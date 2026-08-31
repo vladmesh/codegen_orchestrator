@@ -41,15 +41,18 @@ from pipeline_helpers import (
     po_input_cursor,
     probe_health_endpoint,
     record_env_contract,
+    record_noop_settlement_evidence,
     request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
+    verify_linear_noop_story_completion,
     verify_undeploy_residue,
     wait_application_not_deployed,
     wait_deploy,
     wait_deploy_outcome,
     wait_deploy_run,
     wait_engineering,
+    wait_linear_noop_engineering,
     wait_owner_completion_notification,
     wait_scaffold,
     wait_service_deployment,
@@ -193,10 +196,29 @@ async def _pipeline_phases(
         # A cursor fences out historical and foreign PO events.  It is captured
         # before the story can produce a completion notification.
         ctx["po_input_cursor"] = po_input_cursor()
-    await create_story_and_task(api, ctx)
-    await wait_engineering(
-        api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
-    )
+    await create_story_and_task(api, ctx, linear_noop_tasks=lifecycle_undeploy)
+    if lifecycle_undeploy:
+        await wait_linear_noop_engineering(
+            api,
+            api_internal,
+            ctx,
+            timeout=engineering_timeout,
+            on_poll=lambda: evidence_pass(ctx),
+        )
+        if ctx.get("task_status") == TaskStatus.DONE:
+            await record_noop_settlement_evidence(api_internal, ctx)
+            if ctx.get("noop_settlement_error") is not None:
+                yield ctx
+                dump_debug(ctx, f"{debug_prefix}-noop-settlement")
+                return
+            if not await verify_linear_noop_story_completion(api, ctx):
+                yield ctx
+                dump_debug(ctx, f"{debug_prefix}-noop-linear-story")
+                return
+    else:
+        await wait_engineering(
+            api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
+        )
     if ctx.get("task_status") != TaskStatus.DONE:
         yield ctx
         dump_debug(ctx, f"{debug_prefix}-engineering")
@@ -295,6 +317,33 @@ class TestFullPipeline:
         assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed, app_status: {pipeline.get('final_app_status')}"
         )
+
+    async def test_noop_paid_admission_and_settlement_are_durable(self, pipeline):
+        """Every deterministic engineering attempt retains its paid-work evidence."""
+        assert pipeline.get("noop_settlement_error") is None, pipeline.get("noop_settlement_error")
+        settlement = pipeline.get("noop_settlement") or {}
+        assert len(settlement) == 2
+        for run_id, evidence in settlement.items():
+            assert evidence["decision"]["agent_type"] == "noop", run_id
+            assert evidence["decision"]["source"] == "project_pin", run_id
+            assert evidence["admission"]["outcome"] == "admitted", run_id
+            assert evidence["ledger"]["cost_source"] == "unknown", run_id
+            assert evidence["ledger"]["cost_microusd"] is None, run_id
+
+    async def test_two_noop_tasks_are_sequenced_reused_and_complete_before_deploy(self, pipeline):
+        """A blocked second Task cannot run early or create another Story worker."""
+        assert pipeline.get("noop_task_sequence_error") is None, pipeline.get(
+            "noop_task_sequence_error"
+        )
+        assert pipeline.get("first_task_status") == TaskStatus.DONE
+        assert pipeline.get("second_task_status") == TaskStatus.DONE
+        assert pipeline.get("linear_noop_completion_error") is None, pipeline.get(
+            "linear_noop_completion_error"
+        )
+        assert set(pipeline.get("linear_noop_task_statuses_before_deploy", {}).values()) == {
+            TaskStatus.DONE
+        }
+        assert len(pipeline.get("linear_noop_worker_ids", [])) == 1
 
     async def test_env_contract_present_on_merged_sha(self, pipeline):
         """The contract also holds on the SHA deploy actually resolves it at.

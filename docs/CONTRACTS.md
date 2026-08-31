@@ -143,6 +143,14 @@ Run; a terminal identity is not reopened. A publish failure has an unknown
 broker outcome, so the committed Run and reservation remain recoverable rather
 than being cancelled speculatively.
 
+Internal/admin callers can read the immutable admission fact at
+`GET /api/work-admission/paid-runs/{run_id}/admission` and the corresponding
+reservation outcome at `GET /api/engineering-budget-policies/admissions/{attempt_id}`.
+Neither endpoint retries or mutates admission. The latter reports the real
+stored state: an unlimited or disabled policy has no held reservation, while an
+enforced terminal attempt may be released, settled, or conservatively
+`unknown_final` when no provider cost exists.
+
 Admission writes an immutable `executor_decision` before a billable side effect.
 Consumers load that decision by the engineering task id or QA run id; they do
 not select an executor from mutable project or process configuration. A malformed

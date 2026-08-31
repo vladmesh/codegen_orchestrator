@@ -20,15 +20,23 @@ import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 from pydantic import ValidationError
 import run_cleanup
-from run_evidence import RunEvidenceCollector
+from run_evidence import RunEvidenceCollector, WorkerRole
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionOutcome,
+    EngineeringBudgetAdmissionRead,
+    EngineeringBudgetReservationState,
+)
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.owner_notification import OwnerNotificationState
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunType
-from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
@@ -98,6 +106,8 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 NOOP_PROJECT_DESCRIPTION = "Pipeline E2E test - noop"
 NOOP_TASK_TITLE = "Noop implementation task"
 NOOP_TASK_DESCRIPTION = "Empty commit via NoopRunner - pipeline test"
+NOOP_FOLLOWUP_TASK_TITLE = "Noop follow-up integration task"
+NOOP_FOLLOWUP_TASK_DESCRIPTION = "Second empty NoopRunner commit after the first task"
 
 LLM_BACKEND_PROJECT_DESCRIPTION = (
     "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
@@ -519,8 +529,10 @@ def own_deploy_ahead(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
-async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
-    """Create story (in_progress) + task (todo) for engineering pipeline.
+async def create_story_and_task(
+    api: httpx.AsyncClient, ctx: dict, *, linear_noop_tasks: bool = False
+) -> None:
+    """Create an in-progress Story and one or two schedulable engineering Tasks.
 
     Creating the story is what makes this run able to deploy, so this is where the
     deploy stack is owned — derived, not declared at the call site. Once the
@@ -557,28 +569,48 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
     resp.raise_for_status()
     assert resp.status_code == 200, f"Story start failed: {resp.text}"
 
-    resp = await api.post(
-        "/api/tasks/",
-        json={
-            "project_id": ctx["project_id"],
-            "story_id": ctx["story_id"],
-            "type": "create",
-            "title": ctx.get("task_title", NOOP_TASK_TITLE),
-            "description": ctx.get("task_description", NOOP_TASK_DESCRIPTION),
-            "status": TaskStatus.BACKLOG,
-        },
-    )
-    resp.raise_for_status()
-    assert resp.status_code == 201, f"Create task failed: {resp.text}"
-    ctx["task_id"] = resp.json()["id"]
+    async def create_task(
+        *, title: str, description: str, blocked_by_task_id: str | None = None
+    ) -> str:
+        response = await api.post(
+            "/api/tasks/",
+            json={
+                "project_id": ctx["project_id"],
+                "story_id": ctx["story_id"],
+                "type": "create",
+                "title": title,
+                "description": description,
+                "status": TaskStatus.BACKLOG,
+                "blocked_by_task_id": blocked_by_task_id,
+            },
+        )
+        response.raise_for_status()
+        assert response.status_code == 201, f"Create task failed: {response.text}"
+        task_id = response.json()["id"]
+        response = await api.post(
+            f"/api/tasks/{task_id}/transition",
+            params={"to_status": TaskStatus.TODO},
+            json={"actor": "live-test"},
+        )
+        response.raise_for_status()
+        assert response.status_code == 200, f"Task transition to todo failed: {response.text}"
+        return task_id
 
-    resp = await api.post(
-        f"/api/tasks/{ctx['task_id']}/transition",
-        params={"to_status": TaskStatus.TODO},
-        json={"actor": "live-test"},
+    first_task_id = await create_task(
+        title=ctx.get("task_title", NOOP_TASK_TITLE),
+        description=ctx.get("task_description", NOOP_TASK_DESCRIPTION),
     )
-    resp.raise_for_status()
-    assert resp.status_code == 200, f"Task transition to todo failed: {resp.text}"
+    ctx["task_id"] = first_task_id
+    ctx["first_task_id"] = first_task_id
+    ctx["task_ids"] = [first_task_id]
+    if linear_noop_tasks:
+        second_task_id = await create_task(
+            title=NOOP_FOLLOWUP_TASK_TITLE,
+            description=NOOP_FOLLOWUP_TASK_DESCRIPTION,
+            blocked_by_task_id=first_task_id,
+        )
+        ctx["second_task_id"] = second_task_id
+        ctx["task_ids"].append(second_task_id)
 
 
 async def wait_engineering(
@@ -638,6 +670,306 @@ async def wait_engineering(
         resp = await api.get(f"/api/stories/{ctx['story_id']}")
         resp.raise_for_status()
         ctx["story_status"] = resp.json().get("status")
+
+
+def _engineering_run_candidates(payload: list[dict], task_id: str) -> list[dict]:
+    """Keep only the engineering attempts explicitly bound to one planning task."""
+    return [
+        run
+        for run in payload
+        if run.get("type") == RunType.ENGINEERING.value and run.get("task_id") == task_id
+    ]
+
+
+async def _engineering_runs_for_task(api_internal: httpx.AsyncClient, task_id: str) -> list[dict]:
+    require_unscoped_run_observer(api_internal)
+    response = await api_internal.get(
+        "/api/runs/", params={"task_id": task_id, "run_type": RunType.ENGINEERING.value}
+    )
+    response.raise_for_status()
+    return _engineering_run_candidates(response.json(), task_id)
+
+
+def _capture_dispatch_decisions(ctx: dict, runs: list[dict]) -> None:
+    """Snapshot paid decisions as soon as dispatch exposes their immutable Run."""
+    snapshots = ctx.setdefault("engineering_dispatch_decisions", {})
+    for run in runs:
+        decision = (run.get("run_metadata") or {}).get("executor_decision")
+        if decision is not None:
+            snapshots.setdefault(run["id"], decision)
+
+
+async def wait_linear_noop_engineering(
+    api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    timeout: int = ENGINEERING_TIMEOUT,
+    *,
+    on_poll: Callable[[], None] | None = None,
+) -> None:
+    """Drive two dependent noop Tasks while observing the scheduler's fence.
+
+    Both Tasks are already ``todo``.  The only thing preventing the second
+    dispatch is its persisted dependency, so seeing an engineering Run for it
+    before the first Task reaches ``done`` is a product failure, not a harness
+    ordering convention.
+    """
+    first_task_id = ctx["first_task_id"]
+    second_task_id = ctx["second_task_id"]
+    terminal = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    elapsed = 0
+    first_status = None
+    second_status = None
+    if on_poll is not None:
+        on_poll()
+    while elapsed < timeout:
+        await asyncio.sleep(5)
+        elapsed += 5
+        if on_poll is not None:
+            on_poll()
+        first_response = await api.get(f"/api/tasks/{first_task_id}")
+        first_response.raise_for_status()
+        first_status = first_response.json().get("status")
+        second_response = await api.get(f"/api/tasks/{second_task_id}")
+        second_response.raise_for_status()
+        second_status = second_response.json().get("status")
+        story_response = await api.get(f"/api/stories/{ctx['story_id']}")
+        story_response.raise_for_status()
+        story = story_response.json()
+        if second_status != TaskStatus.DONE and story.get("pr_number") is not None:
+            ctx["noop_task_sequence_error"] = (
+                f"Story {ctx['story_id']} recorded PR {story['pr_number']} before dependent "
+                f"task {second_task_id} reached done (status={second_status})"
+            )
+            break
+        first_runs = await _engineering_runs_for_task(api_internal, first_task_id)
+        second_runs = await _engineering_runs_for_task(api_internal, second_task_id)
+        _capture_dispatch_decisions(ctx, [*first_runs, *second_runs])
+        if first_status != TaskStatus.DONE and second_runs:
+            ctx["noop_task_sequence_error"] = (
+                f"dependent task {second_task_id} created engineering run(s) "
+                f"{[run['id'] for run in second_runs]} before {first_task_id} reached done "
+                f"(status={first_status})"
+            )
+            break
+        if first_status in terminal:
+            break
+
+    ctx["first_task_status"] = first_status
+    ctx["second_task_status_before_first_terminal"] = second_status
+    if first_status != TaskStatus.DONE:
+        ctx["task_status"] = first_status
+        ctx["engineering_elapsed"] = elapsed
+        return
+
+    while elapsed < timeout * 2:
+        await asyncio.sleep(5)
+        elapsed += 5
+        if on_poll is not None:
+            on_poll()
+        second_response = await api.get(f"/api/tasks/{second_task_id}")
+        second_response.raise_for_status()
+        second_status = second_response.json().get("status")
+        second_runs = await _engineering_runs_for_task(api_internal, second_task_id)
+        _capture_dispatch_decisions(ctx, second_runs)
+        if second_status in terminal:
+            break
+
+    ctx["second_task_status"] = second_status
+    ctx["task_status"] = second_status
+    ctx["engineering_elapsed"] = elapsed
+    if second_status == TaskStatus.DONE:
+        for _ in range(20):
+            await asyncio.sleep(3)
+            response = await api.get(f"/api/stories/{ctx['story_id']}")
+            response.raise_for_status()
+            ctx["story_status"] = response.json().get("status")
+            if ctx["story_status"] in {
+                StoryStatus.PR_REVIEW,
+                StoryStatus.DEPLOYING,
+                StoryStatus.COMPLETED,
+                StoryStatus.FAILED,
+            }:
+                break
+
+
+def _noop_settlement_error(ctx: dict, message: str) -> dict[str, dict]:
+    ctx["noop_settlement_error"] = message
+    ctx["noop_settlement"] = {}
+    return {}
+
+
+async def record_noop_settlement_evidence(  # noqa: PLR0911 - specific durable-boundary diagnostics
+    api_internal: httpx.AsyncClient, ctx: dict
+) -> dict[str, dict]:
+    """Read exactly the durable paid-work facts a completed noop route owns.
+
+    The noop profile deliberately has no provider usage.  Its ledger must
+    therefore say ``cost_source=unknown`` with every provider/cost field empty;
+    a reservation may be absent from enforcement (``unlimited`` or
+    ``not_enforced``) or terminal after settlement, but it may never remain an
+    active hold once its engineering Run is terminal.
+    """
+    evidence: dict[str, dict] = {}
+    try:
+        for task_id in ctx["task_ids"]:
+            candidates = await _engineering_runs_for_task(api_internal, task_id)
+            if len(candidates) != 1:
+                return _noop_settlement_error(
+                    ctx,
+                    f"task {task_id} has {len(candidates)} engineering runs; expected exactly one",
+                )
+            listed = candidates[0]
+            run_id = listed["id"]
+            first = await api_internal.get(f"/api/runs/{run_id}")
+            first.raise_for_status()
+            run = first.json()
+            second = await api_internal.get(f"/api/runs/{run_id}")
+            second.raise_for_status()
+            if run != second.json():
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} changed between terminal reads"
+                )
+            if run.get("status") != "completed":
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} ended with status={run.get('status')}"
+                )
+            result = EngineeringRunResult.model_validate(run.get("result"))
+            if result.engineering_status is not EngineeringStatus.DONE:
+                return _noop_settlement_error(
+                    ctx,
+                    (
+                        f"engineering run {run_id} carries "
+                        f"engineering_status={result.engineering_status}"
+                    ),
+                )
+            decision = ExecutorDecision.from_run_metadata(run.get("run_metadata"))
+            if (
+                decision.agent_type.value != "noop"
+                or decision.source is not ExecutorDecisionSource.PROJECT_PIN
+                or decision.attempt_kind is not RunType.ENGINEERING
+            ):
+                return _noop_settlement_error(
+                    ctx,
+                    (
+                        f"engineering run {run_id} has non-noop decision "
+                        f"{decision.model_dump(mode='json')}"
+                    ),
+                )
+            dispatched = ctx.get("engineering_dispatch_decisions", {}).get(run_id)
+            if dispatched is not None and dispatched != decision.model_dump(mode="json"):
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} changed executor decision after dispatch"
+                )
+            admission_response = await api_internal.get(
+                f"/api/work-admission/paid-runs/{run_id}/admission"
+            )
+            admission_response.raise_for_status()
+            admission = WorkAdmissionRead.model_validate(admission_response.json())
+            if admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} lacks admitted audit evidence"
+                )
+            reservation_response = await api_internal.get(
+                f"/api/engineering-budget-policies/admissions/{run_id}"
+            )
+            reservation_response.raise_for_status()
+            reservation = EngineeringBudgetAdmissionRead.model_validate(reservation_response.json())
+            if reservation.attempt_id != run_id:
+                return _noop_settlement_error(
+                    ctx, f"reservation for {run_id} reported attempt_id={reservation.attempt_id}"
+                )
+            if reservation.outcome in {
+                EngineeringBudgetAdmissionOutcome.UNLIMITED,
+                EngineeringBudgetAdmissionOutcome.NOT_ENFORCED,
+            }:
+                if (
+                    reservation.reservation_state is not None
+                    or reservation.active_held_microusd != 0
+                ):
+                    return _noop_settlement_error(
+                        ctx, f"unenforced noop attempt {run_id} retained a budget hold"
+                    )
+            elif reservation.reservation_state not in {
+                EngineeringBudgetReservationState.RELEASED,
+                EngineeringBudgetReservationState.SETTLED,
+                EngineeringBudgetReservationState.UNKNOWN_FINAL,
+            }:
+                return _noop_settlement_error(
+                    ctx,
+                    f"noop reservation {run_id} is not terminal: {reservation.reservation_state}",
+                )
+            ledger_response = await api_internal.get(
+                "/api/runs/engineering-attempts", params={"run_id": run_id}
+            )
+            ledger_response.raise_for_status()
+            ledger = ledger_response.json()
+            if len(ledger) != 1:
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} has {len(ledger)} ledger rows; expected one"
+                )
+            row = ledger[0]
+            required_empty = (
+                "provider",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_microusd",
+            )
+            if (
+                row.get("run_id") != run_id
+                or row.get("project_id") != ctx["project_id"]
+                or row.get("story_id") != ctx["story_id"]
+                or row.get("task_id") != task_id
+                or row.get("role") != "engineering"
+                or row.get("cost_source") != "unknown"
+                or any(row.get(field) is not None for field in required_empty)
+            ):
+                return _noop_settlement_error(
+                    ctx, f"engineering run {run_id} has non-canonical noop ledger evidence"
+                )
+            evidence[run_id] = {
+                "task_id": task_id,
+                "decision": decision.model_dump(mode="json"),
+                "admission": admission.model_dump(mode="json"),
+                "reservation": reservation.model_dump(mode="json"),
+                "ledger": row,
+            }
+    except (httpx.HTTPError, ValidationError, ValueError) as error:
+        return _noop_settlement_error(
+            ctx, f"could not read noop settlement evidence: {type(error).__name__}: {error}"
+        )
+    ctx["noop_settlement_error"] = None
+    ctx["noop_settlement"] = evidence
+    return evidence
+
+
+async def verify_linear_noop_story_completion(api: httpx.AsyncClient, ctx: dict) -> bool:
+    """Prove the merge/deploy gate saw both deterministic Story Tasks complete."""
+    statuses: dict[str, str | None] = {}
+    for task_id in ctx["task_ids"]:
+        response = await api.get(f"/api/tasks/{task_id}")
+        response.raise_for_status()
+        statuses[task_id] = response.json().get("status")
+    ctx["linear_noop_task_statuses_before_deploy"] = statuses
+    if any(status != TaskStatus.DONE for status in statuses.values()):
+        ctx["linear_noop_completion_error"] = (
+            f"deploy gate reached before all Story Tasks completed: {statuses}"
+        )
+        return False
+    worker_ids = ctx["run_evidence"].worker_ids(WorkerRole.DEVELOPER)
+    ctx["linear_noop_worker_ids"] = worker_ids
+    if len(worker_ids) != 1:
+        ctx["linear_noop_completion_error"] = (
+            "two-task noop Story did not preserve one developer worker lifecycle: "
+            f"observed worker ids={worker_ids}"
+        )
+        return False
+    ctx["linear_noop_completion_error"] = None
+    return True
 
 
 async def poll_field(

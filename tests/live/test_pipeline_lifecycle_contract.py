@@ -1,10 +1,13 @@
 """Offline contracts for mega-noop's completed-story and undeploy lifecycle."""
 
+import json
+
 import httpx
 import pipeline_helpers
 import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.task import TaskStatus
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -63,6 +66,195 @@ def test_po_cursor_and_events_exclude_history_and_type_the_new_system_event():
     events = pipeline_helpers.po_events_after("10-0", command=command)
     assert len(events) == 1
     assert events[0].story_id == "story-1"
+
+
+@pytest.mark.asyncio
+async def test_linear_noop_story_creates_a_todo_dependent_second_task(monkeypatch):
+    """Both tasks are schedulable, but the second carries the first as its fence."""
+    monkeypatch.setattr(pipeline_helpers, "own_deploy_ahead", lambda _ctx: None)
+    ctx = {
+        "project_id": "project-1",
+        "task_title": "first noop",
+        "task_description": "first deterministic noop",
+    }
+    task_payloads = []
+    transitions = []
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/api/stories/":
+            return httpx.Response(201, json={"id": "story-1"})
+        if request.method == "POST" and request.url.path == "/api/stories/story-1/start":
+            return httpx.Response(200, json={"id": "story-1"})
+        if request.method == "POST" and request.url.path == "/api/tasks/":
+            task_payloads.append(json.loads(request.content))
+            return httpx.Response(201, json={"id": f"task-{len(task_payloads)}"})
+        if request.method == "POST" and request.url.path.endswith("/transition"):
+            transitions.append((request.url.path, request.url.params["to_status"]))
+            return httpx.Response(200, json={"status": request.url.params["to_status"]})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with _client(handler) as api:
+        await pipeline_helpers.create_story_and_task(api, ctx, linear_noop_tasks=True)
+
+    assert ctx["task_ids"] == ["task-1", "task-2"]
+    assert ctx["task_id"] == ctx["first_task_id"] == "task-1"
+    assert ctx["second_task_id"] == "task-2"
+    assert task_payloads[0]["status"] == TaskStatus.BACKLOG
+    assert task_payloads[1]["status"] == TaskStatus.BACKLOG
+    assert task_payloads[1]["blocked_by_task_id"] == "task-1"
+    assert transitions == [
+        ("/api/tasks/task-1/transition", TaskStatus.TODO),
+        ("/api/tasks/task-2/transition", TaskStatus.TODO),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
+    """Noop acceptance reads durable paid-admission, result, ledger and reservation facts."""
+    ctx = {
+        "project_id": "project-1",
+        "story_id": "story-1",
+        "task_ids": ["task-1", "task-2"],
+        "agent_type": "noop",
+    }
+
+    def run(task_id):
+        return {
+            "id": f"eng-{task_id}",
+            "type": "engineering",
+            "status": "completed",
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "task_id": task_id,
+            "run_metadata": {
+                "triggered_by": "dispatcher",
+                "executor_decision": {
+                    "attempt_kind": "engineering",
+                    "agent_type": "noop",
+                    "source": "project_pin",
+                    "policy_version": "v2",
+                    "reason": "project config pins engineering executor to noop",
+                },
+            },
+            "result": {"engineering_status": "done", "commit_sha": "abc123"},
+        }
+
+    def handler(request):
+        path = request.url.path
+        if path == "/api/runs/":
+            return httpx.Response(200, json=[run(request.url.params["task_id"])])
+        if path.startswith("/api/runs/engineering-attempts"):
+            run_id = request.url.params["run_id"]
+            task_id = run_id.removeprefix("eng-")
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "idempotency_key": f"engineering-run:{run_id}",
+                        "run_id": run_id,
+                        "project_id": "project-1",
+                        "story_id": "story-1",
+                        "task_id": task_id,
+                        "user_id": 7,
+                        "owner_attribution": "resolved",
+                        "role": "engineering",
+                        "occurred_at": "2026-08-31T00:00:00Z",
+                        "provider": None,
+                        "model": None,
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "total_tokens": None,
+                        "cache_read_tokens": None,
+                        "cache_write_tokens": None,
+                        "cost_microusd": None,
+                        "cost_source": "unknown",
+                    }
+                ],
+            )
+        if path.startswith("/api/runs/eng-"):
+            return httpx.Response(200, json=run(path.removeprefix("/api/runs/eng-")))
+        if path.startswith("/api/work-admission/paid-runs/eng-"):
+            return httpx.Response(
+                200,
+                json={"outcome": "admitted", "reason": None, "retryable": False, "message": None},
+            )
+        if path.startswith("/api/engineering-budget-policies/admissions/eng-"):
+            run_id = path.rsplit("/", 1)[-1]
+            return httpx.Response(
+                200,
+                json={
+                    "attempt_id": run_id,
+                    "user_id": 7,
+                    "outcome": "unlimited",
+                    "reservation_microusd": 0,
+                    "known_spend_microusd": 0,
+                    "active_held_microusd": 0,
+                    "available_microusd": None,
+                    "reservation_state": None,
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with _client(handler) as api:
+        evidence = await pipeline_helpers.record_noop_settlement_evidence(api, ctx)
+
+    assert set(evidence) == {"eng-task-1", "eng-task-2"}
+    assert ctx["noop_settlement_error"] is None
+    assert all(item["admission"]["outcome"] == "admitted" for item in evidence.values())
+    assert all(item["ledger"]["cost_source"] == "unknown" for item in evidence.values())
+
+
+@pytest.mark.asyncio
+async def test_linear_noop_wait_keeps_the_dependent_task_and_pr_fenced(monkeypatch):
+    """The live poll observes the dependency until task one is terminal."""
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(pipeline_helpers.asyncio, "sleep", no_sleep)
+    ctx = {"story_id": "story-1", "first_task_id": "task-1", "second_task_id": "task-2"}
+    reads = {"first": 0, "second": 0}
+
+    def engineering_run(task_id):
+        return {
+            "id": f"eng-{task_id}",
+            "type": "engineering",
+            "task_id": task_id,
+            "run_metadata": {
+                "executor_decision": {
+                    "attempt_kind": "engineering",
+                    "agent_type": "noop",
+                    "source": "project_pin",
+                    "policy_version": "v2",
+                    "reason": "test noop pin",
+                }
+            },
+        }
+
+    def handler(request):
+        if request.url.path == "/api/tasks/task-1":
+            reads["first"] += 1
+            return httpx.Response(200, json={"status": "in_dev" if reads["first"] == 1 else "done"})
+        if request.url.path == "/api/tasks/task-2":
+            reads["second"] += 1
+            return httpx.Response(200, json={"status": "done" if reads["second"] >= 3 else "todo"})
+        if request.url.path == "/api/stories/story-1":
+            return httpx.Response(200, json={"status": "pr_review", "pr_number": None})
+        if request.url.path == "/api/runs/":
+            task_id = request.url.params["task_id"]
+            if task_id == "task-2" and reads["second"] < 3:
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=[engineering_run(task_id)])
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with _client(handler) as api:
+        await pipeline_helpers.wait_linear_noop_engineering(api, api, ctx, timeout=10)
+
+    assert ctx["first_task_status"] == TaskStatus.DONE
+    assert ctx["second_task_status"] == TaskStatus.DONE
+    assert ctx.get("noop_task_sequence_error") is None
+    assert set(ctx["engineering_dispatch_decisions"]) == {"eng-task-1", "eng-task-2"}
 
 
 @pytest.mark.asyncio

@@ -173,6 +173,54 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
 
 
 @pytest.mark.asyncio
+async def test_paid_engineering_run_exposes_its_admission_audit_and_reservation(
+    async_client: AsyncClient,
+):
+    """A live harness can read the durable facts created by paid admission."""
+    telegram_id = 830_000_099
+    project_id = str(uuid.uuid4())
+    created = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": "paid-run-evidence"}
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "Paid Run Evidence",
+            "initiating_run_id": str(uuid.uuid4()),
+            "status": "active",
+            "config": {"agent_type": "noop"},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+
+    run_id = f"engineering-evidence-{uuid.uuid4().hex}"
+    started = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": run_id, "type": "engineering", "project_id": project_id},
+    )
+    assert started.status_code == HTTPStatus.OK, started.text
+    assert started.json()["admission"]["outcome"] == "admitted"
+
+    audit = await async_client.get(f"/api/work-admission/paid-runs/{run_id}/admission")
+    assert audit.status_code == HTTPStatus.OK, audit.text
+    assert audit.json() == {
+        "outcome": "admitted",
+        "reason": None,
+        "retryable": False,
+        "message": None,
+    }
+
+    reservation = await async_client.get(f"/api/engineering-budget-policies/admissions/{run_id}")
+    assert reservation.status_code == HTTPStatus.OK, reservation.text
+    assert reservation.json()["attempt_id"] == run_id
+    assert reservation.json()["outcome"] == "unlimited"
+    assert reservation.json()["reservation_state"] is None
+
+
+@pytest.mark.asyncio
 async def test_emergency_stop_requires_strict_bool_and_rejects_generic_mutation(
     async_client: AsyncClient,
 ):

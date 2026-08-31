@@ -19,6 +19,8 @@ from shared.contracts.dto.work_admission import (
     PaidWorkControlsCommand,
     PaidWorkControlsRead,
     WorkAdmissionControlCommand,
+    WorkAdmissionOutcome,
+    WorkAdmissionRead,
 )
 from shared.contracts.vocab import AgentType
 from shared.models import SystemConfig, User, WorkAdmissionAudit
@@ -317,6 +319,37 @@ async def start_paid_run_endpoint(
         ) from exc
     await db.commit()
     return result
+
+
+@router.get("/paid-runs/{run_id}/admission", response_model=WorkAdmissionRead)
+async def get_paid_run_admission(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> WorkAdmissionRead:
+    """Read the immutable admission decision that created one paid attempt.
+
+    The Run's executor snapshot proves what was selected, while this audit fact
+    proves the count/admission outcome that allowed the Run to exist.  Keeping
+    the readback scoped to one opaque run id gives live acceptance a durable
+    fact without exposing a user's broader admission history.
+    """
+    audit = await db.scalar(
+        select(WorkAdmissionAudit).where(
+            WorkAdmissionAudit.subject == "paid_work",
+            WorkAdmissionAudit.reference_id == run_id,
+        )
+    )
+    if audit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Paid run audit not found"
+        )
+    return WorkAdmissionRead(
+        outcome=audit.outcome,
+        reason=audit.reason,
+        retryable=audit.outcome == WorkAdmissionOutcome.DEFERRED.value,
+        message=audit.message,
+    )
 
 
 @router.post("/paid-runs/{run_id}/abort-pre-handoff", status_code=status.HTTP_204_NO_CONTENT)

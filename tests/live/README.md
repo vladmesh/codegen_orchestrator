@@ -48,7 +48,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; noop engineering and deterministic QA | 1 | one project; noop engineering; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port release | 55 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two noop engineering Tasks and deterministic QA | 1 | one project; paid admission evidence; two ordered noop Tasks on one Story worker; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port release | 75 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
 | `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
@@ -65,13 +65,14 @@ The local target names reflect that same contract:
 ### Timeout budget
 
 The timeout values are deliberate bounds, not duration estimates. The noop lifecycle's explicit
-waits sum to at most 48 minutes (`120 + 420 + 420 + 420 + 120 + 20 + 300 + 180 + 180 + 120 + 300 +
-300` seconds): normal pipeline, a bounded external health probe, deterministic QA, completed-story
-and durable PO delivery, the exact deployment record, then undeploy Run, terminal application, and
-port-allocation release. The LLM pipeline remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`)
-because it does not yet run the new lifecycle acceptance. The 55- and 60-minute pytest caps add
-time for manifest-owned teardown and diagnostics. A QA executor switch is separately limited to three
-minutes; runner preflight and final sweep are each five minutes.
+waits sum to at most 61m20s (`120 + 840 + 60 + 420 + 420 + 120 + 320 + 300 + 180 + 180 + 120 + 300 +
+300` seconds): scaffold; two ordered noop Tasks; Story aggregation; deploy; a bounded public health
+probe (up to two 30-second paths per attempt); deterministic QA; completed-story and durable PO
+delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
+release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnostics. The LLM pipeline
+remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
+acceptance. A QA executor switch is separately limited to three minutes; runner preflight and final
+sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include
 two 10-minute machine allocations, five minutes for DNS, three minutes for API readiness, and 20
@@ -86,17 +87,22 @@ jobs do not share an outer timeout.
 ### Invariant map and first-iteration baseline
 
 All named suites exercise the product acceptance path: project creation, scaffold, engineering,
-deploy, and QA verdict. `mega-noop` additionally proves the completed Story's durable
-`story_completed` owner record, its matching post-cursor PO input event and verified public URL,
-the successful service deployment's exact merged SHA, and a product API undeploy through terminal
-`not_deployed` plus owned port-allocation absence. The LLM suites additionally prove selected
-executor wiring; they do not yet claim the new lifecycle acceptance. The static baseline at this
-point is one noop run, one selected LLM pair, or four unique matrix pairs; it does not claim
-unmeasured wall times.
+deploy, and QA verdict. `mega-noop` additionally proves each Task's admitted paid-run audit,
+immutable noop `ExecutorDecision`, typed terminal result, canonical zero-provider-cost ledger row,
+and actual reservation outcome; its second `todo` Task is blocked by the first and must not receive
+a Run early. The two Tasks complete through one observed Story-worker lifecycle before the PR/merge
+can lead to deploy. It also proves the completed Story's durable `story_completed` owner record, its
+matching post-cursor PO input event and verified public URL, the successful service deployment's exact
+merged SHA, and a product API undeploy through terminal `not_deployed` plus owned port-allocation
+absence. The LLM suites additionally prove selected executor wiring; they do not yet claim the new
+lifecycle acceptance. The static baseline at this point is one two-Task noop run, one selected LLM
+pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 
 | Invariant level | Primary evidence | Suites |
 | --- | --- | --- |
 | Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
+| Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
+| Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
 | Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
 | Diagnostics | bounded debug dumps, runner log, and public report files | all named suites |
 | Ownership fence | `OwnershipManifest`, run labels, and fenced teardown | all named suites |
