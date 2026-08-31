@@ -87,6 +87,17 @@ The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
 revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it
 must not be used as a QA TTL grant until the template adds one.
 
+### Deploy diagnostic redaction
+
+`shared.diagnostics.redact_diagnostic` is the single boundary for runtime and
+deploy diagnostics that can leave a process. Callers provide every resolved
+secret value, so the boundary removes those values, encoded dotenv payloads
+that decode to them, authorization-header values, URL userinfo, and Telegram
+Bot API endpoint tokens. The deployer applies it to provider, workflow, HTTP,
+dotenv, refusal, cancellation, and unexpected-failure logs and results; smoke
+applies it to Bot API failures, SSH failures, and retrieved container logs.
+The safe diagnostic retains its failure classification and non-secret context.
+
 ## Accounting, admission, and executor selection
 
 ### Engineering attempt ledger

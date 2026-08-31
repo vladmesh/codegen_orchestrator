@@ -1,5 +1,6 @@
 import base64
 
+from shared.diagnostics import redact_diagnostic
 from shared.log_config import get_logger
 
 logger = get_logger(__name__)
@@ -102,6 +103,6 @@ class SecretsMixin:
                     owner=owner,
                     repo=repo,
                     secret_name=name,
-                    error=str(e),
+                    error=redact_diagnostic(e),
                 )
         return count

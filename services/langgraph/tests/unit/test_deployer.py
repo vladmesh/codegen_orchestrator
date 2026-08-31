@@ -16,6 +16,8 @@ from tests.unit.factories import make_repository
 
 PINNED_SHA = "c" * 40
 PIN_TAG = deploy_pin_tag(PINNED_SHA)
+TELEGRAM_TOKEN = "123456789:AA-deployer-redaction-canary"  # noqa: S105
+USERS_GRANT_CAPABILITY = "users-grant-deployer-redaction-canary"
 
 
 class WorkflowCancelledError(RuntimeError):
@@ -134,6 +136,35 @@ class TestDeployerNodeErrors:
 
         # _write_deploy_secrets should have returned False (secrets not written)
         gh.set_repository_secrets.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.logger")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_failure_result_and_structured_events_redact_resolved_secrets(
+        self, mock_api, mock_gh_cls, mock_logger, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = RuntimeError(
+            f"workflow failed at https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe"
+        )
+        gh.get_latest_workflow_run.return_value = None
+
+        result = await deployer.run(
+            {
+                **base_state,
+                "secret_values": {
+                    "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
+                    "USERS_GRANT_CAPABILITY": USERS_GRANT_CAPABILITY,
+                },
+            }
+        )
+
+        captured_surfaces = f"{result!r} {mock_logger.mock_calls!r}"
+        assert result["deployment_result"]["status"] == "failed"
+        assert "Deploy workflow failed" in result["errors"][0]
+        assert TELEGRAM_TOKEN not in captured_surfaces
+        assert USERS_GRANT_CAPABILITY not in captured_surfaces
 
 
 @patch.dict(

@@ -7,6 +7,8 @@ import pytest
 
 from src.subgraphs.devops.smoke import SmokeTesterNode
 
+TELEGRAM_TOKEN = "123456789:AA-smoke-redaction-canary"  # noqa: S105
+
 
 @pytest.fixture
 def smoke_node():
@@ -319,6 +321,22 @@ class TestSmokeTesterTgBotBadToken:
         assert "Unauthorized" in check["detail"]
         # No container probe once the identity probe failed
         assert not [c for c in env.commands if "ps " in c]
+
+    async def test_failure_result_and_structured_event_redact_bot_api_url(self, smoke_node):
+        state = _tg_bot_state(secret_values={"TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN})
+        failure = httpx.ConnectError(
+            f"connection failed: https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe"
+        )
+
+        with (
+            _TgBotEnv(getme=[failure, failure, failure], ps_stdout="tg_bot\n"),
+            patch("src.subgraphs.devops.smoke.logger") as mock_logger,
+        ):
+            result = await smoke_node.run(state)
+
+        captured_surfaces = f"{result!r} {mock_logger.mock_calls!r}"
+        assert result["smoke_result"]["status"] == "fail"
+        assert TELEGRAM_TOKEN not in captured_surfaces
 
 
 class TestSmokeTesterTgBotSshFailure:

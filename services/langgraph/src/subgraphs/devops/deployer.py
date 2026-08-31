@@ -1,6 +1,7 @@
 """DeployerNode — deploy via GitHub Actions: write secrets, dispatch deploy.yml, wait."""
 
 import asyncio
+from collections.abc import Iterable
 from datetime import UTC, datetime
 import os
 
@@ -12,6 +13,7 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.service_ports import is_http_health_port_service
+from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
@@ -28,6 +30,13 @@ DEPLOY_TIMEOUT_SECONDS = 600
 # module must not import (tests substitute their own doubles), so they are matched
 # by name.
 _CANCELLATION_ERRORS = ("WorkflowCancelledError", "WorkflowCancellationUnprovenError")
+
+
+def _resolved_secret_values(values: object) -> tuple[str, ...]:
+    """Return state secrets that diagnostics must never cross a boundary with."""
+    if not isinstance(values, dict):
+        return ()
+    return tuple(value for value in values.values() if isinstance(value, str) and value)
 
 
 class DeployRefusedError(RuntimeError):
@@ -91,6 +100,7 @@ async def _create_deployment_record(
     port: int,
     deployment_info: dict,
     deployed_sha: str | None = None,
+    diagnostic_secrets: Iterable[str] = (),
 ) -> int | None:
     """Create a deployment record and update the Application status via API.
 
@@ -137,7 +147,7 @@ async def _create_deployment_record(
         logger.error(
             "deployment_record_error",
             service_name=service_name,
-            error=str(e),
+            error=redact_diagnostic(e, secrets=diagnostic_secrets),
             error_type=type(e).__name__,
         )
         return None
@@ -153,6 +163,7 @@ async def _write_deploy_secrets(
     dotenv_b64: str,
     ssh_key: str,
     ssh_user: str,
+    diagnostic_secrets: Iterable[str] = (),
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
     # Registry credentials for CI docker push
@@ -196,7 +207,7 @@ async def _write_deploy_secrets(
             "deploy_secrets_setup_failed",
             owner=owner,
             repo=repo,
-            error=str(e),
+            error=redact_diagnostic(e, secrets=diagnostic_secrets),
             error_type=type(e).__name__,
         )
         return False
@@ -217,6 +228,7 @@ class DeployerNode(FunctionalNode):
         ref: str = "main",
         head_sha: str | None = None,
         deploy_run_id: str | None = None,
+        diagnostic_secrets: Iterable[str] = (),
     ) -> dict | None:
         """Attempt to rerun failed deploy workflow jobs.
 
@@ -265,14 +277,23 @@ class DeployerNode(FunctionalNode):
         except (RuntimeError, TimeoutError) as e:
             if type(e).__name__ in _CANCELLATION_ERRORS:
                 raise
-            logger.error("deploy_rerun_failed", error=str(e))
+            logger.error(
+                "deploy_rerun_failed", error=redact_diagnostic(e, secrets=diagnostic_secrets)
+            )
             return None
         except Exception as e:
-            logger.error("deploy_rerun_api_error", error=str(e))
+            logger.error(
+                "deploy_rerun_api_error", error=redact_diagnostic(e, secrets=diagnostic_secrets)
+            )
             return None
 
     async def _remove_pin_tag(
-        self, github: GitHubAppClient, owner: str, repo: str, tag: str
+        self,
+        github: GitHubAppClient,
+        owner: str,
+        repo: str,
+        tag: str,
+        diagnostic_secrets: Iterable[str] = (),
     ) -> Exception | None:
         """Drop the pin tag whatever the run did. A leftover tag is litter in the user's repo.
 
@@ -288,7 +309,7 @@ class DeployerNode(FunctionalNode):
                 owner=owner,
                 repo=repo,
                 tag=tag,
-                error=str(e),
+                error=redact_diagnostic(e, secrets=diagnostic_secrets),
                 error_type=type(e).__name__,
             )
             return e
@@ -338,6 +359,7 @@ class DeployerNode(FunctionalNode):
         repo: str,
         head_sha: str,
         run_id: str | None,
+        diagnostic_secrets: Iterable[str] = (),
     ) -> tuple[dict, bool]:
         """Run deploy.yml, optionally pinned to one commit. Returns (run_info, was_rerun).
 
@@ -382,18 +404,30 @@ class DeployerNode(FunctionalNode):
             except (RuntimeError, TimeoutError) as e:
                 if type(e).__name__ in _CANCELLATION_ERRORS:
                     raise
-                logger.warning("deploy_workflow_failed", error=str(e))
+                logger.warning(
+                    "deploy_workflow_failed",
+                    error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                )
 
                 # Attempt to rerun failed jobs (gets a new GH Actions runner)
                 rerun_info = await self._try_deploy_rerun(
-                    github, owner, repo, dispatch_time, ref, head_sha or None, run_id
+                    github,
+                    owner,
+                    repo,
+                    dispatch_time,
+                    ref,
+                    head_sha or None,
+                    run_id,
+                    diagnostic_secrets,
                 )
                 if rerun_info is None:
                     raise
                 run_info, rerun = rerun_info, True
         finally:
             if pin_tag:
-                cleanup_error = await self._remove_pin_tag(github, owner, repo, pin_tag)
+                cleanup_error = await self._remove_pin_tag(
+                    github, owner, repo, pin_tag, diagnostic_secrets
+                )
 
         if cleanup_error is not None:
             raise DeployPinTagLeakedError(
@@ -483,6 +517,7 @@ class DeployerNode(FunctionalNode):
         run_id = state.get("run_id")
         project_spec = state.get("project_spec") or {}
         secret_values = state.get("secret_values", {})
+        diagnostic_secrets = list(_resolved_secret_values(secret_values))
         non_secret_values = state.get("non_secret_values", {})
         # Empty means "deploy whatever main holds now"; a SHA means that exact commit.
         head_sha = state.get("head_sha") or ""
@@ -539,6 +574,7 @@ class DeployerNode(FunctionalNode):
             }
             dotenv_content = build_dotenv(all_env)
             dotenv_b64 = encode_dotenv(dotenv_content)
+            diagnostic_secrets.append(dotenv_b64)
 
             # 2. Write deploy secrets to GitHub
             logger.info(
@@ -560,6 +596,7 @@ class DeployerNode(FunctionalNode):
                 dotenv_b64=dotenv_b64,
                 ssh_key=ssh_key,
                 ssh_user=server.ssh_user,
+                diagnostic_secrets=diagnostic_secrets,
             )
 
             if not secrets_ok:
@@ -587,11 +624,16 @@ class DeployerNode(FunctionalNode):
                         "deploy_fence_unproven",
                         project_id=project_id,
                         reason=type(e).__name__,
-                        error=str(e),
+                        error=redact_diagnostic(e, secrets=diagnostic_secrets),
                     )
                     return {
-                        "deployment_result": {"status": "failed", "error": str(e)},
-                        "errors": [f"Deploy refused: {e}"],
+                        "deployment_result": {
+                            "status": "failed",
+                            "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                        },
+                        "errors": [
+                            f"Deploy refused: {redact_diagnostic(e, secrets=diagnostic_secrets)}"
+                        ],
                     }
 
             if await self._run_cancelled(run_id):
@@ -600,24 +642,33 @@ class DeployerNode(FunctionalNode):
             # 3. Dispatch deploy.yml and wait for it, pinned to head_sha when one is given
             try:
                 run_info, rerun = await self._dispatch_and_wait(
-                    github, owner, repo, head_sha, run_id
+                    github, owner, repo, head_sha, run_id, diagnostic_secrets
                 )
             except DeployDispatchWithdrawnError as e:
                 # Stopped before anything left the system. Reported as cancelled,
                 # like a run stopped on Actions, so the consumer records the same
                 # terminal outcome either way.
-                logger.info("deploy_withdrawn_before_dispatch", project_id=project_id, error=str(e))
+                logger.info(
+                    "deploy_withdrawn_before_dispatch",
+                    project_id=project_id,
+                    error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                )
                 return {"deployment_result": {"status": "cancelled"}}
             except DeployRefusedError as e:
                 logger.error(
                     "deploy_refused",
                     project_id=project_id,
                     reason=type(e).__name__,
-                    error=str(e),
+                    error=redact_diagnostic(e, secrets=diagnostic_secrets),
                 )
                 return {
-                    "deployment_result": {"status": "failed", "error": str(e)},
-                    "errors": [f"Deploy refused: {e}"],
+                    "deployment_result": {
+                        "status": "failed",
+                        "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                    },
+                    "errors": [
+                        f"Deploy refused: {redact_diagnostic(e, secrets=diagnostic_secrets)}"
+                    ],
                 }
 
             logger.info(
@@ -647,6 +698,7 @@ class DeployerNode(FunctionalNode):
                     "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
                 },
                 deployed_sha=run_info.get("head_sha"),
+                diagnostic_secrets=diagnostic_secrets,
             )
 
             deployed_url = f"http://{server_ip}:{port}"
@@ -671,13 +723,22 @@ class DeployerNode(FunctionalNode):
                 "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
             )
             return {
-                "deployment_result": {"status": "failed", "error": str(e)},
-                "errors": [f"{error_prefix}: {e}"],
+                "deployment_result": {
+                    "status": "failed",
+                    "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                },
+                "errors": [f"{error_prefix}: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
             }
 
         except Exception as e:
-            logger.error("deployer_failed", error=str(e), exc_info=True)
+            logger.error(
+                "deployer_failed",
+                error=redact_diagnostic(e, secrets=diagnostic_secrets),
+            )
             return {
-                "deployment_result": {"status": "error", "error": str(e)},
-                "errors": [f"Deployment error: {e}"],
+                "deployment_result": {
+                    "status": "error",
+                    "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                },
+                "errors": [f"Deployment error: {redact_diagnostic(e, secrets=diagnostic_secrets)}"],
             }
