@@ -82,7 +82,7 @@ jobs:
         -o ServerAliveCountMax=10
     steps:
       - name: Check out lifecycle code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -548,7 +548,7 @@ jobs:
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
     steps:
       - name: Check out lifecycle code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download cleanup handoff
         id: handoff
@@ -682,7 +682,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Check out lifecycle code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Sweep expired run-tagged machines
         run: |
