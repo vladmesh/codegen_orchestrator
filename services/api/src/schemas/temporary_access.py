@@ -57,6 +57,7 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     head_sha: str
     qa_run_id: str
     grant_run_id: str
+    grant_attempts: int = 1
     qa_message: QAMessage
     status: TemporaryAccessStatus
     granted_at: datetime

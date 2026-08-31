@@ -64,6 +64,7 @@ class TemporaryAccessGrantUpdate(BaseModel):
 
     status: TemporaryAccessStatus | None = None
     grant_run_id: str | None = None
+    grant_attempts: int | None = Field(default=None, ge=1)
     qa_dispatched: bool | None = None
     revoke_reason: TemporaryAccessRevokeReason | None = None
     revoke_run_id: str | None = None
@@ -84,6 +85,7 @@ class TemporaryAccessGrantDTO(TimestampedDTO):
     head_sha: str
     qa_run_id: str
     grant_run_id: str
+    grant_attempts: int = 1
     qa_message: QAMessage
     status: TemporaryAccessStatus
     granted_at: datetime

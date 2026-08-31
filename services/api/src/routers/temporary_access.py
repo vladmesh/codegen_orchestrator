@@ -111,6 +111,7 @@ async def create_grant(
         head_sha=grant_in.head_sha,
         qa_run_id=grant_in.qa_run_id,
         grant_run_id=grant_in.grant_run_id,
+        grant_attempts=1,
         qa_message=grant_in.qa_message.model_dump(mode="json"),
         status=TemporaryAccessStatus.GRANTING.value,
         granted_at=datetime.now(UTC),
@@ -130,7 +131,8 @@ async def list_grants(
     grant_status: list[TemporaryAccessStatus] | None = Query(None, alias="status"),
     live: bool = Query(False),
 ) -> list[TemporaryAccessGrant]:
-    await _reject_live_legacy(db)
+    # A live legacy row blocks only capability-backed creation. It must not
+    # prevent this sweep from reconciling unrelated, target-bound records.
     query = select(TemporaryAccessGrant).where(TemporaryAccessGrant.target_base_url.is_not(None))
     if project_id is not None:
         query = query.where(TemporaryAccessGrant.project_id == project_id)

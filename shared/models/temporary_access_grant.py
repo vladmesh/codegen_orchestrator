@@ -21,7 +21,10 @@ class TemporaryAccessGrant(Base):
             "project_id",
             "target_application_id",
             unique=True,
-            postgresql_where=text(f"status != '{TemporaryAccessStatus.REVOKED.value}'"),
+            postgresql_where=text(
+                f"status != '{TemporaryAccessStatus.REVOKED.value}' "
+                "AND target_application_id IS NOT NULL"
+            ),
         ),
     )
 
@@ -46,6 +49,7 @@ class TemporaryAccessGrant(Base):
 
     # The capability-operation runs and held QA handoff make restart idempotent.
     grant_run_id: Mapped[str] = mapped_column(String(255))
+    grant_attempts: Mapped[int] = mapped_column(Integer, default=1)
     qa_message: Mapped[dict] = mapped_column(JSON)
 
     status: Mapped[str] = mapped_column(

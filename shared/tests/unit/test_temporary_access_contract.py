@@ -20,6 +20,7 @@ def test_durable_grant_has_identity_and_target_but_no_capability_or_environment_
         head_sha="a" * 40,
         qa_run_id="qa-1",
         grant_run_id="temporary-access-grant-1",
+        grant_attempts=1,
         qa_message=QAMessage(
             project_id="00000000-0000-0000-0000-000000000001",
             initiating_run_id="live-1",
@@ -36,4 +37,5 @@ def test_durable_grant_has_identity_and_target_but_no_capability_or_environment_
 
     stored = grant.model_dump()
     assert stored["external_id"] == "8202532144"
+    assert stored["grant_attempts"] == 1
     assert {"env_key", "subject", "capability", "bot_token"}.isdisjoint(stored)

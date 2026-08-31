@@ -87,6 +87,14 @@ Temporary QA access uses the same generated-service capability but a distinct
 durable record. It binds the central QA Telegram identity, application, base URL,
 and SHA before dispatch. Grant and revoke each require the matching active or
 inactive `/users/access` readback; the capability remains in deploy-local memory.
+The reconciler retries only the record's immutable target. Missing or stale grant
+and revoke operation Runs consume their separately recorded, bounded attempt
+budgets. A revoke that exceeds its attempt or unrevoked-time bound receives one
+persisted administrator escalation and never releases or republishes QA access.
+A non-revoked legacy slot record blocks only new capability-backed QA handoffs
+with a non-secret prior-release-drain remediation; it never blocks unrelated
+temporary-access reconciliation or dispatcher work, and terminal legacy history
+remains readable.
 
 ### Deploy diagnostic redaction
 

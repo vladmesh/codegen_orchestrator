@@ -8,6 +8,12 @@
   or inactive generated-service readback. Live legacy slot records now fail closed
   with operator remediation, while terminal history is retained.
 
+- Hardened temporary QA access recovery. Target contention and legacy
+  preconditions now defer only the affected handoff, stale or missing grant and
+  revoke operations consume durable bounded retries against their immutable
+  target, and exhausted unrevoked cleanup records one administrator escalation
+  without republishing QA access or relabelling its original revoke reason.
+
 - Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
   and smoke failure surfaces now remove resolved secrets, encoded dotenv
   content, authorization values, and Telegram Bot API tokens before logs,
