@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Extended the free `mega-noop` stand acceptance from deploy and deterministic
+  QA to the complete user lifecycle: it now records a live health probe, waits
+  for `Story.completed`, proves the durable `story_completed` owner record and
+  matching new PO input event, verifies the selected successful deployment's
+  merged SHA, and performs the product undeploy API path through
+  `Application.not_deployed` and owned port-allocation absence. The suite cap
+  now reflects those bounded lifecycle waits; no live or LLM run was performed.
+
 - Defined the canonical stand E2E suite contract: `mega-noop`, `mega-llm`, and
   the four-cell `matrix` now resolve to exact pytest nodes with canonical names
   in logs and reports. Legacy `mega`/`llm` aliases remain compatible, suite

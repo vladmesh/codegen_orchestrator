@@ -5,6 +5,7 @@ import pytest
 from scripts import stand_run
 from scripts.stand_run import (
     AGENTS,
+    NOOP_SUITE_TIMEOUT_SECONDS,
     QA_EXECUTOR_ENV,
     SUITE_ALIASES,
     SUITES,
@@ -72,6 +73,15 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
     for name, target in expected_targets.items():
         assert SUITES[name].target == target
         assert SUITES[name].timeout_seconds > 0
+
+
+def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
+    """A new lifecycle wait must not silently exceed the named suite cap."""
+    explicit_waits = 120 + 420 + 420 + 420 + 120 + 20 + 300 + 180 + 180 + 120 + 300 + 300
+
+    assert explicit_waits == 2900
+    assert NOOP_SUITE_TIMEOUT_SECONDS == 3300
+    assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 300
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():
