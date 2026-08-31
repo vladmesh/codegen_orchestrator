@@ -14,6 +14,10 @@
   target, and exhausted unrevoked cleanup records one administrator escalation
   without republishing QA access or relabelling its original revoke reason.
 
+- Fixed the temporary QA grant-attempt migration revision so it extends the
+  capability-target migration without colliding with an existing Alembic
+  revision.
+
 - Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
   and smoke failure surfaces now remove resolved secrets, encoded dotenv
   content, authorization values, and Telegram Bot API tokens before logs,
