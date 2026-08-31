@@ -75,10 +75,13 @@ minutes; runner preflight and final sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include
 two 10-minute machine allocations, five minutes for DNS, three minutes for API readiness, and 20
-minutes for target provisioning; the remainder is bootstrap/Ansible reserve. The matrix runner is
-bounded at 262 minutes (`5m preflight + 4 × (60m cell + 3m switch) + 5m sweep`). The E2E job cap is
-360 minutes, a strict 53-minute reserve over provisioning plus that runner path. Lifecycle cleanup
-runs in its own 30-minute GitHub job, because jobs do not share an outer timeout.
+minutes for target provisioning; the remainder is bootstrap/Ansible reserve. The previous broad
+control-plane bootstrap measured about seven minutes. It now uses a stand-only minimal playbook
+whose expected 2–3 minute duration is pending live confirmation; that expectation does not change
+the overall provisioning budget. The matrix runner is bounded at 262 minutes (`5m preflight + 4 ×
+(60m cell + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict 53-minute reserve over
+provisioning plus that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
+jobs do not share an outer timeout.
 
 ### Invariant map and first-iteration baseline
 
