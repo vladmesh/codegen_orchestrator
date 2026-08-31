@@ -112,7 +112,7 @@ For each significant change, ask:
 For new tests that should be written:
 - **Service tests**: add test files to `services/{name}/tests/service/`. These will automatically be picked up by the existing Dockerfile.test and compose file.
 - **Integration tests**: add test files to `tests/integration/{suite}/`. Match the existing conftest fixtures.
-- If a new integration suite is needed (rare), create a new compose file in `docker/test/integration/` following the existing patterns. The Makefile discovers suites automatically from `*.yml` files.
+- If a new integration suite is needed (rare), create a new compose file in `tests/compose/integration/` following the existing patterns. The Makefile discovers suites automatically from `*.yml` files.
 
 When writing new tests, follow existing patterns in the suite. Read the conftest.py to understand available fixtures.
 

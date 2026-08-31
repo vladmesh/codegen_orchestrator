@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY --from=docker:29.7.0-cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Install test dependencies
-COPY docker/test/integration/requirements.txt .
+COPY tests/compose/integration/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy shared and packages

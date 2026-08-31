@@ -32,7 +32,7 @@ COPY services/scheduler/src ./src
 COPY services/scheduler/tests ./tests
 COPY services/scheduler/pytest.ini ./
 
-# Run unit tests only (service tests need full environment via docker/test/service/scheduler.yml)
+# Run unit tests only (service tests need full environment via tests/compose/service/scheduler.yml)
 CMD ["pytest", "tests/unit/", "-v"]
 
 # Which tree this image baked shared from; read by scripts/shared_freshness.py.

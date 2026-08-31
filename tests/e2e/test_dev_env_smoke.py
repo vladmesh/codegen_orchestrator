@@ -4,7 +4,7 @@ Verifies the full vertical slice:
   worker creation → workspace bind-mount → dev network → compose sidecar → cleanup
 
 Run via:
-    docker compose -f docker/test/e2e/e2e.yml run tests \
+    docker compose -f tests/compose/e2e/e2e.yml run tests \
         pytest tests/e2e/test_dev_env_smoke.py
 """
 

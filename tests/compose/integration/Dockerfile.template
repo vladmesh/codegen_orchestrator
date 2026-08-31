@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install test dependencies
-COPY docker/test/integration/requirements.template.txt requirements.txt
+COPY tests/compose/integration/requirements.template.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy tests (usually mounted, but good for caching)

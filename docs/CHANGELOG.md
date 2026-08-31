@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Moved test-only Dockerfiles and Compose harnesses from the misleading root `docker/test/` tree to
+  `tests/compose/`. Make targets, CI change detection and cleanup, contract checks, documentation,
+  and internal fixture paths now use the test-owned location without changing suite behavior.
+
 - Made stand evidence collection suite-aware: single-cell `mega-noop`,
   `mega-llm`, and custom runs now fetch only their selected QA/worker log,
   while `matrix` still fetches all four cells. This removes three guaranteed

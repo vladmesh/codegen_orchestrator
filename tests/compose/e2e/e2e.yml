@@ -176,7 +176,7 @@ services:
     image: codegen-orchestrator/e2e-test-runner:test
     build:
       context: ../../..
-      dockerfile: docker/test/e2e/Dockerfile
+      dockerfile: tests/compose/e2e/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/e2e/", "-v", "-m", "e2e", "--tb=short"]

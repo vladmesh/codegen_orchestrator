@@ -114,7 +114,7 @@ def tree(tmp_path: Path) -> Path:
     _write(tmp_path, "services/api/Dockerfile", LABELLED)
     _write(tmp_path, "Makefile", MAKEFILE)
     _write(tmp_path, "docker-compose.yml", COMPOSE)
-    _write(tmp_path, "docker/test/api.yml", TEST_COMPOSE)
+    _write(tmp_path, "tests/compose/api.yml", TEST_COMPOSE)
     return tmp_path
 
 
@@ -184,7 +184,7 @@ def test_a_built_test_image_without_a_label_fails_the_check_by_name(tree: Path):
     problems = check(tree, inspect=_inspector(images), report=lambda _: None)
 
     assert problems == [
-        f"codegen-orchestrator/api:test (docker/test/api.yml service api) is built without "
+        f"codegen-orchestrator/api:test (tests/compose/api.yml service api) is built without "
         f"a {SOURCE_HASH_LABEL} label"
     ]
 
@@ -336,26 +336,26 @@ def test_a_mounted_compose_service_is_not_tracked(tree: Path):
 
 
 def test_a_compose_service_without_an_image_name_fails_the_check(tree: Path):
-    (tree / "docker/test/api.yml").write_text(
+    (tree / "tests/compose/api.yml").write_text(
         TEST_COMPOSE.replace("    image: codegen-orchestrator/api:test\n", "")
     )
 
     problems, _ = compose_routes(tree)
 
     assert len(problems) == 1
-    assert problems[0].startswith("docker/test/api.yml: service api builds services/api/Dockerfile")
+    assert problems[0].startswith("tests/compose/api.yml: service api builds services/api/Dockerfile")
     assert "without declaring an image: name" in problems[0]
 
 
 def test_a_compose_service_that_does_not_pass_the_hash_fails_the_check(tree: Path):
-    (tree / "docker/test/api.yml").write_text(
+    (tree / "tests/compose/api.yml").write_text(
         TEST_COMPOSE.replace("      args:\n        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}\n", "")
     )
 
     problems = check(tree, inspect=_inspector(_built(tree)), report=lambda _: None)
 
     assert problems == [
-        "docker/test/api.yml: service api builds services/api/Dockerfile, which bakes shared, "
+        "tests/compose/api.yml: service api builds services/api/Dockerfile, which bakes shared, "
         "without passing SOURCE_HASH in build.args"
     ]
 
@@ -371,7 +371,7 @@ def test_an_interpolated_image_name_is_an_unreadable_route(tree: Path):
     _write(tree, "services/newcomer/Dockerfile", LABELLED)
     _write(
         tree,
-        "docker/test/newcomer.yml",
+        "tests/compose/newcomer.yml",
         ROUTED_COMPOSE.replace(
             "    image: codegen-orchestrator/newcomer:local\n", "    image: ${NEWCOMER_IMAGE}\n"
         ),
@@ -383,18 +383,18 @@ def test_an_interpolated_image_name_is_an_unreadable_route(tree: Path):
 
     assert len(problems) == 1
     assert problems[0].startswith(
-        "docker/test/newcomer.yml: service newcomer builds services/newcomer/Dockerfile"
+        "tests/compose/newcomer.yml: service newcomer builds services/newcomer/Dockerfile"
     )
     assert "not a literal" in problems[0]
 
 
 def test_a_compose_file_that_cannot_be_parsed_fails_the_check(tree: Path):
-    _write(tree, "docker/test/broken.yml", "services:\n  api:\n   - build: [\n")
+    _write(tree, "tests/compose/broken.yml", "services:\n  api:\n   - build: [\n")
 
     problems = check(tree, inspect=_inspector(_built(tree)), report=lambda _: None)
 
     assert len(problems) == 1
-    assert problems[0].startswith("docker/test/broken.yml: has services: but cannot be parsed")
+    assert problems[0].startswith("tests/compose/broken.yml: has services: but cannot be parsed")
 
 
 def test_a_yaml_that_is_not_compose_is_left_alone(tree: Path):
@@ -439,7 +439,7 @@ def test_a_dockerfile_no_route_builds_fails_the_check_by_name(tree: Path):
 
 def test_the_same_dockerfile_on_a_compose_route_passes(tree: Path):
     _write(tree, "services/newcomer/Dockerfile", LABELLED)
-    _write(tree, "docker/test/newcomer.yml", ROUTED_COMPOSE)
+    _write(tree, "tests/compose/newcomer.yml", ROUTED_COMPOSE)
 
     assert check(tree, inspect=_inspector(_built(tree)), report=lambda _: None) == []
     assert "codegen-orchestrator/newcomer:local" in {
@@ -532,7 +532,7 @@ def test_every_dockerfile_in_this_repository_reaches_an_image_name():
 
 
 def test_every_compose_service_in_this_repository_can_be_checked():
-    """Including docker/test/**: a built test image is an image like any other."""
+    """Including tests/compose/**: a built test image is an image like any other."""
     problems, _ = compose_routes(REPO_ROOT)
 
     assert problems == []

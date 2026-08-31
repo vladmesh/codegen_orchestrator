@@ -2,7 +2,7 @@
 
 Covers the path the LK depends on: logs pushed to Loki are queried by the
 aggregator, turned into metrics and upserted through the API. Runs against a
-real Loki and a real API/DB (docker/test/service/scheduler.yml).
+real Loki and a real API/DB (tests/compose/service/scheduler.yml).
 """
 
 import asyncio

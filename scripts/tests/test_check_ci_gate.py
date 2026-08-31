@@ -145,12 +145,12 @@ def test_a_missing_tag_counts_as_floating(gate, image_tree):
 
 
 def test_a_floating_compose_image_fails_the_gate(gate, image_tree):
-    (image_tree / "docker").mkdir()
-    (image_tree / "docker/test.yml").write_text(
+    (image_tree / "tests").mkdir()
+    (image_tree / "tests/compose.yml").write_text(
         "services:\n  cache:\n    image: redis:7.4.10-alpine\n  db:\n    image: postgres:latest\n"
     )
 
-    with pytest.raises(SystemExit, match=r"docker/test.yml:5 \(postgres:latest\)"):
+    with pytest.raises(SystemExit, match=r"tests/compose.yml:5 \(postgres:latest\)"):
         gate.assert_pinned_base_images()
 
 
@@ -164,16 +164,16 @@ def test_a_floating_compose_image_fails_the_gate(gate, image_tree):
 )
 def test_an_inline_comment_does_not_hide_a_floating_compose_image(gate, image_tree, image_line):
     """The value and its line come off one parse, so a comment cannot split them."""
-    (image_tree / "docker").mkdir()
-    (image_tree / "docker/test.yml").write_text(f"services:\n  database:\n{image_line}")
+    (image_tree / "tests").mkdir()
+    (image_tree / "tests/compose.yml").write_text(f"services:\n  database:\n{image_line}")
 
-    with pytest.raises(SystemExit, match=r"docker/test.yml:3 \(postgres:latest\)"):
+    with pytest.raises(SystemExit, match=r"tests/compose.yml:3 \(postgres:latest\)"):
         gate.assert_pinned_base_images()
 
 
 def test_an_inline_comment_does_not_fail_a_pinned_compose_image(gate, image_tree):
-    (image_tree / "docker").mkdir()
-    (image_tree / "docker/test.yml").write_text(
+    (image_tree / "tests").mkdir()
+    (image_tree / "tests/compose.yml").write_text(
         "services:\n  database:\n    image: postgres:16-alpine # pinned on purpose\n"
     )
 
@@ -181,8 +181,8 @@ def test_an_inline_comment_does_not_fail_a_pinned_compose_image(gate, image_tree
 
 
 def _write_compose(root: Path, body: str) -> None:
-    (root / "docker").mkdir(parents=True, exist_ok=True)
-    (root / "docker/test.yml").write_text(body)
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "tests/compose.yml").write_text(body)
 
 
 def test_a_merged_floating_image_fails_the_gate(gate, image_tree):
@@ -191,7 +191,7 @@ def test_a_merged_floating_image_fails_the_gate(gate, image_tree):
         image_tree, "x-base: &base\n  image: redis:latest\nservices:\n  cache:\n    <<: *base\n"
     )
 
-    with pytest.raises(SystemExit, match=r"docker/test.yml:2 \(redis:latest\)"):
+    with pytest.raises(SystemExit, match=r"tests/compose.yml:2 \(redis:latest\)"):
         gate.assert_pinned_base_images()
 
 
@@ -210,7 +210,7 @@ def test_a_chain_of_merges_is_followed(gate, image_tree):
         "x-a: &a\n  image: redis:latest\nx-b: &b\n  <<: *a\nservices:\n  cache:\n    <<: *b\n",
     )
 
-    with pytest.raises(SystemExit, match=r"docker/test.yml:2 \(redis:latest\)"):
+    with pytest.raises(SystemExit, match=r"tests/compose.yml:2 \(redis:latest\)"):
         gate.assert_pinned_base_images()
 
 
@@ -246,7 +246,7 @@ def test_a_service_that_only_builds_is_not_a_violation(gate, image_tree):
 def test_an_interpolated_image_stays_floating(gate, image_tree):
     _write_compose(image_tree, "services:\n  app:\n    image: ${APP_IMAGE}\n")
 
-    with pytest.raises(SystemExit, match=r"docker/test.yml:3 \(\$\{APP_IMAGE\}\)"):
+    with pytest.raises(SystemExit, match=r"tests/compose.yml:3 \(\$\{APP_IMAGE\}\)"):
         gate.assert_pinned_base_images()
 
 

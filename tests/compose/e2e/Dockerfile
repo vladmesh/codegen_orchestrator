@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install test dependencies
-COPY docker/test/e2e/requirements.txt .
+COPY tests/compose/e2e/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy shared and packages
