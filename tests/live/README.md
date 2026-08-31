@@ -137,13 +137,15 @@ timeout makes the live run red. This gate does not publish to `qa:queue` and doe
 
 ## Run evidence
 
-Every mega run writes one machine-readable artifact for the worker/QA combination it exercised, to
-`docs/e2e_results/run-evidence-<combination>-<timestamp>.json` (git-ignored, retained on the host).
-It exists so a dynamic worker's death is attributable after the run: it carries the deployed SHA and
+Every mega run writes one machine-readable artifact for the worker/QA combination it exercised.
+Local runs use `docs/e2e_results/run-evidence-<combination>-<timestamp>.json`; the stand runner writes
+the same file into its run directory, transfers it before ephemeral-host cleanup, scans it for
+protected values, and includes it in the final workflow artifact. It exists so a dynamic worker's
+death remains attributable after the host is gone: it carries the deployed SHA and
 the worker image digest record in use, the project, the role agents **as executed**, the attempt
-count, the terminal state and failure kind, the duration — and per worker container its exit code, a
-bounded log tail and the path of the transcript worker-wrapper retained under
-`WORKER_TRANSCRIPT_STORAGE_PATH`.
+count, the terminal state and failure kind, the duration, bounded/redacted task failure metadata —
+and per worker container its exit code, a bounded log tail and the path of the transcript
+worker-wrapper retained under `WORKER_TRANSCRIPT_STORAGE_PATH`.
 
 **Workers are found by run label.** The collector (`tests/live/run_evidence.py`) is given one fact,
 this run's id — the same `initiating_run_id` the project was created with — and asks

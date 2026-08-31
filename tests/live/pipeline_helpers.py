@@ -40,6 +40,8 @@ from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmiss
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
+from shared.contracts.worker_evidence import secret_env_values
+from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
 from shared.live_harness_cleanup import build_remote_cleanup_command
 from shared.queues import SCAFFOLD_QUEUE
@@ -643,7 +645,9 @@ async def wait_engineering(
             on_poll()
         resp = await api.get(f"/api/tasks/{ctx['task_id']}")
         resp.raise_for_status()
-        status = resp.json().get("status")
+        task = resp.json()
+        _record_task_diagnostic(ctx, task, task_id=ctx["task_id"])
+        status = task.get("status")
         if status in done_statuses:
             break
     ctx["task_status"] = status
@@ -679,6 +683,41 @@ def _engineering_run_candidates(payload: list[dict], task_id: str) -> list[dict]
         for run in payload
         if run.get("type") == RunType.ENGINEERING.value and run.get("task_id") == task_id
     ]
+
+
+def _record_task_diagnostic(ctx: dict, task: dict, *, task_id: str | None = None) -> None:
+    """Keep bounded, redacted terminal clues beside worker evidence."""
+    diagnostic_task_id = task.get("id") or task_id
+    if diagnostic_task_id is None:
+        return
+    failure_metadata = task.get("failure_metadata")
+    if failure_metadata is not None:
+        serialized = json.dumps(failure_metadata, sort_keys=True, default=str)
+        redacted = redact_diagnostic(
+            serialized,
+            secrets=secret_env_values(dict(os.environ)),
+        )
+        failure_metadata = json.loads(redacted)
+    ctx.setdefault("task_diagnostics", {})[diagnostic_task_id] = {
+        "status": task.get("status"),
+        "current_iteration": task.get("current_iteration"),
+        "max_iterations": task.get("max_iterations"),
+        "blocked_by_task_id": task.get("blocked_by_task_id"),
+        "last_event": task.get("last_event"),
+        "failure_metadata": failure_metadata,
+    }
+
+
+async def _read_task_with_diagnostic(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    task_id: str,
+) -> dict:
+    response = await api.get(f"/api/tasks/{task_id}")
+    response.raise_for_status()
+    task = response.json()
+    _record_task_diagnostic(ctx, task, task_id=task_id)
+    return task
 
 
 async def _engineering_runs_for_task(api_internal: httpx.AsyncClient, task_id: str) -> list[dict]:
@@ -727,12 +766,10 @@ async def wait_linear_noop_engineering(
         elapsed += 5
         if on_poll is not None:
             on_poll()
-        first_response = await api.get(f"/api/tasks/{first_task_id}")
-        first_response.raise_for_status()
-        first_status = first_response.json().get("status")
-        second_response = await api.get(f"/api/tasks/{second_task_id}")
-        second_response.raise_for_status()
-        second_status = second_response.json().get("status")
+        first_task = await _read_task_with_diagnostic(api, ctx, first_task_id)
+        first_status = first_task.get("status")
+        second_task = await _read_task_with_diagnostic(api, ctx, second_task_id)
+        second_status = second_task.get("status")
         story_response = await api.get(f"/api/stories/{ctx['story_id']}")
         story_response.raise_for_status()
         story = story_response.json()
@@ -767,9 +804,8 @@ async def wait_linear_noop_engineering(
         elapsed += 5
         if on_poll is not None:
             on_poll()
-        second_response = await api.get(f"/api/tasks/{second_task_id}")
-        second_response.raise_for_status()
-        second_status = second_response.json().get("status")
+        second_task = await _read_task_with_diagnostic(api, ctx, second_task_id)
+        second_status = second_task.get("status")
         second_runs = await _engineering_runs_for_task(api_internal, second_task_id)
         _capture_dispatch_decisions(ctx, second_runs)
         if second_status in terminal:

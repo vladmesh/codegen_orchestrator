@@ -25,6 +25,7 @@ from run_evidence import (
     classify_outcome,
     combination_label,
     emit_run_evidence,
+    evidence_output_directory,
     parse_removed_workers,
     qa_cell,
     redact_log_tail,
@@ -420,6 +421,35 @@ def test_the_artifact_is_written_without_being_told_where(tmp_path, monkeypatch)
 
     assert path.parent == tmp_path / "docs" / "e2e_results"
     assert json.loads(path.read_text(encoding="utf-8"))["kind"] == EVIDENCE_KIND
+
+
+def test_stand_runner_can_route_evidence_into_its_ephemeral_run_directory(tmp_path, monkeypatch):
+    output = tmp_path / "stand-run"
+    monkeypatch.setenv(run_evidence.LIVE_EVIDENCE_OUTPUT_DIR_ENV, str(output))
+    ctx = base_ctx(collector_for(FakeDocker()))
+
+    path = emit_run_evidence(ctx)
+
+    assert evidence_output_directory() == output
+    assert path.parent == output
+    assert path.name.startswith("run-evidence-")
+
+
+def test_artifact_retains_redacted_task_failure_diagnostics(tmp_path):
+    collector = collector_for(FakeDocker())
+    ctx = base_ctx(collector)
+    ctx["task_diagnostics"] = {
+        "task-1": {
+            "status": "waiting_human_review",
+            "current_iteration": 3,
+            "max_iterations": 3,
+            "failure_metadata": {"reason": "worker exited 7"},
+        }
+    }
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["tasks"] == ctx["task_diagnostics"]
 
 
 def test_an_owned_worker_the_label_never_listed_is_accounted_for_on_every_pass(tmp_path):
