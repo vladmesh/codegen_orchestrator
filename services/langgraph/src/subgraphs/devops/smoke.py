@@ -6,6 +6,7 @@ Runs deterministic health checks after deployment:
 """
 
 import asyncio
+from collections.abc import Iterable
 import shlex
 
 import asyncssh
@@ -13,6 +14,7 @@ import httpx
 import structlog
 
 from shared.contracts.dto.project import ServiceModule
+from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
@@ -35,6 +37,14 @@ SMOKE_CHECKED_MODULES = (ServiceModule.BACKEND, ServiceModule.TG_BOT)
 
 class TgBotCheckFailed(Exception):
     """A mandatory tg_bot probe could not confirm the deployed bot."""
+
+
+def _resolved_secret_values(state: DevOpsState) -> tuple[str, ...]:
+    """Return resolved values that must not leave smoke diagnostics."""
+    values = state.get("secret_values", {})
+    if not isinstance(values, dict):
+        return ()
+    return tuple(value for value in values.values() if isinstance(value, str) and value)
 
 
 def compose_command(project_name: str, subcommand: str) -> str:
@@ -63,6 +73,7 @@ class SmokeTesterNode(FunctionalNode):
         config = project_spec.get("config") or {}
         modules = config.get("modules", [])
         allocated_resources = state.get("allocated_resources", {})
+        diagnostic_secrets = _resolved_secret_values(state)
 
         checks = []
         errors = []
@@ -91,7 +102,9 @@ class SmokeTesterNode(FunctionalNode):
             port = resource["port"]
 
             if module == ServiceModule.BACKEND:
-                check = await self._check_backend_health(server_ip, port)
+                check = await self._check_backend_health(
+                    server_ip, port, diagnostic_secrets=diagnostic_secrets
+                )
                 checks.append(check)
                 if check["result"] == "fail":
                     errors.append(f"Smoke failed: backend health check — {check['detail']}")
@@ -128,7 +141,10 @@ class SmokeTesterNode(FunctionalNode):
 
             if project_name and server_handle and first_server_ip:
                 container_logs = await self._fetch_container_logs(
-                    first_server_ip, server_handle, project_name
+                    first_server_ip,
+                    server_handle,
+                    project_name,
+                    diagnostic_secrets=diagnostic_secrets,
                 )
                 if container_logs:
                     for check in checks:
@@ -183,6 +199,7 @@ class SmokeTesterNode(FunctionalNode):
         server_ip: str,
         server_handle: str,
         project_name: str,
+        diagnostic_secrets: Iterable[str] = (),
     ) -> str | None:
         """SSH into server and fetch docker compose logs for the project.
 
@@ -190,12 +207,19 @@ class SmokeTesterNode(FunctionalNode):
         """
         cmd = compose_command(project_name, f"logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1")
         try:
-            return await self._ssh_run(server_ip, server_handle, cmd) or None
-        except Exception:
-            logger.warning("smoke_logs_fetch_failed", server_ip=server_ip, exc_info=True)
+            logs = await self._ssh_run(server_ip, server_handle, cmd)
+            return redact_diagnostic(logs, secrets=diagnostic_secrets) if logs else None
+        except Exception as error:
+            logger.warning(
+                "smoke_logs_fetch_failed",
+                server_ip=server_ip,
+                error=redact_diagnostic(error, secrets=diagnostic_secrets),
+            )
             return None
 
-    async def _check_backend_health(self, server_ip: str, port: int) -> dict:
+    async def _check_backend_health(
+        self, server_ip: str, port: int, diagnostic_secrets: Iterable[str] = ()
+    ) -> dict:
         """GET /health with retries."""
         url = f"http://{server_ip}:{port}/health"
         last_error = None
@@ -212,7 +236,7 @@ class SmokeTesterNode(FunctionalNode):
                         }
                     last_error = f"HTTP {response.status_code}"
                 except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as e:
-                    last_error = str(e)
+                    last_error = redact_diagnostic(e, secrets=diagnostic_secrets)
 
                 if attempt < HEALTH_CHECK_RETRIES - 1:
                     logger.info(
@@ -240,11 +264,12 @@ class SmokeTesterNode(FunctionalNode):
             bot_username = await self._resolve_bot_identity(state)
             container_detail = await self._check_bot_container(state, resource)
         except TgBotCheckFailed as e:
-            logger.warning("smoke_tg_bot_fail", reason=str(e))
+            detail = redact_diagnostic(e, secrets=_resolved_secret_values(state))
+            logger.warning("smoke_tg_bot_fail", reason=detail)
             return {
                 "module": TG_BOT_SERVICE,
                 "result": "fail",
-                "detail": str(e),
+                "detail": detail,
             }
 
         return {
@@ -261,6 +286,7 @@ class SmokeTesterNode(FunctionalNode):
             raise TgBotCheckFailed("No TELEGRAM_BOT_TOKEN in secret_values")
 
         url = f"{BOT_API_BASE}/bot{bot_token}/getMe"
+        diagnostic_secrets = _resolved_secret_values(state)
         last_error = None
 
         async with httpx.AsyncClient() as client:
@@ -270,12 +296,15 @@ class SmokeTesterNode(FunctionalNode):
                     payload = response.json()
                     if response.status_code == HTTP_OK and payload.get("ok"):
                         return payload["result"]["username"]
-                    last_error = (
-                        f"getMe returned HTTP {response.status_code}: {payload.get('description')}"
+                    last_error = redact_diagnostic(
+                        f"getMe returned HTTP {response.status_code}: {payload.get('description')}",
+                        secrets=diagnostic_secrets,
                     )
                 # ValueError covers a body the Bot API never sends but a proxy might
                 except (httpx.HTTPError, ValueError) as e:
-                    last_error = f"getMe request failed: {e}"
+                    last_error = redact_diagnostic(
+                        f"getMe request failed: {e}", secrets=diagnostic_secrets
+                    )
 
                 if attempt < HEALTH_CHECK_RETRIES - 1:
                     logger.info("smoke_tg_bot_getme_retry", attempt=attempt + 1, error=last_error)
@@ -290,6 +319,7 @@ class SmokeTesterNode(FunctionalNode):
             raise TgBotCheckFailed("No server_handle in the allocated tg_bot resource")
         server_ip = resource["server_ip"]
         project_name = project_spec_runtime_slug(state.get("project_spec") or {})
+        diagnostic_secrets = _resolved_secret_values(state)
         cmd = compose_command(project_name, "ps --services --status running")
 
         last_error = None
@@ -297,8 +327,10 @@ class SmokeTesterNode(FunctionalNode):
             try:
                 running = (await self._ssh_run(server_ip, server_handle, cmd)).split()
             except Exception as e:
-                last_error = f"container check over SSH failed: {e}"
-                logger.warning("smoke_tg_bot_ssh_failed", server_ip=server_ip, exc_info=True)
+                last_error = redact_diagnostic(
+                    f"container check over SSH failed: {e}", secrets=diagnostic_secrets
+                )
+                logger.warning("smoke_tg_bot_ssh_failed", server_ip=server_ip, error=last_error)
             else:
                 if TG_BOT_SERVICE in running:
                     return f"container {TG_BOT_SERVICE} is running"

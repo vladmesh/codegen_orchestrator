@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
+  and smoke failure surfaces now remove resolved secrets, encoded dotenv
+  content, authorization values, and Telegram Bot API tokens before logs,
+  structured results, callbacks, or persisted diagnostics can receive them.
+
 - Automatic initial-owner recovery now fences grant-intent rebinding in the
   API admission transaction. A live execution, exhausted intent, or historical
   SHA returns its durable disposition without replacing the target, resetting
