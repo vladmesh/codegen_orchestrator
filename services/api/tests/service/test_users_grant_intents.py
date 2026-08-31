@@ -13,6 +13,17 @@ class _PublishRedis:
         self.publish_message = AsyncMock(side_effect=error)
 
 
+@pytest.fixture(autouse=True)
+async def _grant_retry_ceiling(async_client):
+    """Keep the required lifecycle control available across this test module."""
+    payload = {"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"}
+    response = await async_client.post("/api/system-configs/", json=payload)
+    assert response.status_code == 201
+    yield
+    response = await async_client.post("/api/system-configs/", json=payload)
+    assert response.status_code == 201
+
+
 async def _target(client):
     suffix = uuid.uuid4().hex[:8]
     project_id = str(uuid.uuid4())
@@ -254,6 +265,160 @@ async def test_initial_owner_lifecycle_stops_at_the_configured_deploy_retry_ceil
     assert exhausted.json()["disposition"] == "exhausted"
     assert exhausted.json()["status"] == GrantIntentStatus.FAILED.value
     assert exhausted.json()["execution_run_id"] is None
+    assert redis.publish_message.await_count == 2
+    persisted = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{exhausted.json()['intent_id']}"
+    )
+    assert persisted.json()["status"] == GrantIntentStatus.FAILED.value
+    assert persisted.json()["detail"] == "deployment retry ceiling exhausted"
+    assert persisted.json()["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_zero_retry_ceiling_persists_created_terminal_intent(async_client):
+    """A max=0 admission records the created terminal intent before returning."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    configured = await async_client.post(
+        "/api/system-configs/",
+        json={"key": "deploy.max_deploy_retries", "value": 0, "category": "deploy"},
+    )
+    assert configured.status_code == 201
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        exhausted = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+        await async_client.post(
+            "/api/system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+        )
+
+    assert exhausted.json()["disposition"] == "exhausted"
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{exhausted.json()['intent_id']}"
+    )
+    assert intent.json()["status"] == GrantIntentStatus.FAILED.value
+    assert intent.json()["attempts"] == 0
+    redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_target_rebind_starts_a_fresh_bounded_retry_epoch(async_client):
+    """A replacement target does not inherit a terminal target's admissions."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    configured = await async_client.post(
+        "/api/system-configs/",
+        json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+    )
+    assert configured.status_code == 201
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        rebound = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+        await async_client.post(
+            "/api/system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+        )
+
+    assert rebound.json()["disposition"] == "dispatched"
+    assert rebound.json()["execution_run_id"] != first.json()["execution_run_id"]
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}"
+    )
+    assert intent.json()["attempts"] == 1
+    history = intent.json()["target_history"]
+    assert len(history) == 1
+    assert history[0]["application_id"] is None
+    assert history[0]["deployment_id"] is None
+    assert history[0]["sha"] == sha
+    assert history[0]["attempts"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["users/grant", "ownership-transfer"])
+async def test_explicit_permanent_access_retry_reopens_only_the_same_exhausted_intent(
+    async_client, route
+):
+    """Manual retry opens a fresh epoch without duplicating the durable request."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, user, _, _, _ = await _target(async_client)
+    configured = await async_client.post(
+        "/api/system-configs/",
+        json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+    )
+    assert configured.status_code == 201
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/{route}", json={"telegram_id": user["telegram_id"]}
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        exhausted = await async_client.post(
+            f"/api/projects/{project_id}/{route}", json={"telegram_id": user["telegram_id"]}
+        )
+        retried = await async_client.post(
+            f"/api/projects/{project_id}/{route}", json={"telegram_id": user["telegram_id"]}
+        )
+        duplicate = await async_client.post(
+            f"/api/projects/{project_id}/{route}", json={"telegram_id": user["telegram_id"]}
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+        await async_client.post(
+            "/api/system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+        )
+
+    assert exhausted.json()["disposition"] == "exhausted"
+    assert retried.json()["disposition"] == "dispatched"
+    assert retried.json()["intent_id"] == first.json()["intent_id"]
+    assert retried.json()["execution_run_id"] != first.json()["execution_run_id"]
+    assert duplicate.json()["disposition"] == "in_flight"
+    assert duplicate.json()["intent_id"] == first.json()["intent_id"]
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}"
+    )
+    assert intent.json()["attempts"] == 1
+    history = intent.json()["retry_history"]
+    assert len(history) == 1
+    assert history[0]["sha"] == intent.json()["target_sha"]
+    assert history[0]["attempts"] == 1
+    assert history[0]["reason"] == "explicit_retry"
     assert redis.publish_message.await_count == 2
 
 

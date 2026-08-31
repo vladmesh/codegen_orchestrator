@@ -43,9 +43,10 @@ attempt and holds only the intent reference plus its exact SHA.
 
 An APPLIED intent wins redelivery and is never rewritten or dispatched again. A
 non-applied intent on its current live target resumes one attempt; a stale target
-retains the same intent and audit identity, records the replaced target, binds the
-current live application/deployment/SHA, and dispatches a new Run. It never
-redeploys the old SHA. Initial-owner seeding finds the single durable intent while
+retains the same intent and audit identity, records the replaced target and its
+closed admission count, resets the target-epoch counter, binds the current live
+application/deployment/SHA, and dispatches a new Run. It never redeploys the old
+SHA. Initial-owner seeding finds the single durable intent while
 every PR poll, QA cycle, story fix and supervisor recovery keeps its own Run id.
 Retries after ordinary deploy, infrastructure, secret, or post-health grant
 failure reacquire that seed through the same lifecycle operation.
@@ -55,10 +56,15 @@ failure reacquire that seed through the same lifecycle operation.
 `already_applied`, `in_flight`, and terminal `exhausted` carry neither, even
 though the durable intent retains its safe execution history. Before a fresh
 `dispatched` admission, the lifecycle locks and evaluates the same
-`deploy.max_deploy_retries` control as the scheduler. Once the number of
-immutable Runs reaches that ceiling, it records the safe terminal `failed`
-outcome and returns `exhausted` without creating or publishing a `(max + 1)`
-Run. Applied and in-flight responses consume no attempt. PR polling and every
+`deploy.max_deploy_retries` control as the scheduler. The admission counter is
+bounded for one target epoch, not for the lifetime intent. Once the number of
+immutable Runs in that epoch reaches the ceiling, it records and commits the
+safe terminal `failed` outcome before returning `exhausted`, without creating or
+publishing a `(max + 1)` Run. A fresh explicit add-user or ownership-transfer
+request may reopen an exhausted same-target intent in a new user-directed epoch;
+it retains the same row and `retry_history`. Automatic supervisor, PR-poller,
+infrastructure, and waiting-secret recovery cannot reopen that epoch. Applied
+and in-flight responses consume no attempt. PR polling and every
 supervisor recovery route use that disposition rather than an intent's
 historical execution id. A lost completion response reconciles the source deploy
 through the ordinary successful-deploy handoff without spending a retry;

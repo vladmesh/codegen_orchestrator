@@ -37,7 +37,10 @@ class UsersGrantIntent(Base):
     outgoing_owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     incoming_owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
+    # Admissions are bounded per target or explicit user-retry epoch. Closed
+    # epochs remain in retry_history so resetting this counter loses no audit fact.
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    retry_history: Mapped[list] = mapped_column(JSON, default=list)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_run_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("runs.id"), nullable=True

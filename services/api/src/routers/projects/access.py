@@ -124,6 +124,7 @@ def _as_dto(intent: UsersGrantIntent) -> GrantIntent:
         created_at=intent.created_at,
         applied_at=intent.applied_at,
         execution_run_id=intent.execution_run_id,
+        retry_history=intent.retry_history or [],
     )
 
 
@@ -169,6 +170,7 @@ async def _lifecycle(  # noqa: PLR0913
     actor: str,
     target: tuple[int | None, int | None, str],
     story_id: str | None,
+    explicit_user_retry: bool = False,
 ) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
     """The sole create/lookup/rebind/dispatch-preparation operation.
 
@@ -198,6 +200,7 @@ async def _lifecycle(  # noqa: PLR0913
             outgoing_owner_id=project.owner_id if kind is GrantIntentKind.INCOMING_OWNER else None,
             incoming_owner_id=target_user.id if kind is GrantIntentKind.INCOMING_OWNER else None,
             status=GrantIntentStatus.PUBLISH_OWED.value,
+            retry_history=[],
         )
         db.add(intent)
         await db.flush()
@@ -211,19 +214,50 @@ async def _lifecycle(  # noqa: PLR0913
                 "application_id": intent.target_application_id,
                 "deployment_id": intent.target_deployment_id,
                 "sha": intent.target_sha,
+                "attempts": intent.attempts,
                 "replaced_at": datetime.now(UTC).isoformat(),
             },
         ]
         intent.target_application_id, intent.target_deployment_id, intent.target_sha = target
         intent.status = GrantIntentStatus.PUBLISH_OWED.value
         intent.detail = None
+        # A deployment binding is an execution context. Its admission counter
+        # cannot exhaust the replacement target before it receives a Run.
+        intent.attempts = 0
         rebound = True
 
     live_run = None if rebound else await _execution_is_live(db, intent)
     if live_run is not None:
         return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
 
-    if intent.attempts >= await _deploy_retry_ceiling(db):
+    ceiling = await _deploy_retry_ceiling(db)
+    if (
+        explicit_user_retry
+        and kind in {GrantIntentKind.ADD_USER, GrantIntentKind.INCOMING_OWNER}
+        and intent.status == GrantIntentStatus.FAILED.value
+        and intent.detail == _RETRY_CEILING_EXHAUSTED_DETAIL
+        and intent.attempts >= ceiling
+        and ceiling > 0
+    ):
+        # Only a new explicit user request can open a same-target retry epoch.
+        # Automatic recovery has no path to this flag, so a failed intent stays
+        # terminal to supervisor, PR-poller, infrastructure, and secret retries.
+        intent.retry_history = [
+            *(intent.retry_history or []),
+            {
+                "application_id": intent.target_application_id,
+                "deployment_id": intent.target_deployment_id,
+                "sha": intent.target_sha,
+                "attempts": intent.attempts,
+                "reason": "explicit_retry",
+                "restarted_at": datetime.now(UTC).isoformat(),
+            },
+        ]
+        intent.attempts = 0
+        intent.status = GrantIntentStatus.PUBLISH_OWED.value
+        intent.detail = None
+
+    if intent.attempts >= ceiling:
         intent.status = GrantIntentStatus.FAILED.value
         intent.detail = _RETRY_CEILING_EXHAUSTED_DETAIL
         return intent, None, created, GrantIntentLifecycleDisposition.EXHAUSTED
@@ -261,6 +295,11 @@ async def _dispatch_lifecycle(
     disposition: GrantIntentLifecycleDisposition,
     created: bool,
 ) -> GrantIntentLifecycleResult:
+    # _lifecycle is the one admission transaction. Commit a terminal or
+    # in-flight result before returning, and commit every new Run before its
+    # publish. This keeps each reported durable state re-readable.
+    if run is None:
+        await db.commit()
     if run is not None and intent.status == GrantIntentStatus.PUBLISH_OWED.value:
         recipient = await resolve_project_recipient(db, project.id, event="users_grant_intent")
         message = DeployMessage(
@@ -321,6 +360,7 @@ async def _stage_live_intent(  # noqa: PLR0913
         actor=actor,
         target=target,
         story_id=None,
+        explicit_user_retry=True,
     )
     return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 
