@@ -94,7 +94,7 @@ class TestTaskInjection:
             "for this project.\n"
             "You MUST use them in your code via `os.getenv()` or `pydantic-settings`. "
             "Do NOT ask the user for them.\n\n"
-            "- `ADMIN_TELEGRAM_ID`: Telegram ID of the bot admin\n"
+            "- `WEATHER_API_ACCOUNT_ID`: Account ID for the weather provider\n"
             "- `OPENAI_API_KEY`: OpenAI key for responses\n"
         )
 
@@ -131,8 +131,8 @@ class TestTaskInjection:
             task_text = output.decode()
 
             assert "Provided Environment Variables" in task_text
-            assert "ADMIN_TELEGRAM_ID" in task_text
-            assert "Telegram ID of the bot admin" in task_text
+            assert "WEATHER_API_ACCOUNT_ID" in task_text
+            assert "Account ID for the weather provider" in task_text
             assert "OPENAI_API_KEY" in task_text
             assert "os.getenv()" in task_text
 

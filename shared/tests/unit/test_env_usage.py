@@ -365,6 +365,7 @@ def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
     assert result.warnings == (
         "required environment contract key BACKEND_API_URL was not observed",
         "required environment contract key TELEGRAM_BOT_TOKEN was not observed",
+        "required environment contract key USERS_GRANT_CAPABILITY was not observed",
     )
 
 

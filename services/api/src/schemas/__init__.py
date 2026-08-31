@@ -19,9 +19,9 @@ from .engineering_budget_policy import (
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
 from .project import (
-    BotAccessRequest,
-    BotUserMutationRequest,
+    GrantUserRequest,
     MergeSecretsRequest,
+    OwnershipTransferRequest,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -80,9 +80,9 @@ __all__ = [
     "ProjectCreate",
     "ProjectRead",
     "ProjectUpdate",
+    "GrantUserRequest",
+    "OwnershipTransferRequest",
     "MergeSecretsRequest",
-    "BotAccessRequest",
-    "BotUserMutationRequest",
     "RAGDocsIngest",
     "RAGDocsIngestResult",
     "RAGMessageCreate",

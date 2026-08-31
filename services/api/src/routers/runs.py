@@ -6,16 +6,10 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import and_, or_, select, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.bot_rollout import (
-    BOT_ROLLOUT_METADATA_KEY,
-    BOT_ROLLOUT_NOTIFY_KEY,
-    BotRolloutNotifyState,
-    BotRolloutPublishState,
-)
 from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_CLAIMED_AT_KEY,
     DISPATCH_LEASE,
@@ -484,50 +478,6 @@ async def list_runs_owing_owner_notification(
     query = (
         select(Run)
         .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
-        .order_by(Run.created_at.asc(), Run.id.asc())
-        .limit(limit)
-    )
-    result = await db.execute(query)
-    return list(result.scalars().all())
-
-
-@router.get("/bot-rollouts/unsettled", response_model=list[RunRead])
-async def list_unsettled_bot_rollout_runs(
-    limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_async_session),
-    _is_internal: bool = Depends(require_internal_or_admin),
-) -> list[Run]:
-    """Every configuration-only rollout whose publish or notify is unsettled.
-
-    Selected by the state of the records, oldest first, for the same reason as
-    the owner-notification selection above: the commit/publish gap is closed by
-    re-attempting from a durable record, not from a time window. A run qualifies
-    while its rollout record says the queue write is still owed (bounded
-    attempts, then an admin alert) or its notify record says the owner has not
-    heard the ending. Both settle by transition, so no record can stay in the
-    selection across more ticks than its bound.
-    """
-    rollout = Run.run_metadata[BOT_ROLLOUT_METADATA_KEY]
-    publish_state = Run.run_metadata[(BOT_ROLLOUT_METADATA_KEY, "publish")].as_string()
-    notify = Run.run_metadata[BOT_ROLLOUT_NOTIFY_KEY]
-    notify_state = Run.run_metadata[(BOT_ROLLOUT_NOTIFY_KEY, "state")].as_string()
-    query = (
-        select(Run)
-        .where(
-            # A deploy run carrying rollout bookkeeping...
-            rollout.is_not(None),
-            or_(
-                # ...whose message may never have reached the queue, or
-                #
-                # An ABANDONED record deliberately does not qualify: its
-                # bounded attempts ran out, a human was alerted, and selecting
-                # it forever would spend a sweep page on runs nothing may
-                # touch again.
-                publish_state == BotRolloutPublishState.PUBLISH_OWED.value,
-                # ...whose owner is still owed the terminal outcome.
-                and_(notify.is_not(None), notify_state == BotRolloutNotifyState.OWED.value),
-            ),
-        )
         .order_by(Run.created_at.asc(), Run.id.asc())
         .limit(limit)
     )

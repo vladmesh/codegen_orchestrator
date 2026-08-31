@@ -22,9 +22,6 @@ logger = structlog.get_logger()
 router = APIRouter()
 delete_router = APIRouter()
 
-_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
-_BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
-
 
 @router.get("/{project_id}/config/secrets/keys")
 async def list_secret_keys(
@@ -71,17 +68,6 @@ def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
     for key, value in secrets.items():
         if key == TELEGRAM_TOKEN_KEY or looks_like_bot_token(value):
             raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
-
-
-def _reject_legacy_bot_access_writes(secrets: dict[str, str]) -> None:
-    """Keep new audiences on the template contract path.
-
-    Existing encrypted legacy values remain readable by the deploy resolver while
-    projects migrate. This only rejects writes that would create or alter that
-    legacy state after the contract audience endpoint exists.
-    """
-    if _LEGACY_BOT_AUDIENCE_KEY in secrets:
-        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
 
 
 def _find_bot_token_material(node: object, path: str = "config") -> str | None:
@@ -140,38 +126,6 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     stored_agent_type = stored_config.get("agent_type") if isinstance(stored_config, dict) else None
     if stored_agent_type is not None and vetted.get("agent_type") is None:
         vetted["agent_type"] = stored_agent_type
-    stored_access = stored_config.get("bot_access") if isinstance(stored_config, dict) else None
-    stored_overrides = (
-        stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}
-    )
-    stored_audience = (
-        stored_overrides.get("TG_BOT_ALLOWED_TELEGRAM_IDS")
-        if isinstance(stored_overrides, dict)
-        else None
-    )
-    incoming_access = config.get("bot_access")
-    incoming_overrides = config.get("env_overrides", {})
-
-    if stored_access is not None:
-        if incoming_access is not None and incoming_access != stored_access:
-            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
-        vetted["bot_access"] = stored_access
-    elif incoming_access is not None:
-        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
-
-    if stored_audience is not None:
-        if not isinstance(incoming_overrides, dict):
-            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
-        incoming_audience = incoming_overrides.get("TG_BOT_ALLOWED_TELEGRAM_IDS")
-        if incoming_audience is not None and incoming_audience != stored_audience:
-            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
-        overrides = dict(incoming_overrides)
-        overrides["TG_BOT_ALLOWED_TELEGRAM_IDS"] = stored_audience
-        vetted["env_overrides"] = overrides
-    elif (
-        isinstance(incoming_overrides, dict) and "TG_BOT_ALLOWED_TELEGRAM_IDS" in incoming_overrides
-    ):
-        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
     return vetted
 
 
@@ -218,8 +172,6 @@ async def merge_secrets(
         )
 
     _reject_bot_token_writes(body.secrets)
-    _reject_legacy_bot_access_writes(body.secrets)
-
     # Lock the row to prevent concurrent read-modify-write
     query = select(Project).where(Project.id == project_id).with_for_update()
     result = await db.execute(query)
@@ -283,9 +235,6 @@ async def delete_secret(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Secret key '{key}' not found",
         )
-
-    if key == _LEGACY_BOT_AUDIENCE_KEY:
-        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
 
     del existing_secrets[key]
     config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}

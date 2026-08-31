@@ -1,6 +1,6 @@
 """Unit tests for PO system prompt and tool docstrings."""
 
-from src.agents.po.tools import create_story, set_project_secret
+from src.agents.po.tools import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
 MAX_PROMPT_LENGTH = 14000
@@ -60,29 +60,12 @@ class TestSystemPrompt:
         assert "hint" in SYSTEM_PROMPT.lower()
         assert "set_project_secret" in SYSTEM_PROMPT
 
-    def test_contains_access_control_question(self):
-        """Prompt should ask about bot access control for tg_bot projects."""
-        prompt_lower = SYSTEM_PROMPT.lower()
-        assert "access" in prompt_lower
-        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in SYSTEM_PROMPT
-        assert "set_bot_access" in SYSTEM_PROMPT
-        assert "ADMIN_TELEGRAM_ID" not in SYSTEM_PROMPT
-
-    def test_secret_tool_does_not_offer_legacy_bot_access(self):
-        assert "ADMIN_TELEGRAM_ID" not in set_project_secret.description
-
-    def test_access_control_options(self):
-        """Prompt should list access control options."""
-        prompt_lower = SYSTEM_PROMPT.lower()
-        assert "only me" in prompt_lower or "только мне" in prompt_lower
-        assert "everyone" in prompt_lower or "всем" in prompt_lower
-
-    def test_offers_the_supported_contract_access_modes(self):
-        assert "Only me" in SYSTEM_PROMPT
-        assert "Everyone" in SYSTEM_PROMPT
-        assert "Custom" in SYSTEM_PROMPT
-        assert "Me + invitations" not in SYSTEM_PROMPT
-        assert 'mode="invite"' not in SYSTEM_PROMPT
+    def test_describes_durable_permanent_access_tools(self):
+        assert "grant_project_user" in SYSTEM_PROMPT
+        assert "transfer_project_ownership" in SYSTEM_PROMPT
+        assert "active readback" in SYSTEM_PROMPT
+        assert "allowed Telegram IDs" not in SYSTEM_PROMPT
+        assert "bot admin ID" not in SYSTEM_PROMPT
 
     def test_mentions_user_context(self):
         """Prompt should reference the user context prefix (chat id, user name)."""
@@ -97,7 +80,7 @@ class TestSystemPrompt:
     def test_sends_one_confirmation_summary_before_creating_a_story(self):
         """A project brief is confirmed once, rather than interrogated piecemeal."""
         assert "exactly one structured summary" in SYSTEM_PROMPT
-        assert "audience (including your Telegram ID)" in SYSTEM_PROMPT
+        assert "intended users" in SYSTEM_PROMPT
         assert "languages" in SYSTEM_PROMPT
         assert "must-requirements" in SYSTEM_PROMPT
         assert "yes / correct me" in SYSTEM_PROMPT

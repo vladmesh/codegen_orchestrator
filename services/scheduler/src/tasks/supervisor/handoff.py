@@ -7,11 +7,6 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.contracts.bot_access import (
-    QA_TEST_TELEGRAM_ID,
-    bot_admits,
-    project_bot_audience,
-)
 from shared.contracts.dto.project import (
     ProjectDTO,
 )
@@ -105,10 +100,10 @@ def _temporary_access_is_needed(
 ) -> bool:
     """Whether this QA run has to borrow the deployed bot's test identity slot.
 
-    Two deployments do not: one whose audience already admits the QA identity
-    (a public bot, or a project that listed it), and one whose commit declares
-    no test slot at all. The second is reported, because it means QA will be
-    refused by a private bot and the deployed code is why.
+    A deployment without the declared slot cannot use the durable temporary
+    grant lifecycle. The users.grant capability is deliberately not used here:
+    it has no revoke or expiry operation, so it cannot satisfy the QA TTL
+    contract.
 
     The project is read by the caller, which needs it anyway and fails the story
     visibly when it is gone, so this decides the question rather than also
@@ -118,10 +113,6 @@ def _temporary_access_is_needed(
         log.warning("qa_handoff_without_test_identity_slot", project_id=str(project.id))
         return False
 
-    audience = project_bot_audience(project.config)
-    if bot_admits(audience=audience, test_identity="", telegram_id=QA_TEST_TELEGRAM_ID):
-        log.info("qa_handoff_without_temporary_access", reason="audience_already_admits_qa")
-        return False
     return True
 
 

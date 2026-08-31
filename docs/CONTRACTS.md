@@ -31,17 +31,61 @@ internal key is a service principal and may name an actor through
 project ownership, allocation administration, and recipient resolution use that
 principal rather than an untrusted header lookup.
 
-### Telegram bot audiences
+### Generated-service user grants
 
-Canonical parsing and rollout rules live in `shared/contracts/bot_access.py`,
-`shared/contracts/bot_rollout.py`, and `services/api/src/routers/_bot_access.py`.
+Generated Telegram services use their `USERS_GRANT_CAPABILITY` generated secret
+only through the deploy resolver's in-memory `secret_values`. `users_grant_intents`
+is the durable, typed non-secret record. Its identity is `(kind, project, verified
+channel/external identity)`, not a deploy Run id. The API lifecycle operation is
+the sole route that creates, finds, binds or rebinds an intent and dispatches a
+permanent grant attempt. Every deploy Run it creates is one immutable execution
+attempt and holds only the intent reference plus its exact SHA.
 
-- A `custom` private audience includes the verified caller as well as dictated
-  ids; conversational text cannot replace the requester.
-- A private audience includes the project owner. Only an authenticated internal
-  service acting for itself can persist the explicit
-  `allow_ownerless_audience` opt-out.
-- Public audiences have no private list and do not use that opt-out.
+An APPLIED intent wins redelivery and is never rewritten or dispatched again. An
+automatic source Run cannot replace a binding while its execution Run is live,
+cannot reopen an exhausted intent, and cannot bind a SHA retained in
+`target_history`; it receives `in_flight`, `exhausted`, or `stale_target` with no
+new Run. Only after the prior execution is terminal may a genuinely new
+authoritative target record the replaced application/deployment/SHA and its
+closed admission count, reset the target-epoch counter, and dispatch one bounded
+new epoch. It never redeploys a superseded SHA. Initial-owner seeding finds the
+single durable intent while every PR poll, QA cycle, story fix and supervisor
+recovery keeps its own Run id. Retries after ordinary deploy, infrastructure,
+secret, or post-health grant failure reacquire that seed through the same
+lifecycle operation.
+
+`GrantIntentLifecycleResult` is the per-call boundary for that operation. Only
+`dispatched` carries the newly minted Run id and its immutable target;
+`already_applied`, `in_flight`, `stale_target`, and terminal `exhausted` carry
+neither, even though the durable intent retains its safe execution history. Before a fresh
+`dispatched` admission, the lifecycle locks and evaluates the same
+`deploy.max_deploy_retries` control as the scheduler. The admission counter is
+bounded for one target epoch, not for the lifetime intent. Once the number of
+immutable Runs in that epoch reaches the ceiling, it records and commits the
+safe terminal `failed` outcome before returning `exhausted`, without creating or
+publishing a `(max + 1)` Run. A fresh explicit add-user or ownership-transfer
+request may reopen an exhausted same-target intent in a new user-directed epoch;
+it retains the same row and `retry_history`. Automatic supervisor, PR-poller,
+infrastructure, and waiting-secret recovery cannot reopen that epoch. Applied
+and in-flight responses consume no attempt. PR polling and every
+supervisor recovery route use that disposition rather than an intent's
+historical execution id. A lost completion response reconciles the source deploy
+through the ordinary successful-deploy handoff without spending a retry;
+infrastructure and user-secret recovery only claim an intent redispatch when the
+result is `dispatched`, and convert `exhausted` into the normal failed-story and
+admin-alert outcome.
+
+After smoke success, deploy grants through `POST /users/grant` and requires
+`GET /users/access` to report that exact identity active before the API records
+APPLIED or reports access live. An incoming ownership transfer changes
+`Project.owner_id` only in that readback completion transaction. The capability
+is never an override, project configuration value, URL, event field, or log value.
+QA temporary-access grant or revoke remains ineligible for these permanent
+intents, even when it carries a deployment SHA.
+
+The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
+revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it
+must not be used as a QA TTL grant until the template adds one.
 
 ## Accounting, admission, and executor selection
 

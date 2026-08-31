@@ -2,7 +2,50 @@
 
 ## Unreleased
 
+- Automatic initial-owner recovery now fences grant-intent rebinding in the
+  API admission transaction. A live execution, exhausted intent, or historical
+  SHA returns its durable disposition without replacing the target, resetting
+  its epoch, committing or publishing another Run. New authoritative targets
+  still receive one bounded epoch after the prior execution becomes terminal.
+
+- Bounded durable grant-intent lifecycle admission with the configured deploy
+  retry ceiling. Every terminal admission now commits its safe durable outcome
+  before returning. The counter is bounded by target or explicit user-retry
+  epoch, preserving closed epochs in safe intent history: target rebinds get a
+  fresh bounded admission, and an explicit exhausted add-user or ownership
+  retry can resume the same intent without reopening automatic recovery loops.
+  Supervisor recovery still fails and alerts the story instead of deploying
+  indefinitely.
+
+- Reworked permanent generated-service grants into API-owned durable intents,
+  separate immutable deploy attempts, stale-target rebinding, and supervisor
+  recovery after deploy or access-proof failures. Lifecycle calls now return a
+  typed per-call disposition: only a dispatched call exposes its fresh Run and
+  target. Applied intent recovery reconciles the source deploy without consuming
+  retries, and a later merged PR always creates its own deploy Run.
+
 ### Changed
+
+- Replaced generated Telegram bot audience configuration with the generated
+  `users.grant` capability. Production deploy resolution persists the capability
+  as a generated secret, injects it only through `secret_values`, and requires
+  grant plus active readback for the verified project owner after smoke success.
+  The remaining QA temporary-access TTL slot is unchanged because `users.grant`
+  has no revocation or expiry capability.
+
+- Added durable typed `users_grant_intent` deploy metadata for initial owners,
+  added users, and incoming owners. Grant dispatch is persisted before publish,
+  binds a verified identity and target application/deployment/SHA, and records
+  access only after the generated service reports the identity active. Ownership
+  transfer is committed with the incoming-owner readback verdict.
+
+- Aligned durable grant readback with the generated service's `UserAccess`
+  response (`status: active|inactive`), failed closed on malformed responses,
+  and limited initial-owner injection to its one durable seed intent. Repeated
+  permanent-access requests now short-circuit an applied intent; retryable
+  stale targets rebind to the current target without redeploying an old SHA.
+  A later pre-completion PR gets its own ordinary deploy Run after the seed is
+  already applied.
 
 - Split the projects API router into lifecycle, secrets, bot, Telegram, and teardown domains while
   preserving its public routes and consolidating project access checks in the canonical guards module.

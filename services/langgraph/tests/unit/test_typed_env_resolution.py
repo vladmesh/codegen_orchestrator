@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
-from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID, bot_admits
-from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.contracts.env_contract import GeneratedSecretEntry, merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
@@ -39,7 +38,6 @@ def _state(entries: dict, resources: dict | None = None, secrets: dict | None = 
     }
 
 
-@pytest.mark.asyncio
 @patch("src.subgraphs.devops.secret_resolver.api_client")
 @patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
 async def test_contract_resolves_every_source_without_mixing_persisted_maps(_decrypt, api_client):
@@ -93,7 +91,6 @@ async def test_contract_resolves_every_source_without_mixing_persisted_maps(_dec
     assert set(persisted) == {"APP_SECRET_KEY"}
 
 
-@pytest.mark.asyncio
 async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
     entries = {
         "MISSING": {
@@ -115,203 +112,62 @@ async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
     assert result["resolution_outcome"] == "waiting_for_user_secret"
 
 
-def _bot_contract() -> dict:
+def _grant_contract() -> dict:
     return {
-        "TG_BOT_ALLOWED_TELEGRAM_IDS": {
-            "source": "literal",
-            "value": "",
+        "USERS_GRANT_CAPABILITY": {
+            "source": "generated_secret",
             "environments": ["production"],
             "consumers": ["tg_bot"],
-            "required": False,
+            "required": True,
         }
     }
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "audience"),
-    [("only_me", "42"), ("public", ""), ("custom", "42,84")],
-)
-async def test_bot_access_modes_resolve_the_contract_audience(mode, audience):
-    state = _state(_bot_contract())
-    state["project_spec"]["config"] = {
-        "bot_access": {"mode": mode, "allowed_telegram_ids": audience},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": audience},
-    }
+async def test_tg_bot_grant_capability_is_generated_persisted_and_not_overridable():
+    state = _state(_grant_contract())
+    state["project_spec"]["config"]["modules"] = ["backend", "tg_bot"]
+    state["env_overrides"] = {"USERS_GRANT_CAPABILITY": "not-allowed"}
 
-    result = await SecretResolverNode().run(state)
+    with pytest.raises(TypedSecretResolutionError, match="not declared") as error:
+        await SecretResolverNode().run(state)
 
-    assert result["non_secret_values"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == audience
+    assert error.value.outcome == "environment_contract_invalid"
 
 
 @pytest.mark.asyncio
-async def test_tg_bot_without_explicit_bot_access_is_rejected_before_public_deploy():
-    state = _state(_bot_contract())
+@patch("src.subgraphs.devops.secret_resolver.api_client")
+@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
+async def test_tg_bot_capability_comes_only_from_generated_secret_values(_decrypt, api_client):
+    api_client.merge_secrets = AsyncMock()
+    state = _state(_grant_contract())
     state["project_spec"]["config"]["modules"] = ["backend", "tg_bot"]
 
-    with pytest.raises(TypedSecretResolutionError, match="explicit bot_access") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-async def test_private_bot_with_empty_audience_is_rejected():
-    state = _state(_bot_contract())
-    state["project_spec"]["config"] = {
-        "bot_access": {"mode": "only_me", "allowed_telegram_ids": ""},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""},
-    }
-
-    with pytest.raises(
-        TypedSecretResolutionError, match="private bot audience contains no Telegram IDs"
-    ) as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-async def test_private_bot_with_malformed_audience_is_rejected():
-    state = _state(_bot_contract())
-    state["project_spec"]["config"] = {
-        "bot_access": {"mode": "custom", "allowed_telegram_ids": "not-an-id"},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "not-an-id"},
-    }
-
-    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "configured_audience", "message_audience"),
-    [("public", "", "42"), ("only_me", "42", "84")],
-)
-async def test_deploy_cannot_replace_configured_bot_audience(
-    mode, configured_audience, message_audience
-):
-    state = _state(_bot_contract())
-    state["project_spec"]["config"] = {
-        "bot_access": {"mode": mode, "allowed_telegram_ids": configured_audience},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": configured_audience},
-    }
-    state["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": message_audience}
-
-    with pytest.raises(TypedSecretResolutionError, match="cannot override") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
-)
-async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
-    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-
     result = await SecretResolverNode().run(state)
 
-    assert result["non_secret_values"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == "42"
+    assert set(result["secret_values"]) == {"USERS_GRANT_CAPABILITY"}
+    assert result["non_secret_values"] == {}
+    assert set(api_client.merge_secrets.call_args.args[1]) == {"USERS_GRANT_CAPABILITY"}
 
 
 @pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict",
-    return_value={"ADMIN_TELEGRAM_ID": "not-an-id"},
-)
-async def test_malformed_legacy_admin_secret_is_rejected_before_it_can_make_a_bot_public(_decrypt):
-    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+async def test_tg_bot_without_generated_grant_capability_is_rejected():
+    state = _state({})
+    state["project_spec"]["config"]["modules"] = ["backend", "tg_bot"]
 
-    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
+    with pytest.raises(TypedSecretResolutionError, match="USERS_GRANT_CAPABILITY") as error:
         await SecretResolverNode().run(state)
 
     assert error.value.outcome == "environment_contract_invalid"
 
 
-@pytest.mark.asyncio
-@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": ""})
-async def test_empty_legacy_admin_secret_is_rejected_before_it_can_make_a_bot_public(_decrypt):
-    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-
-    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
-)
-async def test_legacy_admin_secret_rejects_a_deploy_audience_override(_decrypt):
-    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-    state["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""}
-
-    with pytest.raises(TypedSecretResolutionError, match="cannot override") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
-)
-async def test_legacy_admin_secret_rejects_a_conflicting_persisted_audience(_decrypt):
-    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""}
-
-    with pytest.raises(TypedSecretResolutionError, match="differs from legacy") as error:
-        await SecretResolverNode().run(state)
-
-    assert error.value.outcome == "environment_contract_invalid"
-
-
-@pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
-)
-async def test_legacy_admin_secret_does_not_require_the_new_contract_literal(_decrypt):
-    entries = {
-        "DEBUG": {
-            "source": "literal",
-            "value": False,
-            "environments": ["production"],
-            "required": True,
-        }
-    }
-
-    result = await SecretResolverNode().run(
-        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-    )
-
-    assert result["non_secret_values"]["DEBUG"] == "false"
-
-
-@pytest.mark.asyncio
-@patch(
-    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
-)
-async def test_legacy_admin_secret_keeps_working_with_a_pre_contract_repository(_decrypt):
-    entries = {
-        "ADMIN_TELEGRAM_ID": {
-            "source": "user_secret",
-            "environments": ["production"],
-            "consumers": ["tg_bot"],
-            "required": True,
-            "description": "Legacy bot owner",
-        }
-    }
-
-    result = await SecretResolverNode().run(
-        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-    )
-
-    assert result["secret_values"]["ADMIN_TELEGRAM_ID"] == "42"
+def test_local_template_fixture_declares_backend_grant_capability():
+    entries = yaml.safe_load(
+        (_template_fixture() / "services/backend/env.contract.yaml").read_text()
+    )["entries"]
+    capability = GeneratedSecretEntry.model_validate(entries["USERS_GRANT_CAPABILITY"])
+    assert capability.source == "generated_secret"
+    assert capability.consumers == ["backend"]
 
 
 @pytest.mark.asyncio
@@ -469,6 +325,7 @@ async def test_template_contract_fixture_resolves_production_entries(_decrypt, a
         },
     )
     state["provided_secrets"] = {"TELEGRAM_BOT_TOKEN": "token"}  # noqa: S105
+    state["project_spec"]["config"]["modules"] = ["backend", "tg_bot"]
 
     result = await SecretResolverNode().run(state)
 
@@ -480,7 +337,6 @@ async def test_template_contract_fixture_resolves_production_entries(_decrypt, a
 def _test_identity_contract() -> dict:
     """The template slot a QA run borrows and gives back."""
     return {
-        **_bot_contract(),
         "TG_BOT_TEST_TELEGRAM_ID": {
             "source": "literal",
             "value": "",
@@ -499,11 +355,6 @@ async def test_revoking_the_test_identity_deploys_an_empty_value():
     arrive as an empty literal rather than as the previously granted id.
     """
     state = _state(_test_identity_contract())
-    state["project_spec"]["config"]["bot_access"] = {
-        "mode": "only_me",
-        "allowed_telegram_ids": "42",
-    }
-    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
     state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": ""}
 
     result = await SecretResolverNode().run(state)
@@ -514,47 +365,8 @@ async def test_revoking_the_test_identity_deploys_an_empty_value():
 @pytest.mark.asyncio
 async def test_granting_the_test_identity_deploys_the_borrowed_id():
     state = _state(_test_identity_contract())
-    state["project_spec"]["config"]["bot_access"] = {
-        "mode": "only_me",
-        "allowed_telegram_ids": "42",
-    }
-    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
     state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": "424242"}
 
     result = await SecretResolverNode().run(state)
 
     assert result["non_secret_values"]["TG_BOT_TEST_TELEGRAM_ID"] == "424242"
-
-
-@pytest.mark.asyncio
-async def test_the_deployed_environment_admits_qa_only_while_granted():
-    """The point of the revoke, checked the way the bot decides access.
-
-    An empty test slot is not just a missing variable: read by the template's
-    admission rule, the environment the revoke deploy ships refuses the QA
-    identity while the project's own audience keeps working.
-    """
-    project_config = {
-        "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
-    }
-
-    async def _deployed_environment(test_identity: str) -> dict:
-        state = _state(_test_identity_contract())
-        state["project_spec"]["config"] = project_config
-        state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": test_identity}
-        return (await SecretResolverNode().run(state))["non_secret_values"]
-
-    granted = await _deployed_environment(str(QA_TEST_TELEGRAM_ID))
-    revoked = await _deployed_environment("")
-
-    def _admits(env: dict, telegram_id: int) -> bool:
-        return bot_admits(
-            audience=env["TG_BOT_ALLOWED_TELEGRAM_IDS"],
-            test_identity=env["TG_BOT_TEST_TELEGRAM_ID"],
-            telegram_id=telegram_id,
-        )
-
-    assert _admits(granted, QA_TEST_TELEGRAM_ID)
-    assert not _admits(revoked, QA_TEST_TELEGRAM_ID)
-    assert _admits(revoked, 42)

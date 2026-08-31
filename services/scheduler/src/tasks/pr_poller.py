@@ -12,6 +12,10 @@ import structlog
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.users_grant import (
+    GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleResult,
+)
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
@@ -45,6 +49,19 @@ def _failure_fingerprint(failed_jobs: list[dict], unavailable_reason: str | None
     ] or [{"details_unavailable_reason": unavailable_reason}]
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+async def _needs_initial_owner_seed(
+    api_client: SchedulerAPIClient, project_id: str, action: str
+) -> bool:
+    """Whether this story needs the API-owned initial-owner lifecycle."""
+    if action != "create":
+        return False
+    project = await api_client.get_project(project_id)
+    config = getattr(project, "config", None)
+    if not isinstance(config, dict) or "tg_bot" not in config.get("modules", []):
+        return False
+    return True
 
 
 def _ci_metadata(task: object) -> dict | None:
@@ -236,7 +253,43 @@ async def poll_merged_prs(
         has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
         action = "feature" if has_completed else "create"
 
-        # Publish deploy message
+        # Initial access is an intent lifecycle, never a stable deploy Run.
+        # Every merged PR has its own immutable attempt even before a story has
+        # completed, which prevents QA/fix cycles from reusing an old SHA.
+        if await _needs_initial_owner_seed(api_client, project_id, action):
+            lifecycle = GrantIntentLifecycleResult.model_validate(
+                await api_client.resume_initial_owner_grant(
+                    project_id, story_id=story_id, head_sha=head_sha
+                )
+            )
+            log.info(
+                "poll_merged_initial_owner_lifecycle",
+                intent_id=lifecycle.intent_id,
+                disposition=lifecycle.disposition.value,
+                run_id=lifecycle.execution_run_id,
+            )
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+                deployed += 1
+                continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+                await api_client.fail_story(story_id)
+                await notify_admins_best_effort(
+                    f"Grant intent deployment retries exhausted for story {story_id}",
+                    level="error",
+                    story_id=story_id,
+                )
+                continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+                log.info(
+                    "poll_merged_initial_owner_intent_in_flight", intent_id=lifecycle.intent_id
+                )
+                continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+                log.info(
+                    "poll_merged_initial_owner_intent_stale_target", intent_id=lifecycle.intent_id
+                )
+                continue
+
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
         run_data = {
             "id": run_id,

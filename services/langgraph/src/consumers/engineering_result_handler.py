@@ -501,6 +501,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                     "type": RunType.DEPLOY.value,
                     "project_id": project_id,
                     "status": RunStatus.QUEUED.value,
+                    "run_metadata": {"head_sha": result["commit_sha"]},
                 },
             )
             deploy_msg = DeployMessage(

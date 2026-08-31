@@ -34,6 +34,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessObservation,
 )
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.users_grant import GrantIntentLifecycleResult
 from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
 
@@ -160,6 +161,16 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
 
+    async def resume_initial_owner_grant(
+        self, project_id: str, *, story_id: str, head_sha: str
+    ) -> GrantIntentLifecycleResult:
+        resp = await self.request(
+            "POST",
+            f"projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "story_id": story_id, "head_sha": head_sha},
+        )
+        return GrantIntentLifecycleResult.model_validate(resp.json())
+
     async def create_run_if_absent(self, run_data: dict) -> RunDTO:
         """Create a run, or return the one already carrying this id.
 
@@ -215,11 +226,6 @@ class SchedulerAPIClient(InternalAPIClient):
     async def update_story_owner_notification(self, story_id: str, notification: dict) -> None:
         """Persist one delivery attempt against a story-backed completion record."""
         await self.request("PATCH", f"stories/{story_id}/owner-notification", json=notification)
-
-    async def list_bot_rollout_runs(self, *, limit: int) -> list[RunDTO]:
-        """One page of bot-audience rollouts whose publish or notify is unsettled."""
-        resp = await self.request("GET", "runs/bot-rollouts/unsettled", params={"limit": limit})
-        return [RunDTO.model_validate(row) for row in resp.json()]
 
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""

@@ -20,7 +20,7 @@ from shared.contracts.queues.deploy import (
     DeployOutcome,
     DeployTrigger,
 )
-from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
+from src.consumers.deploy import _already_deployed_application
 from tests.unit.factories import make_project, make_repository, make_run_start
 
 HEAD = "a" * 40
@@ -138,35 +138,6 @@ def test_deploy_message_defaults_to_no_overrides() -> None:
     assert msg.env_overrides == {}
 
 
-@pytest.mark.parametrize(("configured_audience", "message_audience"), [("", "42"), ("42", "84")])
-def test_deploy_cannot_override_the_configured_bot_audience(
-    configured_audience: str, message_audience: str
-) -> None:
-    project = SimpleNamespace(
-        config={
-            "bot_access": {
-                "mode": "public" if not configured_audience else "only_me",
-                "allowed_telegram_ids": configured_audience,
-            },
-            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": configured_audience},
-        }
-    )
-
-    with pytest.raises(ValueError, match="cannot override"):
-        _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": message_audience})
-
-
-def test_legacy_private_bot_rejects_a_deploy_audience_override() -> None:
-    project = SimpleNamespace(
-        config={
-            "secrets": {"ADMIN_TELEGRAM_ID": "encrypted"},
-        }
-    )
-
-    with pytest.raises(ValueError, match="legacy private bot"):
-        _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""})
-
-
 @pytest.mark.asyncio
 async def test_repeating_a_landed_revoke_is_redundant() -> None:
     """Revoking access that is already gone must not be an error.
@@ -209,7 +180,7 @@ def test_deploy_reports_the_test_identity_slot_it_resolved() -> None:
         {"environment_contract": _contract_with(["TG_BOT_TEST_TELEGRAM_ID"])}
     )
     assert not _declares_test_identity_slot(
-        {"environment_contract": _contract_with(["TG_BOT_ALLOWED_TELEGRAM_IDS"])}
+        {"environment_contract": _contract_with(["USERS_GRANT_CAPABILITY"])}
     )
 
 

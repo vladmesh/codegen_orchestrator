@@ -45,13 +45,6 @@ HTTP_NOT_FOUND = 404
 HTTP_UNPROCESSABLE = 422
 HTTP_CONFLICT = 409
 
-# Rollout verdicts the audience endpoints report. The tool repeats them verbatim
-# so its report can only mirror what the server said, never embellish it.
-ROLLOUT_APPLIED = "applied"
-ROLLOUT_PENDING = "pending"
-ROLLOUT_FAILED = "failed"
-ROLLOUT_NOT_DEPLOYED = "not_deployed"
-
 # A teardown is an SSH `docker compose down` on the project's server: seconds when the
 # consumer is free, minutes when it is busy. The tool waits rather than promising a
 # free token it has no way to deliver, and gives up long before the user does.
@@ -208,8 +201,6 @@ async def set_project_secret(
     """Set a secret for a project (e.g. OPENROUTER_API_KEY).
 
     Telegram bot tokens are refused here — use validate_telegram_token for those.
-    Telegram bot audiences are also refused here — use set_bot_access so the
-    template contract records the selected access mode.
 
     Args:
         project_id: Project ID.
@@ -221,9 +212,6 @@ async def set_project_secret(
     """
     api = _get_api()
     headers = _user_headers(config)
-
-    if key == "ADMIN_TELEGRAM_ID":
-        return "Error: bot access is managed through set_bot_access."
 
     payload: dict = {"secrets": {key: value}}
     if hint:
@@ -240,313 +228,45 @@ async def set_project_secret(
 
 
 @tool
-async def set_bot_access(
-    project_id: str, mode: str, allowed_telegram_ids: str = "", *, config: RunnableConfig
-) -> str:
-    """Set a Telegram bot's contract audience.
+async def grant_project_user(project_id: str, telegram_id: int, *, config: RunnableConfig) -> str:
+    """Request permanent access for one verified Telegram user.
 
-    Use ``only_me`` without allowed_telegram_ids: the current user's Telegram ID is
-    used. Use ``public`` without IDs. For ``custom``, pass the
-    comma-separated base audience chosen by the user.
-
-    On an already-deployed bot this also rolls the new audience out to the
-    running service and waits (bounded): applied means live, anything else is
-    reported exactly as the server phrased it.
+    The deploy worker grants and reads the generated service back after its
+    target is healthy. A queued response is not a claim that access is live.
     """
-    telegram_chat_id = str(config["configurable"]["telegram_chat_id"]).strip()
-    if mode == "only_me":
-        allowed_telegram_ids = telegram_chat_id
-    if mode in {"only_me", "custom"} and not allowed_telegram_ids.strip():
-        return "Error: a private bot needs at least one Telegram ID in its audience."
-
-    api = _get_api()
-    resp = await api.post_raw(
-        f"projects/{project_id}/config/bot-access",
-        json={"mode": mode, "allowed_telegram_ids": allowed_telegram_ids},
+    response = await _get_api().post_raw(
+        f"projects/{project_id}/users/grant",
+        json={"telegram_id": telegram_id},
         headers=_user_headers(config),
     )
-    if resp.status_code == HTTP_UNPROCESSABLE:
-        return f"Error: {resp.json()['detail']}"
-    resp.raise_for_status()
-    body = resp.json()
-    audience = body.get("allowed_telegram_ids", allowed_telegram_ids)
-    prefix = f"Bot access set to '{body['mode']}' for project {project_id}."
-
-    rollout = body.get("rollout", ROLLOUT_NOT_DEPLOYED)
-    if rollout != ROLLOUT_PENDING:
-        return await _finish_mutation_response(
-            prefix=prefix,
-            audience=audience,
-            rollout=rollout,
-            detail="",
-            deferred=False,
-        )
-
-    telegram_chat_id = str(config["configurable"]["telegram_chat_id"])
-    rollout, detail, deferred = await _await_rollout(
-        api,
-        project_id,
-        body["rollout_run_id"],
-        config=config,
-        telegram_chat_id=telegram_chat_id,
-        project_ref=project_id,
-    )
-    return await _finish_mutation_response(
-        prefix=prefix,
-        audience=audience,
-        rollout=rollout,
-        detail=detail,
-        deferred=deferred,
-    )
-
-
-# How long the tool waits for a config-only rollout to land before it hands the
-# outcome over to the proactive channel instead. The Telegram transport deletes
-# the `po:response:{request_id}` stream after PO_RESPONSE_TIMEOUT_S = 60, so a
-# synchronous answer must be well inside that window — the remaining margin is
-# what the graph's other work (tool calls before this one) may have spent.
-ROLLOUT_POLL_INTERVAL_SECONDS = 3.0
-ROLLOUT_SYNC_WAIT_SECONDS = 40.0
-
-
-async def _poll_rollout_once(
-    api, project_id: str, run_id: str, *, config: RunnableConfig
-) -> tuple[str, str]:
-    """One status poll. Transient failures return ("pending", reason) rather
-    than raising: an API blip must not be read as a rollout verdict.
-
-    A poll whose HTTP call itself fails is retried by `_await_rollout` only
-    until the same bounded deadline — a dead API must not stretch the reply
-    past the transport window.
-    """
-    try:
-        poll = await api.get_raw(
-            f"projects/{project_id}/config/bot-access/rollouts/{run_id}",
-            headers=_user_headers(config),
-        )
-    except Exception as exc:
-        logger.warning("rollout_status_poll_failed", run_id=run_id, error=str(exc))
-        return ROLLOUT_PENDING, f"status check failed ({exc}); still trying"
-    if poll.status_code == HTTP_NOT_FOUND:
-        return ROLLOUT_FAILED, "the rollout run disappeared — it was never recorded"
-    # A non-404 error status is the API speaking, not the network flaking: it
-    # says the request itself is wrong, and retrying would only repeat it.
-    poll.raise_for_status()
-    body = poll.json()
-    return body.get("rollout", ROLLOUT_PENDING), body.get("detail", "")
-
-
-async def _await_rollout(
-    api,
-    project_id: str,
-    run_id: str,
-    *,
-    config: RunnableConfig,
-    telegram_chat_id: str,
-    project_ref: str = "",
-) -> tuple[str, str, bool]:
-    """Wait inside the transport window; hand a still-pending verdict onward.
-
-    Returns (status, detail, deferred). Deferred means the rollout had not
-    finished when the wait ended and its terminal outcome has been scheduled
-    for proactive delivery — the user hears the ending either way, just not
-    necessarily inside this reply. The scheduler sweep owns that delivery; it
-    reads the same durable run, so nothing depends on this process staying up.
-    """
-    deadline = asyncio.get_running_loop().time() + ROLLOUT_SYNC_WAIT_SECONDS
-    while True:
-        rollout, detail = await _poll_rollout_once(api, project_id, run_id, config=config)
-        if rollout in {ROLLOUT_APPLIED, ROLLOUT_FAILED}:
-            return rollout, detail, False
-        if asyncio.get_running_loop().time() >= deadline:
-            await notify_rollout_pending(
-                project_id=project_id,
-                run_id=run_id,
-                telegram_chat_id=telegram_chat_id,
-                project_ref=project_ref,
-            )
-            return ROLLOUT_PENDING, detail, True
-        await asyncio.sleep(ROLLOUT_POLL_INTERVAL_SECONDS)
-
-
-async def notify_rollout_pending(
-    *, project_id: str, run_id: str, telegram_chat_id: str, project_ref: str = ""
-) -> None:
-    """Record that this rollout's terminal outcome is still owed to the user.
-
-    The durable marker goes on the rollout run itself (idempotent: written
-    once and flipped to delivered by whoever reports first), and the scheduler
-    sweep turns it into a proactive message when the run reaches applied or
-    failed. The sweep reads the same durable run, so nothing depends on this
-    process staying up.
-    """
-    api = _get_api()
-    try:
-        await api.post_raw(
-            f"projects/{project_id}/config/bot-access/rollouts/{run_id}/notify-owed",
-            json={},
-            headers=_user_headers(_config_with_chat(telegram_chat_id)),
-        )
-    except Exception as exc:
-        # The marker write is best-effort from the tool: the sweep reconciles
-        # owed notifications from the run's records even if this call never
-        # lands, and the next status poll of this same rollout would owe it
-        # again if the conversation were still open.
-        logger.warning("rollout_notify_owe_failed", run_id=run_id, error=str(exc))
-        return
-    logger.info(
-        "rollout_terminal_notification_owed",
-        run_id=run_id,
-        project_id=project_id,
-    )
-
-
-def _config_with_chat(telegram_chat_id: str) -> dict:
-    return {"configurable": {"telegram_chat_id": telegram_chat_id}}
-
-
-def _rollout_report(status: str, detail: str) -> str:
-    """The user-facing sentence for one rollout outcome. Truthful by construction:
-    only `applied` says anything reached the running bot."""
-    if status == "applied":
-        return "The change is live on the running bot now."
-    if status == "failed":
-        return (
-            f"The configuration changed, but applying it to the running bot FAILED"
-            f"{': ' + detail if detail else ''}. The bot is still running with the "
-            "old audience — tell the user, and do not say the access changed."
-        )
+    if response.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE, HTTP_CONFLICT}:
+        return f"Error: {response.json()['detail']}"
+    response.raise_for_status()
+    body = response.json()
     return (
-        "The configuration is saved, but the rollout has not finished yet "
-        "(it is still being applied to the running bot). Tell the user it is "
-        "in progress and check again in a few minutes — do not say the access "
-        "changed live until it is confirmed."
-    )
-
-
-async def _finish_mutation_response(
-    *,
-    prefix: str,
-    audience: str,
-    rollout: str,
-    detail: str,
-    deferred: bool,
-) -> str:
-    """Assemble the truthful final text for one mutation outcome."""
-    if rollout == ROLLOUT_NOT_DEPLOYED:
-        return (
-            f"{prefix} Current audience: {audience}. The project is not deployed, "
-            "so there is nothing to apply to — the audience takes effect at the "
-            "next deploy."
-        )
-    if rollout == ROLLOUT_APPLIED:
-        return f"{prefix} Current audience: {audience}. {_rollout_report(rollout, detail)}"
-    report = _rollout_report(rollout, detail)
-    if deferred:
-        report += " I will message you here as soon as the rollout finishes, whichever way it ends."
-    return f"{prefix} Current audience: {audience}. {report}"
-
-
-async def _mutate_bot_user(
-    project_id: str,
-    telegram_id: int,
-    *,
-    method: str,
-    config: RunnableConfig,
-) -> str:
-    """One typed audience mutation plus a truthful rollout report.
-
-    The server owns the audience arithmetic; this tool sends exactly one ID and
-    never reconstructs the comma-separated list.
-    """
-    api = _get_api()
-    headers = _user_headers(config)
-    if method == "POST":
-        resp = await api.post_raw(
-            f"projects/{project_id}/config/bot-access/users",
-            json={"telegram_id": telegram_id},
-            headers=headers,
-        )
-    else:
-        resp = await api.delete_raw(
-            f"projects/{project_id}/config/bot-access/users/{telegram_id}",
-            headers=headers,
-        )
-    if resp.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE, HTTP_CONFLICT}:
-        return f"Error: {resp.json()['detail']}"
-    resp.raise_for_status()
-    body = resp.json()
-
-    operation = body["operation"]
-    audience = body["audience"]
-    if operation in {"already_present", "already_absent"}:
-        return (
-            f"Telegram ID {telegram_id} was already "
-            f"{'in' if operation == 'already_present' else 'not in'} the audience — "
-            f"nothing changed. Current audience: {audience}."
-        )
-
-    verb = "added to" if operation == "added" else "removed from"
-    prefix = f"Telegram ID {telegram_id} {verb} the audience."
-    rollout = body["rollout"]
-
-    if rollout != ROLLOUT_PENDING:
-        return await _finish_mutation_response(
-            prefix=prefix,
-            audience=audience,
-            rollout=rollout,
-            detail="",
-            deferred=False,
-        )
-
-    telegram_chat_id = str(config["configurable"]["telegram_chat_id"])
-    rollout, detail, deferred = await _await_rollout(
-        api,
-        project_id,
-        body["rollout_run_id"],
-        config=config,
-        telegram_chat_id=telegram_chat_id,
-        project_ref=project_id,
-    )
-    return await _finish_mutation_response(
-        prefix=prefix,
-        audience=audience,
-        rollout=rollout,
-        detail=detail,
-        deferred=deferred,
+        f"Permanent access intent {body['intent_id']} is {body['status']}. "
+        "It will be live only after the deployed service confirms the user is active."
     )
 
 
 @tool
-async def add_bot_user(project_id: str, telegram_id: int, *, config: RunnableConfig) -> str:
-    """Add ONE Telegram user ID to a bot's allowed audience.
-
-    Use this when the user says "add user ID X to my bot". The ID is added to the
-    existing audience — nobody else loses access. For an already-deployed bot the
-    change is rolled out to the running bot automatically; the tool answers only
-    after the rollout is confirmed (or reports honestly that it is still pending).
-
-    Args:
-        project_id: Project ID.
-        telegram_id: The Telegram user ID to allow.
-    """
-    return await _mutate_bot_user(project_id, telegram_id, method="POST", config=config)
-
-
-@tool
-async def remove_bot_user(project_id: str, telegram_id: int, *, config: RunnableConfig) -> str:
-    """Remove ONE Telegram user ID from a bot's allowed audience.
-
-    Use this when the user says "remove user ID X from my bot". Only that ID is
-    removed; the rest of the audience is preserved. The owner stays in the
-    audience unless they are removed explicitly. Removing the final allowed ID is
-    refused — making the bot public is set_bot_access's explicit decision.
-
-    Args:
-        project_id: Project ID.
-        telegram_id: The Telegram user ID to revoke.
-    """
-    return await _mutate_bot_user(project_id, telegram_id, method="DELETE", config=config)
+async def transfer_project_ownership(
+    project_id: str, telegram_id: int, *, config: RunnableConfig
+) -> str:
+    """Transfer a project only after the incoming owner passes active readback."""
+    response = await _get_api().post_raw(
+        f"projects/{project_id}/ownership-transfer",
+        json={"telegram_id": telegram_id},
+        headers=_user_headers(config),
+    )
+    if response.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE, HTTP_CONFLICT}:
+        return f"Error: {response.json()['detail']}"
+    response.raise_for_status()
+    body = response.json()
+    return (
+        f"Ownership-transfer intent {body['intent_id']} is {body['status']}. "
+        "Ownership remains unchanged until the service confirms the incoming user is active."
+    )
 
 
 @tool

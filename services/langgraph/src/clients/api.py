@@ -19,6 +19,7 @@ from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.users_grant import GrantIntent
 from src.config.settings import get_settings
 
 
@@ -127,6 +128,23 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_run(self, run_id: str) -> RunDTO:
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
+
+    async def get_users_grant_intent(self, project_id: str, intent_id: str) -> GrantIntent:
+        data = await self._get_json(f"projects/{project_id}/users/grant-intents/{intent_id}")
+        return GrantIntent.model_validate(data)
+
+    async def complete_users_grant_intent(
+        self,
+        project_id: str,
+        intent_id: str,
+        *,
+        execution_run_id: str,
+        active: bool,
+        detail: str | None = None,
+    ) -> dict:
+        payload = {"execution_run_id": execution_run_id, "active": active, "detail": detail}
+        path = f"projects/{project_id}/users/grant-intents/{intent_id}/complete"
+        return await self._post_json(path, json=payload)
 
     async def list_runs_holding_qa_ssh_grant(
         self, *, limit: int, after: RunDTO | None = None

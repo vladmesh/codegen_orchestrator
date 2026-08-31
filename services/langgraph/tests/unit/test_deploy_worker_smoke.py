@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.users_grant import (
+    USERS_GRANT_INTENT_KEY,
+    GrantIntent,
+    GrantIntentKind,
+)
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
 from tests.unit.factories import make_project, make_repository, make_run, make_run_start
@@ -44,6 +49,9 @@ def mock_api():
                 config={"modules": ["backend"]},
             )
         )
+        api.get_user = AsyncMock(return_value=SimpleNamespace(telegram_id=12345))
+        api.get_users_grant_intent = AsyncMock(return_value=_initial_owner_intent())
+        api.complete_users_grant_intent = AsyncMock()
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/my-project")
         )
@@ -79,6 +87,19 @@ def _job(*, callback_stream=None, telegram_chat_id="12345"):
     }
 
 
+def _initial_owner_intent() -> GrantIntent:
+    return GrantIntent(
+        id="users-grant-initial-owner-deploy-smoke-1",
+        kind=GrantIntentKind.INITIAL_OWNER,
+        project_id="proj-1",
+        channel="telegram",
+        external_id="12345",
+        target_sha="a" * 40,
+        initiating_actor="deploy_producer",
+        execution_run_id="deploy-smoke-1",
+    )
+
+
 @pytest.mark.asyncio
 async def test_deploy_worker_smoke_pass(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
@@ -109,34 +130,85 @@ async def test_deploy_worker_smoke_pass(
 
 
 @pytest.mark.asyncio
-async def test_legacy_private_bot_same_sha_reaches_contract_resolution(
+async def test_bot_owner_is_granted_and_read_back_before_deploy_success(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """A legacy audience must not be skipped before the resolver can migrate it."""
-    mock_api.get_project.return_value = make_project(
-        name="my-project",
-        config={"modules": ["backend"], "secrets": {"ADMIN_TELEGRAM_ID": "encrypted"}},
+    mock_api.get_project.return_value = make_project(config={"modules": ["backend", "tg_bot"]})
+    mock_api.get_run.return_value = make_run(
+        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent().id}
     )
-    mock_api.get.return_value = [
-        {"deployed_sha": "a" * 40, "deployment_info": {"env_overrides_digest": ""}}
-    ]
-    mock_api.get_application.return_value = SimpleNamespace(status="running")
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
             "deployment_result": {},
             "smoke_result": {"status": "pass", "checks": []},
+            "secret_values": {"USERS_GRANT_CAPABILITY": "capability"},
         }
     )
 
     from src.consumers.deploy import process_deploy_job
 
-    result = await process_deploy_job(_job(), mock_redis)
+    with patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as grant_client:
+        grant_client.return_value.grant_and_resolve = AsyncMock(
+            return_value=SimpleNamespace(active=True, failure=None)
+        )
+        result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "success"
-    mock_devops_subgraph.ainvoke.assert_awaited_once()
+    grant_client.return_value.grant_and_resolve.assert_awaited_once_with(
+        channel="telegram", external_id="12345", capability="capability"
+    )
+    completed = [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
+    assert len(completed) == 1
+    mock_api.complete_users_grant_intent.assert_awaited_once_with(
+        "proj-1",
+        _initial_owner_intent().id,
+        execution_run_id="deploy-smoke-1",
+        active=True,
+    )
 
 
+@pytest.mark.asyncio
+async def test_bot_owner_readback_failure_never_records_deploy_success(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    mock_api.get_project.return_value = make_project(config={"modules": ["backend", "tg_bot"]})
+    mock_api.get_run.return_value = make_run(
+        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent().id}
+    )
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployed_url": "http://1.2.3.4:8080",
+            "deployment_result": {},
+            "smoke_result": {"status": "pass", "checks": []},
+            "secret_values": {"USERS_GRANT_CAPABILITY": "capability"},
+        }
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    with patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as grant_client:
+        grant_client.return_value.grant_and_resolve = AsyncMock(
+            return_value=SimpleNamespace(active=False, failure=SimpleNamespace(value="inactive"))
+        )
+        result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "failed"
+    failed = [
+        call for call in mock_api.patch.call_args_list if "owner_access_proof_failed" in str(call)
+    ]
+    assert len(failed) == 1
+    assert not [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
+    mock_api.complete_users_grant_intent.assert_awaited_once_with(
+        "proj-1",
+        _initial_owner_intent().id,
+        execution_run_id="deploy-smoke-1",
+        active=False,
+        detail="inactive",
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_unproven_cancellation_propagates_not_masked_as_failure(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph

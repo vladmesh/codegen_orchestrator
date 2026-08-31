@@ -45,17 +45,14 @@ PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 HEAD_SHA = "b" * 40
 
 
-def _project(audience: str | None) -> ProjectDTO:
-    config = {}
-    if audience is not None:
-        config["bot_access"] = {"mode": "custom", "allowed_telegram_ids": audience}
+def _project() -> ProjectDTO:
     return ProjectDTO(
         id=UUID(PROJECT_ID),
         initiating_run_id="test-run-1",
         title="Test Project",
         slug="test-project",
         status=ProjectStatus.ACTIVE,
-        config=config,
+        config={},
         owner_id=100713,
         created_at=datetime.now(UTC),
     )
@@ -161,7 +158,7 @@ class TestHandoffThroughTheGrant:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=True
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -183,42 +180,6 @@ class TestHandoffThroughTheGrant:
         assert deploys[0].head_sha == HEAD_SHA
 
     @pytest.mark.asyncio
-    async def test_public_bot_needs_no_grant(self, api_client, redis_client):
-        """An empty audience admits everyone, so there is nothing to hand over."""
-        from src.tasks.supervisor import supervise_deploying_stories
-
-        api_client.get_stories_by_status.return_value = [
-            _make_story(id="story-1", status="deploying")
-        ]
-        api_client.get_latest_run_by_story.return_value = _deploy_success_run(
-            test_identity_slot=True
-        )
-        api_client.get_project.return_value = _project("")
-
-        result = await supervise_deploying_stories(api_client, redis_client)
-
-        assert result["tested"] == 1
-        api_client.create_temporary_access_grant.assert_not_called()
-        assert len(_published(redis_client, QA_QUEUE)) == 1
-
-    @pytest.mark.asyncio
-    async def test_audience_that_already_lists_qa_needs_no_grant(self, api_client, redis_client):
-        from src.tasks.supervisor import supervise_deploying_stories
-
-        api_client.get_stories_by_status.return_value = [
-            _make_story(id="story-1", status="deploying")
-        ]
-        api_client.get_latest_run_by_story.return_value = _deploy_success_run(
-            test_identity_slot=True
-        )
-        api_client.get_project.return_value = _project(f"42,{QA_TEST_TELEGRAM_ID}")
-
-        result = await supervise_deploying_stories(api_client, redis_client)
-
-        assert result["tested"] == 1
-        api_client.create_temporary_access_grant.assert_not_called()
-        assert len(_published(redis_client, QA_QUEUE)) == 1
-
     @pytest.mark.asyncio
     async def test_commit_without_the_slot_is_not_granted_anything(self, api_client, redis_client):
         """Deploying a value the generated repository never declared would fail."""
@@ -230,7 +191,7 @@ class TestHandoffThroughTheGrant:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=False
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -249,7 +210,7 @@ class TestHandoffThroughTheGrant:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=True, head_sha=None
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -339,7 +300,7 @@ class TestDeliveryDoesNotWaitForTheCleanup:
         ]
         api_client.get_latest_run_by_story.return_value = _passed_qa_run()
         api_client.get_live_temporary_access_grant_for_run.return_value = _live_grant()
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -362,7 +323,7 @@ class TestDeliveryDoesNotWaitForTheCleanup:
         ]
         api_client.get_latest_run_by_story.return_value = _passed_qa_run()
         api_client.get_live_temporary_access_grant_for_run.return_value = _live_grant()
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         await supervise_testing_stories(api_client, redis_client)
 
@@ -413,7 +374,7 @@ class TestDeliveryDoesNotWaitForTheCleanup:
             escalated_at=datetime.now(UTC),
             last_error="revoke deploy deploy-revoke-1 ended failed (give_up)",
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -443,7 +404,7 @@ class TestDeliveryDoesNotWaitForTheCleanup:
             escalated_at=datetime.now(UTC),
             last_error="revoke deploy deploy-revoke-1 ended failed (give_up)",
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -607,7 +568,7 @@ class TestTheQARunIsWrittenBeforeTheStoryMoves:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=True
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         order = []
         api_client.start_paid_run.side_effect = lambda data: (
@@ -642,7 +603,7 @@ class TestTheQARunIsWrittenBeforeTheStoryMoves:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=True
         )
-        api_client.get_project.return_value = _project("42")
+        api_client.get_project.return_value = _project()
 
         await supervise_deploying_stories(api_client, redis_client)
         await supervise_deploying_stories(api_client, redis_client)
