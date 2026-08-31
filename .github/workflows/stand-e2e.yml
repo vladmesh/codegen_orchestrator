@@ -9,11 +9,11 @@ on:
       suite:
         description: 'What to run'
         required: true
-        default: 'mega'
+        default: 'mega-noop'
         type: choice
         options:
-          - mega
-          - llm
+          - mega-noop
+          - mega-llm
           - matrix
           - custom
       target:
@@ -21,7 +21,7 @@ on:
         required: false
         type: string
       worker:
-        description: 'Coding agent (ignored by mega and matrix)'
+        description: 'Coding agent for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'claude'
         type: choice
@@ -29,7 +29,7 @@ on:
           - claude
           - codex
       qa:
-        description: 'QA executor (ignored by mega and matrix)'
+        description: 'QA executor for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'codex'
         type: choice
@@ -60,7 +60,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    timeout-minutes: 180
+    # 360m > 45m provisioning + 262m runner matrix budget. The runner's 5m
+    # fail-closed sweep is included; lifecycle cleanup has its own 30m job.
+    timeout-minutes: 360
     permissions:
       contents: read
       packages: read
@@ -554,6 +556,7 @@ jobs:
     if: ${{ always() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     environment: stand
+    timeout-minutes: 30
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}

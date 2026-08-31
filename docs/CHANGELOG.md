@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Defined the canonical stand E2E suite contract: `mega-noop`, `mega-llm`, and
+  the four-cell `matrix` now resolve to exact pytest nodes with canonical names
+  in logs and reports. Legacy `mega`/`llm` aliases remain compatible, suite
+  timeouts are derived from the full pipeline's waits, and the stand workflow
+  now reserves enough time for provisioning and the largest matrix path.
+
 - Regenerated the complete vendored service-template fixture from pinned commit
   `edf54dfb1c323d60480761e06ceb982bd79ac9d2` with its recorded Copier inputs.
   The fixture now carries Copier answers and a whole-render digest regression so

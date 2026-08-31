@@ -21,8 +21,8 @@ lessons are the reason this file exists:
 
 Suites are a table, not code paths, so a new one is a line:
 
-    ./scripts/stand_run.py --suite mega
-    ./scripts/stand_run.py --suite llm --worker codex --qa claude
+    ./scripts/stand_run.py --suite mega-noop
+    ./scripts/stand_run.py --suite mega-llm --worker codex --qa claude
     ./scripts/stand_run.py --suite matrix
     ./scripts/stand_run.py --suite tests/live/test_api_crud.py
 """
@@ -45,7 +45,32 @@ QA_EXECUTOR_ENV = "QA_EXECUTOR_AGENT_TYPE"
 AGENTS = ("claude", "codex")
 RUN_ROOT = Path.home() / "e2e-runs"
 EXECUTOR_SWITCH_TIMEOUT_SECONDS = 180
-SUITE_TIMEOUT_SECONDS = 2700
+# The full pipeline's explicit waits are 1,800s for noop and 3,180s for LLM
+# (scaffold + engineering + deploy-run + deploy + deploy-outcome + QA).  The
+# per-suite caps include its manifest-owned teardown and a small diagnostic
+# reserve; see tests/live/README.md for the complete budget ledger.
+NOOP_SUITE_TIMEOUT_SECONDS = 2400
+LLM_SUITE_TIMEOUT_SECONDS = 3600
+CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
+PREFLIGHT_TIMEOUT_SECONDS = 300
+SWEEP_TIMEOUT_SECONDS = 300
+
+# The workflow provisions a disposable pair before invoking this runner. Its
+# bounded operations total 2,280s (two machine waits, DNS, API readiness, and
+# target provisioning); the remaining seven minutes cover bootstrap/Ansible.
+STAND_PROVISIONING_TIMEOUT_SECONDS = 2700
+# A matrix has four 60-minute LLM cells.  Each cell can require a full executor
+# switch; runner preflight and the fail-closed sweep have their own bounds.
+MATRIX_RUNNER_TIMEOUT_SECONDS = (
+    PREFLIGHT_TIMEOUT_SECONDS
+    + len(("claude", "codex")) ** 2 * (LLM_SUITE_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
+    + SWEEP_TIMEOUT_SECONDS
+)
+# 360 minutes leaves a strict 53-minute reserve after the largest possible
+# provision + matrix-runner path (307 minutes). Lifecycle cleanup has its own
+# bounded workflow job because GitHub jobs cannot share one timeout.
+STAND_JOB_TIMEOUT_MINUTES = 360
+STAND_CLEANUP_JOB_TIMEOUT_MINUTES = 30
 # Asked of the container rather than of .env: what matters is the executor the
 # running qa-worker resolved, not the value someone wrote.
 _ACTIVE_EXECUTOR_SNIPPET = (
@@ -63,27 +88,42 @@ class Suite:
     #: Every (qa, worker) pair this suite runs. Empty means one run with whatever
     #: the caller asked for — or the defaults, for suites that use no agents.
     combinations: tuple[tuple[str, str], ...] = ()
+    timeout_seconds: int = CUSTOM_TARGET_TIMEOUT_SECONDS
     description: str = ""
 
 
 SUITES: dict[str, Suite] = {
-    "mega": Suite(
+    "mega-noop": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipeline",
         llm=False,
+        timeout_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
         description="the full pipeline with a noop worker: infrastructure and deploy, no agents",
     ),
-    "llm": Suite(
+    "mega-llm": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
         llm=True,
+        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
         description="the full pipeline with a real coding agent and a real QA executor",
     ),
     "matrix": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
         llm=True,
         combinations=tuple((qa, worker) for qa in AGENTS for worker in AGENTS),
+        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
         description="every QA executor against every worker agent",
     ),
 }
+SUITE_ALIASES = {"mega": "mega-noop", "llm": "mega-llm"}
+LLM_ENV_NAMES = ("LIVE_LLM_QA", "LIVE_QA_AGENT_TYPE", "LIVE_WORKER_AGENT_TYPE")
+
+
+def resolve_suite(requested_name: str) -> tuple[str, Suite]:
+    """Resolve a legacy alias without letting it leak into public artifacts."""
+    canonical_name = SUITE_ALIASES.get(requested_name, requested_name)
+    suite = SUITES.get(canonical_name)
+    if suite is not None:
+        return canonical_name, suite
+    return requested_name, Suite(target=requested_name, llm=False)
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -119,11 +159,13 @@ def write_qa_executor(env_path: Path, executor: str) -> None:
     env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
 
-def matrix_row(qa: str, worker: str, status: str, seconds: int) -> str:
-    return f"{qa}\t{worker}\t{status}\t{seconds}\n"
+def matrix_row(suite_name: str, qa: str, worker: str, status: str, seconds: int) -> str:
+    return f"{suite_name}\t{qa}\t{worker}\t{status}\t{seconds}\n"
 
 
-def write_junit_report(path: Path, results: list[tuple[str, str, str, int]]) -> None:
+def write_junit_report(
+    path: Path, suite_name: str, results: list[tuple[str, str, str, int]]
+) -> None:
     """Write the stable JUnit companion for the human-readable TSV report.
 
     Pytest's own JUnit output is awkward for the matrix because each invocation
@@ -134,7 +176,7 @@ def write_junit_report(path: Path, results: list[tuple[str, str, str, int]]) -> 
     suite = ElementTree.Element(
         "testsuite",
         {
-            "name": "stand-e2e",
+            "name": f"stand-e2e:{suite_name}",
             "tests": str(len(results)),
             "failures": str(failures),
             "errors": "0",
@@ -145,7 +187,7 @@ def write_junit_report(path: Path, results: list[tuple[str, str, str, int]]) -> 
             suite,
             "testcase",
             {
-                "classname": "stand-e2e",
+                "classname": f"stand-e2e:{suite_name}",
                 "name": f"qa={qa} worker={worker}",
                 "time": str(seconds),
             },
@@ -207,8 +249,17 @@ def ensure_qa_executor(env: dict[str, str], executor: str, log) -> bool:
     return False
 
 
-def run_pytest(target: str, env: dict[str, str], extra: dict[str, str], log_path: Path) -> bool:
-    run_env = {**os.environ, **env, **extra, "LIVE_CONTOUR": "stand"}
+def run_pytest(
+    target: str,
+    env: dict[str, str],
+    extra: dict[str, str],
+    log_path: Path,
+    timeout_seconds: int,
+) -> bool:
+    run_env = {**os.environ, **env, "LIVE_CONTOUR": "stand"}
+    for name in LLM_ENV_NAMES:
+        run_env.pop(name, None)
+    run_env.update(extra)
     with log_path.open("w", encoding="utf-8") as handle:
         result = subprocess.run(  # noqa: S603
             ["uv", "run", "pytest", target, "-x", "-q", "--tb=short"],  # noqa: S607
@@ -216,40 +267,50 @@ def run_pytest(target: str, env: dict[str, str], extra: dict[str, str], log_path
             env=run_env,
             stdout=handle,
             stderr=subprocess.STDOUT,
-            timeout=SUITE_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             check=False,
         )
     return result.returncode == 0
 
 
 def preflight(env: dict[str, str], log) -> bool:
-    result = subprocess.run(  # noqa: S603
-        # As a module, not a path: running `python scripts/x.py` puts `scripts/`
-        # on sys.path instead of the repository root, and the script cannot then
-        # import `shared`. That has refused a run twice.
-        [sys.executable, "-m", "scripts.stand_preflight"],  # noqa: S607
-        cwd=REPO,
-        env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603
+            # As a module, not a path: running `python scripts/x.py` puts `scripts/`
+            # on sys.path instead of the repository root, and the script cannot then
+            # import `shared`. That has refused a run twice.
+            [sys.executable, "-m", "scripts.stand_preflight"],  # noqa: S607
+            cwd=REPO,
+            env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
+            capture_output=True,
+            text=True,
+            timeout=PREFLIGHT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"preflight timed out after {PREFLIGHT_TIMEOUT_SECONDS}s")
+        return False
     for line in result.stdout.splitlines():
         log(line)
     return result.returncode == 0
 
 
 def sweep(env: dict[str, str], log) -> bool:
-    result = subprocess.run(  # noqa: S603
-        # As a module: a path invocation puts `scripts/` on sys.path instead of
-        # the repository root, and `shared` then cannot be imported.
-        ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
-        cwd=REPO,
-        env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603
+            # As a module: a path invocation puts `scripts/` on sys.path instead
+            # of the repository root, and `shared` then cannot be imported.
+            ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
+            cwd=REPO,
+            env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
+            capture_output=True,
+            text=True,
+            timeout=SWEEP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"sweep timed out after {SWEEP_TIMEOUT_SECONDS}s")
+        return False
     if result.returncode != 0:
         log(f"sweep failed: {(result.stderr or result.stdout).strip().splitlines()[-1:]}")
     return result.returncode == 0
@@ -258,7 +319,11 @@ def sweep(env: dict[str, str], log) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run an e2e suite on the stand.",
-        epilog="suites: " + "; ".join(f"{name} — {s.description}" for name, s in SUITES.items()),
+        epilog=(
+            "suites: "
+            + "; ".join(f"{name} — {s.description}" for name, s in SUITES.items())
+            + "; legacy aliases: mega → mega-noop, llm → mega-llm"
+        ),
     )
     parser.add_argument("--suite", required=True, help="a named suite, or any pytest target")
     parser.add_argument("--worker", choices=AGENTS, default="claude")
@@ -267,11 +332,11 @@ def main() -> int:
     parser.add_argument("--skip-sweep", action="store_true", help="leave resources for inspection")
     args = parser.parse_args()
 
-    suite = SUITES.get(args.suite) or Suite(target=args.suite, llm=False)
+    canonical_suite_name, suite = resolve_suite(args.suite)
     env = read_env_file(REPO / ".env")
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = RUN_ROOT / f"{args.suite.replace('/', '_')}-{stamp}"
+    run_dir = RUN_ROOT / f"{canonical_suite_name.replace('/', '_')}-{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     latest = RUN_ROOT / "latest"
     latest.unlink(missing_ok=True)
@@ -283,18 +348,21 @@ def main() -> int:
             handle.write(f"{datetime.now(UTC).strftime('%H:%M:%S')} {message}\n")
         print(message, flush=True)
 
-    log(f"suite={args.suite} target={suite.target} dir={run_dir}")
+    log(
+        f"suite={canonical_suite_name} requested_suite={args.suite} "
+        f"target={suite.target} timeout_seconds={suite.timeout_seconds} dir={run_dir}"
+    )
 
     report = run_dir / "report.tsv"
-    report.write_text("qa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
+    report.write_text("suite\tqa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
     results: list[tuple[str, str, str, int]] = []
 
     if not args.skip_preflight and not preflight(env, log):
         log("preflight refused the run")
         results.append((args.qa, args.worker, "preflight_failed", 0))
         with report.open("a", encoding="utf-8") as handle:
-            handle.write(matrix_row(*results[-1]))
-        write_junit_report(run_dir / "junit.xml", results)
+            handle.write(matrix_row(canonical_suite_name, *results[-1]))
+        write_junit_report(run_dir / "junit.xml", canonical_suite_name, results)
         return 2
 
     combinations = suite.combinations or ((args.qa, args.worker),)
@@ -305,7 +373,9 @@ def main() -> int:
         if suite.llm:
             if not ensure_qa_executor(env, qa, log):
                 with report.open("a", encoding="utf-8") as handle:
-                    handle.write(matrix_row(qa, worker, "qa_executor_switch_failed", 0))
+                    handle.write(
+                        matrix_row(canonical_suite_name, qa, worker, "qa_executor_switch_failed", 0)
+                    )
                 results.append((qa, worker, "qa_executor_switch_failed", 0))
                 failed += 1
                 continue
@@ -318,13 +388,23 @@ def main() -> int:
         started = time.monotonic()
         log(f"running qa={qa} worker={worker}")
         try:
-            passed = run_pytest(suite.target, env, extra, run_dir / f"{qa}-{worker}.log")
+            passed = run_pytest(
+                suite.target,
+                env,
+                extra,
+                run_dir / f"{qa}-{worker}.log",
+                suite.timeout_seconds,
+            )
         except subprocess.TimeoutExpired:
             log(f"qa={qa} worker={worker}: timed out")
             passed = False
         seconds = round(time.monotonic() - started)
         with report.open("a", encoding="utf-8") as handle:
-            handle.write(matrix_row(qa, worker, "passed" if passed else "failed", seconds))
+            handle.write(
+                matrix_row(
+                    canonical_suite_name, qa, worker, "passed" if passed else "failed", seconds
+                )
+            )
         results.append((qa, worker, "passed" if passed else "failed", seconds))
         log(f"qa={qa} worker={worker}: {'passed' if passed else 'failed'} in {seconds}s")
         if not passed:
@@ -336,7 +416,7 @@ def main() -> int:
     # residue until it breaks something else.
     swept = args.skip_sweep or sweep(env, log)
 
-    write_junit_report(run_dir / "junit.xml", results)
+    write_junit_report(run_dir / "junit.xml", canonical_suite_name, results)
     log(report.read_text(encoding="utf-8").rstrip())
     if not swept:
         log("cleanup failed; the run is not green regardless of the suite result")
