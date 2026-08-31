@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Automatic initial-owner recovery now fences grant-intent rebinding in the
+  API admission transaction. A live execution, exhausted intent, or historical
+  SHA returns its durable disposition without replacing the target, resetting
+  its epoch, committing or publishing another Run. New authoritative targets
+  still receive one bounded epoch after the prior execution becomes terminal.
+
 - Bounded durable grant-intent lifecycle admission with the configured deploy
   retry ceiling. Every terminal admission now commits its safe durable outcome
   before returning. The counter is bounded by target or explicit user-retry

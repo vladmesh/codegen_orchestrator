@@ -37,6 +37,7 @@ class GrantIntentLifecycleDisposition(StrEnum):
     ALREADY_APPLIED = "already_applied"
     IN_FLIGHT = "in_flight"
     EXHAUSTED = "exhausted"
+    STALE_TARGET = "stale_target"
 
 
 class GrantIntentDispatchTarget(BaseModel):

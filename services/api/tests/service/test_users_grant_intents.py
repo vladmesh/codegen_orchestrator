@@ -361,6 +361,196 @@ async def test_target_rebind_starts_a_fresh_bounded_retry_epoch(async_client):
 
 
 @pytest.mark.asyncio
+async def test_automatic_newer_seed_does_not_replace_a_live_execution(async_client):
+    """A poller redelivery cannot orphan the current immutable grant Run."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        newer = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+
+    assert newer.json()["disposition"] == "in_flight"
+    assert newer.json()["execution_run_id"] is None
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}"
+    )
+    assert intent.json()["target_sha"] == sha
+    assert intent.json()["target_history"] == []
+    assert redis.publish_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_stale_recovery_after_replacement_returns_no_dispatch(async_client):
+    """A supervisor retry for a superseded SHA leaves the replacement bound."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        replacement = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{replacement.json()['intent_id']}/complete",
+            json={"execution_run_id": replacement.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{replacement.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        stale = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+
+    assert stale.json()["disposition"] == "stale_target"
+    assert stale.json()["execution_run_id"] is None
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}"
+    )
+    assert intent.json()["target_sha"] == "b" * 40
+    assert [target["sha"] for target in intent.json()["target_history"]] == [sha]
+    assert redis.publish_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_automatic_backwards_target_history_rebind_is_refused(async_client):
+    """A historic target is never rebound, even after its replacement is terminal."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        replacement = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{replacement.json()['intent_id']}/complete",
+            json={"execution_run_id": replacement.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{replacement.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        refused = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+
+    assert refused.json()["disposition"] == "stale_target"
+    intent = await async_client.get(
+        f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}"
+    )
+    assert intent.json()["target_sha"] == "b" * 40
+    assert len(intent.json()["target_history"]) == 1
+    assert redis.publish_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_alternating_automatic_stale_shas_terminate_without_extra_publish(async_client):
+    """Stale recoveries cannot reset the next target epoch into a ping-pong loop."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    configured = await async_client.post(
+        "/api/system-configs/",
+        json={"key": "deploy.max_deploy_retries", "value": 1, "category": "deploy"},
+    )
+    assert configured.status_code == 201
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        second = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+        stale_while_live = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{second.json()['intent_id']}/complete",
+            json={"execution_run_id": second.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{second.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        exhausted = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+        stale_after_terminal = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+        await async_client.post(
+            "/api/system-configs/",
+            json={"key": "deploy.max_deploy_retries", "value": 3, "category": "deploy"},
+        )
+
+    assert stale_while_live.json()["disposition"] == "in_flight"
+    assert exhausted.json()["disposition"] == "exhausted"
+    assert stale_after_terminal.json()["disposition"] == "exhausted"
+    assert redis.publish_message.await_count == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["users/grant", "ownership-transfer"])
 async def test_explicit_permanent_access_retry_reopens_only_the_same_exhausted_intent(
     async_client, route

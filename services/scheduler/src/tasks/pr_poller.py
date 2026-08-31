@@ -284,6 +284,11 @@ async def poll_merged_prs(
                     "poll_merged_initial_owner_intent_in_flight", intent_id=lifecycle.intent_id
                 )
                 continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+                log.info(
+                    "poll_merged_initial_owner_intent_stale_target", intent_id=lifecycle.intent_id
+                )
+                continue
 
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
         run_data = {

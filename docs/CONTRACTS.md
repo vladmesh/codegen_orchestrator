@@ -41,20 +41,23 @@ the sole route that creates, finds, binds or rebinds an intent and dispatches a
 permanent grant attempt. Every deploy Run it creates is one immutable execution
 attempt and holds only the intent reference plus its exact SHA.
 
-An APPLIED intent wins redelivery and is never rewritten or dispatched again. A
-non-applied intent on its current live target resumes one attempt; a stale target
-retains the same intent and audit identity, records the replaced target and its
-closed admission count, resets the target-epoch counter, binds the current live
-application/deployment/SHA, and dispatches a new Run. It never redeploys the old
-SHA. Initial-owner seeding finds the single durable intent while
-every PR poll, QA cycle, story fix and supervisor recovery keeps its own Run id.
-Retries after ordinary deploy, infrastructure, secret, or post-health grant
-failure reacquire that seed through the same lifecycle operation.
+An APPLIED intent wins redelivery and is never rewritten or dispatched again. An
+automatic source Run cannot replace a binding while its execution Run is live,
+cannot reopen an exhausted intent, and cannot bind a SHA retained in
+`target_history`; it receives `in_flight`, `exhausted`, or `stale_target` with no
+new Run. Only after the prior execution is terminal may a genuinely new
+authoritative target record the replaced application/deployment/SHA and its
+closed admission count, reset the target-epoch counter, and dispatch one bounded
+new epoch. It never redeploys a superseded SHA. Initial-owner seeding finds the
+single durable intent while every PR poll, QA cycle, story fix and supervisor
+recovery keeps its own Run id. Retries after ordinary deploy, infrastructure,
+secret, or post-health grant failure reacquire that seed through the same
+lifecycle operation.
 
 `GrantIntentLifecycleResult` is the per-call boundary for that operation. Only
 `dispatched` carries the newly minted Run id and its immutable target;
-`already_applied`, `in_flight`, and terminal `exhausted` carry neither, even
-though the durable intent retains its safe execution history. Before a fresh
+`already_applied`, `in_flight`, `stale_target`, and terminal `exhausted` carry
+neither, even though the durable intent retains its safe execution history. Before a fresh
 `dispatched` admission, the lifecycle locks and evaluates the same
 `deploy.max_deploy_retries` control as the scheduler. The admission counter is
 bounded for one target epoch, not for the lifetime intent. Once the number of

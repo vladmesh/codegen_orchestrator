@@ -687,6 +687,8 @@ async def _handle_deploy_retry(
         if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
             await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
             return DeployRetryAction.FAILED
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+            log.info("deploy_supervisor_owner_intent_stale_target", source_run_id=run.id)
         return DeployRetryAction.IN_FLIGHT
 
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
@@ -1042,6 +1044,9 @@ async def _handle_deploy_infrastructure_wait(
         if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
             log.info("infrastructure_wait_owner_intent_in_flight", run_id=run.id)
             return RefusedDeployAction.WAITING
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+            log.info("infrastructure_wait_owner_intent_stale_target", run_id=run.id)
+            return RefusedDeployAction.WAITING
 
     new_run_id = f"deploy-infra-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
@@ -1259,6 +1264,9 @@ async def _redispatch_waiting_deploy(
             return False
         if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
             log.info("waiting_secret_owner_intent_in_flight", run_id=run.id)
+            return True
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+            log.info("waiting_secret_owner_intent_stale_target", run_id=run.id)
             return True
 
     new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"

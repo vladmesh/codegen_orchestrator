@@ -132,6 +132,20 @@ def _target_changed(intent: UsersGrantIntent, target: tuple[int | None, int | No
     return (intent.target_application_id, intent.target_deployment_id, intent.target_sha) != target
 
 
+def _target_was_superseded(
+    intent: UsersGrantIntent, target: tuple[int | None, int | None, str]
+) -> bool:
+    """Return whether an automatic source Run names a prior immutable target."""
+    return any(entry.get("sha") == target[2] for entry in intent.target_history or [])
+
+
+def _is_exhausted(intent: UsersGrantIntent) -> bool:
+    return (
+        intent.status == GrantIntentStatus.FAILED.value
+        and intent.detail == _RETRY_CEILING_EXHAUSTED_DETAIL
+    )
+
+
 async def _execution_is_live(db: AsyncSession, intent: UsersGrantIntent) -> Run | None:
     if not intent.execution_run_id:
         return None
@@ -206,8 +220,22 @@ async def _lifecycle(  # noqa: PLR0913
         await db.flush()
     elif intent.status == GrantIntentStatus.APPLIED.value:
         return intent, None, False, GrantIntentLifecycleDisposition.ALREADY_APPLIED
+    target_changed = _target_changed(intent, target)
+    if not explicit_user_retry and target_changed:
+        # Automatic lifecycle callers carry source-Run metadata. It must never
+        # replace a current execution or revive a target this intent has
+        # already superseded. These checks are in the admission transaction,
+        # before a replacement Run can be committed or published.
+        live_run = await _execution_is_live(db, intent)
+        if live_run is not None:
+            return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
+        if _is_exhausted(intent):
+            return intent, None, False, GrantIntentLifecycleDisposition.EXHAUSTED
+        if _target_was_superseded(intent, target):
+            return intent, None, False, GrantIntentLifecycleDisposition.STALE_TARGET
+
     rebound = False
-    if intent is not None and _target_changed(intent, target):
+    if target_changed:
         intent.target_history = [
             *(intent.target_history or []),
             {
@@ -234,8 +262,7 @@ async def _lifecycle(  # noqa: PLR0913
     if (
         explicit_user_retry
         and kind in {GrantIntentKind.ADD_USER, GrantIntentKind.INCOMING_OWNER}
-        and intent.status == GrantIntentStatus.FAILED.value
-        and intent.detail == _RETRY_CEILING_EXHAUSTED_DETAIL
+        and _is_exhausted(intent)
         and intent.attempts >= ceiling
         and ceiling > 0
     ):
