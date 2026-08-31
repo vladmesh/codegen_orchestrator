@@ -7,7 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -201,6 +201,13 @@ async def update_application(
 
     if app_update.status is not None:
         application.status = app_update.status
+        if application.status == ApplicationStatus.NOT_DEPLOYED.value:
+            # An undeploy keeps the Application and its deployment history, but not
+            # its runtime reservations. This scoped DELETE is idempotent and shares
+            # the status/bot-binding transaction committed below.
+            await db.execute(
+                delete(PortAllocation).where(PortAllocation.application_id == application.id)
+            )
         await _release_bot_if_undeployed(application, db)
     if app_update.last_health_check is not None:
         application.last_health_check = app_update.last_health_check

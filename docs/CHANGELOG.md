@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed per-application undeploy to release only the terminal application's
+  runtime port allocations in the same API transaction as its
+  `not_deployed` status and bot-binding release. The operation is idempotent;
+  stopped applications and deployment history retain their allocations and
+  records respectively.
+
 - Replaced the stand orchestrator's broad target provisioning with a minimal,
   builtins-only control-plane bootstrap. It retains root SSH, the runtime user,
   Docker Engine with compose/buildx, pinned `uv`, checkout tooling, and

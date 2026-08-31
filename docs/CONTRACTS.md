@@ -282,7 +282,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Project create/update/status/teardown | `shared/contracts/dto/project.py` | `schemas/project.py`, `routers/projects.py` | initiating run ownership is required before worker-producing work; pre-ownership projects are readable but refused for that work |
 | Repository create/update/role | `shared/contracts/dto/repository.py` | `schemas/repository.py`, `routers/repositories.py` | repository acceptance criteria and bot binding are durable sources for QA |
 | Service modules and port roles | `shared/contracts/dto/project.py`, `shared/contracts/service_ports.py` | project and allocation routes | deploy URL selection uses the public service role, not an arbitrary allocation |
-| Application status | `shared/contracts/dto/application.py` | `schemas/application.py`, `routers/applications.py` | application state is not a substitute for a typed deploy Run outcome |
+| Application status | `shared/contracts/dto/application.py` | `schemas/application.py`, `routers/applications.py` | application state is not a substitute for a typed deploy Run outcome; `not_deployed` releases only that application's runtime port allocations in the same transaction, while `stopped` retains them |
 | Server and SSH user/status | `shared/contracts/dto/server.py` | `schemas/server.py`, `routers/servers.py` | server operations use the resolved caller principal |
 | Service deployment result | `shared/contracts/dto/deployment.py` | `schemas/service_deployment.py`, `routers/service_deployments.py` | deployment rows identify an owned application target |
 | User create/update | `shared/contracts/dto/user.py` | `schemas/user.py`, `routers/users.py` | an API caller cannot substitute another bearer subject |
