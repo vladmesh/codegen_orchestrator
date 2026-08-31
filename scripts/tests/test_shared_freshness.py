@@ -343,7 +343,9 @@ def test_a_compose_service_without_an_image_name_fails_the_check(tree: Path):
     problems, _ = compose_routes(tree)
 
     assert len(problems) == 1
-    assert problems[0].startswith("tests/compose/api.yml: service api builds services/api/Dockerfile")
+    assert problems[0].startswith(
+        "tests/compose/api.yml: service api builds services/api/Dockerfile"
+    )
     assert "without declaring an image: name" in problems[0]
 
 
