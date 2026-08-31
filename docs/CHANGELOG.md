@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed the `mega-noop` completion-event matcher to follow the PO subject
+  contract: story-level owner notifications carry the story id in the emitted
+  event's `task_id`, while their durable notification record has no task.
+
 - Extended the free `mega-noop` stand acceptance from deploy and deterministic
   QA to the complete user lifecycle: it now records a live health probe, waits
   for `Story.completed`, proves the durable `story_completed` owner record and

@@ -362,7 +362,8 @@ class TestFullPipeline:
         assert notification["project_id"] == event["project_id"] == pipeline["project_id"]
         assert notification["story_id"] == event["story_id"] == pipeline["story_id"]
         assert notification["terminal_status"] == StoryStatus.COMPLETED.value
-        assert notification["task_id"] is None and event["task_id"] == ""
+        assert notification["task_id"] is None
+        assert event["task_id"] == pipeline["story_id"]
         assert notification["text"] == event["text"]
         assert pipeline["deployed_url"] in notification["text"]
 
