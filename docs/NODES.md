@@ -173,21 +173,13 @@ Deploy worker writes `DeployOutcome` to `run.result`. The supervisor (`supervise
      present in `PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS`; SSH failure alone is non-destructive
    - Ansible playbooks for server setup
    - Redeploying the services after recovery
-2. **Environment observation** (`env-observation:queue`):
-   - Reads one environment slot out of the containers a deployed service is running with
-   - Changes nothing on the server, so repeating it is free
-   - The answer is left in Redis under the request id, because the caller (the temporary-access
-     sweep) is on a later tick by the time the playbook finishes
-
 **Architecture**:
 ```
 infra-service
   ├── Listen: provisioner:queue (RedisStreamClient.consume, auto_ack=False, claim_pending=True)
-  ├── Listen: env-observation:queue (RedisStreamClient.consume_typed, manual ack)
   ├── Handlers:
-  │   ├── process_provisioner_job() → ansible_runner.py
-  │   └── observe_service_env() → ansible_runner.py (observe_service_env.yml)
-  └── Publish: provisioner:results, env-observation results in Redis keys
+  │   └── process_provisioner_job() → ansible_runner.py
+  └── Publish: provisioner:results
 ```
 
 **Output**: the results go to the Redis Stream `provisioner:results`

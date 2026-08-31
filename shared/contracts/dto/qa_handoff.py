@@ -29,10 +29,8 @@ class TemporaryAccessRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    env_key: str
-    subject: str
-    # Revoking redeploys this same commit with the value cleared, so the bot
-    # that loses the access is the bot that was given it.
+    target_application_id: int
+    target_base_url: str
     head_sha: CommitSha
 
 

@@ -120,3 +120,58 @@ async def test_grant_client_treats_transport_failure_as_safe_failure():
 
     assert proof.active is False
     assert proof.failure is GrantFailureKind.TRANSPORT
+
+
+@pytest.mark.asyncio
+async def test_revoke_requires_an_inactive_readback():
+    transport = AsyncMock()
+    transport.request.side_effect = [
+        httpx.Response(200, request=httpx.Request("POST", "https://service/users/revoke")),
+        httpx.Response(
+            200,
+            json={
+                "user_id": 12,
+                "status": "inactive",
+                "channel": "telegram",
+                "external_id": "84",
+            },
+            request=httpx.Request("GET", "https://service/users/access"),
+        ),
+    ]
+
+    proof = await GeneratedServiceGrantClient(
+        "https://service", transport=transport
+    ).revoke_and_resolve(channel="telegram", external_id="84", capability="not-in-a-url")
+
+    assert proof.active is False
+    assert proof.failure is None
+    revoke = transport.request.await_args_list[0]
+    assert revoke.args == ("POST", "https://service/users/revoke")
+    assert revoke.kwargs["headers"] == {"X-Grant-Capability": "not-in-a-url"}
+    assert "not-in-a-url" not in str(revoke.args)
+    assert "not-in-a-url" not in str(revoke.kwargs["json"])
+
+
+@pytest.mark.asyncio
+async def test_revoke_stays_unproved_when_readback_is_still_active():
+    transport = AsyncMock()
+    transport.request.side_effect = [
+        httpx.Response(200, request=httpx.Request("POST", "https://service/users/revoke")),
+        httpx.Response(
+            200,
+            json={
+                "user_id": 12,
+                "status": "active",
+                "channel": "telegram",
+                "external_id": "84",
+            },
+            request=httpx.Request("GET", "https://service/users/access"),
+        ),
+    ]
+
+    proof = await GeneratedServiceGrantClient(
+        "https://service", transport=transport
+    ).revoke_and_resolve(channel="telegram", external_id="84", capability="never-report")
+
+    assert proof.active is True
+    assert proof.failure is GrantFailureKind.ACTIVE

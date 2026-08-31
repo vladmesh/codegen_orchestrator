@@ -12,20 +12,14 @@ from .base import Base
 
 
 class TemporaryAccessGrant(Base):
-    """One temporary environment value handed out for one QA run.
-
-    The row is written before the deploy that applies the value, so the access
-    is never held without a record of it. Only one live grant may exist per
-    (project, env_key): the contract has a single slot for the value, and two
-    live grants would overwrite each other's revoke.
-    """
+    """One durable QA identity grant bound to one deployed application."""
 
     __tablename__ = "temporary_access_grants"
     __table_args__ = (
         Index(
-            "uq_temporary_access_grants_live_slot",
+            "uq_temporary_access_grants_live_target",
             "project_id",
-            "env_key",
+            "target_application_id",
             unique=True,
             postgresql_where=text(f"status != '{TemporaryAccessStatus.REVOKED.value}'"),
         ),
@@ -34,19 +28,23 @@ class TemporaryAccessGrant(Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id"), index=True)
 
-    # Contract literal the value is written to, and the identity it names.
-    env_key: Mapped[str] = mapped_column(String(255))
-    subject: Mapped[str] = mapped_column(String(255))
+    # These legacy columns remain only so terminal slot history is readable.
+    # New records never populate them; a live row without a target is rejected.
+    legacy_env_key: Mapped[str | None] = mapped_column("env_key", String(255), nullable=True)
+    legacy_subject: Mapped[str | None] = mapped_column("subject", String(255), nullable=True)
 
-    # Commit the access was deployed on. The revoke redeploys this same commit.
+    channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+    # Immutable deployed source identity, used to reject a newer target on retry.
     head_sha: Mapped[str] = mapped_column(String(64))
 
     # The QA run this grant exists for; its terminal state releases the grant.
     qa_run_id: Mapped[str] = mapped_column(String(255), ForeignKey("runs.id"), index=True)
 
-    # The deploy run that applies the value, and the handoff held until it
-    # confirms. Both are stored so a restart can finish what a dead process
-    # started instead of leaving the access without a reader.
+    # The capability-operation runs and held QA handoff make restart idempotent.
     grant_run_id: Mapped[str] = mapped_column(String(255))
     qa_message: Mapped[dict] = mapped_column(JSON)
 
@@ -64,22 +62,8 @@ class TemporaryAccessGrant(Base):
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # What the running service was last seen holding. The grant is closed from
-    # here and nowhere else: a deploy is a request, and only a reading of the
-    # server says the value is gone.
-    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    observation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    slot_clear_since: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    slot_clear_readings: Mapped[int] = mapped_column(Integer, default=0)
-
-    # When a reading found the value again on a grant that was already closed and
-    # put it back under reconciliation. The retry budget is counted from here.
-    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
     def __repr__(self) -> str:
         return (
             f"<TemporaryAccessGrant(id={self.id}, project={self.project_id}, "
-            f"key={self.env_key}, status={self.status})>"
+            f"target={self.target_application_id}, status={self.status})>"
         )

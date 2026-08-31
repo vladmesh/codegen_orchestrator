@@ -13,11 +13,6 @@ import signal
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.queues.env_observation import (
-    ENV_OBSERVATION_RESULT_TTL_SECONDS,
-    EnvObservationRequest,
-    env_observation_result_key,
-)
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.log_config import setup_logging
@@ -26,10 +21,9 @@ from shared.provisioning_policy import (
     managed_provider_ids,
     validate_provider_policies,
 )
-from shared.queues import ENV_OBSERVATION_QUEUE, INFRA_GROUP, PROVISIONER_QUEUE
+from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from .provisioner.env_observation import observe_service_env
 from .provisioner.incidents import IncidentPersistenceError, create_incident
 from .provisioner.node import ProvisionerNode
 
@@ -37,7 +31,6 @@ logger = structlog.get_logger(__name__)
 
 # Consumer configuration
 CONSUMER_NAME = f"infra-worker-{os.getpid()}"
-OBSERVER_CONSUMER_NAME = f"infra-observer-{os.getpid()}"
 
 # Shutdown flag
 _shutdown = False
@@ -243,47 +236,6 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
         )
 
 
-async def run_env_observation_loop(client: RedisStreamClient) -> None:
-    """Answer requests to read a deployed service's environment.
-
-    Runs alongside provisioning because it needs the same two things: the SSH
-    key for the server and the playbooks. The answer is left in Redis under the
-    request id rather than returned, because the caller asking is a sweep that
-    will be on another tick — or another process — by the time the playbook is
-    done.
-
-    A reading that raises is left unacked on purpose. Nothing was answered, the
-    entry is reclaimed later, and the caller meanwhile sees no answer, which is
-    exactly what happened.
-    """
-    async for msg in client.consume_typed(
-        ENV_OBSERVATION_QUEUE,
-        INFRA_GROUP,
-        OBSERVER_CONSUMER_NAME,
-        EnvObservationRequest,
-    ):
-        if _shutdown:
-            break
-        if msg is None:
-            continue
-        try:
-            result = await observe_service_env(msg.value)
-            await client.redis.set(
-                env_observation_result_key(result.request_id),
-                result.model_dump_json(),
-                ex=ENV_OBSERVATION_RESULT_TTL_SECONDS,
-            )
-            await client.ack(ENV_OBSERVATION_QUEUE, INFRA_GROUP, msg.message_id)
-        except Exception as e:
-            logger.error(
-                "env_observation_failed",
-                entry_id=msg.message_id,
-                request_id=msg.value.request_id,
-                error=str(e),
-                exc_info=True,
-            )
-
-
 async def run_worker():
     """Main worker loop handling provisioning queue."""
     setup_logging(service_name="infra-service")
@@ -299,8 +251,6 @@ async def run_worker():
     await client.connect()
 
     logger.info("infrastructure_worker_started", consumer=CONSUMER_NAME)
-    observer = asyncio.create_task(run_env_observation_loop(client))
-
     try:
         async for msg in client.consume(
             PROVISIONER_QUEUE,
@@ -335,8 +285,6 @@ async def run_worker():
                     exc_info=True,
                 )
     finally:
-        observer.cancel()
-        await asyncio.gather(observer, return_exceptions=True)
         await client.close()
         logger.info("infrastructure_worker_shutdown")
 

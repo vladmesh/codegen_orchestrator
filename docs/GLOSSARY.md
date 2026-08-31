@@ -14,7 +14,7 @@ A long-lived process. One container = one service.
 
 A service becomes a consumer only in the context of a specific queue:
 - `langgraph` — consumer of `engineering:queue`, `deploy:queue`
-- `infra-service` — consumer of `provisioner:queue` (provisioning) and `env-observation:queue` (reading a deployed service's environment back)
+- `infra-service` — consumer of `provisioner:queue` (provisioning)
 - `worker-manager` — consumer of `worker:commands`
 - `worker-wrapper` — consumer of `worker:*:input` (inside the worker container)
 
@@ -190,7 +190,6 @@ A Redis Stream for asynchronous processing. A consumer reads Messages from the q
 - `engineering:queue` — development tasks
 - `deploy:queue` — deploy tasks
 - `provisioner:queue` — server provisioning
-- `env-observation:queue` — reading a deployed service's environment back
 
 
 ### Command Queue

@@ -11,7 +11,6 @@ from shared.queues import (
     ARCHITECT_QUEUE,
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
-    ENV_OBSERVATION_QUEUE,
     INFRA_GROUP,
     PO_CONSUMER_GROUP,
     PO_INPUT_QUEUE,
@@ -46,7 +45,7 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 12  # noqa: PLR2004
+        expected_count = 11  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
@@ -59,7 +58,6 @@ class TestQueueTopology:
         assert PO_INPUT_QUEUE in streams
         assert PO_PROACTIVE_QUEUE in streams
         assert ARCHITECT_QUEUE in streams
-        assert ENV_OBSERVATION_QUEUE in streams
 
     def test_all_groups_present(self):
         groups = {b.group for b in QUEUE_TOPOLOGY}

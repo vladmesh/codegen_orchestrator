@@ -56,8 +56,8 @@ async def _execute_qa_handoff(
             api_client,
             redis_client,
             project_id=plan.qa_message.project_id,
-            env_key=plan.access.env_key,
-            subject=plan.access.subject,
+            target_application_id=plan.access.target_application_id,
+            target_base_url=plan.access.target_base_url,
             head_sha=plan.access.head_sha,
             qa_message=plan.qa_message,
         )
@@ -66,9 +66,9 @@ async def _execute_qa_handoff(
             # Nothing to hand off on this tick; the sweep revokes the holder and
             # a later tick tries again.
             log.info(
-                "deploy_supervisor_qa_handoff_deferred_slot_held",
+                "deploy_supervisor_qa_handoff_deferred_target_held",
                 qa_run_id=qa_run_id,
-                env_key=plan.access.env_key,
+                target_application_id=plan.access.target_application_id,
             )
             return
         log.info(
@@ -98,22 +98,9 @@ def _temporary_access_is_needed(
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Whether this QA run has to borrow the deployed bot's test identity slot.
-
-    A deployment without the declared slot cannot use the durable temporary
-    grant lifecycle. The users.grant capability is deliberately not used here:
-    it has no revoke or expiry operation, so it cannot satisfy the QA TTL
-    contract.
-
-    The project is read by the caller, which needs it anyway and fails the story
-    visibly when it is gone, so this decides the question rather than also
-    answering "the audience could not be read at all".
-    """
-    if not result.test_identity_slot:
-        log.warning("qa_handoff_without_test_identity_slot", project_id=str(project.id))
-        return False
-
-    return True
+    """Only Telegram bot QA needs the dedicated, revocable QA identity."""
+    del result, log
+    return "tg_bot" in project.config.get("modules", [])
 
 
 async def _resolve_qa_repository(

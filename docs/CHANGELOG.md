@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replaced the temporary Telegram environment slot with a durable capability-backed
+  QA lifecycle. Each record binds the central QA identity and exact deployed
+  application, base URL, and SHA before dispatch; grant and revoke require active
+  or inactive generated-service readback. Live legacy slot records now fail closed
+  with operator remediation, while terminal history is retained.
+
 - Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
   and smoke failure surfaces now remove resolved secrets, encoded dotenv
   content, authorization values, and Telegram Bot API tokens before logs,
@@ -35,8 +41,6 @@
   `users.grant` capability. Production deploy resolution persists the capability
   as a generated secret, injects it only through `secret_values`, and requires
   grant plus active readback for the verified project owner after smoke success.
-  The remaining QA temporary-access TTL slot is unchanged because `users.grant`
-  has no revocation or expiry capability.
 
 - Added durable typed `users_grant_intent` deploy metadata for initial owners,
   added users, and incoming owners. Grant dispatch is persisted before publish,

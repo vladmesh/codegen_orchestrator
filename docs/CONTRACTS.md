@@ -83,9 +83,10 @@ is never an override, project configuration value, URL, event field, or log valu
 QA temporary-access grant or revoke remains ineligible for these permanent
 intents, even when it carries a deployment SHA.
 
-The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
-revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it
-must not be used as a QA TTL grant until the template adds one.
+Temporary QA access uses the same generated-service capability but a distinct
+durable record. It binds the central QA Telegram identity, application, base URL,
+and SHA before dispatch. Grant and revoke each require the matching active or
+inactive `/users/access` readback; the capability remains in deploy-local memory.
 
 ### Deploy diagnostic redaction
 
@@ -177,7 +178,6 @@ are repository-relative.
 | `worker:{worker_id}:output` | broker session | `queues/developer_worker.py` | worker-wrapper/broker | developer node |
 | `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler | infra-service |
 | `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler, telegram-bot |
-| `env-observation:queue` | `infrastructure-workers` | `queues/env_observation.py` | temporary-access sweep | infra-service |
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
 | `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot |
 | `po:proactive` | `tg-bot-proactive` | `queues/po.py` | PO notification tools | telegram-bot |
@@ -212,16 +212,6 @@ acks only after that output is accepted. Session streams have bounded retention
 and a finite broker TTL. Authentication to the wrapper is not authorization:
 the broker and manager each enforce the recorded worker type. QA workers have
 the constrained QA turn capability; they cannot obtain Compose control.
-
-### Infrastructure observations
-
-`shared/contracts/queues/provisioner.py` defines provisioning messages.
-`shared/contracts/queues/env_observation.py` defines read-only deployed-env
-observations. Infra-service runs the observation on the target and persists its
-result under the request id for the documented TTL; it does not send the result
-through another queue. The pending key is written before publication to prevent
-one sweep from asking repeatedly. `unreachable` means no observation was made,
-not that the value is absent.
 
 ## Consumer patterns
 
@@ -346,7 +336,6 @@ above names a shared contract import.
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | developer input/output | `queues/developer_worker.py` | developer node / wrapper | wrapper / developer node | broker request id and single typed accepted output settle a leased turn |
 | provisioning request/result | `queues/provisioner.py` | scheduler / infra-service | infra-service / scheduler and bot | result consumers use their own group semantics |
-| environment observation | `queues/env_observation.py` | temporary-access sweep | infra-service | result is durable Redis observation, not inferred deploy state |
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
@@ -371,14 +360,13 @@ older active deploys instead of allowing an earlier run to restore the value.
 
 ### Temporary access
 
-Canonical contracts: `dto/temporary_access.py`, `dto/qa_ssh_grant.py`,
-`queues/env_observation.py`, and `shared/contracts/env_overrides.py`.
+Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 
-Persist the grant/revoke obligation before publishing the deploy or observation
-that advances it. A grant is scoped to the named run and restricted capability;
-the target never receives a general SSH identity. Revocation remains recoverable
-until a durable observation proves the running service no longer has the value.
-An unreachable observation proves neither presence nor absence.
+Persist the immutable QA identity and exact deployed-service target before the
+capability operation is dispatched. The post-health deploy worker resolves the
+generated capability only in `secret_values`, then proves grant or revoke with
+the matching access readback. Legacy live records without a target fail closed
+until the preceding release drains them; revoked legacy history remains readable.
 
 ### QA handoff and restricted access
 
