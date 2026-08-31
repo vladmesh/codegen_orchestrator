@@ -16,11 +16,11 @@ import json
 import time
 from uuid import uuid4
 
+import docker
 import httpx
 import pytest
 import redis.asyncio as aioredis
 
-import docker
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,

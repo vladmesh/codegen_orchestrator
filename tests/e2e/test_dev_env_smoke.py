@@ -14,10 +14,9 @@ import os
 import textwrap
 import time
 
+import docker
 import httpx
 import pytest
-
-import docker
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
