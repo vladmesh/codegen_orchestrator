@@ -130,6 +130,7 @@ class TestSendToArchitect:
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
                 "title": "Test story for architect",
+                "type": "technical",
             },
         )
         assert resp.status_code == HTTPStatus.CREATED
@@ -156,6 +157,7 @@ class TestSendToArchitect:
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
                 "title": "Wrong status story",
+                "type": "technical",
             },
         )
         story_id = resp.json()["id"]
@@ -402,7 +404,11 @@ class TestRedeployApplication:
         app_id = await _create_running_app(client, server_handle, app_status="stopped")
         story = await client.post(
             "/api/stories/",
-            json={"project_id": TASK_TEST_PROJECT_ID, "title": "Restore blocked target"},
+            json={
+                "project_id": TASK_TEST_PROJECT_ID,
+                "title": "Restore blocked target",
+                "type": "technical",
+            },
         )
         assert story.status_code == HTTPStatus.CREATED, story.text
         story_id = story.json()["id"]

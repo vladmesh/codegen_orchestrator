@@ -209,6 +209,7 @@ class TestTransitionStoryTool:
         from src.agents.architect.tools import transition_story
 
         response = MagicMock(status_code=422)
+        mock_api.get_story.return_value = make_story(id="story-abc", status="in_progress")
         mock_api.transition_story.side_effect = httpx.HTTPStatusError(
             "unprocessable", request=MagicMock(), response=response
         )
@@ -217,6 +218,22 @@ class TestTransitionStoryTool:
 
         assert result["id"] == "story-abc"
         mock_api.get_story.assert_called_once_with("story-abc")
+
+    @pytest.mark.asyncio
+    async def test_surfaces_missing_product_brief_coverage(self, mock_api):
+        from src.agents.architect.tools import transition_story
+
+        response = MagicMock(status_code=422)
+        response.json.return_value = {
+            "detail": {"missing_product_brief_coverage": ["must-language"]}
+        }
+        mock_api.transition_story.side_effect = httpx.HTTPStatusError(
+            "unprocessable", request=MagicMock(), response=response
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await transition_story.ainvoke({"story_id": "story-abc", "action": "start"})
+        mock_api.get_story.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_does_not_match_422_in_unexpected_error_text(self, mock_api):

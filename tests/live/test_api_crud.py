@@ -54,6 +54,7 @@ async def test_create_story_for_project(api, test_project):
             "title": "Live test story",
             "initiating_run_id": "test-run-1",
             "description": "Automated live test",
+            "type": "technical",
         },
     )
     resp.raise_for_status()

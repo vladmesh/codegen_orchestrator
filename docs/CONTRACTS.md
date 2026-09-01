@@ -297,12 +297,11 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 ### Story, task, and run surfaces
 
-| Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | A Product Brief is a versioned immutable record after confirmation. It holds intended users, languages, source wording and stable must-requirement IDs plus non-secret typed initial settings. A confirmed brief can bind exactly one new product Story. The architect records each requirement's task/acceptance coverage or returned reason; a missing disposition rejects brief-backed story progression. |
-
 <a id="taskdto"></a>
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
 |---|---|---|---|
+| Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | A Product Brief is a versioned immutable record after confirmation. It holds intended users, languages, source wording and stable must-requirement IDs plus non-secret typed initial settings. Every new product Story binds one confirmed brief. The architect records each requirement's task/acceptance coverage or returned reason; missing disposition rejects runnable progression but never blocks delivery to the architect. |
 | Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py` | owner notifications and QA handoff are durable story lifecycle state |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |

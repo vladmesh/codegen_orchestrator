@@ -123,6 +123,7 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
         json={
             "project_id": test_project["id"],
             "title": "Infra failure story",
+            "type": "technical",
         },
     )
     resp.raise_for_status()

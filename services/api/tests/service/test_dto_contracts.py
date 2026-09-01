@@ -127,14 +127,14 @@ async def test_story_response_validates_as_dto(async_client: AsyncClient, projec
         json={
             "project_id": project["id"],
             "title": "dto contract story",
-            "type": "product",
+            "type": "technical",
             "created_by": "test",
         },
     )
     assert resp.status_code == 201
     dto = StoryDTO.model_validate(resp.json())
     assert dto.title == "dto contract story"
-    assert dto.type == "product"
+    assert dto.type == "technical"
     assert dto.status == "created"
 
 

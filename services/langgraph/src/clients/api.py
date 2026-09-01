@@ -264,9 +264,12 @@ class LanggraphAPIClient(InternalAPIClient):
     async def record_requirement_coverage(
         self, brief_id: str, requirement_id: str, coverage: RequirementCoverageCreate
     ) -> dict:
-        return await self._patch_json(
-            f"product-briefs/{brief_id}/coverage/{requirement_id}", json=coverage.model_dump()
+        response = await self.request(
+            "PUT",
+            f"product-briefs/{brief_id}/coverage/{requirement_id}",
+            json=coverage.model_dump(),
         )
+        return response.json()
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})

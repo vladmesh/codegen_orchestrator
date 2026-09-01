@@ -237,9 +237,16 @@ async def transition_story(story_id: str, action: str) -> dict:
         return story.model_dump(mode="json")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
-            # Story already in target state (e.g. PO already started it)
+            detail = exc.response.json().get("detail")
+            if isinstance(detail, dict) and "missing_product_brief_coverage" in detail:
+                raise
+            # Story may already be in target state (e.g. PO already started it).
+            # The status read distinguishes that idempotent race from every other
+            # failed transition, including the Product Brief progression gate.
             story = await api_client.get_story(story_id)
-            return story.model_dump(mode="json")
+            if action == "start" and story.status.value == "in_progress":
+                return story.model_dump(mode="json")
+            raise
         raise
 
 

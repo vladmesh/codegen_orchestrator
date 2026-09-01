@@ -98,7 +98,11 @@ async def test_create_story():
     ) as client:
         resp = await client.post(
             "/api/stories/",
-            json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
+            json={
+                "title": "User login",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "type": "technical",
+            },
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -108,6 +112,49 @@ async def test_create_story():
     assert story.status == "created"
     assert story.project_id == uuid.UUID("00000000-0000-0000-0000-000000000001")
     assert story.id.startswith("story-")
+
+
+@pytest.mark.asyncio
+async def test_create_product_story_requires_a_confirmed_brief():
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert resp.json()["detail"] == "product story requires a confirmed Product Brief"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_product_brief_cannot_bind_a_technical_story():
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={
+                "title": "Technical work",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "type": "technical",
+                "product_brief_id": "brief-confirmed",
+            },
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert resp.json()["detail"] == "Product Brief may only bind a product story"
+    session.add.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -125,6 +172,7 @@ async def test_create_story_with_priority():
                 "title": "High prio",
                 "project_id": "00000000-0000-0000-0000-000000000001",
                 "priority": 5,
+                "type": "technical",
             },
         )
 
@@ -148,6 +196,7 @@ async def test_create_story_with_blocked_by():
                 "title": "Blocked",
                 "project_id": "00000000-0000-0000-0000-000000000001",
                 "blocked_by_story_id": "story-dep",
+                "type": "technical",
             },
         )
 

@@ -22,6 +22,7 @@ from shared.contracts.dto.story import (
     StoryRecheck,
     StoryRecheckMode,
     StoryStatus,
+    StoryType,
 )
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
@@ -157,6 +158,16 @@ async def create_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     await _validate_retry_parent(body, db)
+    if body.product_brief_id is not None and body.type is not StoryType.PRODUCT:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Product Brief may only bind a product story",
+        )
+    if body.type is StoryType.PRODUCT and body.product_brief_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="product story requires a confirmed Product Brief",
+        )
     if body.product_brief_id is not None:
         from shared.models import ProductBrief
 
@@ -946,7 +957,6 @@ async def send_to_architect(
     """
     body = body or AdminAction()
     story = await _get_story(story_id, db)
-    await require_complete_product_brief_coverage(story_id, db)
 
     allowed = {StoryStatus.CREATED.value, StoryStatus.REOPENED.value}
     if story.status not in allowed:

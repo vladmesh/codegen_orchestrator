@@ -14,7 +14,7 @@ async def _create_story(client: AsyncClient, title: str) -> str:
     """Create a story and return its id."""
     resp = await client.post(
         "/api/stories/",
-        json={"project_id": TASK_TEST_PROJECT_ID, "title": title},
+        json={"project_id": TASK_TEST_PROJECT_ID, "title": title, "type": "technical"},
         headers={"X-Telegram-ID": str(TASK_TEST_TELEGRAM_ID)},
     )
     assert resp.status_code == HTTPStatus.CREATED

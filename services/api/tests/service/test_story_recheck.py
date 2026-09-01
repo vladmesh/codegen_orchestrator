@@ -75,7 +75,8 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  #
     assert allocated.status_code == HTTPStatus.OK, allocated.text
 
     story = await async_client.post(
-        "/api/stories/", json={"project_id": project_id, "title": "Recover QA"}
+        "/api/stories/",
+        json={"project_id": project_id, "title": "Recover QA", "type": "technical"},
     )
     assert story.status_code == HTTPStatus.CREATED, story.text
     story_id = story.json()["id"]

@@ -56,7 +56,7 @@ async def _story(async_client: AsyncClient, db_session: AsyncSession) -> tuple[s
     assert project.status_code == status.HTTP_201_CREATED
     story = await async_client.post(
         "/api/stories/",
-        json={"project_id": project_id, "title": "Notify the owner"},
+        json={"project_id": project_id, "title": "Notify the owner", "type": "technical"},
     )
     assert story.status_code == status.HTTP_201_CREATED
     return story.json()["id"], project_id

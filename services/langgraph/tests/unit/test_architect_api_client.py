@@ -129,3 +129,33 @@ class TestTransitionStory:
         call_args = mock_httpx_client.request.call_args
         assert "story-abc" in str(call_args)
         assert "start" in str(call_args)
+
+
+class TestRecordRequirementCoverage:
+    @pytest.mark.asyncio
+    async def test_uses_the_coverage_route_put_contract(self, api_client, mock_httpx_client):
+        from shared.contracts.dto.product_brief import RequirementCoverageCreate
+
+        mock_httpx_client.request.return_value = _ok_response(
+            {
+                "id": 1,
+                "brief_id": "brief-abc",
+                "requirement_id": "must-language",
+                "task_id": None,
+                "repository_acceptance_contract": "The application supports Russian and English.",
+                "returned_reason": None,
+            }
+        )
+
+        await api_client.record_requirement_coverage(
+            "brief-abc",
+            "must-language",
+            RequirementCoverageCreate(
+                requirement_id="must-language",
+                repository_acceptance_contract="The application supports Russian and English.",
+            ),
+        )
+
+        call_args = mock_httpx_client.request.call_args
+        assert call_args[0][0] == "PUT"
+        assert "/api/product-briefs/brief-abc/coverage/must-language" in str(call_args)

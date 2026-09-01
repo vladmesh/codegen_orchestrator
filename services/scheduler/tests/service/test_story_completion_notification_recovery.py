@@ -108,7 +108,8 @@ async def test_direct_completion_without_qa_is_recovered_to_po_input(api_client)
         )
         assert project.status_code == httpx.codes.CREATED, project.text
         created = await client.post(
-            "/api/stories/", json={"project_id": project_id, "title": "Ship direct completion"}
+            "/api/stories/",
+            json={"project_id": project_id, "title": "Ship direct completion", "type": "technical"},
         )
         assert created.status_code == httpx.codes.CREATED, created.text
         story_id = created.json()["id"]
@@ -197,7 +198,8 @@ async def test_bearer_admin_acceptance_is_recovered_to_po_input(api_client):
         )
         assert project.status_code == httpx.codes.CREATED, project.text
         created = await client.post(
-            "/api/stories/", json={"project_id": project_id, "title": "Ship accepted result"}
+            "/api/stories/",
+            json={"project_id": project_id, "title": "Ship accepted result", "type": "technical"},
         )
         assert created.status_code == httpx.codes.CREATED, created.text
         story_id = created.json()["id"]
@@ -314,7 +316,8 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
         )
         assert project.status_code == httpx.codes.CREATED, project.text
         created = await client.post(
-            "/api/stories/", json={"project_id": project_id, "title": "Ship reviewed result"}
+            "/api/stories/",
+            json={"project_id": project_id, "title": "Ship reviewed result", "type": "technical"},
         )
         assert created.status_code == httpx.codes.CREATED, created.text
         story_id = created.json()["id"]
@@ -440,7 +443,8 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
         assert allocated.status_code == httpx.codes.OK, allocated.text
 
         story = await client.post(
-            "/api/stories/", json={"project_id": project_id, "title": "Recheck E2E"}
+            "/api/stories/",
+            json={"project_id": project_id, "title": "Recheck E2E", "type": "technical"},
         )
         assert story.status_code == httpx.codes.CREATED, story.text
         story_id = story.json()["id"]
