@@ -186,6 +186,9 @@ async def create_story(
     )
     db.add(story)
     if body.product_brief_id is not None:
+        # ProductBrief also points at this Story. Flush the new row first so
+        # PostgreSQL can enforce that reverse foreign key in this transaction.
+        await db.flush()
         brief.story_id = story.id
     await db.commit()
     await db.refresh(story)

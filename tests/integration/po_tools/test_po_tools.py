@@ -201,6 +201,7 @@ class TestCreateStoryIntegration:
                 "project_id": project_id,
                 "title": "Build todo feature",
                 "description": "A todo feature with CRUD and reminders",
+                "product_brief_id": brief_id,
             },
             config=config,
         )
@@ -246,13 +247,14 @@ class TestListStoriesIntegration:
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
         config = make_config()
-        await _confirmed_product_brief(project_id, "Story for listing", config)
+        brief_id = await _confirmed_product_brief(project_id, "Story for listing", config)
 
         await create_story.ainvoke(
             {
                 "project_id": project_id,
                 "title": "Story for listing",
                 "description": "Test story",
+                "product_brief_id": brief_id,
             },
             config=config,
         )
