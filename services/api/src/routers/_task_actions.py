@@ -21,7 +21,12 @@ from ..schemas.task import TaskRead, TaskResume, TaskTransition
 from ..work_admission import abort_paid_run_pre_handoff, start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
-from ._task_helpers import create_status_event, get_task, to_read, validate_transition
+from ._task_helpers import (
+    create_status_event,
+    get_task_for_update,
+    to_read,
+    validate_transition,
+)
 
 logger = structlog.get_logger()
 
@@ -53,7 +58,7 @@ async def start_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     body = body or TaskTransition()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     # Allow start from backlog (auto-promote to todo first) or from todo
     if task.status == TaskStatus.BACKLOG:
@@ -79,7 +84,7 @@ async def complete_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     body = body or TaskTransition()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     path = _COMPLETE_PATH.get(task.status)
     if path is None:
@@ -87,6 +92,13 @@ async def complete_task(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot complete task from status '{task.status}'",
         )
+
+    # Every hop of the shortcut is checked against VALID_TRANSITIONS before any
+    # of it is applied, so an illegal step cannot leave the task half-promoted.
+    cursor = task.status
+    for next_status in path:
+        validate_transition(cursor, next_status)
+        cursor = next_status
 
     for next_status in path:
         old_status = task.status
@@ -107,7 +119,7 @@ async def fail_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     body = body or TaskTransition()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     validate_transition(task.status, TaskStatus.FAILED)
 
@@ -131,7 +143,7 @@ async def reopen_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     body = body or TaskTransition()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     validate_transition(task.status, TaskStatus.BACKLOG)
 
@@ -159,7 +171,7 @@ async def resume_task(
     Transitions task WHR -> IN_DEV and creates a 'guidance' event
     containing the admin's instructions for the next worker attempt.
     """
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     validate_transition(task.status, TaskStatus.IN_DEV)
 
@@ -193,7 +205,7 @@ async def transition_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     body = body or TaskTransition()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     validate_transition(task.status, to_status)
 
@@ -221,7 +233,7 @@ async def spawn_worker(
     and publishes EngineeringMessage to engineering:queue.
     """
     body = body or SpawnWorkerRequest()
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
     # The run this work belongs to, recorded when the project was created. The
     # message below cannot be built without it, so an admin-spawned worker is
     # owned on exactly the same terms as a dispatched one.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Serialized every Story and Task write path in `services/api` on its own row. `_get_story` and
+  `get_task` are now read-only helpers; the transition, update, acceptance, recheck and task-action
+  endpoints go through `_get_story_for_update` / `get_task_for_update`, which read the row with
+  `SELECT ... FOR UPDATE`, so two concurrent callers on one row no longer both win. The task
+  complete-path shortcut validates every hop it fast-forwards against `VALID_TRANSITIONS` before
+  applying any of it; an illegal hop is refused with 422 and writes nothing. `VALID_TRANSITIONS`
+  values are unchanged.
+
 - Moved the Stand E2E one-shot health probe into a unit-tested scheduler module
   that initializes the configuration store before invoking the canonical health
   checker outside its normal entrypoint.
