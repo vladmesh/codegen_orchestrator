@@ -78,7 +78,11 @@ async def supervise_stuck_stories(
     *,
     _retry_counts: dict[str, int] | None = None,
 ) -> dict[str, int]:
-    """Detect stories stuck in 'created' with no tasks and retry architect.
+    """Detect recoverable created stories and retry architect.
+
+    A Product Brief story with only unadmitted planned tasks has incomplete
+    coverage. It remains recoverable by the architect until admission releases
+    its work; other stories with tasks have already left the planning boundary.
 
     Retry counts are persisted in Redis so they survive scheduler restarts.
 
@@ -108,9 +112,14 @@ async def supervise_stuck_stories(
         if project_id in active_projects:
             continue
 
-        # Only retry if architect hasn't created any tasks yet
+        # An incomplete Product Brief plan must be able to recover. Once a
+        # brief is admitted, its existing and any later repair tasks are
+        # durably admitted, so this condition cannot re-dispatch it.
         tasks = await api_client.get_tasks_by_story(story_id)
-        if tasks:
+        has_incomplete_brief_plan = bool(story.product_brief_id) and all(
+            not task.dispatch_admitted for task in tasks
+        )
+        if tasks and not has_incomplete_brief_plan:
             continue
 
         log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))

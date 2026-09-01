@@ -224,6 +224,9 @@ product Story work. The brief is durable and versioned, not a queue payload or
 recomposed story description. The architect loads it through the Story identity
 and must dispose of every stable must-requirement with task/repository coverage
 or a returned reason before runnable progression is allowed.
+Until that admission, incomplete planning remains eligible for architect
+recovery. Afterwards, follow-on repair tasks are immediately scheduler-admitted
+without reopening the completed coverage boundary.
 
 Detailed documentation lives in separate files:
 

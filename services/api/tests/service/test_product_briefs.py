@@ -249,6 +249,20 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
     assert task.status_code == HTTPStatus.OK, task.text
     assert task.json()["dispatch_admitted"] is True
 
+    repair_task = await async_client.post(
+        "/api/tasks/",
+        json={
+            "project_id": project_id,
+            "story_id": story_id,
+            "type": "fix",
+            "title": "Repair the failed CI check",
+            "status": "todo",
+            "created_by": "scheduler",
+        },
+    )
+    assert repair_task.status_code == HTTPStatus.CREATED, repair_task.text
+    assert repair_task.json()["dispatch_admitted"] is True
+
     started = await async_client.post(f"/api/stories/{story_id}/start")
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["status"] == "in_progress"

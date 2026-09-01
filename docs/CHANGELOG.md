@@ -7,6 +7,9 @@
 - Durable, versioned Product Briefs with explicit confirmation, typed non-secret initial settings, stable requirement identities, and architect coverage/return records.
 - A fail-closed architect progression gate for incomplete confirmed Product Brief coverage.
 - Enforced confirmed Product Brief admission for every new product Story, aligned architect coverage writes with the API route, and surfaced incomplete coverage to the architect while leaving architect dispatch recoverable.
+- Restored Product Brief lifecycle recovery: an incomplete all-unadmitted plan
+  is retried through the architect, while tasks created after durable admission,
+  including CI and QA repair tasks, are immediately dispatch-admitted.
 
 - Moved the Stand E2E one-shot health probe into a unit-tested scheduler module
   that initializes the configuration store before invoking the canonical health

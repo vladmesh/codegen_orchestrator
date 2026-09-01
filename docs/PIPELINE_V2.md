@@ -83,7 +83,9 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 **Outputs**: Tasks in `todo` status, linearly chained. For a brief-backed
 Product Story, these tasks are planned but not scheduler-admitted until every
 must-requirement has a durable task/acceptance coverage or returned reason and
-the architect calls the idempotent Product Brief admission operation.
+the architect calls the idempotent Product Brief admission operation. Architect
+recovery remains available while all planned tasks are unadmitted; tasks added
+after that durable admission, including repair work, are admitted immediately.
 
 **Rules**:
 - Simple project = 1 task

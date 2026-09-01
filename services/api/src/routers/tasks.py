@@ -83,10 +83,7 @@ async def _dispatch_admitted_for_new_task(body: TaskCreate, db: AsyncSession) ->
             detail="brief-backed task must belong to the Story project",
         )
     if brief.coverage_admitted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Product Brief task plan is already admitted",
-        )
+        return True
     return False
 
 

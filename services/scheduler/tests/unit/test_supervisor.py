@@ -197,6 +197,33 @@ class TestSuperviseStuckStories:
         assert result["failed"] == 0
         redis_client.publish_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_retries_unadmitted_brief_story_with_partial_plan(self, api_client, redis_client):
+        """An incomplete Product Brief plan stays recoverable by the architect."""
+        from src.tasks.supervisor import supervise_stuck_stories
+
+        old = datetime.now(UTC) - timedelta(minutes=10)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                _make_story(
+                    id="story-1",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    created_at=old,
+                    product_brief_id="brief-1",
+                )
+            ]
+            if status == "created"
+            else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _make_task(id="task-1", story_id="story-1", dispatch_admitted=False)
+        ]
+
+        result = await supervise_stuck_stories(api_client, redis_client)
+
+        assert result == {"retried": 1, "failed": 0}
+        redis_client.publish_message.assert_called_once()
+
 
 class TestCompleteStoriesTriggersNext:
     """After completing a story, trigger the next queued story for the same project."""
