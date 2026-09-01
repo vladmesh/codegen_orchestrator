@@ -8,8 +8,8 @@ hop it walks before it applies any of them.
 """
 
 import asyncio
-from http import HTTPStatus
 
+from fastapi import status
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import select
@@ -66,7 +66,7 @@ async def _create_story(async_client: AsyncClient) -> str:
             "description": "Two callers start the same story",
         },
     )
-    assert resp.status_code == HTTPStatus.CREATED, resp.text
+    assert resp.status_code == status.HTTP_201_CREATED, resp.text
     assert resp.json()["status"] == "created"
     return resp.json()["id"]
 
@@ -80,11 +80,11 @@ async def _create_task(async_client: AsyncClient, status_after_start: bool = Tru
             "type": "feature",
         },
     )
-    assert resp.status_code == HTTPStatus.CREATED, resp.text
+    assert resp.status_code == status.HTTP_201_CREATED, resp.text
     task_id = resp.json()["id"]
     if status_after_start:
         started = await async_client.post(f"/api/tasks/{task_id}/start", json={"actor": "po"})
-        assert started.status_code == HTTPStatus.OK, started.text
+        assert started.status_code == status.HTTP_200_OK, started.text
         assert started.json()["status"] == TaskStatus.IN_DEV
     return task_id
 
@@ -97,10 +97,10 @@ async def test_concurrent_story_start_lets_exactly_one_through(
 
     codes = await _race(async_client, db_session, Story, story_id, f"/api/stories/{story_id}/start")
 
-    assert codes == [HTTPStatus.OK, HTTPStatus.UNPROCESSABLE_CONTENT], codes
+    assert codes == [status.HTTP_200_OK, status.HTTP_422_UNPROCESSABLE_CONTENT], codes
 
     final = await async_client.get(f"/api/stories/{story_id}")
-    assert final.status_code == HTTPStatus.OK, final.text
+    assert final.status_code == status.HTTP_200_OK, final.text
     assert final.json()["status"] == "in_progress"
 
 
@@ -118,10 +118,10 @@ async def test_concurrent_task_transition_lets_exactly_one_through(
         f"/api/tasks/{task_id}/transition?to_status={TaskStatus.IN_CI.value}",
     )
 
-    assert codes == [HTTPStatus.OK, HTTPStatus.UNPROCESSABLE_CONTENT], codes
+    assert codes == [status.HTTP_200_OK, status.HTTP_422_UNPROCESSABLE_CONTENT], codes
 
     final = await async_client.get(f"/api/tasks/{task_id}")
-    assert final.status_code == HTTPStatus.OK, final.text
+    assert final.status_code == status.HTTP_200_OK, final.text
     assert final.json()["status"] == TaskStatus.IN_CI
 
     events = await async_client.get(f"/api/tasks/{task_id}/events")
@@ -150,7 +150,7 @@ async def test_complete_path_refuses_an_invalid_intermediate_step(
     )
 
     resp = await async_client.post(f"/api/tasks/{task_id}/complete", json={"actor": "system"})
-    assert resp.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, resp.text
+    assert resp.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT, resp.text
 
     final = await async_client.get(f"/api/tasks/{task_id}")
     assert final.json()["status"] == TaskStatus.IN_DEV
@@ -172,7 +172,7 @@ async def test_complete_path_still_promotes_a_legal_chain(
     task_id = await _create_task(async_client)
 
     resp = await async_client.post(f"/api/tasks/{task_id}/complete", json={"actor": "system"})
-    assert resp.status_code == HTTPStatus.OK, resp.text
+    assert resp.status_code == status.HTTP_200_OK, resp.text
     assert resp.json()["status"] == TaskStatus.DONE
 
     events = await async_client.get(f"/api/tasks/{task_id}/events")
