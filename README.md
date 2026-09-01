@@ -108,7 +108,6 @@ Test layers, what each one costs and when to run it: [docs/TESTING.md](docs/TEST
 | Operations | `infra/` — Ansible, production configuration, and operational scripts. |
 | Developer and CI scripts | `scripts/` — repository checks and repeatable maintenance commands. |
 | Documentation | `docs/` — contracts, pipeline, operations, testing, and historical change notes. |
-| Assistant workflows | `.claude/skills/` — optional live-pipeline and maintenance skills; their state and secrets stay there. |
 | Assistant instructions | [AGENTS.md](AGENTS.md) — canonical guidance; [CLAUDE.md](CLAUDE.md) only redirects Claude Code to it. |
 
 ## Documentation

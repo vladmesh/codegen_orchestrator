@@ -116,16 +116,3 @@ make test-unit               # Unit tests (fast, no deps)
 make test-integration        # Integration tests (require DB/Redis)
 make test-service SERVICE=api # Per-service integration test
 ```
-
-## Skills (`.claude/skills/`)
-
-These exercise the running pipeline and maintain the repository. Scoping and sequencing skills are
-not here: that happens on the Pipeline board.
-
-| Skill | Description |
-|-------|----------|
-| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | An E2E test (engineering → CI → deploy → verify, `--feature` skips scaffolding) |
-| `/escort` | Escorting a real user through the full pipeline |
-| `/architect` | Decomposing a Story → Tasks (for client projects, through the API) |
-| `/test-maintenance` | Running/fixing integration tests locally |
-| `/update-docs` | Synchronizing the living documentation with the code |

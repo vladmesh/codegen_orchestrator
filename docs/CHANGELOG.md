@@ -3,9 +3,11 @@
 ## Unreleased
 
 - Consolidated repository-assistant guidance under `AGENTS.md`; `CLAUDE.md` is now its small
-  Claude Code compatibility entrypoint. Added a root repository map that distinguishes services,
-  shared code, test-owned Compose harnesses, operations, scripts, documentation, and optional
-  `.claude` skills without changing runtime behavior.
+  Claude Code compatibility entrypoint. Removed the obsolete repository-local `.claude` skills,
+  state files, and E2E secret template now that those workflows run through the external pipeline
+  and canonical stand runner. Added a root repository map that distinguishes services, shared code,
+  test-owned Compose harnesses, operations, scripts, and documentation without changing runtime
+  behavior.
 
 - Made dynamic target provisioning failures diagnosable before pytest starts. The Stand observer
   now outlives the access and software provisioner budgets, emits timestamped allow-listed server

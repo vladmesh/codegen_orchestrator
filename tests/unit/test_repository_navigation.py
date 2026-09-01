@@ -17,9 +17,12 @@ def test_readme_maps_the_top_level_areas_people_need_to_navigate():
         "infra/",
         "scripts/",
         "docs/",
-        ".claude/skills/",
     ):
         assert path in readme
+
+
+def test_repository_has_no_legacy_claude_skill_tree():
+    assert not (ROOT / ".claude").exists()
 
 
 def test_claude_entrypoint_delegates_to_the_canonical_agent_playbook():
