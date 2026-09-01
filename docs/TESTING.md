@@ -26,7 +26,7 @@ uv run python -m shared            # accepts the same flags, e.g. `--serial`
 make test-service SERVICE=api
 
 # Integration (Docker Compose, full stack)
-make test-integration          # All (auto-discovers docker/test/integration/*.yml)
+make test-integration          # All (auto-discovers tests/compose/integration/*.yml)
 make test-integration-backend  # Backend tests without nested Docker
 make test-integration-backend-dind  # Worker-container tests; CI runs these on pushes to main
 
@@ -74,7 +74,7 @@ Both must pass.
 `scripts/check-ci-gate.py` (`make ci-contract`, and the `CI Contract` job) derives the set of
 test directories by walking the tree for both default pytest file patterns, then compares it
 with what the CI targets actually claim: the `ALL_SUITES` table, and the pytest arguments in
-`docker/test/service/*.yml` and `docker/test/integration/*.yml`. A directory nobody runs fails
+`tests/compose/service/*.yml` and `tests/compose/integration/*.yml`. A directory nobody runs fails
 the gate.
 
 Two rules keep the claim honest:
@@ -87,7 +87,7 @@ Two rules keep the claim honest:
 Skipping a suite stays possible, but only as a decision on the record: `UNCLAIMED_TEST_DIRS`
 holds one line per skipped directory, each with a reason, and the gate fails if a listed
 directory no longer exists. It currently holds six entries: `scripts` (hand-run drivers against
-a live stack), `tests/e2e` and `tests/e2e/mock_anthropic` (behind `docker/test/e2e/e2e.yml`,
+a live stack), `tests/e2e` and `tests/e2e/mock_anthropic` (behind `tests/compose/e2e/e2e.yml`,
 which no workflow and no make target invokes), `services/langgraph/tests/e2e` (needs a real LLM
 key and would only ever report a skip), `services/infra-service/tests/integration` (red) and
 `tests/integration/worker_wrapper` (red, needs a checkout that exists only inside a worker
@@ -132,10 +132,10 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 
 ## Integration Test Architecture
 
-The backend integration suite (`docker/test/integration/backend.yml`) runs the API, Redis and
+The backend integration suite (`tests/compose/integration/backend.yml`) runs the API, Redis and
 LangGraph paths that do not create worker containers. It runs on relevant pull requests.
 
-`docker/test/integration/backend-dind.yml` covers worker-container creation and execution with
+`tests/compose/integration/backend-dind.yml` covers worker-container creation and execution with
 Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every push to `main` and
 when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged
 nested-daemon suite costs more than it protects. On `main`, `Required CI Gate` consumes that job

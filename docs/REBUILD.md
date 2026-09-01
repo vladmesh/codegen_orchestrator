@@ -32,7 +32,7 @@ only source, and it reaches consumers through three channels.
 
 **`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
 `worker-manager` is the only service in `docker-compose.yml` without a mount, so in the dev stack an
-edit to `shared/` requires rebuilding only that one. The images the compose files under `docker/test/`
+edit to `shared/` requires rebuilding only that one. The images the compose files under `tests/compose/`
 build have no mount either, and they outlive the run that built them. The worker images live in the
 second circuit and are rebuilt according to `WORKER_SOURCE_HASH`. This is the only channel that can go
 stale, and the only one the freshness check looks at: a bind-mounted container picks up an edit on
@@ -131,13 +131,13 @@ pass:
   A `docker build` in a recipe that does not say which Dockerfile it builds (no `-f`, or a path assembled
   out of a make variable) fails the check as well: not knowing what it builds is not the same as knowing
   it does not bake `shared`.
-- **Every compose file in the repository is parsed**, `docker/test/**` included. Neither compose rule
+- **Every compose file in the repository is parsed**, `tests/compose/**` included. Neither compose rule
   asks docker anything, so both hold on a clean machine. A compose file that has `services:` and cannot
   be parsed fails the check too.
 - **The images it compares** are the ones whose baked copy is what actually runs: every route that does
   not mount `./shared` over the baked copy. That is the four worker base images, read off the
   `rebuild-worker-images` recipe, `worker-manager` in the dev stack, and the `:test` images the compose
-  files under `docker/test/` build. A build that stamps `SOURCE_HASH` without copying `shared` itself is
+  files under `tests/compose/` build. A build that stamps `SOURCE_HASH` without copying `shared` itself is
   compared too — `worker-base-claude` and its siblings are `FROM ${BASE_IMAGE}` over the common image, so
   they carry the `shared` it baked and say which one by stamping the label. An image that is compared and
   cannot say what it baked (no label, an empty label, a value that is not a hash) fails by name and

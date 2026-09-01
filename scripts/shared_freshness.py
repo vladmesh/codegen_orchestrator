@@ -28,7 +28,7 @@ cannot read reliably fails the check instead of passing quietly:
   explicit `image:`, and a Makefile recipe that builds it under an explicit `-t` tag. A
   Dockerfile no route reaches is a hole of the same shape as an unreadable one — nothing
   can compare an image nobody names — so it fails the check naming the file.
-* Every compose file in the repository is parsed, `docker/test/**` included. A service
+* Every compose file in the repository is parsed, `tests/compose/**` included. A service
   built from a Dockerfile that bakes `shared` has to pass `SOURCE_HASH` in `build.args`
   and to declare an explicit `image:` — without a name of its own the image is called
   after the compose project and nothing can find it again. The name has to be a literal:
@@ -291,7 +291,7 @@ def uncovered_dockerfiles(root: Path = REPO_ROOT) -> list[tuple[str, str]]:
 
 
 def _compose_documents(root: Path) -> list[tuple[Path, dict]]:
-    """Every compose file in the tree, docker/test/** included, with its services.
+    """Every compose file in the tree, tests/compose/** included, with its services.
 
     A compose file is recognised by having a `services:` mapping, not by its name or its
     directory, so a new one is covered the day it is added. One that has `services:` and

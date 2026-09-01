@@ -9,7 +9,7 @@ useDefault = true
 description = "Audited false positives: test fixtures, lockfile hashes, public IDs"
 paths = [
   '''uv\.lock$''',                    # PyPI wheel sha256 hashes collide with the square-access-token regex
-  '''docker/test/''',                 # dummy Fernet SECRETS_ENCRYPTION_KEY used only when ENVIRONMENT=test
+  '''tests/compose/''',               # dummy Fernet SECRETS_ENCRYPTION_KEY used only when ENVIRONMENT=test
   '''scripts/test-unit-local\.sh$''', # same dummy test encryption key
 ]
 regexes = [

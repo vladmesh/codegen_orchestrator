@@ -9,7 +9,7 @@ services:
   integration-test-runner:
     build:
       context: ../../..
-      dockerfile: docker/test/integration/Dockerfile.template
+      dockerfile: tests/compose/integration/Dockerfile.template
     command: ["pytest", "tests/integration/template/test_copier_generates_project.py", "tests/integration/template/test_pinned_template.py", "-v"]
     environment:
       - PYTHONUNBUFFERED=1

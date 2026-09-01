@@ -9,11 +9,11 @@ import subprocess
 import time
 from uuid import uuid4
 
+import docker
 from docker.errors import APIError, NotFound
 import pytest
 import redis.asyncio as redis
 
-import docker
 from scripts.shared_freshness import source_hash
 from shared.contracts.dto.executor_diagnostics import (
     EXECUTOR_DIAGNOSTICS_REDIS_KEY,

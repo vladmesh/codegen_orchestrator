@@ -27,7 +27,7 @@ def test_worker_broker_internal_token_cannot_be_empty():
 
 
 def test_service_compose_supplies_required_broker_internal_token():
-    compose_path = Path(__file__).parents[4] / "docker/test/service/worker-manager.yml"
+    compose_path = Path(__file__).parents[4] / "tests/compose/service/worker-manager.yml"
     compose = yaml.safe_load(compose_path.read_text())
 
     for service in ("worker-manager", "worker-manager-test-runner"):
@@ -36,7 +36,7 @@ def test_service_compose_supplies_required_broker_internal_token():
 
 
 def test_service_compose_supplies_internal_api_key_for_attempt_inventory():
-    compose_path = Path(__file__).parents[4] / "docker/test/service/worker-manager.yml"
+    compose_path = Path(__file__).parents[4] / "tests/compose/service/worker-manager.yml"
     compose = yaml.safe_load(compose_path.read_text())
 
     environment = compose["services"]["worker-manager"]["environment"]

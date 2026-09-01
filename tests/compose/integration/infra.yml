@@ -64,7 +64,7 @@ services:
     image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
-      dockerfile: docker/test/integration/Dockerfile
+      dockerfile: tests/compose/integration/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
@@ -118,7 +118,7 @@ services:
     image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
-      dockerfile: docker/test/integration/Dockerfile
+      dockerfile: tests/compose/integration/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/integration/infra/", "-v", "-x"]

@@ -83,7 +83,7 @@ def test_scheduler_startup_import_refuses_an_unsafe_effective_override() -> None
 def test_infra_integration_scheduler_uses_the_deployable_freshness_cadence() -> None:
     """The integration stack must boot with the same valid cadence as deployment."""
     compose = yaml.safe_load(
-        (Path(__file__).resolve().parents[2] / "docker/test/integration/infra.yml").read_text()
+        (Path(__file__).resolve().parents[2] / "tests/compose/integration/infra.yml").read_text()
     )
     environment = compose["services"]["scheduler"]["environment"]
     interval = next(value for value in environment if value.startswith("HEALTH_CHECK_INTERVAL="))

@@ -1,10 +1,10 @@
 import os
 
+import docker
 import pytest
 import pytest_asyncio
 import redis.asyncio as aioredis
 
-import docker
 from scripts.shared_freshness import source_hash
 
 # Configure pytest-asyncio

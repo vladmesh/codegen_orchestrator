@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-TEST_COMPOSE_ROOT = Path("docker/test")
+TEST_COMPOSE_ROOT = Path("tests/compose")
 ARCHITECT_LLM_ENV = {
     "ARCHITECT_LLM_MODEL",
     "ARCHITECT_LLM_BASE_URL",

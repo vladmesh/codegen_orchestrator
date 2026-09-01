@@ -72,7 +72,7 @@ jobs:
             infra-service:
               - 'services/infra-service/**'
             docker-test:
-              - 'docker/test/**'
+              - 'tests/compose/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -406,7 +406,7 @@ jobs:
 
       - name: Cleanup test containers
         if: always() && matrix.should_run == 'true'
-        run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f docker/test/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
+        run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f tests/compose/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
 
   template-compatibility:
     name: Template Compatibility (${{ matrix.entry }})
@@ -531,7 +531,7 @@ jobs:
 
       - name: Cleanup test containers
         if: always()
-        run: docker compose -p codegen_orchestrator_test_backend-dind -f docker/test/integration/backend-dind.yml down -v --remove-orphans 2>/dev/null || true
+        run: docker compose -p codegen_orchestrator_test_backend-dind -f tests/compose/integration/backend-dind.yml down -v --remove-orphans 2>/dev/null || true
 
   merge-gate:
     name: Required CI Gate

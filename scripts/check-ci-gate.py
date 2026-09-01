@@ -19,10 +19,10 @@ TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
 LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
 
-SERVICE_COMPOSE_DIR = ROOT / "docker" / "test" / "service"
-INTEGRATION_COMPOSE_DIR = ROOT / "docker" / "test" / "integration"
+SERVICE_COMPOSE_DIR = ROOT / "tests" / "compose" / "service"
+INTEGRATION_COMPOSE_DIR = ROOT / "tests" / "compose" / "integration"
 
-# Where /app points for each docker/test/service compose file. The pytest paths in
+# Where /app points for each tests/compose/service compose file. The pytest paths in
 # those commands are container-relative, so they only resolve with this.
 SERVICE_COMPOSE_ROOTS = {
     "api": "services/api",
@@ -83,7 +83,7 @@ UNCLAIMED_TEST_DIRS = {
         "test_e2e_flow.py talk to a running API"
     ),
     "tests/e2e": (
-        "full-stack e2e behind docker/test/e2e/e2e.yml, which no workflow and no "
+        "full-stack e2e behind tests/compose/e2e/e2e.yml, which no workflow and no "
         "make target invokes; issue:8a41b0e8a3148a68d6e5"
     ),
     "tests/e2e/mock_anthropic": (
@@ -294,7 +294,7 @@ def assert_detect_changes(jobs: dict[str, Any]) -> None:
         "uv.lock",
         "shared/**",
         "packages/**",
-        "docker/test/**",
+        "tests/compose/**",
         "tests/integration/**",
     ]:
         if pattern not in filters:
@@ -812,9 +812,9 @@ def assert_service_tests(jobs: dict[str, Any]) -> None:
     ):
         fail("service tests must require fast-checks and ci-contract")
     if matrix_values(job, "service") != compose_suites(SERVICE_COMPOSE_DIR):
-        fail("service test matrix does not match docker/test/service")
+        fail("service test matrix does not match tests/compose/service")
     if set(SERVICE_COMPOSE_ROOTS) != compose_suites(SERVICE_COMPOSE_DIR):
-        fail("SERVICE_COMPOSE_ROOTS does not match docker/test/service")
+        fail("SERVICE_COMPOSE_ROOTS does not match tests/compose/service")
     run_step = step_by_id(job, "service-tests")
     if run_step.get("run") != "make test-service SERVICE=${{ matrix.service }}":
         fail("service tests must call make test-service")
@@ -841,7 +841,7 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
         fail("integration tests must require fast-checks and ci-contract")
     expected_suites = compose_suites(INTEGRATION_COMPOSE_DIR) - set(OUT_OF_PR_INTEGRATION_SUITES)
     if matrix_values(job, "suite") != expected_suites:
-        fail("integration matrix does not match docker/test/integration")
+        fail("integration matrix does not match tests/compose/integration")
     for suite, reason in OUT_OF_PR_INTEGRATION_SUITES.items():
         if not (INTEGRATION_COMPOSE_DIR / f"{suite}.yml").is_file():
             fail(f"OUT_OF_PR_INTEGRATION_SUITES names {suite}, which has no compose file")
