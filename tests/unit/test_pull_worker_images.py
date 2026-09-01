@@ -229,6 +229,19 @@ def test_matching_release_is_accepted_and_retagged(run_pull):
         ), f"{image} was not retagged for worker-manager: {calls}"
 
 
+def test_release_validation_only_checks_the_exact_marker_without_pulling_or_retagging(run_pull):
+    """The pre-create gate proves the immutable release before billing starts."""
+    result, calls, record = run_pull(RELEASE_VALIDATION_ONLY="true")
+
+    assert result.returncode == 0, result.stderr
+    assert any("worker-base-release" in call for call in calls)
+    pulls = [call for call in calls if call.startswith("pull ")]
+    assert len(pulls) == 1
+    assert "worker-base-release" in pulls[0]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
 def test_the_release_is_read_from_the_marker_and_never_from_a_tag(run_pull):
     """The marker is the release; the images are the digests it names.
 

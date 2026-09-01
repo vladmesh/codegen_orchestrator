@@ -590,6 +590,15 @@ deployed is the release that was verified rather than a second lookup of a mutab
 So a commit can only be deployed once its CI publish job has released it. Deploying an unreleased
 revision is refused rather than falling back to a different worker release.
 
+The ephemeral Stand E2E workflow applies the same rule before it invokes
+BitLaunch preflight or creation, or creates a DNS record. It checks the exact
+workflow SHA's release marker through `pull-worker-images.sh` in read-only
+validation mode. A missing marker is reported as `release_not_published` with
+retry-after-post-merge-publication guidance; authentication, transport,
+rate-limit, and registry-tool errors remain distinct failures. The workflow
+does not wait and does not build worker images on a billed Stand machine. After
+the gate passes, the Stand only pulls and fully verifies that immutable release.
+
 ## First-Time Setup
 
 ```bash

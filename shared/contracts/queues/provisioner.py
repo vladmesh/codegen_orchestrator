@@ -1,4 +1,8 @@
+from typing import Literal
+
 from shared.contracts.base import BaseMessage, BaseResult
+
+ProvisioningProfile = Literal["stand_e2e"]
 
 
 class ProvisionerMessage(BaseMessage):
@@ -6,6 +10,9 @@ class ProvisionerMessage(BaseMessage):
 
     server_handle: str  # Cloud provider ID (Droplet ID) or unique identifier
     is_recovery: bool = False
+    # This is an immutable request-scoped execution choice. It must not be
+    # inferred from server labels, which can change after the job is queued.
+    profile: ProvisioningProfile | None = None
 
 
 class ProvisionerResult(BaseResult):

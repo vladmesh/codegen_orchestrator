@@ -9,6 +9,20 @@
   test-owned Compose harnesses, operations, scripts, and documentation without changing runtime
   behavior.
 
+- Made the Stand E2E contour fail before billable infrastructure when the
+  exact workflow SHA has no complete GHCR worker release marker. The read-only
+  gate reuses the canonical release contract, distinguishes registry failures
+  from `release_not_published`, and gives retry-after-post-merge-CI guidance.
+  A provisioned Stand no longer falls back to building worker images locally.
+
+- Added the typed, request-scoped `stand_e2e` provisioning profile. It retains
+  production's full `dist-upgrade` path by default, skips that upgrade only for
+  the disposable Stand target, consolidates its required package work, reports
+  bounded apt/package/Docker/role timing phases, and invokes the scheduler's
+  canonical one-shot health probe before the target is treated as allocatable.
+  Live timing comparison remains pending post-merge verification; no live E2E
+  was run for this change.
+
 - Made dynamic target provisioning failures diagnosable before pytest starts. The Stand observer
   now outlives the access and software provisioner budgets, emits timestamped allow-listed server
   state, and fails immediately on terminal server states. Failed setup also preserves secret-redacted
