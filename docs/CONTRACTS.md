@@ -449,6 +449,13 @@ request publication. Environment observation reads the running target through
 the infra boundary and reports its typed outcome; it does not read a repository
 file or assume a dispatch changed the deployed service.
 
+`ProvisionerMessage.profile` is an optional, typed, request-scoped execution
+profile. The absent default is the full production provisioning path. The only
+current override, `stand_e2e`, is admitted by the internal provisioning request,
+carried through the queue, and consumed by infra-service for the disposable
+Stand target. It is not inferred from mutable server labels; a replay retains
+the profile that was originally queued.
+
 ## Source map
 
 | Area | Source of truth |

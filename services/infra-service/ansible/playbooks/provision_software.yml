@@ -8,6 +8,10 @@
   become: true
   vars_files:
     - ../group_vars/provision_vars.yml
+  vars:
+    # Only the typed ProvisionerMessage profile can override this. Server
+    # labels deliberately do not select the fast path.
+    provisioning_profile: production
   
   pre_tasks:
     - name: Wait for server to be reachable
@@ -21,8 +25,22 @@
     # ========================================
     # 1. System Updates
     # ========================================
+    - name: Record apt lock wait started
+      ansible.builtin.set_fact:
+        provisioning_apt_lock_wait_started: "{{ lookup('pipe', 'date +%s') | int }}"
+
     - name: Wait for any possibly running apt/dpkg processes
       shell: "while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done;"
+      changed_when: false
+
+    - name: Record apt lock wait finished
+      ansible.builtin.set_fact:
+        provisioning_apt_lock_wait_seconds: >-
+          {{ (lookup('pipe', 'date +%s') | int) - (provisioning_apt_lock_wait_started | int) }}
+
+    - name: Record package and system installation started
+      ansible.builtin.set_fact:
+        provisioning_package_system_started: "{{ lookup('pipe', 'date +%s') | int }}"
 
     - name: Update apt cache
       apt:
@@ -36,6 +54,7 @@
         autoremove: yes
         autoclean: yes
       tags: [system]
+      when: provisioning_profile != 'stand_e2e'
 
     # ========================================
     # 2. Essential Tools Installation
@@ -45,6 +64,15 @@
         name: "{{ essential_packages }}"
         state: present
       tags: [packages]
+
+    - name: Record package and system installation finished
+      ansible.builtin.set_fact:
+        provisioning_package_system_seconds: >-
+          {{ (lookup('pipe', 'date +%s') | int) - (provisioning_package_system_started | int) }}
+
+    - name: Record Docker and tooling installation started
+      ansible.builtin.set_fact:
+        provisioning_docker_tooling_started: "{{ lookup('pipe', 'date +%s') | int }}"
 
     - name: Download pinned uv for stand runner
       ansible.builtin.get_url:
@@ -71,15 +99,6 @@
     # ========================================
     # 3. Docker Installation
     # ========================================
-    - name: Install Docker prerequisites
-      apt:
-        name:
-          - ca-certificates
-          - curl
-          - gnupg
-        state: present
-      tags: [docker]
-
     - name: Add Docker GPG key
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
@@ -110,6 +129,15 @@
         state: started
         enabled: yes
       tags: [docker]
+
+    - name: Record Docker and tooling installation finished
+      ansible.builtin.set_fact:
+        provisioning_docker_tooling_seconds: >-
+          {{ (lookup('pipe', 'date +%s') | int) - (provisioning_docker_tooling_started | int) }}
+
+    - name: Record roles and monitoring started
+      ansible.builtin.set_fact:
+        provisioning_roles_monitoring_started: "{{ lookup('pipe', 'date +%s') | int }}"
 
     - name: Prepare deploy target
       ansible.builtin.include_role:
@@ -167,6 +195,20 @@
       hostname:
         name: "{{ server_hostname | default(inventory_hostname) }}"
       tags: [system]
+
+    - name: Record roles and monitoring finished
+      ansible.builtin.set_fact:
+        provisioning_roles_monitoring_seconds: >-
+          {{ (lookup('pipe', 'date +%s') | int) - (provisioning_roles_monitoring_started | int) }}
+
+    - name: Report provisioning phase timings
+      ansible.builtin.debug:
+        msg:
+          provisioning_phase_timing_seconds:
+            apt_lock_wait: "{{ provisioning_apt_lock_wait_seconds | int }}"
+            package_system: "{{ provisioning_package_system_seconds | int }}"
+            docker_tooling: "{{ provisioning_docker_tooling_seconds | int }}"
+            roles_monitoring: "{{ provisioning_roles_monitoring_seconds | int }}"
 
     # ========================================
     # 6. Verification

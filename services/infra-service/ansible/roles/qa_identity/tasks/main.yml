@@ -154,6 +154,9 @@
       Defaults:{{ qa_ssh_user }} !requiretty
       {{ qa_ssh_user }} ALL=(root) NOPASSWD: {{ qa_docker_wrapper }}
 
+# Fresh Stand targets receive acl with the consolidated essential-package
+# transaction. Keep this idempotent assertion here because the retrofit
+# playbook runs this role on pre-existing production hosts by itself.
 - name: Install acl, so reads can be granted without a group that can write
   ansible.builtin.apt:
     name: acl

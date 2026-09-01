@@ -305,6 +305,7 @@ class ProvisionerNode(FunctionalNode):
         state: dict,
         ssh_user: str | None = None,
         ssh_private_key: str | None = None,
+        provisioning_profile: str | None = None,
     ) -> dict:
         """Execute provisioning using existing SSH access."""
         logger.info("provisioning_existing_setup", server_handle=server_handle)
@@ -351,6 +352,11 @@ class ProvisionerNode(FunctionalNode):
             orchestrator_ip=self.orchestrator_ip,
             orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
+            extra_vars=(
+                {"provisioning_profile": provisioning_profile}
+                if provisioning_profile == "stand_e2e"
+                else None
+            ),
         )
 
         if success_soft:
@@ -529,6 +535,7 @@ class ProvisionerNode(FunctionalNode):
                 state=state,
                 ssh_user="root" if target.provider == BITLAUNCH_PROVIDER else None,
                 ssh_private_key=bitlaunch_key,
+                provisioning_profile=state.get("provisioning_profile"),
             )
 
 

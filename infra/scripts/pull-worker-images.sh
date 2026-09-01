@@ -29,6 +29,10 @@
 #   GHCR_OWNER        — GitHub org/user (e.g. "project-factory-organization")
 #   WORKER_IMAGE_TAG  — the exact published tag to pull (the deployed git SHA)
 #   DIGEST_FILE       — where to write the record of the digests that were verified
+# Optional env vars:
+#   RELEASE_VALIDATION_ONLY=true — validate the exact immutable release marker,
+#       without pulling its worker images, changing local tags, or writing DIGEST_FILE.
+#       This is the pre-create admission used by the billed Stand workflow.
 #
 # Exit codes, one per reason so a caller can tell them apart:
 #   1  usage: a required variable is missing, or the tag names a mutable image
@@ -203,6 +207,17 @@ if ! released="$(worker_release_images "${payload}" "${WORKER_IMAGE_TAG}" "${REG
     echo "FATAL: the release marker of ${WORKER_IMAGE_TAG} (${marker_reference})" >&2
     echo "       does not name a deployable chain; see the reason above." >&2
     exit "${EXIT_BROKEN_RELEASE}"
+fi
+
+# A pre-create caller needs the same marker and payload contract as a deployment,
+# but must not populate local worker tags before it knows it may create machines.
+# The marker was resolved and pulled by digest above, and worker_release_images
+# has already checked that it names this exact SHA and all required immutable
+# repositories. The full consumer below remains the only place that pulls and
+# source-label-verifies every release image before a stand can use it.
+if [ "${RELEASE_VALIDATION_ONLY:-false}" = "true" ]; then
+    echo "Worker image release marker is valid for ${WORKER_IMAGE_TAG}."
+    exit 0
 fi
 
 verified=()

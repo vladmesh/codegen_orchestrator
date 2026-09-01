@@ -64,3 +64,25 @@ def test_terminal_provisioning_failure_is_fail_fast(monkeypatch, capsys):
     assert '"status": "error"' in output.out
     assert "terminal failure" in output.err
     assert slept == []
+
+
+def test_wait_can_observe_completed_provisioning_before_the_immediate_health_probe(monkeypatch):
+    server = {
+        "handle": "bitlaunch-one",
+        "status": "ready",
+        "labels": {"provisioning_phase": "complete"},
+        "last_health_check": None,
+    }
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "wait_stand_provisioning.py",
+            "--handle",
+            "bitlaunch-one",
+            "--no-require-fresh-metrics",
+        ],
+    )
+    monkeypatch.setattr(wait_stand_provisioning, "_read_server", lambda *_args: server)
+
+    assert wait_stand_provisioning.main() == 0

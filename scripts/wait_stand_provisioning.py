@@ -63,6 +63,14 @@ def main() -> int:
         default=300,
         help="must match the allocator's allocation_metrics_freshness_seconds",
     )
+    parser.add_argument(
+        "--require-fresh-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "wait for allocator-ready telemetry (disable only before an immediate canonical probe)"
+        ),
+    )
     args = parser.parse_args()
     internal_key = os.environ.get("INTERNAL_API_KEY")
     if not internal_key:
@@ -79,7 +87,12 @@ def main() -> int:
             and server.get("status") == "ready"
             and isinstance(labels, dict)
             and labels.get("provisioning_phase") == "complete"
-            and _metrics_are_fresh(server.get("last_health_check"), args.metrics_freshness_seconds)
+            and (
+                not args.require_fresh_metrics
+                or _metrics_are_fresh(
+                    server.get("last_health_check"), args.metrics_freshness_seconds
+                )
+            )
         ):
             print(f"provisioning complete for {args.handle}")
             return 0

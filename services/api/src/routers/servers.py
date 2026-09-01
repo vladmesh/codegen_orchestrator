@@ -4,7 +4,7 @@ from datetime import UTC
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +17,7 @@ from shared.contracts.dto.server import (
     ServerStatus,
     SSHUser,
 )
-from shared.contracts.queues.provisioner import ProvisionerMessage
+from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisioningProfile
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
 from shared.provisioning_policy import provider_operation_is_authorized
@@ -38,6 +38,12 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/servers", tags=["servers"])
+
+
+class ProvisioningRequest(BaseModel):
+    """One explicit provisioning invocation profile, if the caller needs one."""
+
+    profile: ProvisioningProfile | None = None
 
 
 @router.post("/", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
@@ -480,6 +486,7 @@ async def get_server_incidents(
 @router.post("/{handle}/provision")
 async def provision_server(
     handle: str,
+    request: ProvisioningRequest | None = None,
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _: None = Depends(require_internal_or_admin),
@@ -490,7 +497,7 @@ async def provision_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    message = ProvisionerMessage(server_handle=handle)
+    message = ProvisionerMessage(server_handle=handle, profile=request.profile if request else None)
     await redis.publish_message(PROVISIONER_QUEUE, message)
     return {"request_id": message.request_id, "server_handle": handle}
 

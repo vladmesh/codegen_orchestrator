@@ -39,9 +39,10 @@ timezone: "UTC"
 essential_packages:
   - curl
   - git
-  # The stand builds its worker base images here whenever no published
-  # release matches its tree, and that build is driven by the Makefile.
+  # Kept for production operator workflows; Stand E2E consumes an immutable
+  # worker release and never builds a fallback on a provisioned machine.
   - make
+  - acl
   - htop
   - vim
   - net-tools

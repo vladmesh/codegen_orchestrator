@@ -119,6 +119,31 @@ jobs:
           set -euo pipefail
           python3 -m scripts.stand_credentials
 
+      # A failed or still-running post-merge publish must cost nothing. The
+      # release marker is immutable and written last by that job, so validate it
+      # with the consumer's canonical contract before asking BitLaunch or DNS to
+      # do anything. This does not wait: the operator should retry once the
+      # post-merge worker-image publication CI has completed.
+      - name: Validate exact worker image release
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          WORKER_IMAGE_TAG: ${{ github.sha }}
+          DIGEST_FILE: ${{ runner.temp }}/stand-precreate-worker-images.json
+        run: |
+          set -euo pipefail
+          if RELEASE_VALIDATION_ONLY=true bash infra/scripts/pull-worker-images.sh; then
+            exit 0
+          else
+            release_status=$?
+          fi
+          if [ "${release_status}" -eq 9 ]; then
+            echo "release_not_published: the exact worker image release ${WORKER_IMAGE_TAG} is not published." >&2
+            echo "Retry after the post-merge worker-image publication CI completes." >&2
+            exit 1
+          fi
+          exit "${release_status}"
+
       - name: Preflight ephemeral machines
         env:
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
@@ -397,12 +422,28 @@ jobs:
             python3 -m scripts.register_bitlaunch_target \
               --input /run/stand-target.json --ssh-private-key-file /run/stand-target.key
             target_handle=$(python3 -c "import json; from pathlib import Path; print(\"bitlaunch-\" + str(json.loads(Path(\"/run/stand-target.json\").read_text())[\"target_id\"]))")
-            python3 -m scripts.request_stand_provisioning --handle "${target_handle}"
+            provisioning_started_epoch=$(date +%s)
+            python3 -m scripts.request_stand_provisioning --handle "${target_handle}" --profile stand_e2e
             diagnostics_dir=/root/e2e-runs/provisioning
             mkdir -p "${diagnostics_dir}"
             wait_status=0
-            python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
+            python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" --no-require-fresh-metrics 2>&1 | \
               tee "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
+            if [ "${wait_status}" -eq 0 ]; then
+              # Use the scheduler's canonical probe, so this writes the same
+              # metrics history and last_health_check evidence as the periodic
+              # worker. The second observer below proves the real probe made
+              # the target allocatable; it never stamps freshness itself.
+              COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler python -c "import asyncio, os; from src.clients.api import api_client; from src.tasks.health_checker import _check_server; server = asyncio.run(api_client.get_server(os.environ[\"TARGET_HANDLE\"])); asyncio.run(_check_server(server))"
+              python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
+                tee -a "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
+              if [ "${wait_status}" -eq 0 ]; then
+                printf '{"event":"first_health_ready","seconds":%s}\n' \
+                  "$(( $(date +%s) - provisioning_started_epoch ))" | \
+                  tee -a "${diagnostics_dir}/provisioning-state.jsonl"
+              fi
+            fi
             if [ "${wait_status}" -ne 0 ]; then
               COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
               protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
@@ -430,24 +471,10 @@ jobs:
              cd /opt/codegen_orchestrator && \
              GHCR_OWNER='${GHCR_OWNER}' WORKER_IMAGE_TAG='${release_sha}' \
              DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json \
-             bash infra/scripts/pull-worker-images.sh" && pulled=0 || pulled=$?
-          # Only a confirmed absent whole release (9) admits a local build.
-          # Auth, transport, rate-limit, DNS, tool, source-hash and
-          # invalid-release failures stay visible instead of being
-          # misclassified as missing images.
-          if [ "${pulled}" -ne 0 ]; then
-            case "${pulled}" in
-              9)
-                echo "no release matches this tree (exit ${pulled}); building on the stand"
-                ssh -i "${key_path}" ${SSH_OPTS} \
-                  root@"${PROD_HOST}" \
-                  'cd /opt/codegen_orchestrator && export PATH=/usr/local/bin:$PATH && make ensure-worker-images'
-                ;;
-              *)
-                echo "FATAL: pulling the worker image release failed with ${pulled}" >&2
-                exit "${pulled}"
-                ;;
-            esac
+             bash infra/scripts/pull-worker-images.sh" || pulled=$?
+          if [ "${pulled:-0}" -ne 0 ]; then
+            echo "FATAL: pulling the worker image release failed after pre-create validation (exit ${pulled})" >&2
+            exit "${pulled}"
           fi
 
       # The runner is the single owner of named-suite and custom-target

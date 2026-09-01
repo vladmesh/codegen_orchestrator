@@ -137,6 +137,22 @@ def test_provisioning_failure_evidence_survives_a_pre_pytest_failure():
     assert "if [ -d /root/e2e-runs/latest ]" in collect
 
 
+def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_probe():
+    provision = _steps()["Register and provision dynamic target"]["run"]
+
+    assert "--profile stand_e2e" in provision
+    assert "--no-require-fresh-metrics" in provision
+    assert "src.tasks.health_checker import _check_server" in provision
+    assert "api_client.get_server" in provision
+    assert "scheduler python -c" in provision
+    assert '"event":"first_health_ready"' in provision
+    assert (
+        provision.index("--no-require-fresh-metrics")
+        < provision.index("src.tasks.health_checker import _check_server")
+        < provision.rindex("scripts.wait_stand_provisioning")
+    )
+
+
 def test_the_matrix_fits_in_the_job_timeout():
     """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]
@@ -212,9 +228,32 @@ def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
     )
 
 
-def test_worker_image_fallback_is_limited_to_confirmed_missing_releases():
+def test_exact_worker_release_is_validated_before_any_provider_or_dns_action():
+    steps = list(_steps())
+    gate = _steps()["Validate exact worker image release"]
+
+    assert gate["env"]["WORKER_IMAGE_TAG"] == "${{ github.sha }}"
+    assert gate["env"]["GHCR_TOKEN"] == "${{ secrets.GHCR_TOKEN || github.token }}"  # noqa: S105
+    assert "RELEASE_VALIDATION_ONLY=true" in gate["run"]
+    assert "pull-worker-images.sh" in gate["run"]
+    assert "BITLAUNCH_API_KEY" not in gate.get("env", {})
+    assert "stand_lifecycle" not in gate["run"]
+    assert "stand_dns" not in gate["run"]
+    assert steps.index("Validate exact worker image release") < steps.index(
+        "Preflight ephemeral machines"
+    )
+    assert steps.index("Validate exact worker image release") < steps.index(
+        "Create ephemeral machines"
+    )
+    assert steps.index("Validate exact worker image release") < steps.index(
+        "Give the stand a resolvable name"
+    )
+
+
+def test_missing_exact_worker_release_fails_with_retry_guidance_not_a_local_build():
     job = _workflow()["jobs"]["e2e"]
     step = _steps()["Provide worker base images on the stand"]
+    gate = _steps()["Validate exact worker image release"]
 
     assert job["permissions"]["packages"] == "read"
     assert job["steps"][0]["with"]["fetch-depth"] == 0
@@ -222,10 +261,11 @@ def test_worker_image_fallback_is_limited_to_confirmed_missing_releases():
     assert "git merge-base HEAD origin/main" not in step["run"]
     assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in step["run"]
     assert "read -r GHCR_TOKEN" in step["run"]
-    assert 'case "${pulled}"' in step["run"]
-    assert "9)" in step["run"]
-    assert "5|9)" not in step["run"]
+    assert "ensure-worker-images" not in step["run"]
+    assert 'case "${pulled}"' not in step["run"]
     assert "FATAL: pulling the worker image release failed" in step["run"]
+    assert "release_not_published" in gate["run"]
+    assert "Retry after the post-merge worker-image publication CI completes" in gate["run"]
 
 
 def test_retention_is_bounded_and_covers_every_run_owned_resource():
