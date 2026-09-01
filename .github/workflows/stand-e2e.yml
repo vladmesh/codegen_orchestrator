@@ -398,7 +398,20 @@ jobs:
               --input /run/stand-target.json --ssh-private-key-file /run/stand-target.key
             target_handle=$(python3 -c "import json; from pathlib import Path; print(\"bitlaunch-\" + str(json.loads(Path(\"/run/stand-target.json\").read_text())[\"target_id\"]))")
             python3 -m scripts.request_stand_provisioning --handle "${target_handle}"
-            python3 -m scripts.wait_stand_provisioning --handle "${target_handle}"
+            diagnostics_dir=/root/e2e-runs/provisioning
+            mkdir -p "${diagnostics_dir}"
+            wait_status=0
+            python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
+              tee "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
+            if [ "${wait_status}" -ne 0 ]; then
+              COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+              protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+              ${COMPOSE} logs --no-color --tail 300 infra-service scheduler 2>&1 | \
+                ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+                python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+                > "${diagnostics_dir}/provisioning-services.log" || true
+              exit "${wait_status}"
+            fi
           '
 
       - name: Provide worker base images on the stand
@@ -475,36 +488,55 @@ jobs:
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           if [ -n "${PROD_HOST}" ]; then
-            reports=(junit.xml report.tsv run.log)
-            if [ "${SUITE}" = "matrix" ]; then
-              reports+=(claude-claude.log claude-codex.log codex-claude.log codex-codex.log)
-            else
-              # A named single-cell suite and a custom target produce exactly
-              # the pair the runner was asked for. Trying all matrix filenames
-              # here made scp wait on three files that cannot exist (21 seconds
-              # in run 33446639363), obscuring rather than improving evidence.
-              reports+=("${QA}-${WORKER}.log")
-            fi
-            for name in "${reports[@]}"; do
-              scp -i "${key_path}" ${SSH_OPTS} \
-                root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
-            done
-            # The pytest fixture writes bounded, redacted worker evidence into
-            # the runner directory before cleanup removes its containers. Stream
-            # every evidence file in one SSH round trip; an empty set is a valid
-            # tar, so custom tests that do not create workers do not wait on a
-            # missing wildcard or emit misleading SCP errors.
+            # Provisioning diagnostics live outside `latest`: pytest owns that
+            # symlink and never creates it when target setup fails first.
             ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
               set -euo pipefail
-              cd /root/e2e-runs/latest
-              shopt -s nullglob
-              files=(run-evidence-*.json)
+              files=()
+              if [ -d /root/e2e-runs/provisioning ]; then
+                cd /root/e2e-runs/provisioning
+                for name in provisioning-state.jsonl provisioning-services.log; do
+                  test ! -f "${name}" || files+=("${name}")
+                done
+              fi
               if [ "${#files[@]}" -eq 0 ]; then
                 tar -cf - --files-from=/dev/null
               else
                 tar -cf - -- "${files[@]}"
               fi
             ' | tar -C "${run_dir}" -xf -
+
+            if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+              if [ -d /root/e2e-runs/latest ]; then exit 0; else exit 1; fi
+            '; then
+              reports=(junit.xml report.tsv run.log)
+              if [ "${SUITE}" = "matrix" ]; then
+                reports+=(claude-claude.log claude-codex.log codex-claude.log codex-codex.log)
+              else
+                # A named single-cell suite and a custom target produce exactly
+                # the pair the runner was asked for. Trying all matrix filenames
+                # here made scp wait on three files that cannot exist (21 seconds
+                # in run 33446639363), obscuring rather than improving evidence.
+                reports+=("${QA}-${WORKER}.log")
+              fi
+              for name in "${reports[@]}"; do
+                scp -i "${key_path}" ${SSH_OPTS} \
+                  root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
+              done
+              # The pytest fixture writes bounded, redacted worker evidence into
+              # the runner directory before cleanup removes its containers.
+              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+                set -euo pipefail
+                cd /root/e2e-runs/latest
+                shopt -s nullglob
+                files=(run-evidence-*.json)
+                if [ "${#files[@]}" -eq 0 ]; then
+                  tar -cf - --files-from=/dev/null
+                else
+                  tar -cf - -- "${files[@]}"
+                fi
+              ' | tar -C "${run_dir}" -xf -
+            fi
           fi
 
       # This is the admission boundary for the inter-job handoff. It derives
