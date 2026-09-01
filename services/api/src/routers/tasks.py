@@ -27,6 +27,7 @@ from ._task_helpers import (
     generate_id,
     get_last_event_summary,
     get_task,
+    get_task_for_update,
     to_read,
     validate_transition,
 )
@@ -254,7 +255,7 @@ async def update_task(
     body: TaskUpdate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -272,7 +273,7 @@ async def cancel_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    task = await get_task(task_id, db)
+    task = await get_task_for_update(task_id, db)
     if task.status == TaskStatus.CANCELLED:
         return to_read(task)
 

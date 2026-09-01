@@ -64,8 +64,10 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
     )
 
 
-async def get_task(task_id: str, db: AsyncSession) -> Task:
+async def _load_task(task_id: str, db: AsyncSession, *, for_update: bool) -> Task:
     query = select(Task).where(Task.id == task_id)
+    if for_update:
+        query = query.with_for_update()
     result = await db.execute(query)
     task = result.scalar_one_or_none()
     if not task:
@@ -74,6 +76,20 @@ async def get_task(task_id: str, db: AsyncSession) -> Task:
             detail=f"Task {task_id} not found",
         )
     return task
+
+
+async def get_task(task_id: str, db: AsyncSession) -> Task:
+    """Read a task without taking a row lock — read-only paths only."""
+    return await _load_task(task_id, db, for_update=False)
+
+
+async def get_task_for_update(task_id: str, db: AsyncSession) -> Task:
+    """Read a task with SELECT ... FOR UPDATE — every path that mutates the row.
+
+    Concurrent transitions of the same task then serialize on the row, so the
+    loser validates against the status the winner committed and is refused.
+    """
+    return await _load_task(task_id, db, for_update=True)
 
 
 async def get_last_event_summary(task_id: str, db: AsyncSession) -> str | None:

@@ -83,8 +83,10 @@ def _generate_id() -> str:
     return f"story-{secrets.token_hex(4)}"
 
 
-async def _get_story(story_id: str, db: AsyncSession) -> Story:
+async def _load_story(story_id: str, db: AsyncSession, *, for_update: bool) -> Story:
     query = select(Story).where(Story.id == story_id)
+    if for_update:
+        query = query.with_for_update()
     result = await db.execute(query)
     story = result.scalar_one_or_none()
     if not story:
@@ -93,6 +95,21 @@ async def _get_story(story_id: str, db: AsyncSession) -> Story:
             detail=f"Story {story_id} not found",
         )
     return story
+
+
+async def _get_story(story_id: str, db: AsyncSession) -> Story:
+    """Read a story without taking a row lock — read-only paths only."""
+    return await _load_story(story_id, db, for_update=False)
+
+
+async def _get_story_for_update(story_id: str, db: AsyncSession) -> Story:
+    """Read a story with SELECT ... FOR UPDATE — every path that mutates the row.
+
+    Two callers transitioning the same story then serialize on the row, so the
+    second one re-reads the status the first committed and its transition is
+    validated against that, not against a stale snapshot.
+    """
+    return await _load_story(story_id, db, for_update=True)
 
 
 def _validate_transition(from_status: str, to_status: str) -> None:
@@ -265,7 +282,7 @@ async def update_story_owner_notification(
     _is_internal: bool = Depends(require_internal_or_admin),
 ) -> OwnerNotification:
     """Settle the story-backed completion notification after one delivery attempt."""
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
     story.owner_notification = notification.model_dump(mode="json")
     await db.commit()
     return notification
@@ -286,7 +303,7 @@ async def update_story(
     body: StoryUpdate,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -566,7 +583,7 @@ async def human_review_story(
 ) -> StoryRead:
     """Move a blocked active story to the visible human-review queue."""
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
@@ -586,7 +603,7 @@ async def wait_user_secret_story(
     so this is a non-terminal wait, not a failure.
     """
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
     _do_transition(story, StoryStatus.WAITING_USER_SECRET)
     await db.commit()
     await db.refresh(story)
@@ -601,7 +618,7 @@ async def start_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     if story.blocked_by_story_id:
         blocker = await _get_story(story.blocked_by_story_id, db)
@@ -629,7 +646,7 @@ async def complete_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
     if story.status == StoryStatus.WAITING_HUMAN_REVIEW.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -647,7 +664,7 @@ async def accept_story_result(
     actor: str = Depends(get_accept_result_actor),
 ) -> StoryRead:
     """Let the authenticated administrator finish a reviewed result with evidence."""
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -679,13 +696,7 @@ async def recheck_story_qa(
     actor: str = Depends(get_accept_result_actor),
 ) -> StoryRead:
     """Re-enter a typed QA quarantine through the ordinary deploy or QA route."""
-    story = (
-        await db.execute(select(Story).where(Story.id == story_id).with_for_update())
-    ).scalar_one_or_none()
-    if story is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Story {story_id} not found"
-        )
+    story = await _get_story_for_update(story_id, db)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -815,7 +826,7 @@ async def fail_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.FAILED)
     await db.commit()
@@ -832,7 +843,7 @@ async def pr_review_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.PR_REVIEW)
     await db.commit()
@@ -849,7 +860,7 @@ async def deploy_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.DEPLOYING)
     await db.commit()
@@ -866,7 +877,7 @@ async def test_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.TESTING)
     await db.commit()
@@ -883,7 +894,7 @@ async def reopen_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryReopen()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.REOPENED)
     story.reopened_at = datetime.now(UTC)
@@ -904,7 +915,7 @@ async def archive_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     body = body or StoryTransition()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.ARCHIVED)
     await db.commit()
@@ -927,7 +938,7 @@ async def send_to_architect(
     and publishes ArchitectMessage to architect:queue.
     """
     body = body or AdminAction()
-    story = await _get_story(story_id, db)
+    story = await _get_story_for_update(story_id, db)
 
     allowed = {StoryStatus.CREATED.value, StoryStatus.REOPENED.value}
     if story.status not in allowed:
