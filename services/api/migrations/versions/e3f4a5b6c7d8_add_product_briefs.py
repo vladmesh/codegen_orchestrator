@@ -1,6 +1,6 @@
 """Add immutable Product Brief and requirement coverage storage.
 
-Revision ID: e1f2a3b4c5d6
+Revision ID: e3f4a5b6c7d8
 Revises: d1e2f3a4b5c6
 """
 
@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "e1f2a3b4c5d6"
+revision: str = "e3f4a5b6c7d8"
 down_revision: str | None = "d1e2f3a4b5c6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | None = None
