@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Consolidated repository-assistant guidance under `AGENTS.md`; `CLAUDE.md` is now its small
+  Claude Code compatibility entrypoint. Added a root repository map that distinguishes services,
+  shared code, test-owned Compose harnesses, operations, scripts, documentation, and optional
+  `.claude` skills without changing runtime behavior.
+
 - Made dynamic target provisioning failures diagnosable before pytest starts. The Stand observer
   now outlives the access and software provisioner budgets, emits timestamped allow-listed server
   state, and fails immediately on terminal server states. Failed setup also preserves secret-redacted

@@ -17,7 +17,7 @@ argument-hint: "[full] <group>"
 Keep living docs in sync with the codebase.
 
 ## Key References
-- See **Documentation Map** in [CLAUDE.md](CLAUDE.md) for the full list of docs grouped by purpose.
+- See **Navigation** in [AGENTS.md](AGENTS.md) for the canonical list of key documents.
 
 ## Modes
 
@@ -108,7 +108,7 @@ Each group bundles logically related docs. The "Code signals" column tells incre
 - `docs/ROADMAP.md`, `docs/VISION.md` — product direction, maintained by hand
 - `docs/e2e_results/*` — gitignored run artifacts
 - `.claude/skills/*/SKILL.md` — managed by `/skill-creator`
-- `CLAUDE.md`, `AGENTS.md` — meta-config, edited manually
+- `AGENTS.md` — canonical assistant guidance, edited manually; `CLAUDE.md` is its Claude Code entrypoint
 
 ## Protocol
 

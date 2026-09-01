@@ -93,9 +93,23 @@ Two details that cost the most time when they are unknown:
   [docs/REBUILD.md](docs/REBUILD.md), which is also where the two separate build loops are
   explained.
 - Nothing takes a default value. A missing key raises rather than falling back, on purpose. The
-  reasoning is in [CLAUDE.md](CLAUDE.md#critical-anti-patterns).
+  reasoning is in [AGENTS.md](AGENTS.md#project-conventions).
 
 Test layers, what each one costs and when to run it: [docs/TESTING.md](docs/TESTING.md).
+
+## Repository map
+
+| Area | Start here |
+|---|---|
+| Product services | `services/` — one directory per deployable service; [ARCHITECTURE.md](ARCHITECTURE.md) explains their relationships. |
+| Shared contracts and utilities | `shared/` — typed DTOs, queues, clients, and common runtime helpers. |
+| Tests | `tests/` — cross-service, live, and E2E coverage; service-local tests live beside each service. |
+| Compose test harnesses | `tests/compose/` — test-owned Dockerfiles and Compose stacks, with a local README. |
+| Operations | `infra/` — Ansible, production configuration, and operational scripts. |
+| Developer and CI scripts | `scripts/` — repository checks and repeatable maintenance commands. |
+| Documentation | `docs/` — contracts, pipeline, operations, testing, and historical change notes. |
+| Assistant workflows | `.claude/skills/` — optional live-pipeline and maintenance skills; their state and secrets stay there. |
+| Assistant instructions | [AGENTS.md](AGENTS.md) — canonical guidance; [CLAUDE.md](CLAUDE.md) only redirects Claude Code to it. |
 
 ## Documentation
 
