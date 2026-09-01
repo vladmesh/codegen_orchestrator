@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed the Stand E2E post-provisioning health timing record so its JSON
+  formatting cannot terminate the surrounding single-quoted SSH payload.
+
 - Consolidated repository-assistant guidance under `AGENTS.md`; `CLAUDE.md` is now its small
   Claude Code compatibility entrypoint. Removed the obsolete repository-local `.claude` skills,
   state files, and E2E secret template now that those workflows run through the external pipeline

@@ -145,12 +145,21 @@ def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_prob
     assert "src.tasks.health_checker import _check_server" in provision
     assert "api_client.get_server" in provision
     assert "scheduler python -c" in provision
-    assert '"event":"first_health_ready"' in provision
+    assert "first_health_ready" in provision
     assert (
         provision.index("--no-require-fresh-metrics")
         < provision.index("src.tasks.health_checker import _check_server")
         < provision.rindex("scripts.wait_stand_provisioning")
     )
+
+
+def test_remote_target_provisioning_script_does_not_break_its_ssh_quote():
+    provision = _steps()["Register and provision dynamic target"]["run"]
+    remote_script = provision.split('root@"${PROD_HOST}" \'\n', maxsplit=1)[1].rsplit(
+        "\n'", maxsplit=1
+    )[0]
+
+    assert "'" not in remote_script
 
 
 def test_the_matrix_fits_in_the_job_timeout():
