@@ -430,7 +430,7 @@ jobs:
             python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" --no-require-fresh-metrics 2>&1 | \
               tee "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
             if [ "${wait_status}" -eq 0 ]; then
-              # Use the scheduler's canonical probe, so this writes the same
+              # Use the scheduler canonical probe, so this writes the same
               # metrics history and last_health_check evidence as the periodic
               # worker. The second observer below proves the real probe made
               # the target allocatable; it never stamps freshness itself.
@@ -439,7 +439,7 @@ jobs:
               python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
                 tee -a "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
               if [ "${wait_status}" -eq 0 ]; then
-                printf '{"event":"first_health_ready","seconds":%s}\n' \
+                printf "{\"event\":\"first_health_ready\",\"seconds\":%s}\n" \
                   "$(( $(date +%s) - provisioning_started_epoch ))" | \
                   tee -a "${diagnostics_dir}/provisioning-state.jsonl"
               fi
