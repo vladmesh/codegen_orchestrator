@@ -50,6 +50,7 @@ def _task(**overrides) -> TaskDTO:
         "failure_metadata": None,
         "last_event": None,
         "elapsed_minutes": None,
+        "dispatch_admitted": True,
         "created_at": _NOW,
         "updated_at": _NOW,
     }
@@ -177,6 +178,24 @@ def redis_client():
 
 class TestDispatchTodoTasks:
     """Dispatch unblocked todo tasks to engineering queue."""
+
+    @pytest.mark.asyncio
+    async def test_unadmitted_todo_task_is_never_dispatched(self, api_client, redis_client):
+        """A raw TODO status cannot substitute for Product Brief admission."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(
+                id="task-awaiting-brief-admission",
+                project_id=PROJ_ID,
+                story_id="story-brief",
+                dispatch_admitted=False,
+            )
+        ]
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+        api_client.start_paid_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_message_carries_the_run_the_project_was_created_for(

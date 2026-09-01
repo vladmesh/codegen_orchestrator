@@ -87,6 +87,7 @@ export interface Task {
   updated_at?: string | null
   last_event?: string | null
   elapsed_minutes?: number | null
+  dispatch_admitted: boolean
 }
 
 export type TaskStatus =
@@ -246,7 +247,7 @@ export interface StoryCreate {
   description?: string | null
   acceptance_criteria?: string | null
   parent_story_id?: string | null
-  type?: 'product' | 'technical'
+  type: 'product' | 'technical'
   priority?: number
   blocked_by_story_id?: string | null
   created_by?: string

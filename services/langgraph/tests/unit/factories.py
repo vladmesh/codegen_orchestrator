@@ -101,6 +101,7 @@ def make_task(**overrides) -> TaskDTO:
         "current_iteration": 1,
         "max_iterations": 3,
         "created_by": "system",
+        "dispatch_admitted": True,
         "created_at": _NOW,
         "updated_at": _NOW,
     }

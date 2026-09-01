@@ -831,6 +831,9 @@ class TestCreateStory:
         )
 
         mock_api_client.patch_raw.assert_not_called()
+        payload = mock_api_client.post_raw.call_args.kwargs["json"]
+        assert payload["type"] == "technical"
+        assert payload["product_brief_id"] is None
 
     @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):

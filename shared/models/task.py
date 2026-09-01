@@ -47,6 +47,11 @@ class Task(Base):
         String(255), ForeignKey("tasks.id"), nullable=True
     )
     failure_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # The scheduler consumes only tasks released through the durable Product
+    # Brief coverage admission operation. Existing non-brief work remains true.
+    dispatch_admitted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
 
 
 class TaskEvent(Base):

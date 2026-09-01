@@ -101,13 +101,17 @@ class TestStoryDTO:
 class TestStoryCreate:
     """StoryCreate should serialize for API requests."""
 
-    def test_minimal(self):
-        create = StoryCreate(project_id=_PROJECT_ID, title="New story")
+    def test_type_is_explicit(self):
+        create = StoryCreate(project_id=_PROJECT_ID, title="New story", type=StoryType.TECHNICAL)
         data = create.model_dump(mode="json")
         assert data["project_id"] == str(_PROJECT_ID)
         assert data["title"] == "New story"
-        assert data["type"] == "product"
+        assert data["type"] == "technical"
         assert data["priority"] == 0
+
+    def test_missing_type_is_rejected(self):
+        with pytest.raises(ValidationError):
+            StoryCreate(project_id=_PROJECT_ID, title="New story")
 
     def test_full(self):
         create = StoryCreate(

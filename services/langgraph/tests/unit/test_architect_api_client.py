@@ -63,6 +63,7 @@ def _task_dict(**overrides):
         "current_iteration": 1,
         "max_iterations": 3,
         "created_by": "system",
+        "dispatch_admitted": True,
         "created_at": _NOW,
     }
     base.update(overrides)

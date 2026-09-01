@@ -57,6 +57,7 @@ def to_read(task: Task, last_event: str | None = None) -> TaskRead:
         story_id=getattr(task, "story_id", None),
         blocked_by_task_id=getattr(task, "blocked_by_task_id", None),
         failure_metadata=getattr(task, "failure_metadata", None),
+        dispatch_admitted=task.dispatch_admitted,
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,

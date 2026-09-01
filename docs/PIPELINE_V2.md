@@ -80,7 +80,10 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 6. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
 7. Skips stories already decomposed (IN_PROGRESS + has tasks)
 
-**Outputs**: Tasks in `todo` status, linearly chained
+**Outputs**: Tasks in `todo` status, linearly chained. For a brief-backed
+Product Story, these tasks are planned but not scheduler-admitted until every
+must-requirement has a durable task/acceptance coverage or returned reason and
+the architect calls the idempotent Product Brief admission operation.
 
 **Rules**:
 - Simple project = 1 task
@@ -95,7 +98,8 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 
 **Actor**: Scheduler (30s poll loop)
 
-1. Finds `todo` tasks with no unresolved blocker
+1. Finds admitted `todo` tasks with no unresolved blocker. A `todo` status
+   alone is never authority to dispatch a brief-backed task.
 2. Guard: if any task in the story is `in_dev` → skip (max 1 at a time)
 3. Publishes to `engineering:queue`
 4. Transitions task to `in_dev`
@@ -322,7 +326,9 @@ todo → in_dev → in_ci → testing → done
 - The confirmed Product Brief by Story identity: original must-requirement wording,
   stable IDs, intended users, languages and typed non-secret initial settings. Before
   the architect starts a brief-backed Story, it must record a coverage or returned
-  disposition for every must-requirement.
+  disposition for every must-requirement, then call the durable admission operation.
+  Missing IDs remain a structured result for re-dispatch; task and Story statuses do
+  not bypass that operation.
 - Story description (from user, via PO)
 - Project spec (modules, description, detailed_spec)
 - Repository tree (from scaffolder, stored in DB)

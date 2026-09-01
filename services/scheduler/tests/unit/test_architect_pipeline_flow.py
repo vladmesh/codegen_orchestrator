@@ -40,6 +40,7 @@ def _task(*, id: str, status: str = "todo", **overrides) -> TaskDTO:
         "created_by": "system",
         "story_id": "story-1",
         "blocked_by_task_id": None,
+        "dispatch_admitted": True,
         "created_at": _NOW,
     }
     defaults.update(overrides)

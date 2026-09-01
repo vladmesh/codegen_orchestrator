@@ -271,6 +271,9 @@ class LanggraphAPIClient(InternalAPIClient):
         )
         return response.json()
 
+    async def admit_product_brief_coverage(self, brief_id: str) -> dict:
+        return await self._post_json(f"product-briefs/{brief_id}/admit")
+
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})
         return [TaskDTO.model_validate(t) for t in resp.json()]

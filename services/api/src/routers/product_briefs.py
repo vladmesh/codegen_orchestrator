@@ -12,13 +12,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionOutcome,
+    ProductBriefAdmissionRead,
     ProductBriefConfirm,
     ProductBriefCreate,
     ProductBriefRead,
     RequirementCoverageCreate,
     RequirementCoverageRead,
 )
-from shared.models import ProductBrief, RequirementCoverage
+from shared.models import ProductBrief, RequirementCoverage, Task
 
 from ..database import get_async_session
 from ..dependencies import _optional_bearer_scheme, is_internal_service
@@ -156,12 +158,23 @@ async def record_requirement_coverage(
 ) -> RequirementCoverageRead:
     if body.requirement_id != requirement_id:
         raise HTTPException(status_code=422, detail="requirement ID path/body mismatch")
-    brief = await db.get(ProductBrief, brief_id)
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id).with_for_update())
+    ).scalar_one_or_none()
     if brief is None or brief.confirmed_at is None:
         raise HTTPException(status_code=422, detail="coverage requires a confirmed Product Brief")
     await _access(brief.project_id, x_telegram_id, db, internal, credentials)
+    if brief.coverage_admitted_at is not None:
+        raise HTTPException(status_code=409, detail="Product Brief coverage is already admitted")
     if requirement_id not in {item["id"] for item in brief.content["must_requirements"]}:
         raise HTTPException(status_code=422, detail="unknown Product Brief requirement")
+    if body.task_id is not None:
+        task = await db.get(Task, body.task_id)
+        if task is None or task.project_id != brief.project_id or task.story_id != brief.story_id:
+            raise HTTPException(
+                status_code=422,
+                detail="coverage task must belong to this Product Brief Story",
+            )
     coverage = (
         await db.execute(
             select(RequirementCoverage).where(
@@ -179,6 +192,69 @@ async def record_requirement_coverage(
     await db.commit()
     await db.refresh(coverage)
     return RequirementCoverageRead.model_validate(coverage, from_attributes=True)
+
+
+@router.post("/{brief_id}/admit", response_model=ProductBriefAdmissionRead)
+async def admit_product_brief_coverage(
+    brief_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> ProductBriefAdmissionRead:
+    """Atomically release planned tasks after every must-requirement is disposed."""
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id).with_for_update())
+    ).scalar_one_or_none()
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Product Brief not found")
+    await _access(brief.project_id, x_telegram_id, db, internal, credentials)
+    if brief.confirmed_at is None or brief.story_id is None:
+        raise HTTPException(
+            status_code=422, detail="admission requires a confirmed Product Brief Story"
+        )
+
+    required = {item["id"] for item in brief.content["must_requirements"]}
+    covered = set(
+        (
+            await db.execute(
+                select(RequirementCoverage.requirement_id)
+                .where(RequirementCoverage.brief_id == brief.id)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    missing = sorted(required - covered)
+    if missing:
+        return ProductBriefAdmissionRead(
+            brief_id=brief.id,
+            story_id=brief.story_id,
+            outcome=ProductBriefAdmissionOutcome.INCOMPLETE,
+            missing_requirement_ids=missing,
+        )
+    if brief.coverage_admitted_at is not None:
+        return ProductBriefAdmissionRead(
+            brief_id=brief.id,
+            story_id=brief.story_id,
+            outcome=ProductBriefAdmissionOutcome.ALREADY_ADMITTED,
+        )
+
+    tasks = list(
+        (
+            await db.execute(select(Task).where(Task.story_id == brief.story_id).with_for_update())
+        ).scalars()
+    )
+    released_task_ids = [task.id for task in tasks if not task.dispatch_admitted]
+    for task in tasks:
+        task.dispatch_admitted = True
+    brief.coverage_admitted_at = datetime.now(UTC)
+    await db.commit()
+    return ProductBriefAdmissionRead(
+        brief_id=brief.id,
+        story_id=brief.story_id,
+        outcome=ProductBriefAdmissionOutcome.ADMITTED,
+        released_task_ids=released_task_ids,
+    )
 
 
 async def require_complete_product_brief_coverage(story_id: str, db: AsyncSession) -> None:
@@ -202,3 +278,16 @@ async def require_complete_product_brief_coverage(story_id: str, db: AsyncSessio
     )
     if missing := sorted(required - covered):
         raise HTTPException(status_code=422, detail={"missing_product_brief_coverage": missing})
+
+
+async def require_product_brief_dispatch_admission(story_id: str, db: AsyncSession) -> None:
+    """Reject lifecycle progression until the separate admission is durable."""
+    await require_complete_product_brief_coverage(story_id, db)
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.story_id == story_id))
+    ).scalar_one_or_none()
+    if brief is not None and brief.coverage_admitted_at is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"product_brief_admission_required": brief.id},
+        )

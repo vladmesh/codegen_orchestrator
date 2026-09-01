@@ -49,6 +49,7 @@ def _task(**overrides) -> TaskDTO:
         "current_iteration": 1,
         "max_iterations": 3,
         "created_by": "system",
+        "dispatch_admitted": True,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
     }

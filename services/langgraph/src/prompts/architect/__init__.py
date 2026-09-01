@@ -33,9 +33,10 @@ need full field definitions to decide how to split work.
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
 Each check must be concrete and verifiable via curl or Telegram command.
-7. For every Product Brief must-requirement, call `record_requirement_coverage`
-with a produced task and/or repository acceptance contract, or a returned reason.
-8. After all dispositions are recorded, call `transition_story` with action "start".
+7. For every Product Brief must-requirement, call `record_requirement_coverage`.
+8. Call `admit_product_brief_coverage` only after every disposition is recorded;
+   an `incomplete` result names the stable IDs that still need work. Only then
+   may you call `transition_story` with action "start".
 
 ## Task Decomposition Philosophy
 

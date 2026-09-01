@@ -50,7 +50,7 @@ from ..schemas.story import (
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from .applications import _make_deploy_run_id
-from .product_briefs import require_complete_product_brief_coverage
+from .product_briefs import require_product_brief_dispatch_admission
 
 logger = structlog.get_logger()
 
@@ -630,7 +630,7 @@ async def start_story(
 ) -> StoryRead:
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
-    await require_complete_product_brief_coverage(story_id, db)
+    await require_product_brief_dispatch_admission(story_id, db)
 
     if story.blocked_by_story_id:
         blocker = await _get_story(story.blocked_by_story_id, db)

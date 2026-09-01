@@ -112,6 +112,9 @@ class TaskDTO(TimestampedDTO):
     failure_metadata: dict[str, Any] | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
+    # Only the Product Brief admission operation may set this for brief-backed
+    # work. Legacy and technical tasks are created admitted.
+    dispatch_admitted: bool
 
 
 class TaskEventDTO(TimestampedDTO):

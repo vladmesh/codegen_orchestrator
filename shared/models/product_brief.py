@@ -27,6 +27,10 @@ class ProductBrief(Base):
     confirmation_request_id: Mapped[str | None] = mapped_column(
         String(255), unique=True, nullable=True
     )
+    # The immutable completion record for the coverage-to-dispatch boundary.
+    coverage_admitted_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class RequirementCoverage(Base):

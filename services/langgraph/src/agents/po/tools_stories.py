@@ -135,11 +135,12 @@ async def create_story(
     headers = _user_headers(config)
 
     product_brief_id = product_brief_id or config["configurable"].get("confirmed_product_brief_id")
-    if story_type != "fix" and not product_brief_id:
+    is_fix = story_type == "fix"
+    if not is_fix and not product_brief_id:
         return "No story was created: product work requires a confirmed Product Brief."
 
     # Determine action from project status, not story_type
-    if story_type == "fix":
+    if is_fix:
         action = "fix"
     else:
         proj_resp = await api.get_raw(f"projects/{project_id}", headers=headers)
@@ -191,9 +192,9 @@ async def create_story(
         "title": title,
         "description": description,
         "parent_story_id": retry_parent_story_id,
-        "type": StoryType.PRODUCT.value,
+        "type": StoryType.TECHNICAL.value if is_fix else StoryType.PRODUCT.value,
         "created_by": "po",
-        "product_brief_id": product_brief_id,
+        "product_brief_id": None if is_fix else product_brief_id,
     }
     resp = await api.post_raw("stories/", json=story_payload, headers=headers)
     resp.raise_for_status()

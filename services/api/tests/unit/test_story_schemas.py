@@ -12,8 +12,8 @@ PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class TestStoryCreate:
-    def test_minimal(self):
-        s = StoryCreate(project_id=PROJECT_UUID, title="User login")
+    def test_type_is_explicit(self):
+        s = StoryCreate(project_id=PROJECT_UUID, title="User login", type="technical")
         assert s.project_id == PROJECT_UUID
         assert s.title == "User login"
         assert s.description is None
@@ -22,7 +22,11 @@ class TestStoryCreate:
         assert s.priority == 0
         assert s.blocked_by_story_id is None
         assert s.created_by == "system"
-        assert s.type == "product"
+        assert s.type == "technical"
+
+    def test_missing_type_is_rejected(self):
+        with pytest.raises(ValidationError):
+            StoryCreate(project_id=PROJECT_UUID, title="User login")
 
     def test_technical_type(self):
         s = StoryCreate(project_id=PROJECT_UUID, title="Rust migration", type="technical")
@@ -40,6 +44,7 @@ class TestStoryCreate:
             acceptance_criteria="Login form works",
             parent_story_id="story-parent",
             created_by="po",
+            type="technical",
         )
         assert s.description == "Allow users to log in"
         assert s.parent_story_id == "story-parent"

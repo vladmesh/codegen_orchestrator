@@ -71,6 +71,7 @@ def test_task_read_from_attributes():
         current_iteration = 0
         max_iterations = 3
         created_by = "system"
+        dispatch_admitted = True
         created_at = now
         updated_at = now
 
@@ -98,6 +99,7 @@ def test_task_read_with_plan():
         current_iteration = 0
         max_iterations = 3
         created_by = "system"
+        dispatch_admitted = True
         created_at = now
         updated_at = now
 
@@ -132,6 +134,7 @@ def test_task_read_includes_need_e2e():
         max_iterations = 3
         created_by = "system"
         need_e2e = True
+        dispatch_admitted = True
         created_at = now
         updated_at = now
 

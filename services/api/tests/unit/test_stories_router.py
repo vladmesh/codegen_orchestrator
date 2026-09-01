@@ -115,7 +115,7 @@ async def test_create_story():
 
 
 @pytest.mark.asyncio
-async def test_create_product_story_requires_a_confirmed_brief():
+async def test_create_story_requires_an_explicit_type():
     session = _mock_session()
     _override_session(session)
 
@@ -129,7 +129,6 @@ async def test_create_product_story_requires_a_confirmed_brief():
         )
 
     assert resp.status_code == 422  # noqa: PLR2004
-    assert resp.json()["detail"] == "product story requires a confirmed Product Brief"
     session.add.assert_not_called()
 
 
@@ -225,6 +224,7 @@ async def test_create_story_rejects_retry_of_qa_failure_held_parent():
                 "title": "Retry login fix",
                 "project_id": "00000000-0000-0000-0000-000000000001",
                 "parent_story_id": "story-qa-held",
+                "type": "technical",
             },
         )
 

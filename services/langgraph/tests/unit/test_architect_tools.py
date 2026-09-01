@@ -40,6 +40,28 @@ class TestGetStoryTool:
         mock_api.get_story.assert_called_once_with("story-abc")
 
 
+class TestProductBriefAdmissionTool:
+    @pytest.mark.asyncio
+    async def test_returns_incomplete_requirement_ids_without_starting_story(self, mock_api):
+        from src.agents.architect.tools import admit_product_brief_coverage
+
+        mock_api.admit_product_brief_coverage = AsyncMock(
+            return_value={
+                "brief_id": "brief-1",
+                "story_id": "story-abc",
+                "outcome": "incomplete",
+                "missing_requirement_ids": ["must-language"],
+                "released_task_ids": [],
+            }
+        )
+
+        result = await admit_product_brief_coverage.ainvoke({"brief_id": "brief-1"})
+
+        assert result["outcome"] == "incomplete"
+        assert result["missing_requirement_ids"] == ["must-language"]
+        mock_api.transition_story.assert_not_called()
+
+
 class TestGetProjectSpecTool:
     @pytest.mark.asyncio
     async def test_returns_project(self, mock_api):

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.dto.task import TaskStatus
-from shared.models import Task, TaskEvent
+from shared.models import ProductBrief, Task, TaskEvent
 
 from ..database import get_async_session
 from ..schemas.task import (
@@ -66,12 +66,37 @@ class _TaskFilters:
 # --- CRUD ---
 
 
+async def _dispatch_admitted_for_new_task(body: TaskCreate, db: AsyncSession) -> bool:
+    """Keep architect planning durable without making it scheduler-runnable."""
+    if body.story_id is None:
+        return True
+    brief = (
+        await db.execute(
+            select(ProductBrief).where(ProductBrief.story_id == body.story_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if brief is None:
+        return True
+    if brief.project_id != body.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="brief-backed task must belong to the Story project",
+        )
+    if brief.coverage_admitted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Product Brief task plan is already admitted",
+        )
+    return False
+
+
 @router.post("/", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
 async def create_task(
     body: TaskCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     now = datetime.now(UTC)
+    dispatch_admitted = await _dispatch_admitted_for_new_task(body, db)
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -90,6 +115,7 @@ async def create_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        dispatch_admitted=dispatch_admitted,
         created_at=now,
         updated_at=now,
     )
@@ -113,6 +139,7 @@ async def push_task(
     auto_priority = (min_priority if min_priority is not None else 0) - 1
 
     now = datetime.now(UTC)
+    dispatch_admitted = await _dispatch_admitted_for_new_task(body, db)
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -131,6 +158,7 @@ async def push_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        dispatch_admitted=dispatch_admitted,
         created_at=now,
         updated_at=now,
     )

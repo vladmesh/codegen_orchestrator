@@ -448,6 +448,13 @@ async def dispatch_todo_tasks(
         task_id = task.id
         blocker_id = task.blocked_by_task_id
 
+        # A TODO value is not dispatch authority. Brief-backed tasks are
+        # released only by the API transaction that verifies every durable
+        # requirement disposition.
+        if not task.dispatch_admitted:
+            logger.info("task_skipped_product_brief_admission", task_id=task_id)
+            continue
+
         # Check if blocker is resolved
         if blocker_id:
             blocker = await api_client.get_task(blocker_id)

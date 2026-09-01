@@ -114,6 +114,7 @@ class ProductBriefRead(BaseModel):
     content: ProductBriefContent
     confirmed_at: datetime | None
     confirmation_request_id: str | None
+    coverage_admitted_at: datetime | None
 
 
 class CoverageDisposition(StrEnum):
@@ -141,3 +142,21 @@ class RequirementCoverageCreate(BaseModel):
 class RequirementCoverageRead(RequirementCoverageCreate):
     id: int
     brief_id: str
+
+
+class ProductBriefAdmissionOutcome(StrEnum):
+    ADMITTED = "admitted"
+    ALREADY_ADMITTED = "already_admitted"
+    INCOMPLETE = "incomplete"
+
+
+class ProductBriefAdmissionRead(BaseModel):
+    """Durable result of releasing one brief-backed Story's planned tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief_id: str
+    story_id: str
+    outcome: ProductBriefAdmissionOutcome
+    missing_requirement_ids: list[str] = Field(default_factory=list)
+    released_task_ids: list[str] = Field(default_factory=list)

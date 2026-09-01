@@ -45,6 +45,7 @@ class TaskRead(TimestampedDTO):
     failure_metadata: dict[str, Any] | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
+    dispatch_admitted: bool
 
 
 class TaskTransition(BaseModel):

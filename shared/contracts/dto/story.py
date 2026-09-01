@@ -120,7 +120,7 @@ class StoryCreate(BaseModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     parent_story_id: str | None = None
-    type: StoryType = StoryType.PRODUCT
+    type: StoryType
     priority: int = 0
     blocked_by_story_id: str | None = None
     created_by: str = "system"

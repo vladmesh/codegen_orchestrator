@@ -225,6 +225,16 @@ async def record_requirement_coverage(
 
 
 @tool
+async def admit_product_brief_coverage(brief_id: str) -> dict:
+    """Release planned tasks after every must-requirement has a durable disposition.
+
+    An ``incomplete`` result names the stable IDs still owed. Record those
+    dispositions and retry this tool; do not treat it as a successful start.
+    """
+    return await api_client.admit_product_brief_coverage(brief_id)
+
+
+@tool
 async def transition_story(story_id: str, action: str) -> dict:
     """Transition a story's status.
 
@@ -260,5 +270,6 @@ def get_architect_tools() -> list:
         create_task,
         update_acceptance_criteria,
         record_requirement_coverage,
+        admit_product_brief_coverage,
         transition_story,
     ]

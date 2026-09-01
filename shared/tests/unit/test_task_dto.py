@@ -46,6 +46,7 @@ class TestTaskDTO:
         "failure_metadata": {"error": "timeout"},
         "last_event": "iteration_start",
         "elapsed_minutes": 45.2,
+        "dispatch_admitted": True,
         "created_at": _NOW.isoformat(),
         "updated_at": _NOW.isoformat(),
     }
@@ -86,6 +87,7 @@ class TestTaskDTO:
             "max_iterations": 3,
             "need_e2e": False,
             "created_by": "system",
+            "dispatch_admitted": True,
             "created_at": _NOW.isoformat(),
         }
         dto = TaskDTO.model_validate(minimal)
@@ -95,6 +97,7 @@ class TestTaskDTO:
         assert dto.last_event is None
         assert dto.elapsed_minutes is None
         assert dto.failure_metadata is None
+        assert dto.dispatch_admitted is True
 
     def test_model_dump_roundtrip(self):
         dto = TaskDTO.model_validate(self.SAMPLE_RESPONSE)

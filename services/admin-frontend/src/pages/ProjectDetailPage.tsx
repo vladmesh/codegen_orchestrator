@@ -304,7 +304,6 @@ function CreateStoryForm({ projectId }: { projectId: string }) {
   const [showForm, setShowForm] = useState(false)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [storyType, setStoryType] = useState<'product' | 'technical'>('product')
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -312,14 +311,13 @@ function CreateStoryForm({ projectId }: { projectId: string }) {
         project_id: projectId,
         title,
         description: description || null,
-        type: storyType,
+        type: 'technical',
         created_by: 'admin',
       }),
     onSuccess: () => {
       setShowForm(false)
       setTitle('')
       setDescription('')
-      setStoryType('product')
       queryClient.invalidateQueries({ queryKey: ['stories', projectId] })
     },
   })
@@ -359,17 +357,10 @@ function CreateStoryForm({ projectId }: { projectId: string }) {
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground"
           />
         </div>
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">Type</label>
-          <select
-            value={storyType}
-            onChange={(e) => setStoryType(e.target.value as 'product' | 'technical')}
-            className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
-          >
-            <option value="product">Product</option>
-            <option value="technical">Technical</option>
-          </select>
-        </div>
+        <p className="text-xs text-muted-foreground">
+          This form creates a technical Story. Create Product Stories through the
+          Product Brief confirmation flow so their confirmed requirements can be admitted.
+        </p>
         <div className="flex items-center gap-2">
           <button
             onClick={() => createMutation.mutate()}
