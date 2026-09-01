@@ -115,6 +115,8 @@ class TaskDTO(TimestampedDTO):
     # Only the Product Brief admission operation may set this for brief-backed
     # work. Legacy and technical tasks are created admitted.
     dispatch_admitted: bool
+    # The architect planning attempt that owns an unadmitted brief task.
+    planning_attempt_id: str | None = None
 
 
 class TaskEventDTO(TimestampedDTO):
@@ -151,6 +153,7 @@ class TaskCreate(BaseModel):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     failure_metadata: dict[str, Any] | None = None
+    planning_attempt_id: str | None = None
 
 
 class TaskUpdate(BaseModel):

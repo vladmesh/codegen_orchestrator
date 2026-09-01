@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
@@ -13,6 +13,7 @@ from shared.allocation_disposition import (
     attempt_disposition,
     refusal_routing,
 )
+from shared.contracts.dto.product_brief import PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
@@ -119,6 +120,17 @@ async def supervise_stuck_stories(
         has_incomplete_brief_plan = bool(story.product_brief_id) and all(
             not task.dispatch_admitted for task in tasks
         )
+        if has_incomplete_brief_plan:
+            brief = await api_client.get_product_brief(story.product_brief_id)
+            if (
+                brief.planning_attempt_active
+                and brief.planning_attempt_heartbeat_at is not None
+                and brief.planning_attempt_heartbeat_at
+                >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+            ):
+                # A persisted heartbeat, not the Story's age, owns this
+                # planning window. Do not spend retry budget on live work.
+                continue
         if tasks and not has_incomplete_brief_plan:
             continue
 

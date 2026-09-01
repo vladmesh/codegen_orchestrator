@@ -19,6 +19,7 @@ from shared.contracts.dto.engineering_budget_policy import (
 )
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
+from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -53,6 +54,10 @@ class SchedulerAPIClient(InternalAPIClient):
     async def ingest_rag(self, body: bytes, headers: dict) -> dict:
         resp = await self.request("POST", "rag/ingest", content=body, headers=headers)
         return resp.json()
+
+    async def get_product_brief(self, brief_id: str) -> ProductBriefRead:
+        resp = await self.request("GET", f"product-briefs/{brief_id}")
+        return ProductBriefRead.model_validate(resp.json())
 
     # --- Projects ---
 

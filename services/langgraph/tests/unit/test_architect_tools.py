@@ -43,7 +43,11 @@ class TestGetStoryTool:
 class TestProductBriefAdmissionTool:
     @pytest.mark.asyncio
     async def test_returns_incomplete_requirement_ids_without_starting_story(self, mock_api):
-        from src.agents.architect.tools import admit_product_brief_coverage
+        from src.agents.architect.tools import (
+            admit_product_brief_coverage,
+            reset_planning_attempt_id,
+            set_planning_attempt_id,
+        )
 
         mock_api.admit_product_brief_coverage = AsyncMock(
             return_value={
@@ -55,10 +59,15 @@ class TestProductBriefAdmissionTool:
             }
         )
 
-        result = await admit_product_brief_coverage.ainvoke({"brief_id": "brief-1"})
+        token = set_planning_attempt_id("plan-1")
+        try:
+            result = await admit_product_brief_coverage.ainvoke({"brief_id": "brief-1"})
+        finally:
+            reset_planning_attempt_id(token)
 
         assert result["outcome"] == "incomplete"
         assert result["missing_requirement_ids"] == ["must-language"]
+        mock_api.admit_product_brief_coverage.assert_called_once_with("brief-1", "plan-1")
         mock_api.transition_story.assert_not_called()
 
 

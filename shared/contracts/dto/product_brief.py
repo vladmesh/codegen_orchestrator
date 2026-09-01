@@ -12,6 +12,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _SECRET_NAME = re.compile(r"(?:secret|token|password|api[_-]?key|private[_-]?key|credential)", re.I)
+PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS = 90
 
 
 class InitialSetting(BaseModel):
@@ -115,6 +116,32 @@ class ProductBriefRead(BaseModel):
     confirmed_at: datetime | None
     confirmation_request_id: str | None
     coverage_admitted_at: datetime | None
+    planning_attempt_id: str | None
+    planning_attempt_active: bool
+    planning_attempt_heartbeat_at: datetime | None
+
+
+class ProductBriefPlanningAttemptOutcome(StrEnum):
+    CLAIMED = "claimed"
+    IN_PROGRESS = "in_progress"
+    ADMITTED = "admitted"
+
+
+class ProductBriefPlanningAttemptRead(BaseModel):
+    """The durable ownership result for one architect planning attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief_id: str
+    story_id: str
+    outcome: ProductBriefPlanningAttemptOutcome
+    planning_attempt_id: str | None = None
+
+
+class ProductBriefPlanningAttemptCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    planning_attempt_id: str = Field(min_length=1, max_length=128)
 
 
 class CoverageDisposition(StrEnum):

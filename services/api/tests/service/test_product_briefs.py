@@ -92,7 +92,9 @@ async def _create_confirmed_brief(
 
 
 @pytest.mark.asyncio
-async def test_product_brief_confirmation_coverage_and_story_gate(async_client: AsyncClient):
+async def test_product_brief_confirmation_coverage_and_story_gate(  # noqa: PLR0915
+    async_client: AsyncClient,
+):
     project_id, owner, intruder = await _create_owned_project(async_client)
     brief_id, confirmation = await _create_confirmed_brief(async_client, project_id, owner)
 
@@ -132,6 +134,15 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
     assert story.status_code == HTTPStatus.CREATED, story.text
     story_id = story.json()["id"]
 
+    planning_attempt = await async_client.post(
+        f"/api/product-briefs/{brief_id}/planning-attempts/claim",
+        headers={"X-Telegram-ID": owner},
+    )
+    assert planning_attempt.status_code == HTTPStatus.OK, planning_attempt.text
+    assert planning_attempt.json()["outcome"] == "claimed"
+    planning_attempt_id = planning_attempt.json()["planning_attempt_id"]
+    planning_headers = {"X-Product-Brief-Planning-Attempt": planning_attempt_id}
+
     planned_task = await async_client.post(
         "/api/tasks/",
         json={
@@ -141,6 +152,7 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
             "description": "Persist the selected language.",
             "status": "todo",
             "created_by": "architect",
+            "planning_attempt_id": planning_attempt_id,
         },
     )
     assert planned_task.status_code == HTTPStatus.CREATED, planned_task.text
@@ -153,7 +165,9 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
         "missing_product_brief_coverage": ["must-english", "must-russian"]
     }
 
-    incomplete_admission = await async_client.post(f"/api/product-briefs/{brief_id}/admit")
+    incomplete_admission = await async_client.post(
+        f"/api/product-briefs/{brief_id}/admit", headers=planning_headers
+    )
     assert incomplete_admission.status_code == HTTPStatus.OK, incomplete_admission.text
     assert incomplete_admission.json() == {
         "brief_id": brief_id,
@@ -171,6 +185,7 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
     mismatched_task_coverage = await async_client.put(
         f"/api/product-briefs/{brief_id}/coverage/must-russian",
         json={"requirement_id": "must-russian", "task_id": "task-not-in-this-story"},
+        headers=planning_headers,
     )
     assert mismatched_task_coverage.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
@@ -183,6 +198,7 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
                 "Russian is available in the product language picker."
             ),
         },
+        headers=planning_headers,
     )
     assert coverage.status_code == HTTPStatus.OK, coverage.text
 
@@ -192,6 +208,7 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
             "requirement_id": "must-english",
             "returned_reason": "English is returned to the PO for a later product revision.",
         },
+        headers=planning_headers,
     )
     assert returned.status_code == HTTPStatus.OK, returned.text
     assert returned.json()["returned_reason"] == (
@@ -209,6 +226,11 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
         },
     )
     assert other_story.status_code == HTTPStatus.CREATED, other_story.text
+    other_planning_attempt = await async_client.post(
+        f"/api/product-briefs/{other_brief_id}/planning-attempts/claim",
+        headers={"X-Telegram-ID": owner},
+    )
+    assert other_planning_attempt.status_code == HTTPStatus.OK, other_planning_attempt.text
     other_task = await async_client.post(
         "/api/tasks/",
         json={
@@ -217,6 +239,7 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
             "title": "Separate planned work",
             "status": "todo",
             "created_by": "architect",
+            "planning_attempt_id": other_planning_attempt.json()["planning_attempt_id"],
         },
     )
     assert other_task.status_code == HTTPStatus.CREATED, other_task.text
@@ -227,8 +250,8 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
     assert before_admission.json()["detail"] == {"product_brief_admission_required": brief_id}
 
     first_admission, concurrent_admission = await asyncio.gather(
-        async_client.post(f"/api/product-briefs/{brief_id}/admit"),
-        async_client.post(f"/api/product-briefs/{brief_id}/admit"),
+        async_client.post(f"/api/product-briefs/{brief_id}/admit", headers=planning_headers),
+        async_client.post(f"/api/product-briefs/{brief_id}/admit", headers=planning_headers),
     )
     assert first_admission.status_code == HTTPStatus.OK, first_admission.text
     assert concurrent_admission.status_code == HTTPStatus.OK, concurrent_admission.text
@@ -266,6 +289,54 @@ async def test_product_brief_confirmation_coverage_and_story_gate(async_client: 
     started = await async_client.post(f"/api/stories/{story_id}/start")
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_reparenting_cannot_admit_work_to_an_incomplete_brief(async_client: AsyncClient):
+    project_id, owner, _intruder = await _create_owned_project(async_client)
+    brief_id, _confirmation = await _create_confirmed_brief(async_client, project_id, owner)
+    story = await async_client.post(
+        "/api/stories/",
+        json={
+            "project_id": project_id,
+            "title": "Awaiting planning",
+            "type": "product",
+            "product_brief_id": brief_id,
+        },
+    )
+    assert story.status_code == HTTPStatus.CREATED, story.text
+    planning_attempt = await async_client.post(
+        f"/api/product-briefs/{brief_id}/planning-attempts/claim",
+        headers={"X-Telegram-ID": owner},
+    )
+    assert planning_attempt.status_code == HTTPStatus.OK, planning_attempt.text
+
+    standalone = await async_client.post(
+        "/api/tasks/",
+        json={
+            "project_id": project_id,
+            "title": "Previously runnable task",
+            "status": "todo",
+        },
+    )
+    assert standalone.status_code == HTTPStatus.CREATED, standalone.text
+    assert standalone.json()["dispatch_admitted"] is True
+
+    reparented = await async_client.patch(
+        f"/api/tasks/{standalone.json()['id']}",
+        json={"story_id": story.json()["id"]},
+    )
+    assert reparented.status_code == HTTPStatus.OK, reparented.text
+    assert reparented.json()["dispatch_admitted"] is False
+
+    admitted = await async_client.post(
+        f"/api/product-briefs/{brief_id}/admit",
+        headers={
+            "X-Product-Brief-Planning-Attempt": planning_attempt.json()["planning_attempt_id"]
+        },
+    )
+    assert admitted.status_code == HTTPStatus.OK, admitted.text
+    assert admitted.json()["outcome"] == "incomplete"
 
 
 @pytest.mark.asyncio

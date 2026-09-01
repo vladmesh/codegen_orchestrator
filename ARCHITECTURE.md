@@ -35,7 +35,7 @@ A three-level abstraction for product management:
    - For existing projects: the ensure-workspace gate (mode=ensure) checks that the workspace exists before dispatching tasks
 4. The PO publishes an `ArchitectMessage` to `architect:queue`
 5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
-6. The Task Dispatcher finds admitted, unblocked tasks, creates Runs, publishes to `engineering:queue`. A confirmed Product Brief Story first receives architect planning and durable per-must-requirement dispositions; its planned tasks become admitted only through the Product Brief coverage completion transaction.
+6. The Task Dispatcher finds admitted, unblocked tasks, creates Runs, publishes to `engineering:queue`. A confirmed Product Brief Story first receives one durable architect planning attempt and per-must-requirement dispositions; its planned tasks become admitted only through the Product Brief coverage completion transaction. The attempt heartbeat fences supervisor retries, and admission releases only tasks stamped with that current attempt.
 7. Once all tasks are done — a PR story/* → main, auto-merge → deploy → QA → story completed
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).

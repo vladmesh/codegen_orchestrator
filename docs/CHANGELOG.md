@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Product Brief coverage is now a durable pre-dispatch admission boundary. Architect-created tasks for a brief-backed Story stay non-dispatchable until the typed, idempotent coverage admission operation verifies every must-requirement and atomically releases that Story's planned tasks. The scheduler refuses unadmitted tasks even when their status is `todo`.
+- Product Brief planning now has a durable single-architect attempt fence. A live heartbeat stops supervisor retry exhaustion; a later retry owns a new task set, and admission releases only that current set. Moving a task between Stories recomputes its dispatch authority.
 - Product Story creation now requires an explicit `type` and a confirmed brief at the persisted API boundary. PO fixes create explicit technical Stories, and the admin form offers only the working technical route with guidance to the Product Brief flow.
 - Durable, versioned Product Briefs with explicit confirmation, typed non-secret initial settings, stable requirement identities, and architect coverage/return records.
 - A fail-closed architect progression gate for incomplete confirmed Product Brief coverage.

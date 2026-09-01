@@ -31,6 +31,13 @@ class ProductBrief(Base):
     coverage_admitted_at: Mapped[object | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # One live architect owns a plan at a time. A stale owner cannot append to
+    # a replacement plan or cause it to release the abandoned tasks.
+    planning_attempt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    planning_attempt_active: Mapped[bool] = mapped_column(default=False, nullable=False)
+    planning_attempt_heartbeat_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class RequirementCoverage(Base):

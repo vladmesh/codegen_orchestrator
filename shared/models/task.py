@@ -52,6 +52,9 @@ class Task(Base):
     dispatch_admitted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, index=True
     )
+    # A brief admission releases only the currently owned plan, never stale
+    # work left by a superseded architect attempt.
+    planning_attempt_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class TaskEvent(Base):

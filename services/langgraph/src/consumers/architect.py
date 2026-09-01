@@ -6,10 +6,12 @@ Run standalone: python -m src.consumers.architect
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import uuid
 
 import structlog
 
+from shared.contracts.dto.product_brief import ProductBriefPlanningAttemptOutcome
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -17,7 +19,11 @@ from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
-from ..agents.architect.tools import reset_task_chain
+from ..agents.architect.tools import (
+    reset_planning_attempt_id,
+    reset_task_chain,
+    set_planning_attempt_id,
+)
 from ..clients.api import api_client
 from ..config.agent_llm_env import missing_llm_env
 from ..config.settings import get_settings
@@ -28,6 +34,33 @@ logger = structlog.get_logger(__name__)
 
 SCAFFOLD_WAIT_INTERVAL = 10  # seconds between checks
 SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
+PLANNING_HEARTBEAT_INTERVAL = 30
+
+
+async def _keep_planning_attempt_alive(brief_id: str, planning_attempt_id: str) -> None:
+    while True:
+        await asyncio.sleep(PLANNING_HEARTBEAT_INTERVAL)
+        await api_client.heartbeat_product_brief_planning_attempt(brief_id, planning_attempt_id)
+
+
+async def _finish_planning_attempt(
+    brief_id: str | None,
+    planning_attempt_id: str | None,
+    heartbeat_task: asyncio.Task[None] | None,
+    planning_token,
+    log,
+) -> None:
+    if heartbeat_task is not None:
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
+    if brief_id is not None and planning_attempt_id is not None:
+        try:
+            await api_client.finish_product_brief_planning_attempt(brief_id, planning_attempt_id)
+        except Exception:
+            log.warning("architect_planning_attempt_finish_failed", exc_info=True)
+    if planning_token is not None:
+        reset_planning_attempt_id(planning_token)
 
 
 async def _wait_for_scaffold(
@@ -61,7 +94,7 @@ async def _wait_for_scaffold(
     return project, None
 
 
-async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:
+async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:  # noqa: PLR0915
     """Process a single architect job by running the Architect ReAct agent.
 
     Args:
@@ -91,12 +124,31 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.info("architect_skipping_deploying_story", status=story_status)
         return live_work_settled({"status": "skipped", "reason": f"story already {story_status}"})
 
+    planning_attempt_id: str | None = None
+    planning_token = None
+    heartbeat_task: asyncio.Task[None] | None = None
+    if story.product_brief_id:
+        planning = await api_client.claim_product_brief_planning_attempt(story.product_brief_id)
+        if planning.outcome is not ProductBriefPlanningAttemptOutcome.CLAIMED:
+            log.info("architect_planning_fenced", outcome=planning.outcome)
+            return live_work_settled({"status": "skipped", "reason": planning.outcome})
+        planning_attempt_id = planning.planning_attempt_id
+        if planning_attempt_id is None:
+            raise RuntimeError("claimed Product Brief planning attempt has no ID")
+        planning_token = set_planning_attempt_id(planning_attempt_id)
+        heartbeat_task = asyncio.create_task(
+            _keep_planning_attempt_alive(story.product_brief_id, planning_attempt_id)
+        )
+
     # Skip if already in_progress with tasks (duplicate message from supervisor retry)
     # But never skip reopened stories — they need re-decomposition
     if story_status == StoryStatus.IN_PROGRESS:
         existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
         if existing_tasks:
             log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
+            await _finish_planning_attempt(
+                story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
+            )
             return live_work_settled({"status": "skipped", "reason": "already decomposed"})
 
     # Transition to in_progress immediately to prevent supervisor retries
@@ -111,12 +163,18 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     project = await api_client.get_project(msg.project_id)
     if not project:
         log.warning("architect_project_not_found", project_id=msg.project_id)
+        await _finish_planning_attempt(
+            story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
+        )
         return live_work_settled({"status": "skipped", "error": "project not found"})
 
     # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
     project, scaffold_err = await _wait_for_scaffold(msg.project_id, project, log)
     if scaffold_err:
         result = {"status": "failed" if project else "skipped", "error": scaffold_err}
+        await _finish_planning_attempt(
+            story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
+        )
         return live_work_unsettled(result) if project else live_work_settled(result)
 
     settings = get_settings()
@@ -124,6 +182,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     missing_env = missing_llm_env("architect", settings)
     if missing_env:
         log.error("architect_llm_not_configured", missing_env=missing_env)
+        await _finish_planning_attempt(
+            story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
+        )
         return live_work_unsettled(
             {"status": "failed", "error": f"{', '.join(missing_env)} not set"}
         )
@@ -175,6 +236,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             "architect_job_success",
             message_count=len(result.get("messages", [])),
         )
+        await _finish_planning_attempt(
+            story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
+        )
         return live_work_settled({"status": "success"})
 
     except Exception as e:
@@ -183,6 +247,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             error=str(e),
             error_type=type(e).__name__,
             exc_info=True,
+        )
+        await _finish_planning_attempt(
+            story.product_brief_id, planning_attempt_id, heartbeat_task, planning_token, log
         )
         return live_work_unsettled({"status": "failed", "error": str(e)})
 

@@ -218,11 +218,50 @@ class TestSuperviseStuckStories:
         api_client.get_tasks_by_story.return_value = [
             _make_task(id="task-1", story_id="story-1", dispatch_admitted=False)
         ]
+        api_client.get_product_brief.return_value = SimpleNamespace(
+            planning_attempt_active=False,
+            planning_attempt_heartbeat_at=None,
+        )
 
         result = await supervise_stuck_stories(api_client, redis_client)
 
         assert result == {"retried": 1, "failed": 0}
         redis_client.publish_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_spend_retries_while_brief_planning_attempt_is_live(
+        self, api_client, redis_client
+    ):
+        """A live durable architect attempt fences supervisor retry exhaustion."""
+        from src.tasks.supervisor import supervise_stuck_stories
+
+        old = datetime.now(UTC) - timedelta(minutes=10)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                _make_story(
+                    id="story-1",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    created_at=old,
+                    product_brief_id="brief-1",
+                )
+            ]
+            if status == "created"
+            else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _make_task(id="task-1", story_id="story-1", dispatch_admitted=False)
+        ]
+        api_client.get_product_brief.return_value = SimpleNamespace(
+            planning_attempt_active=True,
+            planning_attempt_heartbeat_at=datetime.now(UTC),
+        )
+        redis_client._redis.get.return_value = "3"
+
+        result = await supervise_stuck_stories(api_client, redis_client)
+
+        assert result == {"retried": 0, "failed": 0}
+        api_client.fail_story.assert_not_called()
+        redis_client.publish_message.assert_not_called()
 
 
 class TestCompleteStoriesTriggersNext:

@@ -66,25 +66,54 @@ class _TaskFilters:
 # --- CRUD ---
 
 
-async def _dispatch_admitted_for_new_task(body: TaskCreate, db: AsyncSession) -> bool:
+async def _brief_task_admission(
+    *,
+    project_id: uuid.UUID,
+    story_id: str | None,
+    planning_attempt_id: str | None,
+    require_active_attempt: bool,
+    db: AsyncSession,
+) -> tuple[bool, str | None]:
     """Keep architect planning durable without making it scheduler-runnable."""
-    if body.story_id is None:
-        return True
+    if story_id is None:
+        return True, None
     brief = (
         await db.execute(
-            select(ProductBrief).where(ProductBrief.story_id == body.story_id).with_for_update()
+            select(ProductBrief).where(ProductBrief.story_id == story_id).with_for_update()
         )
     ).scalar_one_or_none()
     if brief is None:
-        return True
-    if brief.project_id != body.project_id:
+        return True, None
+    if brief.project_id != project_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="brief-backed task must belong to the Story project",
         )
     if brief.coverage_admitted_at is not None:
-        return True
-    return False
+        return True, None
+    if not require_active_attempt:
+        # Moving pre-existing work into this Story cannot acquire the planner's
+        # authority. Keep it visibly attached but permanently outside this
+        # attempt's release set.
+        return False, None
+    if planning_attempt_id != brief.planning_attempt_id or not brief.planning_attempt_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="brief-backed task requires the active architect planning attempt",
+        )
+    return False, planning_attempt_id
+
+
+async def _dispatch_admitted_for_new_task(
+    body: TaskCreate, db: AsyncSession
+) -> tuple[bool, str | None]:
+    return await _brief_task_admission(
+        project_id=body.project_id,
+        story_id=body.story_id,
+        planning_attempt_id=body.planning_attempt_id,
+        require_active_attempt=True,
+        db=db,
+    )
 
 
 @router.post("/", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
@@ -93,7 +122,7 @@ async def create_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     now = datetime.now(UTC)
-    dispatch_admitted = await _dispatch_admitted_for_new_task(body, db)
+    dispatch_admitted, planning_attempt_id = await _dispatch_admitted_for_new_task(body, db)
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -113,6 +142,7 @@ async def create_task(
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
         dispatch_admitted=dispatch_admitted,
+        planning_attempt_id=planning_attempt_id,
         created_at=now,
         updated_at=now,
     )
@@ -136,7 +166,7 @@ async def push_task(
     auto_priority = (min_priority if min_priority is not None else 0) - 1
 
     now = datetime.now(UTC)
-    dispatch_admitted = await _dispatch_admitted_for_new_task(body, db)
+    dispatch_admitted, planning_attempt_id = await _dispatch_admitted_for_new_task(body, db)
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -156,6 +186,7 @@ async def push_task(
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
         dispatch_admitted=dispatch_admitted,
+        planning_attempt_id=planning_attempt_id,
         created_at=now,
         updated_at=now,
     )
@@ -282,6 +313,17 @@ async def update_task(
     task = await get_task(task_id, db)
 
     update_data = body.model_dump(exclude_unset=True)
+    if "story_id" in update_data or "project_id" in update_data:
+        dispatch_admitted, planning_attempt_id = await _brief_task_admission(
+            project_id=update_data.get("project_id", task.project_id),
+            story_id=update_data.get("story_id", task.story_id),
+            # Reparenting cannot inherit a planner's durable authority.
+            planning_attempt_id=None,
+            require_active_attempt=False,
+            db=db,
+        )
+        update_data["dispatch_admitted"] = dispatch_admitted
+        update_data["planning_attempt_id"] = planning_attempt_id
     for field, value in update_data.items():
         setattr(task, field, value)
 

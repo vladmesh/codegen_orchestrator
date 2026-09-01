@@ -11,7 +11,11 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
-from shared.contracts.dto.product_brief import ProductBriefRead, RequirementCoverageCreate
+from shared.contracts.dto.product_brief import (
+    ProductBriefPlanningAttemptRead,
+    ProductBriefRead,
+    RequirementCoverageCreate,
+)
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -262,17 +266,48 @@ class LanggraphAPIClient(InternalAPIClient):
         return ProductBriefRead.model_validate(data)
 
     async def record_requirement_coverage(
-        self, brief_id: str, requirement_id: str, coverage: RequirementCoverageCreate
+        self,
+        brief_id: str,
+        requirement_id: str,
+        coverage: RequirementCoverageCreate,
+        planning_attempt_id: str,
     ) -> dict:
         response = await self.request(
             "PUT",
             f"product-briefs/{brief_id}/coverage/{requirement_id}",
             json=coverage.model_dump(),
+            headers={"X-Product-Brief-Planning-Attempt": planning_attempt_id},
         )
         return response.json()
 
-    async def admit_product_brief_coverage(self, brief_id: str) -> dict:
-        return await self._post_json(f"product-briefs/{brief_id}/admit")
+    async def admit_product_brief_coverage(self, brief_id: str, planning_attempt_id: str) -> dict:
+        return await self._post_json(
+            f"product-briefs/{brief_id}/admit",
+            headers={"X-Product-Brief-Planning-Attempt": planning_attempt_id},
+        )
+
+    async def claim_product_brief_planning_attempt(
+        self, brief_id: str
+    ) -> ProductBriefPlanningAttemptRead:
+        return ProductBriefPlanningAttemptRead.model_validate(
+            await self._post_json(f"product-briefs/{brief_id}/planning-attempts/claim")
+        )
+
+    async def heartbeat_product_brief_planning_attempt(
+        self, brief_id: str, planning_attempt_id: str
+    ) -> None:
+        await self._post_json(
+            f"product-briefs/{brief_id}/planning-attempts/heartbeat",
+            json={"planning_attempt_id": planning_attempt_id},
+        )
+
+    async def finish_product_brief_planning_attempt(
+        self, brief_id: str, planning_attempt_id: str
+    ) -> None:
+        await self._post_json(
+            f"product-briefs/{brief_id}/planning-attempts/finish",
+            json={"planning_attempt_id": planning_attempt_id},
+        )
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})

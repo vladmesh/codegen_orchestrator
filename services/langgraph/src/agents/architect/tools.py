@@ -10,6 +10,7 @@ or manage dependencies.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from http import HTTPStatus
 
 import httpx
@@ -27,11 +28,22 @@ logger = structlog.get_logger(__name__)
 # Reset between architect invocations (module is long-lived but each graph
 # invocation starts fresh via reset_task_chain).
 _last_task_id: dict[str, str] = {}
+_planning_attempt_id: ContextVar[str | None] = ContextVar(
+    "architect_planning_attempt_id", default=None
+)
 
 
 def reset_task_chain() -> None:
     """Reset auto-chaining state. Call before each architect invocation."""
     _last_task_id.clear()
+
+
+def set_planning_attempt_id(planning_attempt_id: str | None):
+    return _planning_attempt_id.set(planning_attempt_id)
+
+
+def reset_planning_attempt_id(token) -> None:
+    _planning_attempt_id.reset(token)
 
 
 @tool
@@ -148,6 +160,7 @@ async def create_task(
         "status": TaskStatus.TODO,
         "blocked_by_task_id": blocked_by,
         "created_by": "architect",
+        "planning_attempt_id": _planning_attempt_id.get(),
     }
     result = await api_client.create_task(task_data)
 
@@ -221,7 +234,12 @@ async def record_requirement_coverage(
         repository_acceptance_contract=repository_acceptance_contract,
         returned_reason=returned_reason,
     )
-    return await api_client.record_requirement_coverage(brief_id, requirement_id, coverage)
+    planning_attempt_id = _planning_attempt_id.get()
+    if planning_attempt_id is None:
+        raise RuntimeError("Product Brief coverage requires an active planning attempt")
+    return await api_client.record_requirement_coverage(
+        brief_id, requirement_id, coverage, planning_attempt_id
+    )
 
 
 @tool
@@ -231,7 +249,10 @@ async def admit_product_brief_coverage(brief_id: str) -> dict:
     An ``incomplete`` result names the stable IDs still owed. Record those
     dispositions and retry this tool; do not treat it as a successful start.
     """
-    return await api_client.admit_product_brief_coverage(brief_id)
+    planning_attempt_id = _planning_attempt_id.get()
+    if planning_attempt_id is None:
+        raise RuntimeError("Product Brief admission requires an active planning attempt")
+    return await api_client.admit_product_brief_coverage(brief_id, planning_attempt_id)
 
 
 @tool

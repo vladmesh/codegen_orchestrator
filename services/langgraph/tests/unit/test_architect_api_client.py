@@ -155,8 +155,10 @@ class TestRecordRequirementCoverage:
                 requirement_id="must-language",
                 repository_acceptance_contract="The application supports Russian and English.",
             ),
+            "plan-abc",
         )
 
         call_args = mock_httpx_client.request.call_args
         assert call_args[0][0] == "PUT"
         assert "/api/product-briefs/brief-abc/coverage/must-language" in str(call_args)
+        assert call_args.kwargs["headers"]["X-Product-Brief-Planning-Attempt"] == "plan-abc"

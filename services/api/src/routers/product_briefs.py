@@ -1,6 +1,6 @@
 """Product Brief confirmation and architect coverage boundary."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import secrets
@@ -12,10 +12,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.product_brief import (
+    PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
     ProductBriefAdmissionOutcome,
     ProductBriefAdmissionRead,
     ProductBriefConfirm,
     ProductBriefCreate,
+    ProductBriefPlanningAttemptCommand,
+    ProductBriefPlanningAttemptOutcome,
+    ProductBriefPlanningAttemptRead,
     ProductBriefRead,
     RequirementCoverageCreate,
     RequirementCoverageRead,
@@ -35,6 +39,19 @@ def _content_dump(content: object) -> dict:
 
 def _content_hash(content: dict) -> str:
     return sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _planning_attempt_read(
+    brief: ProductBrief, outcome: ProductBriefPlanningAttemptOutcome
+) -> ProductBriefPlanningAttemptRead:
+    if brief.story_id is None:
+        raise HTTPException(status_code=422, detail="planning requires a Product Brief Story")
+    return ProductBriefPlanningAttemptRead(
+        brief_id=brief.id,
+        story_id=brief.story_id,
+        outcome=outcome,
+        planning_attempt_id=brief.planning_attempt_id,
+    )
 
 
 async def _access(
@@ -146,12 +163,99 @@ async def get_product_brief(
     return ProductBriefRead.model_validate(brief, from_attributes=True)
 
 
+@router.post("/{brief_id}/planning-attempts/claim", response_model=ProductBriefPlanningAttemptRead)
+async def claim_product_brief_planning_attempt(
+    brief_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> ProductBriefPlanningAttemptRead:
+    """Give exactly one live architect durable ownership of an incomplete plan."""
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id).with_for_update())
+    ).scalar_one_or_none()
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Product Brief not found")
+    await _access(brief.project_id, x_telegram_id, db, internal, credentials)
+    if brief.confirmed_at is None or brief.story_id is None:
+        raise HTTPException(
+            status_code=422, detail="planning requires a confirmed Product Brief Story"
+        )
+    if brief.coverage_admitted_at is not None:
+        return _planning_attempt_read(brief, ProductBriefPlanningAttemptOutcome.ADMITTED)
+    heartbeat_is_fresh = (
+        brief.planning_attempt_heartbeat_at is not None
+        and brief.planning_attempt_heartbeat_at
+        >= datetime.now(UTC) - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+    )
+    if brief.planning_attempt_active and heartbeat_is_fresh:
+        return _planning_attempt_read(brief, ProductBriefPlanningAttemptOutcome.IN_PROGRESS)
+
+    brief.planning_attempt_id = f"plan-{secrets.token_hex(12)}"
+    brief.planning_attempt_active = True
+    brief.planning_attempt_heartbeat_at = datetime.now(UTC)
+    await db.commit()
+    return _planning_attempt_read(brief, ProductBriefPlanningAttemptOutcome.CLAIMED)
+
+
+@router.post(
+    "/{brief_id}/planning-attempts/heartbeat", response_model=ProductBriefPlanningAttemptRead
+)
+async def heartbeat_product_brief_planning_attempt(
+    brief_id: str,
+    body: ProductBriefPlanningAttemptCommand,
+    db: AsyncSession = Depends(get_async_session),
+) -> ProductBriefPlanningAttemptRead:
+    """Extend the live architect fence without exposing a mutable config path."""
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id).with_for_update())
+    ).scalar_one_or_none()
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Product Brief not found")
+    if not brief.planning_attempt_active or brief.planning_attempt_id != body.planning_attempt_id:
+        raise HTTPException(
+            status_code=409, detail="architect planning attempt is no longer active"
+        )
+    brief.planning_attempt_heartbeat_at = datetime.now(UTC)
+    await db.commit()
+    return _planning_attempt_read(brief, ProductBriefPlanningAttemptOutcome.CLAIMED)
+
+
+@router.post("/{brief_id}/planning-attempts/finish", response_model=ProductBriefPlanningAttemptRead)
+async def finish_product_brief_planning_attempt(
+    brief_id: str,
+    body: ProductBriefPlanningAttemptCommand,
+    db: AsyncSession = Depends(get_async_session),
+) -> ProductBriefPlanningAttemptRead:
+    """Release an unsuccessful planner fence so supervisor recovery can retry."""
+    brief = (
+        await db.execute(select(ProductBrief).where(ProductBrief.id == brief_id).with_for_update())
+    ).scalar_one_or_none()
+    if brief is None:
+        raise HTTPException(status_code=404, detail="Product Brief not found")
+    if brief.planning_attempt_id != body.planning_attempt_id:
+        raise HTTPException(
+            status_code=409, detail="architect planning attempt is no longer active"
+        )
+    brief.planning_attempt_active = False
+    brief.planning_attempt_heartbeat_at = datetime.now(UTC)
+    await db.commit()
+    outcome = (
+        ProductBriefPlanningAttemptOutcome.ADMITTED
+        if brief.coverage_admitted_at is not None
+        else ProductBriefPlanningAttemptOutcome.CLAIMED
+    )
+    return _planning_attempt_read(brief, outcome)
+
+
 @router.put("/{brief_id}/coverage/{requirement_id}", response_model=RequirementCoverageRead)
 async def record_requirement_coverage(
     brief_id: str,
     requirement_id: str,
     body: RequirementCoverageCreate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    x_planning_attempt_id: str | None = Header(None, alias="X-Product-Brief-Planning-Attempt"),
     db: AsyncSession = Depends(get_async_session),
     internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
@@ -166,14 +270,21 @@ async def record_requirement_coverage(
     await _access(brief.project_id, x_telegram_id, db, internal, credentials)
     if brief.coverage_admitted_at is not None:
         raise HTTPException(status_code=409, detail="Product Brief coverage is already admitted")
+    if not brief.planning_attempt_active or x_planning_attempt_id != brief.planning_attempt_id:
+        raise HTTPException(status_code=409, detail="coverage requires the active planning attempt")
     if requirement_id not in {item["id"] for item in brief.content["must_requirements"]}:
         raise HTTPException(status_code=422, detail="unknown Product Brief requirement")
     if body.task_id is not None:
         task = await db.get(Task, body.task_id)
-        if task is None or task.project_id != brief.project_id or task.story_id != brief.story_id:
+        if (
+            task is None
+            or task.project_id != brief.project_id
+            or task.story_id != brief.story_id
+            or task.planning_attempt_id != brief.planning_attempt_id
+        ):
             raise HTTPException(
                 status_code=422,
-                detail="coverage task must belong to this Product Brief Story",
+                detail="coverage task must belong to this Product Brief planning attempt",
             )
     coverage = (
         await db.execute(
@@ -198,6 +309,7 @@ async def record_requirement_coverage(
 async def admit_product_brief_coverage(
     brief_id: str,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    x_planning_attempt_id: str | None = Header(None, alias="X-Product-Brief-Planning-Attempt"),
     db: AsyncSession = Depends(get_async_session),
     internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
@@ -212,6 +324,16 @@ async def admit_product_brief_coverage(
     if brief.confirmed_at is None or brief.story_id is None:
         raise HTTPException(
             status_code=422, detail="admission requires a confirmed Product Brief Story"
+        )
+    if brief.coverage_admitted_at is not None:
+        return ProductBriefAdmissionRead(
+            brief_id=brief.id,
+            story_id=brief.story_id,
+            outcome=ProductBriefAdmissionOutcome.ALREADY_ADMITTED,
+        )
+    if not brief.planning_attempt_active or x_planning_attempt_id != brief.planning_attempt_id:
+        raise HTTPException(
+            status_code=409, detail="admission requires the active planning attempt"
         )
 
     required = {item["id"] for item in brief.content["must_requirements"]}
@@ -232,22 +354,23 @@ async def admit_product_brief_coverage(
             outcome=ProductBriefAdmissionOutcome.INCOMPLETE,
             missing_requirement_ids=missing,
         )
-    if brief.coverage_admitted_at is not None:
-        return ProductBriefAdmissionRead(
-            brief_id=brief.id,
-            story_id=brief.story_id,
-            outcome=ProductBriefAdmissionOutcome.ALREADY_ADMITTED,
-        )
-
     tasks = list(
         (
-            await db.execute(select(Task).where(Task.story_id == brief.story_id).with_for_update())
+            await db.execute(
+                select(Task)
+                .where(
+                    Task.story_id == brief.story_id,
+                    Task.planning_attempt_id == brief.planning_attempt_id,
+                )
+                .with_for_update()
+            )
         ).scalars()
     )
     released_task_ids = [task.id for task in tasks if not task.dispatch_admitted]
     for task in tasks:
         task.dispatch_admitted = True
     brief.coverage_admitted_at = datetime.now(UTC)
+    brief.planning_attempt_active = False
     await db.commit()
     return ProductBriefAdmissionRead(
         brief_id=brief.id,
