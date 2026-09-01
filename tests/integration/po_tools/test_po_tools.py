@@ -11,16 +11,48 @@ import json
 import pytest
 
 from src.agents.po.tools import (
+    confirm_product_brief,
     create_project,
     create_story,
     get_project,
     list_projects,
     list_stories,
+    prepare_product_brief,
     set_project_secret,
 )
 from src.agents.po.tools_shared import init_po_clients
 
 from .conftest import make_config
+
+
+async def _confirmed_product_brief(project_id: str, title: str, config: dict) -> str:
+    """Exercise the PO's required present-then-confirm product intent flow."""
+    content = {
+        "intended_users": ["test users"],
+        "languages": ["en"],
+        "must_requirements": [
+            {
+                "id": "must-test-story",
+                "text": "Create the requested test story",
+                "source": "Create the requested test story",
+            }
+        ],
+        "initial_settings": [],
+    }
+    presented = await prepare_product_brief.ainvoke(
+        {
+            "project_id": project_id,
+            "title": title,
+            **content,
+        },
+        config=config,
+    )
+    brief_id = presented.split("Product Brief ")[1].split(" ")[0]
+    confirmed = await confirm_product_brief.ainvoke(
+        {"brief_id": brief_id, "content": content}, config=config
+    )
+    assert "confirmed" in confirmed.lower()
+    return brief_id
 
 
 @pytest.mark.usefixtures("po_clients", "test_user")
@@ -161,6 +193,8 @@ class TestCreateStoryIntegration:
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
+        config = make_config()
+        brief_id = await _confirmed_product_brief(project_id, "Build todo feature", config)
 
         result = await create_story.ainvoke(
             {
@@ -168,7 +202,7 @@ class TestCreateStoryIntegration:
                 "title": "Build todo feature",
                 "description": "A todo feature with CRUD and reminders",
             },
-            config=make_config(),
+            config=config,
         )
 
         assert "Story created" in result
@@ -182,6 +216,7 @@ class TestCreateStoryIntegration:
         assert story["title"] == "Build todo feature"
         assert story["type"] == "product"
         assert story["created_by"] == "po"
+        assert story["product_brief_id"] == brief_id
 
         # Verify architect:queue has a message
         messages = await redis_client.xrange("architect:queue", count=10)
@@ -210,6 +245,8 @@ class TestListStoriesIntegration:
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
+        config = make_config()
+        await _confirmed_product_brief(project_id, "Story for listing", config)
 
         await create_story.ainvoke(
             {
@@ -217,10 +254,10 @@ class TestListStoriesIntegration:
                 "title": "Story for listing",
                 "description": "Test story",
             },
-            config=make_config(),
+            config=config,
         )
 
-        result = await list_stories.ainvoke({"project_id": project_id}, config=make_config())
+        result = await list_stories.ainvoke({"project_id": project_id}, config=config)
         assert "Story for listing" in result
 
     async def test_empty_stories(self, api_client):
