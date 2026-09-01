@@ -106,6 +106,7 @@ class StoryDTO(TimestampedDTO):
     operator_recheck: "StoryRecheck | None" = None
     reopened_at: datetime | None = None
     pr_number: int | None = None
+    product_brief_id: str | None = None
 
 
 # --- Request DTOs ---
@@ -123,6 +124,7 @@ class StoryCreate(BaseModel):
     priority: int = 0
     blocked_by_story_id: str | None = None
     created_by: str = "system"
+    product_brief_id: str | None = None
 
 
 class StoryUpdate(BaseModel):

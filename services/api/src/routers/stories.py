@@ -49,6 +49,7 @@ from ..schemas.story import (
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from .applications import _make_deploy_run_id
+from .product_briefs import require_complete_product_brief_coverage
 
 logger = structlog.get_logger()
 
@@ -156,6 +157,16 @@ async def create_story(
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     await _validate_retry_parent(body, db)
+    if body.product_brief_id is not None:
+        from shared.models import ProductBrief
+
+        brief = await db.get(ProductBrief, body.product_brief_id)
+        if brief is None or brief.project_id != body.project_id or brief.confirmed_at is None:
+            raise HTTPException(status_code=422, detail="story requires a confirmed Product Brief")
+        if brief.story_id is not None:
+            raise HTTPException(
+                status_code=409, detail="Product Brief is already linked to a story"
+            )
     now = datetime.now(UTC)
     story = Story(
         id=_generate_id(),
@@ -169,10 +180,13 @@ async def create_story(
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
         created_by=body.created_by,
+        product_brief_id=body.product_brief_id,
         created_at=now,
         updated_at=now,
     )
     db.add(story)
+    if body.product_brief_id is not None:
+        brief.story_id = story.id
     await db.commit()
     await db.refresh(story)
 
@@ -602,6 +616,7 @@ async def start_story(
 ) -> StoryRead:
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
+    await require_complete_product_brief_coverage(story_id, db)
 
     if story.blocked_by_story_id:
         blocker = await _get_story(story.blocked_by_story_id, db)
@@ -928,6 +943,7 @@ async def send_to_architect(
     """
     body = body or AdminAction()
     story = await _get_story(story_id, db)
+    await require_complete_product_brief_coverage(story_id, db)
 
     allowed = {StoryStatus.CREATED.value, StoryStatus.REOPENED.value}
     if story.status not in allowed:

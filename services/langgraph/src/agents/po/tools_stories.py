@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -36,12 +37,78 @@ def _qa_failure_hold(stories: list[dict], parent_story_id: str | None) -> tuple[
 
 
 @tool
+async def prepare_product_brief(
+    project_id: str,
+    title: str,
+    intended_users: list[str],
+    languages: list[str],
+    must_requirements: list[dict],
+    initial_settings: list[dict],
+    *,
+    config: RunnableConfig,
+) -> str:
+    """Create one unconfirmed, structured summary before product-story creation.
+
+    Call once after gathering requirements. Send the returned summary verbatim
+    and wait for the user's yes or correction. Corrections require a new call.
+    """
+    payload = {
+        "project_id": project_id,
+        "title": title,
+        # A correction is a new draft revision. Confirmation, keyed below by
+        # brief identity, remains restart-idempotent for the exact presented
+        # content without reusing a stale draft request identity.
+        "request_id": f"po-brief-{config['configurable']['thread_id']}-{uuid.uuid4().hex}",
+        "content": {
+            "intended_users": intended_users,
+            "languages": languages,
+            "must_requirements": must_requirements,
+            "initial_settings": initial_settings,
+        },
+    }
+    response = await _get_api().post_raw(
+        "product-briefs/", json=payload, headers=_user_headers(config)
+    )
+    response.raise_for_status()
+    brief = response.json()
+    content = brief["content"]
+    requirements = "\n".join(
+        f"- [{item['id']}] {item['text']}" for item in content["must_requirements"]
+    )
+    return (
+        f"Product Brief {brief['id']} (revision {brief['revision']})\n"
+        f"Intended users: {', '.join(content['intended_users'])}\n"
+        f"Languages: {', '.join(content['languages'])}\n"
+        f"Must-requirements:\n{requirements}\n"
+        f"Initial settings: {json.dumps(content['initial_settings'], ensure_ascii=False)}\n\n"
+        "yes / correct me"
+    )
+
+
+@tool
+async def confirm_product_brief(brief_id: str, content: dict, *, config: RunnableConfig) -> str:
+    """Record the user's explicit yes for the exact presented Product Brief."""
+    response = await _get_api().post_raw(
+        f"product-briefs/{brief_id}/confirm",
+        json={
+            "request_id": f"po-confirm-{config['configurable']['thread_id']}-{brief_id}",
+            "content": content,
+        },
+        headers=_user_headers(config),
+    )
+    response.raise_for_status()
+    config["configurable"]["confirmed_product_brief_id"] = brief_id
+    return f"Product Brief {brief_id} confirmed. You may now create the product story."
+
+
+@tool
 async def create_story(
     project_id: str,
     title: str,
     description: str,
     story_type: str = "feature",
     parent_story_id: str | None = None,
+    product_brief_id: str | None = None,
     *,
     config: RunnableConfig,
 ) -> str:
@@ -51,9 +118,8 @@ async def create_story(
     from scratch, adding features, or fixing bugs. The architect will decompose
     the story into tasks and start engineering work automatically.
 
-    IMPORTANT: The description should contain the full gathered requirements —
-    not just the user's original short message. Compose a detailed spec from
-    the clarifying conversation before calling this tool.
+    Product work requires a previously confirmed Product Brief. Do not compose
+    requirements from prose or call this before its one user confirmation.
 
     Args:
         project_id: Project ID.
@@ -67,6 +133,10 @@ async def create_story(
     """
     api = _get_api()
     headers = _user_headers(config)
+
+    product_brief_id = product_brief_id or config["configurable"].get("confirmed_product_brief_id")
+    if story_type != "fix" and not product_brief_id:
+        return "No story was created: product work requires a confirmed Product Brief."
 
     # Determine action from project status, not story_type
     if story_type == "fix":
@@ -123,6 +193,7 @@ async def create_story(
         "parent_story_id": retry_parent_story_id,
         "type": StoryType.PRODUCT.value,
         "created_by": "po",
+        "product_brief_id": product_brief_id,
     }
     resp = await api.post_raw("stories/", json=story_payload, headers=headers)
     resp.raise_for_status()

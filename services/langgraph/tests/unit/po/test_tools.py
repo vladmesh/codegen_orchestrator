@@ -71,6 +71,7 @@ def _make_config(telegram_chat_id: str = "test-user", retry_story_id: str = "") 
     configurable = {
         "thread_id": f"po-chat-{telegram_chat_id}",
         "telegram_chat_id": telegram_chat_id,
+        "confirmed_product_brief_id": "brief-confirmed",
     }
     if retry_story_id:
         configurable["retry_story_id"] = retry_story_id
@@ -1171,7 +1172,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 17
+        expected_count = 19
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1187,6 +1188,8 @@ class TestGetAllTools:
             "validate_telegram_token",
             "teardown_project",
             "create_story",
+            "prepare_product_brief",
+            "confirm_product_brief",
             "list_stories",
             "reopen_story",
             "get_story",

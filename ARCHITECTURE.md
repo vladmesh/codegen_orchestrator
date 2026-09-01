@@ -217,6 +217,14 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 ## Documentation
 
+### Product Brief boundary
+
+The PO freezes product intent as a confirmed Product Brief before creating new
+product Story work. The brief is durable and versioned, not a queue payload or
+recomposed story description. The architect loads it through the Story identity
+and must dispose of every stable must-requirement with task/repository coverage
+or a returned reason before runnable progression is allowed.
+
 Detailed documentation lives in separate files:
 
 | Topic | File |

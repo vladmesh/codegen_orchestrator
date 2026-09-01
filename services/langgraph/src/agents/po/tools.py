@@ -47,10 +47,12 @@ from .tools_shared import (  # noqa: F401
 
 # Re-export story/run tools
 from .tools_stories import (  # noqa: F401
+    confirm_product_brief,
     create_story,
     get_run_status,
     get_story,
     list_stories,
+    prepare_product_brief,
     reopen_story,
 )
 
@@ -202,6 +204,8 @@ def get_all_tools() -> list:
         transfer_project_ownership,
         teardown_project,
         validate_telegram_token,
+        prepare_product_brief,
+        confirm_product_brief,
         create_story,
         list_stories,
         reopen_story,
@@ -233,6 +237,8 @@ __all__ = [
     "validate_telegram_token",
     # Story/run tools
     "create_story",
+    "prepare_product_brief",
+    "confirm_product_brief",
     "list_stories",
     "reopen_story",
     "get_story",

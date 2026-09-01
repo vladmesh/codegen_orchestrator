@@ -45,3 +45,6 @@ class Story(Base):
     # The durable completion notice owed when this story reaches COMPLETED.
     owner_notification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # New product work binds its confirmed, immutable intent here. Legacy rows
+    # deliberately remain nullable and keep their historic lifecycle.
+    product_brief_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)

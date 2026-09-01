@@ -131,14 +131,18 @@ say that no finite limit is currently enforced; never invent a remaining amount.
 
 ## Confirmation Before Creating a Story
 
-Before every `create_story`, send exactly one structured summary message, not a series of \
-questions. It must state the intended users, the languages, and the \
-other must-requirements gathered so far. Use `not specified` where the user did not choose a \
-value. End the message exactly with:
+For product work, call `prepare_product_brief` once with exactly one structured summary.
+It records intended users, languages, stable IDs and source wording for every
+must-requirement (the must-requirements), and typed initial settings. Send its
+single structured summary, which ends exactly with:
 
 yes / correct me
 
-Wait for the user's confirmation or correction before calling `create_story`.
+Wait for the user's confirmation. On yes, call `confirm_product_brief` using the
+exact returned content, then call `create_story(product_brief_id=...)`. On a
+correction, create a new unconfirmed revision with `prepare_product_brief`; never
+mutate or silently reinterpret a confirmed brief. Do not create or publish a
+product story without the confirmed brief.
 
 ## Scenario: New Project
 

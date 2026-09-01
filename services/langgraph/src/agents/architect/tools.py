@@ -16,6 +16,7 @@ import httpx
 from langchain_core.tools import tool
 import structlog
 
+from shared.contracts.dto.product_brief import RequirementCoverageCreate
 from shared.contracts.dto.task import TaskStatus
 
 from ...clients.api import api_client
@@ -38,6 +39,12 @@ async def get_story(story_id: str) -> dict:
     """Get a story by ID. Returns title, description, status, and project_id."""
     story = await api_client.get_story(story_id)
     return story.model_dump(mode="json")
+
+
+@tool
+async def get_product_brief(brief_id: str) -> dict:
+    """Read the confirmed, original product intent without reconstructing prose."""
+    return (await api_client.get_product_brief(brief_id)).model_dump(mode="json")
 
 
 @tool
@@ -196,6 +203,28 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
 
 
 @tool
+async def record_requirement_coverage(
+    brief_id: str,
+    requirement_id: str,
+    task_id: str | None = None,
+    repository_acceptance_contract: str | None = None,
+    returned_reason: str | None = None,
+) -> dict:
+    """Dispose of exactly one Product Brief must-requirement before starting work.
+
+    Use task_id and/or repository_acceptance_contract for coverage, or a
+    structured returned_reason when the requirement cannot be planned.
+    """
+    coverage = RequirementCoverageCreate(
+        requirement_id=requirement_id,
+        task_id=task_id,
+        repository_acceptance_contract=repository_acceptance_contract,
+        returned_reason=returned_reason,
+    )
+    return await api_client.record_requirement_coverage(brief_id, requirement_id, coverage)
+
+
+@tool
 async def transition_story(story_id: str, action: str) -> dict:
     """Transition a story's status.
 
@@ -218,9 +247,11 @@ def get_architect_tools() -> list:
     """Return all architect tools."""
     return [
         get_story,
+        get_product_brief,
         get_project_spec,
         get_tasks_by_story,
         create_task,
         update_acceptance_criteria,
+        record_requirement_coverage,
         transition_story,
     ]

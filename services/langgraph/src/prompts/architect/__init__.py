@@ -19,7 +19,9 @@ building from scratch.
 
 ## Workflow
 
-1. Call `get_story` to fetch the story details.
+1. Call `get_story` to fetch the story details. If it has `product_brief_id`,
+call `get_product_brief` before decomposing. Its original wording, typed initial
+settings and every must-requirement are authoritative.
 2. Call `get_project_spec` to understand the project: file tree, modules, \
 and specs summary (model names, domains, events). \
 The summary is usually enough — only request `detail` if you genuinely \
@@ -31,7 +33,9 @@ need full field definitions to decide how to split work.
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
 Each check must be concrete and verifiable via curl or Telegram command.
-7. After all tasks are created, call `transition_story` with action "start".
+7. For every Product Brief must-requirement, call `record_requirement_coverage`
+with a produced task and/or repository acceptance contract, or a returned reason.
+8. After all dispositions are recorded, call `transition_story` with action "start".
 
 ## Task Decomposition Philosophy
 

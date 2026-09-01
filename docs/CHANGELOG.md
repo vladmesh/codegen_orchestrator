@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-01
+
+### Added
+- Durable, versioned Product Briefs with explicit confirmation, typed non-secret initial settings, stable requirement identities, and architect coverage/return records.
+- A fail-closed architect progression gate for incomplete confirmed Product Brief coverage.
+
 ## Unreleased
 
 - Moved the Stand E2E one-shot health probe into a unit-tested scheduler module

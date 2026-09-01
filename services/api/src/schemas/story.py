@@ -52,6 +52,7 @@ class StoryRead(TimestampedDTO):
     operator_recheck: StoryRecheck | None = None
     reopened_at: datetime | None = None
     pr_number: int | None = None
+    product_brief_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

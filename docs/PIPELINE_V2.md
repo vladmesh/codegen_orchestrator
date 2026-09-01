@@ -319,6 +319,10 @@ todo → in_dev → in_ci → testing → done
 ## Key Data Flows
 
 ### What Architect sees
+- The confirmed Product Brief by Story identity: original must-requirement wording,
+  stable IDs, intended users, languages and typed non-secret initial settings. Before
+  the architect starts a brief-backed Story, it must record a coverage or returned
+  disposition for every must-requirement.
 - Story description (from user, via PO)
 - Project spec (modules, description, detailed_spec)
 - Repository tree (from scaffolder, stored in DB)

@@ -37,6 +37,7 @@ def _make_story(**overrides):
         "operator_recheck": None,
         "reopened_at": None,
         "owner_notification": None,
+        "product_brief_id": None,
         "created_at": now,
         "updated_at": now,
     }

@@ -11,6 +11,7 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
+from shared.contracts.dto.product_brief import ProductBriefRead, RequirementCoverageCreate
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -255,6 +256,17 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_story(self, story_id: str) -> StoryDTO:
         resp = await self.request("GET", f"stories/{story_id}")
         return StoryDTO.model_validate(resp.json())
+
+    async def get_product_brief(self, brief_id: str) -> ProductBriefRead:
+        data = await self._get_json(f"product-briefs/{brief_id}")
+        return ProductBriefRead.model_validate(data)
+
+    async def record_requirement_coverage(
+        self, brief_id: str, requirement_id: str, coverage: RequirementCoverageCreate
+    ) -> dict:
+        return await self._patch_json(
+            f"product-briefs/{brief_id}/coverage/{requirement_id}", json=coverage.model_dump()
+        )
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})

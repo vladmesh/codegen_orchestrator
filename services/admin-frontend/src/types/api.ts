@@ -41,6 +41,7 @@ export interface Story {
   operator_recheck?: StoryRecheck | null
   reopened_at?: string | null
   pr_number?: number | null
+  product_brief_id?: string | null
   created_at: string
   updated_at?: string | null
 }
@@ -249,6 +250,7 @@ export interface StoryCreate {
   priority?: number
   blocked_by_story_id?: string | null
   created_by?: string
+  product_brief_id?: string | null
 }
 
 // Worker-manager introspection API (/wm-api/*)

@@ -297,6 +297,8 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 ### Story, task, and run surfaces
 
+| Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | A Product Brief is a versioned immutable record after confirmation. It holds intended users, languages, source wording and stable must-requirement IDs plus non-secret typed initial settings. A confirmed brief can bind exactly one new product Story. The architect records each requirement's task/acceptance coverage or returned reason; a missing disposition rejects brief-backed story progression. |
+
 <a id="taskdto"></a>
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
