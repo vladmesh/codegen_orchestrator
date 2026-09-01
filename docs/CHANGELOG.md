@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Moved the Stand E2E one-shot health probe into a unit-tested scheduler module
+  that initializes the configuration store before invoking the canonical health
+  checker outside its normal entrypoint.
+
 - Fixed the Stand E2E post-provisioning health timing record so its JSON
   formatting cannot terminate the surrounding single-quoted SSH payload.
 

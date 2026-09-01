@@ -435,7 +435,7 @@ jobs:
               # worker. The second observer below proves the real probe made
               # the target allocatable; it never stamps freshness itself.
               COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler python -c "import asyncio, os; from src.clients.api import api_client; from src.tasks.health_checker import _check_server; server = asyncio.run(api_client.get_server(os.environ[\"TARGET_HANDLE\"])); asyncio.run(_check_server(server))"
+              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler python -m src.stand_health_probe
               python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
                 tee -a "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
               if [ "${wait_status}" -eq 0 ]; then
