@@ -40,7 +40,6 @@ htmlcov/
 
 # Secrets (encrypted is ok, decrypted is not)
 /tmp/secrets.yaml
-.claude/e2e-secrets.env
 
 # Distribution / packaging
 *.egg-info/
@@ -58,6 +57,6 @@ secretary-data/
 # Live harness runtime artifacts
 .live-runs/
 
-# E2E and worker run reports — regenerated artifacts, written by /e2e-run,
-# tests/live and scripts/pull_worker_reports.py
+# E2E and worker run reports — regenerated artifacts, written by tests/live,
+# the stand runner and scripts/pull_worker_reports.py
 docs/e2e_results/

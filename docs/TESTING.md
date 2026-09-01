@@ -8,7 +8,7 @@
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI when relevant paths change | ~10-30 min |
 | **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
-| **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
+| **E2E** | `tests/live/`, `.github/workflows/stand-e2e.yml` | Stand + real LLM | Manual workflow | 10-60 min |
 
 ## Running Tests
 
@@ -38,8 +38,7 @@ make test-live-pipeline        # All live tests
 
 # E2E
 make test-e2e-scaffold         # Quick scaffold smoke test (~2-3 min)
-# Full E2E — use skills:
-#   /e2e-run todo_api         # Runs full E2E test for the scenario
+make stand-run SUITE=mega-llm  # Full stand pipeline with real coding and QA agents
 
 # Cleanup
 make test-clean                # Remove all test containers/volumes
@@ -57,9 +56,9 @@ Both must pass.
 
 | Service | Unit | Service | Integration | E2E |
 |---------|------|---------|-------------|-----|
-| api | 6 files | 2 files | via backend suite | via /e2e-run |
-| langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) + po-tools suite (9 tests) | via /e2e-run |
-| worker-manager | 15 files | — | 4 tests (worker creation/execution) | via /e2e-run |
+| api | 6 files | 2 files | via backend suite | via stand mega suites |
+| langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) + po-tools suite (9 tests) | via stand mega suites |
+| worker-manager | 15 files | — | 4 tests (worker creation/execution) | via stand mega suites |
 | scheduler | 2 files | 2 files | — | — |
 | telegram_bot | 3 files | — | via frontend suite | — |
 | infra-service | — | — | 1 file (Ansible) | — |
@@ -95,14 +94,15 @@ container).
 
 ## E2E Testing
 
-E2E tests are NOT in CI — they require a running stack + real LLM calls.
-
-**Skills** (preferred way to run E2E):
-- `/e2e-run <scenario> [--with-po] [--no-cleanup] [--no-nuke] [--feature]` — 7 scenarios (todo_api, echo_bot, landing_page, weather_bot, url_shortener, bot_landing, expense_tracker)
+Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
+`stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
+exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair, and
+`matrix` runs all supported pairs.
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 
-**Scripts** (`tests/e2e/`): Lower-level test scripts (mock anthropic, dev env smoke, live smoke). Used for development, not production E2E.
+**Scripts** (`tests/e2e/`): Lower-level test scripts (mock Anthropic, dev environment smoke, live
+smoke). They are development fixtures rather than the canonical stand runner.
 
 ## Live Pipeline Tests
 

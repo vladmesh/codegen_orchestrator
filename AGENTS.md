@@ -1,6 +1,8 @@
 # Agents Playbook
 
-Instructions for AI assistants working on this project.
+Canonical instructions for every AI assistant working on this project, including Claude Code.
+`CLAUDE.md` is a compatibility entrypoint that directs Claude Code here; do not duplicate rules
+between the two files.
 
 ## Navigation
 
@@ -12,6 +14,9 @@ Instructions for AI assistants working on this project.
 | [docs/NODES.md](docs/NODES.md) | A description of the LangGraph agent nodes |
 | [docs/GLOSSARY.md](docs/GLOSSARY.md) | What an entity is called and what it means |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has already been done |
+| [docs/coding-agents.md](docs/coding-agents.md) | Coding-agent integration and instruction injection |
+| [docs/TESTING.md](docs/TESTING.md) | Test layers, commands, and CI coverage |
+| [docs/SECRETS.md](docs/SECRETS.md) | Secret isolation and operational handling |
 
 ## Related projects
 
@@ -47,6 +52,29 @@ commit quote `check show --module shared`, do not run the suite again. Do not wr
 in `--command`, that receipt is never reusable, and do not substitute a narrower `--module pytest ...`.
 
 **Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
+
+## Project conventions
+
+**Fail fast** — this is a prototype, not legacy software. Do not add fallback values, compatibility
+shims, or speculative branches that hide a missing required value. Required environment variables
+raise a clear error; required mappings and typed objects are accessed directly.
+
+**Contracts first** — statuses, queue names, and messages use the types in `shared/`; do not
+construct ad-hoc dict payloads or invent string values. Check `docs/CONTRACTS.md` before changing
+DTOs, queues, or API boundaries.
+
+**Terminology** — use the terms defined in `docs/GLOSSARY.md`. In particular, a Worker is an
+ephemeral coding-agent container, a Consumer is a queue role, a Service is a long-lived process,
+and a Service Agent is a LangGraph agent within a service.
+
+**Secret isolation** — do not expose real secrets to an LLM. Pass handles through agent state and
+have Python resolve secret values at the execution boundary. See `docs/SECRETS.md` and
+`docs/resource-management.md`.
+
+**Test behavior at the right boundary** — prefer service tests for DB or Redis work and integration
+tests for cross-service flows. Unit tests are for pure logic and fast feedback; they must verify
+observable behavior rather than implementation details. Do not mock a real boundary that the
+relevant test layer can exercise.
 
 ## Rules
 
@@ -88,16 +116,3 @@ make test-unit               # Unit tests (fast, no deps)
 make test-integration        # Integration tests (require DB/Redis)
 make test-service SERVICE=api # Per-service integration test
 ```
-
-## Skills (`.claude/skills/`)
-
-These exercise the running pipeline and maintain the repository. Scoping and sequencing skills are
-not here: that happens on the Pipeline board.
-
-| Skill | Description |
-|-------|----------|
-| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | An E2E test (engineering → CI → deploy → verify, `--feature` skips scaffolding) |
-| `/escort` | Escorting a real user through the full pipeline |
-| `/architect` | Decomposing a Story → Tasks (for client projects, through the API) |
-| `/test-maintenance` | Running/fixing integration tests locally |
-| `/update-docs` | Synchronizing the living documentation with the code |
