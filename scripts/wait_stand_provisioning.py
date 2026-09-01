@@ -11,16 +11,52 @@ import sys
 import time
 import urllib.request
 
+from shared.constants import Timeouts
+
 # The allocator's freshness window is 300s; never sit closer than this to its
 # edge when handing the target to a suite.
 MIN_METRICS_MARGIN_SECONDS = 60
+HEALTH_CHECK_OBSERVER_RESERVE_SECONDS = 120
+DEFAULT_TIMEOUT_SECONDS = (
+    Timeouts.ACCESS_PHASE + Timeouts.PROVISIONING + HEALTH_CHECK_OBSERVER_RESERVE_SECONDS
+)
+TERMINAL_FAILURE_STATUSES = frozenset({"error", "unreachable", "missing", "decommissioned"})
+
+
+def _read_server(api_url: str, handle: str, internal_key: str) -> dict:
+    request = urllib.request.Request(  # noqa: S310 -- workflow-owned local API URL
+        f"{api_url}/api/servers/{handle}",
+        headers={"X-Internal-Key": internal_key},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        payload = json.loads(response.read())
+    return payload if isinstance(payload, dict) else {}
+
+
+def provisioning_snapshot(
+    server: dict,
+    *,
+    observed_at: str | None = None,
+) -> dict[str, object]:
+    """Return the allow-listed state that may cross the stand boundary."""
+    labels = server.get("labels")
+    phase = labels.get("provisioning_phase") if isinstance(labels, dict) else None
+    return {
+        "observed_at": observed_at or datetime.now(UTC).isoformat(),
+        "handle": server.get("handle"),
+        "status": server.get("status"),
+        "provisioning_phase": phase,
+        "provisioning_attempts": server.get("provisioning_attempts"),
+        "provisioning_started_at": server.get("provisioning_started_at"),
+        "last_health_check": server.get("last_health_check"),
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--handle", required=True)
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--timeout-seconds", type=int, default=1200)
+    parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument(
         "--metrics-freshness-seconds",
         type=int,
@@ -35,12 +71,8 @@ def main() -> int:
 
     deadline = time.monotonic() + args.timeout_seconds
     while time.monotonic() < deadline:
-        request = urllib.request.Request(  # noqa: S310 -- workflow-owned local API URL
-            f"{args.api_url}/api/servers/{args.handle}",
-            headers={"X-Internal-Key": internal_key},
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-            server = json.loads(response.read())
+        server = _read_server(args.api_url, args.handle, internal_key)
+        print(json.dumps(provisioning_snapshot(server), sort_keys=True), flush=True)
         labels = server.get("labels") if isinstance(server, dict) else None
         if (
             isinstance(server, dict)
@@ -51,6 +83,12 @@ def main() -> int:
         ):
             print(f"provisioning complete for {args.handle}")
             return 0
+        if server.get("status") in TERMINAL_FAILURE_STATUSES:
+            print(
+                f"provisioning reached terminal failure for {args.handle}",
+                file=sys.stderr,
+            )
+            return 1
         time.sleep(5)
     print(f"provisioning did not complete for {args.handle}", file=sys.stderr)
     return 1

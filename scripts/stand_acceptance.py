@@ -22,6 +22,10 @@ from typing import Any
 
 REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
 REMOTE_INVOCATION_LOG = "remote-invocation.log"
+PROVISIONING_DIAGNOSTIC_FILES = (
+    "provisioning-state.jsonl",
+    "provisioning-services.log",
+)
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
 RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
 # A private-key PEM header is sensitive even when its body was reformatted by a
@@ -141,9 +145,10 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
                 shutil.copyfile(source, output / source.name)
             if source.is_file() and RUN_EVIDENCE.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
-        source = run_dir / REMOTE_INVOCATION_LOG
-        if source.is_file():
-            shutil.copyfile(source, output / source.name)
+        for name in (REMOTE_INVOCATION_LOG, *PROVISIONING_DIAGNOSTIC_FILES):
+            source = run_dir / name
+            if source.is_file():
+                shutil.copyfile(source, output / source.name)
 
 
 def _cleanup_proof(
@@ -372,8 +377,10 @@ def _scan_artifact_issues(
         "final-report.json",
         *REQUIRED_RUN_FILES,
         REMOTE_INVOCATION_LOG,
+        *PROVISIONING_DIAGNOSTIC_FILES,
         *(f"run/{name}" for name in REQUIRED_RUN_FILES),
         f"run/{REMOTE_INVOCATION_LOG}",
+        *(f"run/{name}" for name in PROVISIONING_DIAGNOSTIC_FILES),
     }
     for path in sorted(artifact.rglob("*")) if artifact.is_dir() else []:
         if path.is_dir():

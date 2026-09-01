@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Made dynamic target provisioning failures diagnosable before pytest starts. The Stand observer
+  now outlives the access and software provisioner budgets, emits timestamped allow-listed server
+  state, and fails immediately on terminal server states. Failed setup also preserves secret-redacted
+  infra-service and scheduler log tails; the handoff collector admits those diagnostics without
+  treating an absent pytest run directory as a second failure.
+
 - Moved test-only Dockerfiles and Compose harnesses from the misleading root `docker/test/` tree to
   `tests/compose/`. Make targets, CI change detection and cleanup, contract checks, documentation,
   and internal fixture paths now use the test-owned location without changing suite behavior.

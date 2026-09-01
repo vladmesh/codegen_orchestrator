@@ -151,6 +151,20 @@ def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
     assert scan_artifact(output, canaries=("not-present",)) == []
 
 
+def test_build_and_admission_preserve_provisioning_failure_diagnostics(tmp_path):
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    state = '{"status":"error","provisioning_phase":"software_installation"}\n'
+    services = "infra-service | ansible_playbook_timeout timeout=1200\n"
+    (run_dir / "provisioning-state.jsonl").write_text(state, encoding="utf-8")
+    (run_dir / "provisioning-services.log").write_text(services, encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert (output / "provisioning-state.jsonl").read_text(encoding="utf-8") == state
+    assert (output / "provisioning-services.log").read_text(encoding="utf-8") == services
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
 def test_build_marks_missing_cleanup_observation_incomplete_without_inventing_cost(tmp_path):
     cleanup = {
         "run_tag": "gha-17",

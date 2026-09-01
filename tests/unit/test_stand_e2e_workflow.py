@@ -123,6 +123,20 @@ def test_worker_failure_evidence_is_copied_before_the_ephemeral_host_is_deleted(
     assert 'tar -C "${run_dir}" -xf -' in collect
 
 
+def test_provisioning_failure_evidence_survives_a_pre_pytest_failure():
+    provision = _steps()["Register and provision dynamic target"]["run"]
+    collect = _steps()["Record machine manifest"]["run"]
+
+    assert "provisioning-state.jsonl" in provision
+    assert "provisioning-services.log" in provision
+    assert "docker compose" in provision
+    assert "infra-service scheduler" in provision
+    assert "redact_diagnostic" in provision
+    assert "provisioning-state.jsonl" in collect
+    assert "provisioning-services.log" in collect
+    assert "if [ -d /root/e2e-runs/latest ]" in collect
+
+
 def test_the_matrix_fits_in_the_job_timeout():
     """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]
