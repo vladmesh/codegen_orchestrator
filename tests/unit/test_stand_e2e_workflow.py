@@ -142,13 +142,11 @@ def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_prob
 
     assert "--profile stand_e2e" in provision
     assert "--no-require-fresh-metrics" in provision
-    assert "src.tasks.health_checker import _check_server" in provision
-    assert "api_client.get_server" in provision
-    assert "scheduler python -c" in provision
+    assert "scheduler python -m src.stand_health_probe" in provision
     assert "first_health_ready" in provision
     assert (
         provision.index("--no-require-fresh-metrics")
-        < provision.index("src.tasks.health_checker import _check_server")
+        < provision.index("scheduler python -m src.stand_health_probe")
         < provision.rindex("scripts.wait_stand_provisioning")
     )
 
