@@ -19,13 +19,13 @@ from datetime import UTC, datetime, timedelta
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.product_brief import PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS
-from shared.models import ProductBrief, Task
+from shared.models import ProductBrief, RequirementCoverage, Task
 
-from ._task_helpers import get_task_for_update
+from ._task_helpers import apply_cancellation, cancellation_is_reachable, get_task_for_update
 
 
 async def load_brief_for_update(brief_id: str, db: AsyncSession) -> ProductBrief:
@@ -188,3 +188,71 @@ async def take_task_for_plan_fenced_update(
             ),
         )
     return task
+
+
+async def void_superseded_plan(
+    *, brief: ProductBrief, story_id: str, superseded_attempt_id: str | None, db: AsyncSession
+) -> tuple[list[str], list[str]]:
+    """Make the corpse of a superseded plan harmless, in the claim's transaction.
+
+    A takeover mints a new attempt id, and that alone strands everything the
+    previous owner planned: the release set of an admission is keyed on the
+    *active* attempt, so those tasks are in nobody's release set, the dispatch
+    gate refuses them as `product_brief_not_admitted`, and the plan fence
+    refuses to move them out of the story while they are unadmitted. Left
+    behind, they block the story's completion for ever.
+
+    So the claim voids them. Only the previous attempt's *unadmitted* tasks are
+    touched — an admitted task belongs to a plan that already crossed the
+    boundary and is ordinary work now. The cancel goes through
+    `apply_cancellation`, the same primitive `DELETE /api/tasks/{id}` uses, and
+    a row whose status cannot legally reach `cancelled` is left alone and
+    reported rather than forced. In practice an unadmitted task can only be
+    `backlog` or `todo` — nothing can dispatch it, so nothing can move it past
+    those — and both reach `cancelled`.
+
+    The superseded attempt's `RequirementCoverage` rows go with the tasks: they
+    are dispositions of a plan that no longer exists, they already do not count
+    for any admission (which reads only the active attempt's rows), and half of
+    them now point at cancelled tasks. Keeping them would leave the coverage
+    table describing work that was voided.
+
+    Caller commits. That is the point: a takeover either voids the old plan and
+    opens the new one, or does neither.
+
+    Returns `(cancelled_task_ids, skipped_task_ids)`.
+    """
+    if superseded_attempt_id is None:
+        return [], []
+    # Ascending task id, the order the dispatch admission point's rung 1 uses,
+    # so a takeover and a dispatch decision queue rather than deadlock. The
+    # brief row is already held by the caller, which is this module's lock order.
+    tasks = list(
+        (
+            await db.scalars(
+                select(Task)
+                .where(
+                    Task.story_id == story_id,
+                    Task.planning_attempt_id == superseded_attempt_id,
+                    Task.dispatch_admitted.is_(False),
+                )
+                .order_by(Task.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    cancelled: list[str] = []
+    skipped: list[str] = []
+    for task in tasks:
+        if not cancellation_is_reachable(task.status):
+            skipped.append(task.id)
+            continue
+        if await apply_cancellation(task, db):
+            cancelled.append(task.id)
+    await db.execute(
+        delete(RequirementCoverage).where(
+            RequirementCoverage.brief_id == brief.id,
+            RequirementCoverage.planning_attempt_id == superseded_attempt_id,
+        )
+    )
+    return cancelled, skipped

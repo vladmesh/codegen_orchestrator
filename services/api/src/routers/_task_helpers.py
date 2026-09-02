@@ -130,6 +130,43 @@ async def create_status_event(
     return event
 
 
+def cancellation_is_reachable(from_status: str) -> bool:
+    """Can a task in this status legally reach `cancelled` at all?
+
+    The same `VALID_TRANSITIONS` question `validate_transition` asks, in the
+    form a sweep over many rows needs: a caller that cancels a *set* of tasks
+    has to leave the rows the transition table refuses where they are rather
+    than force them or fail the whole transaction. A status the enum does not
+    know is not cancellable either — it is not a status.
+    """
+    try:
+        from_s = TaskStatus(from_status)
+    except ValueError:
+        return False
+    return TaskStatus.CANCELLED in VALID_TRANSITIONS[from_s]
+
+
+async def apply_cancellation(task: Task, db: AsyncSession) -> bool:
+    """Move one *already locked* task row to cancelled, without committing.
+
+    The whole of the cancel transition lives here — the already-cancelled no-op,
+    the `VALID_TRANSITIONS` check, the status event — so that `DELETE
+    /api/tasks/{id}` and the Product Brief takeover that voids a superseded plan
+    are one writer with one set of rules, not two. Commit is the caller's,
+    because a takeover cancels in the same transaction that mints the new
+    planning attempt.
+
+    Returns True when this call changed the row.
+    """
+    if task.status == TaskStatus.CANCELLED:
+        return False
+    validate_transition(task.status, TaskStatus.CANCELLED)
+    old_status = task.status
+    task.status = TaskStatus.CANCELLED
+    await create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
+    return True
+
+
 def validate_transition(from_status: str, to_status: str) -> None:
     try:
         from_s = TaskStatus(from_status)
