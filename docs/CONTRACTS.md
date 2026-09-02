@@ -132,9 +132,23 @@ becomes an immutable terminal fact.
 | Surface | Canonical source | API owner |
 |---|---|---|
 | paid-run command and outcomes | `shared/contracts/dto/work_admission.py` | `services/api/src/routers/work_admission.py` |
+| engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `services/api/src/engineering_dispatch_admission.py` |
 | per-user engineering budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `services/api/src/routers/engineering_budget_policies.py` |
 | executor decision snapshot | `shared/contracts/dto/executor_decision.py` | `services/api/src/work_admission.py` |
 | executor diagnostics snapshot | `shared/contracts/dto/executor_diagnostics.py` | `services/api/src/executor_diagnostics.py` |
+
+`POST /work-admission/engineering-dispatches` is the one admission point for
+paid engineering dispatch: `services/api/src/engineering_dispatch_admission.py`
+takes the task row (and, for a story task, the story row) for update, evaluates
+the internal-project skip, the blocker, the project scaffold and
+`workspace_ready`, the story lifecycle and the prior-attempt fence, and ends by
+calling `start_paid_run` — it wraps the paid gate rather than standing beside it.
+Every refusal carries one `EngineeringDispatchRefusal` value, so "story busy" is
+distinguishable from "workspace not ready" and from "budget denied" without
+parsing a log line. A prior attempt yields a named `EngineeringDispatchRepair`
+that the caller executes; the decider performs no transition of its own. The
+scheduler's `dispatch_todo_tasks` selects candidates, asks once per task, and
+acts on the answer.
 
 The paid-run command locks its controls, evaluates count admission and (for
 engineering) money admission, then creates the queued Run in one transaction.
@@ -321,6 +335,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | QA SSH grant | `shared/contracts/dto/qa_ssh_grant.py` | `routers/runs.py` | grant only the run-scoped restricted target access |
 | Engineering consumer drain | `shared/contracts/dto/engineering_consumer.py` | `routers/engineering_consumer.py` | a drain is durable and audited; a recreated consumer honours it |
 | Work admission | `shared/contracts/dto/work_admission.py` | `routers/work_admission.py` | command identity does not reopen terminal work |
+| Engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `engineering_dispatch_admission.py`, `routers/work_admission.py` | one decision per dispatch, one typed reason per refusal, and no repair performed by the decider |
 | Budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `routers/engineering_budget_policies.py` | integer micro-USD and optimistic versioning |
 | Executor decision/diagnostics | `shared/contracts/dto/executor_decision.py`, `dto/executor_diagnostics.py` | admission/overview routes | persisted decision wins over later configuration |
 | Admin overview | `shared/contracts/dto/admin_overview.py` | `routers/admin_overview.py` | unavailable observations remain unavailable |

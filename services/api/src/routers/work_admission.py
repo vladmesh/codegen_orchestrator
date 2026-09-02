@@ -5,6 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchCommand,
+    EngineeringDispatchRead,
+)
 from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnosticSnapshot,
@@ -31,6 +35,7 @@ from ..dependencies import (
     require_bearer_admin,
     require_internal_or_admin,
 )
+from ..engineering_dispatch_admission import admit_engineering_dispatch
 from ..executor_diagnostics import (
     current_executor_diagnostic,
     current_executor_snapshot,
@@ -361,3 +366,22 @@ async def abort_paid_run_pre_handoff_endpoint(
 ) -> None:
     await abort_paid_run_pre_handoff(run_id, reason, db)
     await db.commit()
+
+
+@router.post("/engineering-dispatches", response_model=EngineeringDispatchRead)
+async def admit_engineering_dispatch_endpoint(
+    command: EngineeringDispatchCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringDispatchRead:
+    """The one admission point for paid engineering dispatch.
+
+    Every condition is decided here, on rows locked for the duration, and an
+    admitted decision leaves the queued Run and its budget hold committed — the
+    same commit boundary `POST /work-admission/paid-runs` has, because that is
+    the call this one wraps. A refusal commits too: the paid gate's audit fact is
+    written whether it admitted or not.
+    """
+    decision = await admit_engineering_dispatch(command, db)
+    await db.commit()
+    return decision

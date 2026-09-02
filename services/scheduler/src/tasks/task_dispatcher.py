@@ -1,8 +1,8 @@
 """Task Dispatcher — dispatches todo tasks, completes stories, supervises pipeline.
 
 Responsibilities:
-A) Find todo tasks with no blocker (or blocker done), create Run,
-   publish to engineering:queue, transition task to in_dev.
+A) Ask the admission point about every todo task, publish the message for each
+   attempt it admits, and act on the typed answer for each one it does not.
 B) Find stories where all tasks are done → complete story + trigger deploy.
 C) Supervise pipeline: detect stuck states, retry or fail-fast.
 
@@ -12,26 +12,23 @@ Runs as a periodic scheduler job (every 30s).
 from __future__ import annotations
 
 import asyncio
-from enum import StrEnum
 from typing import TYPE_CHECKING
-import uuid
 
 import structlog
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
-from shared.contracts.dto.project import (
-    ProjectDTO,
-    ProjectPredatesRunOwnership,
-    ProjectStatus,
-    require_initiating_run,
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchCommand,
+    EngineeringDispatchOutcome,
+    EngineeringDispatchRead,
+    EngineeringDispatchRefusal,
+    EngineeringDispatchRepair,
 )
-from shared.contracts.dto.run import RunDTO, RunStatus, RunType
+from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
-from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType, OwnerNotificationEvent
-from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -80,13 +77,16 @@ from .. import startup
 
 logger = structlog.get_logger(__name__)
 
-# Statuses of a run that is still owned by the engineering pipeline: the worker
-# either has not picked it up yet or is working on it.
-_LIVE_RUN_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
-
 # This is used only before calling the queue; a publication failure is never proof
 # that the message did not land and must not be routed through the abort command.
 PRE_HANDOFF_PREPARATION_FAILED_ERROR = "dispatch handoff preparation failed"
+
+#: Repairs that leave the task in in_dev with work behind it, so this tick counts
+#: it the way it counts a fresh dispatch.
+_DISPATCH_COMPLETING = (
+    EngineeringDispatchRepair.RECOVER_OWN_ATTEMPT,
+    EngineeringDispatchRepair.REPLAY_FINISHED_RUN,
+)
 
 
 def _dispatch_interval() -> int:
@@ -112,47 +112,23 @@ def _build_cumulative_context(sibling_events: list) -> str:
     return "## Context from completed tasks\n" + "\n".join(lines) + "\n\n"
 
 
-async def _find_unfinished_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
-    """Return an engineering run for this task that has not finished, any iteration.
+async def _enriched_description(api_client: SchedulerAPIClient, task: TaskDTO) -> str:
+    """The task's description with its story's finished work in front of it.
 
-    This is the guard that keeps one story branch to one worker, and it reads the
-    only fact that answers the question: whether an attempt is still open. It
-    deliberately ignores `current_iteration`. The supervisor increments that
-    field in the same breath as it returns a task to todo, so a guard keyed on it
-    stops recognising the very run whose worker may still be holding the branch —
-    which is how a retry used to put a second worker on it.
-
-    An attempt that is genuinely over is closed by whoever ended it: the result
-    handler on a real outcome, and the supervisor on a stuck one, which fails the
-    run before it fails the task. So a run left in queued/running always means
-    work that is still owned, never a leftover to be dispatched past.
+    Message building, never admission: this decides what the worker is told, and
+    it runs only once the admission point has already admitted the dispatch. The
+    sibling read here answers "what has been done" — the admission point does its
+    own sibling read, on locked rows, to answer "may anything be done at all".
     """
-    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
-    for run in runs:
-        if run.run_metadata.get("pre_handoff_aborted"):
-            continue
-        if run.status in _LIVE_RUN_STATUSES:
-            return run
-    return None
-
-
-async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
-    """Return the finished engineering run this task's current iteration produced.
-
-    Only terminal runs reach here — an unfinished one is caught by
-    `_find_unfinished_run` first. Its job is the replay case: a worker can finish
-    before the next tick, and a task left in todo by a failed transition must
-    have that outcome applied instead of being dispatched a second time. Runs of
-    earlier iterations are ignored, because a legitimate retry has to be
-    dispatchable.
-    """
-    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
-    for run in runs:
-        if run.run_metadata.get("pre_handoff_aborted"):
-            continue
-        if run.run_metadata.get("iteration") == task.current_iteration:
-            return run
-    return None
+    description = task.description or ""
+    if not task.story_id:
+        return description
+    events = []
+    for sibling in await api_client.get_tasks_by_story(task.story_id):
+        if sibling.id != task.id and sibling.status == TaskStatus.DONE:
+            events.extend(await api_client.get_task_events(sibling.id))
+    context = _build_cumulative_context(events)
+    return context + description if context else description
 
 
 async def _recover_dispatched_task(
@@ -168,8 +144,8 @@ async def _recover_dispatched_task(
     task was still in todo, and without the replay the task would sit in in_dev
     with nothing working on it.
 
-    The run is always finished by the time this is called: an unfinished one is
-    adopted by the caller's guard before it gets here.
+    The run is always finished by the time this is called: the admission point
+    names this repair only for a run no longer in flight.
     """
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
     for status in terminal_task_statuses(run):
@@ -177,210 +153,141 @@ async def _recover_dispatched_task(
     log.info("task_outcome_replayed", run_id=run.id, run_status=run.status.value)
 
 
-def _story_blocks_dispatch(siblings: list[TaskDTO], log: structlog.BoundLogger) -> bool:
-    """Whether a sibling task in this story forbids dispatching another one.
+async def _execute_repair(
+    api_client: SchedulerAPIClient,
+    task: TaskDTO,
+    decision: EngineeringDispatchRead,
+    log: structlog.BoundLogger,
+) -> bool:
+    """Carry out the repair the admission point decided this task still owes.
 
-    One task in flight per story, and none at all once a sibling has been handed
-    to a human: a story branch is written by one worker at a time.
+    The fence that produced it is server-side and returns a decision; the
+    transitions it implies are executed here, so nothing is committed by a
+    question. Returns whether the task ends this tick with work behind it.
     """
-    if any(sibling.status == TaskStatus.IN_DEV for sibling in siblings):
-        log.info("task_skipped_story_busy")
+    if decision.repair is EngineeringDispatchRepair.REPLAY_FINISHED_RUN:
+        run = await api_client.get_run(decision.run_id)
+        await _recover_dispatched_task(api_client, task.id, run, log)
         return True
-    if any(sibling.status == TaskStatus.WAITING_HUMAN_REVIEW for sibling in siblings):
-        log.info("task_skipped_story_has_gave_up_sibling")
-        return True
-    return False
+    log.info(
+        (
+            "task_transition_recovered"
+            if decision.repair is EngineeringDispatchRepair.RECOVER_OWN_ATTEMPT
+            else "task_dispatch_blocked_by_live_attempt"
+        ),
+        run_id=decision.run_id,
+        iteration=task.current_iteration,
+    )
+    await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
+    return decision.repair in _DISPATCH_COMPLETING
 
 
-class _PriorAttempt(StrEnum):
-    """What an attempt this task already had made this tick do instead of dispatching."""
-
-    #: This task's own dispatch, finished: the message went out on an earlier
-    #: tick and only the transition was missing. Counts as dispatched.
-    RECOVERED = "recovered"
-    #: Somebody else's unfinished attempt is still holding the story branch —
-    #: typically one the supervisor's retry path stepped over. The task goes back
-    #: to in_dev and nothing is dispatched.
-    BLOCKED = "blocked"
-    #: A run that finished while the task was stuck in todo: its outcome is
-    #: applied to the task instead of a second run being created.
-    REPLAYED = "replayed"
-
-
-#: Outcomes in which this tick left a task in in_dev with work behind it.
-_DISPATCH_COMPLETING = (_PriorAttempt.RECOVERED, _PriorAttempt.REPLAYED)
-
-
-async def _handle_prior_attempt(
-    api_client: SchedulerAPIClient, task: TaskDTO, log: structlog.BoundLogger
-) -> _PriorAttempt | None:
-    """Deal with an attempt this task already has, or `None` if it has none.
-
-    Unfinished first, and — this is the whole point — without consulting
-    `current_iteration` to decide *whether* to stop. That field is incremented by
-    the very retry that creates the risk, so a guard keyed on it stops
-    recognising the run whose worker may still be holding the story branch.
-
-    The iteration is read afterwards, and only to name what happened: an
-    unfinished run of this iteration is this task's own dispatch being completed,
-    one of an earlier iteration is a live attempt the retry path ran ahead of.
-    Both take the same action; they are not the same event in the logs.
-    """
-    unfinished_run = await _find_unfinished_run(api_client, task)
-    if unfinished_run is not None:
-        run_iteration = unfinished_run.run_metadata.get("iteration")
-        own_dispatch = run_iteration == task.current_iteration
-        event = (
-            "task_transition_recovered" if own_dispatch else "task_dispatch_blocked_by_live_attempt"
-        )
-        log.info(
-            event,
-            run_id=unfinished_run.id,
-            run_status=unfinished_run.status.value,
-            iteration=task.current_iteration,
-            run_iteration=run_iteration,
-        )
-        await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
-        return _PriorAttempt.RECOVERED if own_dispatch else _PriorAttempt.BLOCKED
-
-    prior_run = await _find_dispatched_run(api_client, task)
-    if prior_run is not None:
-        await _recover_dispatched_task(api_client, task.id, prior_run, log)
-        return _PriorAttempt.REPLAYED
-    return None
-
-
-async def _create_and_publish_run(
+async def _handle_refusal(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     task: TaskDTO,
-    description: str,
-    initiating_run_id: str,
+    decision: EngineeringDispatchRead,
     log: structlog.BoundLogger,
-) -> str | None:
-    """Create the engineering run and publish its message.
+) -> None:
+    """Act on a refusal: only a refusal that already counted an attempt routes.
 
-    `initiating_run_id` is the project's — the run that asked for this work.
-    This function creates one *attempt* inside it, and the message carries both:
-    the attempt as `task_id`, the run as `initiating_run_id`.
-
-    Returns the run id. Only a failure before attempting queue handoff releases the
-    reservation. A created run is closed as CANCELLED because nothing can pick it up; the task stays
-    in todo and a later tick may make a fresh attempt. A budget denial instead routes
-    the task to human review and cannot retry automatically.
+    `paid_work` is present exactly when the paid gate decided, and that is the
+    line: a refusal from an earlier condition is a state this tick simply cannot
+    dispatch in and a later tick may, while a paid denial has spent the attempt
+    and hands the story and the task to a human instead of retrying.
     """
-    task_id = task.id
-    story_id = task.story_id
-    project_id = str(task.project_id)
+    if decision.paid_work is None:
+        log.info("task_dispatch_refused", reason=decision.reason.value)
+        return
+    admission = decision.paid_work.admission
+    if task.story_id and admission.message:
+        source_run = await api_client.get_run(decision.initiating_run_id)
+        owed = await owe_owner_notification(
+            api_client,
+            source_run,
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
+            text=admission.message,
+            story_id=task.story_id,
+            project_id=str(task.project_id),
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            task_id=task.id,
+            log=log,
+        )
+        await api_client.transition_story(task.story_id, "human-review")
+        await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
+    budget = decision.paid_work.engineering_budget
+    await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
+    if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+        details = {
+            "reason": EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED.value,
+            "attempt_id": budget.attempt_id,
+            "known_spend_microusd": budget.known_spend_microusd,
+            "active_held_microusd": budget.active_held_microusd,
+            "available_microusd": budget.available_microusd,
+        }
+    else:
+        details = {"reason": decision.reason.value, "attempt_id": decision.run_id}
+    await api_client.transition_task(
+        task.id, TaskStatus.WAITING_HUMAN_REVIEW, "dispatcher", details=details
+    )
+    log.info(
+        "task_dispatch_count_admission_refused",
+        run_id=decision.run_id,
+        task_id=task.id,
+        reason=decision.reason.value,
+    )
 
-    run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    run_metadata = {
-        "triggered_by": "dispatcher",
-        "story_id": story_id,
-        "task_id": task_id,
-        **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
-        "iteration": task.current_iteration,
-    }
-    try:
-        started = await api_client.start_paid_run(
-            PaidRunStartCommand(
-                id=run_id,
-                type=RunType.ENGINEERING,
-                project_id=task.project_id,
-                task_id=task_id,
-                story_id=story_id,
-                run_metadata=run_metadata,
-            )
-        )
-    except Exception:
-        log.exception("task_dispatch_paid_start_failed", run_id=run_id)
-        return None
-    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
-        if task.story_id and started.admission.message:
-            source_run = await api_client.get_run(initiating_run_id)
-            owed = await owe_owner_notification(
-                api_client,
-                source_run,
-                event=OwnerNotificationEvent.STORY_QUARANTINED,
-                text=started.admission.message,
-                story_id=task.story_id,
-                project_id=project_id,
-                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-                task_id=task_id,
-                log=log,
-            )
-            await api_client.transition_story(task.story_id, "human-review")
-            await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
-        budget = started.engineering_budget
-        if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-            await api_client.transition_task(
-                task_id,
-                TaskStatus.WAITING_HUMAN_REVIEW,
-                "dispatcher",
-                details={
-                    "reason": "engineering_budget_denied",
-                    "attempt_id": budget.attempt_id,
-                    "known_spend_microusd": budget.known_spend_microusd,
-                    "active_held_microusd": budget.active_held_microusd,
-                    "available_microusd": budget.available_microusd,
-                },
-            )
-        else:
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-            await api_client.transition_task(
-                task_id,
-                TaskStatus.WAITING_HUMAN_REVIEW,
-                "dispatcher",
-                details={
-                    "reason": (
-                        started.admission.reason.value
-                        if started.admission.reason is not None
-                        else "paid_work_denied"
-                    ),
-                    "attempt_id": run_id,
-                },
-            )
-        log.info(
-            "task_dispatch_count_admission_refused",
-            run_id=run_id,
-            task_id=task_id,
-            reason=(
-                started.admission.reason.value if started.admission.reason is not None else None
-            ),
-        )
-        return None
+
+async def _publish_admitted_dispatch(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task: TaskDTO,
+    decision: EngineeringDispatchRead,
+    log: structlog.BoundLogger,
+) -> bool:
+    """Hand an admitted attempt to the engineering queue and leave todo.
+
+    The attempt already exists and already holds its budget: the admission point
+    created it. What is left is the message and the transition, and only a
+    failure proven to precede the queue call releases the reservation. A lost
+    publish response keeps the queued Run and its hold, so normal live-attempt
+    recovery owns it on the next tick.
+    """
+    run_id = decision.run_id
     try:
         action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
         recipient = await resolve_project_recipient(
-            api_client, project_id, event="task_dispatch", story_id=story_id or ""
+            api_client, str(task.project_id), event="task_dispatch", story_id=task.story_id or ""
         )
         eng_msg = EngineeringMessage(
             task_id=run_id,
-            project_id=project_id,
-            initiating_run_id=initiating_run_id,
+            project_id=str(task.project_id),
+            initiating_run_id=decision.initiating_run_id,
             telegram_chat_id=recipient.telegram_chat_id,
             action=action,
-            description=description,
+            description=await _enriched_description(api_client, task),
             skip_deploy=True,  # Deploy handled at story level
-            planning_task_id=task_id,
-            story_id=story_id,
-            branch=f"story/{story_id}" if story_id else None,
+            planning_task_id=task.id,
+            story_id=task.story_id,
+            branch=f"story/{task.story_id}" if task.story_id else None,
         )
     except Exception:
         # This block contains only work proven to precede any queue call.  Do
         # not include publication: a lost publish response has an unknown outcome.
         log.exception("task_dispatch_pre_handoff_preparation_failed", run_id=run_id)
         await api_client.abort_paid_run_pre_handoff(run_id, PRE_HANDOFF_PREPARATION_FAILED_ERROR)
-        return None
+        return False
     try:
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
         # Publication may have reached Redis before its response was lost.  Keep
         # the queued Run and active hold so normal unfinished-run recovery owns it.
         log.exception("task_dispatch_publish_outcome_unknown", run_id=run_id)
-        return None
-    return run_id
+        return False
+    if not await _transition_to_in_dev(api_client, task.id, run_id, log):
+        return False
+    log.info("task_dispatched", run_id=run_id)
+    return True
 
 
 async def _transition_to_in_dev(
@@ -392,8 +299,8 @@ async def _transition_to_in_dev(
     """Move a task to in_dev, retrying once.
 
     The message is already out, so the run is live and the task must not stay in
-    todo. If both attempts fail, the pre-dispatch guard finishes the transition on
-    the next tick.
+    todo. If both attempts fail, the admission point's live-attempt repair
+    finishes the transition on the next tick.
     """
     try:
         await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
@@ -407,119 +314,40 @@ async def _transition_to_in_dev(
     return True
 
 
-async def _project_and_initiating_run(
-    api_client: SchedulerAPIClient, project_id: str, log: structlog.BoundLogger
-) -> tuple[ProjectDTO, str] | None:
-    """The project and the run that will own its worker, or None to skip the task.
-
-    Both reasons to skip say the same thing — there is nothing to attribute the
-    worker to — so they are answered together. A project written before run
-    ownership existed names no run and none can be reconstructed for it, so it is
-    skipped loudly rather than dispatched into a worker nobody could attribute
-    after it dies.
-    """
-    project = await api_client.get_project(project_id)
-    if project is None:
-        log.error("task_skipped_project_missing", project_id=project_id)
-        return None
-    try:
-        return project, require_initiating_run(project)
-    except ProjectPredatesRunOwnership as exc:
-        log.error(
-            "task_skipped_project_has_no_initiating_run",
-            project_id=project_id,
-            reason=str(exc),
-        )
-        return None
-
-
 async def dispatch_todo_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
-    """Find and dispatch unblocked todo tasks.
+    """Ask the admission point about every todo task and act on its answer.
+
+    This function selects the candidates and executes decisions; it holds no
+    admission condition of its own. Whether a task may be dispatched — the
+    internal project, the scaffold, the workspace, the blocker, the story, the
+    prior attempt, the budget and the slot — is one question answered server-side
+    on locked rows by `admit_engineering_dispatch`.
 
     Returns the number of tasks dispatched.
     """
-    tasks = await api_client.get_tasks_by_status(TaskStatus.TODO)
     dispatched = 0
 
-    for task in tasks:
-        task_id = task.id
-        blocker_id = task.blocked_by_task_id
-
-        # Check if blocker is resolved
-        if blocker_id:
-            blocker = await api_client.get_task(blocker_id)
-            if blocker.status != TaskStatus.DONE:
-                continue  # Still blocked
-
-        story_id = task.story_id
-        project_id = str(task.project_id)
-        log = logger.bind(task_id=task_id, story_id=story_id)
-
-        # Skip internal project tasks — implemented manually via /implement
-        # TODO: replace with proper project.internal flag when going to prod
-        INTERNAL_PROJECT_ID = "033c2033-fc75-4d86-ade2-08efe7b15a5e"
-        if project_id == INTERNAL_PROJECT_ID:
+    for task in await api_client.get_tasks_by_status(TaskStatus.TODO):
+        log = logger.bind(task_id=task.id, story_id=task.story_id)
+        try:
+            decision = await api_client.admit_engineering_dispatch(
+                EngineeringDispatchCommand(task_id=task.id)
+            )
+        except Exception:
+            # Nothing was decided, so nothing was counted and nothing is owed.
+            log.exception("task_dispatch_admission_failed")
             continue
 
-        # The project is read once and kept: it decides whether this task may be
-        # dispatched at all, and it carries the run that initiated the work,
-        # which the message below has to hand on to the worker.
-        resolved = await _project_and_initiating_run(api_client, project_id, log)
-        if resolved is None:
-            continue
-        project, initiating_run_id = resolved
-
-        # Guard: don't dispatch until scaffold is complete and workspace is ready
-        if project.status == ProjectStatus.DRAFT:
-            log.info("task_skipped_not_scaffolded", project_status=project.status)
-            continue
-        if not (project.config or {}).get("workspace_ready"):
-            log.info("task_skipped_workspace_not_ready", project_id=project_id)
-            continue
-
-        # Fetch siblings once — used for both guard and context
-        siblings = await api_client.get_tasks_by_story(story_id) if story_id else []
-        if _story_blocks_dispatch(siblings, log):
-            continue
-
-        # This task may already have an attempt — one still running, or one that
-        # finished before its outcome could be applied. Either way it must not
-        # get a second worker on the same story branch.
-        prior = await _handle_prior_attempt(api_client, task, log)
-        if prior is not None:
-            if prior in _DISPATCH_COMPLETING:
+        if decision.outcome is EngineeringDispatchOutcome.REFUSED:
+            await _handle_refusal(api_client, redis_client, task, decision, log)
+        elif decision.outcome is EngineeringDispatchOutcome.REPAIR:
+            if await _execute_repair(api_client, task, decision, log):
                 dispatched += 1
-            continue
-
-        # Build cumulative context from sibling tasks
-        context = ""
-        if siblings:
-            all_events = []
-            for sibling in siblings:
-                if sibling.id != task_id and sibling.status == TaskStatus.DONE:
-                    events = await api_client.get_task_events(sibling.id)
-                    all_events.extend(events)
-            context = _build_cumulative_context(all_events)
-
-        # Enrich description with context
-        description = task.description or ""
-        if context:
-            description = context + description
-
-        run_id = await _create_and_publish_run(
-            api_client, redis_client, task, description, initiating_run_id, log
-        )
-        if run_id is None:
-            continue
-
-        if not await _transition_to_in_dev(api_client, task_id, run_id, log):
-            continue
-
-        log.info("task_dispatched", run_id=run_id)
-        dispatched += 1
+        elif await _publish_admitted_dispatch(api_client, redis_client, task, decision, log):
+            dispatched += 1
 
     return dispatched
 

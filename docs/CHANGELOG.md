@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- Gave paid engineering dispatch one declared admission point.
+  `services/api/src/engineering_dispatch_admission.py` is that module, reached over
+  `POST /work-admission/engineering-dispatches`, and every dispatch of an engineering Task now
+  passes through it. It takes the task row through `get_task_for_update` and, for a story task,
+  the story row through `_get_story_for_update`, then evaluates in one transaction every condition
+  that used to sit inline in `dispatch_todo_tasks` and be answered client-side between HTTP reads:
+  the internal-project skip, `blocked_by_task_id`, the project scaffold state and
+  `config["workspace_ready"]`, the story lifecycle (one task in flight per story, none once a
+  sibling reached `waiting_human_review`), the prior-attempt fence, and finally budget/slot
+  admission — by calling the existing `start_paid_run`, which it wraps rather than duplicating. An
+  admitted decision therefore leaves exactly the queued engineering Run and active budget hold the
+  scheduler used to create for itself, with the same `run_metadata` (`triggered_by`, `story_id`,
+  `task_id`, `initiating_run_id`, `iteration`). `shared/contracts/dto/engineering_dispatch.py`
+  carries the typed question and answer: `EngineeringDispatchCommand` is the task id and nothing
+  else, so no caller can pass a stale project status or sibling list, and `EngineeringDispatchRead`
+  returns an `EngineeringDispatchOutcome` with one `EngineeringDispatchRefusal` value per distinct
+  refusal — `story_busy` is readable apart from `workspace_not_ready` and from
+  `engineering_budget_denied` without parsing a log line — plus the wrapped `PaidRunStartRead`
+  whenever the paid gate is the one that decided. The Product Brief admission, the next card, is one
+  more condition in that module and one more value in that enum, not a second surface.
+- The prior-attempt fence decides but no longer repairs. It used to transition the task back to
+  `in_dev` from inside the guard; the admission point instead names the work through
+  `EngineeringDispatchRepair` (`recover_own_attempt`, `adopt_live_attempt`, `replay_finished_run`)
+  and the dispatcher executes it through the same transition endpoints, so a decision carries no
+  hidden side effect. The property the old code protected is unchanged and moved with it:
+  `_prior_attempt` never consults `current_iteration` to decide *whether* to stop — that field is
+  incremented by the very retry that creates the risk — and reads it only to name which repair a
+  live run is. `services/api/tests/unit/test_engineering_dispatch_prior_attempt.py` holds that
+  property now; `services/scheduler/tests/unit/test_task_dispatcher_no_second_worker.py` keeps the
+  dispatcher's half of it.
+- `dispatch_todo_tasks` contains no admission condition. It lists todo tasks, calls the admission
+  point once per task and acts on the typed answer: publish the message for an admitted attempt,
+  execute a named repair, or handle a refusal — routing the story and the task to human review only
+  when the refusal came from the paid gate, which is the case in which an attempt was already
+  counted. Message building stayed on the scheduler where it belongs: the cumulative sibling context
+  and the description enrichment moved into `_enriched_description`, which runs only after
+  admission. `_find_unfinished_run`, `_find_dispatched_run`, `_story_blocks_dispatch`,
+  `_handle_prior_attempt` and `_project_and_initiating_run` are gone from the scheduler, and with
+  them the `INTERNAL_PROJECT_ID` constant — the internal project keeps its behaviour as an explicit
+  named condition of the admission point, with its own refusal reason, not as a UUID compared inside
+  a loop. The one behaviour not carried over is the "project is gone" skip: `tasks.project_id` is a
+  non-nullable foreign key, so server-side that state is a broken database rather than a refusal,
+  and it now raises the way `start_paid_run` already raises for a missing project.
+
 - Gave a Story a typed answer to "what is it waiting for?". `StoryWaitingOn` (`none`, `ci`,
   `deploy`, `qa`, `user_secret`, `human_review`, `resources`) lives in
   `shared/contracts/dto/story.py` beside `VALID_TRANSITIONS`, and `stories.waiting_on` is a

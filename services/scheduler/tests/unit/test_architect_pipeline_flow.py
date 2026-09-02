@@ -12,6 +12,11 @@ from uuid import UUID
 
 import pytest
 
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchOutcome,
+    EngineeringDispatchRead,
+    EngineeringDispatchRefusal,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
@@ -77,6 +82,28 @@ def _repo(**overrides) -> RepositoryDTO:
     return RepositoryDTO(**defaults)
 
 
+def _admission_by_task(*, blocked: set[str]):
+    """Admit every task the story's blocker has released, refuse the rest."""
+
+    async def admit(command):
+        if command.task_id in blocked:
+            return EngineeringDispatchRead(
+                outcome=EngineeringDispatchOutcome.REFUSED,
+                reason=EngineeringDispatchRefusal.BLOCKER_UNRESOLVED,
+            )
+        return EngineeringDispatchRead(
+            outcome=EngineeringDispatchOutcome.ADMITTED,
+            run_id="eng-test",
+            initiating_run_id="live-run-1",
+            paid_work=PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+                run_id="eng-test",
+            ),
+        )
+
+    return admit
+
+
 class TestDispatcherPipelineFlow:
     """Test dispatcher flow with pre-created tasks (as architect would produce)."""
 
@@ -94,6 +121,10 @@ class TestDispatcherPipelineFlow:
         client.start_paid_run.return_value = PaidRunStartRead(
             admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
         )
+        # Dispatch asks the admission point once per candidate task. task-B is
+        # blocked by task-A in phase 1 and unblocked in phase 2, and that is now
+        # the admission point's answer rather than a condition read here.
+        client.admit_engineering_dispatch.side_effect = _admission_by_task(blocked={"task-B"})
         return client
 
     @pytest.fixture
@@ -161,6 +192,7 @@ class TestDispatcherPipelineFlow:
             ),
         ]
         api_client.get_task.return_value = _task(id="task-A", status="done")
+        api_client.admit_engineering_dispatch.side_effect = _admission_by_task(blocked=set())
         api_client.get_tasks_by_story.return_value = [
             _task(id="task-A", status="done"),
             _task(id="task-B"),
