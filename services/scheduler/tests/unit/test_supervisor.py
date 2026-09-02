@@ -13,6 +13,10 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchOutcome,
+    EngineeringDispatchRead,
+)
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.work_admission import (
     PaidRunStartRead,
@@ -674,6 +678,11 @@ class TestSuperviseWaitingResourceTasks:
 
         api_client.update_run.side_effect = update_run
         api_client.update_task.side_effect = update_task
+        api_client.admit_engineering_dispatch.return_value = EngineeringDispatchRead(
+            outcome=EngineeringDispatchOutcome.ADMITTED,
+            run_id="eng-resumed",
+            initiating_run_id="live-run-1",
+        )
 
         parked = await supervise_failed_tasks(api_client, redis_client)
         resumed = await supervise_waiting_resource_tasks(api_client, redis_client)
@@ -688,8 +697,12 @@ class TestSuperviseWaitingResourceTasks:
             "eng-capacity-failed",
             {"run_metadata": {"iteration": None, "task_id": "task-1"}},
         )
-        api_client.start_paid_run.assert_awaited_once()
-        assert api_client.start_paid_run.call_args.args[0].run_metadata["iteration"] == 1
+        # The dispatch itself is one question to the admission point, which reads
+        # the task's iteration off the locked row and stamps it on the attempt it
+        # creates — pinned in services/api/tests/service/
+        # test_engineering_dispatch_admission.py.
+        api_client.admit_engineering_dispatch.assert_awaited_once()
+        assert api_client.admit_engineering_dispatch.await_args.args[0].task_id == task.id
 
     @pytest.mark.asyncio
     async def test_reparking_preserves_original_resource_wait_start(self, api_client, redis_client):

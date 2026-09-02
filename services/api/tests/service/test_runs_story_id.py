@@ -122,35 +122,54 @@ async def test_list_runs_hides_project_bound_runs_from_a_non_owner(
 
 
 @pytest.mark.asyncio
-async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient, _tasks_project):
+async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient):
     """A run created with task_id is found by GET /runs/?task_id=...&status=...
 
-    The dispatcher's pre-dispatch guard asks exactly this question to decide
-    whether a task already has a live engineering run.
+    The story fence asks exactly this question to decide whether a task already
+    has a live engineering run.
+
+    The run is created through the admission point, which is the only thing that
+    may create a paid engineering run bound to a Task row — the lower
+    `POST /work-admission/paid-runs` refuses that command now, because it is a
+    dispatch of a Task. So this test owns a project of its own: the shared task
+    project has no ready workspace, and admission would rightly refuse it.
     """
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": f"runs-{telegram_id}"}
+    )
+    assert user.status_code == HTTPStatus.CREATED, user.text
+    project_id = str(uuid.uuid4())
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "Run task link",
+            "initiating_run_id": f"init-{uuid.uuid4().hex}",
+            "status": "active",
+            "config": {"workspace_ready": True},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
     resp = await async_client.post(
         "/api/tasks/",
         json={
-            "project_id": TASK_TEST_PROJECT_ID,
+            "project_id": project_id,
             "title": "Run task link test",
             "type": "feature",
+            "status": "todo",
         },
     )
     assert resp.status_code == HTTPStatus.CREATED
     task_id = resp.json()["id"]
 
-    run_id = f"eng-{uuid.uuid4().hex[:12]}"
     resp = await async_client.post(
-        "/api/work-admission/paid-runs",
-        json={
-            "id": run_id,
-            "type": "engineering",
-            "project_id": TASK_TEST_PROJECT_ID,
-            "task_id": task_id,
-        },
+        "/api/work-admission/engineering-dispatches", json={"task_id": task_id}
     )
-    assert resp.status_code == HTTPStatus.OK
-    assert resp.json()["admission"]["outcome"] == "admitted"
+    assert resp.status_code == HTTPStatus.OK, resp.text
+    assert resp.json()["outcome"] == "admitted"
+    run_id = resp.json()["run_id"]
     created = await async_client.get(f"/api/runs/{run_id}")
     assert created.json()["task_id"] == task_id
 

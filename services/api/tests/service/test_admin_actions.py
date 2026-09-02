@@ -72,7 +72,9 @@ async def _ensure_project(client: AsyncClient):
                 "title": "Admin Actions Test",
                 "initiating_run_id": "test-run-1",
                 "status": "active",
-                "config": {},
+                # spawn-worker now passes the declared admission point, which
+                # refuses a project whose workspace was never prepared.
+                "config": {"workspace_ready": True},
             },
             headers={"X-Telegram-ID": str(TASK_TEST_TELEGRAM_ID)},
         )
@@ -205,6 +207,74 @@ class TestSpawnWorker:
         msg = await _read_last_message(redis, "engineering:queue")
         assert msg["planning_task_id"] == task_id
         assert msg["description"] == "custom description"
+
+    @pytest.mark.asyncio
+    async def test_spawn_passes_the_declared_admission_point(self, client, redis, _ensure_project):
+        """The operator route decides nothing of its own.
+
+        An unresolved blocker is one of the conditions that used to be invisible
+        here: the route locked the task and bought a worker directly. It now asks
+        `admit_engineering_dispatch` and reports the typed refusal, and nothing is
+        published or created.
+        """
+        blocker = await client.post(
+            "/api/tasks/",
+            json={
+                "project_id": TASK_TEST_PROJECT_ID,
+                "title": "Blocker of a spawn",
+                "type": "feature",
+            },
+        )
+        assert blocker.status_code == HTTPStatus.CREATED
+        blocked = await client.post(
+            "/api/tasks/",
+            json={
+                "project_id": TASK_TEST_PROJECT_ID,
+                "title": "Blocked spawn",
+                "type": "feature",
+                "blocked_by_task_id": blocker.json()["id"],
+            },
+        )
+        assert blocked.status_code == HTTPStatus.CREATED
+        task_id = blocked.json()["id"]
+        queued_before = await redis.xlen("engineering:queue")
+
+        resp = await client.post(f"/api/tasks/{task_id}/spawn-worker", json={"actor": "test"})
+
+        assert resp.status_code == HTTPStatus.CONFLICT, resp.text
+        assert "blocker unresolved" in resp.json()["detail"]
+        assert await redis.xlen("engineering:queue") == queued_before
+        task = await client.get(f"/api/tasks/{task_id}")
+        assert task.json()["status"] == "backlog"
+
+    @pytest.mark.asyncio
+    async def test_spawn_records_the_condition_it_was_allowed_to_override(
+        self, client, db_session, _ensure_project
+    ):
+        """The operator override is named on the attempt, not silent.
+
+        `spawn-worker` starts a task a human picked out, so it is authorised to
+        walk past the dispatchability status. That authority is audited: the run
+        it creates says which condition it overrode and who asked.
+        """
+        created = await client.post(
+            "/api/tasks/",
+            json={
+                "project_id": TASK_TEST_PROJECT_ID,
+                "title": "Overridden spawn",
+                "type": "feature",
+            },
+        )
+        assert created.status_code == HTTPStatus.CREATED
+
+        resp = await client.post(
+            f"/api/tasks/{created.json()['id']}/spawn-worker", json={"actor": "test"}
+        )
+
+        assert resp.status_code == HTTPStatus.OK, resp.text
+        run = await db_session.get(Run, resp.json()["run"]["id"])
+        assert run.run_metadata["triggered_by"] == "admin"
+        assert run.run_metadata["admission_overrides"] == ["task_not_dispatchable"]
 
     @pytest.mark.asyncio
     async def test_spawn_wrong_status_fails(self, client, _ensure_project):

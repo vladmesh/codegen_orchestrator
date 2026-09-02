@@ -5,10 +5,16 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_TASK_REQUIRES_ADMISSION,
+    EngineeringDispatchCommand,
+    EngineeringDispatchRead,
+)
 from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnosticSnapshot,
 )
+from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
@@ -23,7 +29,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionRead,
 )
 from shared.contracts.vocab import AgentType
-from shared.models import SystemConfig, User, WorkAdmissionAudit
+from shared.models import SystemConfig, Task, User, WorkAdmissionAudit
 
 from ..database import get_async_session
 from ..dependencies import (
@@ -31,6 +37,7 @@ from ..dependencies import (
     require_bearer_admin,
     require_internal_or_admin,
 )
+from ..engineering_dispatch_admission import admit_engineering_dispatch
 from ..executor_diagnostics import (
     current_executor_diagnostic,
     current_executor_snapshot,
@@ -305,6 +312,25 @@ async def start_paid_run_endpoint(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> PaidRunStartRead:
+    # Invariant B: a paid engineering run bound to an existing Task row is
+    # created only by the admission point. This route is the paid gate for
+    # everything else, and it stays that: only a command that *is* a Task
+    # dispatch is refused, so the deploy-fix handoff — which names no Task row —
+    # is untouched. The existence check is a complete fence rather than a
+    # partial one because `runs.task_id` is a foreign key onto `tasks.id`: an
+    # engineering run whose `task_id` names no Task cannot be persisted at all.
+    # The question is decided here, server-side, from a column-only existence
+    # check that materialises no entity for the transaction that follows.
+    if command.type is RunType.ENGINEERING and command.task_id is not None:
+        names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
+        if names_a_task is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": ENGINEERING_TASK_REQUIRES_ADMISSION,
+                    "task_id": command.task_id,
+                },
+            )
     try:
         result = await start_paid_run(command, db)
     except PaidRunCommandConflict as exc:
@@ -361,3 +387,22 @@ async def abort_paid_run_pre_handoff_endpoint(
 ) -> None:
     await abort_paid_run_pre_handoff(run_id, reason, db)
     await db.commit()
+
+
+@router.post("/engineering-dispatches", response_model=EngineeringDispatchRead)
+async def admit_engineering_dispatch_endpoint(
+    command: EngineeringDispatchCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringDispatchRead:
+    """The one admission point for paid engineering dispatch.
+
+    Every condition is decided here, on rows locked for the duration, and an
+    admitted decision leaves the queued Run and its budget hold committed — the
+    same commit boundary `POST /work-admission/paid-runs` has, because that is
+    the call this one wraps. A refusal commits too: the paid gate's audit fact is
+    written whether it admitted or not.
+    """
+    decision = await admit_engineering_dispatch(command, db)
+    await db.commit()
+    return decision

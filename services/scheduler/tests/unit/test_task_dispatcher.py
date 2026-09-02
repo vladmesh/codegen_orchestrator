@@ -11,6 +11,12 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionOutcome,
     EngineeringBudgetAdmissionRead,
 )
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchOutcome,
+    EngineeringDispatchRead,
+    EngineeringDispatchRefusal,
+    EngineeringDispatchRepair,
+)
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
@@ -131,6 +137,58 @@ def _admission(
     )
 
 
+def _admitted(run_id: str = "eng-test") -> EngineeringDispatchRead:
+    """The admission point admitting a dispatch: the attempt exists and is held."""
+    return EngineeringDispatchRead(
+        outcome=EngineeringDispatchOutcome.ADMITTED,
+        run_id=run_id,
+        initiating_run_id="live-run-1",
+        paid_work=PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=run_id
+        ),
+    )
+
+
+def _refused(reason: EngineeringDispatchRefusal) -> EngineeringDispatchRead:
+    """A refusal decided before the paid gate: nothing was created, nothing counted."""
+    return EngineeringDispatchRead(outcome=EngineeringDispatchOutcome.REFUSED, reason=reason)
+
+
+def _paid_refusal(
+    reason: EngineeringDispatchRefusal,
+    *,
+    budget: EngineeringBudgetAdmissionRead | None = None,
+    message: str | None = None,
+    run_id: str = "eng-test",
+) -> EngineeringDispatchRead:
+    """A refusal from the paid gate, carrying the paid decision it wraps."""
+    return EngineeringDispatchRead(
+        outcome=EngineeringDispatchOutcome.REFUSED,
+        reason=reason,
+        run_id=run_id,
+        initiating_run_id="live-run-1",
+        paid_work=PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED, message=message),
+            engineering_budget=budget,
+        ),
+    )
+
+
+def _repair(repair: EngineeringDispatchRepair, run_id: str = "eng-abc") -> EngineeringDispatchRead:
+    """A prior attempt this task still owes transition work for."""
+    return EngineeringDispatchRead(
+        outcome=EngineeringDispatchOutcome.REPAIR,
+        repair=repair,
+        reason=(
+            EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT
+            if repair is EngineeringDispatchRepair.ADOPT_LIVE_ATTEMPT
+            else None
+        ),
+        run_id=run_id,
+        initiating_run_id="live-run-1",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -159,9 +217,9 @@ def api_client():
     # Default: no live engineering run left over from a previous tick
     client.list_runs.return_value = []
     client.admit_engineering_budget.return_value = _admission()
-    client.start_paid_run.return_value = PaidRunStartRead(
-        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
-    )
+    # The one question dispatch asks. Admitted by default: every condition that
+    # used to be answered from the mocks above now lives behind this call.
+    client.admit_engineering_dispatch.return_value = _admitted()
     return client
 
 
@@ -211,68 +269,90 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
+        decision = api_client.admit_engineering_dispatch.return_value
         msg = redis_client.publish_message.call_args[0][1]
-        assert msg.initiating_run_id == "live-run-1"
-        assert msg.task_id == api_client.start_paid_run.call_args[0][0].id
+        assert msg.initiating_run_id == decision.initiating_run_id
+        assert msg.task_id == decision.run_id
         assert msg.task_id != msg.initiating_run_id
 
+    #: Every refusal the admission point reaches before anything is counted.
+    #: Each of these was an inline condition of `dispatch_todo_tasks` with a test
+    #: of its own here — a project that predates run ownership, an
+    #: unresolved blocker, a draft project, a workspace that is not ready, a busy
+    #: story, a story with a sibling in human review, and the internal project.
+    #: What the dispatcher owes them is now one behaviour, so they are pinned
+    #: here as one property; which *state* produces which reason is pinned in
+    #: services/api/tests/service/test_engineering_dispatch_admission.py, where
+    #: the conditions moved.
+    _UNCOUNTED_REFUSALS = [
+        EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE,
+        EngineeringDispatchRefusal.INTERNAL_PROJECT,
+        EngineeringDispatchRefusal.BLOCKER_UNRESOLVED,
+        EngineeringDispatchRefusal.PROJECT_HAS_NO_INITIATING_RUN,
+        EngineeringDispatchRefusal.PROJECT_NOT_SCAFFOLDED,
+        EngineeringDispatchRefusal.WORKSPACE_NOT_READY,
+        EngineeringDispatchRefusal.STORY_BUSY,
+        EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW,
+    ]
+
+    @pytest.mark.parametrize("reason", _UNCOUNTED_REFUSALS)
     @pytest.mark.asyncio
-    async def test_a_task_whose_project_is_gone_is_not_dispatched(self, api_client, redis_client):
-        """No project, no run to own the worker — so no worker is asked for."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-1",
-                title="Add user model",
-                description="Create User SQLAlchemy model",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id=None,
-                blocked_by_task_id=None,
-                status="todo",
-            )
-        ]
-        api_client.get_project.return_value = None
-
-        dispatched = await dispatch_todo_tasks(api_client, redis_client)
-
-        assert dispatched == 0
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_a_legacy_project_without_an_initiating_run_is_not_dispatched(
-        self, api_client, redis_client
+    async def test_a_refusal_that_counted_nothing_leaves_the_task_untouched(
+        self, api_client, redis_client, reason
     ):
-        """A project written before run ownership existed cannot own a worker.
+        """No message, no transition, no compensation — and a later tick may retry.
 
-        Its initiating run was never recorded and cannot be reconstructed, so the
-        dispatcher refuses instead of substituting something that is not a run —
-        a project id, a fresh id — which would then be stamped on the container as
-        `com.codegen.run.id` and make unrelated runs answer the same label query.
+        These refusals are decided before the paid gate, so no attempt exists to
+        release and the task keeps its place in the todo queue.
         """
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-1",
-                title="Add user model",
-                description="Create User SQLAlchemy model",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id=None,
-                blocked_by_task_id=None,
-                status="todo",
-            )
+            _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
         ]
-        api_client.get_project.return_value.initiating_run_id = None
+        api_client.admit_engineering_dispatch.return_value = _refused(reason)
 
-        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
 
-        assert dispatched == 0
-        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
+        api_client.transition_task.assert_not_called()
+        api_client.transition_story.assert_not_called()
+        api_client.abort_paid_run_pre_handoff.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_every_todo_task_is_asked_about_by_id(self, api_client, redis_client):
+        """The dispatcher selects candidates and asks; it decides nothing itself."""
+        from shared.contracts.dto.engineering_dispatch import EngineeringDispatchCommand
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo"),
+            _task(id="task-2", project_id=PROJ_ID, story_id="story-2", status="todo"),
+        ]
+        api_client.get_task_events.return_value = []
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        assert [call.args[0] for call in api_client.admit_engineering_dispatch.await_args_list] == [
+            EngineeringDispatchCommand(task_id="task-1"),
+            EngineeringDispatchCommand(task_id="task-2"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_question_dispatches_nothing(self, api_client, redis_client):
+        """A failed admission call decided nothing, so nothing was counted or owed."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
+        ]
+        api_client.admit_engineering_dispatch.side_effect = RuntimeError("API unavailable")
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_task.assert_not_called()
+        api_client.abort_paid_run_pre_handoff.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_dispatches_unblocked_task(self, api_client, redis_client):
@@ -297,16 +377,15 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        # Should create a run
-        api_client.start_paid_run.assert_called_once()
-        run_data = api_client.start_paid_run.call_args[0][0]
-        assert run_data.type.value == "engineering"
-        assert str(run_data.project_id) == PROJ_ID
-        # task_id links the run to the task so the next tick's guard can find it
-        assert run_data.task_id == "task-1"
+        # The attempt was created by the admission point, which was asked about
+        # this task and nothing else.
+        api_client.admit_engineering_dispatch.assert_awaited_once()
+        assert api_client.admit_engineering_dispatch.await_args.args[0].task_id == "task-1"
+        api_client.start_paid_run.assert_not_called()
 
         # Should publish to engineering queue
         redis_client.publish_message.assert_called_once()
+        assert redis_client.publish_message.call_args[0][1].task_id == "eng-test"
 
         # Should transition task to in_dev
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
@@ -338,15 +417,15 @@ class TestDispatchTodoTasks:
         api_client.get_tasks_by_status.side_effect = list_todo_tasks
         api_client.transition_task.side_effect = apply_transition
         api_client.get_task_events.return_value = []
-        api_client.start_paid_run.return_value = PaidRunStartRead(
-            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
-            engineering_budget=_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED,
+            budget=_admission(EngineeringBudgetAdmissionOutcome.DENIED),
         )
 
         assert await dispatch_todo_tasks(api_client, redis_client) == 0
         assert await dispatch_todo_tasks(api_client, redis_client) == 0
 
-        api_client.start_paid_run.assert_awaited_once()
+        api_client.admit_engineering_dispatch.assert_awaited_once()
         redis_client.publish_message.assert_not_called()
         first, second = api_client.transition_task.await_args_list
         assert first.args == ("task-1", "in_dev", "dispatcher")
@@ -377,96 +456,9 @@ class TestDispatchTodoTasks:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.start_paid_run.assert_called_once()
         eng_msg = redis_client.publish_message.call_args[0][1]
         assert eng_msg.action is ActionType.FEATURE
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
-
-    @pytest.mark.asyncio
-    async def test_skips_blocked_task(self, api_client, redis_client):
-        """Task blocked by non-done task is skipped."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-2",
-                title="Add API endpoint",
-                description="REST endpoint",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id="story-1",
-                blocked_by_task_id="task-1",
-                status="todo",
-            )
-        ]
-        api_client.get_task.return_value = _task(id="task-1", status="in_dev")
-
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        # Should NOT create a run
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_task_when_project_is_draft(self, api_client, redis_client):
-        """Task is skipped if project is still in draft (not yet scaffolded)."""
-        from unittest.mock import MagicMock
-
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-1",
-                title="Add user model",
-                description="Create User SQLAlchemy model",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id="story-1",
-                blocked_by_task_id=None,
-                status="todo",
-            )
-        ]
-        from shared.contracts.dto.project import ProjectStatus
-
-        project_mock = MagicMock()
-        project_mock.status = ProjectStatus.DRAFT.value
-        api_client.get_project.return_value = project_mock
-
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_task_when_workspace_not_ready(self, api_client, redis_client):
-        """Task is skipped if project workspace is not ready."""
-        from unittest.mock import MagicMock
-
-        from shared.contracts.dto.project import ProjectStatus
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-1",
-                title="Add feature",
-                description="A feature",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id="story-1",
-                blocked_by_task_id=None,
-                status="todo",
-            )
-        ]
-
-        project_mock = MagicMock()
-        project_mock.status = ProjectStatus.ACTIVE.value
-        project_mock.config = {}  # workspace_ready not set
-        api_client.get_project.return_value = project_mock
-
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_dispatches_task_when_blocker_done(self, api_client, redis_client):
@@ -497,7 +489,7 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.start_paid_run.assert_called_once()
+        api_client.admit_engineering_dispatch.assert_awaited_once()
         redis_client.publish_message.assert_called_once()
 
     @pytest.mark.asyncio
@@ -594,40 +586,6 @@ class TestDispatchTodoTasks:
         assert eng_msg.story_id is None
 
     @pytest.mark.asyncio
-    async def test_skips_task_when_sibling_rejected(self, api_client, redis_client):
-        """Todo task in story with a worker-rejected sibling -> not dispatched."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-2",
-                title="Add endpoint",
-                description="REST API",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id="story-1",
-                blocked_by_task_id=None,
-                status="todo",
-            )
-        ]
-        # Sibling task-1 is waiting for human review (gave_up)
-        api_client.get_tasks_by_story.return_value = [
-            _task(
-                id="task-1",
-                status="waiting_human_review",
-                story_id="story-1",
-                project_id=PROJ_ID,
-            ),
-            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
-        ]
-
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        # Should NOT dispatch — story has a gave_up task awaiting human
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
         """Todo task with a normally-failed sibling (no reject) -> still dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
@@ -656,7 +614,6 @@ class TestDispatchTodoTasks:
         await dispatch_todo_tasks(api_client, redis_client)
 
         # Should dispatch — normal failure doesn't block siblings
-        api_client.start_paid_run.assert_called_once()
         redis_client.publish_message.assert_called_once()
 
 
@@ -749,23 +706,6 @@ class TestDispatchPartialFailure:
         api_client.transition_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_creation_failure_releases_the_pre_handoff_reservation(
-        self, api_client, redis_client
-    ):
-        """No Run row means the admitted hold has proved no provider work started."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [self._todo_task()]
-        api_client.get_task_events.return_value = []
-        api_client.start_paid_run.side_effect = RuntimeError("API unavailable")
-
-        assert await dispatch_todo_tasks(api_client, redis_client) == 0
-
-        api_client.release_engineering_budget_admission.assert_not_awaited()
-        redis_client.publish_message.assert_not_called()
-        api_client.transition_task.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_recipient_failure_releases_the_pre_handoff_reservation(
         self, api_client, redis_client, monkeypatch
     ):
@@ -785,7 +725,7 @@ class TestDispatchPartialFailure:
         api_client.abort_paid_run_pre_handoff.assert_awaited_once()
         assert (
             api_client.abort_paid_run_pre_handoff.await_args.args[0]
-            == api_client.start_paid_run.await_args.args[0].id
+            == api_client.admit_engineering_dispatch.return_value.run_id
         )
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_not_called()
@@ -802,7 +742,7 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.start_paid_run.assert_called_once()
+        api_client.admit_engineering_dispatch.assert_awaited_once()
         redis_client.publish_message.assert_called_once()
         assert api_client.transition_task.call_count == 2
 
@@ -842,25 +782,45 @@ class TestDispatchPartialFailure:
     async def test_next_tick_after_transition_failure_only_transitions(
         self, api_client, redis_client
     ):
-        """A live run from the previous tick means: transition, don't dispatch again."""
-        from shared.contracts.dto.run import RunStatus, RunType
+        """This task's own live run means: finish the transition, dispatch nothing.
+
+        The message went out on an earlier tick, so the tick counts it — the work
+        is real and running — but it creates no second attempt for it.
+        """
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        api_client.list_runs.return_value = [self._prior_run(RunStatus.QUEUED)]
+        api_client.admit_engineering_dispatch.return_value = _repair(
+            EngineeringDispatchRepair.RECOVER_OWN_ATTEMPT
+        )
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
-        # Guard asked about this task's engineering runs, whatever their status
-        assert api_client.list_runs.call_args_list[0][1] == {
-            "task_id": "task-1",
-            "run_type": RunType.ENGINEERING.value,
-        }
+
+    async def test_a_live_foreign_attempt_is_adopted_without_being_counted(
+        self, api_client, redis_client
+    ):
+        """Somebody else's attempt still holds the branch: adopt it, dispatch nothing.
+
+        The task leaves todo so nothing tries to dispatch it again, and the tick
+        does not count it: this tick put no work behind it.
+        """
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.admit_engineering_dispatch.return_value = _repair(
+            EngineeringDispatchRepair.ADOPT_LIVE_ATTEMPT
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
     async def test_next_tick_replays_completed_run_onto_task(self, api_client, redis_client):
         """Worker finished before the tick: replay its outcome, don't redispatch."""
@@ -869,17 +829,18 @@ class TestDispatchPartialFailure:
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        api_client.list_runs.return_value = [
-            self._prior_run(
-                RunStatus.COMPLETED,
-                result={"engineering_status": "done", "commit_sha": "abc123"},
-            )
-        ]
+        api_client.admit_engineering_dispatch.return_value = _repair(
+            EngineeringDispatchRepair.REPLAY_FINISHED_RUN
+        )
+        api_client.get_run.return_value = self._prior_run(
+            RunStatus.COMPLETED,
+            result={"engineering_status": "done", "commit_sha": "abc123"},
+        )
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.start_paid_run.assert_not_called()
+        api_client.get_run.assert_awaited_once_with("eng-abc")
         redis_client.publish_message.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
@@ -895,13 +856,15 @@ class TestDispatchPartialFailure:
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        api_client.list_runs.return_value = [
-            self._prior_run(RunStatus.FAILED, result={"engineering_status": "failed"})
-        ]
+        api_client.admit_engineering_dispatch.return_value = _repair(
+            EngineeringDispatchRepair.REPLAY_FINISHED_RUN
+        )
+        api_client.get_run.return_value = self._prior_run(
+            RunStatus.FAILED, result={"engineering_status": "failed"}
+        )
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
@@ -915,34 +878,37 @@ class TestDispatchPartialFailure:
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        api_client.list_runs.return_value = [
-            self._prior_run(RunStatus.FAILED, result={"engineering_status": "gave_up"})
-        ]
+        api_client.admit_engineering_dispatch.return_value = _repair(
+            EngineeringDispatchRepair.REPLAY_FINISHED_RUN
+        )
+        api_client.get_run.return_value = self._prior_run(
+            RunStatus.FAILED, result={"engineering_status": "gave_up"}
+        )
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.start_paid_run.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
             "waiting_human_review",
         ]
 
-    async def test_supervisor_retry_dispatches_despite_old_run(self, api_client, redis_client):
-        """A retried task carries a bumped iteration, so its old run must not block it."""
-        from shared.contracts.dto.run import RunStatus
+    async def test_a_retried_task_the_point_admits_is_dispatched_normally(
+        self, api_client, redis_client
+    ):
+        """A retry is an ordinary admitted dispatch on this side of the seam.
+
+        Whether the task's own bumped `current_iteration` may hide a live run is
+        decided inside the admission point, and pinned there:
+        services/api/tests/service/test_engineering_dispatch_admission.py.
+        """
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [self._todo_task(current_iteration=1)]
         api_client.get_task_events.return_value = []
-        api_client.list_runs.return_value = [
-            self._prior_run(RunStatus.FAILED, iteration=0, result={"engineering_status": "failed"})
-        ]
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.start_paid_run.assert_called_once()
-        assert api_client.start_paid_run.call_args[0][0].run_metadata["iteration"] == 1
         redis_client.publish_message.assert_called_once()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
@@ -1149,42 +1115,6 @@ class TestSuperviseFailedTasks:
         api_client.transition_task.assert_called_once_with(
             "task-1", "waiting_human_review", "supervisor"
         )
-
-
-class TestDispatchSkipsGaveUpSibling:
-    """Dispatcher skips stories with gave_up (WHR) siblings."""
-
-    @pytest.mark.asyncio
-    async def test_skips_task_when_sibling_waiting_human_review(self, api_client, redis_client):
-        """Todo task in story with a WHR sibling → not dispatched."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(
-                id="task-2",
-                title="Add endpoint",
-                description="REST API",
-                type="feature",
-                project_id=PROJ_ID,
-                story_id="story-1",
-                blocked_by_task_id=None,
-                status="todo",
-            )
-        ]
-        api_client.get_tasks_by_story.return_value = [
-            _task(
-                id="task-1",
-                status="waiting_human_review",
-                story_id="story-1",
-                project_id=PROJ_ID,
-            ),
-            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
-        ]
-
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        api_client.start_paid_run.assert_not_called()
-        redis_client.publish_message.assert_not_called()
 
 
 class TestPollMergedPRs:

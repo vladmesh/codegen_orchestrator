@@ -17,6 +17,10 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionCommand,
     EngineeringBudgetAdmissionRead,
 )
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchCommand,
+    EngineeringDispatchRead,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
@@ -140,6 +144,20 @@ class SchedulerAPIClient(InternalAPIClient):
             "POST", "engineering-budget-policies/admissions", json=command.model_dump(mode="json")
         )
         return EngineeringBudgetAdmissionRead.model_validate(resp.json())
+
+    async def admit_engineering_dispatch(
+        self, command: EngineeringDispatchCommand
+    ) -> EngineeringDispatchRead:
+        """Ask the one admission point whether this engineering Task may dispatch.
+
+        Every condition is decided behind this call, on locked rows, so the
+        dispatcher holds a typed answer instead of a snapshot it would have to
+        re-derive a condition from.
+        """
+        resp = await self.request(
+            "POST", "work-admission/engineering-dispatches", json=command.model_dump(mode="json")
+        )
+        return EngineeringDispatchRead.model_validate(resp.json())
 
     async def start_paid_run(self, command: PaidRunStartCommand) -> PaidRunStartRead:
         resp = await self.request(

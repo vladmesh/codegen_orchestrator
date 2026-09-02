@@ -87,6 +87,9 @@ class TestTheInitiatingRunReachesTheContainer:
         project = await seed_project(
             name=f"ownership-{uuid4().hex[:6]}",
             status="active",
+            # spawn-worker passes the engineering dispatch admission point, and
+            # a project without a prepared workspace is refused there.
+            config={"workspace_ready": True},
             initiating_run_id=manifest.run_id,
         )
         manifest.own("project", project["id"])

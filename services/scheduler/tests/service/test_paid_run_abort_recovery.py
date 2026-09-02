@@ -4,8 +4,11 @@ import uuid
 
 import pytest
 
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchCommand,
+    EngineeringDispatchOutcome,
+)
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.work_admission import PaidRunStartCommand
 from src.tasks.task_dispatcher import dispatch_todo_tasks
 
 
@@ -53,17 +56,15 @@ async def test_real_pre_handoff_abort_is_readable_and_dispatches_a_new_attempt(a
         }
     )
 
-    aborted_id = f"eng-aborted-{uuid.uuid4().hex}"
-    started = await api_client.start_paid_run(
-        PaidRunStartCommand(
-            id=aborted_id,
-            type=RunType.ENGINEERING,
-            project_id=project_id,
-            task_id=task.id,
-            run_metadata={"triggered_by": "dispatcher", "iteration": task.current_iteration},
-        )
+    # The prior attempt is created the one way a paid engineering attempt on a
+    # Task can be created: through the declared admission point. It is then
+    # aborted before the queue handoff, which is the state this test is about.
+    admitted = await api_client.admit_engineering_dispatch(
+        EngineeringDispatchCommand(task_id=task.id)
     )
-    assert started.run_id == aborted_id
+    assert admitted.outcome is EngineeringDispatchOutcome.ADMITTED, admitted
+    aborted_id = admitted.run_id
+    assert aborted_id is not None
     await api_client.abort_paid_run_pre_handoff(aborted_id, "recipient preparation failed")
 
     before_tick = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)

@@ -132,9 +132,61 @@ becomes an immutable terminal fact.
 | Surface | Canonical source | API owner |
 |---|---|---|
 | paid-run command and outcomes | `shared/contracts/dto/work_admission.py` | `services/api/src/routers/work_admission.py` |
+| engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `services/api/src/engineering_dispatch_admission.py` |
 | per-user engineering budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `services/api/src/routers/engineering_budget_policies.py` |
 | executor decision snapshot | `shared/contracts/dto/executor_decision.py` | `services/api/src/work_admission.py` |
 | executor diagnostics snapshot | `shared/contracts/dto/executor_diagnostics.py` | `services/api/src/executor_diagnostics.py` |
+
+`POST /work-admission/engineering-dispatches` is the one admission point for
+paid engineering dispatch: `services/api/src/engineering_dispatch_admission.py`
+takes the task row (and, for a story task, the story row) for update, evaluates
+the internal-project skip, the blocker, the project scaffold and
+`workspace_ready`, the story lifecycle and the prior-attempt fence, and ends by
+calling `start_paid_run` — it wraps the paid gate rather than standing beside it.
+Every refusal carries one `EngineeringDispatchRefusal` value, so "story busy" is
+distinguishable from "workspace not ready" and from "budget denied" without
+parsing a log line. A prior attempt yields a named `EngineeringDispatchRepair`
+that the caller executes; the decider performs no transition of its own. The
+scheduler's `dispatch_todo_tasks` selects candidates, asks once per task, and
+acts on the answer, and the admin route `POST /api/tasks/{id}/spawn-worker` asks
+the same question before it publishes anything. Those two, plus the deploy
+supervisor's code-fix handoff — which dispatches no Task and so has no admission
+to pass — are the only publishers of an `EngineeringMessage`.
+
+An operator spawn may walk past a condition only by naming it: a command carries
+`overrides`, a list of `EngineeringDispatchRefusal` values restricted to
+`OVERRIDABLE_REFUSALS`, the decision returns the ones it applied in `overridden`,
+and the attempt records them in `run_metadata["admission_overrides"]`. The paid
+gate and the project conditions are never overridable.
+
+Two invariants hold the one-point guarantee up, and both are enforced in the API.
+
+**One lock ladder, and every condition row on it.** `LOCK_LADDER` in
+`engineering_dispatch_admission.py` declares the order once: Task rows — the
+candidate, its blocker and its story's roster — in ascending task id, then the
+Story, then the Project, then the engineering Run rows of those tasks, then the
+paid-work control rows `start_paid_run` takes. Every row a condition reads is
+taken through it with a locking reader (`get_task_for_update`,
+`_get_story_for_update`, `load_locked_project`, `SELECT ... FOR UPDATE`).
+Ascending task id is what keeps a reciprocal `blocked_by` from deadlocking. An
+unlocked query is permitted only to learn *which* row to lock next, must be
+column-only, and never supplies a value a condition uses. Its corollary binds
+callers: no caller may materialise a subject row before calling admission,
+because SQLAlchemy's identity map would then serve the locking read that stale
+entity; a route that must know something first asks a column-only question, as
+`spawn-worker` does. A story roster can still grow by INSERT, which no row lock
+fences, so the roster is re-read under the story lock and a member the decision
+does not hold ends the tick with `story_roster_changed`.
+
+**One entry to paid engineering work on a Task.** A paid engineering run bound to
+an existing Task row is created only by the admission point.
+`POST /work-admission/paid-runs` refuses a `type=engineering` command whose
+`task_id` names an existing Task with HTTP 409 and the typed code
+`engineering_task_dispatch_requires_admission`. It remains the paid gate for
+everything else, including the deploy supervisor's code-fix handoff, which names
+no Task row. The existence check fences the whole class rather than part of it:
+`runs.task_id` is a foreign key onto `tasks.id`, so an engineering run whose
+`task_id` names no Task cannot be persisted at all.
 
 The paid-run command locks its controls, evaluates count admission and (for
 engineering) money admission, then creates the queued Run in one transaction.
@@ -321,6 +373,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | QA SSH grant | `shared/contracts/dto/qa_ssh_grant.py` | `routers/runs.py` | grant only the run-scoped restricted target access |
 | Engineering consumer drain | `shared/contracts/dto/engineering_consumer.py` | `routers/engineering_consumer.py` | a drain is durable and audited; a recreated consumer honours it |
 | Work admission | `shared/contracts/dto/work_admission.py` | `routers/work_admission.py` | command identity does not reopen terminal work |
+| Engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `engineering_dispatch_admission.py`, `routers/work_admission.py` | one decision per dispatch, one typed reason per refusal, and no repair performed by the decider |
 | Budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `routers/engineering_budget_policies.py` | integer micro-USD and optimistic versioning |
 | Executor decision/diagnostics | `shared/contracts/dto/executor_decision.py`, `dto/executor_diagnostics.py` | admission/overview routes | persisted decision wins over later configuration |
 | Admin overview | `shared/contracts/dto/admin_overview.py` | `routers/admin_overview.py` | unavailable observations remain unavailable |

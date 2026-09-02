@@ -34,7 +34,11 @@ async def _project(client: AsyncClient, telegram_id: int) -> dict:
             "id": str(uuid.uuid4()),
             "title": "Ledger ownership",
             "initiating_run_id": f"init-{uuid.uuid4().hex}",
-            "config": {},
+            # Scaffolded and prepared: the manual spawn path in this file goes
+            # through the admission point, which refuses a draft project and one
+            # whose workspace is not ready.
+            "status": "active",
+            "config": {"workspace_ready": True},
         },
         headers={"X-Telegram-ID": str(telegram_id)},
     )

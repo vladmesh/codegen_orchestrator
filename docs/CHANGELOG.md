@@ -2,6 +2,113 @@
 
 ## Unreleased
 
+- Put every condition row of engineering dispatch admission on one declared lock ladder, and shut
+  the lower entry to paid engineering work on a Task. `LOCK_LADDER` in
+  `services/api/src/engineering_dispatch_admission.py` states the order once — Task rows (the
+  candidate, its blocker and its story's roster) in ascending task id, then the Story, then the
+  Project, then the engineering Run rows of those tasks, then the paid-work controls `start_paid_run`
+  takes — and every row a condition reads is now taken through it with a locking reader. Three rows
+  were not: the Project was read with a plain `select()` while every project writer takes
+  `load_locked_project`, so a concurrent PATCH could clear `workspace_ready` between the decision and
+  the run; the story fence read sibling Task rows and their Run rows unlocked, so a sibling's status
+  or attempt could change under it. An unlocked query is now permitted for one purpose only —
+  learning which row to lock next — and must be column-only. A story roster can still grow by INSERT,
+  which no row lock fences, so the roster is re-read under the story lock and a member the decision
+  does not hold ends the tick with the new `story_roster_changed` refusal instead of being locked out
+  of ladder order.
+- No caller may materialise a subject row before calling admission. `POST /api/tasks/{id}/spawn-worker`
+  loaded the Task as an entity for the status hop it is able to perform, and SQLAlchemy's identity map
+  then handed admission's `SELECT ... FOR UPDATE` that same object without refreshing it, so the
+  conditions were decided on the pre-read status and blocker and the route's transition wrote over
+  whatever committed in between. The route now peeks `Task.status` column-only, which materialises
+  nothing. `services/api/tests/service/test_engineering_dispatch_invariants.py` proves both halves
+  against the database: a real concurrent write between the peek and the lock is refused, and the
+  counterfactual next to it shows the same call admitting a stale row when the caller holds the
+  entity first.
+- `POST /work-admission/paid-runs` refuses a `type=engineering` command whose `task_id` names an
+  existing Task row, with HTTP 409 and the typed code `engineering_task_dispatch_requires_admission`.
+  That command is a dispatch of a Task, and a Task dispatch is admitted in exactly one place; an
+  authorised internal or admin caller could otherwise create a queued billable engineering attempt
+  naming a real Task with none of the admission conditions run. The route stays the paid gate for
+  everything else, and the deploy supervisor's code-fix handoff is untouched because it names no
+  Task row. The check is a complete fence rather than a partial one: `runs.task_id` is a foreign key
+  onto `tasks.id`, so an engineering run whose `task_id` names no Task cannot be persisted at all.
+- Gave paid engineering dispatch one declared admission point.
+  `services/api/src/engineering_dispatch_admission.py` is that module, reached over
+  `POST /work-admission/engineering-dispatches`, and every dispatch of an engineering Task now
+  passes through it. It takes the task row through `get_task_for_update` and, for a story task,
+  the story row through `_get_story_for_update`, then evaluates in one transaction every condition
+  that used to sit inline in `dispatch_todo_tasks` and be answered client-side between HTTP reads:
+  the internal-project skip, `blocked_by_task_id`, the project scaffold state and
+  `config["workspace_ready"]`, the story lifecycle (one task in flight per story, none once a
+  sibling reached `waiting_human_review`), the prior-attempt fence, and finally budget/slot
+  admission — by calling the existing `start_paid_run`, which it wraps rather than duplicating. An
+  admitted decision therefore leaves exactly the queued engineering Run and active budget hold the
+  scheduler used to create for itself, with the same `run_metadata` (`triggered_by`, `story_id`,
+  `task_id`, `initiating_run_id`, `iteration`). `shared/contracts/dto/engineering_dispatch.py`
+  carries the typed question and answer: `EngineeringDispatchCommand` names the task and nothing
+  about its state, so no caller can pass a stale project status or sibling list, and
+  `EngineeringDispatchRead`
+  returns an `EngineeringDispatchOutcome` with one `EngineeringDispatchRefusal` value per distinct
+  refusal — `story_busy` is readable apart from `workspace_not_ready` and from
+  `engineering_budget_denied` without parsing a log line — plus the wrapped `PaidRunStartRead`
+  whenever the paid gate is the one that decided. The Product Brief admission, the next card, is one
+  more condition in that module and one more value in that enum, not a second surface.
+- The prior-attempt fence decides but no longer repairs. It used to transition the task back to
+  `in_dev` from inside the guard; the admission point instead names the work through
+  `EngineeringDispatchRepair` (`recover_own_attempt`, `adopt_live_attempt`, `replay_finished_run`)
+  and the dispatcher executes it through the same transition endpoints, so a decision carries no
+  hidden side effect. The property the old code protected is unchanged and moved with it:
+  `_prior_attempt` never consults `current_iteration` to decide *whether* to stop — that field is
+  incremented by the very retry that creates the risk — and reads it only to name which repair a
+  live run is. `services/api/tests/unit/test_engineering_dispatch_prior_attempt.py` holds that
+  property now; `services/scheduler/tests/unit/test_task_dispatcher_no_second_worker.py` keeps the
+  dispatcher's half of it.
+- `dispatch_todo_tasks` contains no admission condition. It lists todo tasks, calls the admission
+  point once per task and acts on the typed answer: publish the message for an admitted attempt,
+  execute a named repair, or handle a refusal — routing the story and the task to human review only
+  when the refusal came from the paid gate, which is the case in which an attempt was already
+  counted. Message building stayed on the scheduler where it belongs: the cumulative sibling context
+  and the description enrichment moved into `_enriched_description`, which runs only after
+  admission. `_find_unfinished_run`, `_find_dispatched_run`, `_story_blocks_dispatch`,
+  `_handle_prior_attempt` and `_project_and_initiating_run` are gone from the scheduler, and with
+  them the `INTERNAL_PROJECT_ID` constant — the internal project keeps its behaviour as an explicit
+  named condition of the admission point, with its own refusal reason, not as a UUID compared inside
+  a loop. The one behaviour not carried over is the "project is gone" skip: `tasks.project_id` is a
+  non-nullable foreign key, so server-side that state is a broken database rather than a refusal,
+  and it now raises the way `start_paid_run` already raises for a missing project.
+- The admin route `POST /api/tasks/{id}/spawn-worker` goes through that same admission point. It
+  used to lock the task and then call `start_paid_run` and publish an `EngineeringMessage` itself,
+  so a supported operator action could buy and publish a worker for an internal-project task, a task
+  with an unresolved blocker, a task on a busy story or a task in a draft or workspace-not-ready
+  project. It now asks `admit_engineering_dispatch` and acts on the typed answer, and the two
+  conditions it is allowed to walk past are named rather than absent: `EngineeringDispatchCommand`
+  gained `overrides`, a list of `EngineeringDispatchRefusal` values validated against
+  `OVERRIDABLE_REFUSALS`, and the route passes exactly `task_not_dispatchable` and
+  `live_attempt_in_flight` — the two that mean "the scheduler would not have started this now",
+  which is the whole point of an operator spawn. Every other condition, the paid gate included,
+  refuses an operator spawn exactly as it refuses a scheduled one. An override is audited rather
+  than silent: the decision returns `overridden`, the created attempt records
+  `run_metadata["admission_overrides"]`, and `worker_spawned` logs it. `EngineeringDispatchCommand`
+  also gained `origin`, so an attempt still records whether a human or the scheduler asked for it.
+  The remaining publisher of an `EngineeringMessage`, the deploy supervisor's code-fix handoff in
+  `services/scheduler/src/tasks/supervisor/deploy.py`, dispatches no Task at all — it has no Task
+  row — and is outside this admission point's subject.
+- The story fence observes runs, not only statuses. A sibling that was admitted and published but
+  whose transition out of `todo` failed is a supported recovery state: still `todo`, with a live
+  engineering run whose worker holds the story branch. Under the story lock the admission point now
+  refuses a dispatch whose story has any sibling holding a queued or running engineering run, with
+  the same `story_busy` reason an `in_dev` sibling produces — one condition, read two ways, because
+  the status write that would have made the sibling visible locks only its own row.
+- The blocker row is read for update. `blocked_by_task_id` used to be resolved through the
+  read-only reader, so a concurrent legal `done → backlog` on the blocker could be lost between the
+  read and the commit. Both Task rows are now taken with `get_task_for_update` in ascending task id,
+  never in dependency order, which is what makes a reciprocal dependency safe: two dispatches of
+  tasks that block each other take the same two rows in the same order and one waits instead of both
+  deadlocking. The edge itself is peeked at first with a column-only unlocked query, purely to learn
+  which second row to take; if the locked row then names a different blocker, that tick refuses with
+  `blocker_unresolved` rather than locking out of order.
+
 - Gave a Story a typed answer to "what is it waiting for?". `StoryWaitingOn` (`none`, `ci`,
   `deploy`, `qa`, `user_secret`, `human_review`, `resources`) lives in
   `shared/contracts/dto/story.py` beside `VALID_TRANSITIONS`, and `stories.waiting_on` is a
