@@ -63,7 +63,84 @@ How errors "bubble up" from the low-level components to the user.
 2. **Logic Error (in container):** the agent catches an exception.
    - Publishes the result: `status="failed", error="Exception message"`.
 
-### C. Consumer Errors (Redis)
+### C. Engineering Dispatch Refusals and Repairs
+
+A dispatch that does not happen is an answer, not an error.
+`POST /api/work-admission/engineering-dispatches`
+(`services/api/src/engineering_dispatch_admission.py`) returns one typed
+decision, and the caller reads it rather than an HTTP status:
+
+1. **`refused` with a typed `EngineeringDispatchRefusal`** — one value per
+   distinct condition, so `story_busy`, `workspace_not_ready` and
+   `engineering_budget_denied` are told apart without parsing a log line. The
+   dispatcher splits them on one line, in `_handle_refusal`: `paid_work` is
+   present exactly when the paid gate decided, and a refusal from an earlier
+   condition is a state this tick cannot dispatch in and a later tick may — it is
+   logged and left alone, with nothing spent and nothing owed. A paid denial has
+   already spent the attempt, so it hands the task to `waiting_human_review`
+   with the reason in the event details, and — for a story task whose denial
+   carries a message for the owner — the story to `human-review`, with the owner
+   notification persisted before it is published.
+2. **`repair` with a named `EngineeringDispatchRepair`** — the admission point
+   found an attempt this task already has, created nothing, and performs no
+   transition of its own; the dispatcher executes the named repair through the
+   ordinary transition endpoints. `recover_own_attempt` finishes this task's own
+   dispatch whose transition out of `todo` failed; `adopt_live_attempt` puts the
+   task back in `in_dev` behind somebody else's live attempt and dispatches
+   nothing; `replay_finished_run` moves the task to `in_dev` and then applies
+   the terminal outcome of a run that finished while the task was stuck in
+   `todo`, instead of buying a second one. Which repair it is never depends on
+   `current_iteration` — that field is incremented by the retry that creates the
+   risk — the iteration only names the event.
+3. **`admitted`** — the queued Run and its budget hold already exist. Only a
+   failure proven to precede the queue call releases the reservation
+   (`abort_paid_run_pre_handoff`); a lost publish *response* has an unknown
+   broker outcome, so the Run is kept and the live-attempt repair owns it on the
+   next tick.
+
+An operator override is not an absence of admission: every condition is still
+evaluated, `spawn-worker` may name only `task_not_dispatchable` and
+`live_attempt_in_flight`, and the attempt records what it walked past in
+`run_metadata["admission_overrides"]`.
+
+**A story whose Product Brief plan never completed.** `product_brief_not_admitted`
+refuses every task of a plan whose architect died mid-way, and the plan-membership
+freeze refuses to move those tasks out of the story, so before the recovery path
+existed such a story was stranded for good. Recovery has two halves.
+`supervise_stuck_stories` (`services/scheduler/src/tasks/supervisor/liveness.py`)
+retries the story through the ordinary architect path when all three of the
+following hold: every task of the story is unadmitted, the story is backed by a
+brief, and no architect owns the incomplete plan — its attempt is inactive or its
+heartbeat is older than `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`. A live
+planner is left alone, and one admitted task keeps the old skip. Then
+`POST /api/product-briefs/{id}/planning-attempts/claim` voids the plan it
+supersedes in the same transaction that mints the new attempt id: the superseded
+attempt's unadmitted tasks are cancelled through `apply_cancellation` and its
+`RequirementCoverage` rows are deleted, so the corpse cannot keep the recovered
+story from completing. A row whose status cannot legally reach `cancelled` is
+left alone and reported rather than forced. The scheduler decides no admission
+in any of this — it reads brief state through
+`GET /api/product-briefs/by-story/{story_id}` and the release step stays the
+API's one `POST /api/product-briefs/{id}/admit`. Nothing claims an attempt or
+calls `admit` today, so this path is enforced and testable but not yet exercised
+by a real architect.
+
+**A story's own status is never repaired by a caller.** Both places that write it
+— `_do_transition` and `_apply_chain` in `services/api/src/routers/` — validate
+every hop against `VALID_TRANSITIONS` on a row held with `SELECT ... FOR UPDATE`,
+and a composite applies all of its hops or none, so an illegal hop raises 422
+with the story exactly as it was. That is why the CI-failure retry is one call:
+as three (`fail` → `reopen` → `start`) a crash in the middle left a story parked
+in an intermediate status with nobody to finish it. `waiting_on` cannot drift
+away from `status` either — the same transition writes both, from
+`WAITING_ON_BY_STATUS`, and `PATCH /api/stories/{id}` answers 422 to a caller
+that tries to set either. So a parked story in `GET /api/admin/overview`'s
+`waiting_stories` names a real wait: `ci`, `deploy`, `qa`, `human_review` or
+`user_secret`. `resources` is declared in the enum and set by nothing — a
+capacity wait parks the Task in `waiting_resources` (see §5) while the Story
+stays `in_progress`.
+
+### D. Consumer Errors (Redis)
 
 All consumers read through the unified `RedisStreamClient.consume()` / `consume_typed()` API with two ACK modes:
 
