@@ -11,6 +11,14 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
+from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionRead,
+    ProductBriefPlanningAttemptCommand,
+    ProductBriefPlanningAttemptRead,
+    ProductBriefRead,
+    RequirementCoverageCreate,
+    RequirementCoverageRead,
+)
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -249,6 +257,92 @@ class LanggraphAPIClient(InternalAPIClient):
 
     async def update_incident(self, incident_id: int, payload: dict) -> dict:
         return await self._patch_json(f"incidents/{incident_id}", json=payload)
+
+    # --- Product Brief: the coverage-to-dispatch boundary ---
+    #
+    # The client half of `services/api/src/routers/product_briefs.py`. Every
+    # method here returns the shared DTO the endpoint declares, because the
+    # architect branches on typed outcomes — `claimed` / `in_progress` /
+    # `already_admitted`, `admitted` / `incomplete` — and never on an HTTP
+    # status it reconstructs a meaning from. Nothing here writes
+    # `dispatch_admitted`: `admit_product_brief_coverage` is the only release
+    # step, and it is the API's.
+
+    async def get_product_brief_by_story(self, story_id: str) -> ProductBriefRead | None:
+        """The brief backing this story, or None when the story has no brief.
+
+        None is the ordinary case and not an error: a story with no brief is
+        planned exactly as it always was.
+        """
+        try:
+            resp = await self.request("GET", f"product-briefs/by-story/{story_id}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+        return ProductBriefRead.model_validate(resp.json())
+
+    async def claim_planning_attempt(self, brief_id: str) -> ProductBriefPlanningAttemptRead:
+        """Take ownership of this brief's incomplete plan, if it is free to take.
+
+        The outcome is the answer, not the status code: a rival owner reports
+        `in_progress` and an already-released plan reports `already_admitted`,
+        and both are 200.
+        """
+        resp = await self.request("POST", f"product-briefs/{brief_id}/planning-attempts/claim")
+        return ProductBriefPlanningAttemptRead.model_validate(resp.json())
+
+    async def heartbeat_planning_attempt(
+        self, brief_id: str, planning_attempt_id: str
+    ) -> ProductBriefPlanningAttemptRead:
+        """Prove this architect is still alive, so its claim is not taken over."""
+        command = ProductBriefPlanningAttemptCommand(planning_attempt_id=planning_attempt_id)
+        resp = await self.request(
+            "POST",
+            f"product-briefs/{brief_id}/planning-attempts/heartbeat",
+            json=command.model_dump(mode="json"),
+        )
+        return ProductBriefPlanningAttemptRead.model_validate(resp.json())
+
+    async def finish_planning_attempt(
+        self, brief_id: str, planning_attempt_id: str
+    ) -> ProductBriefPlanningAttemptRead:
+        """Give up ownership without admitting, so the next architect need not wait."""
+        command = ProductBriefPlanningAttemptCommand(planning_attempt_id=planning_attempt_id)
+        resp = await self.request(
+            "POST",
+            f"product-briefs/{brief_id}/planning-attempts/finish",
+            json=command.model_dump(mode="json"),
+        )
+        return ProductBriefPlanningAttemptRead.model_validate(resp.json())
+
+    async def record_requirement_coverage(
+        self, brief_id: str, coverage: RequirementCoverageCreate
+    ) -> RequirementCoverageRead:
+        """Record how the owning architect disposed of one must-requirement."""
+        resp = await self.request(
+            "PUT",
+            f"product-briefs/{brief_id}/coverage/{coverage.requirement_id}",
+            json=coverage.model_dump(mode="json"),
+        )
+        return RequirementCoverageRead.model_validate(resp.json())
+
+    async def list_requirement_coverage(self, brief_id: str) -> list[RequirementCoverageRead]:
+        """Every disposition recorded against this brief, whatever attempt wrote it."""
+        resp = await self.request("GET", f"product-briefs/{brief_id}/coverage")
+        return [RequirementCoverageRead.model_validate(row) for row in resp.json()]
+
+    async def admit_product_brief_coverage(
+        self, brief_id: str, planning_attempt_id: str
+    ) -> ProductBriefAdmissionRead:
+        """Cross the coverage-to-dispatch boundary once. The API releases, not us."""
+        command = ProductBriefPlanningAttemptCommand(planning_attempt_id=planning_attempt_id)
+        resp = await self.request(
+            "POST",
+            f"product-briefs/{brief_id}/admit",
+            json=command.model_dump(mode="json"),
+        )
+        return ProductBriefAdmissionRead.model_validate(resp.json())
 
     # --- Architect: story/task methods ---
 

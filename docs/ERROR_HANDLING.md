@@ -129,9 +129,19 @@ story from completing. A row whose status cannot legally reach `cancelled` is
 left alone and reported rather than forced. The scheduler decides no admission
 in any of this — it reads brief state through
 `GET /api/product-briefs/by-story/{story_id}` and the release step stays the
-API's one `POST /api/product-briefs/{id}/admit`. Nothing claims an attempt or
-calls `admit` today, so this path is enforced and testable but not yet exercised
-by a real architect.
+API's one `POST /api/product-briefs/{id}/admit`. The architect consumer is the
+producer at the other end of this: it gives a claim back through
+`POST /api/product-briefs/{id}/planning-attempts/finish` when its run failed or
+its plan came back `incomplete`, which closes the attempt immediately instead of
+leaving it to expire with the heartbeat timeout — and a planner that died without
+giving anything back is exactly the stale-heartbeat case above. Closing the
+attempt is not the same as recovering the story: the architect consumer moves a
+story to `in_progress` before it claims, and the scan above reads
+`StoryStatus.CREATED` only, so a story stranded behind an `incomplete` or failed
+plan is never reached by this recovery today (and a republished `in_progress`
+story that already has tasks is skipped by the consumer as "already decomposed").
+Such a story needs an operator until the scheduler side is widened; widening it
+is a deferred decision, not something the consumer retries around.
 
 **A story's own status is never repaired by a caller.** Both places that write it
 — `_do_transition` and `_apply_chain` in `services/api/src/routers/` — validate

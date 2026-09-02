@@ -26,3 +26,19 @@ class TestArchitectPromptContent:
 
     def test_mentions_task_count_guidance(self):
         assert "1" in SYSTEM_PROMPT and "2" in SYSTEM_PROMPT
+
+
+class TestProductBriefDirectives:
+    """The prompt has to say what releases a brief-backed plan, and how."""
+
+    def test_names_the_tool_that_records_a_disposition(self):
+        assert "record_requirement_coverage" in SYSTEM_PROMPT
+
+    def test_demands_exactly_one_disposition_per_requirement(self):
+        lower = SYSTEM_PROMPT.lower()
+        assert "must-requirement" in lower
+        assert "exactly one disposition" in lower
+        assert "one call per requirement" in lower
+
+    def test_says_nothing_is_dispatched_until_all_of_them_are_recorded(self):
+        assert "Nothing you planned is dispatched until all of them are recorded" in SYSTEM_PROMPT

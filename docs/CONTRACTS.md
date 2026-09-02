@@ -264,14 +264,28 @@ any Task row. The dispatch admission point reads no brief at all — its conditi
 is a column of the candidate Task, which rung 1 of `LOCK_LADDER` already holds —
 so brief-before-task closes no cycle with task-before-story-before-project.
 
-**Enforced, not yet exercised.** No producer claims a planning attempt, records
-requirement coverage or calls `admit` today: the architect wiring does not exist,
-and `plan_admission_for_new_task` therefore returns `dispatch_admitted=True` for
-every task the pipeline actually creates. What the boundary changes today is
-what happens when a brief-backed task *is* created — it is refused dispatch
-until its plan is admitted — not how ordinary work is dispatched. The scheduler
-reads brief state in exactly one place, `get_product_brief_by_story` over
-`GET /api/product-briefs/by-story/{story_id}`, and decides no admission with it.
+**The producer is the architect consumer.** `services/langgraph/src/consumers/architect.py`
+is the only thing that claims a planning attempt, and it does so for one reason:
+the story it was handed is backed by a confirmed brief. It claims before the
+graph runs, heartbeats the claim for as long as the graph runs and stops beating
+however the run ends, plans every task under the attempt it holds, records one
+disposition per must-requirement through the coverage route, and calls `admit`
+exactly once afterwards. An `incomplete` answer is the result of that job:
+nothing is dispatched, the story is not moved on, no second admit is attempted,
+and the undisposed requirement ids are in the job result and the log whatever the
+LLM said about its own run. A failed or incomplete run gives the claim back
+through `finish`, which closes the attempt immediately instead of leaving it to
+expire with the heartbeat timeout. That does not by itself hand the story to
+machinery: this consumer moves the story to `in_progress` before it claims, and
+`supervise_stuck_stories` scans `StoryStatus.CREATED` only, so a story stranded
+behind an `incomplete` plan is not picked up by today's supervisor recovery and
+needs an operator until the scheduler side is widened. The consumer writes
+`dispatch_admitted` nowhere and adds no second admission surface; a story with no
+brief, or one whose brief is already admitted, is planned exactly as it always
+was, and `plan_admission_for_new_task` returns `dispatch_admitted=True` for it.
+The scheduler still reads brief state in exactly one place,
+`get_product_brief_by_story` over `GET /api/product-briefs/by-story/{story_id}`,
+and decides no admission with it.
 
 ### Operational overview
 

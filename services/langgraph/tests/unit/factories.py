@@ -8,6 +8,14 @@ from datetime import UTC, datetime
 import uuid
 
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
+from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionOutcome,
+    ProductBriefAdmissionRead,
+    ProductBriefContent,
+    ProductBriefPlanningAttemptOutcome,
+    ProductBriefPlanningAttemptRead,
+    ProductBriefRead,
+)
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
@@ -90,6 +98,62 @@ def make_story(**overrides) -> StoryDTO:
     # Required on the DTO, and implied by the status the story sits on.
     base.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(base["status"])])
     return StoryDTO(**base)
+
+
+def make_product_brief(**overrides) -> ProductBriefRead:
+    """A confirmed, story-bound brief with an unadmitted plan — the planning case.
+
+    Override `confirmed_at=None` for a brief the user has not frozen yet, or
+    `coverage_admitted_at` for one whose plan is already released.
+    """
+    base = {
+        "id": "brief-1",
+        "project_id": _PROJECT_ID,
+        "story_id": "story-abc",
+        "revision": 1,
+        "title": "Test brief",
+        "content": ProductBriefContent(
+            summary="A product",
+            must_requirements=[
+                {"id": "req-1", "text": "It must sign users in"},
+                {"id": "req-2", "text": "It must list cities"},
+            ],
+        ),
+        "confirmed_at": _NOW,
+        "confirmation_request_id": "confirm-1",
+        "coverage_admitted_at": None,
+        "planning_attempt_id": None,
+        "planning_attempt_active": False,
+        "planning_attempt_heartbeat_at": None,
+    }
+    base.update(overrides)
+    return ProductBriefRead(**base)
+
+
+def make_planning_attempt(**overrides) -> ProductBriefPlanningAttemptRead:
+    """The answer a claim, heartbeat or finish gives about who owns the plan."""
+    base = {
+        "brief_id": "brief-1",
+        "story_id": "story-abc",
+        "outcome": ProductBriefPlanningAttemptOutcome.CLAIMED,
+        "planning_attempt_id": "plan-1",
+        "planning_attempt_heartbeat_at": _NOW,
+    }
+    base.update(overrides)
+    return ProductBriefPlanningAttemptRead(**base)
+
+
+def make_admission(**overrides) -> ProductBriefAdmissionRead:
+    """The durable answer of the one coverage-to-dispatch admission step."""
+    base = {
+        "brief_id": "brief-1",
+        "story_id": "story-abc",
+        "outcome": ProductBriefAdmissionOutcome.ADMITTED,
+        "coverage_admitted_at": _NOW,
+        "released_task_ids": ["task-1"],
+    }
+    base.update(overrides)
+    return ProductBriefAdmissionRead(**base)
 
 
 def make_task(**overrides) -> TaskDTO:
