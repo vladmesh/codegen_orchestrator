@@ -3,7 +3,7 @@
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images ensure-worker-images check-shared-freshness print-source-hash \
-	.nuke-common .nuke-hard-prune pull-worker-reports
+	.nuke-common .nuke-hard-prune
 
 # Load .env file
 -include .env
@@ -520,11 +520,6 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	@echo "🚀 Starting remaining services..."
 	$(DOCKER_COMPOSE) up -d
 	@echo "✅ Fresh environment ready!"
-
-# === Worker reports ===
-
-pull-worker-reports:
-	@uv run python scripts/pull_worker_reports.py
 
 # === Seeding ===
 
