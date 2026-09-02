@@ -104,7 +104,8 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
 | Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
 | Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
-| Diagnostics | bounded debug dumps, runner log, and public report files | all named suites |
+| Failure attribution | the failing stage, its control-plane reason, the engineering Run records and the verdict | all named suites; the paid verdict rules apply to LLM/matrix |
+| Diagnostics | bounded debug dumps, redacted service tails on suite failure, runner log, and public report files | all named suites |
 | Ownership fence | `OwnershipManifest`, run labels, and fenced teardown | all named suites |
 | Neighbour isolation | manifest-scoped cleanup regressions; no prefix or shared-stream deletion | all named suites |
 | Redaction | stand acceptance admission scans only public evidence | all named suites |
@@ -187,6 +188,46 @@ references by path only. `tests/live/test_run_evidence.py` covers the whole sche
 `tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.
+
+## Naming the failure
+
+A run that stopped has to say **where** and **why** in the artifact itself, because by the time
+anybody reads it the host is gone. Run 33683482667 is why: it ended `stopped_at_engineering` /
+`worker_did_not_finish` with `attempts=0` and a null `failure_metadata`, and nothing that could
+explain it survived teardown — no service logs, no engineering Run record, no admission outcome, no
+executor diagnostics, and the test's own debug dump died with the deleted machine.
+
+`failure` answers both questions. `stage` is the terminal state, `failure_kind` its classification,
+and `control_plane_reason` is a capture: for the engineering stage it carries the Run's status, its
+`error_message`, the `run_metadata` stop reason, the executor decision it was dispatched under and
+the admission outcome that allowed it to exist, beside the task's redacted failure metadata and
+iteration. When no Run could be read the field is a stated `missed` naming why — "the control plane
+holds no engineering Run for it" is a different, and much sharper, finding than a blank field.
+
+`engineering` carries the source those facts are read from: every engineering Run of the
+combination, each with its Run record, its work-admission outcome and the executor diagnostics
+snapshot in force at that moment. It is read inside the engineering phase, on failure exactly as on
+success, because after teardown there is nothing left to read.
+
+`verdict` is `green` or `red` with the reasons for red, and it is where a paid run's *missing*
+evidence stops being silent. On a paid combination, `worker_executed` coming back `missed` — and
+`qa_executed` when the suite asked for an LLM QA executor — is a red reason carrying the
+control-plane reason for the stage that stopped the run. The free `mega-noop` route starts no such
+container by design, so its verdict is exactly what the terminal state always said.
+
+The workflow fails closed on it. For a failed paid run, `scripts/stand_acceptance.py` refuses an
+acceptance artifact whose run evidence lacks the failing stage, its reason, the engineering section
+or the redacted service log tails — the same admission the handoff already fails closed on, and the
+same redaction canary still guards it. A piece that genuinely could not be collected is admissible
+*as a stated missed capture*; a piece that is simply absent is not.
+
+Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of `scheduler`,
+`engineering-worker`, `worker-manager`, `worker-broker` and `api` into `suite-services.log` when the
+suite fails — through the same `shared.diagnostics.redact_diagnostic` helper and the same
+protected-name allow-list the provisioning-failure branch uses, with the stated reason published in
+place of the tails if that pipe cannot complete. And `dump_debug` now writes beside the run evidence,
+in the runner-owned directory the workflow collects from, rather than under the ephemeral checkout;
+the artifact lists the dumps the run wrote under `debug_dumps`.
 
 ## Run-scoped cleanup
 

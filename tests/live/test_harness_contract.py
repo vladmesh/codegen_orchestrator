@@ -2902,3 +2902,127 @@ def test_live_modules_do_not_compose_auth_headers_of_their_own():
         source = (live_dir / name).read_text()
         assert "AUTH_HEADERS" not in source, f"{name} composes the user header itself"
         assert "internal_headers" not in source, f"{name} composes the internal key itself"
+
+
+# ── The control-plane evidence a failed paid run has to leave behind ─────
+
+
+def _engineering_evidence_handler(*, runs: list[dict], admission: httpx.Response | None = None):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={"version": "v1", "diagnostics": []})
+        if request.url.path == "/api/runs/":
+            return httpx.Response(200, json=runs)
+        if request.url.path.endswith("/admission"):
+            return (
+                admission
+                if admission is not None
+                else httpx.Response(
+                    200, json={"outcome": "admitted", "reason": None, "retryable": False}
+                )
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    return handler
+
+
+def _engineering_run(**overrides) -> dict:
+    run = {
+        "id": "run-eng-1",
+        "type": "engineering",
+        "task_id": "task-1",
+        "status": "failed",
+        "error_message": "Agent exited without reporting result",
+        "run_metadata": {
+            "stop_reason": "agent_limit_exceeded",
+            "executor_decision": {"agent_type": "claude"},
+        },
+        "result": {"engineering_status": "failed"},
+    }
+    run.update(overrides)
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_failed_engineering_stage_retains_its_run_admission_and_diagnostics():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(_engineering_evidence_handler(runs=[_engineering_run()]))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert ctx["engineering_evidence_error"] is None
+    assert ctx["engineering_runs"] == records
+    record = records[0]
+    assert record["run_id"] == "run-eng-1"
+    assert record["run"]["value"]["status"] == "failed"
+    assert record["run"]["value"]["stop_reason"] == "agent_limit_exceeded"
+    assert record["run"]["value"]["executor_decision"] == {"agent_type": "claude"}
+    assert record["admission"]["value"]["outcome"] == "admitted"
+    assert record["executor_diagnostics"]["value"] == {"version": "v1", "diagnostics": []}
+
+
+@pytest.mark.asyncio
+async def test_an_engineering_run_whose_admission_audit_is_absent_says_so():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(
+        _engineering_evidence_handler(
+            runs=[_engineering_run()], admission=httpx.Response(404, json={"detail": "absent"})
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    admission = records[0]["admission"]
+    assert admission["status"] == "missed"
+    assert "HTTP 404" in admission["reason"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_control_plane_names_the_collection_failure():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={"version": "v1", "diagnostics": []})
+        raise httpx.ReadTimeout("runs listing timed out", request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert records == []
+    assert "could not be listed" in ctx["engineering_evidence_error"]
+    assert "ReadTimeout" in ctx["engineering_evidence_error"]
+
+
+@pytest.mark.asyncio
+async def test_engineering_evidence_redacts_secret_values_before_retaining_them(monkeypatch):
+    monkeypatch.setenv("STAND_WORKER_TOKEN", "super-secret-token")
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(
+        _engineering_evidence_handler(
+            runs=[_engineering_run(error_message="auth failed for super-secret-token")]
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert "super-secret-token" not in json.dumps(records)
+    assert "[redacted]" in records[0]["run"]["value"]["error_message"]
+
+
+def test_a_debug_dump_is_written_where_the_handoff_collects_it(monkeypatch, tmp_path):
+    """The stand checkout dies with the host; the runner directory is collected."""
+    runner_dir = tmp_path / "e2e-runs" / "mega-llm"
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path / "checkout")
+    monkeypatch.setenv("LIVE_EVIDENCE_OUTPUT_DIR", str(runner_dir))
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    ctx = {"project_id": "project-1"}
+
+    pipeline_helpers.dump_debug(ctx, "full-llm-engineering")
+
+    dump = next(runner_dir.glob("debug-full-llm-engineering-*.md"))
+    assert not (tmp_path / "checkout" / "docs").exists()
+    assert ctx["debug_dumps"] == [dump.name]

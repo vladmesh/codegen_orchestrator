@@ -20,7 +20,14 @@ import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 from pydantic import ValidationError
 import run_cleanup
-from run_evidence import RunEvidenceCollector, WorkerRole
+from run_evidence import (
+    Capture,
+    RunEvidenceCollector,
+    WorkerRole,
+    engineering_run_facts,
+    engineering_run_record,
+    evidence_output_directory,
+)
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -683,6 +690,85 @@ def _engineering_run_candidates(payload: list[dict], task_id: str) -> list[dict]
         for run in payload
         if run.get("type") == RunType.ENGINEERING.value and run.get("task_id") == task_id
     ]
+
+
+def redacted_payload(payload: object) -> object:
+    """One control-plane payload, redacted before it becomes retained evidence.
+
+    The same rule the worker log tails are held to: a serialized payload is
+    passed through `shared.diagnostics.redact_diagnostic` against every value of
+    this process's environment whose name says it is a secret. Nothing new is
+    trusted and no new secret-handling path is introduced.
+    """
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    return json.loads(redact_diagnostic(serialized, secrets=secret_env_values(dict(os.environ))))
+
+
+async def _executor_diagnostics_snapshot(api_internal: httpx.AsyncClient) -> Capture:
+    """The executor diagnostics the control plane held at this moment."""
+    try:
+        response = await api_internal.get("/api/work-admission/executor-diagnostics")
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        return Capture.missed(
+            f"the executor diagnostics snapshot could not be read: {type(error).__name__}: {error}"
+        )
+    return Capture.captured(redacted_payload(response.json()))
+
+
+async def _paid_run_admission(api_internal: httpx.AsyncClient, run_id: str) -> Capture:
+    """The immutable work-admission outcome that allowed one Run to exist."""
+    try:
+        response = await api_internal.get(f"/api/work-admission/paid-runs/{run_id}/admission")
+        response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        return Capture.missed(
+            f"the work-admission audit for {run_id} answered HTTP {error.response.status_code}"
+        )
+    except httpx.HTTPError as error:
+        return Capture.missed(
+            f"the work-admission audit for {run_id} could not be read: {type(error).__name__}"
+        )
+    return Capture.captured(redacted_payload(response.json()))
+
+
+async def record_engineering_evidence(api_internal: httpx.AsyncClient, ctx: dict) -> list[dict]:
+    """Read every engineering Run of this combination while the stand still exists.
+
+    On failure exactly as on success, and inside the phase rather than after it:
+    the Run record, its admission outcome and the executor diagnostics in force
+    are database and Redis facts on a machine the workflow deletes minutes
+    later. A run that did not read them here has nothing to read afterwards, and
+    its artifact can then name no reason for the stage that stopped it — which is
+    exactly what run 33683482667 could not do.
+
+    This is evidence collection, so it never fails the run: a read that could not
+    be made is recorded as a stated missed capture, and a discovery that failed
+    is recorded as the reason the whole section is missed.
+    """
+    ctx["engineering_evidence_error"] = None
+    records: list[dict] = []
+    try:
+        diagnostics = await _executor_diagnostics_snapshot(api_internal)
+        for task_id in ctx.get("task_ids") or [ctx["task_id"]]:
+            for run in await _engineering_runs_for_task(api_internal, task_id):
+                run_id = run["id"]
+                records.append(
+                    engineering_run_record(
+                        run_id=run_id,
+                        task_id=task_id,
+                        run=Capture.captured(redacted_payload(engineering_run_facts(run))),
+                        admission=await _paid_run_admission(api_internal, run_id),
+                        executor_diagnostics=diagnostics,
+                    )
+                )
+    except (httpx.HTTPError, KeyError, ValueError) as error:
+        ctx["engineering_evidence_error"] = (
+            f"the engineering Runs of this combination could not be listed: "
+            f"{type(error).__name__}: {error}"
+        )
+    ctx["engineering_runs"] = records
+    return records
 
 
 def _record_task_diagnostic(ctx: dict, task: dict, *, task_id: str | None = None) -> None:
@@ -2414,10 +2500,23 @@ def _cleanup_db(project_id: str) -> None:
 
 
 def dump_debug(ctx: dict, test_name: str) -> None:
-    """Write debug info to docs/e2e_results/ for post-mortem analysis."""
+    """Write this run's own debug dump where the handoff can still collect it.
+
+    Beside the run-evidence artifact, not under the checkout. On the stand the
+    checkout is the ephemeral host: a dump written there dies with the machine
+    and never reaches the acceptance artifact, which is how run 33683482667
+    ended with no post-mortem at all. `evidence_output_directory` resolves the
+    runner-owned directory the workflow collects from, and falls back to
+    `docs/e2e_results/` for a local run.
+
+    The file's name is recorded on the context, so the artifact names the dumps
+    this run wrote rather than leaving a reader to guess whether any exist.
+    """
     ts = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
-    filepath = os.path.join(ORCHESTRATOR_ROOT, "docs", "e2e_results", f"debug-{test_name}-{ts}.md")
+    directory = evidence_output_directory(ORCHESTRATOR_ROOT)
+    filepath = os.path.join(directory, f"debug-{test_name}-{ts}.md")
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    ctx.setdefault("debug_dumps", []).append(os.path.basename(filepath))
 
     lines = [
         f"# Debug: {test_name}",
