@@ -42,3 +42,17 @@ class TestProductBriefDirectives:
 
     def test_says_nothing_is_dispatched_until_all_of_them_are_recorded(self):
         assert "Nothing you planned is dispatched until all of them are recorded" in SYSTEM_PROMPT
+
+
+class TestInitialSettingsDirectives:
+    """A confirmed setting is planned for, not written by the plan."""
+
+    def test_requires_the_manifest_declaration_that_makes_a_key_writable(self):
+        lower = SYSTEM_PROMPT.lower()
+        assert "settings_schema" in lower
+        assert "manifest.yaml" in lower
+
+    def test_says_the_platform_writes_the_values_and_the_plan_does_not(self):
+        lower = SYSTEM_PROMPT.lower()
+        assert "the platform writes them" in lower
+        assert "setting key not declared" in lower

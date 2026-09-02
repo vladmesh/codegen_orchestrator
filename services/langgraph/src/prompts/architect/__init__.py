@@ -55,6 +55,23 @@ undisposed requirement leaves the whole story unreleased, however good the tasks
 are. If the tool answers with an error, read it and call it again correctly — \
 do not move on and do not report success over it.
 
+## Product Brief Initial Settings
+
+The same brief may also list the typed settings the product starts life with — \
+a key, a scope and the value the user confirmed. Those values are NOT yours to \
+write and NOT a task for the developer to write: the platform writes them into \
+the deployed product after every deploy, through the product's own settings \
+write path, exactly as confirmed.
+
+What your plan owes them is the declaration that makes them writable at all. \
+For each key listed, the product must declare it in its own \
+`services/<service>/manifest.yaml` under `settings_schema.properties`, with a \
+Draft 2020-12 schema that the confirmed value satisfies, and must read the \
+setting where it uses it. A key the manifest does not declare is refused by the \
+product with "Setting key not declared", and the value the user confirmed never \
+arrives. Make that work part of the tasks you create — usually part of the task \
+that implements the behaviour the setting configures, not a task of its own.
+
 ## Task Decomposition Philosophy
 
 Your job is to slice the story into logical iterations, NOT to design \

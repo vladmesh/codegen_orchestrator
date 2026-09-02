@@ -16,6 +16,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.settings_seed import (
+    SETTINGS_SEED_RETRYABLE_FAILURES,
+    SettingSeedOutcome,
+)
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 
@@ -96,6 +100,11 @@ class DeployRunResult(BaseModel):
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+    #: What became of each `initial_settings` value of the confirmed Product
+    #: Brief backing this story — see `shared/contracts/dto/settings_seed.py`.
+    #: Empty is the ordinary case: a standalone deploy, a story with no brief,
+    #: or a brief that confirmed no settings.
+    settings_seed: list[SettingSeedOutcome] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _infrastructure_wait_carries_its_classification(self) -> DeployRunResult:
@@ -121,6 +130,39 @@ class DeployRunResult(BaseModel):
         if missing:
             raise ValueError(
                 f"{DeployOutcome.WAITING_INFRASTRUCTURE.value} requires {', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _success_means_every_confirmed_setting_arrived(self) -> DeployRunResult:
+        """A deploy is not a success while a confirmed setting is still missing.
+
+        This is the one place the invariant lives, so that every producer and
+        every reconciliation reaches it rather than each remembering to check:
+        a result may not say SUCCESS while it also records a settings-seed
+        failure that a second deploy of the same commit could answer
+        differently. Such a run belongs to
+        `DeployOutcome.SETTINGS_SEED_FAILED`, which goes round under a bound.
+
+        The deterministic failures — an undeclared key, a schema-refused value,
+        a pinned product whose contract predates the write capability — are
+        deliberately not covered: no redeploy of this artifact changes them, so
+        they are reported beside the successful deploy instead of blocking it.
+        """
+        if self.deploy_outcome is not DeployOutcome.SUCCESS:
+            return self
+        held_back = sorted(
+            {
+                outcome.failure.value
+                for outcome in self.settings_seed
+                if outcome.failure in SETTINGS_SEED_RETRYABLE_FAILURES
+            }
+        )
+        if held_back:
+            raise ValueError(
+                f"{DeployOutcome.SUCCESS.value} cannot carry a settings-seed failure that holds "
+                f"the deploy back ({', '.join(held_back)}); use "
+                f"{DeployOutcome.SETTINGS_SEED_FAILED.value}"
             )
         return self
 

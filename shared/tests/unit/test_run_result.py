@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pydantic import ValidationError
 import pytest
 
+from shared.contracts.dto.product_brief import SettingScope
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
@@ -22,6 +23,11 @@ from shared.contracts.dto.run_result import (
     QARunResult,
     QAStateChange,
     QAStateChangeCleanup,
+)
+from shared.contracts.dto.settings_seed import (
+    SETTINGS_SEED_RETRYABLE_FAILURES,
+    SettingSeedOutcome,
+    SettingsSeedFailureKind,
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
@@ -319,3 +325,78 @@ class TestInfrastructureWaitCarriesItsClassification:
     def test_other_outcomes_do_not_require_an_allocation_classification(self):
         gave_up = DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP)
         assert gave_up.allocation_failure_reason is None
+
+
+def _seed(failure: SettingsSeedFailureKind | None) -> SettingSeedOutcome:
+    return SettingSeedOutcome(
+        key="reminders.default_hour",
+        scope=SettingScope.PRODUCT,
+        written=failure is None,
+        failure=failure,
+    )
+
+
+class TestSuccessMeansEveryConfirmedSettingArrived:
+    """A deploy cannot be a success while a confirmed setting is still missing.
+
+    The invariant lives on the result rather than in each producer, so that a
+    reconciliation that builds a success out of a failed run reaches it too.
+    """
+
+    @pytest.mark.parametrize("failure", sorted(SETTINGS_SEED_RETRYABLE_FAILURES))
+    def test_success_carrying_a_held_back_seed_failure_is_refused(self, failure):
+        with pytest.raises(ValidationError, match="settings-seed failure"):
+            DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS,
+                deployed_url="https://example.com",
+                settings_seed=[_seed(failure)],
+            )
+
+    @pytest.mark.parametrize(
+        "failure",
+        sorted(set(SettingsSeedFailureKind) - SETTINGS_SEED_RETRYABLE_FAILURES),
+    )
+    def test_success_reports_a_deterministic_seed_failure_beside_itself(self, failure):
+        """An undeclared key or a refused value is repaired by a new plan, not a redeploy."""
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SUCCESS,
+            deployed_url="https://example.com",
+            settings_seed=[_seed(failure)],
+        )
+
+        assert result.settings_seed[0].failure is failure
+
+    def test_the_seed_failure_outcome_carries_the_same_record(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+            deployed_url="https://example.com",
+            error_details="settings_seed:transport",
+            settings_seed=[_seed(SettingsSeedFailureKind.TRANSPORT)],
+        )
+
+        assert result.deploy_outcome is DeployOutcome.SETTINGS_SEED_FAILED
+        assert result.settings_seed[0].written is False
+
+    def test_a_reconciliation_that_revalidates_cannot_launder_the_failure(self):
+        """`model_copy` runs no validators; re-validating is what reaches the invariant."""
+        failed = DeployRunResult(
+            deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+            deployed_url="https://example.com",
+            error_details="settings_seed:transport",
+            settings_seed=[_seed(SettingsSeedFailureKind.TRANSPORT)],
+        )
+
+        with pytest.raises(ValidationError):
+            DeployRunResult.model_validate(
+                failed.model_dump()
+                | {"deploy_outcome": DeployOutcome.SUCCESS, "error_details": None}
+            )
+
+    def test_a_success_that_seeded_everything_is_untouched(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SUCCESS,
+            deployed_url="https://example.com",
+            settings_seed=[_seed(None)],
+        )
+
+        assert result.settings_seed[0].written is True

@@ -130,6 +130,14 @@ inside a claimed planning attempt:
 - the consumer then calls `admit` once. `incomplete` releases nothing and is the
   result of the job, whatever the agent said about its own run.
 
+The same brief may also carry the typed settings the product starts life with
+(`initial_settings`). They reach the agent on the graph state and by name in the
+instructions, and they are **not** disposed of one by one: the platform writes
+their values after deploy (Phase 5). What the plan owes them is the declaration
+that makes them writable — each key in the generated product's own
+`services/<service>/manifest.yaml` `settings_schema`, with a schema the
+confirmed value satisfies, read where the product uses it.
+
 **Outputs**: Tasks in `todo` status, linearly chained
 
 **Rules**:
@@ -264,14 +272,34 @@ If the developer agent encounters an unsolvable problem:
 5. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
 6. Resolve failures deterministically: typed environment failures keep their specific outcome;
    unclassified subgraph and smoke failures become RETRY
-7. Write `DeployOutcome` to `run.result`
-8. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+7. Seed the confirmed Product Brief's `initial_settings` into the deployed product
+   (brief-backed stories only) — see below
+8. Write `DeployOutcome` to `run.result`
+9. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+
+**Seeding the confirmed settings**: after health checks, the handler reads the
+brief bound to this story and writes each `initial_settings` entry through the
+product's own `POST /settings/set`, proving each one with `POST /settings/get`.
+The `SETTINGS_WRITE_CAPABILITY` comes only from this deploy's in-memory
+`secret_values` and travels as a header — never a URL, log, event or persisted
+diagnostic. Every setting's disposition is recorded in
+`DeployRunResult.settings_seed`. A transport failure or an unproved readback
+holds the deploy back as `SETTINGS_SEED_FAILED` — its own outcome and its own
+bounded supervisor route, because the owner-grant outcome is reconciled to
+SUCCESS once that grant is applied and would launder the failure away; an
+undeclared key, a schema-refused value, or a pinned product whose contract
+predates the capability is reported beside the successful deploy, because
+redeploying the same artifact would answer identically. A story with no brief,
+or a brief with no settings, seeds nothing. See `docs/CONTRACTS.md`, "A brief
+carries typed initial settings, and never a secret".
 
 **Supervisor routing** (`supervise_deploying_stories()` in scheduler, 30s poll):
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
 - RETRY → redeploy with counter (max 3 consecutive failures)
+- SETTINGS_SEED_FAILED → redeploy the same commit under that same counter, never
+  reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
@@ -428,6 +456,8 @@ todo → in_dev → in_ci → testing → done
 
 ### What Architect sees
 - Story description (from user, via PO)
+- The confirmed Product Brief backing the story, when there is one: its
+  must-requirements and its typed `initial_settings`
 - Project spec (modules, description, detailed_spec)
 - Repository tree (from scaffolder, stored in DB)
 - Key spec files (models.yaml, events.yaml if backend module)

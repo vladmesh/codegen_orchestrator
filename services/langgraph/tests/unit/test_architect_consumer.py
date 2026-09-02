@@ -10,9 +10,12 @@ import pytest
 
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
+    InitialSetting,
     ProductBriefAdmissionOutcome,
+    ProductBriefContent,
     ProductBriefPlanningAttemptOutcome,
     RequirementCoverageRead,
+    SettingScope,
 )
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
@@ -358,6 +361,7 @@ class TestProductBriefPlanning:
         assert state["product_brief_id"] is None
         assert state["planning_attempt_id"] is None
         assert state["must_requirements"] == []
+        assert state["initial_settings"] == []
 
     @pytest.mark.asyncio
     async def test_claimed_plan_runs_under_the_attempt_and_admits_once(
@@ -795,3 +799,95 @@ class TestUndisposedRequirementCounterfactual:
         assert boundary.admit_calls == 1
         assert boundary.released == ["task-1"]
         assert boundary.tasks["task-1"]["dispatch_admitted"] is True
+
+
+class TestProductBriefInitialSettings:
+    """The typed settings the user confirmed reach the plan as data.
+
+    They are not disposed of one by one — that is what a must-requirement is.
+    What the architect owes them is the declaration that makes them writable in
+    the generated product at all, so they travel on the state and are named in
+    the instructions.
+    """
+
+    @pytest.fixture
+    def mock_redis(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            telegram_chat_id="user-1",
+        ).model_dump(mode="json")
+
+    @staticmethod
+    def _brief_with_settings(settings):
+        return make_product_brief(
+            content=ProductBriefContent(
+                summary="A reminder bot",
+                must_requirements=[
+                    {"id": "req-1", "text": "It must sign users in"},
+                    {"id": "req-2", "text": "It must list cities"},
+                ],
+                initial_settings=settings,
+            )
+        )
+
+    async def _run(self, api, mock_redis, valid_job_data, settings):
+        api.get_product_brief_by_story = AsyncMock(return_value=self._brief_with_settings(settings))
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        graph = _graph_returning()
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        return graph.ainvoke.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_confirmed_settings_reach_the_state_and_the_prompt(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        state = await self._run(
+            _mock_api_get_project,
+            mock_redis,
+            valid_job_data,
+            [
+                InitialSetting(key="reminders.default_hour", value=9),
+                InitialSetting(
+                    key="reminders.locale", scope=SettingScope.USER, subject_id=7, value="ru"
+                ),
+            ],
+        )
+
+        assert [s.key for s in state["initial_settings"]] == [
+            "reminders.default_hour",
+            "reminders.locale",
+        ]
+        # Same run, same instructions: the coverage boundary is untouched.
+        user_msg = state["messages"][0]["content"]
+        assert "record_requirement_coverage" in user_msg
+        assert "req-1" in user_msg and "req-2" in user_msg
+        # Each key, its scope, its subject and the confirmed value, verbatim.
+        assert "reminders.default_hour" in user_msg
+        assert "= 9" in user_msg
+        assert "reminders.locale" in user_msg
+        assert "subject_id: 7" in user_msg
+        assert '= "ru"' in user_msg
+        # And what the architect owes them: the manifest declaration.
+        assert "manifest.yaml" in user_msg
+        assert "settings_schema" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_a_brief_that_confirmed_no_settings_says_nothing_about_them(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        state = await self._run(_mock_api_get_project, mock_redis, valid_job_data, [])
+
+        assert state["initial_settings"] == []
+        user_msg = state["messages"][0]["content"]
+        assert "record_requirement_coverage" in user_msg
+        assert "settings_schema" not in user_msg
