@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Documented the Story/Task lifecycle owner, the engineering dispatch admission point and
+  `waiting_on` in the three documents that already cover that ground, each from its own angle:
+  `docs/CONTRACTS.md` the contract surface (the two places that write a Story's status, the
+  `waiting_on` column and the DTO fields that carry it, `TRANSITION_OWNED_STORY_FIELDS`, the
+  overrides `spawn-worker` may name), `docs/PIPELINE_V2.md` the flow (Phase 4 asks the admission
+  point once per task and holds no condition of its own; the Story status flow now carries its
+  `waiting_on` table and the one composite move), and `docs/ERROR_HANDLING.md` the refusal and
+  recovery behaviour (what each typed refusal means for the caller, the named repair the dispatcher
+  executes, and the two-part recovery of a story stranded behind an incomplete Product Brief plan).
+  Three passages the last sprints made stale were corrected: the dispatcher's client-side
+  one-task-per-story guard and its `repository.workspace_ready` check, both now conditions of the
+  admission decision, and the CI-failure retry, now one composite call rather than a poller
+  sequencing `fail` → `reopen` → `start`. Documentation only. `StoryWaitingOn.RESOURCES` is
+  described as declared and unset, and the Product Brief boundary as enforced but not yet exercised:
+  no producer claims a planning attempt, records coverage or calls `admit` today.
 - Made the corpse of a superseded Product Brief plan harmless, so a recovered story can finish.
   A takeover mints a new planning attempt id, and that alone stranded everything the previous
   architect planned: those tasks are in no admission's release set, the dispatch admission point

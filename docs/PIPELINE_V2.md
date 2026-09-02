@@ -54,10 +54,10 @@ This same directory is mounted into worker containers later.
 
 For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks dispatch:
 
-1. Task dispatcher checks `repository.workspace_ready` flag before dispatching
-2. If not ready, scaffold_trigger publishes ScaffoldMessage with `mode=ensure`
-3. Scaffolder checks if workspace exists on disk; if missing, clones repo + runs setup
-4. Sets `workspace_ready = True` on the repository
+1. `scaffold_trigger` publishes a ScaffoldMessage with `mode=ensure` for an ACTIVE project that has TODO tasks and no `workspace_ready` in its config
+2. Scaffolder checks if workspace exists on disk; if missing, clones repo + runs setup
+3. Sets `workspace_ready = True` in the project's config
+4. Until then the admission point refuses every dispatch of that project's tasks with `workspace_not_ready` — the check is a condition of the admission decision, on the project row it locks, not a flag the dispatcher reads
 5. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` when workspace is garbage-collected
 
 This prevents crashes when a workspace is GC'd between tasks in a story.
@@ -95,10 +95,33 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 
 **Actor**: Scheduler (30s poll loop)
 
-1. Finds `todo` tasks with no unresolved blocker
-2. Guard: if any task in the story is `in_dev` → skip (max 1 at a time)
-3. Publishes to `engineering:queue`
+1. Finds `todo` tasks — candidate selection, and the whole of what this loop decides
+2. Asks the admission point once per task: `POST /api/work-admission/engineering-dispatches`
+3. Acts on the typed answer: publish to `engineering:queue` when admitted, execute the named repair, or record the refusal
 4. Transitions task to `in_dev`
+
+**Admission happens here, and only here.** `dispatch_todo_tasks` in
+`services/scheduler/src/tasks/task_dispatcher.py` holds no dispatch condition of
+its own. Whether this task may be bought a worker — the dispatchable status, the
+Product Brief coverage boundary, the internal project, the blocker, the project
+scaffold and workspace, the one-task-per-story fence, the prior attempt, and
+finally the budget and slot — is one question answered server-side, on rows
+locked in the deciding transaction, by
+`services/api/src/engineering_dispatch_admission.py`. The one-at-a-time story
+guard used to be a client-side check in this loop; it is now the `story_busy` and
+`story_waiting_human_review` conditions of that decision, which also observe the
+siblings' live engineering *runs* and not only their statuses. An admitted
+decision has already created the queued Run and taken its budget hold, so what
+this loop still owes is the message and the transition out of `todo`. The
+operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
+
+The Product Brief condition is the one that can hold a whole story's plan back:
+a task created under an active architect planning attempt is
+`dispatch_admitted=false` and is refused with `product_brief_not_admitted` until
+`POST /api/product-briefs/{id}/admit` releases the plan as a whole. No producer
+claims a planning attempt or calls `admit` today — the architect wiring does not
+exist — so every task Phase 3 actually creates is dispatch-admitted at creation
+and this condition refuses nothing in practice.
 
 ### Worker
 
@@ -171,7 +194,7 @@ If the developer agent encounters an unsolvable problem:
 
 **CI runs on the PR:**
 - **Green CI** → auto-merge → PR poller detects merged PR → deploy
-- **Red CI** → PR poller detects CI failure → creates fix task → story back to `in_progress`
+- **Red CI** → PR poller detects CI failure → creates fix task → one `retry-after-ci-failure` call walks the story `failed → reopened → in_progress` server-side
 
 **PR merge detection**: PR poller (`scheduler/src/tasks/pr_poller.py`) polls GitHub for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
 
@@ -273,7 +296,7 @@ created → in_progress → pr_review → deploying → testing → completed
                       → waiting_human_review → in_progress (admin resolves)
                                              → failed
                       → failed (after max retries)
-         pr_review → in_progress (CI failed on story branch → fix task created)
+         pr_review → failed → reopened → in_progress (CI failed on story branch → fix task created; one composite move)
                    → deploying (PR poller detects a merged PR)
                    → failed
          deploying → testing (deploy success → QA handoff)
@@ -290,6 +313,40 @@ created → in_progress → pr_review → deploying → testing → completed
 `testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
 on the management host (Codex by default, with Claude Code as an explicit `QA_EXECUTOR_AGENT_TYPE=claude` override).
 `waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
+
+**Who moves a Story.** Only the API does, in two places: `_do_transition`
+(`services/api/src/routers/_story_helpers.py`) for a single hop, and
+`_apply_chain` (`routers/_story_actions.py`) for a composite declared in
+`COMPOSITE_CHAINS`. Both take the row with `SELECT ... FOR UPDATE` and check
+every hop against `VALID_TRANSITIONS` before writing any of them. The one
+composite today is `retry-after-ci-failure` — `failed → reopened → in_progress`,
+called by `pr_poller` as a single `POST /api/stories/{id}/retry-after-ci-failure`
+once it has recorded the failed CI run and created the fix task. It was three
+client calls (`fail` → `reopen` → `start`), and a crash between two of them
+parked the story in an intermediate status with nobody to finish it. Pollers,
+supervisors and consumers now report the event that happened; none of them
+sequences a Story through more than one status.
+
+**What a story is waiting for.** Every landing status also implies a
+`waiting_on` value, written by the same transition on the same locked row from
+`WAITING_ON_BY_STATUS` (`shared/contracts/dto/story.py`) — never patched by a
+client, and never derived by a reader:
+
+| Story status | `waiting_on` | What has to happen |
+|---|---|---|
+| `created`, `in_progress`, `reopened` | `none` | the pipeline itself is working |
+| `pr_review` | `ci` | CI on the story branch, then auto-merge |
+| `deploying` | `deploy` | the deploy run |
+| `testing` | `qa` | the QA verdict |
+| `waiting_human_review` | `human_review` | an admin |
+| `waiting_user_secret` | `user_secret` | the owner supplies a secret |
+| `completed`, `failed`, `archived` | `none` | nothing; the story has ended |
+
+`StoryWaitingOn.RESOURCES` is declared in the enum and no status maps to it: a
+capacity wait parks the *Task* in `waiting_resources` while the Story stays
+`in_progress`, so nothing sets it today. Parked stories are listed, most
+recently touched first and capped, in the `waiting_stories` section of
+`GET /api/admin/overview`.
 
 ### Task
 ```
@@ -309,7 +366,7 @@ todo → in_dev → in_ci → testing → done
 ## Sequencing Rules
 
 1. **One story at a time** per project. Next story starts only after current completes.
-2. **One task at a time** per story. Dispatcher guard enforces this.
+2. **One task at a time** per story. The admission point enforces this, as the `story_busy` refusal; the dispatcher only asks.
 3. **Tasks form a linear chain**. Each `blocked_by` the preceding task. No parallelism.
 4. **Final task is auto-generated**. Always: test + CI green + push.
 5. **QA loops** until pass. Each failure → new fix task → re-deploy → re-QA.

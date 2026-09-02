@@ -141,18 +141,21 @@ becomes an immutable terminal fact.
 `POST /work-admission/engineering-dispatches` is the one admission point for
 paid engineering dispatch: `services/api/src/engineering_dispatch_admission.py`
 takes the task row (and, for a story task, the story row) for update, evaluates
-the internal-project skip, the blocker, the project scaffold and
-`workspace_ready`, the story lifecycle and the prior-attempt fence, and ends by
-calling `start_paid_run` — it wraps the paid gate rather than standing beside it.
+the dispatchable status, the Product Brief coverage boundary, the
+internal-project skip, the blocker, the project scaffold and `workspace_ready`,
+the story lifecycle and the prior-attempt fence, and ends by calling
+`start_paid_run` — it wraps the paid gate rather than standing beside it.
 Every refusal carries one `EngineeringDispatchRefusal` value, so "story busy" is
 distinguishable from "workspace not ready" and from "budget denied" without
 parsing a log line. A prior attempt yields a named `EngineeringDispatchRepair`
 that the caller executes; the decider performs no transition of its own. The
 scheduler's `dispatch_todo_tasks` selects candidates, asks once per task, and
 acts on the answer, and the admin route `POST /api/tasks/{id}/spawn-worker` asks
-the same question before it publishes anything. Those two, plus the deploy
-supervisor's code-fix handoff — which dispatches no Task and so has no admission
-to pass — are the only publishers of an `EngineeringMessage`.
+the same question before it publishes anything, behind an audited override
+naming `task_not_dispatchable` and `live_attempt_in_flight` and nothing else.
+Those two, plus the deploy supervisor's code-fix handoff — which dispatches no
+Task and so has no admission to pass — are the only publishers of an
+`EngineeringMessage`.
 
 An operator spawn may walk past a condition only by naming it: a command carries
 `overrides`, a list of `EngineeringDispatchRefusal` values restricted to
@@ -260,6 +263,15 @@ the plan, it refuses instead of stamping the boundary over an inconsistency.
 any Task row. The dispatch admission point reads no brief at all — its condition
 is a column of the candidate Task, which rung 1 of `LOCK_LADDER` already holds —
 so brief-before-task closes no cycle with task-before-story-before-project.
+
+**Enforced, not yet exercised.** No producer claims a planning attempt, records
+requirement coverage or calls `admit` today: the architect wiring does not exist,
+and `plan_admission_for_new_task` therefore returns `dispatch_admitted=True` for
+every task the pipeline actually creates. What the boundary changes today is
+what happens when a brief-backed task *is* created — it is refused dispatch
+until its plan is admitted — not how ordinary work is dispatched. The scheduler
+reads brief state in exactly one place, `get_product_brief_by_story` over
+`GET /api/product-briefs/by-story/{story_id}`, and decides no admission with it.
 
 ### Operational overview
 
@@ -404,7 +416,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
 |---|---|---|---|
-| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py` | owner notifications and QA handoff are durable story lifecycle state |
+| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; owner notifications and QA handoff are durable story lifecycle state |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
 | Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
@@ -412,6 +424,38 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |
 | Engineering attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by engineering Run |
 | Owner notification | `shared/contracts/dto/owner_notification.py` | `schemas/story.py`, `routers/stories.py` | persist notification obligation before PO publish; retry from that record |
+
+**Story lifecycle ownership.** A Story's status is written in exactly two places,
+both in `services/api`: `_do_transition` in `routers/_story_helpers.py` for a
+single hop, and `_apply_chain` in `routers/_story_actions.py` for a composite
+move declared in `COMPOSITE_CHAINS`. Both read the row through
+`_get_story_for_update` and validate every hop against `VALID_TRANSITIONS`
+before applying any, so a composite is all-or-nothing on one locked row inside
+one transaction rather than a client-side sequence a crash can leave halfway.
+`COMPOSITE_CHAINS` has one entry today — `retry-after-ci-failure`, the
+`failed → reopened → in_progress` move exposed as
+`POST /api/stories/{id}/retry-after-ci-failure` — and nothing outside that table
+walks a Story through more than one status. Every other caller reports the event
+that happened through a single-hop action; no path in `services/scheduler` or
+`services/langgraph` issues two Story transitions for one story.
+
+**`waiting_on` belongs to the transition, not to the caller.** `stories.waiting_on`
+is a non-nullable typed `StoryWaitingOn` column (migration `c3f7a91d2b48`)
+written only by `_land_on` in `routers/_story_helpers.py` — reached from story
+creation, `_do_transition` and `_apply_chain` — on the same locked row and in the
+same transaction as `status`, from the one `WAITING_ON_BY_STATUS` mapping in
+`shared/contracts/dto/story.py`. That mapping is total over `StoryStatus`, so no
+transition can leave a stale wait behind. `PATCH /api/stories/{id}` refuses
+`status` and `waiting_on` alike — they are `TRANSITION_OWNED_STORY_FIELDS`, so
+sending either is a 422 rather than a field silently dropped. `StoryDTO` and
+`StoryRead` both declare `waiting_on` required with no default, so a response
+without it is a broken response and not a story waiting for nothing, and
+`GET /api/admin/overview` exposes it per story in the bounded `waiting_stories`
+section (`WaitingStory`, at most `WAITING_STORY_LIMIT` rows, filtered in SQL on
+`waiting_on != none` and read exactly as the transition wrote it).
+`StoryWaitingOn.RESOURCES` is declared and unset: no Story status maps to it,
+because work parks for resources at the *Task* level (`waiting_resources`) while
+the Story stays `in_progress`.
 
 <a id="rundto"></a>
 
