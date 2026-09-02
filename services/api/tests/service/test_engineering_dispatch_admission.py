@@ -28,6 +28,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
+    safe_executor_diagnostic_reason,
 )
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.vocab import AgentType
@@ -439,9 +440,17 @@ async def test_an_exhausted_engineering_budget_denies_the_dispatch(
     assert (await db_session.scalars(select(Run).where(Run.task_id == task_id))).all() == []
 
 
-async def _publish_diagnostics(
-    redis_client: Redis, availability: ExecutorAvailability, *, version: str
-) -> None:
+async def _publish_diagnostics(redis_client: Redis, reason_code: str, *, version: str) -> None:
+    """Publish the snapshot both executors are in the named safe state.
+
+    A diagnostic carries the whole state its reason code is allowed to describe,
+    so availability and the lease count come from the code rather than being
+    chosen next to it.
+    """
+    availability, lease_count = {
+        "local_auth_invalid": (ExecutorAvailability.UNAVAILABLE, 0),
+        "inventory_unreconciled": (ExecutorAvailability.UNKNOWN, None),
+    }[reason_code]
     now = datetime.now(UTC)
     expiry = now + timedelta(minutes=5)
     await redis_client.set(
@@ -459,9 +468,9 @@ async def _publish_diagnostics(
                     availability=availability,
                     observed_at=now,
                     expires_at=expiry,
-                    active_lease_count=0,
-                    reason_code="service-test",
-                    reason="Service test state.",
+                    active_lease_count=lease_count,
+                    reason_code=reason_code,
+                    reason=safe_executor_diagnostic_reason(reason_code),
                 )
                 for executor in (AgentType.CLAUDE, AgentType.CODEX)
             ],
@@ -478,7 +487,7 @@ async def test_an_unavailable_executor_denies_the_dispatch(
     project_id = await _project(async_client, await _owner(async_client))
     task_id = await _task(async_client, project_id)
     await _publish_diagnostics(
-        redis_client, ExecutorAvailability.UNAVAILABLE, version=f"down-{uuid.uuid4().hex[:8]}"
+        redis_client, "local_auth_invalid", version=f"down-{uuid.uuid4().hex[:8]}"
     )
 
     decision = await _decide(async_client, task_id)
@@ -495,7 +504,7 @@ async def test_an_unknown_executor_state_needs_an_administrator(
     project_id = await _project(async_client, await _owner(async_client))
     task_id = await _task(async_client, project_id)
     await _publish_diagnostics(
-        redis_client, ExecutorAvailability.UNKNOWN, version=f"unknown-{uuid.uuid4().hex[:8]}"
+        redis_client, "inventory_unreconciled", version=f"unknown-{uuid.uuid4().hex[:8]}"
     )
 
     decision = await _decide(async_client, task_id)
