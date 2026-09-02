@@ -511,6 +511,11 @@ jobs:
           evidence_dir="${RUNNER_TEMP}/stand-e2e-handoff"
           run_dir="${evidence_dir}/run"
           mkdir -p "${run_dir}"
+          # What this step actually observed about the service-tail collection.
+          # The fallback below may state a missing piece, but it may not assert a
+          # cause nobody here observed, so the account is built where the attempt
+          # happens rather than inferred from the absent file.
+          services_attempt="no collection was attempted, because no stand host address was recorded for this run"
           test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
           test -f "${RUNNER_TEMP}/remote-invocation.log" && \
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
@@ -576,7 +581,7 @@ jobs:
             # failure is diagnosed from an acceptance artifact alone, against a
             # host that no longer exists.
             if [ "${SUITE_OUTCOME}" != "success" ]; then
-              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+              if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
                 set -euo pipefail
                 cd /opt/codegen_orchestrator
                 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
@@ -597,17 +602,27 @@ jobs:
                   printf "%s\n" "service log tails were not collected: the redaction path did not complete, so no unredacted service output is published" > "${out}"
                   rm -f "${partial}"
                 fi
-              ' || true
-              scp -i "${key_path}" ${SSH_OPTS} \
+              '; then
+                services_attempt="the remote collection command completed"
+              else
+                services_attempt="the remote collection command over ssh did not complete"
+              fi
+              if ! scp -i "${key_path}" ${SSH_OPTS} \
                 root@"${PROD_HOST}":/root/e2e-runs/suite-services.log \
-                "${run_dir}/suite-services.log" || true
+                "${run_dir}/suite-services.log"; then
+                services_attempt="${services_attempt}, and copying the collected file to the runner failed"
+              fi
             fi
           fi
           if [ "${SUITE_OUTCOME}" != "success" ] && [ ! -f "${run_dir}/suite-services.log" ]; then
             # Named rather than silently absent: the admission below requires
-            # this file for a failed paid run, and a reader has to be told the
-            # host could not be reached rather than left to infer it.
-            printf '%s\n' "service log tails are unavailable: the stand host could not be reached after the suite failed" \
+            # this file for a failed paid run. It states what this step observed
+            # — which collection step failed, and whether the suite ran at all —
+            # and never a cause it did not observe: an unreachable host, a
+            # `docker compose exec api` that could not start and a suite that
+            # never ran after a provisioning failure are three different reasons
+            # for the same absent file.
+            printf '%s\n' "service log tails are unavailable: ${services_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
               > "${run_dir}/suite-services.log"
           fi
 

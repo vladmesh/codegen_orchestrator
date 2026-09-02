@@ -239,6 +239,22 @@ handoff is named there too: acceptance refuses a candidate whose `debug_dumps` n
 not carry, and a dump-shaped file whose name the allow-list cannot admit is reported as
 `debug_dump_name_unadmissible:<name>` instead of being dropped in silence.
 
+Because the dump now crosses that boundary, it is held to the boundary's rule. It embeds container
+stdout, and a worker's stdout is not a trusted surface: worker-manager gives the worker an origin of
+`https://x-access-token:<token>@github.com/...`, so an ordinary git failure prints a usable
+credential into the log the dump copies. The embedded slices are bounded by the same
+`run_evidence` bounds the worker log tails use, and the assembled text goes through
+`shared.diagnostics.redact_diagnostic` against every secret-named value of the environment before it
+is written. That is the same mechanism `redacted_payload` and the service tails already use, one
+place further along — not a new secret-handling path. It redacts at write time rather than relying
+on the admission canary, which scans only for a PEM marker and for the named stand values, and whose
+match refuses the whole artifact rather than repairing one file.
+
+When no service tails reach the runner at all, `suite-services.log` says what the workflow observed
+— which collection step failed, and whether the suite step ran — and never a cause it did not
+observe: an unreachable host, an `api` container that could not execute the redaction and a suite
+that never ran after a provisioning failure are three different reasons for the same absent file.
+
 ## Run-scoped cleanup
 
 Teardown removes what this run's ownership label selects, not what its context still remembers.

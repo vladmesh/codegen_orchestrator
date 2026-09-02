@@ -1335,6 +1335,55 @@ def test_an_engineering_collection_failure_is_named_rather_than_omitted(codex_do
     assert "ReadTimeout" in reason["reason"]
 
 
+def test_a_scaffold_stage_reason_carries_what_the_contract_probe_said(codex_docker, tmp_path):
+    """The phase key alone is not a reason; for this stage the message is the reason."""
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        scaffold_status=ProjectStatus.ACTIVE,
+        env_contract_errors={"scaffold": "services/backend/env.contract.yaml declares no entries"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert reason["status"] == CaptureStatus.CAPTURED.value
+    assert reason["value"]["source"] == run_evidence.ReasonSource.SCAFFOLD.value
+    assert reason["value"]["env_contract_errors"] == {
+        "scaffold": "services/backend/env.contract.yaml declares no entries"
+    }
+
+
+def test_a_deploy_stage_reason_carries_what_the_contract_probe_said(codex_docker, tmp_path):
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        task_status=TaskStatus.DONE,
+        deploy_run_id="run-1",
+        env_contract_errors={"merged": "merged: fragments missing at abc123"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert reason["value"]["source"] == run_evidence.ReasonSource.DEPLOY_RUN.value
+    assert reason["value"]["env_contract_errors"] == {
+        "merged": "merged: fragments missing at abc123"
+    }
+
+
+def test_a_contract_probe_message_is_redacted_before_it_becomes_a_reason(
+    codex_docker, tmp_path, monkeypatch
+):
+    """A probe's own text is a diagnostic like any other, held to the same rule."""
+    monkeypatch.setenv("STAND_INTERNAL_API_KEY", "super-secret-token")
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        env_contract_errors={"scaffold": "probe could not run: auth super-secret-token rejected"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert "super-secret-token" not in json.dumps(reason)
+    assert "[redacted]" in reason["value"]["env_contract_errors"]["scaffold"]
+
+
 def test_a_stage_with_no_engineering_run_says_the_control_plane_holds_none(codex_docker, tmp_path):
     ctx = base_ctx(collector_for(codex_docker), engineering_runs=[])
 

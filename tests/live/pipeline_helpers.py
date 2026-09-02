@@ -21,6 +21,8 @@ from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, reso
 from pydantic import ValidationError
 import run_cleanup
 from run_evidence import (
+    LOG_TAIL_LINES,
+    LOG_TAIL_MAX_CHARS,
     Capture,
     RunEvidenceCollector,
     WorkerRole,
@@ -744,7 +746,11 @@ async def record_engineering_evidence(api_internal: httpx.AsyncClient, ctx: dict
 
     This is evidence collection, so it never fails the run: a read that could not
     be made is recorded as a stated missed capture, and a discovery that failed
-    is recorded as the reason the whole section is missed.
+    is recorded as the reason the whole section is missed. `RuntimeError` is
+    caught with the transport and shape errors because `_engineering_runs_for_task`
+    goes through `require_unscoped_run_observer`, which raises it: a collector
+    that can fail the very run it is diagnosing is the wrong shape to leave here,
+    even while no current client reaches that branch.
     """
     ctx["engineering_evidence_error"] = None
     records: list[dict] = []
@@ -762,7 +768,7 @@ async def record_engineering_evidence(api_internal: httpx.AsyncClient, ctx: dict
                         executor_diagnostics=diagnostics,
                     )
                 )
-    except (httpx.HTTPError, KeyError, ValueError) as error:
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as error:
         ctx["engineering_evidence_error"] = (
             f"the engineering Runs of this combination could not be listed: "
             f"{type(error).__name__}: {error}"
@@ -2498,6 +2504,28 @@ def _cleanup_db(project_id: str) -> None:
 
 # ── Debug dump ───────────────────────────────────────────────────────────
 
+# The service tails are a coarser sample than a worker's own stdout, so they
+# keep their tighter bound; the worker tail uses the shared `run_evidence`
+# bounds, because it is the same kind of thing read the same way.
+DEBUG_DUMP_SERVICE_TAIL_LINES = 30
+DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS = 2_000
+
+
+def redacted_dump_text(text: str) -> str:
+    """The assembled debug dump, redacted before it can be written down.
+
+    The dump embeds container stdout, and a worker's stdout is not a trusted
+    surface: `services/worker-manager/src/git_ops.py` gives the worker an origin
+    of `https://x-access-token:<token>@github.com/...`, so an ordinary git
+    failure prints a usable credential. The dump now crosses the handoff into an
+    uploaded artifact, so it is held to the rule `redacted_payload` and the
+    worker log tails already follow — `shared.diagnostics.redact_diagnostic`
+    against every value of this process's environment whose name says it is a
+    secret. No new secret-handling path: the same mechanism, applied one place
+    further.
+    """
+    return redact_diagnostic(text, secrets=secret_env_values(dict(os.environ)))
+
 
 def dump_debug(ctx: dict, test_name: str) -> None:
     """Write this run's own debug dump where the handoff can still collect it.
@@ -2511,6 +2539,9 @@ def dump_debug(ctx: dict, test_name: str) -> None:
 
     The file's name is recorded on the context, so the artifact names the dumps
     this run wrote rather than leaving a reader to guess whether any exist.
+
+    Because it now crosses the handoff, the embedded log slices are bounded and
+    the assembled text is redacted by `redacted_dump_text` before the write.
     """
     ts = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
     directory = evidence_output_directory(ORCHESTRATOR_ROOT)
@@ -2594,7 +2625,7 @@ def dump_debug(ctx: dict, test_name: str) -> None:
                 if not container:
                     continue
                 result = subprocess.run(
-                    ["docker", "logs", "--tail=200", container],
+                    ["docker", "logs", f"--tail={LOG_TAIL_LINES}", container],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -2604,9 +2635,9 @@ def dump_debug(ctx: dict, test_name: str) -> None:
                 if output:
                     lines.extend(
                         [
-                            f"## dynamic worker {resource.identifier} logs (last 200)",
+                            f"## dynamic worker {resource.identifier} logs (last {LOG_TAIL_LINES})",
                             "```",
-                            output.strip()[-12000:],
+                            output.strip()[-LOG_TAIL_MAX_CHARS:],
                             "```",
                             "",
                         ]
@@ -2618,7 +2649,7 @@ def dump_debug(ctx: dict, test_name: str) -> None:
     for service in ["scaffolder", "engineering-worker", "scheduler", "deploy-worker"]:
         try:
             result = subprocess.run(
-                ["docker", "compose", "logs", "--tail=30", service],
+                ["docker", "compose", "logs", f"--tail={DEBUG_DUMP_SERVICE_TAIL_LINES}", service],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -2627,9 +2658,9 @@ def dump_debug(ctx: dict, test_name: str) -> None:
             if result.stdout.strip():
                 lines.extend(
                     [
-                        f"## {service} logs (last 30)",
+                        f"## {service} logs (last {DEBUG_DUMP_SERVICE_TAIL_LINES})",
                         "```",
-                        result.stdout.strip()[-2000:],
+                        result.stdout.strip()[-DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS:],
                         "```",
                         "",
                     ]
@@ -2638,4 +2669,4 @@ def dump_debug(ctx: dict, test_name: str) -> None:
             pass
 
     with open(filepath, "w") as f:
-        f.write("\n".join(lines))
+        f.write(redacted_dump_text("\n".join(lines)))

@@ -1351,6 +1351,22 @@ def _engineering_reason(ctx: dict) -> Capture:
     )
 
 
+def _env_contract_errors(ctx: dict) -> dict[str, str]:
+    """The environment-contract failures of this run, phase by phase, with what failed.
+
+    The phase key alone says which probe failed and not why; for a paid run that
+    stops at scaffold or deploy that key *is* the whole control-plane reason, so
+    the message travels with it. It is a probe's own text, so it goes through the
+    same redaction every other retained diagnostic does.
+    """
+    errors = ctx.get("env_contract_errors") or {}
+    secrets = secret_env_values(dict(os.environ))
+    return {
+        phase: redact_diagnostic(message, secrets=secrets)
+        for phase, message in sorted(errors.items())
+    }
+
+
 def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
     """The control plane's own account of why the run ended where it did."""
     if terminal_state is TerminalState.COMPLETED:
@@ -1362,7 +1378,7 @@ def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
             {
                 "source": ReasonSource.SCAFFOLD.value,
                 "scaffold_status": ctx.get("scaffold_status"),
-                "env_contract_errors": sorted(ctx.get("env_contract_errors") or {}),
+                "env_contract_errors": _env_contract_errors(ctx),
             }
         )
     if terminal_state is TerminalState.STOPPED_AT_ENGINEERING:
@@ -1375,7 +1391,7 @@ def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
                 "deploy_outcome": ctx.get("deploy_outcome"),
                 "deploy_error_details": ctx.get("deploy_error_details"),
                 "app_status": ctx.get("final_app_status"),
-                "env_contract_errors": sorted(ctx.get("env_contract_errors") or {}),
+                "env_contract_errors": _env_contract_errors(ctx),
             }
         )
     qa_run = ctx.get("qa_run") or {}
