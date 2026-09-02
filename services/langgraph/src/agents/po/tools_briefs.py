@@ -20,6 +20,14 @@ not yet spent. A PO that restarts reads that pointer before it composes
 anything. `create_story` clears it once the brief is bound, because from then on
 `GET /product-briefs/by-story/{story_id}` is the way back to it.
 
+**What makes a retry a retry.** The creation key is a fingerprint of the
+document being presented, not a guessed revision number. The server owns the
+revision counter, and the PO forgets its pointer as soon as a brief is bound, so
+a guess would collide with a spent key on a project's second brief and refuse
+every later presentation. A fingerprint answers the question the key is actually
+asked — "is this the same presentation?" — without knowing anything the PO does
+not hold.
+
 **A correction is a new revision, never an edit.** The released API has no
 update path. When the user corrects the brief, the PO presents again naming the
 revision it corrects, a second revision is opened, and the pointer moves. The
@@ -28,7 +36,9 @@ superseded revision stays exactly as it was.
 
 from __future__ import annotations
 
+from hashlib import sha256
 from http import HTTPStatus
+import json
 import uuid
 
 from langchain_core.runnables import RunnableConfig
@@ -56,14 +66,45 @@ PRODUCT_BRIEF_POINTER_KEY = "product_brief_id"
 NOT_SPECIFIED = "not specified"
 
 
-def _creation_request_id(project_id: str, revision: int) -> str:
-    """The idempotency key of one revision of one project's brief.
+#: How many keys one presentation may try before giving up. Each step past the
+#: first means the key it would have used already names a revision that is spent
+#: — bound to a story — so the ceiling is only ever reached by a project that
+#: presented the identical document for that many stories in a row.
+MAX_PRESENTATION_KEYS = 8
 
-    Derived, not random: a retry after a crash — or after the PO process was
-    replaced — sends the same key, and the released endpoint answers it with the
-    revision it already opened instead of opening a second one.
+
+def _creation_request_id(
+    project_id: str, title: str, content: ProposedProductBriefContent, attempt: int = 0
+) -> str:
+    """The idempotency key of one presentation of one project's brief.
+
+    Derived from what is actually being presented — the project, the title and
+    the document — and not from a guessed revision number. A guess cannot be
+    unique: the project's revision counter lives on the server, the PO forgets
+    the pointer once a brief is bound, and a second brief on that project would
+    guess a number the released endpoint has already spent and be refused with
+    409 for the rest of the project's life.
+
+    A fingerprint has the idempotency the guess was reaching for and none of
+    that: a retry after a crash — or after the PO process was replaced — sends
+    the same key for the same document and the released endpoint answers it with
+    the revision it already opened, while a different document is a different
+    key and therefore a new revision.
+
+    `attempt` distinguishes the one case a fingerprint alone cannot: the same
+    document presented again for a *second* story, after the first revision was
+    bound. `present_product_brief` walks it upwards only when the key it tried
+    answered with a revision that is already spent.
     """
-    return f"po-brief:{project_id}:r{revision}"
+    document = json.dumps(
+        {"title": title, "content": content.model_dump(mode="json")},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    fingerprint = sha256(document.encode()).hexdigest()[:32]
+    suffix = "" if attempt == 0 else f":{attempt + 1}"
+    return f"po-brief:{project_id}:{fingerprint}{suffix}"
 
 
 def _confirmation_request_id(brief_id: str) -> str:
@@ -101,7 +142,11 @@ def _render(brief: ProductBriefRead) -> str:
         lines.append(f"- {NOT_SPECIFIED}")
     for setting in brief.content.initial_settings:
         subject = "" if setting.subject_id is None else f", subject {setting.subject_id}"
-        value = NOT_SPECIFIED if setting.value is None else repr(setting.value)
+        value = (
+            NOT_SPECIFIED
+            if setting.value is None
+            else json.dumps(setting.value, ensure_ascii=False)
+        )
         lines.append(f"- {setting.key} ({setting.scope.value}{subject}) = {value}")
     lines.append("")
     lines.append("yes / correct me")
@@ -252,28 +297,54 @@ async def present_product_brief(
     if refusal := await _refuse_settings_that_are_secrets(project_id, content, headers):
         return refusal
 
-    revision = 1 if stored is None else stored.revision + 1
-    creation = ProductBriefCreate(
-        project_id=project_uuid,
-        title=title,
-        content=content,
-        request_id=_creation_request_id(project_id, revision),
-    )
-    response = await api.post_raw(
-        "product-briefs/", json=creation.model_dump(mode="json"), headers=headers
-    )
-    if response.status_code == HTTPStatus.CONFLICT:
-        # The same revision number already names different content. Whatever
-        # composed it, it is not this call's to replace.
-        return (
-            "No Product Brief was presented: revision "
-            f"{revision} of this project already exists with different content "
-            f"({response.json().get('detail')}). Read the stored revision before "
-            "presenting anything."
+    brief = None
+    for attempt in range(MAX_PRESENTATION_KEYS):
+        creation = ProductBriefCreate(
+            project_id=project_uuid,
+            title=title,
+            content=content,
+            request_id=_creation_request_id(project_id, title, content, attempt),
         )
-    response.raise_for_status()
-    brief = ProductBriefRead.model_validate(response.json())
+        response = await api.post_raw(
+            "product-briefs/", json=creation.model_dump(mode="json"), headers=headers
+        )
+        if response.status_code == HTTPStatus.CONFLICT:
+            # Two presentations raced for the same next revision number. Nothing
+            # was opened and nothing was lost; the same call made again wins or
+            # finds the revision the other one opened.
+            return (
+                "No Product Brief was presented: "
+                f"{response.json().get('detail')}. Nothing was changed — call "
+                "present_product_brief again."
+            )
+        response.raise_for_status()
+        candidate = ProductBriefRead.model_validate(response.json())
+        if candidate.story_id is None:
+            # Either a revision just opened, or the one this exact presentation
+            # opened before and has not spent yet. Both are this presentation.
+            brief = candidate
+            break
+        # The key named a revision already bound to a story: this project has
+        # been asked for the same document twice, once per story. Reach past it
+        # rather than re-presenting something no new story may be planned from.
+    if brief is None:
+        logger.warning("po_brief_presentation_keys_exhausted", project_id=project_id)
+        return (
+            f"No Product Brief was presented: every one of the last "
+            f"{MAX_PRESENTATION_KEYS} revisions of this project holds exactly this "
+            "document and is already bound to a story. Ask the user what is different "
+            "about this one before presenting it again."
+        )
     await _write_pointer(project_id, project_config, brief.id, headers)
+    if brief.confirmed_at is not None:
+        # The key found a revision this project confirmed and has not spent —
+        # a presentation whose pointer was lost after the user already said yes.
+        # Asking them again would be asking them to confirm what they confirmed.
+        return _presented(
+            brief,
+            "This brief is already confirmed. Do not present it again — call "
+            f"create_story(product_brief_id='{brief.id}'). It reads:",
+        )
     logger.info(
         "po_product_brief_presented",
         project_id=project_id,

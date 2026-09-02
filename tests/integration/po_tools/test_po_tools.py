@@ -25,7 +25,9 @@ from src.agents.po.tools_shared import init_po_clients
 from .conftest import make_config
 
 
-async def confirmed_brief_id(project_id: str, title: str = "Todo bot") -> str:
+async def confirmed_brief_id(
+    project_id: str, title: str = "Todo bot", summary: str | None = None
+) -> str:
     """Walk the real confirmation flow and return the frozen brief's id.
 
     New product work is only reachable through it: the PO presents one atomic
@@ -35,7 +37,7 @@ async def confirmed_brief_id(project_id: str, title: str = "Todo bot") -> str:
         {
             "project_id": project_id,
             "title": title,
-            "summary": "A bot that keeps a todo list and reminds about it.",
+            "summary": summary or "A bot that keeps a todo list and reminds about it.",
             "must_requirements": [
                 {
                     "id": "r1",
@@ -249,6 +251,83 @@ class TestCreateStoryIntegration:
                     found = True
                     break
         assert found, f"ArchitectMessage for story {story_id} not found in architect:queue"
+
+    async def test_a_second_brief_is_presentable_once_the_first_is_bound(self, api_client):
+        """The shape of every story after a project's first one.
+
+        The creation key is a fingerprint of the document, not a guessed
+        revision number: the server owns the counter and the PO forgets its
+        pointer at the bind, so a guess would spend `r1` forever and the
+        released endpoint would answer every later presentation with 409.
+        """
+        create_result = await create_project.ainvoke(
+            {"title": "second-brief-proj", "modules": "backend"},
+            config=make_config(),
+        )
+        project_id = create_result.split("ID: ")[1].split(",")[0]
+
+        first_brief_id = await confirmed_brief_id(project_id)
+        story_result = await create_story.ainvoke(
+            {
+                "project_id": project_id,
+                "title": "Build the todo list",
+                "description": "A todo feature with CRUD and reminders",
+                "product_brief_id": first_brief_id,
+            },
+            config=make_config(),
+        )
+        assert "Story created" in story_result, story_result
+
+        second_brief_id = await confirmed_brief_id(
+            project_id, summary="The same bot, now also sharing a list with a friend."
+        )
+
+        assert second_brief_id != first_brief_id
+        second = await api_client.get(f"/api/product-briefs/{second_brief_id}")
+        assert second.status_code == 200
+        assert second.json()["revision"] == 2
+        assert second.json()["story_id"] is None
+
+    async def test_re_presenting_the_same_document_opens_one_revision(self, api_client):
+        """Idempotency survives the change of key: a retry is not a new brief."""
+        create_result = await create_project.ainvoke(
+            {"title": "retry-brief-proj", "modules": "backend"},
+            config=make_config(),
+        )
+        project_id = create_result.split("ID: ")[1].split(",")[0]
+
+        first = await present_product_brief.ainvoke(
+            {
+                "project_id": project_id,
+                "title": "Retry bot",
+                "summary": "A bot presented twice.",
+                "must_requirements": [
+                    {"id": "r1", "text": "It answers", "user_wording": "it should answer me"}
+                ],
+            },
+            config=make_config(),
+        )
+        first_id = first.split("(id: ")[1].split(")")[0]
+
+        # The pointer is what a live PO reads; drop it to force the key itself
+        # to carry the idempotency, as it must after a bind cleared the pointer.
+        await api_client.patch(f"/api/projects/{project_id}", json={"config": {}})
+
+        second = await present_product_brief.ainvoke(
+            {
+                "project_id": project_id,
+                "title": "Retry bot",
+                "summary": "A bot presented twice.",
+                "must_requirements": [
+                    {"id": "r1", "text": "It answers", "user_wording": "it should answer me"}
+                ],
+            },
+            config=make_config(),
+        )
+
+        assert second.split("(id: ")[1].split(")")[0] == first_id
+        stored = await api_client.get(f"/api/product-briefs/{first_id}")
+        assert stored.json()["revision"] == 1
 
     async def test_new_product_work_without_a_brief_creates_nothing(self, api_client):
         """The prose-summary path is not a fallback for a missing brief."""

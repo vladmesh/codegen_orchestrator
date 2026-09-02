@@ -33,8 +33,10 @@ Everything is sequential per project. One story at a time, one task at a time.
 
 ### The Product Brief is confirmed before the story exists
 
-For new product work the requirement becomes durable typed data before there is
-anything to plan, and it is the PO that produces it:
+New product work is every story that builds something the user asked for — the
+first story of a new project and every later feature alike. For all of it the
+requirement becomes durable typed data before there is anything to plan, and it
+is the PO that produces it:
 
 1. `present_product_brief` opens a revision through `POST /api/product-briefs/`
    and returns the one message the user is shown — the summary, every
@@ -43,18 +45,25 @@ anything to plan, and it is the PO that produces it:
    initial settings. Asked again — a retry, a restart, a second PO turn — it
    returns the *stored* revision instead of composing a second interpretation:
    the project's config carries the pointer `product_brief_id` to the revision
-   presented and not yet spent.
+   presented and not yet spent, and the creation idempotency key is a
+   fingerprint of the document being presented, so the same presentation is the
+   same revision even after the pointer is gone.
 2. The user answers. On "yes", `confirm_product_brief` echoes the stored content
    to `POST /api/product-briefs/{id}/confirm`, which refuses anything but a
    byte-for-byte match. A correction is a new revision, never an edit.
 3. `create_story` refuses to create new product work without a confirmed brief,
    and binds the confirmed brief to the story it created through
    `POST /api/product-briefs/{id}/story` **before** it publishes
-   `ArchitectMessage`. A bind that fails is reported and nothing is published:
-   an unbound story would be planned as ordinary prose work.
+   `ArchitectMessage`. A bind that fails publishes nothing, and the story it
+   could not back is closed as `failed` rather than left in `created` — a
+   `created` story with no tasks is what the scheduler's liveness sweep
+   re-publishes, and it would be planned from its prose description.
+
+Each story gets its own brief: the revision bound to a story is spent, and the
+next one is a new revision of the same project.
 
 A `fix` story on an existing project and `reopen_story` have no brief and are
-unchanged.
+unchanged — they repair what a confirmed brief already described.
 
 ---
 

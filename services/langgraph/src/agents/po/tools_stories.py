@@ -20,6 +20,20 @@ from .tools_shared import _get_api, _get_stream_client, _user_headers
 
 logger = structlog.get_logger(__name__)
 
+#: The actions that build something the user asked for and therefore need a
+#: confirmed Product Brief behind them. `create` is the first story of a DRAFT
+#: project and `feature` is every later one, and a requirement is lost in prose
+#: the same way in both. The one action outside the set is `fix`, which repairs
+#: what a confirmed brief already described; `reopen_story` is a different tool
+#: and never passes through here.
+NEW_PRODUCT_WORK = frozenset({"create", "feature"})
+
+#: How many times the bind is tried before the story is closed. More than one
+#: because a 5xx or a dropped connection says nothing about whether the bind is
+#: possible; small because every further attempt delays closing a story the
+#: scheduler would otherwise pick up.
+BIND_ATTEMPTS = 2
+
 
 def _qa_failure_hold(stories: list[dict], parent_story_id: str | None) -> tuple[str, dict] | None:
     """Return an unresolved QA failure only when retrying that story chain."""
@@ -68,6 +82,41 @@ async def _confirmed_brief(
     return brief, None
 
 
+def _detail_of(response) -> str:
+    try:
+        return response.json().get("detail")
+    except ValueError:
+        return response.text
+
+
+async def _abandon_unbound_story(story_id: str, headers: dict[str, str]) -> str | None:
+    """Close a story the brief could not be bound to. Or say why it is still open.
+
+    Returning without publishing is not enough to keep an unbound story away
+    from the architect. The story row stays `created` with no tasks, and that is
+    exactly the shape the scheduler's liveness sweep re-publishes minutes later
+    — which would plan the story from its prose `description` and bypass the
+    brief the user confirmed, the one failure this whole boundary exists to
+    prevent. So the PO closes what it orphaned: `created -> failed` is a
+    declared transition, and a failed story is picked up by neither the stuck
+    sweep nor the next-story trigger.
+    """
+    response = await _get_api().post_raw(
+        f"stories/{story_id}/fail", json={"actor": "po"}, headers=headers
+    )
+    if response.is_success:
+        logger.info("po_unbound_story_failed", story_id=story_id)
+        return None
+    detail = _detail_of(response)
+    logger.error(
+        "po_unbound_story_still_open",
+        story_id=story_id,
+        status_code=response.status_code,
+        detail=detail,
+    )
+    return detail
+
+
 async def _bind_brief_to_story(brief_id: str, story_id: str, headers: dict[str, str]) -> str | None:
     """Make the story brief-backed, or say why it is not. Nothing else may publish.
 
@@ -75,28 +124,45 @@ async def _bind_brief_to_story(brief_id: str, story_id: str, headers: dict[str, 
     the planning attempt and plans under it. A story published to the architect
     without it would be planned as ordinary prose work, and the requirement the
     user confirmed would silently stop being the thing being built.
+
+    A refusal (4xx) is an answer and is taken as one; only a server-side failure
+    is tried again, because that is the shape a lost connection or a restarting
+    API takes. When no attempt binds, the story is closed rather than left for
+    the scheduler to plan as prose — see `_abandon_unbound_story`.
     """
     bind = ProductBriefStoryBind(story_id=story_id)
-    response = await _get_api().post_raw(
-        f"product-briefs/{brief_id}/story", json=bind.model_dump(mode="json"), headers=headers
-    )
-    if response.is_success:
-        return None
-    try:
-        detail = response.json().get("detail")
-    except ValueError:
-        detail = response.text
-    logger.error(
-        "po_product_brief_bind_failed",
-        brief_id=brief_id,
-        story_id=story_id,
-        status_code=response.status_code,
-        detail=detail,
-    )
+    for attempt in range(BIND_ATTEMPTS):
+        response = await _get_api().post_raw(
+            f"product-briefs/{brief_id}/story", json=bind.model_dump(mode="json"), headers=headers
+        )
+        if response.is_success:
+            return None
+        detail = _detail_of(response)
+        logger.error(
+            "po_product_brief_bind_failed",
+            brief_id=brief_id,
+            story_id=story_id,
+            status_code=response.status_code,
+            detail=detail,
+            attempt=attempt + 1,
+        )
+        if response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
+            break
+
+    still_open = await _abandon_unbound_story(story_id, headers)
+    if still_open is not None:
+        return (
+            f"Story {story_id} was created but the confirmed Product Brief {brief_id} "
+            f"could not be bound to it ({detail}), and the story could not be closed "
+            f"either ({still_open}). It was NOT sent to the architect. Ask a human to "
+            f"close story {story_id} before anything plans it from its description."
+        )
     return (
         f"Story {story_id} was created but the confirmed Product Brief {brief_id} could "
-        f"not be bound to it ({detail}), so it was NOT sent to the architect. Ask a human "
-        "to review it — do not create a second story."
+        f"not be bound to it ({detail}), so it was NOT sent to the architect and was "
+        f"closed as failed. Product Brief {brief_id} is still confirmed and unspent: "
+        "tell the user what happened and call create_story again with the same "
+        "product_brief_id."
     )
 
 
@@ -120,6 +186,8 @@ async def create_story(
     New product work needs a confirmed Product Brief: present it with
     `present_product_brief`, confirm it with `confirm_product_brief` once the
     user says yes, and pass the brief id here. Without it no story is created.
+    New product work is every story that builds something the user asked for —
+    the first story of a project and every later feature alike.
 
     IMPORTANT: The description should contain the full gathered requirements —
     not just the user's original short message. Compose a detailed spec from
@@ -135,8 +203,10 @@ async def create_story(
             "fix" (bug fix).
         parent_story_id: Story this work retries or continues, if any.
         product_brief_id: The confirmed Product Brief this story is planned
-            against. Required for new product work; leave unset for a fix on an
-            existing project.
+            against. Required for new product work, a feature on a live project
+            included; leave unset only for a fix on an existing project. Each
+            story needs its own brief — the one bound to an earlier story is
+            spent.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -150,11 +220,11 @@ async def create_story(
         project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
         action = "create" if project_status == ProjectStatus.DRAFT else "feature"
 
-    if action == "create" and not product_brief_id:
+    if action in NEW_PRODUCT_WORK and not product_brief_id:
         # The prose-summary path is not a fallback for a missing brief: the
         # architect would plan against a re-derived interpretation of the
         # conversation instead of what the user confirmed.
-        logger.warning("po_story_without_confirmed_brief", project_id=project_id)
+        logger.warning("po_story_without_confirmed_brief", project_id=project_id, action=action)
         return (
             "No story was created: new product work needs a confirmed Product Brief. "
             "Call present_product_brief, send the user the message it returns, and after "

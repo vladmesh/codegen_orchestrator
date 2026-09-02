@@ -103,9 +103,15 @@ class TestSystemPrompt:
         assert "NEVER put a token, password or API key into `initial_settings`" in SYSTEM_PROMPT
 
     def test_the_flows_that_have_no_brief_keep_working(self):
-        assert "A `fix` story on an existing project and `reopen_story` need no brief." in (
+        assert "A `fix` story on an existing project and `reopen_story` need no brief" in (
             SYSTEM_PROMPT
         )
+
+    def test_a_feature_on_a_live_project_is_new_product_work_too(self):
+        """The shape most product work takes once a project exists."""
+        assert "the first story of a new project and every later feature alike" in SYSTEM_PROMPT
+        assert "**A new feature**: it is new product work" in SYSTEM_PROMPT
+        assert "Each feature gets its own brief" in SYSTEM_PROMPT
 
     def test_offers_both_ways_out_of_an_own_token_conflict(self):
         """Without this, the agent asks for another token the user does not have."""
@@ -137,3 +143,8 @@ class TestCreateStoryDocstring:
         doc = create_story.description
         assert "confirmed Product Brief" in doc
         assert "product_brief_id" in doc
+
+    def test_says_a_feature_is_new_product_work_too(self):
+        doc = create_story.description
+        assert "the first story of a project and every later feature alike" in doc
+        assert "leave unset only for a fix on an existing project" in doc

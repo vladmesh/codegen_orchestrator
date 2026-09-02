@@ -16,9 +16,11 @@ import httpx
 import pytest
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.contracts.dto.product_brief import ProposedProductBriefContent
 from src.agents.po.tools import init_po_clients
 from src.agents.po.tools_briefs import (
     PRODUCT_BRIEF_POINTER_KEY,
+    _creation_request_id,
     confirm_product_brief,
     present_product_brief,
 )
@@ -95,6 +97,7 @@ class _API:
     def __init__(self, *, project_config: dict | None = None, briefs=None, secret_keys=None):
         self.project_config = dict(project_config or {})
         self.briefs = dict(briefs or {})
+        self.by_request_id: dict[str, dict] = {}
         self.secret_keys = list(secret_keys or [])
         self.posts: list[tuple[str, dict]] = []
         self.patches: list[tuple[str, dict]] = []
@@ -118,11 +121,24 @@ class _API:
         if self.post_status >= HTTPStatus.BAD_REQUEST:
             return _response({"detail": self.post_detail}, status_code=self.post_status)
         if path == "product-briefs/":
+            # The released rule, modelled: `request_id` is looked up globally,
+            # the same key with the same document returns the revision it
+            # already opened, and the same key with a different one is refused.
+            existing = self.by_request_id.get(json["request_id"])
+            if existing is not None:
+                same = existing["title"] == json["title"] and existing["content"] == json["content"]
+                if not same:
+                    return _response(
+                        {"detail": "request_id already names a different Product Brief"},
+                        status_code=HTTPStatus.CONFLICT,
+                    )
+                return _response(existing, status_code=HTTPStatus.CREATED)
             revision = 1 + max((b["revision"] for b in self.briefs.values()), default=0)
             brief_id = f"brief-{revision}"
             stored = _brief(brief_id=brief_id, revision=revision, content=json["content"])
             stored["title"] = json["title"]
             self.briefs[brief_id] = stored
+            self.by_request_id[json["request_id"]] = stored
             return _response(stored, status_code=HTTPStatus.CREATED)
         if path.endswith("/confirm"):
             brief_id = path.split("/")[1]
@@ -152,6 +168,21 @@ def _config() -> dict:
     return {"configurable": {"thread_id": "po-chat-1", "telegram_chat_id": "42"}}
 
 
+def _key_of(content: dict, title: str = "Recipe bot", attempt: int = 0) -> str:
+    """The creation key the tool derives for this exact document."""
+    return _creation_request_id(
+        PROJECT_ID, title, ProposedProductBriefContent.model_validate(content), attempt
+    )
+
+
+def _bind_and_forget(api: _API, brief_id: str, story_id: str = "story-1") -> None:
+    """What `create_story` leaves behind: a bound revision and no pointer."""
+    api.briefs[brief_id]["confirmed_at"] = "2026-09-02T10:00:00Z"
+    api.briefs[brief_id]["story_id"] = story_id
+    api.project_config = {}
+    api.posts.clear()
+
+
 async def _present(**overrides) -> str:
     payload = {
         "project_id": PROJECT_ID,
@@ -178,7 +209,8 @@ class TestPresenting:
         assert "[r1] It stores a recipe" in message
         assert 'your words: "I want to save my recipes"' in message
         assert "said in: telegram:chat=42:message=17" in message
-        assert "recipes.default_language (product) = 'ru'" in message
+        # JSON, not repr: the user is asked to confirm ru, never 'ru'.
+        assert 'recipes.default_language (product) = "ru"' in message
         assert message.rstrip().endswith("yes / correct me")
 
     @pytest.mark.asyncio
@@ -200,7 +232,11 @@ class TestPresenting:
         path, body = api.posts[0]
         assert path == "product-briefs/"
         assert body["project_id"] == PROJECT_ID
-        assert body["request_id"] == f"po-brief:{PROJECT_ID}:r1"
+        # The key names this presentation, not a revision number the PO guessed:
+        # the server owns the counter, and a guess collides with a spent key on
+        # the project's second brief.
+        assert body["request_id"].startswith(f"po-brief:{PROJECT_ID}:")
+        assert not body["request_id"].endswith(":r1")
         assert body["content"]["must_requirements"][0]["user_wording"] == (
             "I want to save my recipes"
         )
@@ -259,7 +295,7 @@ class TestPresenting:
 
         path, body = api.posts[0]
         assert path == "product-briefs/"
-        assert body["request_id"] == f"po-brief:{PROJECT_ID}:r2"
+        assert body["request_id"] != _key_of(_stored_content())
         assert api.briefs[BRIEF_ID]["content"]["summary"] == "A bot that keeps recipes"
         assert api.project_config[PRODUCT_BRIEF_POINTER_KEY] == "brief-2"
         assert "shops for them" in message
@@ -313,16 +349,92 @@ class TestPresenting:
         assert "is a secret of this project" in message
 
     @pytest.mark.asyncio
-    async def test_a_revision_that_already_names_other_content_is_not_replaced(self, stream_client):
+    async def test_a_revision_opened_concurrently_is_relayed_not_worked_around(self, stream_client):
         api = _API()
         api.post_status = HTTPStatus.CONFLICT
-        api.post_detail = "request_id already names a different Product Brief"
+        api.post_detail = "another Product Brief revision was opened concurrently; retry"
         _install(api, stream_client)
 
         message = await _present()
 
         assert "No Product Brief was presented" in message
+        assert "opened concurrently" in message
         assert api.project_config == {}
+
+
+class TestTheCreationKey:
+    """The key names the presentation, so a project may have a second brief.
+
+    A key derived from a guessed revision number is unique only for a project
+    that never opens a second brief: the counter lives on the server, and the PO
+    forgets its pointer the moment a brief is bound. The released endpoint looks
+    the key up globally and refuses a spent one with 409, so the guess wedges
+    every later presentation on that project — which is every feature story of a
+    live product.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_retry_of_the_same_presentation_opens_one_revision(self, stream_client):
+        """Even with the pointer gone, the same document is the same revision."""
+        api = _API()
+        _install(api, stream_client)
+
+        first = await _present()
+        api.project_config = {}  # the pointer never reached the config
+        second = await _present()
+
+        assert len(api.briefs) == 1
+        assert api.posts[0][1]["request_id"] == api.posts[1][1]["request_id"]
+        assert first == second
+
+    @pytest.mark.asyncio
+    async def test_a_second_brief_is_presentable_once_the_first_is_bound(self, stream_client):
+        """The shape of every feature story on a live project."""
+        api = _API()
+        _install(api, stream_client)
+
+        await _present()
+        _bind_and_forget(api, "brief-1")
+
+        message = await _present(summary="A bot that also shops for the ingredients")
+
+        assert set(api.briefs) == {"brief-1", "brief-2"}
+        assert api.briefs["brief-2"]["revision"] == 2
+        assert api.project_config[PRODUCT_BRIEF_POINTER_KEY] == "brief-2"
+        assert "shops for the ingredients" in message
+
+    @pytest.mark.asyncio
+    async def test_a_spent_revision_is_reached_past_rather_than_re_presented(self, stream_client):
+        """The same document asked for twice is two stories, not one."""
+        api = _API()
+        _install(api, stream_client)
+
+        await _present()
+        _bind_and_forget(api, "brief-1")
+
+        message = await _present()
+
+        assert set(api.briefs) == {"brief-1", "brief-2"}
+        assert api.briefs["brief-1"]["story_id"] == "story-1"
+        assert api.briefs["brief-2"]["story_id"] is None
+        assert api.project_config[PRODUCT_BRIEF_POINTER_KEY] == "brief-2"
+        assert "(id: brief-2)" in message
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_revision_the_pointer_lost_is_not_re_confirmed(self, stream_client):
+        """The key finds what the pointer forgot, and the user is not asked twice."""
+        api = _API()
+        _install(api, stream_client)
+
+        await _present()
+        api.briefs["brief-1"]["confirmed_at"] = "2026-09-02T10:00:00Z"
+        api.project_config = {}
+
+        message = await _present()
+
+        assert set(api.briefs) == {"brief-1"}
+        assert "already confirmed" in message
+        assert "create_story(product_brief_id='brief-1')" in message
 
 
 class TestConfirming:

@@ -5,22 +5,30 @@
 - Gave the Product Brief boundary its producer: the user's requirement is durable typed data
   before the story exists. Two new PO tools work the released endpoints and store nothing of
   their own — `present_product_brief` opens the revision through `POST /api/product-briefs/`
-  under a derived idempotency key and returns the one atomic confirmation message (summary,
+  under an idempotency key that fingerprints the document being presented (project, title and
+  content — never a guessed revision number, which the server owns and which would collide with
+  a spent key on the project's second brief) and returns the one atomic confirmation message
+  (summary,
   every must-requirement with its id and either the user's own wording or a reference to where
   they said it, the typed initial settings, `not specified` for what nobody chose), and
   `confirm_product_brief` freezes it by echoing the stored content back. Asked a second time —
   a retry, a restart, another PO turn — presenting returns the *stored* revision instead of a
   second interpretation of the same conversation: the project config carries the pointer
   `product_brief_id` to the revision presented and not yet spent, because until a brief is bound
-  to a story no route finds it from the project alone. A correction is a new revision, never an
-  edit. `create_story` refuses new product work without a confirmed brief instead of falling back
-  to the prose-summary path, and binds the brief through `POST /api/product-briefs/{id}/story`
-  before it publishes `ArchitectMessage`; a bind that fails publishes nothing and is reported, so
-  no unbound story is ever handed to the architect as if it were brief-backed. `reopen_story` and
-  a `fix` story on an existing project are unchanged. The `po-tools` integration suite walks the
-  whole flow against the real API — present, confirm, create, and the bind read back through
-  `GET /api/product-briefs/by-story/{story_id}` — and asserts that new product work without a
-  brief creates no story at all.
+  to a story no route finds it from the project alone; a revision the key names but that is
+  already bound to a story is reached past rather than re-presented, so a project's second brief
+  is reachable. A correction is a new revision, never an edit. `create_story` refuses new product
+  work without a confirmed brief instead of falling back to the prose-summary path — and new
+  product work is every story that builds something the user asked for, the first story of a
+  DRAFT project and every later feature alike — and binds the brief through
+  `POST /api/product-briefs/{id}/story` before it publishes `ArchitectMessage`; a bind that fails
+  publishes nothing and closes the story it could not back as `failed`, because a `created` story
+  with no tasks is what the scheduler's liveness sweep re-publishes and it would then be planned
+  from prose. `reopen_story` and a `fix` story on an existing project are unchanged. The
+  `po-tools` integration suite walks the whole flow against the real API — present, confirm,
+  create, and the bind read back through `GET /api/product-briefs/by-story/{story_id}` — asserts
+  that a project whose first brief is bound can still present a second one, and that new product
+  work without a brief creates no story at all.
 - Made the brief document carry what the boundary needs, additively and with no migration
   (`content` is a JSON column). `ProductBriefContent` stays the permissive read shape, so every
   revision already stored keeps parsing; the new `ProposedProductBriefContent` is what

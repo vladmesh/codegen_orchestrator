@@ -279,11 +279,26 @@ shown; `confirm_product_brief` freezes it by echoing that content back.
 Recovering the presentation across a PO restart is what the project config key
 `product_brief_id` is for — it points at the revision presented and not yet
 spent, because until a brief is bound to a story no route finds it from the
-project alone; `create_story` clears it after the bind. `create_story` refuses
-new product work without a confirmed brief rather than falling back to the prose
-`description` path, and binds the brief through `POST /api/product-briefs/{id}/story`
+project alone; `create_story` clears it after the bind. The creation
+`request_id` is a fingerprint of the document being presented — project, title
+and content — and never a guessed revision number: the server owns the revision
+counter (`max(revision) + 1` per project) and the PO forgets its pointer at the
+bind, so a guess would re-spend a key the endpoint already holds and 409 every
+later presentation on that project. A revision the key names but that is already
+bound to a story is reached past rather than re-presented, so a project's second
+brief — the shape of every feature story — is reachable.
+
+**New product work is every story that builds something the user asked for**:
+the first story of a DRAFT project and every later feature alike, since a
+requirement is lost in prose the same way in both. `create_story` refuses it
+without a confirmed brief rather than falling back to the prose `description`
+path, and binds the brief through `POST /api/product-briefs/{id}/story`
 **before** it publishes `ArchitectMessage`, so the story the architect picks up
-is already brief-backed. A failed bind publishes nothing and is reported.
+is already brief-backed. A failed bind publishes nothing *and closes the story
+it could not back*: returning without publishing is not enough, because the
+scheduler's liveness sweep re-publishes a `created` story with no tasks and it
+would then be planned from prose. A `fix` story and `reopen_story` need no
+brief; they repair what a confirmed brief already described.
 
 **A planned task's plan membership is immutable while it is unadmitted.** Its
 project, story and planning attempt are what the admission's release set and the
