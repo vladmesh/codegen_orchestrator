@@ -115,6 +115,19 @@ token in argv nor in its environment. The profile is deleted with the worker;
 artifact. These values are only protected worker-manager configuration, never
 queue payload fields, Docker labels or producer-supplied `env_vars`.
 
+### Stand session keepalive
+
+Both stand agents refresh their session only when used, so a stand that is idle
+between runs can lose a refresh that a live run depends on. `infra/scripts/stand-subscription-keepalive.sh`
+sends one throwaway prompt to Claude and to Codex, logs the outcome to
+`~/.stand-keepalive.log` and never fails the host — `make stand-preflight` is what
+refuses to start a run. It is installed by hand as a cron job on the stand host,
+nothing in the repository invokes it:
+
+```cron
+17 */6 * * * /opt/codegen_orchestrator/infra/scripts/stand-subscription-keepalive.sh
+```
+
 ## Managed project deploy target
 
 The provisioner prepares `/opt/services` for the `Server.ssh_user` configured on
