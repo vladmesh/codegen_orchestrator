@@ -11,16 +11,56 @@ import json
 import pytest
 
 from src.agents.po.tools import (
+    confirm_product_brief,
     create_project,
     create_story,
     get_project,
     list_projects,
     list_stories,
+    present_product_brief,
     set_project_secret,
 )
 from src.agents.po.tools_shared import init_po_clients
 
 from .conftest import make_config
+
+
+async def confirmed_brief_id(project_id: str, title: str = "Todo bot") -> str:
+    """Walk the real confirmation flow and return the frozen brief's id.
+
+    New product work is only reachable through it: the PO presents one atomic
+    revision, the user answers yes, and the PO echoes the stored content back.
+    """
+    presented = await present_product_brief.ainvoke(
+        {
+            "project_id": project_id,
+            "title": title,
+            "summary": "A bot that keeps a todo list and reminds about it.",
+            "must_requirements": [
+                {
+                    "id": "r1",
+                    "text": "It stores a todo item",
+                    "user_wording": "I want to write down what I have to do",
+                },
+                {
+                    "id": "r2",
+                    "text": "It reminds about an item",
+                    "wording_reference": "chat 2026-09-02, the user's second message",
+                },
+            ],
+            "initial_settings": [{"key": "reminders.default_hour", "scope": "product", "value": 9}],
+        },
+        config=make_config(),
+    )
+    assert "yes / correct me" in presented, presented
+    brief_id = presented.split("(id: ")[1].split(")")[0]
+
+    confirmed = await confirm_product_brief.ainvoke(
+        {"project_id": project_id, "brief_id": brief_id},
+        config=make_config(),
+    )
+    assert "is confirmed and frozen" in confirmed, confirmed
+    return brief_id
 
 
 @pytest.mark.usefixtures("po_clients", "test_user")
@@ -162,11 +202,14 @@ class TestCreateStoryIntegration:
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
 
+        brief_id = await confirmed_brief_id(project_id)
+
         result = await create_story.ainvoke(
             {
                 "project_id": project_id,
                 "title": "Build todo feature",
                 "description": "A todo feature with CRUD and reminders",
+                "product_brief_id": brief_id,
             },
             config=make_config(),
         )
@@ -182,6 +225,13 @@ class TestCreateStoryIntegration:
         assert story["title"] == "Build todo feature"
         assert story["type"] == "product"
         assert story["created_by"] == "po"
+
+        # The story is brief-backed: this is the read the architect does before
+        # it claims the planning attempt.
+        bound = await api_client.get(f"/api/product-briefs/by-story/{story_id}")
+        assert bound.status_code == 200
+        assert bound.json()["id"] == brief_id
+        assert bound.json()["confirmed_at"] is not None
 
         # Verify architect:queue has a message
         messages = await redis_client.xrange("architect:queue", count=10)
@@ -200,6 +250,29 @@ class TestCreateStoryIntegration:
                     break
         assert found, f"ArchitectMessage for story {story_id} not found in architect:queue"
 
+    async def test_new_product_work_without_a_brief_creates_nothing(self, api_client):
+        """The prose-summary path is not a fallback for a missing brief."""
+        create_result = await create_project.ainvoke(
+            {"title": "nobrief-proj", "modules": "backend"},
+            config=make_config(),
+        )
+        project_id = create_result.split("ID: ")[1].split(",")[0]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": project_id,
+                "title": "Build something",
+                "description": "Requirements the user never confirmed",
+            },
+            config=make_config(),
+        )
+
+        assert "No story was created" in result
+        assert "present_product_brief" in result
+        stories = await api_client.get(f"/api/stories/?project_id={project_id}")
+        assert stories.status_code == 200
+        assert stories.json() == []
+
 
 @pytest.mark.usefixtures("po_clients", "test_user")
 class TestListStoriesIntegration:
@@ -211,11 +284,14 @@ class TestListStoriesIntegration:
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
 
+        brief_id = await confirmed_brief_id(project_id, title="Listing bot")
+
         await create_story.ainvoke(
             {
                 "project_id": project_id,
                 "title": "Story for listing",
                 "description": "Test story",
+                "product_brief_id": brief_id,
             },
             config=make_config(),
         )

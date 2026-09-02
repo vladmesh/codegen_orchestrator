@@ -17,7 +17,10 @@
   to the prose-summary path, and binds the brief through `POST /api/product-briefs/{id}/story`
   before it publishes `ArchitectMessage`; a bind that fails publishes nothing and is reported, so
   no unbound story is ever handed to the architect as if it were brief-backed. `reopen_story` and
-  a `fix` story on an existing project are unchanged.
+  a `fix` story on an existing project are unchanged. The `po-tools` integration suite walks the
+  whole flow against the real API — present, confirm, create, and the bind read back through
+  `GET /api/product-briefs/by-story/{story_id}` — and asserts that new product work without a
+  brief creates no story at all.
 - Made the brief document carry what the boundary needs, additively and with no migration
   (`content` is a JSON column). `ProductBriefContent` stays the permissive read shape, so every
   revision already stored keeps parsing; the new `ProposedProductBriefContent` is what
