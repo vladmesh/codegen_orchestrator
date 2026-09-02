@@ -16,7 +16,7 @@ from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
-from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO
 
 _NOW = datetime.now(UTC)
@@ -35,6 +35,10 @@ def _make_story(
     updated_at: datetime | None = None,
     **kwargs,
 ) -> StoryDTO:
+    # `waiting_on` is required on the DTO, and what a story waits for follows
+    # from the status it sits on — so derive it rather than pin a constant that
+    # would contradict the status a caller asked for.
+    kwargs.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(status)])
     return StoryDTO(
         id=id,
         project_id=UUID(project_id),

@@ -26,16 +26,17 @@ export interface Project {
 export interface Story {
   id: string
   project_id: string
-  parent_story_id: string | null
+  parent_story_id?: string | null
   title: string
-  description: string | null
-  acceptance_criteria: string | null
-  type: string
-  status: string
+  description?: string | null
+  acceptance_criteria?: string | null
+  type: StoryType
+  status: StoryStatus
+  waiting_on: StoryWaitingOn
   priority: number
-  blocked_by_story_id: string | null
+  blocked_by_story_id?: string | null
   created_by: string
-  user_report: string | null
+  user_report?: string | null
   quarantine_reason?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
   operator_recheck?: StoryRecheck | null
@@ -44,6 +45,30 @@ export interface Story {
   created_at: string
   updated_at?: string | null
 }
+
+export type StoryType = 'product' | 'technical'
+
+export type StoryStatus =
+  | 'created'
+  | 'in_progress'
+  | 'reopened'
+  | 'pr_review'
+  | 'deploying'
+  | 'testing'
+  | 'waiting_human_review'
+  | 'waiting_user_secret'
+  | 'completed'
+  | 'failed'
+  | 'archived'
+
+export type StoryWaitingOn =
+  | 'none'
+  | 'ci'
+  | 'deploy'
+  | 'qa'
+  | 'user_secret'
+  | 'human_review'
+  | 'resources'
 
 export interface StoryAcceptance {
   actor: string
@@ -201,6 +226,15 @@ export interface AdminOverview {
   task_counts: TaskStatusCounts
   paid_runs: PaidRunCounts
   recent_failed_runs: RecentFailedRun[]
+  waiting_stories: WaitingStory[]
+}
+
+export interface WaitingStory {
+  story_id: string
+  project_id: string
+  status: StoryStatus
+  waiting_on: StoryWaitingOn
+  updated_at: string | null
 }
 
 export interface RecentFailedRun {

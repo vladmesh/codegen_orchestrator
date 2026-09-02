@@ -28,6 +28,9 @@ def _make_story(**overrides):
         "acceptance_criteria": None,
         "type": "product",
         "status": "created",
+        # The row carries the wait its status implies; the transition that
+        # produced the status wrote it.
+        "waiting_on": "none",
         "priority": 0,
         "blocked_by_story_id": None,
         "created_by": "system",

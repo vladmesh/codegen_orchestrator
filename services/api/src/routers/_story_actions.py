@@ -19,7 +19,7 @@ from shared.models.story import Story
 
 from ..database import get_async_session
 from ..schemas.story import StoryRead, StoryTransition
-from ._story_helpers import _get_story_for_update, _validate_transition
+from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
 
 logger = structlog.get_logger()
 
@@ -50,6 +50,10 @@ def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:
     raises 422 with the story exactly as it was.  Partial application is
     impossible: the first write happens only once the whole chain is known to
     be legal, and all of them commit together with the caller's transaction.
+
+    Only the status the chain lands on survives, and ``waiting_on`` lands with
+    it: every hop writes both through ``_land_on``, so the committed row carries
+    the wait its final status implies.
     """
     cursor = story.status
     for hop in chain:
@@ -57,7 +61,9 @@ def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:
         cursor = hop.value
 
     for hop in chain:
-        story.status = hop.value
+        # The same landing write the single-hop path uses, so a composite gets
+        # `waiting_on` from the one mapping rather than a copy of it.
+        _land_on(story, hop)
         if hop is StoryStatus.REOPENED:
             # Reopening starts the current work cycle, and completion reads
             # this stamp to refuse pre-reopen QA evidence.  A composite that

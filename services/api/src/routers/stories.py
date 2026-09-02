@@ -48,7 +48,7 @@ from ..schemas.story import (
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from ._story_actions import action_router
-from ._story_helpers import _do_transition, _get_story, _get_story_for_update
+from ._story_helpers import _do_transition, _get_story, _get_story_for_update, _land_on
 from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
@@ -134,13 +134,16 @@ async def create_story(
         description=body.description,
         acceptance_criteria=body.acceptance_criteria,
         type=body.type,
-        status=StoryStatus.CREATED.value,
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
         created_by=body.created_by,
         created_at=now,
         updated_at=now,
     )
+    # The initial landing goes through the same writer every later transition
+    # uses, so `status` and `waiting_on` are set together from the one mapping
+    # and creation is not a second place that assigns either field.
+    _land_on(story, StoryStatus.CREATED)
     db.add(story)
     await db.commit()
     await db.refresh(story)

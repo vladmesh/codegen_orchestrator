@@ -13,12 +13,14 @@ from shared.contracts.dto.admin_overview import (
     PaidRunStateCounts,
     RecentFailedRun,
     TaskStatusCounts,
+    WaitingStory,
 )
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryWaitingOn
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import AgentType
-from shared.models import Run, Task
+from shared.models import Run, Story, Task
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -29,6 +31,7 @@ router = APIRouter(
 )
 
 RECENT_FAILED_RUN_LIMIT = 20
+WAITING_STORY_LIMIT = 20
 
 
 def _decision_from_metadata(
@@ -114,6 +117,27 @@ async def build_admin_overview(db: AsyncSession) -> AdminOverviewResponse:
             )
         )
 
+    # Bounded the same way the failed-run list is: most recently touched first,
+    # capped, and filtered in SQL so the API never loads every story to find the
+    # parked ones.  `waiting_on` is read as written by the transition — the
+    # overview derives nothing.
+    waiting_rows = await db.execute(
+        select(Story.id, Story.project_id, Story.status, Story.waiting_on, Story.updated_at)
+        .where(Story.waiting_on != StoryWaitingOn.NONE.value)
+        .order_by(Story.updated_at.desc(), Story.id.desc())
+        .limit(WAITING_STORY_LIMIT)
+    )
+    waiting_stories = [
+        WaitingStory(
+            story_id=story_id,
+            project_id=project_id,
+            status=story_status,
+            waiting_on=waiting_on,
+            updated_at=updated_at,
+        )
+        for story_id, project_id, story_status, waiting_on, updated_at in waiting_rows.all()
+    ]
+
     return AdminOverviewResponse(
         queues=queues,
         task_counts=task_counts,
@@ -127,6 +151,7 @@ async def build_admin_overview(db: AsyncSession) -> AdminOverviewResponse:
             unavailable_executor_decisions=unavailable_decisions,
         ),
         recent_failed_runs=recent_failed_runs,
+        waiting_stories=waiting_stories,
     )
 
 

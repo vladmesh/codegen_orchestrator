@@ -1,14 +1,20 @@
 """Unit tests for Story API schemas — validation, defaults, from_attributes."""
 
 from datetime import UTC, datetime
+from typing import get_type_hints
 import uuid
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 import pytest
 
+from shared.contracts.dto.story import StoryDTO, StoryWaitingOn
 from src.schemas.story import StoryAccept, StoryCreate, StoryRead, StoryReopen, StoryUpdate
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+#: Sentinel for "this field has no default", so a field defaulting to `None` and
+#: a required field never compare equal.
+_NO_DEFAULT = object()
 
 
 class TestStoryCreate:
@@ -67,6 +73,7 @@ class TestStoryRead:
         mock.description = "Details"
         mock.acceptance_criteria = None
         mock.status = "created"
+        mock.waiting_on = "none"
         mock.priority = 5
         mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
@@ -83,6 +90,7 @@ class TestStoryRead:
         r = StoryRead.model_validate(mock, from_attributes=True)
         assert r.id == "story-abc123"
         assert r.status == "created"
+        assert r.waiting_on == "none"
         assert r.type == "technical"
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
@@ -101,6 +109,7 @@ class TestStoryRead:
         mock.description = None
         mock.acceptance_criteria = None
         mock.status = "in_progress"
+        mock.waiting_on = "none"
         mock.priority = 0
         mock.blocked_by_story_id = None
         mock.created_by = "po"
@@ -163,3 +172,79 @@ class TestStoryUpdate:
         assert len(data) == 6  # noqa: PLR2004
         assert data["priority"] == 3
         assert data["blocked_by_story_id"] == "story-dep"
+
+
+class TestStoryReadPairing:
+    """`StoryRead` and the shared `StoryDTO` are one response contract in two files.
+
+    Every client that reads a story (`services/scheduler`, `services/langgraph`,
+    `services/scaffolder`) parses the response through `StoryDTO`, which ignores
+    fields it does not declare and applies its own defaults to fields the
+    response omits.  A field that exists on one model alone, or is typed
+    differently, or is required on one side and optional on the other, is a
+    contract split that no runtime fallback may paper over — so the whole field
+    spec is compared here, in the fast suite, rather than discovered downstream.
+    """
+
+    @staticmethod
+    def _field_specs(model: type[BaseModel]) -> dict[str, tuple[object, bool, object]]:
+        """Name -> (annotation, required?, default) for every field of `model`.
+
+        Annotations come from `get_type_hints` so a forward reference and the
+        class it names compare equal; nothing else is normalised.
+        """
+        hints = get_type_hints(model)
+
+        def default_of(field) -> object:
+            if field.is_required():
+                return _NO_DEFAULT
+            return field.get_default(call_default_factory=True)
+
+        return {
+            name: (hints[name], field.is_required(), default_of(field))
+            for name, field in model.model_fields.items()
+        }
+
+    def test_both_models_declare_the_same_fields(self):
+        assert set(StoryDTO.model_fields) == set(StoryRead.model_fields)
+
+    def test_both_models_declare_the_same_field_spec(self):
+        """Annotation, requiredness and default, field by field.
+
+        The name set alone let `waiting_on` be required on `StoryRead` while
+        `StoryDTO` defaulted it to `NONE`, which turned a response missing the
+        field into an invented "not waiting".  Comparing the whole spec is what
+        makes that drift impossible to land.
+        """
+        assert self._field_specs(StoryDTO) == self._field_specs(StoryRead)
+
+    def test_the_wait_is_required_on_both_sides(self):
+        """Spelled out, because this is the field the contract split twice on."""
+        for model in (StoryDTO, StoryRead):
+            field = model.model_fields["waiting_on"]
+            assert get_type_hints(model)["waiting_on"] is StoryWaitingOn
+            assert field.is_required(), f"{model.__name__}.waiting_on must have no default"
+
+
+class TestStoryDTORefusesAMissingWait:
+    def test_a_story_response_without_waiting_on_raises(self):
+        """No producer may omit it, so an omission is a broken response.
+
+        The column is non-nullable, migration `c3f7a91d2b48` backfilled every
+        existing row, and `StoryRead` always returns the field.
+        """
+        response = {
+            "id": "story-abc123",
+            "project_id": str(PROJECT_UUID),
+            "title": "User login",
+            "type": "product",
+            "status": "pr_review",
+            "priority": 0,
+            "created_by": "po",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+
+        with pytest.raises(ValidationError) as excinfo:
+            StoryDTO.model_validate(response)
+
+        assert any(error["loc"] == ("waiting_on",) for error in excinfo.value.errors())

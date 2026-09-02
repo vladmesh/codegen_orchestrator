@@ -17,7 +17,7 @@ from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.server import ServerDTO
-from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story import StoryDTO, StoryWaitingOn
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.project_slug import PROJECT_SLUG_PATTERN
 
@@ -136,6 +136,20 @@ async def test_story_response_validates_as_dto(async_client: AsyncClient, projec
     assert dto.title == "dto contract story"
     assert dto.type == "product"
     assert dto.status == "created"
+    assert dto.waiting_on is StoryWaitingOn.NONE
+
+    # The wait a transition writes has to survive the shared DTO: every client
+    # that reads a story parses it through StoryDTO, so a field missing here is
+    # a field no consumer ever sees, however faithfully the API returns it.
+    story_id = dto.id
+    started = await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "po"})
+    assert started.status_code == 200
+    review = await async_client.post(f"/api/stories/{story_id}/pr_review", json={"actor": "po"})
+    assert review.status_code == 200
+    parked = StoryDTO.model_validate(review.json())
+    assert parked.status == "pr_review"
+    assert parked.waiting_on is StoryWaitingOn.CI
+    assert parked.model_dump(mode="json")["waiting_on"] == "ci"
 
 
 # ── Repository ───────────────────────────────────────────────

@@ -14,7 +14,7 @@ import pytest
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
-from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.work_admission import (
     PaidRunStartRead,
@@ -57,6 +57,8 @@ def _story(*, id: str, status: str = "in_progress", **overrides) -> StoryDTO:
         "created_at": _NOW,
     }
     defaults.update(overrides)
+    # Required on the DTO, and implied by the status the story sits on.
+    defaults.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(defaults["status"])])
     return StoryDTO(id=id, **defaults)
 
 

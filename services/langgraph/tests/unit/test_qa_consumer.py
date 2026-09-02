@@ -23,7 +23,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.server import ServerDTO
-from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.vocab import AgentType
@@ -92,6 +92,8 @@ def _qa_story(**overrides) -> StoryDTO:
         "updated_at": datetime.now(UTC),
     }
     base.update(overrides)
+    # Required on the DTO, and implied by the status the story sits on.
+    base.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(base["status"])])
     return StoryDTO(**base)
 
 

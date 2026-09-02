@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Gave a Story a typed answer to "what is it waiting for?". `StoryWaitingOn` (`none`, `ci`,
+  `deploy`, `qa`, `user_secret`, `human_review`, `resources`) lives in
+  `shared/contracts/dto/story.py` beside `VALID_TRANSITIONS`, and `stories.waiting_on` is a
+  non-nullable column defaulting to `none` (alembic `c3f7a91d2b48`, which backfills existing rows
+  from their current status). One declared mapping, `WAITING_ON_BY_STATUS`, says what the status a
+  transition lands on implies; `_land_on` in `services/api/src/routers/_story_helpers.py` is the
+  only assignment of the field, reached by `_do_transition` for a single hop and by `_apply_chain`
+  for a composite, so every action writes the wait in the same transaction and on the same locked
+  row as the status. `PATCH /stories/{id}` refuses a `waiting_on` (and a `status`) in the body with
+  422 rather than dropping it, so a poller cannot write the field. `StoryRead` returns it, and
+  `AdminOverviewResponse` gained a `waiting_stories` section bounded by `WAITING_STORY_LIMIT` the
+  way `recent_failed_runs` is bounded by `RECENT_FAILED_RUN_LIMIT`. The shared `StoryDTO` carries
+  the field too, typed the same way: scheduler, langgraph and scaffolder all parse Story responses
+  through it, and a field it does not declare is dropped before any consumer sees it. `StoryDTO`
+  requires the field with no default: the column is non-nullable and every row is backfilled, so a
+  Story response that omits `waiting_on` is a broken response and now raises instead of parsing as
+  "waiting on nothing" and re-publishing an invented `none`. `StoryRead` and `StoryDTO` are two
+  hand-kept halves of one response contract, so `services/api/tests/unit/test_story_schemas.py`
+  compares their whole field spec — name set, annotation, requiredness and, where a default exists,
+  that both carry the same one — and `StoryRead` was aligned to it: `type` and `status` are the
+  typed `StoryType`/`StoryStatus` rather than bare `str`, and the nullable editorial fields default
+  the way the DTO's do. `services/admin-frontend/src/types/api.ts` follows that shape.
+  `resources` is declared and unmapped: work parks for resources at the Task level
+  (`TaskStatus.WAITING_RESOURCES`) while the Story stays `in_progress`, and both the park and the
+  un-park are scheduler-side sequences of client calls, so no single server action owns that
+  moment yet. `VALID_TRANSITIONS` values are unchanged.
+
 - Gave composite Story transitions one server-side owner. A move that walks a Story through more
   than one status is now a declared action in `services/api/src/routers/_story_actions.py`: the
   chain is a table entry, the row is read once through `_get_story_for_update`, every hop is

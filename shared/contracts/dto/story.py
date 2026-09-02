@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -27,6 +27,24 @@ class StoryStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     ARCHIVED = "archived"
+
+
+class StoryWaitingOn(StrEnum):
+    """What a Story is waiting for — the typed answer to "why is this parked?".
+
+    The value is not a status of its own and it is not a transition: it is what
+    the status a transition lands on implies, written by the same server action
+    that performs the transition. ``NONE`` means the story is not waiting on
+    anything outside itself, which includes both live work and every ending.
+    """
+
+    NONE = "none"
+    CI = "ci"
+    DEPLOY = "deploy"
+    QA = "qa"
+    USER_SECRET = "user_secret"  # noqa: S105
+    HUMAN_REVIEW = "human_review"
+    RESOURCES = "resources"
 
 
 VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
@@ -82,6 +100,28 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     StoryStatus.ARCHIVED: set(),
 }
 
+#: The one declared mapping from the status a transition lands on to the
+#: ``waiting_on`` that status implies.  Adding it is not a change to
+#: ``VALID_TRANSITIONS``: no edge moves, and no status is added or removed.
+#:
+#: It is total over ``StoryStatus`` on purpose — every landing has an answer, so
+#: a transition can never leave a stale wait behind.  ``RESOURCES`` is declared
+#: and unmapped: work parks for resources at the *Task* level while the Story
+#: stays ``IN_PROGRESS``, so no Story status implies it.
+WAITING_ON_BY_STATUS: dict[StoryStatus, StoryWaitingOn] = {
+    StoryStatus.CREATED: StoryWaitingOn.NONE,
+    StoryStatus.IN_PROGRESS: StoryWaitingOn.NONE,
+    StoryStatus.REOPENED: StoryWaitingOn.NONE,
+    StoryStatus.PR_REVIEW: StoryWaitingOn.CI,
+    StoryStatus.DEPLOYING: StoryWaitingOn.DEPLOY,
+    StoryStatus.TESTING: StoryWaitingOn.QA,
+    StoryStatus.WAITING_HUMAN_REVIEW: StoryWaitingOn.HUMAN_REVIEW,
+    StoryStatus.WAITING_USER_SECRET: StoryWaitingOn.USER_SECRET,
+    StoryStatus.COMPLETED: StoryWaitingOn.NONE,
+    StoryStatus.FAILED: StoryWaitingOn.NONE,
+    StoryStatus.ARCHIVED: StoryWaitingOn.NONE,
+}
+
 
 # --- Response DTOs ---
 
@@ -97,6 +137,13 @@ class StoryDTO(TimestampedDTO):
     acceptance_criteria: str | None = None
     type: StoryType
     status: StoryStatus
+    # Paired with ``StoryRead.waiting_on``: what the story is waiting for, written
+    # by the transition that landed it on ``status``.  Required, with no default:
+    # the column is non-nullable, migration ``c3f7a91d2b48`` backfilled every
+    # existing row, and ``StoryRead`` always returns it — so a response without
+    # the field is a broken response, not a story waiting for nothing, and it
+    # must raise here rather than be interpreted into an invented ``none``.
+    waiting_on: StoryWaitingOn
     priority: int
     blocked_by_story_id: str | None = None
     created_by: str
@@ -125,8 +172,20 @@ class StoryCreate(BaseModel):
     created_by: str = "system"
 
 
+#: Story fields a transition owns.  Sending one to ``PATCH /stories/{id}`` is a
+#: caller bug, not a no-op, so it is refused instead of dropped by
+#: ``extra="ignore"``.
+TRANSITION_OWNED_STORY_FIELDS: tuple[str, ...] = ("status", "waiting_on")
+
+
 class StoryUpdate(BaseModel):
-    """Update story request."""
+    """Update story request — the editorial fields, never the lifecycle ones.
+
+    ``status`` was never patchable; ``waiting_on`` is refused on the same
+    grounds and out loud.  Both are written only by the server actions that
+    perform a transition, so a poller that thinks it knows what a story waits
+    for gets a 422 rather than a field it silently clobbered.
+    """
 
     title: str | None = None
     description: str | None = None
@@ -137,6 +196,18 @@ class StoryUpdate(BaseModel):
     blocked_by_story_id: str | None = None
     quarantine_reason: dict[str, Any] | None = None
     pr_number: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_transition_owned_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            offending = [name for name in TRANSITION_OWNED_STORY_FIELDS if name in data]
+            if offending:
+                raise ValueError(
+                    f"{', '.join(offending)} is written by Story transitions only"
+                    " and cannot be patched"
+                )
+        return data
 
 
 class StoryAcceptance(BaseModel):
