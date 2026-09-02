@@ -17,6 +17,7 @@ from shared.contracts.dto.story import (
     StoryCreate,
     StoryRecheck,
     StoryUpdate,
+    StoryWaitingOn,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "StoryReopen",
     "StoryTransition",
     "StoryUpdate",
+    "StoryWaitingOn",
 ]
 
 
@@ -43,6 +45,9 @@ class StoryRead(TimestampedDTO):
     acceptance_criteria: str | None
     type: str
     status: str
+    # Typed, and written by the transition that landed the story on `status` —
+    # never by a reader of this schema.
+    waiting_on: StoryWaitingOn
     priority: int
     blocked_by_story_id: str | None
     created_by: str

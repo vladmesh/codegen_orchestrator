@@ -67,6 +67,7 @@ class TestStoryRead:
         mock.description = "Details"
         mock.acceptance_criteria = None
         mock.status = "created"
+        mock.waiting_on = "none"
         mock.priority = 5
         mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
@@ -83,6 +84,7 @@ class TestStoryRead:
         r = StoryRead.model_validate(mock, from_attributes=True)
         assert r.id == "story-abc123"
         assert r.status == "created"
+        assert r.waiting_on == "none"
         assert r.type == "technical"
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
@@ -101,6 +103,7 @@ class TestStoryRead:
         mock.description = None
         mock.acceptance_criteria = None
         mock.status = "in_progress"
+        mock.waiting_on = "none"
         mock.priority = 0
         mock.blocked_by_story_id = None
         mock.created_by = "po"

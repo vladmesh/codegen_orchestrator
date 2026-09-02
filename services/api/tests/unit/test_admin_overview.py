@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
@@ -17,6 +18,7 @@ from shared.contracts.dto.admin_overview import (
 )
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import AgentType
 from src.main import app
@@ -48,6 +50,7 @@ async def test_admin_overview_is_internal_only_and_returns_typed_empty_state():
             unavailable_executor_decisions=0,
         ),
         recent_failed_runs=[],
+        waiting_stories=[],
     )
 
     with patch(
@@ -65,6 +68,7 @@ async def test_admin_overview_is_internal_only_and_returns_typed_empty_state():
     assert body["task_counts"]["failed"] == 0
     assert body["paid_runs"][RunStatus.QUEUED.value] == 0
     assert body["recent_failed_runs"] == []
+    assert body["waiting_stories"] == []
 
 
 @pytest.mark.parametrize("agent", [AgentType.CLAUDE, AgentType.CODEX])
@@ -168,6 +172,17 @@ async def test_overview_counts_all_task_statuses_and_only_persisted_paid_decisio
     failed_result = MagicMock()
     failed_result.scalars.return_value.all.return_value = [failed]
     results.append(failed_result)
+    waiting_result = MagicMock()
+    waiting_result.all.return_value = [
+        (
+            "story-1",
+            uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            StoryStatus.DEPLOYING.value,
+            StoryWaitingOn.DEPLOY.value,
+            datetime(2026, 1, 3, tzinfo=UTC),
+        )
+    ]
+    results.append(waiting_result)
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=results)
     queues = QueueHealthSnapshot(status="ok", bindings=[], issues=[])
@@ -182,3 +197,7 @@ async def test_overview_counts_all_task_statuses_and_only_persisted_paid_decisio
     assert overview.paid_runs.unavailable_executor_decisions == 2
     assert overview.recent_failed_runs[0].executor_decision == decision
     assert overview.recent_failed_runs[0].error_message == "safe error"
+    # The overview reports the wait the transition wrote; it derives none of it.
+    assert [
+        (story.story_id, story.status, story.waiting_on) for story in overview.waiting_stories
+    ] == [("story-1", StoryStatus.DEPLOYING, StoryWaitingOn.DEPLOY)]

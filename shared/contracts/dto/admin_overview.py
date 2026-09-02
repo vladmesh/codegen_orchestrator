@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.run import RunType
+from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 from shared.contracts.vocab import AgentType
 
 
@@ -86,11 +87,28 @@ class RecentFailedRun(_StrictModel):
     executor_decision_availability: ExecutorDecisionAvailability
 
 
+class WaitingStory(_StrictModel):
+    """One story that is currently waiting on something, and on what.
+
+    The wait comes off the story row, where the transition that produced it
+    wrote it; the overview reads it and never derives one of its own.
+    """
+
+    story_id: str
+    project_id: uuid.UUID
+    status: StoryStatus
+    waiting_on: StoryWaitingOn
+    updated_at: datetime | None
+
+
 class AdminOverviewResponse(_StrictModel):
     queues: QueueHealthSnapshot
     task_counts: TaskStatusCounts
     paid_runs: PaidRunCounts
     recent_failed_runs: list[RecentFailedRun]
+    # Bounded exactly like `recent_failed_runs`: the overview is an operational
+    # summary, not a story list, so it returns the most recent waits and no more.
+    waiting_stories: list[WaitingStory]
 
 
 __all__ = [
@@ -104,4 +122,5 @@ __all__ = [
     "QueueStreamInfo",
     "RecentFailedRun",
     "TaskStatusCounts",
+    "WaitingStory",
 ]

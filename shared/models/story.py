@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.contracts.dto.story import StoryStatus, StoryType
+from shared.contracts.dto.story import StoryStatus, StoryType, StoryWaitingOn
 
 from .base import Base
 
@@ -28,6 +28,16 @@ class Story(Base):
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(String(50), default=StoryType.PRODUCT.value, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default=StoryStatus.CREATED.value, index=True)
+    # What this story is waiting for. Written only by the server actions that
+    # perform a transition, in the same transaction and on the same locked row
+    # as `status`, from the one `WAITING_ON_BY_STATUS` mapping.
+    waiting_on: Mapped[str] = mapped_column(
+        String(50),
+        default=StoryWaitingOn.NONE.value,
+        server_default=StoryWaitingOn.NONE.value,
+        nullable=False,
+        index=True,
+    )
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     blocked_by_story_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("stories.id"), nullable=True, index=True

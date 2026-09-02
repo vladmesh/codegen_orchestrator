@@ -6,15 +6,15 @@ hop validated against ``VALID_TRANSITIONS`` before any hop is applied, and
 ``reopened_at`` stamped exactly as the single `reopen` hop stamps it.
 
 A Story keeps no status-change event table — the row itself is the record — so
-"no partial status change was written" is asserted on the two fields the chain
-writes: ``status`` and ``reopened_at``.
+"no partial status change was written" is asserted on the three fields the chain
+writes: ``status``, ``waiting_on`` and ``reopened_at``.
 """
 
 from fastapi import status
 from httpx import AsyncClient
 import pytest
 
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryStatus, StoryWaitingOn
 
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -37,6 +37,7 @@ async def _story_in_pr_review(async_client: AsyncClient) -> str:
     review = await async_client.post(f"/api/stories/{story_id}/pr_review", json={"actor": "po"})
     assert review.status_code == status.HTTP_200_OK, review.text
     assert review.json()["reopened_at"] is None
+    assert review.json()["waiting_on"] == StoryWaitingOn.CI
 
     return story_id
 
@@ -62,6 +63,8 @@ async def test_ci_retry_applies_every_hop_in_one_call(
     final = await async_client.get(f"/api/stories/{story_id}")
     assert final.json()["status"] == StoryStatus.IN_PROGRESS
     assert final.json()["reopened_at"] == body["reopened_at"]
+    # The chain lands on in_progress, so the CI wait it started from is gone.
+    assert final.json()["waiting_on"] == StoryWaitingOn.NONE
 
 
 @pytest.mark.asyncio
@@ -90,9 +93,11 @@ async def test_ci_retry_applies_nothing_when_a_later_hop_is_invalid(
 
     final = await async_client.get(f"/api/stories/{story_id}")
     assert final.status_code == status.HTTP_200_OK, final.text
-    # Neither the legal first hop nor the reopen stamp reached the row.
+    # Neither the legal first hop nor the reopen stamp reached the row, and the
+    # wait the untouched status implies is still the one recorded.
     assert final.json()["status"] == StoryStatus.PR_REVIEW
     assert final.json()["reopened_at"] is None
+    assert final.json()["waiting_on"] == StoryWaitingOn.CI
 
 
 @pytest.mark.asyncio
@@ -113,3 +118,4 @@ async def test_ci_retry_is_refused_when_the_first_hop_is_illegal(
     final = await async_client.get(f"/api/stories/{story_id}")
     assert final.json()["status"] == StoryStatus.FAILED
     assert final.json()["reopened_at"] is None
+    assert final.json()["waiting_on"] == StoryWaitingOn.NONE
