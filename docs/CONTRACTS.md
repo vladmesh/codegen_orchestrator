@@ -245,6 +245,61 @@ Confirmed content is never updated in place: there is no update path, and a
 change to what the user asked for is a new revision, so an architect planning
 against revision N cannot have the ground move under it.
 
+**The brief document has a read shape and a write shape.**
+`ProductBriefContent` is what `ProductBriefRead` parses out of the JSON column,
+and it stays permissive so that every revision the API has already stored keeps
+parsing. `ProposedProductBriefContent` is what `ProductBriefCreate` and
+`ProductBriefConfirm` carry, and it refuses what must never be opened as a
+revision: a must-requirement id that is not path-safe, and a requirement that
+carries neither the user's wording (`user_wording`) nor an auditable reference to
+it (`wording_reference`) — exactly one of the two, because both is two answers to
+the one question of where the requirement came from. The id refusal is a
+property of the coverage route: `PUT /api/product-briefs/{id}/coverage/{requirement_id}`
+addresses a requirement as one path segment, so an id carrying `/` would come
+back as a 404 that says nothing about why, and the refusal belongs where the
+revision is opened. Both are additive: `extra="forbid"` stays, ids stay unique,
+and no migration is needed because `content` is a JSON column.
+
+**A brief carries typed initial settings, and never a secret.**
+`ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
+a manifest-declared `key`, an explicit `scope` (`product`, or `user` with a
+positive `subject_id`), and a JSON `value` — the same vocabulary the generated
+product's core settings contract uses (`service-template`, `docs/CONTRACTS.md`,
+"Core settings v1"), so writing them into a product later is a transcription and
+not an interpretation. `(key, scope, subject_id)` is unique within one brief. A
+credential is not a setting: a credential-shaped key or value is refused by the
+type, and the PO additionally refuses a key that names one of the project's
+stored secrets, reading only the secret *names*. Writing these values into a
+generated product through `settings.set` is a later card; this contract only
+carries them on the brief.
+
+**The producer of the confirmed brief is the PO consumer.**
+`present_product_brief` opens the revision and returns the exact text the user is
+shown; `confirm_product_brief` freezes it by echoing that content back.
+Recovering the presentation across a PO restart is what the project config key
+`product_brief_id` is for — it points at the revision presented and not yet
+spent, because until a brief is bound to a story no route finds it from the
+project alone; `create_story` clears it after the bind. The creation
+`request_id` is a fingerprint of the document being presented — project, title
+and content — and never a guessed revision number: the server owns the revision
+counter (`max(revision) + 1` per project) and the PO forgets its pointer at the
+bind, so a guess would re-spend a key the endpoint already holds and 409 every
+later presentation on that project. A revision the key names but that is already
+bound to a story is reached past rather than re-presented, so a project's second
+brief — the shape of every feature story — is reachable.
+
+**New product work is every story that builds something the user asked for**:
+the first story of a DRAFT project and every later feature alike, since a
+requirement is lost in prose the same way in both. `create_story` refuses it
+without a confirmed brief rather than falling back to the prose `description`
+path, and binds the brief through `POST /api/product-briefs/{id}/story`
+**before** it publishes `ArchitectMessage`, so the story the architect picks up
+is already brief-backed. A failed bind publishes nothing *and closes the story
+it could not back*: returning without publishing is not enough, because the
+scheduler's liveness sweep re-publishes a `created` story with no tasks and it
+would then be planned from prose. A `fix` story and `reopen_story` need no
+brief; they repair what a confirmed brief already described.
+
 **A planned task's plan membership is immutable while it is unadmitted.** Its
 project, story and planning attempt are what the admission's release set and the
 coverage evidence are keyed on, so `PATCH /api/tasks/{id}` refuses to change any
@@ -264,7 +319,7 @@ any Task row. The dispatch admission point reads no brief at all — its conditi
 is a column of the candidate Task, which rung 1 of `LOCK_LADDER` already holds —
 so brief-before-task closes no cycle with task-before-story-before-project.
 
-**The producer is the architect consumer.** `services/langgraph/src/consumers/architect.py`
+**The producer of the plan is the architect consumer.** `services/langgraph/src/consumers/architect.py`
 is the only thing that claims a planning attempt, and it does so for one reason:
 the story it was handed is backed by a confirmed brief. It claims before the
 graph runs, heartbeats the claim for as long as the graph runs and stops beating

@@ -99,8 +99,9 @@ async def _release_planning_attempt(attempt: _PlanningAttempt, log) -> None:
     back incomplete. Nothing is released by this: `finish` gives up ownership,
     and only `admit` ever crosses the boundary. Failing to give it up is not
     worth failing the job over — the claim goes stale on its own within
-    `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS` and the supervisor's
-    unadmitted-story recovery picks the story up either way — so it is logged
+    `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`, and a story left behind an
+    incomplete plan needs an operator either way, because
+    `supervise_stuck_stories` scans `StoryStatus.CREATED` only — so it is logged
     rather than raised over whatever went wrong first.
     """
     try:

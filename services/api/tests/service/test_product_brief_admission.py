@@ -41,12 +41,27 @@ DISPATCH_URL = "/api/work-admission/engineering-dispatches"
 #: exactly the failure the race is meant to show.
 _RACE_WINDOW_SECONDS = 1.0
 
+#: Written out in the shape the server stores, defaults included, because a
+#: test below re-reads the stored document and compares it with this dict. Each
+#: requirement carries its provenance — one the user's own words, one a
+#: reference to where they said them — which is what the create DTO requires.
 _CONTENT = {
     "summary": "A bot that tracks reading",
     "must_requirements": [
-        {"id": "r1", "text": "It stores a book"},
-        {"id": "r2", "text": "It lists the books"},
+        {
+            "id": "r1",
+            "text": "It stores a book",
+            "user_wording": "I want it to remember the books I read",
+            "wording_reference": None,
+        },
+        {
+            "id": "r2",
+            "text": "It lists the books",
+            "user_wording": None,
+            "wording_reference": "telegram:chat=1:message=2",
+        },
     ],
+    "initial_settings": [],
 }
 
 
@@ -693,6 +708,7 @@ async def test_a_changed_brief_is_a_new_revision_not_an_edit(async_client: Async
     changed = {
         "summary": "A bot that tracks reading and lending",
         "must_requirements": _CONTENT["must_requirements"],
+        "initial_settings": [],
     }
     mismatch = await async_client.post(
         f"{BRIEFS_URL}/{first.json()['id']}/confirm",

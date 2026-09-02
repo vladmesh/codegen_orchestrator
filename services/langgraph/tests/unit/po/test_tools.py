@@ -66,6 +66,44 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     return resp
 
 
+#: New product work is planned against a confirmed Product Brief, so a project
+#: that reaches `create_story` with `action=create` is addressed by its real
+#: UUID — that is what a brief is opened against.
+BRIEF_PROJECT_ID = "11111111-1111-4111-8111-111111111111"
+BRIEF_ID = "brief-1"
+
+
+def _brief(confirmed: bool = True, story_id: str | None = None, project_id: str | None = None):
+    """A brief as `GET /api/product-briefs/{id}` returns it."""
+    return _make_response(
+        {
+            "id": BRIEF_ID,
+            "project_id": project_id or BRIEF_PROJECT_ID,
+            "story_id": story_id,
+            "revision": 1,
+            "title": "Recipe bot",
+            "content": {
+                "summary": "A bot that keeps recipes",
+                "must_requirements": [
+                    {
+                        "id": "r1",
+                        "text": "It stores a recipe",
+                        "user_wording": "I want to save my recipes",
+                        "wording_reference": None,
+                    }
+                ],
+                "initial_settings": [],
+            },
+            "confirmed_at": "2026-09-02T10:00:00Z" if confirmed else None,
+            "confirmation_request_id": "po-brief-confirm:brief-1" if confirmed else None,
+            "coverage_admitted_at": None,
+            "planning_attempt_id": None,
+            "planning_attempt_active": False,
+            "planning_attempt_heartbeat_at": None,
+        }
+    )
+
+
 def _make_config(telegram_chat_id: str = "test-user", retry_story_id: str = "") -> dict:
     """Create a RunnableConfig with telegram_chat_id."""
     configurable = {
@@ -596,7 +634,8 @@ class TestCreateStory:
     ):
         """Reminder provenance blocks the third story in the same QA failure chain."""
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}}),
+            _brief(),
             _make_response(
                 [
                     {
@@ -620,9 +659,10 @@ class TestCreateStory:
 
         result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Try the fix again",
                 "description": "Retry the same failing feature",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42", retry_story_id="story-held"),
         )
@@ -637,8 +677,10 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         """A held retry chain must not freeze unrelated project work."""
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response(
                 [
                     {
@@ -651,20 +693,26 @@ class TestCreateStory:
                     }
                 ]
             ),
+            project_resp,
         ]
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-export"})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-export"}),
+            _brief(story_id="story-export"),
+        ]
 
         result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Add export",
                 "description": "Export project data as CSV",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
 
         assert "Story created" in result
-        assert mock_api_client.post_raw.call_args.kwargs["json"]["parent_story_id"] is None
+        story_call = mock_api_client.post_raw.call_args_list[0]
+        assert story_call[1]["json"]["parent_story_id"] is None
         mock_stream_client.publish_message.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -672,23 +720,29 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         """create_story publishes ArchitectMessage to architect:queue."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),  # the story
+            _brief(story_id="story-xxx"),  # the brief bound to it
+        ]
         project_data = {
-            "id": "abc",
+            "id": BRIEF_PROJECT_ID,
             "status": "draft",
-            "config": {"modules": ["backend"], "name": "my-bot"},
+            "config": {"modules": ["backend"], "name": "my-bot", "product_brief_id": BRIEF_ID},
         }
         mock_api_client.get_raw.side_effect = [
             _make_response(project_data),
+            _brief(),
             _make_response([]),  # no active stories
+            _make_response(project_data),  # clearing the presented-brief pointer
         ]
-        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
 
         result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Create todo bot",
                 "description": "Build a todo app with reminders",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
@@ -696,14 +750,17 @@ class TestCreateStory:
         assert "Story created" in result
         assert "architect" in result.lower()
 
-        # Should have 1 POST call: create story only (no run, no start)
-        assert mock_api_client.post_raw.call_count == 1
+        # Two POSTs: the story, then the bind that makes it brief-backed.
+        assert mock_api_client.post_raw.call_count == 2
         story_call = mock_api_client.post_raw.call_args_list[0]
         assert story_call[0][0] == "stories/"
         story_payload = story_call[1]["json"]
         assert story_payload["title"] == "Create todo bot"
         assert story_payload["type"] == "product"
         assert story_payload["created_by"] == "po"
+        bind_call = mock_api_client.post_raw.call_args_list[1]
+        assert bind_call[0][0] == f"product-briefs/{BRIEF_ID}/story"
+        assert bind_call[1]["json"] == {"story_id": "story-xxx"}
 
         # Should publish ArchitectMessage to architect:queue
         from shared.contracts.queues.architect import ArchitectMessage
@@ -714,51 +771,67 @@ class TestCreateStory:
         arch_msg = pub_call[0][1]
         assert isinstance(arch_msg, ArchitectMessage)
         assert arch_msg.story_id == "story-xxx"
-        assert arch_msg.project_id == "abc"
+        assert arch_msg.project_id == BRIEF_PROJECT_ID
         assert arch_msg.telegram_chat_id == "user-42"
 
     @pytest.mark.asyncio
     async def test_no_run_created(self, mock_api_client, mock_stream_client):
         """create_story should NOT create a Run (dispatcher does that)."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([]),  # no active stories
+            project_resp,
         ]
 
         await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Add feature",
                 "description": "New feature",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
 
-        # Only 1 POST: story creation. No runs/ call.
-        assert mock_api_client.post_raw.call_count == 1
+        # Two POSTs: the story and its bind. No runs/ call.
+        assert mock_api_client.post_raw.call_count == 2
         for call in mock_api_client.post_raw.call_args_list:
             assert "runs/" not in call[0][0]
 
     @pytest.mark.asyncio
     async def test_persists_description_for_create(self, mock_api_client, mock_stream_client):
         """For action=create, should persist description to project config."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
         project_resp = _make_response(
-            {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
+            {
+                "id": BRIEF_PROJECT_ID,
+                "status": "draft",
+                "config": {"modules": ["backend"], "name": "my-bot"},
+            }
         )
         mock_api_client.get_raw.side_effect = [
             project_resp,  # project status check
+            _brief(),  # the confirmed brief
             _make_response([]),  # no active stories
-            project_resp,  # re-fetch for config persist
+            project_resp,  # clearing the presented-brief pointer
         ]
-        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
 
         await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Create new bot",
                 "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
@@ -772,10 +845,16 @@ class TestCreateStory:
     async def test_spec_persistence_failure_does_not_publish_to_architect(
         self, mock_api_client, mock_stream_client
     ):
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([]),
+            project_resp,
         ]
         mock_api_client.patch_raw.side_effect = httpx.HTTPStatusError(
             "spec persistence unavailable", request=MagicMock(), response=MagicMock()
@@ -784,9 +863,10 @@ class TestCreateStory:
         with pytest.raises(httpx.HTTPStatusError, match="spec persistence unavailable"):
             await create_story.ainvoke(
                 {
-                    "project_id": "abc",
+                    "project_id": BRIEF_PROJECT_ID,
                     "title": "Create new bot",
                     "description": "Build a recipe bot",
+                    "product_brief_id": BRIEF_ID,
                 },
                 config=_make_config(),
             )
@@ -796,21 +876,31 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_no_patch_for_feature_on_active(self, mock_api_client, mock_stream_client):
         """For action=feature, should NOT persist description to project config."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([]),  # no active stories
+            project_resp,
         ]
 
-        await create_story.ainvoke(
+        result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Add feature",
                 "description": "New feature",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
 
+        # The story really was created — the assertion below is about the spec
+        # write, not about the tool having refused before it got there.
+        assert "Story created" in result
         mock_api_client.patch_raw.assert_not_called()
 
     @pytest.mark.asyncio
@@ -833,18 +923,25 @@ class TestCreateStory:
 
     @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([]),  # no active stories
+            project_resp,
         ]
 
         await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Test",
                 "description": "Test desc",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-777"),
         )
@@ -858,25 +955,32 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_queues_story_when_active_story_exists(self, mock_api_client, mock_stream_client):
         """If project has in_progress story, create story but don't publish to architect."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-new"})
-        # First GET: project status (active → action=feature)
-        # Second GET: stories list (has in_progress story)
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-new"}),
+            _brief(story_id="story-new"),
+        ]
+        # GETs: project status (active → action=feature), the confirmed brief,
+        # the stories list (has an in_progress story), the pointer read.
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([{"id": "story-old", "status": "in_progress"}]),
+            project_resp,
         ]
 
         result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Add feature",
                 "description": "New feature",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
 
-        # Story created
-        assert mock_api_client.post_raw.call_count == 1
+        # Story created and bound
+        assert mock_api_client.post_raw.call_count == 2
         # But NOT published to architect:queue
         mock_stream_client.publish_message.assert_not_called()
         assert "queued" in result.lower()
@@ -884,23 +988,344 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_publishes_when_no_active_story(self, mock_api_client, mock_stream_client):
         """If project has no in_progress story, publish to architect normally."""
-        mock_api_client.post_raw.return_value = _make_response({"id": "story-new"})
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "active", "config": {}})
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-new"}),
+            _brief(story_id="story-new"),
+        ]
         mock_api_client.get_raw.side_effect = [
-            _make_response({"id": "abc", "status": "active", "config": {}}),
+            project_resp,
+            _brief(),
             _make_response([]),  # No active stories
+            project_resp,
         ]
 
         result = await create_story.ainvoke(
             {
-                "project_id": "abc",
+                "project_id": BRIEF_PROJECT_ID,
                 "title": "Add feature",
                 "description": "New feature",
+                "product_brief_id": BRIEF_ID,
             },
             config=_make_config("user-42"),
         )
 
         mock_stream_client.publish_message.assert_called_once()
         assert "architect" in result.lower()
+
+
+class TestCreateStoryIsBriefBacked:
+    """New product work reaches the architect as a brief-backed story, or not at all.
+
+    The consumer half shipped already: the architect reads the brief by story id,
+    claims the planning attempt and plans under it. The bind is what makes that
+    reachable, so it happens before anything can hand the story on — and when it
+    fails, nothing is handed on at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_new_product_work_without_a_confirmed_brief_creates_nothing(
+        self, mock_api_client, mock_stream_client
+    ):
+        """The prose-summary path is not a fallback for a missing brief."""
+        mock_api_client.get_raw.return_value = _make_response(
+            {"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}}
+        )
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "No story was created" in result
+        assert "present_product_brief" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_brief_creates_nothing(self, mock_api_client, mock_stream_client):
+        mock_api_client.get_raw.side_effect = [
+            _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}}),
+            _brief(confirmed=False),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "is not confirmed yet" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_brief_that_already_backs_a_story_creates_nothing(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.get_raw.side_effect = [
+            _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}}),
+            _brief(story_id="story-old"),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "already backs story story-old" in result
+        mock_api_client.post_raw.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_bind_happens_before_the_architect_is_told(
+        self, mock_api_client, mock_stream_client
+    ):
+        """An architect that saw the story first would plan it as prose work."""
+        order: list[str] = []
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
+        mock_api_client.get_raw.side_effect = [
+            project_resp,
+            _brief(),
+            _make_response([]),
+            project_resp,
+        ]
+
+        async def _post(path, **kwargs):
+            order.append(f"POST {path}")
+            return (
+                _make_response({"id": "story-xxx"})
+                if path == "stories/"
+                else _brief(story_id="story-xxx")
+            )
+
+        async def _publish(*args, **kwargs):
+            order.append("publish")
+
+        mock_api_client.post_raw.side_effect = _post
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
+        mock_stream_client.publish_message.side_effect = _publish
+
+        await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert order == [
+            "POST stories/",
+            f"POST product-briefs/{BRIEF_ID}/story",
+            "publish",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_story_whose_bind_failed_is_never_handed_to_the_architect(
+        self, mock_api_client, mock_stream_client
+    ):
+        """And it is closed, because "not published by the PO" is not enough.
+
+        The scheduler's liveness sweep re-publishes a `created` story with no
+        tasks. Left open, the story the bind could not back would reach the
+        architect minutes later and be planned from its prose description —
+        exactly the bypass the brief exists to prevent.
+        """
+        mock_api_client.get_raw.side_effect = [
+            _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}}),
+            _brief(),
+            _make_response([]),
+        ]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _make_response({"detail": "story is already backed by another Product Brief"}, 409),
+            _make_response({"id": "story-xxx", "status": "failed"}),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "NOT sent to the architect" in result
+        assert "already backed by another Product Brief" in result
+        assert "closed as failed" in result
+        # A refusal is an answer: one bind attempt, then the story is closed.
+        assert [call[0][0] for call in mock_api_client.post_raw.call_args_list] == [
+            "stories/",
+            f"product-briefs/{BRIEF_ID}/story",
+            "stories/story-xxx/fail",
+        ]
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_bind_that_failed_on_the_server_is_tried_again(
+        self, mock_api_client, mock_stream_client
+    ):
+        """A 5xx says nothing about whether the bind is possible."""
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
+        mock_api_client.get_raw.side_effect = [
+            project_resp,
+            _brief(),
+            _make_response([]),
+            project_resp,
+        ]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _make_response({"detail": "upstream unavailable"}, 503),
+            _brief(story_id="story-xxx"),
+        ]
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "Story created" in result
+        assert [call[0][0] for call in mock_api_client.post_raw.call_args_list] == [
+            "stories/",
+            f"product-briefs/{BRIEF_ID}/story",
+            f"product-briefs/{BRIEF_ID}/story",
+        ]
+        mock_stream_client.publish_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_story_that_could_not_be_closed_is_named_to_the_user(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.get_raw.side_effect = [
+            _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}}),
+            _brief(),
+            _make_response([]),
+        ]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _make_response({"detail": "brief already backs a story"}, 409),
+            _make_response({"detail": "invalid transition"}, 409),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "could not be closed either" in result
+        assert "invalid transition" in result
+        assert "close story story-xxx" in result
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_feature_on_an_active_project_without_a_brief_creates_nothing(
+        self, mock_api_client, mock_stream_client
+    ):
+        """New product work is not only the first story of a project.
+
+        Once a project is live, a feature is the shape most product work takes,
+        and it is where a requirement is lost in prose exactly as it would be at
+        creation. Only a `fix` (and `reopen_story`, a different tool) repairs
+        something a confirmed brief already described.
+        """
+        mock_api_client.get_raw.return_value = _make_response(
+            {"id": BRIEF_PROJECT_ID, "status": "active", "config": {}}
+        )
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Add bilingual replies",
+                "description": "The bot should answer in ru and en",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "No story was created" in result
+        assert "present_product_brief" in result
+        mock_api_client.post_raw.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_queued_story_is_bound_too(self, mock_api_client, mock_stream_client):
+        """What the queue releases later must already be brief-backed."""
+        project_resp = _make_response({"id": BRIEF_PROJECT_ID, "status": "draft", "config": {}})
+        mock_api_client.get_raw.side_effect = [
+            project_resp,
+            _brief(),
+            _make_response([{"id": "story-old", "status": "in_progress"}]),
+            project_resp,
+        ]
+        mock_api_client.post_raw.side_effect = [
+            _make_response({"id": "story-xxx"}),
+            _brief(story_id="story-xxx"),
+        ]
+        mock_api_client.patch_raw.return_value = _make_response({"id": BRIEF_PROJECT_ID})
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Create recipe bot",
+                "description": "Build a recipe bot",
+                "product_brief_id": BRIEF_ID,
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "queued" in result.lower()
+        assert mock_api_client.post_raw.call_args_list[1][0][0] == (
+            f"product-briefs/{BRIEF_ID}/story"
+        )
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_fix_on_an_existing_project_needs_no_brief(
+        self, mock_api_client, mock_stream_client
+    ):
+        """The flows that legitimately have no brief keep working unchanged."""
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-fix"})
+        mock_api_client.get_raw.return_value = _make_response([])
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": BRIEF_PROJECT_ID,
+                "title": "Fix bug",
+                "description": "Fix the login",
+                "story_type": "fix",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "Story created" in result
+        assert mock_api_client.post_raw.call_count == 1
+        mock_stream_client.publish_message.assert_awaited_once()
 
 
 class TestListStories:
@@ -1171,7 +1596,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 17
+        expected_count = 19
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1186,6 +1611,8 @@ class TestGetAllTools:
             "transfer_project_ownership",
             "validate_telegram_token",
             "teardown_project",
+            "present_product_brief",
+            "confirm_product_brief",
             "create_story",
             "list_stories",
             "reopen_story",

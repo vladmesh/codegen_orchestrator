@@ -22,13 +22,48 @@ Everything is sequential per project. One story at a time, one task at a time.
 4. PO creates **Repository** for the project (1:1 for now, model supports multi-repo)
 5. PO collects secrets from user → stores encrypted on **Repository** (tied to code, not project)
 6. PO sets **modules** on project config (e.g. `backend`, `tg_bot`)
-7. PO creates one or more **Stories** for the project
+7. PO presents the **Product Brief** and the user confirms it (new product work only)
+8. PO creates one or more **Stories** for the project
    - Stories are ordered by priority
    - Only the first story is active — rest wait in queue
    - If user keeps chatting, PO may add more stories
-8. First story triggers the pipeline
+9. First story triggers the pipeline
 
-**Outputs**: Project, Repository (empty), Secrets (on repo), Stories
+**Outputs**: Project, Repository (empty), Secrets (on repo), Product Brief, Stories
+
+### The Product Brief is confirmed before the story exists
+
+New product work is every story that builds something the user asked for — the
+first story of a new project and every later feature alike. For all of it the
+requirement becomes durable typed data before there is anything to plan, and it
+is the PO that produces it:
+
+1. `present_product_brief` opens a revision through `POST /api/product-briefs/`
+   and returns the one message the user is shown — the summary, every
+   must-requirement with the id the architect will dispose of it by and either
+   the user's own wording or a reference to where they said it, and the typed
+   initial settings. Asked again — a retry, a restart, a second PO turn — it
+   returns the *stored* revision instead of composing a second interpretation:
+   the project's config carries the pointer `product_brief_id` to the revision
+   presented and not yet spent, and the creation idempotency key is a
+   fingerprint of the document being presented, so the same presentation is the
+   same revision even after the pointer is gone.
+2. The user answers. On "yes", `confirm_product_brief` echoes the stored content
+   to `POST /api/product-briefs/{id}/confirm`, which refuses anything but a
+   byte-for-byte match. A correction is a new revision, never an edit.
+3. `create_story` refuses to create new product work without a confirmed brief,
+   and binds the confirmed brief to the story it created through
+   `POST /api/product-briefs/{id}/story` **before** it publishes
+   `ArchitectMessage`. A bind that fails publishes nothing, and the story it
+   could not back is closed as `failed` rather than left in `created` — a
+   `created` story with no tasks is what the scheduler's liveness sweep
+   re-publishes, and it would be planned from its prose description.
+
+Each story gets its own brief: the revision bound to a story is spent, and the
+next one is a new revision of the same project.
+
+A `fix` story on an existing project and `reopen_story` have no brief and are
+unchanged — they repair what a confirmed brief already described.
 
 ---
 
