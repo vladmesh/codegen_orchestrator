@@ -6,6 +6,7 @@ import uuid
 from pydantic import ValidationError
 import pytest
 
+from shared.contracts.dto.story import StoryDTO, StoryWaitingOn
 from src.schemas.story import StoryAccept, StoryCreate, StoryRead, StoryReopen, StoryUpdate
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -166,3 +167,21 @@ class TestStoryUpdate:
         assert len(data) == 6  # noqa: PLR2004
         assert data["priority"] == 3
         assert data["blocked_by_story_id"] == "story-dep"
+
+
+class TestStoryReadPairing:
+    """`StoryRead` and the shared `StoryDTO` are one response contract in two files.
+
+    Every client that reads a story (`services/scheduler`, `services/langgraph`,
+    `services/scaffolder`) parses the response through `StoryDTO`, which ignores
+    fields it does not declare.  A field added to `StoryRead` alone therefore
+    reaches no consumer at all, however faithfully the API returns it — so the
+    pairing is asserted here rather than discovered downstream.
+    """
+
+    def test_the_shared_dto_declares_every_field_the_read_schema_returns(self):
+        assert set(StoryDTO.model_fields) == set(StoryRead.model_fields)
+
+    def test_the_wait_is_typed_the_same_on_both_sides(self):
+        assert StoryDTO.model_fields["waiting_on"].annotation is StoryWaitingOn
+        assert StoryRead.model_fields["waiting_on"].annotation is StoryWaitingOn

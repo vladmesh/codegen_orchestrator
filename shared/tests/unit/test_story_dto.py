@@ -13,6 +13,7 @@ from shared.contracts.dto.story import (
     StoryStatus,
     StoryType,
     StoryUpdate,
+    StoryWaitingOn,
 )
 
 _NOW = datetime(2026, 3, 17, tzinfo=UTC)
@@ -31,6 +32,7 @@ class TestStoryDTO:
         "acceptance_criteria": "Users can log in",
         "type": "product",
         "status": "in_progress",
+        "waiting_on": "ci",
         "priority": 3,
         "blocked_by_story_id": "story-dep",
         "created_by": "po",
@@ -53,6 +55,7 @@ class TestStoryDTO:
         assert dto.blocked_by_story_id == "story-dep"
         assert dto.created_by == "po"
         assert dto.user_report == "Login button not visible"
+        assert dto.waiting_on is StoryWaitingOn.CI
 
     def test_parse_minimal_response(self):
         minimal = {
@@ -75,12 +78,18 @@ class TestStoryDTO:
         assert dto.parent_story_id is None
         assert dto.user_report is None
         assert dto.updated_at is None
+        # A response without the field parses as "waiting on nothing".
+        assert dto.waiting_on is StoryWaitingOn.NONE
 
     def test_model_dump_roundtrip(self):
         dto = StoryDTO.model_validate(self.SAMPLE_RESPONSE)
         data = dto.model_dump(mode="json")
         dto2 = StoryDTO.model_validate(data)
         assert dto2.id == dto.id
+        # The field survives serialization, so it reaches every consumer that
+        # re-dumps a story it parsed.
+        assert data["waiting_on"] == "ci"
+        assert dto2.waiting_on is StoryWaitingOn.CI
 
     def test_status_and_type_are_typed_enums(self):
         dto = StoryDTO.model_validate(self.SAMPLE_RESPONSE)
@@ -94,6 +103,11 @@ class TestStoryDTO:
 
     def test_rejects_unknown_type(self):
         bad = {**self.SAMPLE_RESPONSE, "type": "epic"}
+        with pytest.raises(ValidationError):
+            StoryDTO.model_validate(bad)
+
+    def test_rejects_unknown_waiting_on(self):
+        bad = {**self.SAMPLE_RESPONSE, "waiting_on": "weather"}
         with pytest.raises(ValidationError):
             StoryDTO.model_validate(bad)
 

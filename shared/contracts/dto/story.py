@@ -137,6 +137,11 @@ class StoryDTO(TimestampedDTO):
     acceptance_criteria: str | None = None
     type: StoryType
     status: StoryStatus
+    # Paired with ``StoryRead.waiting_on``: what the story is waiting for, written
+    # by the transition that landed it on ``status``.  The default matches the
+    # column's own default, so a story nobody has parked reads as ``NONE`` here
+    # exactly as it does in the row.
+    waiting_on: StoryWaitingOn = StoryWaitingOn.NONE
     priority: int
     blocked_by_story_id: str | None = None
     created_by: str
