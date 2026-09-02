@@ -80,6 +80,18 @@ relevant test layer can exercise.
 
 **Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md`.
 
+**CHANGELOG shape** — every entry lives under a `## YYYY-MM-DD` heading for the day it is merged
+(UTC), newest heading first. There is no `Unreleased` section: add the heading if the day has none,
+otherwise append to it. An entry is one bullet of at most two lines (~200 characters) saying what
+changed and why — no file inventories, no narrative of what was found. For example:
+
+```markdown
+## 2026-09-02
+
+- `POST /work-admission/paid-runs` refuses an engineering command whose task is not dispatch-admitted,
+  so one admission point decides instead of each caller.
+```
+
 **Environment variables** — never use default values:
 ```python
 # Wrong

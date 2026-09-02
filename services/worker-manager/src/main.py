@@ -5,7 +5,6 @@ from redis.asyncio import Redis
 import structlog
 
 from shared.redis import RedisStreamClient
-from shared.worker_type_cutover import backfill_pre_cutover_worker_type
 
 from .config import settings
 from .manager import WorkerManager
@@ -40,25 +39,12 @@ async def run_periodic_task(coro_func, interval: int, name: str):
     logger.info("periodic_task_stopped", task=name)
 
 
-async def migrate_pre_cutover_worker_records(redis: Redis) -> int:
-    """Name the type of workers this service created before it recorded types.
-
-    The Compose endpoint authorizes on `worker:meta:<id>`, this service's own
-    record of the worker it created, and refuses a record without a type. A
-    developer worker that was running when this service restarted has one, so
-    the same one-time migration the broker runs on its credentials runs here on
-    the records this side decides from. See `shared/worker_type_cutover.py`.
-    """
-    return await backfill_pre_cutover_worker_type(redis, key_pattern="worker:meta:*", boundary="worker-manager")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     global redis, worker_manager
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     worker_manager = WorkerManager(redis)
-    await migrate_pre_cutover_worker_records(redis)
     await worker_manager.publish_executor_diagnostics()
 
     # Shared state for HTTP handlers

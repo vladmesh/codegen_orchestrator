@@ -25,7 +25,6 @@ const statusColors: Record<string, string> = {
   ready: 'bg-green-900 text-green-200',
   in_use: 'bg-green-900 text-green-200',
   unreachable: 'bg-red-900 text-red-200',
-  maintenance: 'bg-yellow-900 text-yellow-200',
   error: 'bg-red-900 text-red-200',
   // Application statuses
   not_deployed: 'bg-zinc-700 text-zinc-200',

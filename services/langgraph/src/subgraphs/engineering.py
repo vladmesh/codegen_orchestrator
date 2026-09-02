@@ -93,14 +93,6 @@ class EngineeringState(TypedDict):
     stop_reason: WorkerStopReason | None
     agent_limit_seconds: int | None
 
-    # Loop tracking
-    iteration_count: int
-    test_results: dict | None
-
-    # Human-in-the-loop
-    needs_human_approval: bool
-    human_approval_reason: str | None
-
     # Errors (merges without duplicates)
     errors: Annotated[list[str], _merge_errors]
 
@@ -131,10 +123,7 @@ class DoneNode(FunctionalNode):
         super().__init__(node_id="done")
 
     async def run(self, state: EngineeringState) -> dict:
-        return {
-            "engineering_status": EngineeringStatus.DONE,
-            "needs_human_approval": False,
-        }
+        return {"engineering_status": EngineeringStatus.DONE}
 
 
 class BlockedNode(FunctionalNode):
@@ -144,10 +133,7 @@ class BlockedNode(FunctionalNode):
         super().__init__(node_id="blocked")
 
     async def run(self, state: EngineeringState) -> dict:
-        result: dict = {
-            "needs_human_approval": True,
-            "human_approval_reason": "Developer failed to complete the task.",
-        }
+        result: dict = {}
         # Preserve GAVE_UP / FAILED set by developer node.
         # Only overwrite for unexpected statuses (e.g. DONE that arrived here via errors).
         if state.get("engineering_status") not in (

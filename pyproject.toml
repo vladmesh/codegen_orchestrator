@@ -17,7 +17,6 @@ dev = [
     # real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
     # Adopting it means fixing those first.
     "ruff>=0.15.5,<0.16",
-    "mypy>=1.13.0",
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
@@ -72,10 +71,5 @@ markers = [
     "requires_github: marks tests requiring real GitHub credentials",
 ]
 
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_ignores = true
-disallow_untyped_defs = true
 # Ruff is configured in the root ruff.toml. A [tool.ruff] section here would be
 # ignored whenever that file exists, so it lives in one place only.

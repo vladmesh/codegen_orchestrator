@@ -11,9 +11,7 @@ The wire is a discriminated union keyed on ``status``:
 - ``completed`` — code was written and committed (``commit_sha`` + ``content``).
 - ``failed``    — execution error, timeout, or the agent exited without
   reporting (``error``).
-- ``blocked`` / ``rejected`` — the worker gave up (``block_reason``). Both status
-  values share one shape; the worker only emits ``blocked``, ``rejected`` stays
-  accepted because the consumer historically treated the two identically.
+- ``blocked``   — the worker gave up (``block_reason``).
 
 ``worker_report`` and ``agent_stdout_tail`` are optional metadata the wrapper may
 attach to any result. ``extra="forbid"`` keeps the boundary strict: an unexpected
@@ -55,7 +53,6 @@ class WorkerResultStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
-    REJECTED = "rejected"
 
 
 class _WorkerResultBase(BaseModel):
@@ -128,9 +125,7 @@ class WorkerFailedResult(_WorkerResultBase):
 class WorkerBlockedResult(_WorkerResultBase):
     """Worker gave up on the task (blocker hit or task refused)."""
 
-    status: Literal[WorkerResultStatus.BLOCKED, WorkerResultStatus.REJECTED] = (
-        WorkerResultStatus.BLOCKED
-    )
+    status: Literal[WorkerResultStatus.BLOCKED] = WorkerResultStatus.BLOCKED
     block_reason: str
 
 

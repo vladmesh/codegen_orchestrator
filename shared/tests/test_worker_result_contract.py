@@ -43,13 +43,10 @@ class TestWorkerResultRoundTrip:
         assert parsed == model
         assert parsed.status == WorkerResultStatus.BLOCKED
 
-    def test_rejected_shares_blocked_shape(self):
-        parsed = parse_worker_result(
-            {"status": "rejected", "block_reason": "REGISTRY_PASSWORD empty"}
-        )
-        assert isinstance(parsed, WorkerBlockedResult)
-        assert parsed.status == WorkerResultStatus.REJECTED
-        assert parsed.block_reason == "REGISTRY_PASSWORD empty"
+    def test_rejected_is_not_a_status(self):
+        """`rejected` was a second spelling of `blocked`; only `blocked` exists."""
+        with pytest.raises(ValidationError):
+            parse_worker_result({"status": "rejected", "block_reason": "x"})
 
     @pytest.mark.parametrize(
         "result",
@@ -92,7 +89,7 @@ class TestWorkerResultValidation:
     def test_synonym_reason_key_rejected(self):
         # legacy reject_reason is no longer part of the wire
         with pytest.raises(ValidationError):
-            parse_worker_result({"status": "rejected", "reject_reason": "x"})
+            parse_worker_result({"status": "blocked", "reject_reason": "x"})
 
     def test_completed_requires_commit_and_content(self):
         with pytest.raises(ValidationError):

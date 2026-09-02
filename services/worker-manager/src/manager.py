@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional, Dict, List
+from typing import Optional, Dict, List
 
 import structlog
 import httpx
@@ -30,9 +30,6 @@ from . import garbage_collector as gc
 from . import git_ops
 from . import qa_egress
 from .worker_removal import QA_WORKER_TYPE, WorkerRemoval
-
-if TYPE_CHECKING:
-    from shared.contracts.queues.worker import ScaffoldConfig
 
 logger = structlog.get_logger()
 
@@ -592,7 +589,6 @@ class WorkerManager:
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
         repo_id: str | None = None,
-        scaffold_config: "ScaffoldConfig | None" = None,
         branch: str | None = None,
     ) -> str:
         """
