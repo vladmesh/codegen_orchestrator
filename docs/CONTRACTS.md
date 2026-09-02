@@ -183,8 +183,10 @@ an existing Task row is created only by the admission point.
 `POST /work-admission/paid-runs` refuses a `type=engineering` command whose
 `task_id` names an existing Task with HTTP 409 and the typed code
 `engineering_task_dispatch_requires_admission`. It remains the paid gate for
-everything else, including the deploy supervisor's code-fix handoff, whose
-`task_id` is a synthesised run id with no Task row behind it.
+everything else, including the deploy supervisor's code-fix handoff, which names
+no Task row. The existence check fences the whole class rather than part of it:
+`runs.task_id` is a foreign key onto `tasks.id`, so an engineering run whose
+`task_id` names no Task cannot be persisted at all.
 
 The paid-run command locks its controls, evaluates count admission and (for
 engineering) money admission, then creates the queued Run in one transaction.

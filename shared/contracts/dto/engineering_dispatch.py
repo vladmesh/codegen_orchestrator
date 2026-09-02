@@ -120,7 +120,7 @@ PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
 #: engineering start whose `task_id` names an existing Task row. That command is
 #: a Task dispatch, and a Task dispatch is admitted in exactly one place — every
 #: other paid start still goes through the paid gate unchanged, including the
-#: deploy-fix handoff, whose `task_id` is a synthesised run id and not a Task.
+#: deploy-fix handoff, which names no Task row.
 ENGINEERING_TASK_REQUIRES_ADMISSION = "engineering_task_dispatch_requires_admission"
 
 

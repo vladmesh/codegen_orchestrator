@@ -30,8 +30,9 @@
   That command is a dispatch of a Task, and a Task dispatch is admitted in exactly one place; an
   authorised internal or admin caller could otherwise create a queued billable engineering attempt
   naming a real Task with none of the admission conditions run. The route stays the paid gate for
-  everything else, and the deploy supervisor's code-fix handoff is untouched because its `task_id` is
-  a synthesised run id with no Task row behind it.
+  everything else, and the deploy supervisor's code-fix handoff is untouched because it names no
+  Task row. The check is a complete fence rather than a partial one: `runs.task_id` is a foreign key
+  onto `tasks.id`, so an engineering run whose `task_id` names no Task cannot be persisted at all.
 - Gave paid engineering dispatch one declared admission point.
   `services/api/src/engineering_dispatch_admission.py` is that module, reached over
   `POST /work-admission/engineering-dispatches`, and every dispatch of an engineering Task now

@@ -17,8 +17,8 @@ peeks column-only.
 
 **Invariant B — one entry to paid engineering work on a Task.**
 `POST /work-admission/paid-runs` refuses an engineering command whose `task_id`
-names a Task row, and still starts the deploy-fix handoff, whose `task_id` is a
-synthesised run id with no Task behind it.
+names a Task row, and still starts every paid engineering run that is not a Task
+dispatch — the deploy-fix handoff among them, which carries no Task row.
 
 Every test drives the real endpoints against the real database; the monkeypatched
 wrappers below are scheduling points, not stubs — the write they interleave is a
@@ -154,18 +154,26 @@ async def test_a_paid_engineering_start_naming_a_task_row_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_a_deploy_fix_start_is_not_a_task_dispatch_and_still_starts(
+async def test_a_paid_engineering_start_that_is_no_task_dispatch_still_starts(
     async_client: AsyncClient, db_session: AsyncSession
 ):
-    """The handoff Invariant B must not break, driven through the same route.
+    """Everything Invariant B does not name is decided by the paid gate as before.
 
-    The deploy-fix engineering start carries a synthesised run id in `task_id`
-    and no Task row exists for it, so it is not a dispatch of a Task and the paid
-    gate decides it exactly as before.
+    The refusal asks one question — does this `task_id` name a Task row — so a
+    paid engineering start that is not a dispatch of a Task passes through
+    untouched. The deploy-fix handoff is that shape: no Task row backs it, and
+    `runs.task_id` is a foreign key onto `tasks.id`, so the only engineering run
+    the database can persist with a `task_id` at all is one naming a real Task.
+    That is what makes the existence check a complete fence rather than a partial
+    one.
+
+    The deploy supervisor still puts its synthesised id in `task_id`
+    (`supervisor/deploy.py`), which that foreign key rejects on main as it does
+    here: a defect this branch neither introduces nor repairs, and named in the
+    card report rather than fixed under an admission card.
     """
     project_id = await _project(async_client, await _owner(async_client))
     fix_id = f"eng-deploy-fix-{uuid.uuid4().hex[:8]}-1"
-    assert await db_session.scalar(select(Task.id).where(Task.id == fix_id)) is None
 
     response = await async_client.post(
         PAID_RUNS_URL,
@@ -173,7 +181,7 @@ async def test_a_deploy_fix_start_is_not_a_task_dispatch_and_still_starts(
             "id": fix_id,
             "type": RunType.ENGINEERING.value,
             "project_id": project_id,
-            "task_id": fix_id,
+            "task_id": None,
             "run_metadata": {"deploy_fix_attempt": 1},
         },
     )

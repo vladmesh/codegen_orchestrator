@@ -315,10 +315,12 @@ async def start_paid_run_endpoint(
     # Invariant B: a paid engineering run bound to an existing Task row is
     # created only by the admission point. This route is the paid gate for
     # everything else, and it stays that: only a command that *is* a Task
-    # dispatch is refused, so the deploy-fix handoff — whose `task_id` is a
-    # synthesised run id with no Task row behind it — is untouched. The question
-    # is decided here, server-side, from a column-only existence check that
-    # materialises no entity for the transaction that follows.
+    # dispatch is refused, so the deploy-fix handoff — which names no Task row —
+    # is untouched. The existence check is a complete fence rather than a
+    # partial one because `runs.task_id` is a foreign key onto `tasks.id`: an
+    # engineering run whose `task_id` names no Task cannot be persisted at all.
+    # The question is decided here, server-side, from a column-only existence
+    # check that materialises no entity for the transaction that follows.
     if command.type is RunType.ENGINEERING and command.task_id is not None:
         names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
         if names_a_task is not None:
