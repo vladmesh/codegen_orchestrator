@@ -330,6 +330,63 @@ in this commit: redeploying the same artifact answers identically, so they are
 reported *beside* the successful deploy in `settings_seed` rather than becoming
 a retry that cannot converge. Neither is ever a silent skip.
 
+*As a fact QA asserts on.* For a brief-backed story the QA run is given the same
+confirmed `initial_settings` — key, scope and value — as an established fact,
+read through the same `GET /api/product-briefs/by-story/{story_id}`. An
+acceptance step about a configured behaviour therefore reads the typed value
+rather than reconstructing it from the story description; the canonical case is
+`settings.languages = ["ru","en"]`, where the languages QA asserts on are the
+confirmed ones and never a list parsed out of prose. A story with no confirmed
+brief adds nothing and the run is exactly what it was.
+
+**A QA run can invoke a *named* scheduled behaviour, and judges it on the
+product's own output.** The generated product's released core jobs contract
+(`service-template`, `docs/CONTRACTS.md`, "Core jobs v1") is the whole of the
+mechanism: `POST /jobs/fire` takes a `JobFire` and `POST /jobs/evidence` takes a
+`JobCommandRef`, both `contract_version: 1`. Central QA calls them through
+`services/langgraph/src/clients/product_jobs.py`, the same narrow shape as the
+settings client — nothing here names a module, a queue, a container or a
+transport, and nothing here holds the product's capability.
+
+*Where the name comes from.* `shared/contracts/acceptance.py` parses the run's
+own checklist. A line `- FIRE JOB <name> [WITH {json}] THEN <observable>` is a
+declaration: the name and the arguments are read off it deterministically, and
+the observable is what the check is judged on. That is the only source — an
+executor never invents a name, never supplies arguments, and `fire_job` refuses
+any name the criteria did not declare. A name declared twice is one behaviour
+and one execution. A line whose `WITH` is not a JSON object declares nothing, so
+a fire the platform cannot spell exactly is a fire nobody may make.
+
+*Where the capability comes from.* `JOBS_FIRE_CAPABILITY` is a
+`generated_secret` of the product's environment contract. The QA consumer
+resolves it on the management host from the project's own encrypted
+`config.secrets`, exactly as the deploy path resolves
+`SETTINGS_WRITE_CAPABILITY` and the runtime resolves the Telegram credentials,
+and hands it to the run's calls. It travels as the `X-Jobs-Capability` header
+and appears in no URL, log, trace line, error, event, verdict, prompt or `qa`
+CLI argument, and never inside the executor container. Reading evidence back
+carries no capability at all. A deployment whose contract predates the jobs core
+offers no fire: the run is told so as a fact and a check that needed one fails
+visibly rather than being silently skipped.
+
+*Identity and retry.* Identity is `(fired_by_product, command_id)`, the tuple
+the product bounds execution on. The runner owns both: `fired_by_product` is the
+project under test, `command_id` is `qa-<qa run id>-<behaviour name>`, and
+`fired_by_run` names this QA run — the same row the executor's ownership carries
+as its attempt. One identity per run per behaviour is why re-invoking the same
+logical check within a run is safe: the product returns the recorded evidence
+and emits nothing a second time, so a retry can never become a second execution
+of the behaviour.
+
+*What a dispatch record is not.* `dispatch_status: dispatched` means the
+product's core published `job_fired` — `service-template`'s own contract says in
+those words that it is not evidence a provider consumed the event or ran the
+behaviour. So it is never the answer here either. Every outcome carries that
+sentence, the run's established facts state it, the executor prompt forbids
+passing a check on it, and the observable named by the criterion — what the
+product sent, wrote or now exposes, seen through the ordinary read-only calls —
+is what the verdict rests on.
+
 **The producer of the confirmed brief is the PO consumer.**
 `present_product_brief` opens the revision and returns the exact text the user is
 shown; `confirm_product_brief` freezes it by echoing that content back.

@@ -1,0 +1,22 @@
+domain: settings
+config:
+  rest:
+    prefix: "/settings"
+    tags: ["settings"]
+
+operations:
+  get:
+    input: SettingGet
+    output: SettingValue
+    rest:
+      method: POST
+      path: "/get"
+      status: 200
+
+  set:
+    input: SettingSet
+    output: SettingValue
+    rest:
+      method: POST
+      path: "/set"
+      status: 200

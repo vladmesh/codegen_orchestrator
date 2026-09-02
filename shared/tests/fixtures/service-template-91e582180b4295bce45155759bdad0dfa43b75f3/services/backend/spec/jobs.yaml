@@ -1,0 +1,22 @@
+domain: jobs
+config:
+  rest:
+    prefix: "/jobs"
+    tags: ["jobs"]
+
+operations:
+  fire:
+    input: JobFire
+    output: JobCommand
+    rest:
+      method: POST
+      path: "/fire"
+      status: 200
+
+  evidence:
+    input: JobCommandRef
+    output: JobCommand
+    rest:
+      method: POST
+      path: "/evidence"
+      status: 200

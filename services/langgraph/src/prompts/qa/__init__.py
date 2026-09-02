@@ -10,7 +10,11 @@ one as LangChain tools — so the rules below are written once and only the
 
 The rules themselves are unchanged from the on-target Claude Code run they
 replaced: test the running application, never read implementation for evidence,
-never write to the application, report the same JSON.
+never write to the application's data, report the same JSON. One call asks the
+product to act rather than to answer — a *named* scheduled behaviour, named by
+this run's own acceptance criteria — and the rule that comes with it is stated
+here once: the product core's record of having dispatched that fire is not
+evidence the behaviour ran, and a check never passes on it.
 
 What a run may carry now is a short list of facts the QA runner established
 deterministically before the executor started — container state, and whether the
@@ -54,7 +58,20 @@ _TOOL_SECTION = """\
 - `remote_exec(command)` — one read-only command as an argument vector, e.g.
   `["docker", "ps", "-a"]`. No shell, no pipes, no redirection.
 - `remote_read(path)` — read a file from the deployment directory.
+- `fire_job(name)` — invoke one scheduled behaviour of the product by name.
+  Only a name this run's criteria declared, and only the name: the arguments and
+  the command identity are the run's. Firing the same name twice re-reads the
+  same execution.
+- `job_evidence(name)` — read back what the product recorded for this run's fire.
 - `write_qa_report(markdown)` — store the report.
+"""
+
+_DISPATCH_RULE = """\
+- A fired job answers with a dispatch record. `dispatch_status: dispatched`
+  means the product's core published the event and nothing more — it is not
+  evidence that anything consumed it, and not evidence that the behaviour ran.
+  Never pass a check on it. The check passes on the product's own output: what
+  it sent, wrote or now exposes, observed with the calls above.
 """
 
 _PROBE_SECTION = f"""\
@@ -74,10 +91,16 @@ deployment this run is bound to and prints the JSON answer.
   URL, the loopback ports you may reach, the containers you may name and the
   directory you may read. A call outside that set is refused, and a refusal is
   not a product failure — choose another check.
-- There is no form of any of these calls that writes. `{QA_PROBE_NAME} http_get`
+- None of these calls writes to the application's data. `{QA_PROBE_NAME} http_get`
   and `{QA_PROBE_NAME} localhost_http_get` take no method; `{QA_PROBE_NAME}
   remote_exec` takes read-only docker sub-commands against your own containers
   and nothing else.
+- `{QA_PROBE_NAME} fire_job <name>` is the one call that asks the product to *do*
+  something, and only a scheduled behaviour this run's criteria named. You pass
+  the name and nothing else — the arguments and the command identity belong to
+  this run, so firing the same name again re-reads the same single execution
+  rather than causing a second one. `{QA_PROBE_NAME} job_evidence <name>` reads
+  that record back.
 - There is no other way to reach the application, so do not spend the run
   looking for one. This container is on a network with no route to the
   deployment, to the fleet or to the internet: curl, a script you write and any
@@ -206,7 +229,10 @@ try to change the application you are testing.
   `{QA_PROBE_NAME} help` to see the calls, and `{QA_PROBE_NAME} capabilities` to
   see what this run may reach.
 - Never attempt to reach the application other than through `{QA_PROBE_NAME}`,
-  and never attempt any request to it that is not a GET.
+  and never attempt any request to it that is not a GET. The one thing you may
+  ask the application to *do* is `{QA_PROBE_NAME} fire_job <name>`, for a
+  scheduled behaviour this run's task names; what it answers with is a dispatch
+  record, which is never on its own evidence that the behaviour happened.
 - Finish by storing a report with `{QA_PROBE_NAME} report` and submitting the
   result JSON with `{QA_PROBE_NAME} finish`. Nothing else you do is delivered.
 """
@@ -259,10 +285,12 @@ CRITICAL RULES:
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
-- You cannot write to the application, and must not try. {write_rule}.
+- You cannot write to the application's data, and must not try. {write_rule}.
   Creating a test user, changing privileges or calling any write endpoint is
   outside what QA does; the runner records any write it detects and blocks the
-  run. The deterministic QA identity is `telegram_id={QA_TEST_TELEGRAM_ID}`; do
+  run. Invoking a named scheduled behaviour is the one exception, it exists only
+  as the call listed below, and it is never a way to reach anything else.
+  The deterministic QA identity is `telegram_id={QA_TEST_TELEGRAM_ID}`; do
   not try to create it to obtain access to a private bot. Access is provided by
   the platform's temporary test mechanism.
 - You reach exactly one deployment: the one below. A call naming anything
@@ -274,7 +302,7 @@ CRITICAL RULES:
 ## Deployment
 - URL: {deployed_url}
 {bot_section}{_established_section(established_facts)}
-{_PROBE_SECTION if central else _TOOL_SECTION}
+{_PROBE_SECTION if central else _TOOL_SECTION}{_DISPATCH_RULE}
 ## Checklist
 1. Health endpoint responds with 200
 2. Every check from acceptance criteria — execute and verify

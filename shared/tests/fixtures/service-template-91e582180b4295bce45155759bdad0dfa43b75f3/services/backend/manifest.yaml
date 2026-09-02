@@ -1,0 +1,27 @@
+# Versioned, service-owned declaration of what this service exposes to operators.
+#
+# `settings_schema` declares user-controlled product settings; settings are stored
+# independently, so do not use top-level `required` or `$ref`.
+#
+# `jobs_schema` declares, in the same fail-closed form, the named behaviours the core
+# jobs contract may fire. Each property is the JSON Schema of that behaviour's
+# `arguments` object; an undeclared name is refused. The template ships none: a product
+# declares its own.
+#
+# `provides` names the core capabilities this service provides for other callers, for
+# example `jobs.fire` for an optional scheduler module. The core never resolves a
+# provider from it.
+#
+# Deployment values and secrets belong in the environment contract, never in this file.
+version: 1
+settings_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties: {}
+  additionalProperties: false
+jobs_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties: {}
+  additionalProperties: false
+provides: []

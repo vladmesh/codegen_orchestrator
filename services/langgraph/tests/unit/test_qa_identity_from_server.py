@@ -152,6 +152,9 @@ def api(request):
                 updated_at=datetime.now(UTC),
             )
         )
+        # A story with no confirmed brief is the ordinary case: the run's facts
+        # gain nothing and QA is exactly what it was.
+        mock.get_product_brief_by_story = AsyncMock(return_value=None)
         mock.get_server = AsyncMock(return_value=server)
         mock.get_server_ssh_key = AsyncMock(return_value="-----BEGIN KEY-----\nfleet\n-----")
         mock.patch = AsyncMock(return_value={})

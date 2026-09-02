@@ -55,7 +55,7 @@ INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
-TEMPLATE_REF = "edf54dfb1c323d60480761e06ceb982bd79ac9d2"
+TEMPLATE_REF = "91e582180b4295bce45155759bdad0dfa43b75f3"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
