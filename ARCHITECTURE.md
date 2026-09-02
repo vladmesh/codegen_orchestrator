@@ -148,7 +148,7 @@ graph TD
     DepGraph --> |"run.result = DeployOutcome"| API
     Dispatcher --> |"supervise: deploy SUCCESS → QA"| QAQueue[qa:queue]
     QAQueue --> QAConsumer[QA Consumer]
-    QAConsumer --> |"subscription executor or API fallback"| QAResult{QA Pass?}
+    QAConsumer --> |"assigned subscription executor"| QAResult{QA Pass?}
 
     %% Feedback Loops
     EngGraph --> |"task done → API"| API
@@ -206,7 +206,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
 - **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY.
-- **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally; an API agent is an optional fallback after that executor fails. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
+- **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally — the only executor there is, so a failure to start it ends the run as a typed infrastructure outcome. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
 - **Unified Redis Consumers**: every consumer reads through `RedisStreamClient.consume()` / `consume_typed()` with PEL recovery (`claim_pending=True`) — an entry left unacked is reclaimed by the running consumer on its next `XAUTOCLAIM` sweep, restart or no restart, and a poison entry goes to `{stream}:dlq` rather than being ACKed away. The PO consumer reads through the same client and differs only in what it does with an entry: it dispatches concurrently, and keeps the ids it has in flight so its own sweep cannot hand it work it is already running. Delivery stays at-least-once between processes, as it is for every other consumer. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)
 
 ## External dependencies

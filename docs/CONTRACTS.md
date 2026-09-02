@@ -751,8 +751,8 @@ retain their attempt budget only before the absolute unrevoked deadline.
 
 `dto/qa_handoff.py` binds QA to deploy provenance. Health-only criteria run over
 HTTP without an executor. Other criteria use the central ephemeral QA executor
-through worker-manager; API-agent fallback is only after that executor path
-fails. The executor receives a run-scoped restricted capability, no target SSH
+through worker-manager, which is QA's only executor: when it does not run, the
+run ends as a typed infrastructure outcome rather than retrying elsewhere. The executor receives a run-scoped restricted capability, no target SSH
 credential, and egress only through the assigned proxy. Failure to establish
 that boundary is a typed infrastructure outcome, not a product verdict.
 

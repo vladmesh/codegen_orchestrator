@@ -394,12 +394,12 @@ Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon ses
   its documented `--skip-git-repo-check` mode because its ephemeral workspace intentionally has no Git repository.
 - `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
   for projects with a bot.
-- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — **optional**. An API fallback consulted only
-  after the assigned executor has actually failed to run (no session, expired session, broken CLI,
-  container never started). Leaving all three empty is a supported production configuration. If the
-  executor fails and there is no complete triplet, the run ends as `qa_executor_unavailable` — a
-  QA-infrastructure outcome that alerts administrators and sends the story to human review, never a
-  product defect. Health-only criteria run with no executor at all.
+
+QA has exactly one executor, and the runtime holds no model credential of its own. When the assigned
+executor does not run (no session, expired session, broken CLI, container never started), the run
+ends as `qa_executor_unavailable` — a QA-infrastructure outcome that names the assigned executor and
+what it said, alerts administrators and sends the story to human review, never a product defect.
+Health-only criteria run with no executor at all.
 
 **What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
 no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to

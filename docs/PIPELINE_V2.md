@@ -357,7 +357,6 @@ nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon
 
 **QA runtime prerequisites** (orchestrator `.env`, read by `qa-worker`):
 - `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly
-- `QA_LLM_MODEL` / `QA_LLM_BASE_URL` / `QA_LLM_API_KEY` — optional API fallback, read only after the assigned subscription executor is unavailable
 - `TELETHON_API_ID` / `TELETHON_API_HASH` / `TELETHON_SESSION` — only for projects with a bot
 
 **Outputs**: `QAOutcome` in run.result for supervisor
