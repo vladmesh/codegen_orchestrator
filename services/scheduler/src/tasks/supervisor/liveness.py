@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
@@ -13,13 +13,17 @@ from shared.allocation_disposition import (
     attempt_disposition,
     refusal_routing,
 )
+from shared.contracts.dto.product_brief import (
+    PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
+    ProductBriefRead,
+)
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     EngineeringRunResult,
 )
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -78,7 +82,12 @@ async def supervise_stuck_stories(
     *,
     _retry_counts: dict[str, int] | None = None,
 ) -> dict[str, int]:
-    """Detect stories stuck in 'created' with no tasks and retry architect.
+    """Retry the architect for a story stuck in 'created' with no live plan.
+
+    Two shapes of stuck story reach the architect again: one with no tasks at
+    all, and one whose Product Brief plan was left half-built by an architect
+    that is gone — see `_plan_is_abandoned_unadmitted`. Everything else with
+    tasks is somebody else's business.
 
     Retry counts are persisted in Redis so they survive scheduler restarts.
 
@@ -108,10 +117,15 @@ async def supervise_stuck_stories(
         if project_id in active_projects:
             continue
 
-        # Only retry if architect hasn't created any tasks yet
+        # Retry when the architect never created a task, and — since the
+        # Product Brief boundary exists — also when it created only tasks that
+        # can never dispatch and then died holding the plan.
         tasks = await api_client.get_tasks_by_story(story_id)
+        recovering_plan = False
         if tasks:
-            continue
+            recovering_plan = await _plan_is_abandoned_unadmitted(api_client, story_id, tasks)
+            if not recovering_plan:
+                continue
 
         log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
 
@@ -147,10 +161,70 @@ async def supervise_stuck_stories(
             "story_stuck_retry",
             retry_attempt=current_retries + 1,
             max_retries=_max_architect_retries(),
+            unadmitted_plan_recovery=recovering_plan,
         )
         retried += 1
 
     return {"retried": retried, "failed": failed}
+
+
+def _planning_attempt_is_live(brief: ProductBriefRead, now: datetime) -> bool:
+    """Is an architect still proving it owns this brief's incomplete plan?
+
+    The same question `services/api/.../_product_brief_helpers.py` asks of the
+    row before it hands a claim to a second architect, asked here of the row the
+    API returned and against the one timeout the brief contract declares. It is
+    a read: nothing here takes the claim, and a brief whose owner is alive is
+    simply left to it.
+    """
+    if not brief.planning_attempt_active:
+        return False
+    heartbeat = brief.planning_attempt_heartbeat_at
+    if heartbeat is None:
+        return False
+    if heartbeat.tzinfo is None:
+        heartbeat = heartbeat.replace(tzinfo=UTC)
+    return heartbeat >= now - timedelta(seconds=PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS)
+
+
+async def _plan_is_abandoned_unadmitted(
+    api_client: SchedulerAPIClient, story_id: str, tasks: list[TaskDTO]
+) -> bool:
+    """May this story's half-built Product Brief plan be handed to a new architect?
+
+    A brief-backed story whose architect died mid-plan is the one state nothing
+    else in the pipeline picks up: its tasks exist, so the old `if tasks:
+    continue` skipped the story for ever, and they are unadmitted, so the
+    dispatch admission point refuses every one of them. Three conditions have to
+    hold together before this says yes, and each is read from the service that
+    owns it:
+
+    * **every** task of the story is unadmitted. One admitted task means the
+      story has left the planning boundary — and it is also why this can never
+      re-dispatch an admitted plan: admission releases the whole release set at
+      once, so an admitted brief has no unadmitted tasks left to mistake for a
+      corpse, and the story keeps the skip it has today;
+    * the story is backed by a brief at all. Without one there is nothing to
+      recover and nothing said `dispatch_admitted` false, so a task-carrying
+      story behaves exactly as it did before;
+    * and no architect owns the incomplete plan — an inactive attempt, or one
+      whose heartbeat is older than the brief contract's timeout. A live planner
+      is left alone; retrying it would only race the architect that is working.
+
+    Nothing here decides admission: `dispatch_admitted` is read, never written,
+    and the release step stays the API's one `POST /product-briefs/{id}/admit`.
+    """
+    if any(task.dispatch_admitted for task in tasks):
+        return False
+    brief = await api_client.get_product_brief_by_story(story_id)
+    if brief is None:
+        return False
+    if brief.coverage_admitted_at is not None:
+        # The boundary was crossed, so this is not an incomplete plan whatever
+        # its tasks look like; admission is the API's answer, not one this
+        # function reconstructs from task columns.
+        return False
+    return not _planning_attempt_is_live(brief, datetime.now(UTC))
 
 
 async def supervise_failed_tasks(

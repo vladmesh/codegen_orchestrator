@@ -23,6 +23,7 @@ from shared.contracts.dto.engineering_dispatch import (
 )
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
+from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -400,6 +401,23 @@ class SchedulerAPIClient(InternalAPIClient):
             json=update.model_dump(mode="json", exclude_unset=True),
         )
         return TemporaryAccessGrantDTO.model_validate(resp.json())
+
+    # --- Product Briefs ---
+
+    async def get_product_brief_by_story(self, story_id: str) -> ProductBriefRead | None:
+        """The brief backing this story, or None when the story has no brief.
+
+        Read-only, and the only shape in which the scheduler learns anything
+        about a brief: admission and the planning-attempt fence are decided by
+        the API, and this returns the row they decided from.
+        """
+        try:
+            resp = await self.request("GET", f"product-briefs/by-story/{story_id}")
+            return ProductBriefRead.model_validate(resp.json())
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
 
     # --- Stories ---
 
