@@ -121,7 +121,9 @@ async def _get_workspace_path(redis, worker_id: str, request: Request | None = N
     """Get workspace path for a worker.
 
     Resolves via repo_id from Redis metadata → SCAFFOLDED_WORKSPACE_PATH/{repo_id}/.
-    Falls back to workspace_path from Redis metadata for legacy workers.
+    Both `repo_id` and `workspace_path` are written conditionally when the
+    container is created, so a worker that carries no repo_id — or whose
+    scaffolded directory is not on this host — is resolved by the stored path.
     """
     meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
     repo_id = meta.get("repo_id")
@@ -133,7 +135,7 @@ async def _get_workspace_path(redis, worker_id: str, request: Request | None = N
             if workspace.exists() and workspace.is_dir():
                 return workspace
 
-    # Fallback: workspace_path from Redis metadata (legacy workers)
+    # No repo_id, or its scaffolded directory is absent: use the stored path.
     workspace_path = meta.get("workspace_path")
     if not workspace_path:
         raise HTTPException(

@@ -18,12 +18,14 @@ class Deployment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Link to Application (nullable for backward compat with existing data)
+    # Link to Application. Nullable in the schema; the one producer always
+    # supplies an id, so narrowing it is a migration, not a comment change.
     application_id: Mapped[int | None] = mapped_column(
         ForeignKey("applications.id"), nullable=True, index=True
     )
 
-    # Denormalized fields — kept for queries and backward compat
+    # Denormalized from the Application: these are what deployment queries
+    # filter and order by, without a join.
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     service_name: Mapped[str]
     server_handle: Mapped[str] = mapped_column(

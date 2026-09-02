@@ -20,7 +20,7 @@ from shared.contracts.queues.worker import WorkerLabel
 
 logger = structlog.get_logger()
 
-# Backward-compatible alias used in tests
+# The status this listener writes when Docker reports a worker container died.
 WORKER_DEAD_STATUS = WorkerStatus.DEAD
 
 

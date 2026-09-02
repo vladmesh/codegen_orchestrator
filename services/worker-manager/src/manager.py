@@ -49,7 +49,6 @@ DEV_NETWORK_TYPE_LABEL = "worker-dev-network"
 class WorkerManager:
     """
     Manages worker container lifecycle.
-    Replaces legacy ContainerService and LifecycleManager.
     """
 
     def __init__(self, redis: Redis, docker_client: Optional[DockerClientWrapper] = None):
@@ -467,7 +466,12 @@ class WorkerManager:
         await gc.garbage_collect_images(self.redis, self.docker, retention_seconds=retention_seconds)
 
     async def get_worker_status(self, worker_id: str) -> str:
-        """Get status from Redis (primary) or Docker (fallback)."""
+        """Read the status Redis holds; UNKNOWN when it holds none.
+
+        Redis is the only source consulted. A worker whose status key has
+        expired or was never written is reported UNKNOWN rather than
+        inspected in Docker, so this call stays free of a daemon round trip.
+        """
         status = await self.redis.hget(f"worker:status:{worker_id}", "status")
         if status:
             return status

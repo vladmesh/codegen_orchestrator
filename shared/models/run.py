@@ -55,7 +55,8 @@ class Run(Base):
         String(255), ForeignKey("stories.id"), nullable=True, index=True
     )
 
-    # Link to Task (planning layer) — nullable for backward compat
+    # Link to Task (planning layer) — nullable: a deploy or QA run is raised
+    # against a Story or on its own and has no Task of the planning layer.
     task_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("tasks.id"), nullable=True, index=True
     )
