@@ -47,6 +47,20 @@ class Task(Base):
         String(255), ForeignKey("tasks.id"), nullable=True
     )
     failure_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Whether this task has crossed the coverage-to-dispatch boundary. True for
+    # every task that is not planned against an unadmitted Product Brief, which
+    # is every task that existed before the boundary did — so a `todo` status
+    # keeps meaning "dispatchable" everywhere except under a brief still being
+    # planned. Written false only at creation under an active planning attempt,
+    # and back to true only by that brief's one admission step.
+    dispatch_admitted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    # The architect planning attempt this task was planned under, when it was
+    # planned against a Product Brief. An admission releases exactly the tasks
+    # of its own attempt, so a superseded planner's abandoned tasks are not
+    # released by its replacement.
+    planning_attempt_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class TaskEvent(Base):

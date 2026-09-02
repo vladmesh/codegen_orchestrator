@@ -1,11 +1,13 @@
 """Unit tests for Task API schemas (planning layer)."""
 
 from datetime import UTC, datetime
+from typing import get_type_hints
 import uuid
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 import pytest
 
+from shared.contracts.dto.task import TaskDTO
 from src.schemas.task import (
     TaskCreate,
     TaskEventCreate,
@@ -17,6 +19,10 @@ from src.schemas.task import (
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 PROJECT_UUID_2 = uuid.UUID("00000000-0000-0000-0000-000000000002")
+
+#: Sentinel for "this field has no default", so a field defaulting to `None` and
+#: a required field never compare equal.
+_NO_DEFAULT = object()
 
 
 def test_task_create_minimal():
@@ -71,6 +77,9 @@ def test_task_read_from_attributes():
         current_iteration = 0
         max_iterations = 3
         created_by = "system"
+        # Non-nullable on the model, required on the schema: a task that was
+        # never planned against a Product Brief is admitted by existing.
+        dispatch_admitted = True
         created_at = now
         updated_at = now
 
@@ -98,6 +107,9 @@ def test_task_read_with_plan():
         current_iteration = 0
         max_iterations = 3
         created_by = "system"
+        # Non-nullable on the model, required on the schema: a task that was
+        # never planned against a Product Brief is admitted by existing.
+        dispatch_admitted = True
         created_at = now
         updated_at = now
 
@@ -131,6 +143,9 @@ def test_task_read_includes_need_e2e():
         current_iteration = 0
         max_iterations = 3
         created_by = "system"
+        # Non-nullable on the model, required on the schema: a task that was
+        # never planned against a Product Brief is admitted by existing.
+        dispatch_admitted = True
         need_e2e = True
         created_at = now
         updated_at = now
@@ -229,3 +244,89 @@ def test_task_event_read():
     )
     assert read.from_status == "backlog"
     assert read.to_status == "todo"
+
+
+class TestTaskReadPairing:
+    """`TaskRead` and the shared `TaskDTO` are one response contract in two files.
+
+    Every client that reads a task — `services/scheduler`, `services/langgraph` —
+    parses the response through `TaskDTO`, which ignores fields it does not
+    declare and applies its own defaults to fields the response omits. A field
+    that exists on one model alone, or is typed differently, or is required on
+    one side and optional on the other, is a contract split that no runtime
+    fallback may paper over. The Story pair learned this the expensive way; the
+    guard is the same one, over the Task pair, because `dispatch_admitted` is
+    exactly the kind of field a silent default would invert.
+    """
+
+    @staticmethod
+    def _field_specs(model: type[BaseModel]) -> dict[str, tuple[object, bool, object]]:
+        hints = get_type_hints(model)
+
+        def default_of(field) -> object:
+            if field.is_required():
+                return _NO_DEFAULT
+            return field.get_default(call_default_factory=True)
+
+        return {
+            name: (hints[name], field.is_required(), default_of(field))
+            for name, field in model.model_fields.items()
+        }
+
+    def test_both_models_declare_the_same_fields(self):
+        assert set(TaskDTO.model_fields) == set(TaskRead.model_fields)
+
+    #: Fields whose specs already differed before the Product Brief admission
+    #: existed: `TaskDTO` types the two vocabulary fields as enums while
+    #: `TaskRead` returns their strings, and it defaults two optional strings
+    #: `TaskRead` requires. Narrowing that drift is a response-contract change
+    #: with its own consumers, so it is frozen here rather than widened: this
+    #: list may shrink, and a new name in it is a new split.
+    _KNOWN_DIVERGENCES = frozenset({"type", "status", "description", "acceptance_criteria"})
+
+    def test_no_new_field_splits_the_contract(self):
+        """Every field but the frozen ones has the same spec on both sides."""
+        dto = self._field_specs(TaskDTO)
+        read = self._field_specs(TaskRead)
+        compared = set(dto) - self._KNOWN_DIVERGENCES
+        assert {name: dto[name] for name in compared} == {name: read[name] for name in compared}
+
+    def test_the_frozen_divergences_are_all_real(self):
+        """A name that stops diverging has to leave the list, not linger in it."""
+        dto = self._field_specs(TaskDTO)
+        read = self._field_specs(TaskRead)
+        assert {name for name in self._KNOWN_DIVERGENCES if dto[name] != read[name]} == (
+            self._KNOWN_DIVERGENCES
+        )
+
+    def test_the_dispatch_admission_is_required_on_both_sides(self):
+        """Spelled out: a default here would invent dispatch authority.
+
+        A response that omitted the field would be read as "admitted", which is
+        the one thing the coverage-to-dispatch boundary exists to withhold.
+        """
+        for model in (TaskDTO, TaskRead):
+            field = model.model_fields["dispatch_admitted"]
+            assert get_type_hints(model)["dispatch_admitted"] is bool
+            assert field.is_required(), f"{model.__name__}.dispatch_admitted must have no default"
+
+
+def test_task_dto_refuses_a_response_without_the_dispatch_admission():
+    """No producer may omit it, so an omission is a broken response, not a default."""
+    response = {
+        "id": "task-abc",
+        "project_id": str(PROJECT_UUID),
+        "type": "feature",
+        "title": "Test",
+        "status": "todo",
+        "priority": 0,
+        "current_iteration": 0,
+        "max_iterations": 3,
+        "created_by": "system",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    with pytest.raises(ValidationError):
+        TaskDTO.model_validate(response)
+    assert TaskDTO.model_validate({**response, "dispatch_admitted": False}).dispatch_admitted is (
+        False
+    )

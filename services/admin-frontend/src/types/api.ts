@@ -107,6 +107,8 @@ export interface Task {
   repository_id?: string | null
   blocked_by_task_id?: string | null
   failure_metadata?: Record<string, unknown> | null
+  dispatch_admitted: boolean
+  planning_attempt_id?: string | null
   created_at: string
   updated_at?: string | null
   last_event?: string | null

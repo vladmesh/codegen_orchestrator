@@ -54,6 +54,8 @@ def _task(**overrides) -> TaskDTO:
         "story_id": None,
         "blocked_by_task_id": None,
         "failure_metadata": None,
+        # Required on the DTO: a task that is not brief-backed is admitted.
+        "dispatch_admitted": True,
         "last_event": None,
         "elapsed_minutes": None,
         "created_at": _NOW,
@@ -286,6 +288,7 @@ class TestDispatchTodoTasks:
     #: the conditions moved.
     _UNCOUNTED_REFUSALS = [
         EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE,
+        EngineeringDispatchRefusal.PRODUCT_BRIEF_NOT_ADMITTED,
         EngineeringDispatchRefusal.INTERNAL_PROJECT,
         EngineeringDispatchRefusal.BLOCKER_UNRESOLVED,
         EngineeringDispatchRefusal.PROJECT_HAS_NO_INITIATING_RUN,

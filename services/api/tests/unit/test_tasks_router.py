@@ -34,6 +34,10 @@ def _make_task(**overrides):
         "blocked_by_task_id": None,
         "need_e2e": False,
         "failure_metadata": None,
+        # Non-nullable on the model, required on the response schema: a task
+        # that was never planned against a Product Brief is admitted already.
+        "dispatch_admitted": True,
+        "planning_attempt_id": None,
         "created_at": now,
         "updated_at": now,
     }
