@@ -89,9 +89,17 @@ decision, and the caller reads it rather than an HTTP status:
    task back in `in_dev` behind somebody else's live attempt and dispatches
    nothing; `replay_finished_run` moves the task to `in_dev` and then applies
    the terminal outcome of a run that finished while the task was stuck in
-   `todo`, instead of buying a second one. Which repair it is never depends on
-   `current_iteration` — that field is incremented by the retry that creates the
-   risk — the iteration only names the event.
+   `todo`, instead of buying a second one. Whether a live attempt fences the
+   dispatch at all is independent of `current_iteration`: the scan stops on any
+   queued or running engineering run of the task, whatever iteration it belongs
+   to, because that field is incremented by the very retry that creates the risk
+   and a fence keyed on it would stop recognising the run whose worker may still
+   hold the story branch. The iteration is read afterwards, only to name which
+   repair it is — a live run of the current iteration is this task's own dispatch
+   being completed (`recover_own_attempt`), an older one is a live attempt the
+   retry path ran ahead of (`adopt_live_attempt`) — and, in the replay case, to
+   ignore terminal runs of earlier iterations, because a legitimate retry has to
+   stay dispatchable.
 3. **`admitted`** — the queued Run and its budget hold already exist. Only a
    failure proven to precede the queue call releases the reservation
    (`abort_paid_run_pre_handoff`); a lost publish *response* has an unknown
