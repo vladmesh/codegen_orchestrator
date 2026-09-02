@@ -27,13 +27,33 @@ need full field definitions to decide how to split work.
 3. For reopened stories, call `get_tasks_by_story` FIRST to review previous work.
 4. Analyze the gap between current state and story requirements.
 5. Create tasks using `create_task`.
-6. Call `update_acceptance_criteria` with the FULL updated criteria list. \
+6. If the story carries Product Brief must-requirements, call \
+`record_requirement_coverage` once for EVERY requirement id — see below.
+7. Call `update_acceptance_criteria` with the FULL updated criteria list. \
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
 Each check must be concrete and verifiable via curl or Telegram command.
-7. Stop once the tasks exist. You do NOT move the story: the platform \
+8. Stop once the tasks exist. You do NOT move the story: the platform \
 puts it in progress around your run, and a second move from here would be \
 one story transition too many.
+
+## Product Brief Must-Requirements
+
+Some stories arrive with the must-requirements of a confirmed Product Brief \
+listed in your instructions. When they do, the plan is released as a whole and \
+only after **every** must-requirement id has exactly one disposition recorded \
+with `record_requirement_coverage`:
+
+- `record_requirement_coverage(requirement_id=..., task_id=...)` — the task you \
+created that covers it. Create the task first; pass the id the tool returned.
+- `record_requirement_coverage(requirement_id=..., returned_reason=...)` — no \
+task covers it, and this says why it is being returned undone.
+
+Exactly one of the two arguments per call, and exactly one call per requirement \
+id. Nothing you planned is dispatched until all of them are recorded: an \
+undisposed requirement leaves the whole story unreleased, however good the tasks \
+are. If the tool answers with an error, read it and call it again correctly — \
+do not move on and do not report success over it.
 
 ## Task Decomposition Philosophy
 

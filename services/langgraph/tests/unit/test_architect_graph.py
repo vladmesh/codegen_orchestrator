@@ -61,6 +61,15 @@ class TestArchitectState:
         assert "telegram_chat_id" in annotations
         assert "messages" in annotations
 
+    def test_state_carries_the_planning_identity(self):
+        """The attempt and the requirements are state, so tools read them injected."""
+        from src.agents.architect.state import ArchitectState
+
+        annotations = ArchitectState.__annotations__
+        assert "product_brief_id" in annotations
+        assert "planning_attempt_id" in annotations
+        assert "must_requirements" in annotations
+
 
 class TestArchitectSettings:
     def test_settings_have_architect_fields(self):

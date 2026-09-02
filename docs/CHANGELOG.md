@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Gave the released Product Brief boundary a real producer. The architect consumer now asks
+  `GET /api/product-briefs/by-story/{story_id}` before it plans, and for a confirmed brief it claims
+  the planning attempt and branches on the typed outcome: `claimed` plans under the returned attempt
+  id, `in_progress` names the rival attempt and plans nothing, `already_admitted` plans as ordinary
+  work under no attempt. While the graph runs the claim is heartbeated every
+  `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3` seconds, and the beat stops on every exit —
+  success, LLM exception, cancellation. `create_task` carries the attempt id, so the API creates
+  each planned task unadmitted under that attempt; a new `record_requirement_coverage` tool writes
+  one disposition per must-requirement through `PUT /api/product-briefs/{id}/coverage/{requirement_id}`
+  and hands the API's refusal back to the model in the API's own words; and after the graph returns
+  the consumer calls `POST /api/product-briefs/{id}/admit` exactly once. An `incomplete` admission
+  is the result of the job — the undisposed requirement ids in the structured result and the log,
+  nothing dispatched and the story not moved on — even when the LLM reported success. The brief id
+  and the attempt id are injected from graph state and absent from every tool schema, so the model
+  cannot name a plan it does not own. Nothing here writes `dispatch_admitted` or adds a second
+  admission surface: no endpoint, DTO, model or migration changed, and a story with no brief keeps
+  exactly the run it had.
+
 - Documented the Story/Task lifecycle owner, the engineering dispatch admission point and
   `waiting_on` in the three documents that already cover that ground, each from its own angle:
   `docs/CONTRACTS.md` the contract surface (the two places that write a Story's status, the

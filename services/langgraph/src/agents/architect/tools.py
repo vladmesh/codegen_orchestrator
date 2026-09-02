@@ -10,13 +10,25 @@ or manage dependencies.
 Story lifecycle is deliberately absent: the architect consumer moves the story
 to IN_PROGRESS around this agent's run, and an agent tool that moved it too
 gave one code path two Story transitions for the same story.
+
+Planning identity is deliberately absent from every tool schema: the brief id
+and the planning attempt id arrive through `InjectedState`, so the model can
+neither invent an attempt nor plan into a brief it was not given. A run that is
+not planning under a brief carries `None` for both, and then `create_task`
+sends the shape it always sent and `record_requirement_coverage` refuses.
 """
 
 from __future__ import annotations
 
+from typing import Annotated
+
+import httpx
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
+from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.product_brief import RequirementCoverageCreate
 from shared.contracts.dto.task import TaskStatus
 
 from ...clients.api import api_client
@@ -115,6 +127,7 @@ async def create_task(
     acceptance_criteria: str,
     story_id: str,
     project_id: str,
+    planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
 ) -> dict:
     """Create a new task for a story.
 
@@ -143,6 +156,12 @@ async def create_task(
         "blocked_by_task_id": blocked_by,
         "created_by": "architect",
     }
+    if planning_attempt_id is not None:
+        # Planning under a Product Brief: the API creates the task unadmitted
+        # under this attempt, and only `POST /product-briefs/{id}/admit`
+        # releases it. Absent otherwise, so an ordinary task is created with the
+        # shape it has always been created with.
+        task_data["planning_attempt_id"] = planning_attempt_id
     result = await api_client.create_task(task_data)
 
     # Track for auto-chaining
@@ -155,8 +174,86 @@ async def create_task(
         task_id=task_id,
         title=title,
         blocked_by=blocked_by,
+        planning_attempt_id=planning_attempt_id,
     )
     return result.model_dump(mode="json")
+
+
+def _refusal_detail(error: httpx.HTTPStatusError) -> str:
+    """What the API refused, in the words it refused it with.
+
+    The architect's next move depends on which refusal this was — an unknown
+    requirement id is a different repair from a disposition that named both a
+    task and a reason — so the detail is handed back to the model rather than
+    flattened into "failed".
+    """
+    try:
+        body = error.response.json()
+    except ValueError:
+        return error.response.text or str(error)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return str(detail) if detail else str(body)
+
+
+@tool
+async def record_requirement_coverage(
+    requirement_id: str,
+    task_id: str = "",
+    returned_reason: str = "",
+    brief_id: Annotated[str | None, InjectedState("product_brief_id")] = None,
+    planning_attempt_id: Annotated[str | None, InjectedState("planning_attempt_id")] = None,
+) -> dict:
+    """Record how you disposed of ONE must-requirement of the Product Brief.
+
+    Exactly one disposition per requirement id, and exactly one of the two
+    arguments: the id of the task that covers it, or the reason it is being
+    returned undone. Neither is not an answer and both is two answers.
+
+    Nothing in this story's plan is released until every must-requirement id has
+    a disposition recorded here, so call this once per requirement — including
+    the ones you are returning.
+
+    Args:
+        requirement_id: The must-requirement id, exactly as it was given to you.
+        task_id: The task created for it, when a task covers it.
+        returned_reason: Why it is being returned, when no task covers it.
+    """
+    if not brief_id or not planning_attempt_id:
+        return {
+            "error": (
+                "this story is not planned under a Product Brief planning attempt; "
+                "there is no requirement coverage to record"
+            )
+        }
+    try:
+        coverage = RequirementCoverageCreate(
+            requirement_id=requirement_id,
+            planning_attempt_id=planning_attempt_id,
+            task_id=task_id or None,
+            returned_reason=returned_reason or None,
+        )
+    except ValidationError as invalid:
+        return {"error": f"invalid disposition for {requirement_id}: {invalid}"}
+    try:
+        recorded = await api_client.record_requirement_coverage(brief_id, coverage)
+    except httpx.HTTPStatusError as refused:
+        detail = _refusal_detail(refused)
+        logger.warning(
+            "architect_requirement_coverage_refused",
+            brief_id=brief_id,
+            requirement_id=requirement_id,
+            status_code=refused.response.status_code,
+            detail=detail,
+        )
+        return {"error": f"coverage for {requirement_id} was refused: {detail}"}
+    logger.info(
+        "architect_requirement_coverage_recorded",
+        brief_id=brief_id,
+        requirement_id=requirement_id,
+        task_id=coverage.task_id,
+        returned=coverage.returned_reason is not None,
+    )
+    return recorded.model_dump(mode="json")
 
 
 @tool
@@ -203,5 +300,6 @@ def get_architect_tools() -> list:
         get_project_spec,
         get_tasks_by_story,
         create_task,
+        record_requirement_coverage,
         update_acceptance_criteria,
     ]

@@ -80,6 +80,21 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 6. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
 7. Skips stories already decomposed (IN_PROGRESS + has tasks)
 
+**When the story is backed by a confirmed Product Brief**, steps 1–5 happen
+inside a claimed planning attempt:
+
+- the consumer claims the attempt before invoking the agent, and plans nothing
+  when the claim reports `in_progress` (another architect owns it) — see
+  `docs/CONTRACTS.md`, "The Product Brief coverage-to-dispatch boundary";
+- the claim is heartbeated while the agent runs, and the beat stops however the
+  run ends;
+- every task is created under the attempt, so it is `dispatch_admitted=false`
+  until the plan is released;
+- the agent records one disposition per must-requirement — the task that covers
+  it, or the reason it is returned — with `record_requirement_coverage`;
+- the consumer then calls `admit` once. `incomplete` releases nothing and is the
+  result of the job, whatever the agent said about its own run.
+
 **Outputs**: Tasks in `todo` status, linearly chained
 
 **Rules**:
@@ -118,10 +133,11 @@ operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
 The Product Brief condition is the one that can hold a whole story's plan back:
 a task created under an active architect planning attempt is
 `dispatch_admitted=false` and is refused with `product_brief_not_admitted` until
-`POST /api/product-briefs/{id}/admit` releases the plan as a whole. No producer
-claims a planning attempt or calls `admit` today — the architect wiring does not
-exist — so every task Phase 3 actually creates is dispatch-admitted at creation
-and this condition refuses nothing in practice.
+`POST /api/product-briefs/{id}/admit` releases the plan as a whole. Phase 3 is
+the producer: a story backed by a confirmed brief is planned under a claimed
+attempt and released only when every must-requirement has a disposition. A story
+with no brief still creates dispatch-admitted tasks, and for those this condition
+refuses nothing.
 
 ### Worker
 

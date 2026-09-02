@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
+from shared.contracts.dto.product_brief import RequirementCoverageRead
 from tests.unit.factories import make_project, make_story, make_task
 
 
@@ -24,6 +26,15 @@ def mock_api():
         )
         api.get_tasks_by_story = AsyncMock(return_value=[])
         api.create_task = AsyncMock(return_value=make_task(id="task-new", title="New task"))
+        api.record_requirement_coverage = AsyncMock(
+            return_value=RequirementCoverageRead(
+                id=1,
+                brief_id="brief-1",
+                requirement_id="req-1",
+                planning_attempt_id="plan-1",
+                task_id="task-new",
+            )
+        )
         yield api
 
 
@@ -211,6 +222,9 @@ class TestArchitectToolSurface:
             "get_project_spec",
             "get_tasks_by_story",
             "create_task",
+            # Added with the Product Brief boundary: one disposition per
+            # must-requirement is what releases the plan.
+            "record_requirement_coverage",
             "update_acceptance_criteria",
         }
 
@@ -218,3 +232,192 @@ class TestArchitectToolSurface:
         from src.prompts.architect import SYSTEM_PROMPT
 
         assert "transition_story" not in SYSTEM_PROMPT
+
+
+def _refusal(status_code: int, detail: str) -> httpx.HTTPStatusError:
+    return httpx.HTTPStatusError(
+        detail,
+        request=httpx.Request("PUT", "http://api/coverage"),
+        response=httpx.Response(status_code, json={"detail": detail}),
+    )
+
+
+class TestCreateTaskUnderAPlanningAttempt:
+    @pytest.fixture(autouse=True)
+    def _reset_chain(self):
+        from src.agents.architect.tools import reset_task_chain
+
+        reset_task_chain()
+        yield
+        reset_task_chain()
+
+    @pytest.mark.asyncio
+    async def test_carries_the_attempt_when_planning_under_one(self, mock_api):
+        """The API creates it unadmitted under this attempt; only admit releases it."""
+        from src.agents.architect.tools import create_task
+
+        await create_task.ainvoke(
+            {
+                "title": "Add User model",
+                "description": "Create model",
+                "type": "feature",
+                "acceptance_criteria": "Model exists",
+                "story_id": "story-abc",
+                "project_id": "proj-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        assert mock_api.create_task.call_args[0][0]["planning_attempt_id"] == "plan-1"
+
+    @pytest.mark.asyncio
+    async def test_non_brief_call_shape_is_unchanged(self, mock_api):
+        from src.agents.architect.tools import create_task
+
+        await create_task.ainvoke(
+            {
+                "title": "Add User model",
+                "description": "Create model",
+                "type": "feature",
+                "acceptance_criteria": "Model exists",
+                "story_id": "story-abc",
+                "project_id": "proj-1",
+            }
+        )
+
+        assert "planning_attempt_id" not in mock_api.create_task.call_args[0][0]
+
+    def test_the_model_is_not_asked_for_a_planning_attempt(self):
+        """Planning identity is injected from state, never a tool argument.
+
+        A model that could name an attempt could plan into a brief it does not
+        own, so the id is absent from the schema the model is shown.
+        """
+        from src.agents.architect.tools import create_task, record_requirement_coverage
+
+        assert "planning_attempt_id" not in create_task.tool_call_schema.model_fields
+        for field in ("planning_attempt_id", "brief_id"):
+            assert field not in record_requirement_coverage.tool_call_schema.model_fields
+
+
+class TestRecordRequirementCoverageTool:
+    @pytest.mark.asyncio
+    async def test_records_a_task_disposition(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        result = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-1",
+                "task_id": "task-new",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        assert result["requirement_id"] == "req-1"
+        brief_id, coverage = mock_api.record_requirement_coverage.call_args[0]
+        assert brief_id == "brief-1"
+        assert coverage.planning_attempt_id == "plan-1"
+        assert coverage.task_id == "task-new"
+        assert coverage.returned_reason is None
+
+    @pytest.mark.asyncio
+    async def test_records_a_returned_disposition(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-2",
+                "returned_reason": "needs a payment provider the project has no account with",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        _, coverage = mock_api.record_requirement_coverage.call_args[0]
+        assert coverage.task_id is None
+        assert coverage.returned_reason.startswith("needs a payment provider")
+
+    @pytest.mark.asyncio
+    async def test_two_dispositions_at_once_are_refused_readably(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        result = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-1",
+                "task_id": "task-new",
+                "returned_reason": "also returned",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        assert "req-1" in result["error"]
+        mock_api.record_requirement_coverage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_disposition_at_all_is_refused_readably(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        result = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-1",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        assert "error" in result
+        mock_api.record_requirement_coverage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_server_refusal_reaches_the_model_in_its_own_words(self, mock_api):
+        """The architect's repair depends on which refusal it was, so it is not flattened."""
+        from src.agents.architect.tools import record_requirement_coverage
+
+        mock_api.record_requirement_coverage = AsyncMock(
+            side_effect=_refusal(422, "unknown Product Brief must-requirement")
+        )
+
+        result = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-typo",
+                "task_id": "task-new",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-1",
+            }
+        )
+
+        assert "unknown Product Brief must-requirement" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_wrong_attempt_refusal_is_returned_not_raised(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        mock_api.record_requirement_coverage = AsyncMock(
+            side_effect=_refusal(
+                409, "Product Brief planning requires the currently active attempt"
+            )
+        )
+
+        result = await record_requirement_coverage.ainvoke(
+            {
+                "requirement_id": "req-1",
+                "task_id": "task-new",
+                "brief_id": "brief-1",
+                "planning_attempt_id": "plan-superseded",
+            }
+        )
+
+        assert "currently active attempt" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_a_plan_has_nothing_to_record(self, mock_api):
+        from src.agents.architect.tools import record_requirement_coverage
+
+        result = await record_requirement_coverage.ainvoke(
+            {"requirement_id": "req-1", "task_id": "task-new"}
+        )
+
+        assert "error" in result
+        mock_api.record_requirement_coverage.assert_not_called()
