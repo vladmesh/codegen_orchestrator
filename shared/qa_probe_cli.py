@@ -27,6 +27,8 @@ qa remote_exec ARG [ARG ...]        — one read-only docker call, e.g.
                                       qa remote_exec docker top <container>
 qa container_logs CONTAINER [TAIL]  — tail one container's log
 qa container_inspect CONTAINER      — one container's state
+qa fire_job NAME                    — invoke one named scheduled behaviour
+qa job_evidence NAME                — read back this run's record of that fire
 qa telegram_probe MESSAGE           — send a message to the bot under test
 qa telegram_click_button ID DATA    — invoke a visible inline bot button
 qa report FILE                      — store the Markdown QA report
@@ -97,6 +99,14 @@ def build_call(argv):
         if len(rest) != 1:
             fail("usage: qa container_inspect CONTAINER")
         return "container_inspect", {"container": rest[0]}
+    if command == "fire_job":
+        if len(rest) != 1:
+            fail("usage: qa fire_job NAME")
+        return "fire_job", {"name": rest[0]}
+    if command == "job_evidence":
+        if len(rest) != 1:
+            fail("usage: qa job_evidence NAME")
+        return "job_evidence", {"name": rest[0]}
     if command == "telegram_probe":
         if not rest:
             fail("usage: qa telegram_probe MESSAGE")

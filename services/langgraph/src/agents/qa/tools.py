@@ -5,9 +5,20 @@ workspace and Telegram credentials. There is no module-level state and no
 parameter naming a host, so an agent cannot address a second deployment: the
 only target it can reach is the one the runner bound these calls to.
 
-None of these can write to the application. The HTTP calls take no method, the
-remote calls take an allowlist-checked argument vector, and the Telegram call
-sends a message the platform's own test account is entitled to send.
+None of these can write to the application's own data. The HTTP calls take no
+method, the remote calls take an allowlist-checked argument vector, and the
+Telegram call sends a message the platform's own test account is entitled to
+send.
+
+``fire_job`` is the one call that asks the product to *do* something, and it is
+bounded the same way rather than by trust: it names a behaviour the run's own
+acceptance criteria declared, carries arguments those criteria stated, and fires
+under an identity the runner owns, which the product bounds execution on. It
+reaches no application endpoint of the product's own domain, and what it returns
+is a dispatch record — never a verdict. The template's contract says in those
+words that a dispatched command is not evidence a provider ran the behaviour, so
+the answer carries that sentence and the judgement stays with the behaviour's
+own output.
 
 There are two front-ends over one boundary, and only one boundary.
 :func:`build_qa_callables` is it. :func:`build_qa_tools` wraps the callables as
@@ -25,11 +36,13 @@ and the runner keeps its own record of the refusal either way.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import httpx
 from langchain_core.tools import StructuredTool
 import structlog
 
+from shared.contracts.acceptance import ScheduledBehaviourCriterion
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
@@ -43,6 +56,12 @@ from shared.telegram_bot_probe import (
     parse_bot_probe_result,
 )
 
+from ...clients.product_jobs import (
+    DISPATCH_IS_NOT_PROOF,
+    GeneratedServiceJobsClient,
+    JobCallFailure,
+    JobCallOutcome,
+)
 from ...consumers._qa_target import QACapabilities, QATargetError, QATargetSession
 from ...consumers._qa_workspace import QAWorkspace
 
@@ -307,12 +326,169 @@ class _TelegramCapability:
         )
 
 
+@dataclass(frozen=True)
+class QAJobsCapability:
+    """What one QA run may fire, and under whose identity it fires it.
+
+    Assembled on the management host before any executor exists. The
+    `capability` is the deployment's generated `JOBS_FIRE_CAPABILITY`: it is
+    read here, put in one request header by the client, and never travels into
+    the executor container, its environment, its arguments, the trace, a log
+    line or a verdict.
+
+    `behaviours` is the closed set of names this run may fire, read off the
+    run's own acceptance criteria. An executor cannot widen it and cannot
+    invent a name, because it never supplies the arguments and never supplies a
+    name that is not in this set.
+    """
+
+    base_url: str
+    capability: str
+    fired_by_product: str
+    fired_by_run: str
+    behaviours: tuple[ScheduledBehaviourCriterion, ...]
+
+    def command_id(self, name: str) -> str:
+        """The identity this run fires `name` under, every time it fires it.
+
+        One identity per (run, behaviour). The product bounds execution on
+        `(fired_by_product, command_id)`, so a second call within this run —
+        a retry, or the same logical check reached twice — returns the recorded
+        evidence and emits nothing. A retry of the call is therefore safe by
+        construction rather than by the caller being careful.
+        """
+        return f"qa-{self.fired_by_run}-{name}"
+
+    def behaviour(self, name: str) -> ScheduledBehaviourCriterion | None:
+        return next((one for one in self.behaviours if one.name == name), None)
+
+    @property
+    def names(self) -> list[str]:
+        return [one.name for one in self.behaviours]
+
+
+#: What each closed-set failure means, in the words a QA executor has to be
+#: able to act on. A refusal is an answer, never a crash: the executor reads it
+#: and decides what to do with the check it was making.
+_JOB_CALL_ERRORS = {
+    JobCallFailure.NAME_NOT_DECLARED: (
+        "the product declares no scheduled behaviour by this name, so nothing was fired "
+        "(its jobs core answered 404). The behaviour this check needs does not exist in "
+        "the deployment under test."
+    ),
+    JobCallFailure.ARGUMENTS_REJECTED: (
+        "the product refused the arguments this check declares for the behaviour "
+        "(its jobs core answered 422). Nothing was fired."
+    ),
+    JobCallFailure.NO_COMMAND_RECORDED: (
+        "the product has no recorded command under this run's identity for that "
+        "behaviour. Fire it first; evidence exists only for a command that was fired."
+    ),
+    JobCallFailure.REJECTED: "the product refused the call.",
+    JobCallFailure.TRANSPORT: "the product's jobs core could not be reached.",
+    JobCallFailure.MALFORMED_ANSWER: (
+        "the product answered with something that is not a recorded job command, so "
+        "there is no evidence to read."
+    ),
+}
+
+
+class _JobsCapability:
+    """One run's two jobs calls: invoke a named behaviour, and read it back.
+
+    Neither call names a module, a queue, a container or a transport, and
+    neither takes arguments from the executor: the name is checked against the
+    run's declared set and the arguments come from the criterion that declared
+    it. What comes back never contains the capability and never contains the
+    deployment URL — the runner's own write guard reads this trace, and the
+    sanctioned fire must not be spelled the way a forbidden direct write is.
+    """
+
+    def __init__(
+        self,
+        *,
+        jobs: QAJobsCapability,
+        workspace: QAWorkspace,
+        client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
+    ) -> None:
+        self._jobs = jobs
+        self._workspace = workspace
+        self._client_factory = client_factory or GeneratedServiceJobsClient
+
+    async def fire_job(self, name: str) -> dict:
+        """Invoke one declared scheduled behaviour on the deployment under test."""
+        behaviour = self._jobs.behaviour(name)
+        if behaviour is None:
+            return self._undeclared("fire_job", name)
+        outcome = await self._client_factory(self._jobs.base_url).fire(
+            command_id=self._jobs.command_id(name),
+            name=behaviour.name,
+            arguments=behaviour.arguments,
+            fired_by_product=self._jobs.fired_by_product,
+            fired_by_run=self._jobs.fired_by_run,
+            capability=self._jobs.capability,
+        )
+        return self._answer("fire_job", behaviour, outcome)
+
+    async def job_evidence(self, name: str) -> dict:
+        """Read back what the product recorded for this run's fire of `name`."""
+        behaviour = self._jobs.behaviour(name)
+        if behaviour is None:
+            return self._undeclared("job_evidence", name)
+        outcome = await self._client_factory(self._jobs.base_url).evidence(
+            command_id=self._jobs.command_id(name),
+            fired_by_product=self._jobs.fired_by_product,
+        )
+        return self._answer("job_evidence", behaviour, outcome)
+
+    def _undeclared(self, tool: str, name: str) -> dict:
+        """A name this run's criteria did not declare is refused here, not fired.
+
+        This is the whole of "never guessed": the platform reached the name by
+        reading a checklist line, and a name that came from anywhere else has
+        no fire to make.
+        """
+        error = (
+            f"{name!r} is not a scheduled behaviour this run's acceptance criteria named; "
+            f"this run may fire: {', '.join(self._jobs.names) or '(none)'}"
+        )
+        logger.info("qa_tool_refused", tool=tool, error=error)
+        self._workspace.record(tool, f"{tool} {name}", f"refused: {error}")
+        return {"error": error, "declared_behaviours": self._jobs.names}
+
+    def _answer(
+        self, tool: str, behaviour: ScheduledBehaviourCriterion, outcome: JobCallOutcome
+    ) -> dict:
+        command_id = self._jobs.command_id(behaviour.name)
+        request = f"{tool} {behaviour.name} command_id={command_id}"
+        if outcome.command is None:
+            failure = outcome.failure or JobCallFailure.MALFORMED_ANSWER
+            error = _JOB_CALL_ERRORS[failure]
+            logger.info("qa_job_call_failed", tool=tool, name=behaviour.name, failure=failure.value)
+            self._workspace.record(tool, request, f"{failure.value}: {error}")
+            return {
+                "error": error,
+                "failure": failure.value,
+                "name": behaviour.name,
+                "command_id": command_id,
+            }
+        answer = {
+            **outcome.command.as_dict(),
+            "observable": behaviour.observable,
+            "dispatch_is_not_proof": DISPATCH_IS_NOT_PROOF,
+        }
+        self._workspace.record(tool, request, repr(answer))
+        return answer
+
+
 def build_qa_callables(
     *,
     session: QATargetSession,
     workspace: QAWorkspace,
     telethon_env: dict[str, str] | None = None,
     probe_runner: Callable[..., object] | None = None,
+    jobs: QAJobsCapability | None = None,
+    jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
 ) -> dict[str, Callable]:
     """Build the whole reach of exactly one QA run, keyed by call name.
 
@@ -327,6 +503,11 @@ def build_qa_callables(
         telethon_env: QA account credentials, present only when the deployment
             has a bot to talk to. No executor ever sees them.
         probe_runner: override for the Telegram child process, for tests.
+        jobs: the run's scheduled-behaviour capability, present only when this
+            run's criteria named a behaviour and the deployment holds the
+            generated jobs capability. Like the Telegram credentials, no
+            executor ever sees the capability itself.
+        jobs_client_factory: override for the product jobs client, for tests.
     """
     capabilities = session.capabilities
 
@@ -344,6 +525,12 @@ def build_qa_callables(
 
     callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse))
     callables["write_qa_report"] = write_qa_report
+    if jobs is not None and jobs.behaviours:
+        jobs_capability = _JobsCapability(
+            jobs=jobs, workspace=workspace, client_factory=jobs_client_factory
+        )
+        callables["fire_job"] = jobs_capability.fire_job
+        callables["job_evidence"] = jobs_capability.job_evidence
     if capabilities.bot_username:
         if not telethon_env:
             raise ValueError("a bot target needs the QA account's Telethon credentials")
@@ -364,6 +551,8 @@ def build_qa_tools(
     workspace: QAWorkspace,
     telethon_env: dict[str, str] | None = None,
     probe_runner: Callable[..., object] | None = None,
+    jobs: QAJobsCapability | None = None,
+    jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
 ) -> list[StructuredTool]:
     """Wrap this run's callables as LangChain tools for the in-process agent."""
     callables = build_qa_callables(
@@ -371,10 +560,40 @@ def build_qa_tools(
         workspace=workspace,
         telethon_env=telethon_env,
         probe_runner=probe_runner,
+        jobs=jobs,
+        jobs_client_factory=jobs_client_factory,
     )
     capabilities = session.capabilities
     remote = {name: fn for name, fn in callables.items() if name in _descriptions(capabilities)}
     tools = _describe(capabilities, remote, callables["write_qa_report"])
+    if "fire_job" in callables:
+        names = ", ".join(jobs.names) if jobs else ""
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=callables["fire_job"],
+                name="fire_job",
+                description=(
+                    "Invoke one scheduled behaviour of the product by name, on the deployment "
+                    f"under test. This run may fire: {names}. You supply only the name, and only "
+                    "one of those — the arguments and the command identity belong to the run, "
+                    "so calling it twice re-reads the same execution instead of causing a "
+                    "second one. A successful answer records that the product's core dispatched "
+                    "the fire; it is not evidence the behaviour ran. Assert that against the "
+                    "product's own output."
+                ),
+            )
+        )
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=callables["job_evidence"],
+                name="job_evidence",
+                description=(
+                    "Read back what the product recorded for this run's fire of a named "
+                    f"behaviour: {names}. Same rule — the record is dispatch evidence, not "
+                    "proof that the behaviour happened."
+                ),
+            )
+        )
     if "telegram_probe" in callables:
         tools.append(
             StructuredTool.from_function(

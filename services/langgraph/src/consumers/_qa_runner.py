@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 import json
 import re
@@ -13,7 +14,8 @@ import asyncssh
 import httpx
 import structlog
 
-from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.acceptance import HealthCriterion, ScheduledBehaviourCriterion
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
@@ -30,7 +32,7 @@ from shared.telegram_access_probe import (
 
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.graph import create_qa_graph
-from ..agents.qa.tools import build_qa_callables, build_qa_tools
+from ..agents.qa.tools import QAJobsCapability, build_qa_callables, build_qa_tools
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..config.agent_llm_env import AGENT_LLM_ENV
 from ..prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
@@ -552,6 +554,75 @@ def container_state_fact(probe: QAResult) -> str:
     return f"- Container state, read from the target with docker inspect: {containers}."
 
 
+def scheduled_behaviour_facts(
+    behaviours: Sequence[ScheduledBehaviourCriterion], *, fireable: bool
+) -> list[str]:
+    """What the executor is told about this run's named scheduled behaviours.
+
+    The names are not the executor's to choose: the runner read them off this
+    run's acceptance criteria, and `fire_job` refuses anything else. Stating
+    them here is what lets the checklist ask for the behaviour by name without
+    a prompt inviting anyone to guess one.
+
+    The second sentence is the one that keeps the verdict honest. The product's
+    core answers a fire with a dispatch record, and `service-template`'s own
+    contract says a dispatched command is not evidence that a provider consumed
+    the event or ran the behaviour. So the fact says, where an executor would
+    otherwise read the record as the answer, that the answer is the observable
+    the criterion states.
+    """
+    if not behaviours:
+        return []
+    if not fireable:
+        return [
+            "- Scheduled behaviours named by this run's criteria that cannot be fired: "
+            + "; ".join(one.name for one in behaviours)
+            + ". This deployment holds no jobs capability for the QA runtime, so no fire is "
+            "offered. Report each such check as failed with that reason; do not look for "
+            "another way to trigger the behaviour, and do not pass it on anything else."
+        ]
+    return [
+        "- Scheduled behaviours this run may invoke, by the name its acceptance criteria "
+        "gave them: "
+        + "; ".join(f"{one.name} — then: {one.observable}" for one in behaviours)
+        + ". Invoke one with `fire_job <name>`; you supply nothing but the name, and only "
+        "one of these names. Firing the same name again in this run re-reads the same "
+        "single execution instead of causing a second one.",
+        "- A fired command comes back with a dispatch record. That record says the "
+        "product's core published the event, and nothing more: it is not evidence that "
+        "anything consumed it or that the behaviour ran. The check passes only on the "
+        "observable stated with the name above — what the product itself sent, wrote or "
+        "exposes. `dispatch_status: dispatched` on its own is not a passing check.",
+    ]
+
+
+def confirmed_settings_facts(settings: Sequence[InitialSetting]) -> list[str]:
+    """The confirmed brief's typed settings, given to the run as data.
+
+    A story backed by a Product Brief was deployed with these values written
+    into the product through its own settings core. An acceptance step about a
+    configured behaviour therefore has the value, typed, instead of
+    reconstructing it from the story's prose — the canonical case being
+    `settings.languages`, where the languages QA asserts on are the confirmed
+    ones and not a list read out of a description. A story with no brief adds
+    nothing here and the run is exactly as it was.
+    """
+    if not settings:
+        return []
+    stated = "; ".join(
+        f"{setting.key} (scope {setting.scope.value}"
+        + (f", subject {setting.subject_id}" if setting.subject_id is not None else "")
+        + f") = {json.dumps(setting.value, ensure_ascii=False)}"
+        for setting in settings
+    )
+    return [
+        "- Configured product settings, from the user's confirmed Product Brief and written "
+        f"into this deployment by the platform: {stated}. These are the typed confirmed "
+        "values. Where a check depends on a configured value, assert against the value "
+        "here — do not re-derive one from the story text or from the criteria's wording."
+    ]
+
+
 async def preflight_bot_access(
     *, bot_username: str, telethon_env: dict[str, str] | None
 ) -> QABlocker | None:
@@ -653,12 +724,14 @@ async def _invoke_qa_agent(
     established_facts: list[str],
     timeout: int,
     settings,
+    jobs: QAJobsCapability | None,
 ) -> QAResult:
     """Run the assigned executor, then optional API fallback through one endpoint."""
     calls = build_qa_callables(
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
+        jobs=jobs,
     )
     service = QACapabilityService(
         calls=calls,
@@ -718,6 +791,7 @@ async def _invoke_qa_agent(
             established_facts=established_facts,
             fallback=fallback,
             timeout=timeout,
+            jobs=jobs,
         ),
         workspace,
     )
@@ -814,12 +888,14 @@ async def _run_in_process_agent(
     established_facts: list[str],
     fallback: QAApiFallback,
     timeout: int,
+    jobs: QAJobsCapability | None,
 ) -> QAResult:
     """The API fallback: the ReactAgent this used to be, over the same tool set."""
     tools = build_qa_tools(
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
+        jobs=jobs,
     )
     graph = create_qa_graph(
         model=fallback.model,
@@ -878,7 +954,7 @@ class QAProvisioningJournal(Protocol):
     async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None: ...
 
 
-async def run_qa_centrally(
+async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
     ownership: WorkerOwnership,
@@ -889,6 +965,7 @@ async def run_qa_centrally(
     provisioning_journal: QAProvisioningJournal,
     settings,
     established_facts: list[str],
+    jobs: QAJobsCapability | None = None,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path."""
@@ -931,6 +1008,7 @@ async def run_qa_centrally(
                         ],
                         timeout=timeout,
                         settings=settings,
+                        jobs=jobs,
                     )
             # The network is the boundary; scan visible evidence for unexpected writes.
             write = _forbidden_application_write(

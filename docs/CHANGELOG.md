@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- Moved the pinned `service-template` to
+  `91e582180b4295bce45155759bdad0dfa43b75f3`, so a newly generated product carries the core
+  settings contract and the whole core jobs contract instead of only the revocable
+  generated-user access of its parent. `scheduler.service_template_ref` is the one place the
+  pin lives, so `Template Compatibility (baseline)` in CI generates a product from that exact
+  commit off the real remote and exercises it — the pair is tested, never inferred from two
+  local trees. The vendored env-contract fixture was regenerated from the same commit with its
+  recorded Copier inputs, and its whole-render digest regression moved with it. Products already
+  pinned to an older template are not migrated and nothing rewrites their stored pin.
+
+- Gave central QA the ability to invoke a *named* scheduled behaviour of the product under test,
+  without knowing which module implements it, over what transport, or holding the product's
+  capability. Two new typed capability calls sit on the one boundary both QA front-ends dispatch
+  into: `fire_job(name)` invokes the behaviour through the product's released `POST /jobs/fire`,
+  and `job_evidence(name)` reads the recorded command back through `POST /jobs/evidence`
+  (`services/langgraph/src/clients/product_jobs.py`, the same narrow shape as the settings
+  client). The executor supplies a name and nothing else.
+
+  The name is never guessed and never inferred from prose. `shared/contracts/acceptance.py` now
+  reads `- FIRE JOB <name> [WITH {json}] THEN <observable>` off the run's own checklist, exactly
+  as it already reads a plain GET expectation: the name and the arguments come off the
+  declaration, the observable is what the check is judged on, and `fire_job` refuses any name the
+  criteria did not declare. The product's `JOBS_FIRE_CAPABILITY` is resolved on the management
+  host from the project's own encrypted secrets, travels as the `X-Jobs-Capability` header, and
+  is in no URL, log, trace, error, verdict, prompt or `qa` CLI argument — it never enters the
+  executor container at all, the way the Telegram credentials and the settings-write capability
+  already never do. Reading evidence back carries no capability. A deployment whose environment
+  contract predates the jobs core offers no fire and the run is told so, so a check that needed
+  one fails visibly instead of being silently skipped.
+
+  Identity and provenance belong to the runner: `(fired_by_product, command_id)` is the project
+  under test and `qa-<qa run id>-<behaviour name>`, and `fired_by_run` names this QA run. One
+  identity per run per behaviour is what makes a retry safe — the product returns the recorded
+  evidence and emits nothing a second time, so re-invoking the same logical check within a run
+  cannot become a second execution of the behaviour.
+
+  The verdict rests on the behaviour's own output, never on the dispatch record. A `dispatched`
+  command means only that the product's core published `job_fired`, which the template's contract
+  states in those words; so every answer carries that sentence, the run's established facts state
+  it, and both executor prompts forbid passing a check on it.
+
+- Made the confirmed brief's typed settings travel into the QA run as data. For a brief-backed
+  story the run is given the confirmed `initial_settings` — key, scope and value — read through
+  `GET /api/product-briefs/by-story/{story_id}`, so an acceptance step about a configured
+  behaviour asserts against the typed value rather than reconstructing it from the story
+  description. The canonical case is `settings.languages = ["ru","en"]`: the languages QA asserts
+  on come from the setting, never from prose. A story with no confirmed brief is unchanged.
+
 - Made the typed settings the user confirmed reach the generated product as data, through the
   product's own released write path. The confirmed brief's `initial_settings` now travel to the
   architect exactly as its must-requirements do — on `ArchitectState.initial_settings` and named

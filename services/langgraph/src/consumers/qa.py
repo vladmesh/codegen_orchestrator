@@ -15,9 +15,14 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
-from shared.contracts.acceptance import parse_health_only_criteria
+from shared.contracts.acceptance import (
+    ScheduledBehaviourCriterion,
+    parse_health_only_criteria,
+    parse_scheduled_behaviours,
+)
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
@@ -25,6 +30,7 @@ from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.crypto import decrypt_dict
 from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import (
     QA_SSH_USER_LABEL,
@@ -36,6 +42,7 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
+from ..agents.qa.tools import QAJobsCapability
 from ..clients.api import api_client, bot_liveness_path
 from ..config.settings import get_settings
 from ..runtime_identity import project_runtime_slug
@@ -46,13 +53,21 @@ from ._qa_runner import (
     QAResult,
     QARuntimeConfig,
     check_deployed_url_reachable,
+    confirmed_settings_facts,
     preflight_bot_access,
     run_health_checks,
     run_qa_centrally,
+    scheduled_behaviour_facts,
 )
 from ._qa_target import QATarget
 
 logger = structlog.get_logger(__name__)
+
+#: The generated product's job-fire capability, as its environment contract
+#: names it. Resolved on the management host from the project's own encrypted
+#: secrets and put in one request header there; it never enters the executor
+#: container, its environment, the `qa` CLI's arguments or any verdict text.
+_JOBS_FIRE_CAPABILITY = "JOBS_FIRE_CAPABILITY"  # noqa: S105
 
 MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 QA_INFLIGHT_TTL = 1500  # 25 min TTL for inflight marker
@@ -361,6 +376,71 @@ async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | No
     )
 
 
+async def _confirmed_initial_settings(story_id: str) -> list[InitialSetting]:
+    """The typed settings the user confirmed for this story, or nothing.
+
+    Read through the released brief endpoint, exactly as the deploy path reads
+    them before writing them into the product. A story with no brief, or a
+    brief nobody confirmed, has no settings and leaves the run unchanged; that
+    is the ordinary case and not a failure.
+    """
+    if not story_id:
+        return []
+    brief = await api_client.get_product_brief_by_story(story_id)
+    if brief is None or brief.confirmed_at is None:
+        return []
+    return list(brief.content.initial_settings)
+
+
+async def _resolve_jobs_capability(
+    *,
+    project_id: str,
+    deployed_url: str,
+    behaviours: list[ScheduledBehaviourCriterion],
+    ownership: WorkerOwnership,
+) -> QAJobsCapability | None:
+    """Resolve this deployment's job-fire capability, here on the management host.
+
+    The same boundary the Telegram credentials and the settings-write
+    capability already sit on: the value is read from the project's own
+    encrypted secrets in this process, handed to the run's calls, and put in a
+    request header by the client. It is never an argument of the `qa` CLI,
+    never in the executor's environment, never in the trace and never in a
+    verdict.
+
+    A deployment that holds no such capability — an existing product pinned to
+    a template older than the jobs core — offers no fire at all rather than a
+    fire that cannot be authenticated. The run is told so, and a check that
+    needed one fails visibly instead of being quietly skipped.
+    """
+    if not behaviours:
+        return None
+    project = await api_client.get_project(project_id)
+    if project is None:
+        logger.warning("qa_jobs_capability_project_missing", project_id=project_id)
+        return None
+    stored = (project.config or {}).get("secrets") or {}
+    capability = decrypt_dict(stored).get(_JOBS_FIRE_CAPABILITY) if stored else None
+    if not isinstance(capability, str) or not capability:
+        logger.info(
+            "qa_jobs_capability_unavailable",
+            project_id=project_id,
+            behaviours=[one.name for one in behaviours],
+        )
+        return None
+    return QAJobsCapability(
+        base_url=deployed_url,
+        capability=capability,
+        # Identity is (fired_by_product, command_id). The product is the one
+        # under test, and the run is this QA attempt — the same row the
+        # executor's ownership calls its attempt — so a fire is attributable to
+        # exactly this QA run and a retry of it reuses that identity.
+        fired_by_product=ownership.project_id,
+        fired_by_run=ownership.attempt_id,
+        behaviours=tuple(behaviours),
+    )
+
+
 async def _run_exploratory_qa(
     *,
     msg: QAMessage,
@@ -398,8 +478,23 @@ async def _run_exploratory_qa(
     if isinstance(executor_decision, QABlocker):
         return None, executor_decision
     runtime = _resolve_qa_runtime(executor_decision.agent_type)
+    ownership = WorkerOwnership.for_qa(msg)
 
-    established_facts: list[str] = []
+    # Both of these are read here, on the management host, before any executor
+    # exists: the behaviour names come off this run's own criteria and the
+    # settings off the confirmed brief, so neither is something an executor
+    # could have guessed or inferred from prose.
+    behaviours = parse_scheduled_behaviours(acceptance_criteria)
+    jobs = await _resolve_jobs_capability(
+        project_id=msg.project_id,
+        deployed_url=msg.deployed_url,
+        behaviours=behaviours,
+        ownership=ownership,
+    )
+    established_facts: list[str] = [
+        *scheduled_behaviour_facts(behaviours, fireable=jobs is not None),
+        *confirmed_settings_facts(await _confirmed_initial_settings(msg.story_id)),
+    ]
     if msg.bot_username:
         # Liveness first: a bot that is not live cannot admit anyone, and the
         # access probe would blame the wrong thing for the same silence.
@@ -422,7 +517,7 @@ async def _run_exploratory_qa(
         # derives it: the project under test, the run that asked for the work
         # (the same run the developer workers of this project carry), and this
         # QA run row as the attempt. All of it exists before any container does.
-        ownership=WorkerOwnership.for_qa(msg),
+        ownership=ownership,
         target=QATarget(
             server_ip=server_info.server_ip,
             ssh_user=server_info.ssh_user,
@@ -444,6 +539,7 @@ async def _run_exploratory_qa(
         provisioning_journal=ServerProvisioningJournal(server_info),
         settings=get_settings(),
         established_facts=established_facts,
+        jobs=jobs,
     )
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
         await _alert_admins_qa_infrastructure(msg=msg, blocker=qa_result.blocker)

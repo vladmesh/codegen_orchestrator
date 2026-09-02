@@ -326,7 +326,7 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
         fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-edf54dfb1c323d60480761e06ceb982bd79ac9d2"
+            "shared/tests/fixtures/service-template-91e582180b4295bce45155759bdad0dfa43b75f3"
         )
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
@@ -342,7 +342,7 @@ class TestComposeRunner:
 
     def test_service_template_has_no_label_file_compatibility_consumer(self):
         fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-edf54dfb1c323d60480761e06ceb982bd79ac9d2"
+            "shared/tests/fixtures/service-template-91e582180b4295bce45155759bdad0dfa43b75f3"
         )
 
         assert all("label_file" not in source.read_text() for source in (fixture / "infra").glob("compose*.yml"))
@@ -350,7 +350,7 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     async def test_real_documented_integration_resolution_passes_the_production_validator(self, tmp_path):
         fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-edf54dfb1c323d60480761e06ceb982bd79ac9d2"
+            "shared/tests/fixtures/service-template-91e582180b4295bce45155759bdad0dfa43b75f3"
         )
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
@@ -370,7 +370,7 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     async def test_documented_integration_source_flow_is_compiled(self, tmp_path):
         fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-edf54dfb1c323d60480761e06ceb982bd79ac9d2"
+            "shared/tests/fixtures/service-template-91e582180b4295bce45155759bdad0dfa43b75f3"
         )
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)

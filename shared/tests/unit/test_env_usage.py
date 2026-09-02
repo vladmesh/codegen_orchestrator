@@ -355,7 +355,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
     assert answers == {
-        "_commit": "0.4.0-12-gedf54df",
+        "_commit": "0.4.0-19-g91e5821",
         "_src_path": "gh:vladmesh/service-template",
         "author_email": "dev@example.com",
         "author_name": "Developer",
@@ -368,7 +368,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     }
     assert (
         fixture_tree_digest(fixture)
-        == "38f64c0da45ff6e71064711dc4e54212b91572a3110d2042704056b59ce290b3"
+        == "38856e1a130cc792f201baa878bfc523bfbc1b256a15d714dd6b663407c42bea"
     )
 
 

@@ -19,6 +19,12 @@ import respx
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
+from shared.contracts.dto.product_brief import (
+    InitialSetting,
+    MustRequirement,
+    ProductBriefContent,
+    ProductBriefRead,
+)
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
@@ -27,6 +33,7 @@ from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStat
 from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.vocab import AgentType
+from shared.crypto import encrypt_dict
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
@@ -115,6 +122,9 @@ def mock_api_client():
             )
         )
         mock.get_application = AsyncMock(return_value=_application())
+        # A story with no confirmed brief is the ordinary case: the run's facts
+        # gain nothing and QA is exactly what it was.
+        mock.get_product_brief_by_story = AsyncMock(return_value=None)
         # The API holds the bot token and answers the liveness question with it.
         # A live bot is the uninteresting case for the tests below; the ones
         # about liveness itself override this.
@@ -1052,3 +1062,154 @@ class TestTelegramProbeEmptyMessage:
 
         blockers = [entry[2] for entry in recorded if entry[0] == "probe"]
         assert blockers == [None, None, None]
+
+
+def _confirmed_brief(*settings: InitialSetting) -> ProductBriefRead:
+    """A confirmed brief backing this story, with the settings the user chose."""
+    import uuid
+
+    return ProductBriefRead(
+        id="brief-1",
+        project_id=uuid.uuid4(),
+        story_id="story-1",
+        revision=1,
+        title="Weather bot",
+        content=ProductBriefContent(
+            summary="A weather bot",
+            must_requirements=[MustRequirement(id="r1", text="Answer /weather")],
+            initial_settings=list(settings),
+        ),
+        confirmed_at=datetime.now(UTC),
+        planning_attempt_active=False,
+    )
+
+
+def _with_secrets(mock_api_client, **secrets) -> None:
+    """Give the project the encrypted secrets a deployed product actually holds."""
+    project = mock_api_client.get_project.return_value
+    mock_api_client.get_project = AsyncMock(
+        return_value=project.model_copy(update={"config": {"secrets": encrypt_dict(secrets)}})
+    )
+
+
+class TestTheConfirmedBriefsSettingsTravelIntoTheRunAsData:
+    """AC6 — a configured behaviour is asserted against the typed value."""
+
+    @pytest.mark.asyncio
+    async def test_the_confirmed_settings_reach_the_runs_facts(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        mock_api_client.get_product_brief_by_story = AsyncMock(
+            return_value=_confirmed_brief(
+                InitialSetting(key="settings.languages", value=["ru", "en"])
+            )
+        )
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
+        assert "settings.languages" in facts
+        assert '["ru", "en"]' in facts
+        assert "scope product" in facts
+        assert "do not re-derive one from the story text" in facts
+
+    @pytest.mark.asyncio
+    async def test_a_story_with_no_brief_is_unchanged(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert mock_run.call_args.kwargs["established_facts"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_brief_seeds_no_facts(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Only what the user actually confirmed is data QA may assert on."""
+        from src.consumers._qa_runner import QAResult
+
+        brief = _confirmed_brief(InitialSetting(key="settings.languages", value=["ru"]))
+        mock_api_client.get_product_brief_by_story = AsyncMock(
+            return_value=brief.model_copy(update={"confirmed_at": None})
+        )
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert mock_run.call_args.kwargs["established_facts"] == []
+
+
+class TestTheJobsCapabilityIsResolvedOnTheManagementHost:
+    """AC2/AC3/AC4 — where the fire's name, capability and identity come from."""
+
+    @pytest.mark.asyncio
+    async def test_a_named_behaviour_gets_the_deployments_capability_and_this_runs_identity(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["acceptance_criteria"] = (
+            "- GET /health returns 200\n"
+            "- FIRE JOB daily_digest THEN the bot sends the digest to the owner\n"
+        )
+        _with_secrets(mock_api_client, JOBS_FIRE_CAPABILITY="resolved-on-the-host")
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        jobs = mock_run.call_args.kwargs["jobs"]
+        assert [one.name for one in jobs.behaviours] == ["daily_digest"]
+        assert jobs.capability == "resolved-on-the-host"
+        assert jobs.fired_by_product == qa_message_data["project_id"]
+        assert jobs.fired_by_run == qa_message_data["run_id"]
+        # One identity per (run, behaviour): a retry re-reads one execution.
+        assert jobs.command_id("daily_digest") == "qa-qa-run-1-daily_digest"
+
+        facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
+        assert "daily_digest" in facts
+        assert "resolved-on-the-host" not in facts
+        assert "not evidence that anything consumed it" in facts
+
+    @pytest.mark.asyncio
+    async def test_criteria_that_name_no_behaviour_resolve_no_capability_at_all(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        _with_secrets(mock_api_client, JOBS_FIRE_CAPABILITY="resolved-on-the-host")
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert mock_run.call_args.kwargs["jobs"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_product_without_the_capability_offers_no_fire_and_says_so(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A product pinned before the jobs core fails the check visibly."""
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["acceptance_criteria"] = (
+            "- FIRE JOB daily_digest THEN the bot sends the digest to the owner\n"
+        )
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert mock_run.call_args.kwargs["jobs"] is None
+        facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
+        assert "cannot be fired" in facts
+        assert "Report each such check as failed" in facts

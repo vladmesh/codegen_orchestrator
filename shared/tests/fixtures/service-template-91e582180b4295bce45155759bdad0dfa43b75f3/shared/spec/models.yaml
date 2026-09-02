@@ -1,0 +1,225 @@
+models:
+  User:
+    fields:
+      id:
+        type: int
+        readonly: true
+      status:
+        type:
+          type: enum
+          values: [active, inactive]
+        default: inactive
+      created_at:
+        type: datetime
+        readonly: true
+      updated_at:
+        type: datetime
+        readonly: true
+  UserChannel:
+    fields:
+      id:
+        type: int
+        readonly: true
+      user_id:
+        type: int
+        readonly: true
+      channel:
+        type: string
+        min_length: 1
+      external_id:
+        type: string
+        min_length: 1
+      created_at:
+        type: datetime
+        readonly: true
+      updated_at:
+        type: datetime
+        readonly: true
+  UserGrant:
+    fields:
+      channel:
+        type: string
+        min_length: 1
+      external_id:
+        type: string
+        min_length: 1
+
+  UserRevoke:
+    fields:
+      channel:
+        type: string
+        min_length: 1
+      external_id:
+        type: string
+        min_length: 1
+
+  UserAccess:
+    fields:
+      user_id:
+        type: int
+      status:
+        type:
+          type: enum
+          values: [active, inactive]
+      channel:
+        type: string
+      external_id:
+        type: string
+
+  SettingGet:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      key:
+        type: string
+        min_length: 1
+      scope:
+        type:
+          type: enum
+          values: [product, user]
+        default: product
+      subject_id:
+        type: int
+        ge: 1
+        optional: true
+
+  SettingSet:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      key:
+        type: string
+        min_length: 1
+      scope:
+        type:
+          type: enum
+          values: [product, user]
+        default: product
+      subject_id:
+        type: int
+        ge: 1
+        optional: true
+      value:
+        type: json
+
+  SettingValue:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      key:
+        type: string
+      scope:
+        type:
+          type: enum
+          values: [product, user]
+      subject_id:
+        type: int
+        optional: true
+      value:
+        type: json
+
+  JobFire:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      command_id:
+        type: string
+        min_length: 1
+      name:
+        type: string
+        min_length: 1
+      arguments:
+        type: json
+      fired_by_product:
+        type: string
+        min_length: 1
+      fired_by_run:
+        type: string
+        min_length: 1
+
+  JobCommandRef:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      command_id:
+        type: string
+        min_length: 1
+      fired_by_product:
+        type: string
+        min_length: 1
+
+  JobCommand:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      command_id:
+        type: string
+      name:
+        type: string
+      arguments:
+        type: json
+      fired_by_product:
+        type: string
+      fired_by_run:
+        type: string
+      dispatch_status:
+        type:
+          type: enum
+          values: [dispatched, undelivered]
+      accepted_at:
+        type: datetime
+      dispatched_at:
+        type: datetime
+        optional: true
+
+  JobFired:
+    fields:
+      contract_version:
+        type: int
+        ge: 1
+        le: 1
+        default: 1
+      command_id:
+        type: string
+      name:
+        type: string
+      arguments:
+        type: json
+      fired_by_product:
+        type: string
+      fired_by_run:
+        type: string
+      accepted_at:
+        type: datetime
+
+  CommandReceived:
+    fields:
+      command:
+        type: string
+      args:
+        type: list[string]
+      user_id:
+        type: int
+      timestamp:
+        type: datetime
+    variants:
+      Create:
+        optional: [timestamp]

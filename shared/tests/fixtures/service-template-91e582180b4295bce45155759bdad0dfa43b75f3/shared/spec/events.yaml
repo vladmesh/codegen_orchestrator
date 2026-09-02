@@ -1,0 +1,12 @@
+events:
+  user_granted:
+    message: UserAccess
+    publish: true
+
+  command_received:
+    message: CommandReceived
+    publish: true
+
+  job_fired:
+    message: JobFired
+    publish: true
