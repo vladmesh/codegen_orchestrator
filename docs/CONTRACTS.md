@@ -357,6 +357,27 @@ any name the criteria did not declare. A name declared twice is one behaviour
 and one execution. A line whose `WITH` is not a JSON object declares nothing, so
 a fire the platform cannot spell exactly is a fire nobody may make.
 
+*Who writes the line, and what makes the name answerable.* The architect does,
+in the same run that plans the behaviour. When a confirmed must-requirement
+implies a deferred or scheduled behaviour, the plan owes two things the product
+would otherwise refuse: the behaviour declared by name in the generated
+product's own `services/<service>/manifest.yaml` under `jobs_schema`, with an
+arguments schema that is `type: object` with `additionalProperties: false` — an
+undeclared name is `404` and refused arguments are `422` — and the module that
+declares `provides: ["jobs.fire"]`, subscribes to `job_fired` and performs the
+work, because the product's core schedules nothing. The checklist line the
+architect then authors carries the same name character for character, and
+arguments the declared schema accepts. Where the confirmed brief's typed
+settings configure the behaviour, the observable is read off those values
+(`settings.languages = ["ru","en"]` asserts the output in each configured
+language) rather than re-derived from the story prose, and it asserts a
+capability rather than a sample: "a digest per configured language" is a check,
+"there is a Russian item this week" makes QA red on a quiet week. A story
+without such a behaviour gets neither the line nor the declaration. The prompt
+and the `update_acceptance_criteria` contract teach exactly the form
+`shared/contracts/acceptance.py` parses, and a unit test round-trips the worked
+lines through `parse_scheduled_behaviours` itself so the two cannot drift.
+
 *Where the capability comes from.* `JOBS_FIRE_CAPABILITY` is a
 `generated_secret` of the product's environment contract. The QA consumer
 resolves it on the management host from the project's own encrypted

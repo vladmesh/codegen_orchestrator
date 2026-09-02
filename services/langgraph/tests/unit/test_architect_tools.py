@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.product_brief import RequirementCoverageRead
 from tests.unit.factories import make_project, make_story, make_task
 
@@ -421,3 +422,55 @@ class TestRecordRequirementCoverageTool:
 
         assert "error" in result
         mock_api.record_requirement_coverage.assert_not_called()
+
+
+class TestUpdateAcceptanceCriteriaContract:
+    """The tool teaches the checklist forms the platform itself reads."""
+
+    @staticmethod
+    def _contract() -> str:
+        from src.agents.architect.tools import update_acceptance_criteria
+
+        return update_acceptance_criteria.description
+
+    def test_still_teaches_the_ordinary_check_forms(self):
+        contract = self._contract()
+
+        assert "- GET /health returns 200" in contract
+        assert '- POST /api/cities with {"name": "Moscow"} returns 201' in contract
+
+    def test_teaches_the_fire_job_form_and_its_rules(self):
+        contract = self._contract()
+
+        assert "- FIRE JOB daily_digest THEN" in contract
+        assert "jobs_schema" in contract
+        assert "character for character" in contract
+        assert "a capability rather than a sample" in contract
+        assert "there is a Russian item this week" in contract
+        assert "from those confirmed values, not from the story prose" in contract
+
+    def test_every_worked_criterion_line_is_read_by_the_released_parser(self):
+        """One pattern: the contract's examples round-trip through the parser itself."""
+        worked = [
+            line.strip()
+            for line in self._contract().splitlines()
+            if line.strip().startswith("- FIRE JOB")
+        ]
+
+        assert len(worked) == 2
+        parsed = [parse_scheduled_behaviours(line) for line in worked]
+        assert [len(one) for one in parsed] == [1, 1]
+        assert {one[0].name for one in parsed} == {"daily_digest"}
+        assert parsed[0][0].arguments == {}
+        assert parsed[1][0].arguments == {"languages": ["ru", "en"]}
+        assert parsed[1][0].observable == "a digest per configured language"
+
+    def test_an_ordinary_checklist_the_contract_teaches_declares_no_behaviour(self):
+        """A story with no scheduled behaviour keeps exactly today's criteria."""
+        ordinary = (
+            "- GET /health returns 200\n"
+            '- POST /api/cities with {"name": "Moscow"} returns 201\n'
+            "- Telegram: /start responds with welcome message\n"
+        )
+
+        assert parse_scheduled_behaviours(ordinary) == []

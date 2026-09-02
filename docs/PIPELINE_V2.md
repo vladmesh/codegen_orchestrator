@@ -138,6 +138,18 @@ that makes them writable — each key in the generated product's own
 `services/<service>/manifest.yaml` `settings_schema`, with a schema the
 confirmed value satisfies, read where the product uses it.
 
+A must-requirement that implies a deferred or scheduled behaviour is planned the
+same way, because the generated product's core schedules nothing: the plan
+declares the behaviour by name in that same `manifest.yaml` under `jobs_schema`
+(arguments schema `type: object`, `additionalProperties: false` — an undeclared
+name is `404`), plans the module that declares `provides: ["jobs.fire"]` and
+does the work on `job_fired`, and authors the checklist line QA fires from,
+`- FIRE JOB <name> [WITH {json}] THEN <observable>` (step 7a of Phase 6), with
+the declared name character for character. Where typed settings configure the
+behaviour the observable is read off those confirmed values, and it asserts a
+capability rather than a sample, so a quiet week is not a false red. A story
+with no such behaviour gets no line and no declaration.
+
 **Outputs**: Tasks in `todo` status, linearly chained
 
 **Rules**:

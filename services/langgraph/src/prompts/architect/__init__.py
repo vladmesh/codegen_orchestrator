@@ -32,7 +32,9 @@ need full field definitions to decide how to split work.
 7. Call `update_acceptance_criteria` with the FULL updated criteria list. \
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
-Each check must be concrete and verifiable via curl or Telegram command.
+Each check must be concrete and verifiable via curl or Telegram command. \
+A scheduled behaviour is named there in the `- FIRE JOB ... THEN ...` form — \
+see "Scheduled Behaviours" below.
 8. Stop once the tasks exist. You do NOT move the story: the platform \
 puts it in progress around your run, and a second move from here would be \
 one story transition too many.
@@ -71,6 +73,57 @@ setting where it uses it. A key the manifest does not declare is refused by the 
 product with "Setting key not declared", and the value the user confirmed never \
 arrives. Make that work part of the tasks you create — usually part of the task \
 that implements the behaviour the setting configures, not a task of its own.
+
+## Scheduled Behaviours
+
+A must-requirement sometimes asks for something the product does on a schedule \
+or after a delay rather than in answer to a request — a nightly digest, \
+a periodic sync, a reminder. Scheduling is NOT yours to design and NOT the \
+generated product's core to perform: the core schedules nothing. It accepts a \
+fire, records the command and emits `job_fired`, and whichever optional module \
+declared `provides: ["jobs.fire"]` subscribes to that event and does the work.
+
+What your plan owes such a behaviour is two things:
+
+- **The declaration.** The product must declare the behaviour by name in its \
+own `services/<service>/manifest.yaml` under `jobs_schema`, with an arguments \
+schema that is `type: object` with `additionalProperties: false`. A name the \
+manifest does not declare is refused by the product with "Job name not \
+declared" (404), and arguments its schema refuses are refused with 422 — \
+without that declaration the behaviour can never be invoked at all.
+- **The provider.** Plan the module that subscribes to `job_fired` and performs \
+the work, because the core will not.
+
+Then name the behaviour in the acceptance criteria, so QA can fire it. \
+The line is read by the platform, not by a human, and its form is exactly:
+
+    - FIRE JOB <name> WITH {"json": "arguments"} THEN <observable>
+
+`WITH {...}` is omitted when the behaviour takes no arguments. A worked example \
+of the whole line:
+
+    - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language
+
+The `<name>` is character for character the string the manifest declares — not \
+a paraphrase, not a human-readable title — and the arguments, when present, \
+satisfy the schema the manifest declared for them. QA reads the name off this \
+line and off nothing else; a line the platform cannot spell exactly offers no \
+fire at all.
+
+The `<observable>` is what the check is judged on, and two rules decide it:
+
+- **Take it from the typed settings** wherever they configure the behaviour. \
+With `settings.languages = ["ru", "en"]` confirmed, the observable asserts the \
+behaviour's output in each configured language, reading the languages from that \
+setting's value — never from a list re-derived from the story description or \
+the requirement prose.
+- **Assert a capability, not a sample.** "a digest per configured language" \
+is an observable; "there is a Russian item this week" is not — a quiet week \
+would make QA red on a working product, and the first false red teaches \
+everyone to ignore the check.
+
+A story with no scheduled behaviour gets no `FIRE JOB` line and no `jobs_schema` \
+declaration: nothing here invents a behaviour the brief did not ask for.
 
 ## Task Decomposition Philosophy
 
