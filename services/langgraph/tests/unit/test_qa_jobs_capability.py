@@ -20,7 +20,7 @@ from src.agents.qa.tools import QAJobsCapability, build_qa_callables
 from src.clients.product_jobs import GeneratedServiceJobsClient
 from src.consumers._qa_target import QACapabilities
 from src.consumers._qa_workspace import QAWorkspace
-from src.prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
+from src.prompts.qa import build_qa_instructions, build_qa_prompt
 
 CAPABILITY = "jobs-capability-never-leaves-the-host"  # noqa: S105
 CRITERIA = (
@@ -198,7 +198,6 @@ class TestTheCapabilityStaysOnTheManagementHost:
         prompt = build_qa_prompt(
             CRITERIA,
             "https://weather.example.com",
-            executor=QAExecutorKind.CENTRAL_AGENT,
             established_facts=[],
         )
         for text in (QA_PROBE_SCRIPT, QA_PROBE_USAGE, prompt, build_qa_instructions()):
@@ -284,12 +283,10 @@ class TestDispatchIsNotProof:
         assert answer["observable"] == "the bot sends the digest to the owner"
 
     def test_the_prompt_forbids_passing_a_check_on_the_dispatch_record(self):
-        for executor in QAExecutorKind:
-            prompt = build_qa_prompt(
-                CRITERIA, "https://weather.example.com", executor=executor, established_facts=[]
-            )
-            assert "dispatch_status: dispatched" in prompt
-            assert "Never pass a check on it" in prompt
+        prompt = build_qa_prompt(CRITERIA, "https://weather.example.com", established_facts=[])
+
+        assert "dispatch_status: dispatched" in prompt
+        assert "Never pass a check on it" in prompt
 
 
 class TestTheWriteGuardStillSeesNoApplicationWrite:

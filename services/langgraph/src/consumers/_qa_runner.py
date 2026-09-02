@@ -1,4 +1,4 @@
-"""Run deterministic QA checks, then subscription executor, then optional API fallback."""
+"""Run deterministic QA checks, then the one assigned subscription QA executor."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 import json
 import re
 from typing import Protocol
-import uuid
 
 import asyncssh
 import httpx
@@ -31,11 +30,9 @@ from shared.telegram_access_probe import (
 )
 
 from ..agents.qa.capability_service import QACapabilityService
-from ..agents.qa.graph import create_qa_graph
-from ..agents.qa.tools import QAJobsCapability, build_qa_callables, build_qa_tools
+from ..agents.qa.tools import QAJobsCapability, build_qa_callables
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
-from ..config.agent_llm_env import AGENT_LLM_ENV
-from ..prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
+from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_target import (
     CONTAINER_PROBE_ATTEMPTS,
     CONTAINER_PROBE_RETRY_DELAY,
@@ -54,7 +51,6 @@ from ._qa_workspace import QAWorkspace, qa_workspace
 logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
-QA_MAX_STEPS = 200
 # Retry only transient subscription-executor failures.
 QA_EXECUTOR_ATTEMPTS = 2
 HEALTH_CHECK_TIMEOUT = 30
@@ -74,15 +70,6 @@ class QARuntimeConfig:
     telethon_env: dict[str, str] | None = None
 
 
-@dataclass(frozen=True)
-class QAApiFallback:
-    """The optional API triplet, resolved only after the assigned executor failed."""
-
-    model: str
-    base_url: str
-    api_key: str
-
-
 class QAInfrastructureFailure(Exception):
     """Typed infrastructure failure that must not become a product verdict."""
 
@@ -90,19 +77,6 @@ class QAInfrastructureFailure(Exception):
         super().__init__(blocker.received)
         self.summary = summary
         self.blocker = blocker
-
-
-def api_fallback(settings) -> QAApiFallback | None:
-    """Resolve API fallback only after the subscription executor failed."""
-    model, base_url, api_key = (getattr(settings, name.lower()) for name in AGENT_LLM_ENV["qa"])
-    if model and base_url and api_key:
-        return QAApiFallback(model=model, base_url=base_url, api_key=api_key)
-    return None
-
-
-def missing_api_fallback_env(settings) -> list[str]:
-    """Which of the fallback triplet's names carry no value, for the admin alert."""
-    return [name for name in AGENT_LLM_ENV["qa"] if not getattr(settings, name.lower())]
 
 
 @dataclass
@@ -652,24 +626,6 @@ async def preflight_bot_access(
     )
 
 
-def _final_message_text(state: dict) -> str:
-    """The agent's last message, as text.
-
-    Chat models may return content as a list of blocks; a QA result buried in
-    one of them is still the result, so the blocks are joined rather than
-    stringified into `[{'type': ...}]`.
-    """
-    messages = state.get("messages") or []
-    if not messages:
-        return ""
-    content = getattr(messages[-1], "content", messages[-1])
-    if isinstance(content, list):
-        return "\n".join(
-            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
-        )
-    return content if isinstance(content, str) else str(content)
-
-
 def _cleanup_blocker(residues: list[str]) -> QABlocker:
     detail = "; ".join(residues)
     return QABlocker(
@@ -723,10 +679,9 @@ async def _invoke_qa_agent(
     runtime: QARuntimeConfig,
     established_facts: list[str],
     timeout: int,
-    settings,
     jobs: QAJobsCapability | None,
 ) -> QAResult:
-    """Run the assigned executor, then optional API fallback through one endpoint."""
+    """Run the one assigned executor over this run's capability endpoint."""
     calls = build_qa_callables(
         session=session,
         workspace=workspace,
@@ -758,42 +713,22 @@ async def _invoke_qa_agent(
     finally:
         await service.stop()
 
-    fallback = api_fallback(settings)
-    if fallback is None:
-        missing = missing_api_fallback_env(settings)
-        raise QAInfrastructureFailure(
-            summary="QA could not be performed: no executor was available",
-            blocker=QABlocker(
-                category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
-                attempted=(
-                    f"run exploratory QA on the assigned executor "
-                    f"({runtime.executor_agent_type.value})"
-                ),
-                sent=", ".join(missing) or "no API fallback configured",
-                received=(
-                    f"the assigned QA executor ({runtime.executor_agent_type.value}) did not run "
-                    f"({executor_failure.detail}), and no API fallback is configured"
-                ),
+    # QA has exactly one executor. When it does not run there is nothing to fall
+    # back to, so the run ends here as infrastructure rather than as a verdict.
+    executor = runtime.executor_agent_type.value
+    raise QAInfrastructureFailure(
+        summary="QA could not be performed: the assigned executor did not run",
+        blocker=QABlocker(
+            category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+            attempted=f"run exploratory QA on the assigned executor ({executor})",
+            sent=(
+                f"{QA_EXECUTOR_ATTEMPTS} start attempt(s) of the {executor} QA executor "
+                f"against {target.deployed_url}"
             ),
-        )
-    logger.warning(
-        "qa_executor_fallback_to_api",
-        executor=runtime.executor_agent_type.value,
-        detail=executor_failure.detail,
-    )
-    return _apply_telegram_probe_evidence(
-        await _run_in_process_agent(
-            target=target,
-            workspace=workspace,
-            session=session,
-            acceptance_criteria=acceptance_criteria,
-            runtime=runtime,
-            established_facts=established_facts,
-            fallback=fallback,
-            timeout=timeout,
-            jobs=jobs,
+            received=(
+                f"the assigned QA executor ({executor}) did not run: {executor_failure.detail}"
+            ),
         ),
-        workspace,
     )
 
 
@@ -813,7 +748,6 @@ async def _run_central_executor(
         acceptance_criteria,
         target.deployed_url,
         target.bot_username,
-        executor=QAExecutorKind.CENTRAL_AGENT,
         established_facts=established_facts,
     )
     last: QAExecutorUnavailable | None = None
@@ -878,76 +812,6 @@ def _verdict_of(
     return qa_result
 
 
-async def _run_in_process_agent(
-    *,
-    target: QATarget,
-    workspace: QAWorkspace,
-    session,
-    acceptance_criteria: str,
-    runtime: QARuntimeConfig,
-    established_facts: list[str],
-    fallback: QAApiFallback,
-    timeout: int,
-    jobs: QAJobsCapability | None,
-) -> QAResult:
-    """The API fallback: the ReactAgent this used to be, over the same tool set."""
-    tools = build_qa_tools(
-        session=session,
-        workspace=workspace,
-        telethon_env=runtime.telethon_env,
-        jobs=jobs,
-    )
-    graph = create_qa_graph(
-        model=fallback.model,
-        base_url=fallback.base_url,
-        api_key=fallback.api_key,
-        tools=tools,
-        prompt=build_qa_prompt(
-            acceptance_criteria,
-            target.deployed_url,
-            target.bot_username,
-            executor=QAExecutorKind.IN_PROCESS_TOOLS,
-            established_facts=established_facts,
-        ),
-    )
-    try:
-        state = await asyncio.wait_for(
-            graph.ainvoke(
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Run the regression test now and finish with the result JSON."
-                            ),
-                        }
-                    ]
-                },
-                config={
-                    "recursion_limit": QA_MAX_STEPS,
-                    "configurable": {"thread_id": str(uuid.uuid4())},
-                },
-            ),
-            timeout=timeout,
-        )
-    except TimeoutError:
-        logger.warning("qa_agent_timeout", server_ip=target.server_ip, timeout=timeout)
-        return QAResult(
-            passed=False,
-            summary=f"QA agent did not finish within {timeout}s",
-            report=workspace.read_report(),
-            blocker=_unknown_result_blocker(
-                attempted="run the central QA agent",
-                sent=f"QA agent against {target.deployed_url}",
-                received=f"no result after {timeout}s",
-            ),
-        )
-
-    qa_result = parse_qa_result(_final_message_text(state))
-    qa_result.report = workspace.read_report()
-    return qa_result
-
-
 class QAProvisioningJournal(Protocol):
     """Record a missing provisioning-owned QA identity against its server."""
 
@@ -963,7 +827,6 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     runtime: QARuntimeConfig,
     grant_journal: QAGrantJournal,
     provisioning_journal: QAProvisioningJournal,
-    settings,
     established_facts: list[str],
     jobs: QAJobsCapability | None = None,
     timeout: int = QA_TIMEOUT,
@@ -1007,7 +870,6 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             container_state_fact(container_state),
                         ],
                         timeout=timeout,
-                        settings=settings,
                         jobs=jobs,
                     )
             # The network is the boundary; scan visible evidence for unexpected writes.

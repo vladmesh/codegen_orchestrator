@@ -20,13 +20,10 @@ words that a dispatched command is not evidence a provider ran the behaviour, so
 the answer carries that sentence and the judgement stays with the behaviour's
 own output.
 
-There are two front-ends over one boundary, and only one boundary.
-:func:`build_qa_callables` is it. :func:`build_qa_tools` wraps the callables as
-LangChain tools for the in-process fallback agent, and
-``agents/qa/capability_service`` serves the same dictionary over HTTP to the
-central executor container. Neither front-end may add an operation, widen an
-argument, or decide anything the capability set does not decide — a call the
-executor makes is the same call the fallback agent makes.
+There is one boundary and one front-end over it. :func:`build_qa_callables` is
+the boundary, and ``agents/qa/capability_service`` serves that dictionary over
+HTTP to the central executor container. The front-end may not add an operation,
+widen an argument, or decide anything the capability set does not decide.
 
 A refused call comes back as an ``error`` field rather than an exception: the
 agent has to be able to read "that is out of scope" and choose another check,
@@ -39,7 +36,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
-from langchain_core.tools import StructuredTool
 import structlog
 
 from shared.contracts.acceptance import ScheduledBehaviourCriterion
@@ -62,7 +58,7 @@ from ...clients.product_jobs import (
     JobCallFailure,
     JobCallOutcome,
 )
-from ...consumers._qa_target import QACapabilities, QATargetError, QATargetSession
+from ...consumers._qa_target import QATargetError, QATargetSession
 from ...consumers._qa_workspace import QAWorkspace
 
 logger = structlog.get_logger(__name__)
@@ -543,135 +539,3 @@ def build_qa_callables(
         callables["telegram_probe"] = telegram.telegram_probe
         callables["telegram_click_button"] = telegram.telegram_click_button
     return callables
-
-
-def build_qa_tools(
-    *,
-    session: QATargetSession,
-    workspace: QAWorkspace,
-    telethon_env: dict[str, str] | None = None,
-    probe_runner: Callable[..., object] | None = None,
-    jobs: QAJobsCapability | None = None,
-    jobs_client_factory: Callable[[str], GeneratedServiceJobsClient] | None = None,
-) -> list[StructuredTool]:
-    """Wrap this run's callables as LangChain tools for the in-process agent."""
-    callables = build_qa_callables(
-        session=session,
-        workspace=workspace,
-        telethon_env=telethon_env,
-        probe_runner=probe_runner,
-        jobs=jobs,
-        jobs_client_factory=jobs_client_factory,
-    )
-    capabilities = session.capabilities
-    remote = {name: fn for name, fn in callables.items() if name in _descriptions(capabilities)}
-    tools = _describe(capabilities, remote, callables["write_qa_report"])
-    if "fire_job" in callables:
-        names = ", ".join(jobs.names) if jobs else ""
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=callables["fire_job"],
-                name="fire_job",
-                description=(
-                    "Invoke one scheduled behaviour of the product by name, on the deployment "
-                    f"under test. This run may fire: {names}. You supply only the name, and only "
-                    "one of those — the arguments and the command identity belong to the run, "
-                    "so calling it twice re-reads the same execution instead of causing a "
-                    "second one. A successful answer records that the product's core dispatched "
-                    "the fire; it is not evidence the behaviour ran. Assert that against the "
-                    "product's own output."
-                ),
-            )
-        )
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=callables["job_evidence"],
-                name="job_evidence",
-                description=(
-                    "Read back what the product recorded for this run's fire of a named "
-                    f"behaviour: {names}. Same rule — the record is dispatch evidence, not "
-                    "proof that the behaviour happened."
-                ),
-            )
-        )
-    if "telegram_probe" in callables:
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=callables["telegram_probe"],
-                name="telegram_probe",
-                description=(
-                    f"Send a message to @{capabilities.bot_username} as the platform's QA "
-                    "Telegram account and return the bot's replies. This is the only way to talk "
-                    "to the bot; you never hold the account's credentials."
-                ),
-            )
-        )
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=callables["telegram_click_button"],
-                name="telegram_click_button",
-                description=(
-                    "Invoke one inline button returned by telegram_probe in this QA run. "
-                    "Use the reply id and callback_data exactly as returned; arbitrary callbacks "
-                    "and callbacks from another bot are refused."
-                ),
-            )
-        )
-    return tools
-
-
-def _descriptions(capabilities: QACapabilities) -> dict[str, str]:
-    """What each tool promises the agent, stated as the capability that bounds it."""
-    containers = ", ".join(sorted(capabilities.containers)) or "(none running)"
-    ports = ", ".join(str(port) for port in sorted(capabilities.loopback_ports)) or "(none)"
-    return {
-        "http_get": (
-            "GET a path on the deployed application over its public URL "
-            f"({capabilities.deployed_url}). Returns status, headers and body. There is no way "
-            "to send POST, PUT, PATCH or DELETE — QA never writes to the application."
-        ),
-        "localhost_http_get": (
-            "GET a path on the target's loopback interface, for a service that is not "
-            f"published publicly. Only ports allocated to this deployment work: {ports}. "
-            "GET only, like http_get."
-        ),
-        "remote_read": (
-            "Read a file from this deployment's directory on the target "
-            f"({capabilities.physical_root}). The path is resolved on the target, so a symlink "
-            "leading out of the deployment is refused, as are files holding deployment "
-            "credentials."
-        ),
-        "remote_exec": (
-            "Run one read-only docker command against a container of this deployment, as an "
-            'argument vector, e.g. ["docker", "top", "<container>"]. Sub-commands: diff, '
-            "inspect, logs, port, stats, top. There is no shell and no command that describes "
-            f"the host. Containers you can name: {containers}."
-        ),
-        "container_logs": f"Tail the log of one of this deployment's containers: {containers}.",
-        "container_inspect": (
-            "Inspect the state of one of this deployment's containers: running, health, "
-            f"exit code, restart count. Containers: {containers}."
-        ),
-    }
-
-
-def _describe(
-    capabilities: QACapabilities, remote_tools: dict, write_report
-) -> list[StructuredTool]:
-    """Bind the run's closures to their names and descriptions."""
-    descriptions = _descriptions(capabilities)
-    tools = [
-        StructuredTool.from_function(coroutine=fn, name=name, description=descriptions[name])
-        for name, fn in remote_tools.items()
-    ]
-    tools.append(
-        StructuredTool.from_function(
-            func=write_report,
-            name="write_qa_report",
-            description=(
-                "Store the QA report in Markdown. Call this once, before returning the final "
-                "JSON result."
-            ),
-        )
-    )
-    return tools

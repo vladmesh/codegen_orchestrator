@@ -22,6 +22,7 @@ result.
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import inspect
 import os
 from pathlib import Path
 import subprocess
@@ -41,7 +42,7 @@ from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
-from src.agents.qa.tools import build_qa_tools
+from src.agents.qa.tools import build_qa_callables
 from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
@@ -56,10 +57,9 @@ from src.consumers._qa_target import (
 from src.consumers._qa_workspace import qa_workspace
 from src.consumers.qa import process_qa_job
 
-# The executor is the assigned subscription agent, addressing the runtime over
-# loopback because in a test the "container" is this process; no API fallback.
+# The run's only executor is the assigned subscription agent, addressing the
+# runtime over loopback because in a test the "container" is this process.
 _RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
-_NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
 
 OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1")
 ALLOWED_PORT = 8000
@@ -206,13 +206,11 @@ async def test_no_tool_can_send_a_write_to_the_application(tmp_path, attempt):
         argv = [part.replace("{url}", application.url) for part in attempt]
 
         with qa_workspace(root=str(tmp_path / "runs")) as workspace:
-            tools = {
-                tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
-            }
-            refusal = await tools["remote_exec"].ainvoke({"command": argv})
+            calls = build_qa_callables(session=session, workspace=workspace)
+            refusal = await calls["remote_exec"](argv)
             # The read the agent is entitled to still works, and really reaches
             # the application — so an empty method list would prove nothing.
-            await tools["http_get"].ainvoke({"path": "/health"})
+            await calls["http_get"]("/health")
 
         assert "error" in refusal
         assert application.methods == ["GET"]
@@ -226,11 +224,9 @@ async def test_the_public_probe_is_get_only(tmp_path):
     with _RecordingApplication() as application:
         session = _session(deployment, application.url, _LocalShellConn())
         with qa_workspace(root=str(tmp_path / "runs")) as workspace:
-            tools = {
-                tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
-            }
-            assert "method" not in tools["http_get"].args
-            answer = await tools["http_get"].ainvoke({"path": "/users"})
+            calls = build_qa_callables(session=session, workspace=workspace)
+            assert "method" not in inspect.signature(calls["http_get"]).parameters
+            answer = await calls["http_get"]("/users")
 
         assert answer["status"] == 200
         assert application.methods == ["GET"]
@@ -426,7 +422,6 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
             runtime=_RUNTIME,
             grant_journal=_Journal(),
             provisioning_journal=_ProvisioningJournal(),
-            settings=_NO_API_FALLBACK,
             established_facts=[],
         )
 
@@ -488,9 +483,6 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
         get_settings.return_value = SimpleNamespace(
             qa_executor_agent_type=AgentType.CLAUDE,
             qa_capability_host="127.0.0.1",
-            qa_llm_model=None,
-            qa_llm_base_url=None,
-            qa_llm_api_key=None,
         )
         await process_qa_job(
             {
