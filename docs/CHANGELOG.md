@@ -15,8 +15,9 @@
   admitted decision therefore leaves exactly the queued engineering Run and active budget hold the
   scheduler used to create for itself, with the same `run_metadata` (`triggered_by`, `story_id`,
   `task_id`, `initiating_run_id`, `iteration`). `shared/contracts/dto/engineering_dispatch.py`
-  carries the typed question and answer: `EngineeringDispatchCommand` is the task id and nothing
-  else, so no caller can pass a stale project status or sibling list, and `EngineeringDispatchRead`
+  carries the typed question and answer: `EngineeringDispatchCommand` names the task and nothing
+  about its state, so no caller can pass a stale project status or sibling list, and
+  `EngineeringDispatchRead`
   returns an `EngineeringDispatchOutcome` with one `EngineeringDispatchRefusal` value per distinct
   refusal — `story_busy` is readable apart from `workspace_not_ready` and from
   `engineering_budget_denied` without parsing a log line — plus the wrapped `PaidRunStartRead`
@@ -45,6 +46,37 @@
   a loop. The one behaviour not carried over is the "project is gone" skip: `tasks.project_id` is a
   non-nullable foreign key, so server-side that state is a broken database rather than a refusal,
   and it now raises the way `start_paid_run` already raises for a missing project.
+- The admin route `POST /api/tasks/{id}/spawn-worker` goes through that same admission point. It
+  used to lock the task and then call `start_paid_run` and publish an `EngineeringMessage` itself,
+  so a supported operator action could buy and publish a worker for an internal-project task, a task
+  with an unresolved blocker, a task on a busy story or a task in a draft or workspace-not-ready
+  project. It now asks `admit_engineering_dispatch` and acts on the typed answer, and the two
+  conditions it is allowed to walk past are named rather than absent: `EngineeringDispatchCommand`
+  gained `overrides`, a list of `EngineeringDispatchRefusal` values validated against
+  `OVERRIDABLE_REFUSALS`, and the route passes exactly `task_not_dispatchable` and
+  `live_attempt_in_flight` — the two that mean "the scheduler would not have started this now",
+  which is the whole point of an operator spawn. Every other condition, the paid gate included,
+  refuses an operator spawn exactly as it refuses a scheduled one. An override is audited rather
+  than silent: the decision returns `overridden`, the created attempt records
+  `run_metadata["admission_overrides"]`, and `worker_spawned` logs it. `EngineeringDispatchCommand`
+  also gained `origin`, so an attempt still records whether a human or the scheduler asked for it.
+  The remaining publisher of an `EngineeringMessage`, the deploy supervisor's code-fix handoff in
+  `services/scheduler/src/tasks/supervisor/deploy.py`, dispatches no Task at all — it has no Task
+  row — and is outside this admission point's subject.
+- The story fence observes runs, not only statuses. A sibling that was admitted and published but
+  whose transition out of `todo` failed is a supported recovery state: still `todo`, with a live
+  engineering run whose worker holds the story branch. Under the story lock the admission point now
+  refuses a dispatch whose story has any sibling holding a queued or running engineering run, with
+  the same `story_busy` reason an `in_dev` sibling produces — one condition, read two ways, because
+  the status write that would have made the sibling visible locks only its own row.
+- The blocker row is read for update. `blocked_by_task_id` used to be resolved through the
+  read-only reader, so a concurrent legal `done → backlog` on the blocker could be lost between the
+  read and the commit. Both Task rows are now taken with `get_task_for_update` in ascending task id,
+  never in dependency order, which is what makes a reciprocal dependency safe: two dispatches of
+  tasks that block each other take the same two rows in the same order and one waits instead of both
+  deadlocking. The edge itself is peeked at first with a column-only unlocked query, purely to learn
+  which second row to take; if the locked row then names a different blocker, that tick refuses with
+  `blocker_unresolved` rather than locking out of order.
 
 - Gave a Story a typed answer to "what is it waiting for?". `StoryWaitingOn` (`none`, `ci`,
   `deploy`, `qa`, `user_secret`, `human_review`, `resources`) lives in

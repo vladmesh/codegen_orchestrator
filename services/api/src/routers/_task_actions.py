@@ -1,28 +1,32 @@
 """Task action endpoints — state machine transitions."""
 
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.engineering_dispatch import (
+    EngineeringDispatchCommand,
+    EngineeringDispatchOrigin,
+    EngineeringDispatchOutcome,
+    EngineeringDispatchRefusal,
+)
 from shared.contracts.dto.task import TaskEventType, TaskStatus
-from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.models import Project, Run, TaskEvent
+from shared.models import Run, Task, TaskEvent
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client, require_internal_or_admin
+from ..engineering_dispatch_admission import admit_engineering_dispatch
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
-from ..work_admission import abort_paid_run_pre_handoff, start_paid_run
-from ._ownership import initiating_run_or_conflict
+from ..work_admission import abort_paid_run_pre_handoff
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import (
     create_status_event,
+    get_task,
     get_task_for_update,
     to_read,
     validate_transition,
@@ -31,6 +35,31 @@ from ._task_helpers import (
 logger = structlog.get_logger()
 
 action_router = APIRouter()
+
+#: The conditions the operator spawn button is authorised to walk past, named
+#: once here rather than being absent. `spawn-worker` exists to start a task a
+#: human picked out — from backlog, or again on one already in_dev — so it
+#: overrides the dispatchability status and the prior-attempt fence, which are
+#: exactly the two conditions that describe "the scheduler would not have
+#: started this now". Everything else — the internal project, an unresolved
+#: blocker, a busy story, a draft or unprepared project, the budget and the
+#: slot — refuses an operator spawn exactly as it refuses a scheduled one, and
+#: the overrides that were used are recorded on the attempt.
+_OPERATOR_SPAWN_OVERRIDES = [
+    EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE,
+    EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT,
+]
+
+#: Statuses this route will start a worker from. Its own transition validation,
+#: not an admission condition: it says which hop the route is able to perform,
+#: and it runs before admission so a status it cannot move consumes nothing.
+_SPAWNABLE_FROM = {TaskStatus.BACKLOG, TaskStatus.TODO, TaskStatus.IN_DEV}
+
+
+def _refusal_detail(value: str) -> str:
+    """A typed refusal, as the one sentence an HTTP caller reads."""
+    return f"Engineering dispatch refused: {value.replace('_', ' ')}"
+
 
 # Path from working statuses to done (auto-promotion chain)
 _COMPLETE_PATH: dict[str, list[str]] = {
@@ -229,70 +258,71 @@ async def spawn_worker(
 ) -> dict:
     """Spawn an engineering worker for a task.
 
-    Transitions task to IN_DEV (if not already), creates a Run,
-    and publishes EngineeringMessage to engineering:queue.
+    The operator's way in to the same admission point the dispatcher uses: this
+    route decides nothing about whether the work may happen. It asks
+    `admit_engineering_dispatch` with its two declared overrides and acts on the
+    typed answer, so there is no way to publish an engineering message without
+    passing the admission point.
     """
     body = body or SpawnWorkerRequest()
-    task = await get_task_for_update(task_id, db)
-    # The run this work belongs to, recorded when the project was created. The
-    # message below cannot be built without it, so an admin-spawned worker is
-    # owned on exactly the same terms as a dispatched one.
-    project = await db.get(Project, task.project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project {task.project_id} not found",
-        )
-    # Refused here, before the task is moved or a Run row exists: a project
-    # that predates run ownership must not leave a half-started attempt behind.
-    initiating_run_id = initiating_run_or_conflict(project)
 
-    # Validate every local refusal before admission.  These checks do not modify
-    # the task, so a bad status cannot consume a reservation.
-    startable = {TaskStatus.BACKLOG, TaskStatus.TODO}
-    task_status = TaskStatus(task.status)
-    if task_status in startable:
-        if task_status is TaskStatus.BACKLOG:
-            validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
-            task_status = TaskStatus.TODO
-        validate_transition(task_status, TaskStatus.IN_DEV)
-    elif task_status is not TaskStatus.IN_DEV:
+    # Unlocked, and only to reject a status this route could not move anyway:
+    # admission takes the row locks, in its own order. Refusing here means no
+    # reservation was consumed by a request that was never going to transition.
+    peeked = await get_task(task_id, db)
+    if TaskStatus(peeked.status) not in _SPAWNABLE_FROM:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot spawn worker for task in status '{task.status}'",
+            detail=f"Cannot spawn worker for task in status '{peeked.status}'",
         )
 
-    run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    started = await start_paid_run(
-        PaidRunStartCommand(
-            id=run_id,
-            type="engineering",
-            project_id=task.project_id,
-            task_id=task.id,
-            story_id=getattr(task, "story_id", None),
-            run_metadata={"triggered_by": "admin", "task_id": task.id},
+    decision = await admit_engineering_dispatch(
+        EngineeringDispatchCommand(
+            task_id=task_id,
+            origin=EngineeringDispatchOrigin.ADMIN,
+            overrides=_OPERATOR_SPAWN_OVERRIDES,
         ),
         db,
     )
-    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+    if decision.outcome is not EngineeringDispatchOutcome.ADMITTED:
+        # Nothing to publish. The commit keeps whatever the paid gate recorded
+        # about its own decision; no Run was left queued by a refusal.
         await db.commit()
         logger.info(
-            "worker_spawn_count_admission_refused",
-            task_id=task.id,
-            run_id=run_id,
-            reason=started.admission.reason.value if started.admission.reason else None,
+            "worker_spawn_admission_refused",
+            task_id=task_id,
+            outcome=decision.outcome.value,
+            reason=decision.reason.value if decision.reason else None,
+            repair=decision.repair.value if decision.repair else None,
         )
-        return {"admission": started.admission.model_dump(mode="json")}
+        if decision.paid_work is not None:
+            # The paid gate's own refusal keeps the shape it has always had, so
+            # a caller reading `admission` still reads the same document.
+            return {"admission": decision.paid_work.admission.model_dump(mode="json")}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_refusal_detail(
+                decision.reason.value if decision.reason else decision.repair.value
+            ),
+        )
 
+    run_id = decision.run_id
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise RuntimeError("Locked task disappeared before worker handoff")
     try:
-        # Transition to IN_DEV if needed.
-        if TaskStatus(task.status) in startable:
-            if task.status == TaskStatus.BACKLOG:
+        # The admitted row is the locked one, so this is the status the transition
+        # is actually applied to — not the one the unlocked peek above saw.
+        task_status = TaskStatus(task.status)
+        if task_status is not TaskStatus.IN_DEV:
+            if task_status is TaskStatus.BACKLOG:
+                validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
                 await create_status_event(
                     task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db
                 )
                 task.status = TaskStatus.TODO
             old_status = task.status
+            validate_transition(old_status, TaskStatus.IN_DEV)
             task.status = TaskStatus.IN_DEV
             await create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, {}, db)
 
@@ -306,7 +336,7 @@ async def spawn_worker(
         msg = EngineeringMessage(
             task_id=run_id,
             project_id=str(task.project_id),
-            initiating_run_id=initiating_run_id,
+            initiating_run_id=decision.initiating_run_id,
             telegram_chat_id=await resolve_project_chat_id(
                 db,
                 task.project_id,
@@ -338,7 +368,13 @@ async def spawn_worker(
             detail="Engineering handoff could not be confirmed",
         ) from error
 
-    logger.info("worker_spawned", task_id=task.id, run_id=run_id, actor=body.actor)
+    logger.info(
+        "worker_spawned",
+        task_id=task.id,
+        run_id=run_id,
+        actor=body.actor,
+        overridden=[reason.value for reason in decision.overridden],
+    )
     return {
         "task": to_read(task),
         "run": RunRead.model_validate(run, from_attributes=True),

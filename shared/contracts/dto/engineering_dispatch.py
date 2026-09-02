@@ -7,7 +7,7 @@ hold, because every condition was decided server-side on locked rows.
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .work_admission import PaidRunStartRead, WorkAdmissionReason
 
@@ -22,6 +22,18 @@ class EngineeringDispatchOutcome(StrEnum):
     REPAIR = "repair"
     #: Do not dispatch. `reason` says why.
     REFUSED = "refused"
+
+
+class EngineeringDispatchOrigin(StrEnum):
+    """Who is asking. Recorded on the run the admission point creates.
+
+    The conditions are the same for both; the origin only names the caller in
+    the attempt's metadata, so an operator reading a run can tell a scheduled
+    dispatch from one a human asked for.
+    """
+
+    DISPATCHER = "dispatcher"
+    ADMIN = "admin"
 
 
 class EngineeringDispatchRepair(StrEnum):
@@ -97,18 +109,55 @@ PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
 }
 
 
+#: The refusals an authorised operator may override, and the only values a
+#: command's `overrides` may contain. Everything absent from this set is refused
+#: no matter who asks: the paid gate's decisions, because overriding them would
+#: spend money nobody admitted, and the project conditions, because a worker sent
+#: at a draft or unprepared workspace has nothing to check out.
+OVERRIDABLE_REFUSALS: frozenset[EngineeringDispatchRefusal] = frozenset(
+    {
+        EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE,
+        EngineeringDispatchRefusal.INTERNAL_PROJECT,
+        EngineeringDispatchRefusal.BLOCKER_UNRESOLVED,
+        EngineeringDispatchRefusal.STORY_BUSY,
+        EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW,
+        EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT,
+    }
+)
+
+
 class EngineeringDispatchCommand(BaseModel):
     """Ask whether one engineering Task may be dispatched now.
 
-    The task id is the whole command: every fact the decision needs is read
-    server-side, on the locked rows, inside the deciding transaction. A caller
-    that could pass the project status or the sibling list would be a caller that
-    could pass a stale one.
+    The task id is the whole of the question: every fact the decision needs is
+    read server-side, on the locked rows, inside the deciding transaction. A
+    caller that could pass the project status or the sibling list would be a
+    caller that could pass a stale one. The other two fields say nothing about
+    the state — `origin` names who is asking, and `overrides` names, one typed
+    value at a time, the refusals this caller is authorised to walk past.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1)
+    origin: EngineeringDispatchOrigin = EngineeringDispatchOrigin.DISPATCHER
+    #: Conditions this caller is authorised to override, named one by one. An
+    #: empty list — the default, and the only thing the scheduler ever sends — is
+    #: full admission. An override is not an absence of admission: the condition
+    #: is still evaluated, the decision reports it in `overridden`, and the
+    #: attempt records it, so a dispatch that only happened because a human said
+    #: so says which condition it walked past.
+    overrides: list[EngineeringDispatchRefusal] = Field(default_factory=list)
+
+    @field_validator("overrides")
+    @classmethod
+    def _only_overridable(
+        cls, overrides: list[EngineeringDispatchRefusal]
+    ) -> list[EngineeringDispatchRefusal]:
+        forbidden = [r for r in overrides if r not in OVERRIDABLE_REFUSALS]
+        if forbidden:
+            raise ValueError("not overridable: " + ", ".join(sorted(r.value for r in forbidden)))
+        return overrides
 
 
 class EngineeringDispatchRead(BaseModel):
@@ -137,3 +186,7 @@ class EngineeringDispatchRead(BaseModel):
     #: The wrapped paid-work decision, present exactly when the paid gate was
     #: reached. Every earlier condition refuses before anything is counted.
     paid_work: PaidRunStartRead | None = None
+    #: The conditions that refused and were walked past because the command
+    #: named them. Empty for every scheduled dispatch; the audit trail of an
+    #: operator override, and written onto the attempt it created.
+    overridden: list[EngineeringDispatchRefusal] = Field(default_factory=list)

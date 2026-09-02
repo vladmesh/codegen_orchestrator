@@ -113,6 +113,23 @@ async def _set_status(db_session: AsyncSession, task_id: str, status: str) -> No
     await db_session.commit()
 
 
+async def _blocked_pair(
+    client: AsyncClient, project_id: str, *, blocker_sorts_first: bool
+) -> tuple[str, str]:
+    """A (dependent, blocker) pair whose ids sort in the requested direction.
+
+    Task ids are random, so the pair is drawn until it lands the way the test
+    needs. Both directions are exercised, which is the only way to tell an
+    ascending-id lock order from one that happens to follow the dependency edge.
+    """
+    for _ in range(40):
+        blocker = await _task(client, project_id, title="Blocker")
+        dependent = await _task(client, project_id, title="Dependent", blocked_by_task_id=blocker)
+        if (blocker < dependent) is blocker_sorts_first:
+            return dependent, blocker
+    pytest.fail("could not draw a task id pair in the requested order")
+
+
 @pytest.fixture
 async def paid_controls(db_session: AsyncSession) -> AsyncGenerator[dict, None]:
     """Restore every paid control this module writes, whatever the test does."""
@@ -580,3 +597,223 @@ async def test_a_story_whose_siblings_are_done_still_dispatches(
 
     assert decision["outcome"] == EngineeringDispatchOutcome.ADMITTED
     assert (await db_session.get(Story, story_id)) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker_sorts_first", [True, False])
+async def test_both_task_rows_are_taken_in_ascending_id_order(
+    async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch, blocker_sorts_first: bool
+):
+    """The blocker is read for update, and the order does not follow the edge.
+
+    A row read in order to decide action is locked, so a concurrent legal
+    `done -> backlog` on the blocker cannot be lost between the read and the
+    commit. Ascending task id — not dependency order — is what keeps a reciprocal
+    dependency from deadlocking: both dispatches take the same two rows in the
+    same order, so one waits.
+    """
+    from src.routers import _task_helpers
+
+    project_id = await _project(async_client, await _owner(async_client))
+    dependent, blocker = await _blocked_pair(
+        async_client, project_id, blocker_sorts_first=blocker_sorts_first
+    )
+    locked: list[str] = []
+    original = _task_helpers.get_task_for_update
+
+    async def recording(task_id: str, db: AsyncSession):
+        locked.append(task_id)
+        return await original(task_id, db)
+
+    monkeypatch.setattr(_task_helpers, "get_task_for_update", recording)
+    locked.clear()
+
+    decision = await _decide(async_client, dependent)
+
+    assert decision["reason"] == EngineeringDispatchRefusal.BLOCKER_UNRESOLVED
+    assert locked == sorted([dependent, blocker])
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_holding_a_live_run_makes_the_story_busy(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """The fence observes runs, not only statuses.
+
+    A sibling that was admitted and published but whose transition out of todo
+    failed is a supported recovery state: still todo, with a live run whose worker
+    holds the story branch. A status-only scan cannot see it, and a second worker
+    would go onto the same branch.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    story_id = await _story(async_client, project_id)
+    sibling_id = await _task(async_client, project_id, story_id=story_id, title="Published")
+    task_id = await _task(async_client, project_id, story_id=story_id)
+    db_session.add(
+        Run(
+            id=f"eng-sibling-{uuid.uuid4().hex[:8]}",
+            type=RunType.ENGINEERING.value,
+            status=RunStatus.QUEUED.value,
+            project_id=uuid.UUID(project_id),
+            task_id=sibling_id,
+            story_id=story_id,
+            run_metadata={"triggered_by": "dispatcher", "iteration": 0},
+        )
+    )
+    await db_session.commit()
+    assert (await db_session.get(Task, sibling_id)).status == "todo"
+
+    decision = await _decide(async_client, task_id)
+
+    assert decision["reason"] == EngineeringDispatchRefusal.STORY_BUSY
+    assert (await db_session.scalars(select(Run).where(Run.task_id == task_id))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_a_siblings_finished_or_aborted_run_does_not_hold_the_story(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Only a live run holds the branch, and an aborted one never reached a worker."""
+    project_id = await _project(async_client, await _owner(async_client))
+    story_id = await _story(async_client, project_id)
+    sibling_id = await _task(async_client, project_id, story_id=story_id, title="Finished")
+    task_id = await _task(async_client, project_id, story_id=story_id)
+    db_session.add_all(
+        [
+            Run(
+                id=f"eng-done-{uuid.uuid4().hex[:8]}",
+                type=RunType.ENGINEERING.value,
+                status=RunStatus.COMPLETED.value,
+                project_id=uuid.UUID(project_id),
+                task_id=sibling_id,
+                story_id=story_id,
+                run_metadata={"iteration": 0},
+            ),
+            Run(
+                id=f"eng-aborted-{uuid.uuid4().hex[:8]}",
+                type=RunType.ENGINEERING.value,
+                status=RunStatus.QUEUED.value,
+                project_id=uuid.UUID(project_id),
+                task_id=sibling_id,
+                story_id=story_id,
+                run_metadata={"iteration": 1, "pre_handoff_aborted": True},
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    decision = await _decide(async_client, task_id)
+
+    assert decision["outcome"] == EngineeringDispatchOutcome.ADMITTED
+
+
+# --- overrides: named, evaluated, recorded ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_named_override_walks_past_its_condition_and_is_recorded(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """An override is not an absence of admission: the condition still ran.
+
+    The decision says which refusal it walked past and the attempt it created
+    records the same thing, so a dispatch that only happened because somebody was
+    authorised to say so can be read back off the run.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    task_id = await _task(async_client, project_id)
+    await _set_status(db_session, task_id, "in_dev")
+
+    response = await async_client.post(
+        ADMISSION_URL,
+        json={
+            "task_id": task_id,
+            "origin": "admin",
+            "overrides": [EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE.value],
+        },
+    )
+    assert response.status_code == HTTPStatus.OK, response.text
+    decision = response.json()
+
+    assert decision["outcome"] == EngineeringDispatchOutcome.ADMITTED
+    assert decision["overridden"] == [EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE]
+    run = await db_session.get(Run, decision["run_id"])
+    assert run.run_metadata["triggered_by"] == "admin"
+    assert run.run_metadata["admission_overrides"] == [
+        EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE.value
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_override_clears_only_the_condition_it_names(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Every other condition refuses an overriding caller exactly as before."""
+    project_id = await _project(async_client, await _owner(async_client))
+    story_id = await _story(async_client, project_id)
+    sibling_id = await _task(async_client, project_id, story_id=story_id, title="Working")
+    task_id = await _task(async_client, project_id, story_id=story_id)
+    await _set_status(db_session, sibling_id, "in_dev")
+    await _set_status(db_session, task_id, "backlog")
+
+    response = await async_client.post(
+        ADMISSION_URL,
+        json={
+            "task_id": task_id,
+            "overrides": [EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE.value],
+        },
+    )
+    assert response.status_code == HTTPStatus.OK, response.text
+    decision = response.json()
+
+    assert decision["reason"] == EngineeringDispatchRefusal.STORY_BUSY
+    assert decision["overridden"] == [EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE]
+    assert (await db_session.scalars(select(Run).where(Run.task_id == task_id))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_the_paid_gate_and_the_project_conditions_cannot_be_overridden(
+    async_client: AsyncClient,
+):
+    """The command itself refuses to carry an override nobody may have."""
+    project_id = await _project(async_client, await _owner(async_client))
+    task_id = await _task(async_client, project_id)
+
+    for reason in (
+        EngineeringDispatchRefusal.ENGINEERING_BUDGET_DENIED,
+        EngineeringDispatchRefusal.WORKSPACE_NOT_READY,
+        EngineeringDispatchRefusal.PROJECT_NOT_SCAFFOLDED,
+        EngineeringDispatchRefusal.EMERGENCY_STOP,
+    ):
+        response = await async_client.post(
+            ADMISSION_URL, json={"task_id": task_id, "overrides": [reason.value]}
+        )
+        assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+
+
+@pytest.mark.asyncio
+async def test_a_task_is_not_its_own_busy_sibling(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """The story condition asks what *else* holds the branch.
+
+    An operator respawning a worker for a task already in_dev overrides the
+    dispatchability status; it must not then be refused by its own row turning up
+    in the story's sibling scan.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    story_id = await _story(async_client, project_id)
+    task_id = await _task(async_client, project_id, story_id=story_id)
+    await _set_status(db_session, task_id, "in_dev")
+
+    response = await async_client.post(
+        ADMISSION_URL,
+        json={
+            "task_id": task_id,
+            "origin": "admin",
+            "overrides": [EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE.value],
+        },
+    )
+    assert response.status_code == HTTPStatus.OK, response.text
+
+    assert response.json()["outcome"] == EngineeringDispatchOutcome.ADMITTED

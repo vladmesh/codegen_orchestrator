@@ -148,7 +148,18 @@ distinguishable from "workspace not ready" and from "budget denied" without
 parsing a log line. A prior attempt yields a named `EngineeringDispatchRepair`
 that the caller executes; the decider performs no transition of its own. The
 scheduler's `dispatch_todo_tasks` selects candidates, asks once per task, and
-acts on the answer.
+acts on the answer, and the admin route `POST /api/tasks/{id}/spawn-worker` asks
+the same question before it publishes anything. Those two, plus the deploy
+supervisor's code-fix handoff — which dispatches no Task and so has no admission
+to pass — are the only publishers of an `EngineeringMessage`.
+
+An operator spawn may walk past a condition only by naming it: a command carries
+`overrides`, a list of `EngineeringDispatchRefusal` values restricted to
+`OVERRIDABLE_REFUSALS`, the decision returns the ones it applied in `overridden`,
+and the attempt records them in `run_metadata["admission_overrides"]`. The paid
+gate and the project conditions are never overridable. Rows are taken in one
+order — the candidate Task and its blocker in ascending task id, then the story,
+then the paid-work controls — so a reciprocal `blocked_by` cannot deadlock.
 
 The paid-run command locks its controls, evaluates count admission and (for
 engineering) money admission, then creates the queued Run in one transaction.
