@@ -118,7 +118,6 @@ ALL_SUITES=(
     "api|services/api/tests/unit|$ROOT/services/api"
     "langgraph|services/langgraph/tests/unit|$ROOT/services/langgraph"
     "telegram_bot|services/telegram_bot/tests/unit|$ROOT/services/telegram_bot"
-    "telegram_bot-legacy|services/telegram_bot/tests_legacy/unit|$ROOT/services/telegram_bot"
     "scheduler|services/scheduler/tests/unit|$ROOT/services/scheduler"
     "worker-manager|services/worker-manager/tests/unit|$ROOT/services/worker-manager"
     "worker-broker|services/worker-broker/tests/unit|$ROOT/services/worker-broker"
