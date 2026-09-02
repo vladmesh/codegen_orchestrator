@@ -34,9 +34,6 @@ from .service_deployment import (
     DeploymentCreate,
     DeploymentRead,
     DeploymentUpdate,
-    ServiceDeploymentCreate,
-    ServiceDeploymentRead,
-    ServiceDeploymentUpdate,
 )
 from .system_config import SystemConfigCreate, SystemConfigRead, SystemConfigUpdate
 from .task import (
@@ -53,7 +50,7 @@ from .temporary_access import (
     TemporaryAccessGrantRead,
     TemporaryAccessGrantUpdate,
 )
-from .user import UserCreate, UserRead, UserUpdate, UserUpsert
+from .user import UserCreate, UserRead, UserUpsert
 
 __all__ = [
     "AdminAction",
@@ -76,7 +73,6 @@ __all__ = [
     "EngineeringBudgetPolicyRead",
     "UserCreate",
     "UserRead",
-    "UserUpdate",
     "ProjectCreate",
     "ProjectRead",
     "ProjectUpdate",
@@ -104,9 +100,6 @@ __all__ = [
     "DeploymentCreate",
     "DeploymentRead",
     "DeploymentUpdate",
-    "ServiceDeploymentCreate",
-    "ServiceDeploymentRead",
-    "ServiceDeploymentUpdate",
     "RunCreate",
     "RunRead",
     "RunUpdate",

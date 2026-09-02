@@ -21,7 +21,6 @@ dev = [
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
-    "makefun",
     "copier>=9.17.1",
     # Workspace members (all services + packages)
     "api",

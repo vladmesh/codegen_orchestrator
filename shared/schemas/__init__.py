@@ -9,11 +9,7 @@ Usage:
     from shared.schemas import RepoInfo, AllocatedResource, Time4VPSServer
 """
 
-from .github import (
-    GitHubFileContent,
-    GitHubInstallation,
-    GitHubRepository,
-)
+from .github import GitHubRepository
 from .project_spec import (
     EntryPointSpec,
     InfrastructureSpec,
@@ -21,7 +17,6 @@ from .project_spec import (
     ProjectSpecYAML,
 )
 from .time4vps import (
-    Time4VPSOSTemplate,
     Time4VPSServer,
     Time4VPSServerDetails,
     Time4VPSTask,
@@ -40,11 +35,8 @@ __all__ = [
     "Time4VPSServer",
     "Time4VPSServerDetails",
     "Time4VPSTask",
-    "Time4VPSOSTemplate",
     # GitHub
-    "GitHubInstallation",
     "GitHubRepository",
-    "GitHubFileContent",
     # Project Spec
     "ProjectSpecYAML",
     "ProjectInfo",

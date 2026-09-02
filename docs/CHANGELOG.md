@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- First safe pass of the legacy and dead-code cleanup, deletions only, no behaviour or contract
+  change. The contract-change checklist in `docs/CONTRACTS.md` no longer licenses compatibility
+  shims: it now says what `AGENTS.md` says — no shims, fallbacks or dual-read paths for data that
+  no longer exists, and a changed persisted row or payload shape is migrated with Alembic instead
+  of kept alive behind a compat branch. Removed ten scripts nothing in the repository referenced
+  (`scripts/test-native-dev-env.sh`, `verify_grafana_dashboards.py`, `live_deploy_infra_evidence.sh`,
+  `test_e2e_analyst.py`, `pull_worker_reports.py` with its `pull-worker-reports` make target,
+  `rag_ingest_public.py`, `git-credential-github-app.sh`, `setup-docker-gc.sh`, `admin_truth_broad.py`,
+  `infra/scripts/ssh-to-server.sh`). Dropped infrastructure glue with no reader: unused `.env.example`
+  variables (`RAG_SUMMARY_*`, `SOPS_AGE_KEY_FILE`, `GITHUB_APP_INSTALLATION_ID`,
+  `ORCHESTRATOR_SSH_PRIVATE_KEY_PATH`, `SSH_TIMEOUT`), the `react-is` direct dependency in both
+  frontends, `makefun`, the `alembic/**` ruff ignore for a directory that does not exist, the `develop`
+  branch triggers in CI, and the `cleanup-agents` make target that filtered a container naming
+  generation that is gone; `PROVISIONING_TIMEOUT` in `.env.example` now matches the code default of
+  1200. Removed dead re-exports and wrappers: the `ServiceDeployment*` aliases, the "backward
+  compatibility with tests" `__all__` blocks in the deploy and engineering consumers and in the DevOps
+  nodes module, both `_safe_validation_errors` proxies over `shared.diagnostics.safe_validation_errors`,
+  the lazy `__getattr__` in `services/scheduler/src/tasks/__init__.py` no import went through, and the
+  `provisioner_node` singleton with its `run` alias. Deleted three tombstone test files, keeping the
+  two assertions in them that were about live code (the deploy path has no LLM dependency; the site
+  playbook still provisions the base roles), and made the `.claude` assertion in
+  `tests/unit/test_repository_navigation.py` check tracked files rather than the working tree so it is
+  stable on a developer machine. Deleted unreferenced definitions: `dto/api_key.py`,
+  `dto/agent_config.py`, `DeployResult`, `GitHubInstallation`, `GitHubFileContent`, `GitHubContentItem`,
+  `Time4VPSOSTemplate`, `UserUpdate` and `require_admin`, with the `docs/CONTRACTS.md` registry rows
+  that pointed at them updated.
+
 - Gave the fire path a producer: the architect now authors the criterion QA fires from, and
   plans what makes the name answerable. When a confirmed must-requirement implies a deferred or
   scheduled behaviour, the plan declares it by name in the generated product's own

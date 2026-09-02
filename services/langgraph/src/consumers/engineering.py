@@ -21,6 +21,7 @@ from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import ActionType
 from shared.contracts.worker_turn import AttemptTurnMetadata
+from shared.diagnostics import safe_validation_errors
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -31,10 +32,8 @@ from ._base import start_worker
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
 from ._repo_setup import _create_repo_and_set_secrets
-from ._validation import _safe_validation_errors
 from .engineering_result_handler import (
     EngineeringSuccessParams,
-    _update_task_status,
     _write_task_event,
     fail_job as _fail_job,
     handle_engineering_success as _handle_engineering_success,
@@ -84,19 +83,6 @@ async def _engineering_consumer_is_draining() -> bool | None:
     return draining
 
 
-# Re-export for backward compatibility with tests
-__all__ = [
-    "_build_story_context",
-    "_build_story_md",
-    "_fail_job",
-    "_handle_engineering_success",
-    "_handle_worker_gave_up",
-    "_update_task_status",
-    "_write_task_event",
-    "process_engineering_job",
-]
-
-
 def _parse_telegram_id(telegram_chat_id: str) -> dict:
     """Build get_project kwargs with telegram_id if telegram_chat_id is numeric."""
     if telegram_chat_id and telegram_chat_id.isdigit():
@@ -120,7 +106,7 @@ async def _handle_invalid_engineering_message(
     logger.error(
         "engineering_job_invalid_message",
         task_id=raw_task_id,
-        errors=_safe_validation_errors(exc),
+        errors=safe_validation_errors(exc),
     )
     if not (isinstance(raw_task_id, str) and raw_task_id):
         # No identifiable run — nothing durable to lose; ACK so it does not reclaim forever.

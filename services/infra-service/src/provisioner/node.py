@@ -42,7 +42,7 @@ from .api_client import (
 from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient
 from .handlers import handle_provisioning_success
 from .incidents import create_incident
-from .operations import reinstall_and_provision, reset_server_password
+from .operations import reinstall_and_provision
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -79,17 +79,6 @@ class ProvisioningDenied(Exception):
             "errors": state.get("errors", []) + [self.error],
             "provisioning_result": {"status": "failed", "reason": self.reason},
         }
-
-
-# Re-export extracted names for backward compatibility
-__all__ = [
-    "ProvisionerNode",
-    "handle_provisioning_success",
-    "provisioner_node",
-    "reinstall_and_provision",
-    "reset_server_password",
-    "run",
-]
 
 
 class ProvisionerNode(FunctionalNode):
@@ -537,7 +526,3 @@ class ProvisionerNode(FunctionalNode):
                 ssh_private_key=bitlaunch_key,
                 provisioning_profile=state.get("provisioning_profile"),
             )
-
-
-provisioner_node = ProvisionerNode()
-run = provisioner_node.run

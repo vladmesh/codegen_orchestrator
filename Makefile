@@ -1,9 +1,9 @@
 .PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
-	setup-hooks lock-deps cleanup-agents \
+	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images ensure-worker-images check-shared-freshness print-source-hash \
-	.nuke-common .nuke-hard-prune pull-worker-reports
+	.nuke-common .nuke-hard-prune
 
 # Load .env file
 -include .env
@@ -56,7 +56,6 @@ help:
 	@echo "  make nuke-hard      - Full reset: clean workers, remove volumes, NO-CACHE rebuild"
 	@echo "  make seed           - Seed database with API keys from env"
 	@echo "  make lock-deps      - Regenerate all requirements.lock files"
-	@echo "  make cleanup-agents - Remove all agent-* containers"
 	@echo ""
 	@echo "  make rebuild      - Rebuild everything (services + worker images), restart stack"
 	@echo ""
@@ -115,12 +114,6 @@ rebuild:
 	@echo "🚀 Starting stack..."
 	$(DOCKER_COMPOSE) up -d
 	@echo "✅ Rebuild complete!"
-
-# Cleanup orphaned agent containers (manual cleanup)
-cleanup-agents:
-	@echo "🧹 Cleaning up agent containers..."
-	@docker ps -a --filter "name=agent-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
-	@echo "✅ Agent containers cleaned up"
 
 # === Worker Base Images ===
 # Build the worker image chain: common -> claude/factory/codex
@@ -520,11 +513,6 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	@echo "🚀 Starting remaining services..."
 	$(DOCKER_COMPOSE) up -d
 	@echo "✅ Fresh environment ready!"
-
-# === Worker reports ===
-
-pull-worker-reports:
-	@uv run python scripts/pull_worker_reports.py
 
 # === Seeding ===
 

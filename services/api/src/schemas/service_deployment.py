@@ -44,9 +44,3 @@ class DeploymentRead(DeploymentBase, TimestampedDTO):
     deployed_sha: str | None = None
     deployed_at: datetime
     server_ip: str
-
-
-# Backward compat aliases
-ServiceDeploymentCreate = DeploymentCreate
-ServiceDeploymentRead = DeploymentRead
-ServiceDeploymentUpdate = DeploymentUpdate

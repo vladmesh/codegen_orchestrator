@@ -30,15 +30,6 @@ class UserUpsert(UserBase):
     promo_code: str | None = Field(None, min_length=1, max_length=255)
 
 
-class UserUpdate(BaseModel):
-    """Schema for updating a user."""
-
-    username: str | None = None
-    first_name: str | None = None
-    last_name: str | None = None
-    is_admin: bool | None = None
-
-
 class UserRead(UserBase, TimestampedDTO):
     """Schema for reading a user."""
 

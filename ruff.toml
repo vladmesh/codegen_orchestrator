@@ -32,7 +32,6 @@ max-returns = 12
 "tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
 "**/tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
 "shared/tests/**" = ["PLR2004", "S101"]
-"alembic/**" = ["F401"]
 
 [lint.isort]
 combine-as-imports = true

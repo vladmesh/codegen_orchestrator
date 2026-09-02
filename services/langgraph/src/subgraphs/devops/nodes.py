@@ -1,30 +1,18 @@
 """DevOps subgraph nodes.
 
-Contains functional nodes for secret resolution, readiness check, and deployment.
-
-Implementation lives in dedicated modules; this file re-exports for backward compatibility.
+Holds the readiness check and the node instances the DevOps graph wires up;
+the secret resolver and the deployer live in their own modules.
 """
 
 from langchain_core.messages import AIMessage
 import structlog
 
 from ...nodes.base import FunctionalNode
-from .deployer import DeployerNode, _create_deployment_record, _write_deploy_secrets
+from .deployer import DeployerNode
 from .secret_resolver import SecretResolverNode
 from .state import DevOpsState
 
 logger = structlog.get_logger()
-
-__all__ = [
-    "DeployerNode",
-    "ReadinessCheckNode",
-    "SecretResolverNode",
-    "_create_deployment_record",
-    "_write_deploy_secrets",
-    "deployer_node",
-    "readiness_check_node",
-    "secret_resolver_node",
-]
 
 
 class ReadinessCheckNode(FunctionalNode):

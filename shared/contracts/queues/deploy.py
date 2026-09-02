@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from shared.contracts.base import BaseMessage, BaseResult
+from shared.contracts.base import BaseMessage
 from shared.contracts.git_ref import OptionalCommitSha
 
 
@@ -120,11 +120,3 @@ class DeployMessage(BaseMessage):
         if self.action in LIFECYCLE_ACTIONS and self.application_id is None:
             raise ValueError(f"application_id is required for action '{self.action.value}'")
         return self
-
-
-class DeployResult(BaseResult):
-    """Deploy task result."""
-
-    deployed_url: str | None = None
-    server_ip: str | None = None
-    port: int | None = None

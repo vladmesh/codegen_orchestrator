@@ -44,27 +44,11 @@ from ._events import publish_callback_event
 from ._live_work import live_work_cancel_key, live_work_settled, live_work_unsettled
 from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
-from .deploy_precheck import (
-    SERVICE_BASE_DIR,
-    _pre_check_server,
-    _run_deploy_precheck,
-)
+from .deploy_precheck import _run_deploy_precheck
 from .deploy_result_handler import (
     _handle_deploy_success,
     _handle_smoke_failure,
 )
-
-# Re-export for backward compatibility with tests
-__all__ = [
-    "SERVICE_BASE_DIR",
-    "_build_subgraph_input",
-    "_handle_deploy_failure",
-    "_handle_deploy_success",
-    "_handle_smoke_failure",
-    "_pre_check_server",
-    "_run_deploy_precheck",
-    "process_deploy_job",
-]
 
 logger = structlog.get_logger(__name__)
 

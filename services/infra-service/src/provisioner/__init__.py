@@ -5,7 +5,3 @@ This module handles:
 - Incident recovery with automatic service redeployment
 - Integration with Time4VPS API
 """
-
-from .node import run
-
-__all__ = ["run"]
