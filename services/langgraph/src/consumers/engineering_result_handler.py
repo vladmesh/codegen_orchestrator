@@ -248,9 +248,8 @@ async def handle_worker_gave_up(
 ) -> dict:
     """Handle worker gave_up: task/story → WHR, admin notified, user informed.
 
-    Covers both former "blocked" (worker hit a blocker) and "rejected" (infra issue)
-    paths — in both cases the worker explicitly could not complete the task and
-    a human needs to intervene.
+    The worker explicitly could not complete the task and a human needs to
+    intervene.
     """
     logger.warning(
         "worker_gave_up",
@@ -429,8 +428,6 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     run_result = EngineeringRunResult(
         engineering_status=result["engineering_status"],
         commit_sha=result.get("commit_sha"),
-        selected_modules=result.get("selected_modules"),
-        test_results=result.get("test_results"),
     )
     await prepare_terminal_settlement(
         task_id,

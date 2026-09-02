@@ -20,7 +20,7 @@ HEALTH_CHECK_OBSERVER_RESERVE_SECONDS = 120
 DEFAULT_TIMEOUT_SECONDS = (
     Timeouts.ACCESS_PHASE + Timeouts.PROVISIONING + HEALTH_CHECK_OBSERVER_RESERVE_SECONDS
 )
-TERMINAL_FAILURE_STATUSES = frozenset({"error", "unreachable", "missing", "decommissioned"})
+TERMINAL_FAILURE_STATUSES = frozenset({"error", "unreachable", "missing"})
 
 
 def _read_server(api_url: str, handle: str, internal_key: str) -> dict:

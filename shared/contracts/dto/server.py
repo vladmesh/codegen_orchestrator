@@ -29,12 +29,10 @@ class ServerStatus(StrEnum):
     # Issues
     ERROR = "error"  # Инцидент: был в норме, доступ пропал
     UNREACHABLE = "unreachable"  # Недоступен по сети
-    MAINTENANCE = "maintenance"  # Плановое обслуживание
 
     # Archive
     RESERVED = "reserved"  # Inventory-only; no provisioning is scheduled
     MISSING = "missing"  # Пропал из Time4VPS API
-    DECOMMISSIONED = "decommissioned"  # Выведен из эксплуатации
 
 
 class ServerCreate(BaseModel):

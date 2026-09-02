@@ -51,48 +51,6 @@ class TestSendTaskGaveUpPropagation:
     @pytest.mark.asyncio
     @patch("src.clients.worker_spawner.get_settings")
     @patch("src.clients.worker_spawner.redis")
-    async def test_rejected_worker_output_populates_gave_up_reason(
-        self, mock_redis_mod, mock_settings
-    ):
-        """When worker returns status=rejected, SpawnResult carries gave_up_reason."""
-        mock_settings.return_value.redis_url = "redis://localhost:6379"
-
-        mock_client = AsyncMock()
-        mock_redis_mod.from_url.return_value = mock_client
-
-        # Mock xgroup_create
-        mock_client.xgroup_create = AsyncMock()
-
-        # Mock xadd (sending task to worker)
-        mock_client.xadd = AsyncMock()
-
-        # Mock worker output: rejected (block_reason maps to gave_up_reason)
-        worker_output = {
-            "status": "rejected",
-            "block_reason": "REGISTRY_PASSWORD secret is empty",
-        }
-
-        # _wait_for_response returns the worker output
-        with patch(
-            "src.clients.worker_spawner._wait_for_response",
-            new_callable=AsyncMock,
-            return_value=worker_output,
-        ):
-            from src.clients.worker_spawner import send_task_to_worker
-
-            result = await send_task_to_worker(
-                ownership=_OWNERSHIP,
-                worker_id="dev-test-123",
-                task_content="Fix CI",
-                timeout_seconds=10,
-            )
-
-        assert result.success is False
-        assert result.gave_up_reason == "REGISTRY_PASSWORD secret is empty"
-
-    @pytest.mark.asyncio
-    @patch("src.clients.worker_spawner.get_settings")
-    @patch("src.clients.worker_spawner.redis")
     async def test_blocked_worker_output_populates_gave_up_reason(
         self, mock_redis_mod, mock_settings
     ):

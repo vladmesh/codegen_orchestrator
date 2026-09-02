@@ -271,14 +271,14 @@ class TestSpawnResultFromOutput:
         assert result.gave_up_reason == "Missing API credentials"
         assert result.error_message is None
 
-    def test_rejected_maps_to_gave_up_reason(self):
+    def test_rejected_is_no_longer_a_status(self):
         result = spawn_result_from_output(
             {"status": "rejected", "block_reason": "REGISTRY_PASSWORD empty"},
             request_id="req-4",
             worker_id="dev-4",
         )
         assert result.success is False
-        assert result.gave_up_reason == "REGISTRY_PASSWORD empty"
+        assert result.error_message == "invalid_worker_result"
 
     def test_invalid_payload_is_explicit_failure(self):
         # legacy synonym status — no longer valid on the wire
