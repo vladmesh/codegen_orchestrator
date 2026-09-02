@@ -116,3 +116,14 @@ class TestParseScheduledBehaviours:
             )
             is None
         )
+
+    def test_an_ordinary_checklist_declares_no_behaviour(self):
+        """The forms the architect already authors stay prose to the fire path."""
+        assert (
+            parse_scheduled_behaviours(
+                "- GET /health returns 200\n"
+                '- POST /api/cities with {"name": "Moscow"} returns 201\n'
+                "- Telegram: /start responds with welcome message\n"
+            )
+            == []
+        )

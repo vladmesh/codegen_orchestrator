@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Gave the fire path a producer: the architect now authors the criterion QA fires from, and
+  plans what makes the name answerable. When a confirmed must-requirement implies a deferred or
+  scheduled behaviour, the plan declares it by name in the generated product's own
+  `services/<service>/manifest.yaml` under `jobs_schema` — arguments schema `type: object` with
+  `additionalProperties: false`, since an undeclared name is refused with `404` and refused
+  arguments with `422` — and plans the module that declares `provides: ["jobs.fire"]` and does
+  the work on `job_fired`, because the product's core schedules nothing. Said in the register the
+  initial-settings section already uses: what is not the plan's to do, and what the plan
+  therefore owes.
+
+  The checklist line is authored in the released form, `- FIRE JOB <name> [WITH {json}] THEN
+  <observable>`, with the name character for character the one the manifest declares and
+  arguments the declared schema accepts. The observable comes from the brief's typed settings
+  wherever they configure the behaviour — with `settings.languages = ["ru","en"]` confirmed it
+  asserts the output in each configured language, from the typed setting the architect already
+  receives and never from the story prose — and it asserts a capability rather than a sample: "a
+  digest per configured language" is a check, "there is a Russian item this week" would make QA
+  red on a quiet week and teach everyone to ignore the check. A story with no brief, a brief with
+  no scheduled behaviour and an ordinary feature all produce exactly today's criteria: no `FIRE
+  JOB` line and no `jobs_schema` declaration.
+
+  Drift between what the prompt teaches and what the platform parses is closed by a test rather
+  than by care: the worked lines in the prompt and in the `update_acceptance_criteria` contract
+  are round-tripped through the released `parse_scheduled_behaviours` itself, never against a
+  second copy of the pattern.
+
 - Moved the pinned `service-template` to
   `91e582180b4295bce45155759bdad0dfa43b75f3`, so a newly generated product carries the core
   settings contract and the whole core jobs contract instead of only the revocable

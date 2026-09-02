@@ -271,6 +271,21 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
         - POST /api/cities with {"name": "Moscow"} returns 201
         - Telegram: /start responds with welcome message
 
+    A behaviour the product runs on a schedule is named in its own form, which
+    the platform reads rather than an executor — QA fires the behaviour itself
+    and judges it on what follows THEN:
+        - FIRE JOB daily_digest THEN a digest message is delivered to the owner
+        - FIRE JOB daily_digest WITH {"languages":["ru","en"]} THEN a digest per configured language
+
+    The name is character for character the one the product's
+    `services/<service>/manifest.yaml` declares under `jobs_schema`, the
+    arguments after WITH are one JSON object its declared schema accepts, and
+    what follows THEN asserts a capability rather than a sample: "a digest per
+    configured language" is a check, "there is a Russian item this week"
+    makes QA red on a quiet week. Where typed settings configure the behaviour,
+    the observable comes from those confirmed values, not from the story prose.
+    Add such a line only for a behaviour the product actually declares.
+
     Args:
         project_id: Project ID (same as used in create_task).
         acceptance_criteria: The FULL updated acceptance criteria text.
