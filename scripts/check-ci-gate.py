@@ -76,19 +76,6 @@ TEST_TREE_SKIP_DIRS = {
 # not for their subdirectories. Every line needs a reason; the point of the list
 # is that skipping a suite is a decision on the record, not a default.
 UNCLAIMED_TEST_DIRS = {
-    "scripts": (
-        "scripts/test_e2e_flow.py and e2e_scaffold_test.py are hand-run drivers "
-        "against a live stack, invoked through their __main__ block; the two "
-        "functions pytest would collect from test_e2e_flow.py talk to a running API"
-    ),
-    "tests/e2e": (
-        "full-stack e2e behind tests/compose/e2e/e2e.yml, which no workflow and no "
-        "make target invokes; issue:8a41b0e8a3148a68d6e5"
-    ),
-    "tests/e2e/mock_anthropic": (
-        "the mock LLM server that backs tests/e2e; unreachable for the same reason, "
-        "issue:8a41b0e8a3148a68d6e5"
-    ),
     "services/langgraph/tests/e2e": (
         "needs a real LLM API key (PO_LLM_API_KEY) and skips without one, so running "
         "it on a PR would only ever report a skip"

@@ -349,11 +349,15 @@ def test_worker_base_children_take_their_base_from_the_builder(gate):
 
 
 def test_repo_tree_suffix_named_files_are_covered(gate):
-    """The real tree, globbed independently of the gate's own walk."""
+    """The real tree, globbed independently of the gate's own walk.
+
+    The tree currently holds no `*_test.py` file, so this says nothing until one
+    appears; that the walk reads the pattern at all is asserted on a synthetic tree
+    by test_walk_finds_both_default_pytest_patterns.
+    """
     suffix_dirs = {
         str(path.relative_to(gate.ROOT).parent)
         for path in gate.ROOT.rglob("*_test.py")
         if not gate.TEST_TREE_SKIP_DIRS.intersection(path.relative_to(gate.ROOT).parts)
     }
-    assert suffix_dirs
     assert suffix_dirs <= gate.discover_test_dirs()

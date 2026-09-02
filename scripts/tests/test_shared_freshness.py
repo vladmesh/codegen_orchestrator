@@ -596,13 +596,11 @@ def test_the_makefile_hash_equals_the_hash_this_module_computes():
     assert printed.stdout.strip() == source_hash(REPO_ROOT)
 
 
-def test_the_fixtures_that_build_worker_images_use_the_same_producer():
-    """The label those fixtures write has to be comparable with what this module says."""
-    from tests.e2e import conftest as e2e_conftest
+def test_the_fixture_that_builds_worker_images_uses_the_same_producer():
+    """The label that fixture writes has to be comparable with what this module says."""
     from tests.integration.backend import conftest as backend_conftest
 
     assert backend_conftest.source_hash is source_hash
-    assert e2e_conftest.source_hash is source_hash
 
 
 def test_the_check_is_reachable_through_a_make_target():

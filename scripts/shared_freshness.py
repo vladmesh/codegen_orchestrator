@@ -10,9 +10,9 @@ image with the tree it was built from.
 The comparison reuses the mechanism the worker images already have: a hash of the baked
 sources, passed into the build as `--build-arg SOURCE_HASH` and kept on the image as the
 `org.codegen.worker_source_hash` label. This module is the single place that hash is
-computed; the Makefile reads it from here (`WORKER_SOURCE_HASH`) and so do the fixtures
-that build worker base images (`tests/integration/backend/conftest.py`,
-`tests/e2e/conftest.py`), so there is one counter and not several that can drift apart.
+computed; the Makefile reads it from here (`WORKER_SOURCE_HASH`) and so does the fixture
+that builds worker base images (`tests/integration/backend/conftest.py`), so there is one
+counter and not several that can drift apart.
 
 Coverage is derived from the tree and never listed by hand, and everything this module
 cannot read reliably fails the check instead of passing quietly:
