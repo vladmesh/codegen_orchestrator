@@ -10,11 +10,9 @@ import structlog
 from shared.contracts.dto.project import ProjectDTO
 
 from ..clients.api import api_client
-from ..runtime_identity import project_runtime_slug
+from ..runtime_identity import SERVICE_BASE_DIR, project_runtime_slug
 
 logger = structlog.get_logger(__name__)
-
-SERVICE_BASE_DIR = "/opt/services"
 
 
 async def _pre_check_server(

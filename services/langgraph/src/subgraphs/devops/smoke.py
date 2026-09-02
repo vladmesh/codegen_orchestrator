@@ -18,7 +18,7 @@ from shared.diagnostics import redact_diagnostic
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
-from ...runtime_identity import project_spec_runtime_slug
+from ...runtime_identity import SERVICE_BASE_DIR, project_spec_runtime_slug
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -28,7 +28,6 @@ HEALTH_CHECK_RETRIES = 3
 HEALTH_CHECK_RETRY_DELAY = 5
 HTTP_OK = 200
 CONTAINER_LOG_TAIL = 50
-SERVICE_BASE_DIR = "/opt/services"
 BOT_API_BASE = "https://api.telegram.org"
 # Compose service names on the deployed project match the module names
 TG_BOT_SERVICE = ServiceModule.TG_BOT.value

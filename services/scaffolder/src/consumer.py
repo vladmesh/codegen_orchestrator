@@ -22,7 +22,7 @@ from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 from src.clients.api import get_api_client
 from src.clients.github import get_github_client
 from src.config import get_settings

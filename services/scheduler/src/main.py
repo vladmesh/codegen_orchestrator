@@ -21,7 +21,7 @@ from shared.provisioning_policy import (
     validate_provider_policies,
 )
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from .tasks.analytics_aggregator import analytics_aggregator_worker
 from .tasks.github_sync import sync_projects_worker

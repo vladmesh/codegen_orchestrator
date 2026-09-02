@@ -241,7 +241,7 @@ function OverrideSelect({ label, value, disabled, onChange }: {
     <label className="flex items-center justify-between gap-4 text-sm">
       <span>{label}</span>
       <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as ExecutorOverride)} className="rounded border border-border bg-background px-2 py-1">
-        <option value="none">Use legacy policy</option>
+        <option value="none">No override (use policy)</option>
         <option value="claude">Claude</option>
         <option value="codex">Codex</option>
       </select>

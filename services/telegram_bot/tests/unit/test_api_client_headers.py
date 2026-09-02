@@ -7,7 +7,7 @@ header cannot go missing without that module changing.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -79,3 +79,23 @@ async def test_post_json_sends_both_internal_headers(client, sent_requests):
 async def test_the_bot_keeps_its_shorter_timeout(client):
     """A user waits on these calls, so the bot gives the API less time than the services do."""
     assert (await client._get_client()).timeout.read == TELEGRAM_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_read_handlers_forward_the_caller_identity_to_the_api():
+    """`_api_get` names the caller, because the API scopes reads by that header.
+
+    A read made without `X-Telegram-ID` is an unscoped read, so the handler layer
+    must attach the id of the user whose button produced the request and must
+    send no such header when there is no user.
+    """
+    from src.handlers import _api_get
+
+    with patch("src.handlers.api_client.get_json", new_callable=AsyncMock) as get_json:
+        get_json.return_value = {}
+
+        await _api_get("/projects")
+        get_json.assert_called_with("/projects", headers={})
+
+        await _api_get("/projects", telegram_id=12345)
+        get_json.assert_called_with("/projects", headers={"X-Telegram-ID": "12345"})

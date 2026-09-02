@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 import structlog
 
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 from shared.worker_type_cutover import backfill_pre_cutover_worker_type
 
 from .config import settings

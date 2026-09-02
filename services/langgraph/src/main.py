@@ -46,7 +46,7 @@ async def run_worker() -> None:
             fix="set these vars in .env (see .env.example) and restart langgraph",
         )
     else:
-        from shared.redis_client import RedisStreamClient
+        from shared.redis import RedisStreamClient
 
         from .agents.po.reminders import run_reminder_poller
         from .consumers.po import run_po_consumer

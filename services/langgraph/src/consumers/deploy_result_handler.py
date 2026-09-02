@@ -26,7 +26,7 @@ from shared.contracts.dto.users_grant import (
     GrantIntentStatus,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
 from ..clients.product_settings import GeneratedServiceSettingsClient

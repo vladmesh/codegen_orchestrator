@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Third pass of the legacy and dead-code cleanup, deletions and comment corrections only, no
+  behaviour or contract change. Deleted the closed-sprint live tests `tests/live/test_scaffold.py`
+  and `test_scaffold_result.py`: no make target, named stand suite or workflow collected them, and
+  the second declared itself expected to fail until `service-template` changed. The one current
+  invariant they still asserted — the scaffolder container carrying the registry credentials it
+  copies into a scaffolded repository's Actions secrets — moved next to the langgraph equivalent in
+  `tests/live/test_deploy_infra.py`, and their entries left the three offline ignore lists in the
+  Makefile, `scripts/check-ci-gate.py` and `scripts/test-unit-local.sh` together.
+  `tests/live/test_sprint_dod.py` and its offline companion `test_sprint_dod_regression.py` were
+  kept: they are the stand-only Definition-of-Done target, reachable through
+  `make stand-run SUITE=tests/live/test_sprint_dod.py`, guarded by a collection test that CI runs,
+  and their assertions describe current turn-fencing and worker-ownership behaviour.
+  Retired `services/telegram_bot/tests_legacy/` and its `telegram_bot-legacy` runner entry: the
+  handler file asserted only Python string slicing, the API-client rules moved to
+  `shared/clients/internal_api.py` and are covered by `shared/tests/unit/test_internal_api_transport.py`,
+  and the handler tests pinned call shapes. What was uncovered is kept as
+  `services/telegram_bot/tests/unit/test_auth_middleware.py` (the `ADMIN_TELEGRAM_IDS` branch of
+  `auth_middleware`) and a case in `tests/unit/test_api_client_headers.py` (`_api_get` attaching the
+  caller's `X-Telegram-ID`). Deleted the `shared/redis_client.py` re-export shim and pointed all 43
+  importing modules at `shared.redis`. Removed constants with no reader: `shared.constants.CI`,
+  `Timeouts.SSH_COMMAND`, `Timeouts.PREPARER_SPAWN`, the `shared.config` fields
+  `notification_rate_limit` and `agent_config_cache_ttl` (the rate limit in force is read from
+  `NOTIFICATION_RATE_LIMIT` by `shared/notifications.py`), `provisioning_policy.PROVIDER_LABEL` and
+  the scheduler's `AGGREGATION_INTERVAL`, with the value assertions in `shared/tests/test_constants.py`
+  that were their only mentions; `services/langgraph/src/config/constants.py` now re-exports only the
+  `Timeouts` its callers import. `SERVICE_BASE_DIR` was declared four times with the same literal and
+  now has one owner in `services/langgraph/src/runtime_identity.py`. Finally, comments that called a
+  primary code path legacy were rewritten to state what the code does — the introspect workspace
+  fallback serves any worker without a `repo_id` rather than an older generation, `WORKER_DEAD_STATUS`
+  is what the Docker events listener writes, `ContainerService`/`LifecycleManager` do not exist,
+  `get_worker_status` never consults Docker, `Run.task_id` is null for runs with no planning-layer
+  Task, and `Deployment`'s columns are denormalized for querying — and the admin console's executor
+  override now reads "No override (use policy)" instead of naming a legacy policy that never existed.
+
 - Retired the legacy `tests/e2e` contour. It ran only through `tests/compose/e2e/e2e.yml`, which no
   make target and no workflow invoked, and its mechanics no longer matched the code: raw dicts on
   `worker:commands`, developer workers without `repo_id` (worker-manager refuses those), a

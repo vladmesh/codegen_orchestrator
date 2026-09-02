@@ -14,7 +14,7 @@ import time
 import structlog
 
 from shared.queues import JOB_TTL_SECONDS, QUEUE_TOPOLOGY
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
 

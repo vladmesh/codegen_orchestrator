@@ -17,9 +17,10 @@ import structlog
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrant, QASshGrantState
 
+from ..runtime_identity import SERVICE_BASE_DIR
+
 logger = structlog.get_logger(__name__)
 
-SERVICE_BASE_DIR = "/opt/services"
 GRANT_MARKER_PREFIX = "codegen-qa-run"
 # SSHD expiry backs up runner and sweep grant removal.
 GRANT_LIFETIME_S = 3600

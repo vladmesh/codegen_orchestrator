@@ -13,7 +13,7 @@ from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.po import POSystemEvent, from_flat_fields
 from shared.contracts.queues.qa import QAMessage
 from shared.queues import PO_INPUT_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 
 async def _record_running_acceptance_target(

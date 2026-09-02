@@ -36,8 +36,8 @@ import pytest_asyncio
 from structlog.testing import capture_logs
 
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
+from shared.redis import RedisStreamClient
 from shared.redis.client import dlq_stream
-from shared.redis_client import RedisStreamClient
 from shared.tests.redis_pel_scan import PelEntry, RedisPelScan
 from src.consumers import po as po_consumer
 

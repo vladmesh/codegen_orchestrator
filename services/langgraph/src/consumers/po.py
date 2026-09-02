@@ -49,7 +49,7 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients

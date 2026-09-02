@@ -15,7 +15,7 @@ import structlog
 from shared.contracts.queues.po import POProactiveMessage, POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent, POCallbackEvent
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
 

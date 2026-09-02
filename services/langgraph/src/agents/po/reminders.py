@@ -14,7 +14,7 @@ import structlog
 
 from shared.contracts.queues.po import POReminderMessage, to_flat_fields
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
 

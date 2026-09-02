@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from shared.redis_client import StreamMessage
+from shared.redis import StreamMessage
 
 
 @pytest.fixture()

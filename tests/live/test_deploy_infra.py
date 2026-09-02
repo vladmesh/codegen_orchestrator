@@ -205,6 +205,17 @@ class TestDeploySecrets:
             "Deployer node (_write_deploy_secrets) will fail."
         )
 
+    @pytest.mark.parametrize("var", ["ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"])
+    def test_scaffolder_has_registry_env_vars(self, compose_exec, var):
+        """The scaffolder container carries the registry credentials it publishes.
+
+        ``services/scaffolder/src/consumer.py`` copies these into the scaffolded
+        repository's Actions secrets; empty values there make the generated
+        build-and-push job fail with "Must provide --username with --password-stdin".
+        """
+        value = compose_exec("scaffolder", f"printenv {var}")
+        assert value.strip(), f"{var} is empty in the scaffolder container"
+
     def test_secrets_encryption_key_available(self, compose_exec):
         """SECRETS_ENCRYPTION_KEY is set — needed to decrypt SSH keys for deploy."""
         try:

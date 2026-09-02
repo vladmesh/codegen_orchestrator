@@ -335,8 +335,6 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_parallel_engineering.py \
 	--ignore=tests/live/test_pipeline_engineering.py \
 	--ignore=tests/live/test_pipeline_scaffold.py \
-	--ignore=tests/live/test_scaffold.py \
-	--ignore=tests/live/test_scaffold_result.py \
 	--ignore=tests/live/test_streams.py \
 	--ignore=tests/live/test_supervisor.py
 

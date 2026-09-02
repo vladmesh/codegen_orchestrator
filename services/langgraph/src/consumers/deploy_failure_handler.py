@@ -13,7 +13,7 @@ import structlog
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
 from shared.contracts.queues.deploy import DeployOutcome
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
 from ._events import publish_callback_event

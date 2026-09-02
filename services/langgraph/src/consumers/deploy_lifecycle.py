@@ -14,11 +14,10 @@ from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 
 from ..clients.api import api_client
+from ..runtime_identity import SERVICE_BASE_DIR
 from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
-
-SERVICE_BASE_DIR = "/opt/services"
 
 
 async def process_lifecycle_action(

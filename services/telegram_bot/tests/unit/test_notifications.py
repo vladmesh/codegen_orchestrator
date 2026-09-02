@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 from shared.contracts.queues.provisioner import ProvisionerResult
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 from src.notifications import ProvisionerNotifier
 
 

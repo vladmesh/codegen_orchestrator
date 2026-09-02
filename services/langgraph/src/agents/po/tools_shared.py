@@ -8,7 +8,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from shared.clients.internal_api import InternalAPIClient
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 # Module-level clients — set by init_po_clients()
 _api_client: InternalAPIClient | None = None

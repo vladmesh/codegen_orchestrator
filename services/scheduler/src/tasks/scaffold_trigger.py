@@ -24,7 +24,7 @@ from .. import startup
 from ._recipients import resolve_owner_recipient
 
 if TYPE_CHECKING:
-    from shared.redis_client import RedisStreamClient
+    from shared.redis import RedisStreamClient
 
     from ..clients.api import SchedulerAPIClient
 

@@ -49,20 +49,6 @@ class BaseSettings(PydanticBaseSettings):
         description="Log level (DEBUG, INFO, WARNING, ERROR)",
     )
 
-    # Rate limiting
-    notification_rate_limit: int = Field(
-        default=10,
-        ge=1,
-        description="Max notifications per hour per user",
-    )
-
-    # Cache TTL
-    agent_config_cache_ttl: int = Field(
-        default=60,
-        ge=1,
-        description="Agent config cache TTL in seconds",
-    )
-
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

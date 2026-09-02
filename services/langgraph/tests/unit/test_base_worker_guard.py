@@ -12,7 +12,7 @@ import pytest
 
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
-from shared.redis_client import StreamMessage
+from shared.redis import StreamMessage
 
 
 @pytest.fixture()

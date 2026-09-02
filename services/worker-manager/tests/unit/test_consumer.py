@@ -19,7 +19,7 @@ from shared.contracts.queues.worker import (
     WorkerCommand,
 )
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from src.consumer import WorkerCommandConsumer, resolve_local_auth_mode
 from src.manager import WorkerManager

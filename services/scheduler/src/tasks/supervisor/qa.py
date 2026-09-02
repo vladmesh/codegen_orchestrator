@@ -24,7 +24,7 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 if TYPE_CHECKING:
     from ...clients.api import SchedulerAPIClient

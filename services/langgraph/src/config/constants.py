@@ -1,9 +1,9 @@
 """Constants for langgraph service.
 
-Shared constants are re-exported from shared.constants.
-Only CI is langgraph-specific.
+Re-exported from shared.constants so the service's own modules have one import
+path for them.
 """
 
-from shared.constants import CI, Paths, Provisioning, Timeouts
+from shared.constants import Timeouts
 
-__all__ = ["CI", "Paths", "Provisioning", "Timeouts"]
+__all__ = ["Timeouts"]

@@ -1,6 +1,6 @@
 """Tests for shared constants."""
 
-from shared.constants import CI, Paths, Provisioning, Timeouts
+from shared.constants import Paths, Provisioning, Timeouts
 
 
 class TestPaths:
@@ -13,9 +13,6 @@ class TestPaths:
 
 
 class TestTimeouts:
-    def test_ssh_command(self):
-        assert Timeouts.SSH_COMMAND == 30
-
     def test_provisioning(self):
         assert Timeouts.PROVISIONING == 1200
 
@@ -37,28 +34,8 @@ class TestTimeouts:
         assert Timeouts.WORKER_SPAWN == Timeouts.AGENT_TURN + Timeouts.WORKER_TURN_OVERHEAD
         assert Timeouts.WORKER_SPAWN > Timeouts.AGENT_TURN
 
-    def test_preparer_spawn(self):
-        assert Timeouts.PREPARER_SPAWN == 120
-
     def test_service_deploy(self):
         assert Timeouts.SERVICE_DEPLOY == 300
-
-
-class TestCI:
-    def test_max_fix_retries(self):
-        assert CI.MAX_FIX_RETRIES == 2
-
-    def test_workflow_timeout(self):
-        assert CI.WORKFLOW_TIMEOUT == 600
-
-    def test_poll_interval(self):
-        assert CI.POLL_INTERVAL == 15
-
-    def test_total_gate_timeout(self):
-        assert CI.TOTAL_GATE_TIMEOUT == 3600
-
-    def test_ci_workflow_file(self):
-        assert CI.CI_WORKFLOW_FILE == "ci.yml"
 
 
 class TestProvisioning:
