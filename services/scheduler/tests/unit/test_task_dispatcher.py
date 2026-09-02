@@ -1068,6 +1068,94 @@ class TestCompleteStories:
         assert result == 1
 
 
+class TestCompletionIgnoresCancelledTasks:
+    """A cancelled task is not outstanding work, so it cannot be waited on."""
+
+    @pytest.mark.asyncio
+    async def test_recovered_story_completes_with_the_cancelled_corpse_present(
+        self, api_client, redis_client
+    ):
+        """The property card 1243 exists for: a recovered plan can finish.
+
+        A takeover voids the superseded attempt's unadmitted tasks — they are in
+        nobody's release set, so nothing would ever dispatch them. Before this
+        change those cancelled rows sat in the story for ever and `all(done)`
+        could never hold, so a recovered story could never reach `pr_review`
+        however well its new plan went.
+        """
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, title="Recovered story")
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            # The corpse of the superseded plan: never admitted, now cancelled.
+            _task(
+                id="task-old",
+                status="cancelled",
+                story_id="story-1",
+                project_id=PROJ_ID,
+                dispatch_admitted=False,
+            ),
+            # The replacement architect's plan, admitted and finished.
+            _task(id="task-new", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
+
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {"number": 7, "node_id": "PR_x"}
+        mock_github.enable_auto_merge.return_value = True
+
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+            completed = await complete_stories(api_client, redis_client)
+
+        assert completed == 1
+        api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_task_still_does_not_hide_unfinished_work(
+        self, api_client, redis_client
+    ):
+        """Ignoring cancelled tasks is not ignoring the live ones."""
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [_story(id="story-1", project_id=PROJ_ID)]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="cancelled", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="done", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-3", status="in_dev", story_id="story-1", project_id=PROJ_ID),
+        ]
+
+        await complete_stories(api_client, redis_client)
+
+        api_client.transition_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_story_whose_tasks_are_all_cancelled_does_not_complete(
+        self, api_client, redis_client
+    ):
+        """Nothing was built, so there is no branch to open a PR for."""
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [_story(id="story-1", project_id=PROJ_ID)]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="cancelled", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="cancelled", story_id="story-1", project_id=PROJ_ID),
+        ]
+
+        completed = await complete_stories(api_client, redis_client)
+
+        assert completed == 0
+        api_client.transition_story.assert_not_called()
+        api_client.get_primary_repository.assert_not_called()
+
+
 class TestSuperviseFailedTasks:
     """Supervisor retries failed tasks or escalates to WHR."""
 

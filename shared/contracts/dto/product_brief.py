@@ -120,7 +120,8 @@ class ProductBriefPlanningAttemptOutcome(StrEnum):
 
     #: This caller now owns the incomplete plan, and the attempt id says which
     #: attempt it owns. A takeover of a stale attempt says this too — with a new
-    #: attempt id, which is what strands the previous owner.
+    #: attempt id, and the same transaction voids what the superseded attempt
+    #: planned, because nothing would ever release it.
     CLAIMED = "claimed"
     #: Another architect owns it and its heartbeat is fresh. Nothing was issued.
     IN_PROGRESS = "in_progress"

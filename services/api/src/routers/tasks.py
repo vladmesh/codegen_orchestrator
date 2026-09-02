@@ -26,14 +26,13 @@ from ._product_brief_helpers import (
 )
 from ._task_actions import action_router
 from ._task_helpers import (
+    apply_cancellation,
     commit_or_raise_fk,
-    create_status_event,
     generate_id,
     get_last_event_summary,
     get_task,
     get_task_for_update,
     to_read,
-    validate_transition,
 )
 
 logger = structlog.get_logger()
@@ -303,14 +302,11 @@ async def cancel_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     task = await get_task_for_update(task_id, db)
-    if task.status == TaskStatus.CANCELLED:
+    # The transition itself lives in `apply_cancellation`, which the Product
+    # Brief takeover reuses; this endpoint owns only the lock and the commit.
+    if not await apply_cancellation(task, db):
         return to_read(task)
 
-    validate_transition(task.status, TaskStatus.CANCELLED)
-
-    old_status = task.status
-    task.status = TaskStatus.CANCELLED
-    await create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
     await db.commit()
     await db.refresh(task)
 

@@ -105,9 +105,14 @@ async def complete_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
-    """Find stories where all tasks are done, create PR for CI gate.
+    """Find stories whose live tasks are all done, create PR for CI gate.
 
-    When all tasks in a story are done:
+    A *live* task is one that is not cancelled. A cancelled task is work that
+    was decided against, not work still outstanding, so waiting on it waits for
+    ever; a story whose tasks are *all* cancelled is not finished either and is
+    left where it is.
+
+    When all live tasks in a story are done:
     1. Create PR from story/{story_id} → main
     2. Enable auto-merge (merge commit, not squash — preserves individual commits)
     3. Transition story to PR_REVIEW
@@ -138,8 +143,24 @@ async def complete_stories(
             continue
 
         task_statuses = [t.status for t in tasks]
-        # Check if all tasks are done
-        if not all(s == TaskStatus.DONE for s in task_statuses):
+        # A cancelled task is not outstanding work, so it cannot be waited on.
+        # Counting it was what stranded a story for ever: an operator cancelling
+        # a task through `DELETE /api/tasks/{id}`, and — since the Product Brief
+        # boundary exists — the corpse of a superseded plan, which the takeover
+        # cancels because nothing will ever release it.
+        live_statuses = [s for s in task_statuses if s != TaskStatus.CANCELLED]
+        if not live_statuses:
+            # Every task cancelled is not a finished story: there is nothing on
+            # the branch to open a PR for. Somebody has to decide what happens
+            # to this story, so it stays in progress rather than completing.
+            logger.debug(
+                "complete_stories_skip_all_cancelled",
+                story_id=story_id,
+                task_count=len(task_statuses),
+            )
+            continue
+        # Check if all non-cancelled tasks are done
+        if not all(s == TaskStatus.DONE for s in live_statuses):
             logger.debug(
                 "complete_stories_skip_not_all_done",
                 story_id=story_id,

@@ -56,6 +56,7 @@ from ._product_brief_helpers import (
     attempt_heartbeat_is_fresh,
     load_brief_for_update,
     require_active_attempt,
+    void_superseded_plan,
 )
 from .projects_guards import check_project_access
 
@@ -339,27 +340,44 @@ async def claim_planning_attempt(
     Two architects that claim at the same moment queue on the brief row, so one
     gets `CLAIMED` with a fresh attempt id and the other re-reads the row the
     winner committed and gets `IN_PROGRESS`. A claim whose heartbeat has gone
-    stale is taken over — with a *new* attempt id, which is what strands the
-    previous owner: its tasks are no longer in any admission's release set and
-    its coverage no longer counts.
+    stale is taken over — with a *new* attempt id, which supersedes the previous
+    owner: its tasks are no longer in any admission's release set and its
+    coverage no longer counts.
+
+    Superseding is therefore also *voiding*. The same transaction that mints the
+    new id cancels the superseded attempt's unadmitted tasks and deletes its
+    dispositions (`void_superseded_plan`), because a task nobody will ever
+    release is not merely useless — it blocks its story's completion for good.
+    One transaction, so a takeover either voids the old plan and opens the new
+    one, or does neither.
     """
     brief = await load_brief_for_update(brief_id, db)
     await _authorize(brief.project_id, x_telegram_id, db, internal, credentials)
-    _require_planning_subject(brief)
+    story_id = _require_planning_subject(brief)
     if brief.coverage_admitted_at is not None:
         return _planning_read(brief, ProductBriefPlanningAttemptOutcome.ALREADY_ADMITTED)
     now = datetime.now(UTC)
     if brief.planning_attempt_active and attempt_heartbeat_is_fresh(brief, now):
         return _planning_read(brief, ProductBriefPlanningAttemptOutcome.IN_PROGRESS)
+    superseded_attempt_id = brief.planning_attempt_id
     brief.planning_attempt_id = f"plan-{secrets.token_hex(12)}"
     brief.planning_attempt_active = True
     brief.planning_attempt_heartbeat_at = now
+    voided, uncancellable = await void_superseded_plan(
+        brief=brief,
+        story_id=story_id,
+        superseded_attempt_id=superseded_attempt_id,
+        db=db,
+    )
     await db.commit()
     await db.refresh(brief)
     logger.info(
         "product_brief_planning_claimed",
         brief_id=brief.id,
         planning_attempt_id=brief.planning_attempt_id,
+        superseded_planning_attempt_id=superseded_attempt_id,
+        voided_task_ids=voided,
+        uncancellable_task_ids=uncancellable,
     )
     return _planning_read(brief, ProductBriefPlanningAttemptOutcome.CLAIMED)
 

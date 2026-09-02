@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Made the corpse of a superseded Product Brief plan harmless, so a recovered story can finish.
+  A takeover mints a new planning attempt id, and that alone stranded everything the previous
+  architect planned: those tasks are in no admission's release set, the dispatch admission point
+  refuses them as `product_brief_not_admitted`, and the plan-membership freeze refuses to move them
+  out of the story. `POST /api/product-briefs/{id}/planning-attempts/claim` now voids that plan in
+  the *same* transaction that mints the new id — it cancels the superseded attempt's unadmitted
+  tasks and deletes that attempt's `RequirementCoverage` rows — so a takeover either voids the old
+  plan and opens the new one, or does neither. The cancel is not a second writer: the transition
+  itself moved into `apply_cancellation`, which `DELETE /api/tasks/{id}` now calls too, so the
+  `VALID_TRANSITIONS` check, the status event and the already-cancelled no-op have one home.
+  `VALID_TRANSITIONS` values are unchanged; a row whose status cannot legally reach `cancelled` is
+  left alone and logged rather than forced. And `complete_stories` stops counting cancelled tasks:
+  a story completes when all of its *non-cancelled* tasks are done, with the guard that a story
+  whose tasks are all cancelled does not complete. That last change also fixes the pre-existing
+  case of an operator cancelling a task through `DELETE /api/tasks/{id}` and stranding the story
+  for ever.
 - Gave an unadmitted story a recovery path. `supervise_stuck_stories` used to skip any `created`
   story that had tasks, which left a brief-backed story whose architect died mid-plan stranded for
   ever: its tasks exist, so nothing retried the story, and they are unadmitted, so the dispatch
@@ -14,10 +30,9 @@
   admitted plan, since admission releases the whole release set at once. The scheduler reads brief
   state only through the new typed `SchedulerAPIClient.get_product_brief_by_story` over the existing
   `GET /api/product-briefs/by-story/{story_id}`; it decides no admission and writes no brief state.
-  Known limitation: a new claim issues a new attempt id, and admission counts coverage and releases
-  tasks only for the active attempt, so the previous attempt's unadmitted tasks and coverage rows
-  stay behind with nothing to clean them up — and those tasks, never dispatchable and never done,
-  keep `complete_stories` from ever completing the recovered story.
+  The limitation this left — a new claim issues a new attempt id, so the previous attempt's
+  unadmitted tasks and coverage rows stayed behind and kept `complete_stories` from ever completing
+  the recovered story — is removed by the takeover voiding described above.
 - Added the Product Brief admission to the declared dispatch admission point. A brief-backed Task is
   no longer dispatchable because it is `todo`: `tasks.dispatch_admitted` is the coverage-to-dispatch
   boundary, and `admit_engineering_dispatch` refuses a task whose column is false with the new typed

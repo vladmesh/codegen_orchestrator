@@ -31,7 +31,7 @@ from shared.contracts.dto.product_brief import (
     ProductBriefAdmissionOutcome,
     ProductBriefPlanningAttemptOutcome,
 )
-from shared.models import ProductBrief, Task
+from shared.models import ProductBrief, RequirementCoverage, Task
 
 BRIEFS_URL = "/api/product-briefs"
 DISPATCH_URL = "/api/work-admission/engineering-dispatches"
@@ -756,3 +756,125 @@ async def test_an_unconfirmed_brief_cannot_be_planned(async_client: AsyncClient)
     assert bound.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, bound.text
     claim = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
     assert claim.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, claim.text
+
+
+# --- the corpse of a superseded plan -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_takeover_voids_exactly_the_superseded_attempts_unadmitted_tasks(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """A takeover cancels the plan it supersedes, and nothing else.
+
+    Without this the previous attempt's tasks live for ever: no admission
+    includes them, the dispatch gate refuses them, the plan fence refuses to
+    move them out of the story — and `complete_stories` waits on them, so the
+    recovered story can never finish.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, first_attempt = await _planned_brief(async_client, project_id)
+    stranded = await _planned_task(async_client, project_id, story_id, first_attempt, "Stranded")
+    released = await _planned_task(async_client, project_id, story_id, first_attempt, "Released")
+    assert (
+        await _cover(async_client, brief_id, "r1", first_attempt, task_id=stranded)
+    ).status_code == HTTPStatus.OK
+
+    # A task of this attempt that already crossed the boundary. Setup, not a
+    # route: what the sweep must not touch is a task whose `dispatch_admitted`
+    # is true, whatever attempt planned it — that plan was released, and the
+    # task has an ordinary lifecycle now.
+    admitted_row = await db_session.get(Task, released)
+    admitted_row.dispatch_admitted = True
+    await db_session.commit()
+    db_session.expunge(admitted_row)
+
+    # Another story of the same project, mid-plan and untouched by this takeover.
+    other_brief, other_story, other_attempt = await _planned_brief(async_client, project_id)
+    other_task = await _planned_task(async_client, project_id, other_story, other_attempt, "Other")
+    assert (
+        await _cover(async_client, other_brief, "r1", other_attempt, task_id=other_task)
+    ).status_code == HTTPStatus.OK
+
+    await _go_stale(db_session, brief_id)
+    takeover = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
+    assert takeover.status_code == HTTPStatus.OK, takeover.text
+    second_attempt = takeover.json()["planning_attempt_id"]
+    assert second_attempt != first_attempt
+    replacement = await _planned_task(
+        async_client, project_id, story_id, second_attempt, "Replacement"
+    )
+
+    voided = await db_session.get(Task, stranded)
+    await db_session.refresh(voided)
+    assert voided.status == "cancelled"
+    # Cancelling is not admitting: the corpse never becomes dispatchable.
+    assert voided.dispatch_admitted is False
+    # And the cancel is the ordinary transition, so it left the ordinary record.
+    events = await async_client.get(f"/api/tasks/{stranded}/events?event_type=status_change")
+    assert [(event["from_status"], event["to_status"]) for event in events.json()] == [
+        ("todo", "cancelled")
+    ]
+
+    for untouched_id in (released, other_task, replacement):
+        untouched = await db_session.get(Task, untouched_id)
+        await db_session.refresh(untouched)
+        assert untouched.status == "todo", untouched_id
+
+    # The superseded attempt's dispositions go with its tasks; the other
+    # story's plan keeps its own.
+    remaining = (
+        await db_session.scalars(
+            select(RequirementCoverage).where(RequirementCoverage.brief_id == brief_id)
+        )
+    ).all()
+    assert list(remaining) == []
+    other_remaining = (
+        await db_session.scalars(
+            select(RequirementCoverage).where(RequirementCoverage.brief_id == other_brief)
+        )
+    ).all()
+    assert [row.requirement_id for row in other_remaining] == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_the_claim_and_the_voiding_are_one_transaction(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """A takeover voids the old plan and opens the new one, or does neither.
+
+    A third session parks a lock on the task the takeover must cancel, so the
+    claim is genuinely mid-flight while we look. Nothing it has written is
+    visible: the brief still names the superseded attempt. Were the new attempt
+    committed first and the cancellation done afterwards, that window would be
+    exactly the stranded state this card exists to remove.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, first_attempt = await _planned_brief(async_client, project_id)
+    stranded = await _planned_task(async_client, project_id, story_id, first_attempt, "Stranded")
+    await _go_stale(db_session, brief_id)
+
+    parked = (
+        await db_session.execute(select(Task).where(Task.id == stranded).with_for_update())
+    ).scalar_one_or_none()
+    assert parked is not None, "the task is not visible to the locking session"
+    claim = asyncio.create_task(
+        async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
+    )
+    try:
+        await asyncio.sleep(_RACE_WINDOW_SECONDS)
+        assert not claim.done(), "the claim never reached the task row it has to void"
+        mid_flight = await async_client.get(f"{BRIEFS_URL}/{brief_id}")
+        assert mid_flight.json()["planning_attempt_id"] == first_attempt
+        mid_task = await async_client.get(f"/api/tasks/{stranded}")
+        assert mid_task.json()["status"] == "todo"
+    finally:
+        await db_session.rollback()
+
+    takeover = await claim
+    assert takeover.status_code == HTTPStatus.OK, takeover.text
+    assert takeover.json()["outcome"] == ProductBriefPlanningAttemptOutcome.CLAIMED
+    assert takeover.json()["planning_attempt_id"] != first_attempt
+    voided = await db_session.get(Task, stranded)
+    await db_session.refresh(voided)
+    assert voided.status == "cancelled"
