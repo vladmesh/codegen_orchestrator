@@ -26,17 +26,17 @@ export interface Project {
 export interface Story {
   id: string
   project_id: string
-  parent_story_id: string | null
+  parent_story_id?: string | null
   title: string
-  description: string | null
-  acceptance_criteria: string | null
-  type: string
-  status: string
+  description?: string | null
+  acceptance_criteria?: string | null
+  type: StoryType
+  status: StoryStatus
   waiting_on: StoryWaitingOn
   priority: number
-  blocked_by_story_id: string | null
+  blocked_by_story_id?: string | null
   created_by: string
-  user_report: string | null
+  user_report?: string | null
   quarantine_reason?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
   operator_recheck?: StoryRecheck | null
@@ -45,6 +45,8 @@ export interface Story {
   created_at: string
   updated_at?: string | null
 }
+
+export type StoryType = 'product' | 'technical'
 
 export type StoryStatus =
   | 'created'

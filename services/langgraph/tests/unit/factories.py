@@ -12,7 +12,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.server import ServerDTO
-from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.user import UserDTO
 from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
@@ -87,6 +87,8 @@ def make_story(**overrides) -> StoryDTO:
         "updated_at": _NOW,
     }
     base.update(overrides)
+    # Required on the DTO, and implied by the status the story sits on.
+    base.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(base["status"])])
     return StoryDTO(**base)
 
 

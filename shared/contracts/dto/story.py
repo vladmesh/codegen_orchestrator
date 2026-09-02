@@ -138,10 +138,12 @@ class StoryDTO(TimestampedDTO):
     type: StoryType
     status: StoryStatus
     # Paired with ``StoryRead.waiting_on``: what the story is waiting for, written
-    # by the transition that landed it on ``status``.  The default matches the
-    # column's own default, so a story nobody has parked reads as ``NONE`` here
-    # exactly as it does in the row.
-    waiting_on: StoryWaitingOn = StoryWaitingOn.NONE
+    # by the transition that landed it on ``status``.  Required, with no default:
+    # the column is non-nullable, migration ``c3f7a91d2b48`` backfilled every
+    # existing row, and ``StoryRead`` always returns it — so a response without
+    # the field is a broken response, not a story waiting for nothing, and it
+    # must raise here rather than be interpreted into an invented ``none``.
+    waiting_on: StoryWaitingOn
     priority: int
     blocked_by_story_id: str | None = None
     created_by: str

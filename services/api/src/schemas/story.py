@@ -16,6 +16,8 @@ from shared.contracts.dto.story import (
     StoryAcceptance,
     StoryCreate,
     StoryRecheck,
+    StoryStatus,
+    StoryType,
     StoryUpdate,
     StoryWaitingOn,
 )
@@ -28,30 +30,39 @@ __all__ = [
     "StoryRead",
     "StoryOwnerNotificationRead",
     "StoryReopen",
+    "StoryStatus",
     "StoryTransition",
+    "StoryType",
     "StoryUpdate",
     "StoryWaitingOn",
 ]
 
 
 class StoryRead(TimestampedDTO):
-    """Schema for reading a story."""
+    """Schema for reading a story.
+
+    One half of the Story response contract; the shared `StoryDTO` every client
+    parses with is the other.  `services/api/tests/unit/test_story_schemas.py`
+    holds the two to the same field spec — name, annotation, requiredness and
+    default — so a field cannot go missing, change type or become optional on
+    one side alone.  Keep any change here paired with `StoryDTO`.
+    """
 
     id: str
     project_id: uuid.UUID
-    parent_story_id: str | None
+    parent_story_id: str | None = None
     title: str
-    description: str | None
-    acceptance_criteria: str | None
-    type: str
-    status: str
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    type: StoryType
+    status: StoryStatus
     # Typed, and written by the transition that landed the story on `status` —
     # never by a reader of this schema.
     waiting_on: StoryWaitingOn
     priority: int
-    blocked_by_story_id: str | None
+    blocked_by_story_id: str | None = None
     created_by: str
-    user_report: str | None
+    user_report: str | None = None
     quarantine_reason: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None
     operator_recheck: StoryRecheck | None = None

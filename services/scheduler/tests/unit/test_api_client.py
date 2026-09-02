@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
 from shared.log_config.correlation import clear_context, set_correlation_id
 
 _INTERNAL_KEY = "test-internal-key"
@@ -82,6 +83,8 @@ def _story_data(**overrides) -> dict:
         "updated_at": "2026-03-17T00:00:00Z",
     }
     base.update(overrides)
+    # The API always returns `waiting_on`, and it follows from the status.
+    base.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(base["status"])].value)
     return base
 
 

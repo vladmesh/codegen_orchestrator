@@ -7,6 +7,8 @@ import uuid
 import httpx
 import pytest
 
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
+
 
 @pytest.fixture
 def mock_httpx_client():
@@ -49,6 +51,8 @@ def _story_dict(**overrides):
         "created_at": _NOW,
     }
     base.update(overrides)
+    # The API always returns `waiting_on`, and it follows from the status.
+    base.setdefault("waiting_on", WAITING_ON_BY_STATUS[StoryStatus(base["status"])].value)
     return base
 
 

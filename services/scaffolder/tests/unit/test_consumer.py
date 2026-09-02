@@ -7,7 +7,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.story import StoryDTO, StoryStatus
+from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -371,7 +371,11 @@ class TestProcessScaffoldJobEnsureMode:
 
 
 def _make_story(story_id: str, status: str):
-    """Build a StoryDTO for tests."""
+    """Build a StoryDTO for tests, shaped like the response the API returns.
+
+    `waiting_on` is required on the DTO and follows from the status, so the
+    fixture derives it rather than pin a constant the status could contradict.
+    """
     return StoryDTO.model_validate(
         {
             "id": story_id,
@@ -379,6 +383,7 @@ def _make_story(story_id: str, status: str):
             "title": f"story {story_id}",
             "type": "product",
             "status": status,
+            "waiting_on": WAITING_ON_BY_STATUS[StoryStatus(status)].value,
             "priority": 0,
             "created_by": "system",
             "created_at": "2026-03-17T00:00:00Z",

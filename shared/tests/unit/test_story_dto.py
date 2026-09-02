@@ -57,20 +57,17 @@ class TestStoryDTO:
         assert dto.user_report == "Login button not visible"
         assert dto.waiting_on is StoryWaitingOn.CI
 
-    def test_parse_minimal_response(self):
+    def test_parse_response_without_the_optional_fields(self):
+        """The genuinely optional fields may be absent; `waiting_on` is not one."""
         minimal = {
             "id": "story-min",
             "project_id": str(_PROJECT_ID),
-            "parent_story_id": None,
             "title": "Simple story",
-            "description": None,
-            "acceptance_criteria": None,
             "type": "technical",
             "status": "created",
+            "waiting_on": "none",
             "priority": 0,
-            "blocked_by_story_id": None,
             "created_by": "system",
-            "user_report": None,
             "created_at": _NOW.isoformat(),
         }
         dto = StoryDTO.model_validate(minimal)
@@ -78,8 +75,23 @@ class TestStoryDTO:
         assert dto.parent_story_id is None
         assert dto.user_report is None
         assert dto.updated_at is None
-        # A response without the field parses as "waiting on nothing".
         assert dto.waiting_on is StoryWaitingOn.NONE
+
+    def test_a_response_that_omits_waiting_on_is_refused(self):
+        """No default may interpret a missing field into an invented `none`.
+
+        The column is non-nullable, migration `c3f7a91d2b48` backfilled every
+        existing row and `StoryRead` always returns the field, so there is no
+        producer that may legitimately omit it.  A response without it is a
+        broken response and must raise here rather than be read as "not
+        waiting" and then re-published as a fact about the story.
+        """
+        without_wait = {k: v for k, v in self.SAMPLE_RESPONSE.items() if k != "waiting_on"}
+
+        with pytest.raises(ValidationError) as excinfo:
+            StoryDTO.model_validate(without_wait)
+
+        assert any(error["loc"] == ("waiting_on",) for error in excinfo.value.errors())
 
     def test_model_dump_roundtrip(self):
         dto = StoryDTO.model_validate(self.SAMPLE_RESPONSE)
