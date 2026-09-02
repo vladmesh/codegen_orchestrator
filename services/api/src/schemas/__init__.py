@@ -50,7 +50,7 @@ from .temporary_access import (
     TemporaryAccessGrantRead,
     TemporaryAccessGrantUpdate,
 )
-from .user import UserCreate, UserRead, UserUpdate, UserUpsert
+from .user import UserCreate, UserRead, UserUpsert
 
 __all__ = [
     "AdminAction",
@@ -73,7 +73,6 @@ __all__ = [
     "EngineeringBudgetPolicyRead",
     "UserCreate",
     "UserRead",
-    "UserUpdate",
     "ProjectCreate",
     "ProjectRead",
     "ProjectUpdate",

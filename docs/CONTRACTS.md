@@ -678,7 +678,7 @@ the Story stays `in_progress`.
 | Executor decision/diagnostics | `shared/contracts/dto/executor_decision.py`, `dto/executor_diagnostics.py` | admission/overview routes | persisted decision wins over later configuration |
 | Admin overview | `shared/contracts/dto/admin_overview.py` | `routers/admin_overview.py` | unavailable observations remain unavailable |
 | Incidents, analytics, brainstorms | `dto/incident.py`, `dto/analytics.py`, `dto/brainstorm.py` | corresponding schema and router modules | their status vocabularies are source-owned |
-| Agent config, API key, system config | `dto/agent_config.py`, `dto/api_key.py` and `schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
+| System config | `services/api/src/schemas/system_config.py` | corresponding API routers | API-local system-config payloads are not shared DTOs |
 | Telegram binding | `shared/contracts/dto/telegram.py` | `routers/projects.py` | token binding is fail-closed and stores the verified bot identity |
 | API analytics and RAG payloads | `services/api/src/schemas/analytics.py`, `schemas/rag.py` | `routers/analytics.py`, `routers/rag.py` | these API-local models have no shared duplicate |
 | Promo-code and port allocation payloads | `services/api/src/schemas/promo_code.py`, `schemas/port_allocation.py` | promo-code and allocation routes | route ownership determines admission and visibility |
@@ -700,7 +700,7 @@ above names a shared contract import.
 | `ScaffoldMessage` | `queues/scaffold.py` | scheduler | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
 | `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler | architect consumer | story identity, not conversational state, drives decomposition |
 | `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
-| `DeployMessage`, `DeployResult`, triggers/actions/outcomes | `queues/deploy.py` | scheduler/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
+| `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | developer input/output | `queues/developer_worker.py` | developer node / wrapper | wrapper / developer node | broker request id and single typed accepted output settle a leased turn |

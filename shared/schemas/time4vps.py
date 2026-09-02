@@ -86,17 +86,3 @@ class Time4VPSTask(BaseModel):
     def is_completed(self) -> bool:
         """Check if task has completed."""
         return bool(self.completed)
-
-
-class Time4VPSOSTemplate(BaseModel):
-    """Available OS template from GET /api/server/{server_id}/oses.
-
-    Used for selecting OS during server reinstall.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    name: str = Field(..., description="Template identifier (e.g., 'kvm-ubuntu-24.04-gpt-x86_64')")
-    title: str | None = Field(None, description="Human-readable OS name")
-    arch: str | None = Field(None, description="Architecture (x86_64, etc)")
-    version: str | None = Field(None, description="OS version")

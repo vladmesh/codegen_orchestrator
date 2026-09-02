@@ -186,19 +186,6 @@ async def get_current_user(
     return user
 
 
-async def require_admin(user: User = Depends(get_current_user)) -> User:
-    """Require user to be admin.
-
-    Raises 403 if user is not admin.
-    """
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-    return user
-
-
 async def require_bearer_admin(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
