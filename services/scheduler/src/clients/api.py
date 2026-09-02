@@ -409,8 +409,27 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return StoryDTO.model_validate(resp.json())
 
+    async def retry_story_after_ci_failure(self, story_id: str) -> StoryDTO:
+        """Hand a story whose CI run failed back to engineering in one server-side move.
+
+        failed -> reopened -> in_progress is applied by the API on one locked
+        row, so the poller reports the CI failure instead of sequencing three
+        transitions that a crash between them could leave half-applied.
+        """
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/retry-after-ci-failure",
+            json={"actor": "scheduler"},
+        )
+        return StoryDTO.model_validate(resp.json())
+
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:
-        """Transition story status. action: 'start', 'complete', 'archive'."""
+        """Apply one Story transition. action: 'start', 'complete', 'archive'.
+
+        Single hops only.  A move that needs more than one hop is a composite
+        action in ``services/api/src/routers/_story_actions.py`` and gets its
+        own client method above; never call this twice for the same story.
+        """
         resp = await self.request(
             "POST", f"stories/{story_id}/{action}", json={"actor": "architect"}
         )

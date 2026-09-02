@@ -962,6 +962,10 @@ class TestSuperviseDeployingStories:
             )
 
         api_client.fail_story.assert_awaited_once_with("story-1")
+        # The story is failed straight out of WAITING_USER_SECRET: this path
+        # must not also move it to DEPLOYING first, which was a second Story
+        # transition with nothing to finish it.
+        api_client.transition_story.assert_not_awaited()
         notify.assert_awaited_once()
         api_client.create_run.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()

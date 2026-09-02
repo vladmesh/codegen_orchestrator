@@ -18,7 +18,6 @@ from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.story import (
-    VALID_TRANSITIONS,
     StoryRecheck,
     StoryRecheckMode,
     StoryStatus,
@@ -48,11 +47,16 @@ from ..schemas.story import (
     StoryUpdate,
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
+from ._story_actions import action_router
+from ._story_helpers import _do_transition, _get_story, _get_story_for_update
 from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/stories", tags=["stories"])
+# The composite (multi-hop) Story moves live in their own declared module and
+# are served under the same /stories prefix as the single-hop actions here.
+router.include_router(action_router)
 
 _DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
     "The story is finished. Tell the user the good news that their product is ready."
@@ -81,58 +85,6 @@ _COMMIT_SHA_LENGTHS = frozenset({40, 64})
 
 def _generate_id() -> str:
     return f"story-{secrets.token_hex(4)}"
-
-
-async def _load_story(story_id: str, db: AsyncSession, *, for_update: bool) -> Story:
-    query = select(Story).where(Story.id == story_id)
-    if for_update:
-        query = query.with_for_update()
-    result = await db.execute(query)
-    story = result.scalar_one_or_none()
-    if not story:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Story {story_id} not found",
-        )
-    return story
-
-
-async def _get_story(story_id: str, db: AsyncSession) -> Story:
-    """Read a story without taking a row lock — read-only paths only."""
-    return await _load_story(story_id, db, for_update=False)
-
-
-async def _get_story_for_update(story_id: str, db: AsyncSession) -> Story:
-    """Read a story with SELECT ... FOR UPDATE — every path that mutates the row.
-
-    Two callers transitioning the same story then serialize on the row, so the
-    second one re-reads the status the first committed and its transition is
-    validated against that, not against a stale snapshot.
-    """
-    return await _load_story(story_id, db, for_update=True)
-
-
-def _validate_transition(from_status: str, to_status: str) -> None:
-    try:
-        from_s = StoryStatus(from_status)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Invalid status: {from_status}",
-        ) from e
-    try:
-        to_s = StoryStatus(to_status)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Invalid status: {to_status}",
-        ) from e
-    if to_s not in VALID_TRANSITIONS[from_s]:
-        allowed = [s.value for s in VALID_TRANSITIONS[from_s]]
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot transition from {from_status} to {to_status}. Allowed: {allowed}",
-        )
 
 
 # --- CRUD ---
@@ -317,11 +269,6 @@ async def update_story(
 
 
 # --- Action endpoints (state machine transitions) ---
-
-
-def _do_transition(story: Story, to_status: StoryStatus) -> None:
-    _validate_transition(story.status, to_status.value)
-    story.status = to_status.value
 
 
 async def _completion_notification_text(

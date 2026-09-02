@@ -342,6 +342,37 @@ class TestSuperviseFailedTasks:
         api_client.transition_story.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_two_exhausted_tasks_of_one_story_escalate_it_once(
+        self, api_client, redis_client
+    ):
+        """The human-review queue entry is about the story, so it is issued once.
+
+        Escalating each failed task separately issued a second `human-review`
+        transition for a story already in it — refused by the API and swallowed
+        here, which is exactly the sequencing the API now owns.
+        """
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(
+                id=task_id,
+                story_id="story-1",
+                status="failed",
+                current_iteration=3,
+                max_iterations=3,
+            )
+            for task_id in ("task-1", "task-2")
+        ]
+        api_client.transition_task.return_value = {}
+        api_client.transition_story.return_value = {}
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result["escalated"] == 2  # noqa: PLR2004
+        assert api_client.transition_task.await_count == 2  # noqa: PLR2004
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+
+    @pytest.mark.asyncio
     async def test_skips_task_without_story(self, api_client, redis_client):
         """Failed task without story_id -> skip (standalone task)."""
         from src.tasks.supervisor import supervise_failed_tasks

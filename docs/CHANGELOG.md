@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Gave composite Story transitions one server-side owner. A move that walks a Story through more
+  than one status is now a declared action in `services/api/src/routers/_story_actions.py`: the
+  chain is a table entry, the row is read once through `_get_story_for_update`, every hop is
+  validated against `VALID_TRANSITIONS` before any hop is applied, and the whole chain commits in
+  one transaction (an illegal hop is refused with 422 and writes nothing, including
+  `reopened_at`). The CI-failure retry is the first such action — `POST
+  /stories/{id}/retry-after-ci-failure`, failed → reopened → in_progress — and `pr_poller` calls it
+  through the single client method `retry_story_after_ci_failure` instead of issuing `fail`,
+  `reopen` and `start` as three separate calls. Two other paths that issued two Story transitions
+  on one code path now issue one: an exhausted initial-owner grant intent fails the story straight
+  out of `pr_review` (`poll_merged_prs`) or `waiting_user_secret` (`_redispatch_waiting_deploy`)
+  instead of moving it to `deploying` first. The architect agent lost its `transition_story` tool
+  and the prompt line that called it; the architect consumer already moves the story around the
+  agent's run, so the tool was a second transition on the same path whose 422 was swallowed.
+  `VALID_TRANSITIONS` values are unchanged.
+
 - Serialized every Story and Task write path in `services/api` on its own row. `_get_story` and
   `get_task` are now read-only helpers; the transition, update, acceptance, recheck and task-action
   endpoints go through `_get_story_for_update` / `get_task_for_update`, which read the row with

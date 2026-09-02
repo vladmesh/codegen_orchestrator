@@ -155,6 +155,24 @@ class TestFailStory:
         assert result.status == "failed"
 
 
+class TestRetryStoryAfterCIFailure:
+    @pytest.mark.asyncio
+    async def test_retry_posts_to_the_composite_endpoint(self, api_client):
+        """The CI-failure retry is one call; the API applies every hop of the chain."""
+        mock = _mock_http(_story_data(status="in_progress"))
+        api_client._client = mock
+
+        result = await api_client.retry_story_after_ci_failure("story-1")
+
+        mock.request.assert_called_once_with(
+            "POST",
+            "/api/stories/story-1/retry-after-ci-failure",
+            headers=_INTERNAL_HEADERS,
+            json={"actor": "scheduler"},
+        )
+        assert result.status == "in_progress"
+
+
 class TestTransitionStory:
     @pytest.mark.asyncio
     async def test_human_review_uses_state_machine_endpoint(self, api_client):

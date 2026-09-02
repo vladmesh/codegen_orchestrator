@@ -6,13 +6,14 @@ All tools use the shared LanggraphAPIClient singleton.
 Task chaining: create_task auto-chains tasks sequentially — each new task
 is blocked by the previous one. The LLM doesn't need to track task IDs
 or manage dependencies.
+
+Story lifecycle is deliberately absent: the architect consumer moves the story
+to IN_PROGRESS around this agent's run, and an agent tool that moved it too
+gave one code path two Story transitions for the same story.
 """
 
 from __future__ import annotations
 
-from http import HTTPStatus
-
-import httpx
 from langchain_core.tools import tool
 import structlog
 
@@ -195,25 +196,6 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
     }
 
 
-@tool
-async def transition_story(story_id: str, action: str) -> dict:
-    """Transition a story's status.
-
-    Args:
-        story_id: The story ID.
-        action: One of: start, complete, archive.
-    """
-    try:
-        story = await api_client.transition_story(story_id, action)
-        return story.model_dump(mode="json")
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
-            # Story already in target state (e.g. PO already started it)
-            story = await api_client.get_story(story_id)
-            return story.model_dump(mode="json")
-        raise
-
-
 def get_architect_tools() -> list:
     """Return all architect tools."""
     return [
@@ -222,5 +204,4 @@ def get_architect_tools() -> list:
         get_tasks_by_story,
         create_task,
         update_acceptance_criteria,
-        transition_story,
     ]

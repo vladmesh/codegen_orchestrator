@@ -1233,9 +1233,11 @@ async def _redispatch_waiting_deploy(
 
     head_sha is resolved from the source run exactly as the RETRY path does; a
     missing head_sha is a typed failure (fail the story, notify admin), never a
-    silent fallback to the default branch. The story is moved to DEPLOYING first so
-    it leaves the WAITING set; if the publish then fails, next tick re-derives the
-    wait from the old run rather than wedging on a queued run with no message.
+    silent fallback to the default branch. The story is moved to DEPLOYING before
+    the deploy message is created so it leaves the WAITING set; if the publish then
+    fails, next tick re-derives the wait from the old run rather than wedging on a
+    queued run with no message. An exhausted owner-grant intent is failed from
+    WAITING_USER_SECRET instead, so this path issues exactly one Story transition.
 
     Returns True once re-dispatched, False if the story was failed instead.
     """
@@ -1248,22 +1250,28 @@ async def _redispatch_waiting_deploy(
         )
         return False
 
+    lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
+    disposition = lifecycle.disposition if lifecycle is not None else None
+    if disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+        # Failed straight out of WAITING_USER_SECRET. Moving the story to
+        # DEPLOYING first and then failing it here was two Story transitions on
+        # one code path, and the intermediate DEPLOYING had no owner.
+        await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+        return False
+
+    # The story leaves WAITING_USER_SECRET exactly once, on the paths that are
+    # actually taking it further.
     await api_client.transition_story(story_id, "deploy")
 
-    lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
-    if lifecycle is not None:
-        if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
-            log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
-            return True
-        if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
-            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
-            return False
-        if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
-            log.info("waiting_secret_owner_intent_in_flight", run_id=run.id)
-            return True
-        if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
-            log.info("waiting_secret_owner_intent_stale_target", run_id=run.id)
-            return True
+    if disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+        log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
+        return True
+    if disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+        log.info("waiting_secret_owner_intent_in_flight", run_id=run.id)
+        return True
+    if disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+        log.info("waiting_secret_owner_intent_stale_target", run_id=run.id)
+        return True
 
     new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(

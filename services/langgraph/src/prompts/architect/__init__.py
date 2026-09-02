@@ -31,7 +31,9 @@ need full field definitions to decide how to split work.
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
 Each check must be concrete and verifiable via curl or Telegram command.
-7. After all tasks are created, call `transition_story` with action "start".
+7. Stop once the tasks exist. You do NOT move the story: the platform \
+puts it in progress around your run, and a second move from here would be \
+one story transition too many.
 
 ## Task Decomposition Philosophy
 
@@ -76,6 +78,6 @@ Do NOT repeat the same approach if it already failed.
 ## Important
 
 - Do NOT create duplicate tasks if tasks already exist for this story.
-- If existing tasks cover the story, just call `transition_story` with "start".
+- If existing tasks cover the story, create nothing and stop.
 - Every task must have acceptance_criteria.
 """

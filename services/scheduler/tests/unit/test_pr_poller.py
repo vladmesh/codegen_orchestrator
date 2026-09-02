@@ -203,6 +203,10 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
     assert await poll_merged_prs(api, redis) == 0
 
     api.fail_story.assert_awaited_once_with(story.id)
+    # The story is failed straight out of PR_REVIEW: this path must not also
+    # move it to DEPLOYING first, which was a second Story transition with
+    # nothing to finish it.
+    api.transition_story.assert_not_awaited()
     notify.assert_awaited_once()
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
@@ -315,6 +319,30 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.create_task.reset_mock()
     assert await poll_ci_failures(api) == 0
     api.create_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_failure_retry_is_one_server_side_move(mock_gh_cls):
+    """The poller reports the CI failure; the API owns failed → reopened → in_progress."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(311, "sha-311")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [{"name": "unit", "failed_steps": ["Run pytest"]}],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    api.retry_story_after_ci_failure.assert_awaited_once_with("story-1")
+    # No lifecycle sequencing is left on the client side: three `fail`/`reopen`/
+    # `start` calls could be interrupted between any two of them.
+    api.transition_story.assert_not_awaited()
 
 
 @pytest.mark.asyncio
