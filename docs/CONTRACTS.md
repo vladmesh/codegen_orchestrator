@@ -834,5 +834,7 @@ Before changing a DTO, queue, or API boundary:
 3. Decide delivery, idempotency, ownership, recipient, and failure semantics.
 4. Add behaviour-level tests at the boundary and update this document only for
    a new registry entry or invariant.
-5. Preserve compatibility only when current code accepts or rejects a real
-   persisted row or wire payload; state the current rule, not its chronology.
+5. Do not add compatibility shims, fallbacks, or dual-read paths for data that
+   no longer exists. When a persisted row or payload shape changes, migrate the
+   data with Alembic instead of keeping a compat branch. Document the current
+   rule, not its chronology.
