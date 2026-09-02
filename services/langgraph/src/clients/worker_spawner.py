@@ -106,17 +106,6 @@ def _invalid_worker_result(request_id: str, worker_id: str | None) -> SpawnResul
     )
 
 
-def _safe_validation_errors(exc: ValidationError) -> list[dict]:
-    """Structured validation errors with every field value stripped.
-
-    ``e.errors()`` keeps ``msg`` and ``ctx`` even with input excluded, and for a
-    discriminated-union tag mismatch both echo the offending ``status`` value —
-    which may be a secret. Log only ``type`` and ``loc`` so nothing from the
-    payload reaches the logs.
-    """
-    return safe_validation_errors(exc)
-
-
 def spawn_result_from_output(
     output_resp: dict, request_id: str, worker_id: str | None
 ) -> SpawnResult:
@@ -136,7 +125,7 @@ def spawn_result_from_output(
             "worker_result_invalid",
             worker_id=worker_id,
             request_id=request_id,
-            errors=_safe_validation_errors(e),
+            errors=safe_validation_errors(e),
         )
         return _invalid_worker_result(request_id, worker_id)
     return _map_worker_result(result, request_id, worker_id)

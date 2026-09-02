@@ -150,7 +150,7 @@ class TestTaskStatusUpdates:
     @pytest.mark.asyncio
     async def test_task_failed_on_engineering_failure(self, mock_redis, mock_api):
         """When engineering fails with planning_task_id, task → failed."""
-        from src.consumers.engineering import _update_task_status
+        from src.consumers.engineering_result_handler import _update_task_status
 
         await _update_task_status(mock_api, "task-42", "failed")
 

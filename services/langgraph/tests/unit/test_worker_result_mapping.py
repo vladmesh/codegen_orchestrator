@@ -19,9 +19,9 @@ from shared.contracts.queues.worker_result import (
     parse_worker_result,
 )
 from shared.contracts.vocab import AgentType
+from shared.diagnostics import safe_validation_errors
 from src.clients.worker_spawner import (
     WorkerOutputDecodeError,
-    _safe_validation_errors,
     _wait_for_response,
     spawn_result_from_output,
 )
@@ -303,7 +303,7 @@ class TestValidationErrorSanitization:
         try:
             WorkerResultAdapter.validate_python({"status": secret, "content": "x"})
         except ValidationError as e:
-            safe = _safe_validation_errors(e)
+            safe = safe_validation_errors(e)
         blob = json.dumps(safe)
         assert secret not in blob
         assert safe  # still structured — type/loc survive
@@ -315,7 +315,7 @@ class TestValidationErrorSanitization:
                 {"status": "completed", "commit_sha": "sha", "content": "x", "leak": "s3cr3t"}
             )
         except ValidationError as e:
-            safe = _safe_validation_errors(e)
+            safe = safe_validation_errors(e)
         assert "s3cr3t" not in json.dumps(safe)
 
 

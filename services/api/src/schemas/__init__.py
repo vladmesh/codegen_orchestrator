@@ -34,9 +34,6 @@ from .service_deployment import (
     DeploymentCreate,
     DeploymentRead,
     DeploymentUpdate,
-    ServiceDeploymentCreate,
-    ServiceDeploymentRead,
-    ServiceDeploymentUpdate,
 )
 from .system_config import SystemConfigCreate, SystemConfigRead, SystemConfigUpdate
 from .task import (
@@ -104,9 +101,6 @@ __all__ = [
     "DeploymentCreate",
     "DeploymentRead",
     "DeploymentUpdate",
-    "ServiceDeploymentCreate",
-    "ServiceDeploymentRead",
-    "ServiceDeploymentUpdate",
     "RunCreate",
     "RunRead",
     "RunUpdate",
