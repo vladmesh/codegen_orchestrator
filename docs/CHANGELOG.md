@@ -11,7 +11,8 @@
   runs. Deleted `tests/e2e/`, `tests/compose/e2e/`, the hand-run drivers `scripts/test_e2e_flow.py`
   and `scripts/e2e_scaffold_test.py`, and the `test-e2e-scaffold` make target, and dropped the
   `scripts`, `tests/e2e` and `tests/e2e/mock_anthropic` entries from `UNCLAIMED_TEST_DIRS` in
-  `scripts/check-ci-gate.py` — the gate now records three skipped directories, not six. The two
+  `scripts/check-ci-gate.py` — the gate now records three skipped directories, not six; the `e2e`
+  and `e2e_real` pytest markers went with it, nothing marks either any more. The two
   invariants that contour was the only place to assert — the `worker:commands` consumer group named
   `WORKER_MANAGER_GROUP`, and the positive path of a worker's compose sidecar (postgres up through
   the broker, reachable by service name, network and workspace gone after delete) — are preserved as
