@@ -37,7 +37,6 @@ make test-live-mega            # Full pipeline with deploy (~7-10 min)
 make test-live-pipeline        # All live tests
 
 # E2E
-make test-e2e-scaffold         # Quick scaffold smoke test (~2-3 min)
 make stand-run SUITE=mega-llm  # Full stand pipeline with real coding and QA agents
 
 # Cleanup
@@ -85,12 +84,10 @@ Two rules keep the claim honest:
 
 Skipping a suite stays possible, but only as a decision on the record: `UNCLAIMED_TEST_DIRS`
 holds one line per skipped directory, each with a reason, and the gate fails if a listed
-directory no longer exists. It currently holds six entries: `scripts` (hand-run drivers against
-a live stack), `tests/e2e` and `tests/e2e/mock_anthropic` (behind `tests/compose/e2e/e2e.yml`,
-which no workflow and no make target invokes), `services/langgraph/tests/e2e` (needs a real LLM
-key and would only ever report a skip), `services/infra-service/tests/integration` (red) and
-`tests/integration/worker_wrapper` (red, needs a checkout that exists only inside a worker
-container).
+directory no longer exists. It currently holds three entries: `services/langgraph/tests/e2e`
+(needs a real LLM key and would only ever report a skip),
+`services/infra-service/tests/integration` (red) and `tests/integration/worker_wrapper` (red,
+needs a checkout that exists only inside a worker container).
 
 ## E2E Testing
 
@@ -101,8 +98,11 @@ exercises the full pipeline without a model call, `mega-llm` selects one coding/
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 
-**Scripts** (`tests/e2e/`): Lower-level test scripts (mock Anthropic, dev environment smoke, live
-smoke). They are development fixtures rather than the canonical stand runner.
+**Retired contour**: the legacy `tests/e2e` harness (mock Anthropic, dev environment smoke, live
+smoke) and its `tests/compose/e2e/e2e.yml` were deleted — no target ran them and their mechanics no
+longer matched the contracts. The two invariants only they asserted are kept as drafts in
+[docs/examples/dev-env-sidecar-and-consumer-group-checks.md](examples/dev-env-sidecar-and-consumer-group-checks.md),
+to be wired into the live and backend-dind suites under a separate issue.
 
 ## Live Pipeline Tests
 

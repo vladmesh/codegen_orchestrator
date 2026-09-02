@@ -68,8 +68,6 @@ testpaths = ["tests"]
 # importable for every pytest run rooted here.
 pythonpath = ["."]
 markers = [
-    "e2e: marks tests as end-to-end tests",
-    "e2e_real: marks tests as real e2e tests (deselect with '-m \"not e2e_real\"')",
     "integration: marks tests as integration tests",
     "requires_github: marks tests requiring real GitHub credentials",
 ]
