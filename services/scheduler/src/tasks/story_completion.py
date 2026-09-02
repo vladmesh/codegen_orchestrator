@@ -12,7 +12,7 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
 

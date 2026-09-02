@@ -27,7 +27,7 @@ from shared.contracts.dto.product_brief import (
 )
 from shared.contracts.dto.user import UserDTO
 from shared.queues import ARCHITECT_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 STORY_ID = "story-brief-1"

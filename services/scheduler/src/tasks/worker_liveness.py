@@ -22,8 +22,7 @@ from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.worker_evidence import RemovedWorkerEvidence, removed_worker_evidence_key
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.queues import WORKER_COMMANDS
-from shared.redis import decode_redis_fields, decode_redis_value
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient, decode_redis_fields, decode_redis_value
 
 logger = structlog.get_logger(__name__)
 

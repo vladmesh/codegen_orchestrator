@@ -19,8 +19,8 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
+from shared.redis import RedisStreamClient
 from shared.redis.client import decode_redis_fields
-from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..clients.story_worker_registry import set_story_worker

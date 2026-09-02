@@ -39,7 +39,7 @@ from shared.qa_identity import (
     qa_run_identity,
 )
 from shared.queues import QA_GROUP, QA_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
 from ..agents.qa.tools import QAJobsCapability

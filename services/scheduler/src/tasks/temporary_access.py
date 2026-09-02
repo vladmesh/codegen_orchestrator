@@ -23,7 +23,7 @@ from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOu
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from .. import startup
 

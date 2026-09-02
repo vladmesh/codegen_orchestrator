@@ -19,7 +19,7 @@ from shared.contracts.dto.users_grant import (
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from .. import startup
 from ._recipients import resolve_project_recipient

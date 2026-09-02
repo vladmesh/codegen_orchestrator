@@ -24,7 +24,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain

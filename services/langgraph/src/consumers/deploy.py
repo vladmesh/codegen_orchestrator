@@ -33,7 +33,7 @@ from shared.contracts.queues.deploy import (
 )
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..allocations import AllocationError
 from ..clients.api import api_client

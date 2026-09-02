@@ -14,7 +14,7 @@ from shared.contracts.queues.worker import (
 )
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
-from shared.redis_client import RedisStreamClient, TypedMessage
+from shared.redis import RedisStreamClient, TypedMessage
 
 from .manager import WorkerManager
 

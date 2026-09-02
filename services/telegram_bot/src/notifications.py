@@ -11,7 +11,7 @@ from telegram import Bot
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 logger = structlog.get_logger()
 

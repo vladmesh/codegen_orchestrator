@@ -10,7 +10,7 @@ import uuid
 import structlog
 
 from shared.clients.github import WorkflowCancellationUnprovenError
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
 

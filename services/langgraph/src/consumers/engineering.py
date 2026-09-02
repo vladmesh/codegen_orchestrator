@@ -23,7 +23,7 @@ from shared.contracts.vocab import ActionType
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.diagnostics import safe_validation_errors
 from shared.queues import ENGINEERING_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker

@@ -39,7 +39,7 @@ from shared.diagnostics import safe_validation_errors
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_GROUP
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ..clients.api import api_client
 from ._live_work import execute_live_work, live_work_active

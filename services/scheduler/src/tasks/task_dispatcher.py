@@ -30,7 +30,7 @@ from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType, OwnerNotificationEvent
 from shared.queues import ENGINEERING_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
 from .owner_notifications import (

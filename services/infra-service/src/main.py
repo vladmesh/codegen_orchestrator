@@ -22,7 +22,7 @@ from shared.provisioning_policy import (
     validate_provider_policies,
 )
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 from .provisioner.incidents import IncidentPersistenceError, create_incident
 from .provisioner.node import ProvisionerNode

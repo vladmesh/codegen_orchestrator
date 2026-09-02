@@ -28,8 +28,7 @@ from telegram.ext import (
 from shared.contracts.queues.po import POUserMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
-from shared.redis import decode_redis_fields
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient, decode_redis_fields
 
 # Add shared to path
 sys.path.insert(0, "/app")

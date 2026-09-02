@@ -3,7 +3,7 @@
 Uses service-specific config for Redis URL.
 """
 
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 from src.config.settings import get_settings
 
 EVENTS_STREAM = "orchestrator:events"

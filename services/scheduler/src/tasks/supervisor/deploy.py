@@ -53,7 +53,7 @@ from shared.queues import (
     ENGINEERING_QUEUE,
     PO_INPUT_QUEUE,
 )
-from shared.redis_client import RedisStreamClient
+from shared.redis import RedisStreamClient
 
 if TYPE_CHECKING:
     from ...clients.api import SchedulerAPIClient
