@@ -57,7 +57,7 @@ Instead of Docker-in-Docker (Sysbox), the system uses the **Flat Dev Environment
 
 The worker-base image `worker-base-common` is unified:
 - Ubuntu + Python 3.12 + Node.js
-- **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier` and so on are installed at the image level (not duplicated per worker).
+- **Shared Tooling Layer**: `ruff`, `pytest`, `copier` and so on are installed at the image level (not duplicated per worker).
 - A non-root user `worker` (uid 1000). Code on the host reached through the bind-mount does not become `root`-owned.
 - Tests and linters run **natively** through per-service venvs, without starting extra ephemeral containers.
 
