@@ -573,6 +573,104 @@ async def test_a_task_cannot_be_moved_into_a_plan_that_is_still_being_built(
     assert moved.status_code == HTTPStatus.CONFLICT, moved.text
 
 
+@pytest.mark.asyncio
+async def test_a_covering_task_cannot_be_moved_out_of_its_plan_before_admission(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Moving it out would strand it: admitted brief, unreleasable work.
+
+    The route is the supported one, `PATCH /api/tasks/{id}` — the same edit an
+    ordinary caller makes — and the fence answers it in the outbound direction.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    task_id = await _planned_task(async_client, project_id, story_id, attempt)
+    assert (await _cover(async_client, brief_id, "r1", attempt, task_id=task_id)).status_code == (
+        HTTPStatus.OK
+    )
+    await _cover(async_client, brief_id, "r2", attempt, returned_reason="dropped")
+
+    moved = await async_client.patch(f"/api/tasks/{task_id}", json={"story_id": None})
+
+    assert moved.status_code == HTTPStatus.CONFLICT, moved.text
+    task = await db_session.get(Task, task_id)
+    await db_session.refresh(task)
+    assert task.story_id == story_id
+    # And the plan is not stuck: the admission that the move would have broken
+    # still releases exactly the task the coverage named.
+    admitted = await _admit(async_client, brief_id, attempt)
+    assert admitted.json()["outcome"] == ProductBriefAdmissionOutcome.ADMITTED
+    assert admitted.json()["released_task_ids"] == [task_id]
+    # Once released it is ordinary work again, so the fence is a plan fence and
+    # not a permanent freeze on the row.
+    freed = await async_client.patch(f"/api/tasks/{task_id}", json={"story_id": None})
+    assert freed.status_code == HTTPStatus.OK, freed.text
+
+
+@pytest.mark.asyncio
+async def test_a_covering_tasks_project_cannot_be_changed_before_admission(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Coverage approved under one project must not release another's work.
+
+    Same supported route, `PATCH /api/tasks/{id}`, this time with `project_id`:
+    the brief's coverage is evidence about *this* project's engineering spend.
+    """
+    telegram_id = await _owner(async_client)
+    project_id = await _project(async_client, telegram_id)
+    other_project = await _project(async_client, telegram_id)
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    task_id = await _planned_task(async_client, project_id, story_id, attempt)
+    assert (await _cover(async_client, brief_id, "r1", attempt, task_id=task_id)).status_code == (
+        HTTPStatus.OK
+    )
+
+    moved = await async_client.patch(
+        f"/api/tasks/{task_id}", json={"project_id": str(other_project)}
+    )
+
+    assert moved.status_code == HTTPStatus.CONFLICT, moved.text
+    task = await db_session.get(Task, task_id)
+    await db_session.refresh(task)
+    assert str(task.project_id) == project_id
+
+
+@pytest.mark.asyncio
+async def test_admit_refuses_rather_than_stamping_over_a_covering_task_outside_the_plan(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """The fail-closed depth behind the fence, driven where the fence is not.
+
+    The mismatch is built through the model layer on purpose: the guarded route
+    refuses it, so the only way to test what `admit` does when it meets one is
+    to write the row directly. Defence in depth is worth what it is tested at.
+    """
+    project_id = await _project(async_client, await _owner(async_client))
+    brief_id, story_id, attempt = await _planned_brief(async_client, project_id)
+    task_id = await _planned_task(async_client, project_id, story_id, attempt)
+    await _cover(async_client, brief_id, "r1", attempt, task_id=task_id)
+    await _cover(async_client, brief_id, "r2", attempt, returned_reason="dropped")
+
+    stranded = await db_session.get(Task, task_id)
+    stranded.story_id = None
+    await db_session.commit()
+    db_session.expunge(stranded)
+
+    refused = await _admit(async_client, brief_id, attempt)
+
+    assert refused.status_code == HTTPStatus.CONFLICT, refused.text
+    assert task_id in refused.text
+    brief = await db_session.get(ProductBrief, brief_id)
+    await db_session.refresh(brief)
+    # Nothing durable was written: no boundary crossed, and the planner still
+    # owns the plan it now has to repair.
+    assert brief.coverage_admitted_at is None
+    assert brief.planning_attempt_active is True
+    task = await db_session.get(Task, task_id)
+    await db_session.refresh(task)
+    assert task.dispatch_admitted is False
+
+
 # --- confirmed content is never updated in place -------------------------------
 
 

@@ -123,6 +123,22 @@ def _must_requirement_ids(brief: ProductBrief) -> set[str]:
     return {requirement["id"] for requirement in brief.content["must_requirements"]}
 
 
+def _task_is_in_plan(task: Task, brief: ProductBrief, story_id: str) -> bool:
+    """Is this task still a member of the plan the brief is being admitted for?
+
+    Plan membership is project, story and attempt together — the same three
+    fields the task update route freezes while a task is unadmitted. Coverage
+    asks it before recording a disposition, and `admit` asks it again over every
+    row it counts, so the durable record is never written over an
+    inconsistency.
+    """
+    return (
+        task.project_id == brief.project_id
+        and task.story_id == story_id
+        and task.planning_attempt_id == brief.planning_attempt_id
+    )
+
+
 # --- the brief itself ---------------------------------------------------------
 
 
@@ -436,11 +452,11 @@ async def record_requirement_coverage(
         task = (
             await db.execute(select(Task).where(Task.id == body.task_id).with_for_update())
         ).scalar_one_or_none()
-        if (
-            task is None
-            or task.story_id != story_id
-            or task.planning_attempt_id != brief.planning_attempt_id
-        ):
+        # Story, project and attempt — the whole of a task's plan membership.
+        # Project is not implied by story: the supported task update route can
+        # set `project_id`, and a disposition approved under this brief's
+        # project must not end up releasing work charged to another one.
+        if task is None or not _task_is_in_plan(task, brief, story_id):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="a covering task must be planned under this planning attempt",
@@ -530,16 +546,17 @@ async def admit_product_brief_coverage(
     # Only this attempt's dispositions count. A plan taken over from a stale
     # architect starts from nothing covered, because its coverage rows point at
     # tasks that attempt will never release.
-    covered = set(
+    dispositions = list(
         (
             await db.scalars(
-                select(RequirementCoverage.requirement_id).where(
+                select(RequirementCoverage).where(
                     RequirementCoverage.brief_id == brief.id,
                     RequirementCoverage.planning_attempt_id == brief.planning_attempt_id,
                 )
             )
         ).all()
     )
+    covered = {row.requirement_id for row in dispositions}
     missing = sorted(_must_requirement_ids(brief) - covered)
     if missing:
         return ProductBriefAdmissionRead(
@@ -564,6 +581,31 @@ async def admit_product_brief_coverage(
             )
         ).all()
     )
+    # Fail closed. Every counted disposition must still name a member of this
+    # plan; the task update route freezes plan membership while a task is
+    # unadmitted, so this should be unreachable. It is here because the durable
+    # record must never be written over an inconsistency: an admission that
+    # stamped `coverage_admitted_at` while a covering task sat outside the
+    # release set would strand that task for good — the attempt is closed by
+    # then, and the one admission step can only replay `already_admitted`.
+    by_id = {task.id: task for task in tasks}
+    stale = sorted(
+        {
+            row.task_id
+            for row in dispositions
+            if row.task_id is not None
+            and not (row.task_id in by_id and _task_is_in_plan(by_id[row.task_id], brief, story_id))
+        }
+    )
+    if stale:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Product Brief coverage names tasks that are no longer part of this plan: "
+                + ", ".join(stale)
+            ),
+        )
+
     released = [task.id for task in tasks if not task.dispatch_admitted]
     for task in tasks:
         task.dispatch_admitted = True

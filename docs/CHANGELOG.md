@@ -22,6 +22,16 @@
   retry cannot release a duplicate plan: claim/heartbeat/finish fence the attempt, a fresh heartbeat
   makes a second claim report `in_progress`, a stale one can be taken over with a new attempt id, and
   both the coverage counted and the tasks released are only those of the attempt the caller presents.
+- Froze a planned task's plan membership while it is unadmitted. `PATCH /api/tasks/{id}` already
+  refused to move a task *into* a story whose plan is still being built; it now answers the other
+  direction from the same guard, refusing a change to `project_id`, `story_id` or the planning
+  attempt of a task whose `dispatch_admitted` is false. Those three fields are what the release set
+  and the coverage evidence are keyed on, so without the fence a supported edit between recording a
+  disposition and admitting the brief could strand the covering task for good, or let a disposition
+  approved under one project release engineering work charged to another. Coverage recording now
+  checks the covering task's project as well as its story and attempt, and `admit` fails closed:
+  a disposition naming a task that is no longer part of the plan refuses the admission rather than
+  stamping `coverage_admitted_at` over the inconsistency.
 - `tasks.dispatch_admitted` is non-nullable and defaults to true, so every task that exists today and
   every task that is not planned against an unadmitted brief keeps dispatching exactly as it does now;
   the migration's `server_default` is the backfill. It is written false only at creation under an

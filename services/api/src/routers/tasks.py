@@ -22,7 +22,7 @@ from ..schemas.task import (
 )
 from ._product_brief_helpers import (
     plan_admission_for_new_task,
-    refuse_task_move_into_unadmitted_plan,
+    take_task_for_plan_fenced_update,
 )
 from ._task_actions import action_router
 from ._task_helpers import (
@@ -282,12 +282,10 @@ async def update_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     update_data = body.model_dump(exclude_unset=True)
-    if "story_id" in update_data:
-        # Asked before the Task row is taken, because the brief row is above
-        # every Task row in this service's lock order — see
-        # `_product_brief_helpers`.
-        await refuse_task_move_into_unadmitted_plan(story_id=update_data["story_id"], db=db)
-    task = await get_task_for_update(task_id, db)
+    # One guard, both directions of the plan fence, and it hands back the locked
+    # Task: a task may not join a plan that is still being built, and while it is
+    # unadmitted it may not leave the one it was planned into.
+    task = await take_task_for_plan_fenced_update(task_id=task_id, update_data=update_data, db=db)
 
     for field, value in update_data.items():
         setattr(task, field, value)

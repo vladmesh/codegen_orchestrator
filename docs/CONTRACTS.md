@@ -242,6 +242,20 @@ Confirmed content is never updated in place: there is no update path, and a
 change to what the user asked for is a new revision, so an architect planning
 against revision N cannot have the ground move under it.
 
+**A planned task's plan membership is immutable while it is unadmitted.** Its
+project, story and planning attempt are what the admission's release set and the
+coverage evidence are keyed on, so `PATCH /api/tasks/{id}` refuses to change any
+of them while `dispatch_admitted` is false, and refuses just as it always did to
+move a task *into* a story whose plan is still being built — one fence, both
+directions. Without the outbound half, a task moved out of its story would leave
+the brief stamping `coverage_admitted_at` over work nothing can release any more,
+and a task moved to another project would let a disposition approved under one
+project's brief release engineering work charged to another. The task is not
+stuck: finishing the plan releases it, and a plan that should not proceed is
+abandoned through the planning-attempt fence. Behind that guard `admit` fails
+closed — if any disposition it counts names a task that is no longer a member of
+the plan, it refuses instead of stamping the boundary over an inconsistency.
+
 **Lock order.** Every Product Brief writer takes the brief row for update before
 any Task row. The dispatch admission point reads no brief at all — its condition
 is a column of the candidate Task, which rung 1 of `LOCK_LADDER` already holds —

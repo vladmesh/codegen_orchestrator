@@ -3,7 +3,8 @@
 Two routers need the brief: `product_briefs.py`, which owns the claim, the
 coverage writes and the one admission step, and `tasks.py`, which has to know
 whether the task it is about to create belongs to a plan that has not been
-admitted yet. Both take the brief the same way — `SELECT ... FOR UPDATE` — and
+admitted yet, and whether the task it is about to update may change the plan it
+belongs to. Both take the brief the same way — `SELECT ... FOR UPDATE` — and
 both ask the planning fence the same question, so there is one answer to "may
 this caller act as the planner of this brief" rather than two.
 
@@ -22,7 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.product_brief import PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS
-from shared.models import ProductBrief
+from shared.models import ProductBrief, Task
+
+from ._task_helpers import get_task_for_update
 
 
 async def load_brief_for_update(brief_id: str, db: AsyncSession) -> ProductBrief:
@@ -110,8 +113,15 @@ async def plan_admission_for_new_task(
     return False, planning_attempt_id
 
 
-async def refuse_task_move_into_unadmitted_plan(*, story_id: str | None, db: AsyncSession) -> None:
-    """A task may not be moved into a story whose plan is still being built.
+#: The fields that say which plan a task belongs to. While the task is
+#: unadmitted, all three are frozen; `TaskUpdate` forbids extras and does not
+#: expose `planning_attempt_id` today, but the fence is written over the
+#: membership itself rather than over one schema's current field list.
+PLAN_MEMBERSHIP_FIELDS = ("project_id", "story_id", "planning_attempt_id")
+
+
+async def _refuse_move_into_unadmitted_plan(story_id: str | None, db: AsyncSession) -> None:
+    """The inbound half: a task may not be moved into a plan still being built.
 
     The release set of an admission is exactly the tasks planned under that
     attempt. A task moved in from elsewhere belongs to no attempt, so nothing
@@ -131,3 +141,50 @@ async def refuse_task_move_into_unadmitted_plan(*, story_id: str | None, db: Asy
             "plan it under the active architect planning attempt instead"
         ),
     )
+
+
+async def take_task_for_plan_fenced_update(
+    *, task_id: str, update_data: dict, db: AsyncSession
+) -> Task:
+    """Take the task an update is about, with both directions of the plan fence.
+
+    *A planned task's plan membership is immutable while it is unadmitted.* One
+    guard, both directions, because they are one invariant:
+
+    * inbound — a task may not join a plan that is still being built, because
+      nothing would ever release it;
+    * outbound — while `dispatch_admitted` is false, its project, story and
+      planning attempt are frozen. Moving it out of the story strands it: the
+      admission's release set is keyed on story *and* attempt, so the brief
+      would stamp `coverage_admitted_at` over work that is never released and
+      can never be released again, the attempt being closed by then. Changing
+      the project releases the wrong thing: a disposition approved under one
+      project's brief would release engineering work charged to another.
+
+    The task is not stuck. Finishing the plan releases it, and a plan that
+    should not proceed is abandoned through the planning-attempt fence.
+
+    Returns the task row, locked, so the caller does not take it twice. The
+    inbound question is asked *first*, because the brief row sits above every
+    Task row in this service's lock order (see the module docstring).
+    """
+    await _refuse_move_into_unadmitted_plan(update_data.get("story_id"), db)
+    task = await get_task_for_update(task_id, db)
+    if task.dispatch_admitted:
+        return task
+    moved = [
+        field
+        for field in PLAN_MEMBERSHIP_FIELDS
+        if field in update_data and update_data[field] != getattr(task, field)
+    ]
+    if moved:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "cannot change "
+                + ", ".join(moved)
+                + " of a task whose Product Brief coverage is not admitted; "
+                "finish or abandon the planning attempt first"
+            ),
+        )
+    return task
