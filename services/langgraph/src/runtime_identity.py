@@ -7,6 +7,12 @@ from typing import Any
 
 from shared.contracts.dto.project import ProjectDTO
 
+# Where a deployed stack lives on its target host. The base is fixed by the
+# generated repository's own deploy workflow, so every module that composes a
+# remote path — precheck, lifecycle, smoke, QA targeting — must derive it from
+# the same value as the runtime slug it is joined with.
+SERVICE_BASE_DIR = "/opt/services"
+
 
 def project_runtime_slug(project: ProjectDTO) -> str:
     """Return the immutable runtime identifier from a project DTO."""

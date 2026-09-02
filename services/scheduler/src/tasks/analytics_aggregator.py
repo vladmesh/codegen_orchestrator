@@ -24,7 +24,6 @@ from src.clients.api import api_client
 
 logger = structlog.get_logger()
 
-AGGREGATION_INTERVAL = 3600  # 1 hour
 HOURLY_RETENTION_DAYS = 90
 DAILY_RETENTION_DAYS = 365
 HTTP_SERVER_ERROR_THRESHOLD = 500
