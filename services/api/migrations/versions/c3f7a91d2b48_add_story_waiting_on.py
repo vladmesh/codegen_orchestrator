@@ -1,6 +1,6 @@
 """add stories.waiting_on
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: c3f7a91d2b48
 Revises: d1e2f3a4b5c6
 Create Date: 2026-09-02 01:00:00.000000
 """
@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "c3f7a91d2b48"
 down_revision: str | None = "d1e2f3a4b5c6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

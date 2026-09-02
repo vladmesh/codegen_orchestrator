@@ -5,7 +5,7 @@
 - Gave a Story a typed answer to "what is it waiting for?". `StoryWaitingOn` (`none`, `ci`,
   `deploy`, `qa`, `user_secret`, `human_review`, `resources`) lives in
   `shared/contracts/dto/story.py` beside `VALID_TRANSITIONS`, and `stories.waiting_on` is a
-  non-nullable column defaulting to `none` (alembic `a1b2c3d4e5f6`, which backfills existing rows
+  non-nullable column defaulting to `none` (alembic `c3f7a91d2b48`, which backfills existing rows
   from their current status). One declared mapping, `WAITING_ON_BY_STATUS`, says what the status a
   transition lands on implies; `_land_on` in `services/api/src/routers/_story_helpers.py` is the
   only assignment of the field, reached by `_do_transition` for a single hop and by `_apply_chain`
