@@ -62,6 +62,9 @@ def _task_data(**overrides) -> dict:
         "current_iteration": 0,
         "max_iterations": 3,
         "created_by": "system",
+        # Required on the DTO: the API always returns it, so a "minimal valid
+        # task response" that omitted it would not be a valid one.
+        "dispatch_admitted": True,
         "created_at": "2026-03-17T00:00:00Z",
         "updated_at": "2026-03-17T00:00:00Z",
     }

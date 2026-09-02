@@ -23,7 +23,14 @@ __all__ = [
 
 
 class TaskRead(TimestampedDTO):
-    """Schema for reading a task."""
+    """Schema for reading a task.
+
+    One half of the Task response contract; the shared `TaskDTO` every client
+    parses with is the other. `services/api/tests/unit/test_task_schemas.py`
+    holds the two to the same field spec — name, annotation, requiredness and
+    default — so a field cannot go missing, change type or become optional on
+    one side alone. Keep any change here paired with `TaskDTO`.
+    """
 
     id: str
     project_id: uuid.UUID
@@ -43,6 +50,9 @@ class TaskRead(TimestampedDTO):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     failure_metadata: dict[str, Any] | None = None
+    # Paired with `TaskDTO`, field for field — see the class docstring.
+    dispatch_admitted: bool
+    planning_attempt_id: str | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
 

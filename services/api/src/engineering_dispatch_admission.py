@@ -8,9 +8,10 @@ locked in the transaction that decides, ending in the budget/slot gate that was
 already server-side. That gate is wrapped, not duplicated: `start_paid_run` is
 still the only thing that may create a queued paid run.
 
-A new condition — the Product Brief admission is the next one — is one more step
-in `admit_engineering_dispatch` and one more value in `EngineeringDispatchRefusal`.
-It is not a new surface.
+A new condition is one more step in `admit_engineering_dispatch` and one more
+value in `EngineeringDispatchRefusal`. It is not a new surface. The Product
+Brief admission is the worked example: it added
+`PRODUCT_BRIEF_NOT_ADMITTED` and one `if` on rung 1, and nothing else here.
 
 There is one lock ladder — `LOCK_LADDER` below — and every row any condition
 reads is taken through it with a locking reader. A column-only query is used for
@@ -346,6 +347,24 @@ async def admit_engineering_dispatch(
         EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE
     ):
         return _refused(EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE, overrides)
+
+    # Still rung 1, and the second half of "is this row dispatch authority at
+    # all": for a task planned against a Product Brief, a todo status is not.
+    # The subject is `tasks.dispatch_admitted`, a column of the candidate Task,
+    # which the ladder's own rule puts on the Task rung — "a Task row belongs on
+    # the Task rung wherever the condition that reads it lives" — and which this
+    # decision already holds for update. No brief row is read, so no rung is
+    # added: the brief's admission step writes this column under the same Task
+    # row lock, after taking the brief, so writer and reader serialize on the
+    # Task row and the two orders never cross. Reading the brief here would
+    # invert that — this transaction holds Task rows and would then wait for a
+    # brief, while the admission step holds the brief and waits for the Tasks.
+    # Not overridable: nothing in `OVERRIDABLE_REFUSALS` names it, because
+    # walking past it would buy a worker for a plan the architect has not
+    # finished, and the release is a property of the whole plan rather than of
+    # this one task.
+    if not task.dispatch_admitted:
+        return _refused(EngineeringDispatchRefusal.PRODUCT_BRIEF_NOT_ADMITTED, overrides)
 
     if task.blocked_by_task_id:
         blocker = locked.get(task.blocked_by_task_id)

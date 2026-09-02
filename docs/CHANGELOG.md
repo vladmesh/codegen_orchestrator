@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Added the Product Brief admission to the declared dispatch admission point. A brief-backed Task is
+  no longer dispatchable because it is `todo`: `tasks.dispatch_admitted` is the coverage-to-dispatch
+  boundary, and `admit_engineering_dispatch` refuses a task whose column is false with the new typed
+  `product_brief_not_admitted` refusal. That refusal is not overridable — the release is a property of
+  the whole plan, not of one task — and it is one more `if` on rung 1 of `LOCK_LADDER`, deciding from
+  a column of the candidate Task row the ladder already holds for update. No brief row is read there:
+  every brief writer takes the brief before any Task row, so a dispatch that read a brief after its
+  Task rows would be the one thing that closes the cycle.
+- `ProductBrief` and `RequirementCoverage` (migration `b7c1e4a90d23`) carry the confirmed product
+  intent of one project at one revision, its story, `coverage_admitted_at`, and the three
+  planning-attempt fields that give exactly one live architect ownership of an incomplete plan.
+  Confirmed content is never updated in place — there is no update path, and a change is a new
+  revision — so an architect planning against revision N cannot have the ground move under it.
+  `POST /api/product-briefs/{id}/admit` is the one durable, idempotent admission step: in one
+  transaction on locked rows it either names the must-requirements still undisposed and releases
+  nothing, or stamps `coverage_admitted_at`, releases the tasks planned under the presented attempt
+  and closes it. Calling it twice reports `already_admitted` and releases nothing twice. A planning
+  retry cannot release a duplicate plan: claim/heartbeat/finish fence the attempt, a fresh heartbeat
+  makes a second claim report `in_progress`, a stale one can be taken over with a new attempt id, and
+  both the coverage counted and the tasks released are only those of the attempt the caller presents.
+- `tasks.dispatch_admitted` is non-nullable and defaults to true, so every task that exists today and
+  every task that is not planned against an unadmitted brief keeps dispatching exactly as it does now;
+  the migration's `server_default` is the backfill. It is written false only at creation under an
+  active planning attempt, and back to true only by that brief's admission step. `TaskDTO` and
+  `TaskRead` both declare it required, with no default, because a response that omitted it would
+  otherwise be read as invented dispatch authority.
 - Put every condition row of engineering dispatch admission on one declared lock ladder, and shut
   the lower entry to paid engineering work on a Task. `LOCK_LADDER` in
   `services/api/src/engineering_dispatch_admission.py` states the order once — Task rows (the

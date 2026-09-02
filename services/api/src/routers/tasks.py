@@ -20,6 +20,10 @@ from ..schemas.task import (
     TaskRead,
     TaskUpdate,
 )
+from ._product_brief_helpers import (
+    plan_admission_for_new_task,
+    refuse_task_move_into_unadmitted_plan,
+)
 from ._task_actions import action_router
 from ._task_helpers import (
     commit_or_raise_fk,
@@ -73,6 +77,15 @@ async def create_task(
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
     now = datetime.now(UTC)
+    # Taken before the row is inserted, and before any Task row is locked: a
+    # brief-backed task is planned, not merely created, so whether it is
+    # dispatchable is decided by the plan it belongs to.
+    dispatch_admitted, planning_attempt_id = await plan_admission_for_new_task(
+        project_id=body.project_id,
+        story_id=body.story_id,
+        planning_attempt_id=body.planning_attempt_id,
+        db=db,
+    )
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -91,6 +104,8 @@ async def create_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        dispatch_admitted=dispatch_admitted,
+        planning_attempt_id=planning_attempt_id,
         created_at=now,
         updated_at=now,
     )
@@ -114,6 +129,15 @@ async def push_task(
     auto_priority = (min_priority if min_priority is not None else 0) - 1
 
     now = datetime.now(UTC)
+    # Taken before the row is inserted, and before any Task row is locked: a
+    # brief-backed task is planned, not merely created, so whether it is
+    # dispatchable is decided by the plan it belongs to.
+    dispatch_admitted, planning_attempt_id = await plan_admission_for_new_task(
+        project_id=body.project_id,
+        story_id=body.story_id,
+        planning_attempt_id=body.planning_attempt_id,
+        db=db,
+    )
     task = Task(
         id=generate_id(),
         project_id=body.project_id,
@@ -132,6 +156,8 @@ async def push_task(
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         failure_metadata=body.failure_metadata,
+        dispatch_admitted=dispatch_admitted,
+        planning_attempt_id=planning_attempt_id,
         created_at=now,
         updated_at=now,
     )
@@ -255,9 +281,14 @@ async def update_task(
     body: TaskUpdate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
+    update_data = body.model_dump(exclude_unset=True)
+    if "story_id" in update_data:
+        # Asked before the Task row is taken, because the brief row is above
+        # every Task row in this service's lock order — see
+        # `_product_brief_helpers`.
+        await refuse_task_move_into_unadmitted_plan(story_id=update_data["story_id"], db=db)
     task = await get_task_for_update(task_id, db)
 
-    update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(task, field, value)
 

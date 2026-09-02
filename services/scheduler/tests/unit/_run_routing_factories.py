@@ -65,6 +65,8 @@ def _make_task(**overrides) -> TaskDTO:
         "max_iterations": 3,
         "created_by": "system",
         "story_id": None,
+        # Required on the DTO: a task that is not brief-backed is admitted.
+        "dispatch_admitted": True,
         "created_at": _NOW,
         "updated_at": None,
     }

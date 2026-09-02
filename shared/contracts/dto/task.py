@@ -110,6 +110,13 @@ class TaskDTO(TimestampedDTO):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     failure_metadata: dict[str, Any] | None = None
+    #: Whether this task crossed the coverage-to-dispatch boundary. Required,
+    #: with no default: a response that omitted it would otherwise be read as an
+    #: invented "admitted", which is exactly the authority the boundary exists to
+    #: withhold. Paired with `TaskRead` — see `TestTaskReadPairing`.
+    dispatch_admitted: bool
+    #: The architect planning attempt this task was planned under, if any.
+    planning_attempt_id: str | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
 
@@ -148,6 +155,11 @@ class TaskCreate(BaseModel):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     failure_metadata: dict[str, Any] | None = None
+    #: The architect planning attempt this task is planned under. Required when
+    #: the story is backed by a Product Brief whose coverage is not admitted yet;
+    #: ignored everywhere else, because a task outside a brief plan is admitted
+    #: by existing.
+    planning_attempt_id: str | None = None
 
 
 class TaskUpdate(BaseModel):

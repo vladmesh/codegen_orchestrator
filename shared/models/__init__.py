@@ -15,6 +15,7 @@ from .engineering_budget_policy import EngineeringBudgetPolicy
 from .engineering_budget_reservation import EngineeringBudgetReservation
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
+from .product_brief import ProductBrief, RequirementCoverage
 from .project import Project
 from .promo_code import PromoCode
 from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
@@ -53,7 +54,9 @@ __all__ = [
     "ServerMetricsHistory",
     "ServerStatus",
     "PortAllocation",
+    "ProductBrief",
     "PromoCode",
+    "RequirementCoverage",
     "Task",
     "TaskEvent",
     "TemporaryAccessGrant",

@@ -133,6 +133,7 @@ becomes an immutable terminal fact.
 |---|---|---|
 | paid-run command and outcomes | `shared/contracts/dto/work_admission.py` | `services/api/src/routers/work_admission.py` |
 | engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `services/api/src/engineering_dispatch_admission.py` |
+| Product Brief coverage admission | `shared/contracts/dto/product_brief.py` | `services/api/src/routers/product_briefs.py` |
 | per-user engineering budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `services/api/src/routers/engineering_budget_policies.py` |
 | executor decision snapshot | `shared/contracts/dto/executor_decision.py` | `services/api/src/work_admission.py` |
 | executor diagnostics snapshot | `shared/contracts/dto/executor_diagnostics.py` | `services/api/src/executor_diagnostics.py` |
@@ -209,6 +210,42 @@ not select an executor from mutable project or process configuration. A malforme
 control or diagnostic is fail-closed. An administrator may confirm only a
 specific unexpired `unknown` diagnostics snapshot; an internal service cannot
 make that confirmation.
+
+### The Product Brief coverage-to-dispatch boundary
+
+A Story planned from a confirmed Product Brief is released as a whole, not task
+by task. `tasks.dispatch_admitted` is that boundary: non-nullable, true by
+default — so every task that is not planned against an unadmitted brief keeps
+the lifecycle it has always had — and false only for a task created under an
+active architect planning attempt. `admit_engineering_dispatch` refuses such a
+task with `product_brief_not_admitted`, which is not in `OVERRIDABLE_REFUSALS`:
+the release is a property of the plan, not a judgement about one task.
+
+`POST /api/product-briefs/{id}/admit` is the one step that writes the column. In
+one transaction, on rows taken for update, it either names the must-requirements
+still undisposed (`incomplete`, releasing nothing) or stamps
+`coverage_admitted_at`, releases the tasks planned under the presented attempt
+and closes it (`admitted`). A second call is a replay, not a rival: it answers
+`already_admitted` and releases nothing twice.
+
+Exactly one architect owns an incomplete plan.
+`POST /api/product-briefs/{id}/planning-attempts/{claim,heartbeat,finish}` fence
+it on the brief row: a claim against an active attempt with a fresh heartbeat
+reports `in_progress`, a stale attempt is taken over with a *new* attempt id, and
+coverage writes, task creation and `admit` all require the attempt the row names
+now. Both the coverage counted and the tasks released are scoped to that attempt,
+so a superseded planner's abandoned tasks are never released by its replacement's
+admission, and the replacement re-disposes of every requirement rather than
+inheriting rows that point at abandoned work.
+
+Confirmed content is never updated in place: there is no update path, and a
+change to what the user asked for is a new revision, so an architect planning
+against revision N cannot have the ground move under it.
+
+**Lock order.** Every Product Brief writer takes the brief row for update before
+any Task row. The dispatch admission point reads no brief at all — its condition
+is a column of the candidate Task, which rung 1 of `LOCK_LADDER` already holds —
+so brief-before-task closes no cycle with task-before-story-before-project.
 
 ### Operational overview
 
@@ -355,6 +392,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 |---|---|---|---|
 | Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py` | owner notifications and QA handoff are durable story lifecycle state |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
+| Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
 | Run create/type/status | `shared/contracts/dto/run.py` | `schemas/run.py`, `routers/runs.py` | terminal transitions are guarded by the Run owner and lock |
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |

@@ -44,6 +44,8 @@ class TestTaskDTO:
         "story_id": "story-333",
         "blocked_by_task_id": "task-blocker",
         "failure_metadata": {"error": "timeout"},
+        "dispatch_admitted": True,
+        "planning_attempt_id": None,
         "last_event": "iteration_start",
         "elapsed_minutes": 45.2,
         "created_at": _NOW.isoformat(),
@@ -86,6 +88,9 @@ class TestTaskDTO:
             "max_iterations": 3,
             "need_e2e": False,
             "created_by": "system",
+            # Required, with no default: the API always returns it, so the
+            # minimal *valid* response is one that carries it.
+            "dispatch_admitted": True,
             "created_at": _NOW.isoformat(),
         }
         dto = TaskDTO.model_validate(minimal)
@@ -95,6 +100,13 @@ class TestTaskDTO:
         assert dto.last_event is None
         assert dto.elapsed_minutes is None
         assert dto.failure_metadata is None
+        assert dto.planning_attempt_id is None
+
+    def test_a_response_without_the_dispatch_admission_is_refused(self):
+        """No producer may omit it; an omitted field would invent dispatch authority."""
+        without = {k: v for k, v in self.SAMPLE_RESPONSE.items() if k != "dispatch_admitted"}
+        with pytest.raises(ValidationError):
+            TaskDTO.model_validate(without)
 
     def test_model_dump_roundtrip(self):
         dto = TaskDTO.model_validate(self.SAMPLE_RESPONSE)

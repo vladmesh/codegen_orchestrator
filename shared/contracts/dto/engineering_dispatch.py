@@ -67,6 +67,11 @@ class EngineeringDispatchRefusal(StrEnum):
     #: The locked row is no longer in todo — somebody moved it while this tick
     #: was reading the candidate list.
     TASK_NOT_DISPATCHABLE = "task_not_dispatchable"
+    #: The task was planned against a Product Brief whose coverage has not been
+    #: admitted yet. A `todo` status is not dispatch authority for brief-backed
+    #: work: the plan is released as a whole, by the brief's one admission step,
+    #: and until then no task of it may be bought.
+    PRODUCT_BRIEF_NOT_ADMITTED = "product_brief_not_admitted"
     #: The orchestrator's own project, whose tasks are implemented by hand.
     INTERNAL_PROJECT = "internal_project"
     #: `blocked_by_task_id` names a task that is not done.
