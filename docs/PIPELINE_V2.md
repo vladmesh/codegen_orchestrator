@@ -22,13 +22,39 @@ Everything is sequential per project. One story at a time, one task at a time.
 4. PO creates **Repository** for the project (1:1 for now, model supports multi-repo)
 5. PO collects secrets from user → stores encrypted on **Repository** (tied to code, not project)
 6. PO sets **modules** on project config (e.g. `backend`, `tg_bot`)
-7. PO creates one or more **Stories** for the project
+7. PO presents the **Product Brief** and the user confirms it (new product work only)
+8. PO creates one or more **Stories** for the project
    - Stories are ordered by priority
    - Only the first story is active — rest wait in queue
    - If user keeps chatting, PO may add more stories
-8. First story triggers the pipeline
+9. First story triggers the pipeline
 
-**Outputs**: Project, Repository (empty), Secrets (on repo), Stories
+**Outputs**: Project, Repository (empty), Secrets (on repo), Product Brief, Stories
+
+### The Product Brief is confirmed before the story exists
+
+For new product work the requirement becomes durable typed data before there is
+anything to plan, and it is the PO that produces it:
+
+1. `present_product_brief` opens a revision through `POST /api/product-briefs/`
+   and returns the one message the user is shown — the summary, every
+   must-requirement with the id the architect will dispose of it by and either
+   the user's own wording or a reference to where they said it, and the typed
+   initial settings. Asked again — a retry, a restart, a second PO turn — it
+   returns the *stored* revision instead of composing a second interpretation:
+   the project's config carries the pointer `product_brief_id` to the revision
+   presented and not yet spent.
+2. The user answers. On "yes", `confirm_product_brief` echoes the stored content
+   to `POST /api/product-briefs/{id}/confirm`, which refuses anything but a
+   byte-for-byte match. A correction is a new revision, never an edit.
+3. `create_story` refuses to create new product work without a confirmed brief,
+   and binds the confirmed brief to the story it created through
+   `POST /api/product-briefs/{id}/story` **before** it publishes
+   `ArchitectMessage`. A bind that fails is reported and nothing is published:
+   an unbound story would be planned as ordinary prose work.
+
+A `fix` story on an existing project and `reopen_story` have no brief and are
+unchanged.
 
 ---
 

@@ -85,6 +85,28 @@ class TestSystemPrompt:
         assert "must-requirements" in SYSTEM_PROMPT
         assert "yes / correct me" in SYSTEM_PROMPT
 
+    def test_the_confirmation_is_the_product_brief_flow(self):
+        """The confirmed brief, not a re-worded summary, is what is planned against."""
+        assert "## The Product Brief: Confirmation Before Creating a Story" in SYSTEM_PROMPT
+        assert "present_product_brief" in SYSTEM_PROMPT
+        assert "confirm_product_brief" in SYSTEM_PROMPT
+        assert "product_brief_id=<the brief id>" in SYSTEM_PROMPT
+
+    def test_a_correction_is_a_new_revision(self):
+        assert "corrects_brief_id" in SYSTEM_PROMPT
+        assert "A correction is a new revision, never an edit" in SYSTEM_PROMPT
+
+    def test_the_stored_revision_is_never_re_composed(self):
+        assert "do not compose another one" in SYSTEM_PROMPT
+
+    def test_a_secret_is_never_an_initial_setting(self):
+        assert "NEVER put a token, password or API key into `initial_settings`" in SYSTEM_PROMPT
+
+    def test_the_flows_that_have_no_brief_keep_working(self):
+        assert "A `fix` story on an existing project and `reopen_story` need no brief." in (
+            SYSTEM_PROMPT
+        )
+
     def test_offers_both_ways_out_of_an_own_token_conflict(self):
         """Without this, the agent asks for another token the user does not have."""
         assert "teardown_project" in SYSTEM_PROMPT
@@ -110,3 +132,8 @@ class TestCreateStoryDocstring:
     def test_mentions_gathered_requirements(self):
         doc = create_story.description
         assert "gathered requirements" in doc.lower() or "detailed" in doc.lower()
+
+    def test_says_new_product_work_needs_a_confirmed_brief(self):
+        doc = create_story.description
+        assert "confirmed Product Brief" in doc
+        assert "product_brief_id" in doc

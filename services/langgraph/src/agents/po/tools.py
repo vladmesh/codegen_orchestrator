@@ -21,6 +21,13 @@ from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
 
+# Re-export the Product Brief tools
+from .tools_briefs import (  # noqa: F401
+    PRODUCT_BRIEF_POINTER_KEY,
+    confirm_product_brief,
+    present_product_brief,
+)
+
 # Re-export project tools
 from .tools_projects import (  # noqa: F401
     AVAILABLE_MODULES,
@@ -202,6 +209,8 @@ def get_all_tools() -> list:
         transfer_project_ownership,
         teardown_project,
         validate_telegram_token,
+        present_product_brief,
+        confirm_product_brief,
         create_story,
         list_stories,
         reopen_story,
@@ -231,6 +240,10 @@ __all__ = [
     "teardown_project",
     "transfer_project_ownership",
     "validate_telegram_token",
+    # Product Brief tools
+    "PRODUCT_BRIEF_POINTER_KEY",
+    "present_product_brief",
+    "confirm_product_brief",
     # Story/run tools
     "create_story",
     "list_stories",

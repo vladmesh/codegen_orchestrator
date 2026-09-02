@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Gave the Product Brief boundary its producer: the user's requirement is durable typed data
+  before the story exists. Two new PO tools work the released endpoints and store nothing of
+  their own — `present_product_brief` opens the revision through `POST /api/product-briefs/`
+  under a derived idempotency key and returns the one atomic confirmation message (summary,
+  every must-requirement with its id and either the user's own wording or a reference to where
+  they said it, the typed initial settings, `not specified` for what nobody chose), and
+  `confirm_product_brief` freezes it by echoing the stored content back. Asked a second time —
+  a retry, a restart, another PO turn — presenting returns the *stored* revision instead of a
+  second interpretation of the same conversation: the project config carries the pointer
+  `product_brief_id` to the revision presented and not yet spent, because until a brief is bound
+  to a story no route finds it from the project alone. A correction is a new revision, never an
+  edit. `create_story` refuses new product work without a confirmed brief instead of falling back
+  to the prose-summary path, and binds the brief through `POST /api/product-briefs/{id}/story`
+  before it publishes `ArchitectMessage`; a bind that fails publishes nothing and is reported, so
+  no unbound story is ever handed to the architect as if it were brief-backed. `reopen_story` and
+  a `fix` story on an existing project are unchanged.
+- Made the brief document carry what the boundary needs, additively and with no migration
+  (`content` is a JSON column). `ProductBriefContent` stays the permissive read shape, so every
+  revision already stored keeps parsing; the new `ProposedProductBriefContent` is what
+  `ProductBriefCreate` and `ProductBriefConfirm` carry, and it refuses a must-requirement id that
+  is not path-safe — the coverage route addresses it as one path segment, so a `/` in it would
+  surface as an unexplained 404 at coverage time — and a requirement that carries neither the
+  user's wording nor an auditable reference to it. `initial_settings` is an ordered list of
+  `(key, scope, value)` in the vocabulary of the generated core settings contract
+  (`service-template` `f0b27617`, "Core settings v1"), unique on `(key, scope, subject_id)`. A
+  credential is never a setting: a credential-shaped key or value is refused by the type, and the
+  PO additionally refuses a key naming one of the project's stored secrets, reading only their
+  names. Writing settings into a generated product through `settings.set` is the next card.
+- Corrected the docstring of `_release_planning_attempt` in the architect consumer: it still said
+  the supervisor's unadmitted-story recovery "picks the story up either way", the claim
+  `codegen-orchestrator-1245` retracted — `supervise_stuck_stories` scans `StoryStatus.CREATED`
+  only, so a story left behind an incomplete plan needs an operator. No behaviour change.
+
 - Gave the released Product Brief boundary a real producer. The architect consumer now asks
   `GET /api/product-briefs/by-story/{story_id}` before it plans, and for a confirmed brief it claims
   the planning attempt and branches on the typed outcome: `claimed` plans under the returned attempt

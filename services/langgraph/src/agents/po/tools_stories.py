@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 import json
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
+from shared.contracts.dto.product_brief import ProductBriefRead, ProductBriefStoryBind
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryType
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 
+from .tools_briefs import clear_brief_pointer
 from .tools_shared import _get_api, _get_stream_client, _user_headers
 
 logger = structlog.get_logger(__name__)
@@ -35,6 +38,68 @@ def _qa_failure_hold(stories: list[dict], parent_story_id: str | None) -> tuple[
     return None
 
 
+async def _confirmed_brief(
+    project_id: str, brief_id: str, headers: dict[str, str]
+) -> tuple[ProductBriefRead | None, str | None]:
+    """The confirmed brief this story will be planned against, or why it is not.
+
+    Read before the story is created, so that a brief which cannot back a story
+    costs nothing: the refusal reaches the model instead of an unbound story
+    reaching the architect.
+    """
+    response = await _get_api().get_raw(f"product-briefs/{brief_id}", headers=headers)
+    if response.status_code == HTTPStatus.NOT_FOUND:
+        return None, f"No story was created: Product Brief {brief_id} does not exist."
+    response.raise_for_status()
+    brief = ProductBriefRead.model_validate(response.json())
+    if str(brief.project_id) != project_id:
+        return None, (f"No story was created: Product Brief {brief_id} belongs to another project.")
+    if brief.confirmed_at is None:
+        return None, (
+            f"No story was created: Product Brief {brief_id} is not confirmed yet. "
+            "Show the user the presented revision and call confirm_product_brief "
+            "once they answer yes."
+        )
+    if brief.story_id is not None:
+        return None, (
+            f"No story was created: Product Brief {brief_id} already backs story "
+            f"{brief.story_id}. A new story needs a new brief."
+        )
+    return brief, None
+
+
+async def _bind_brief_to_story(brief_id: str, story_id: str, headers: dict[str, str]) -> str | None:
+    """Make the story brief-backed, or say why it is not. Nothing else may publish.
+
+    The bind is what the architect sees: it reads the brief by story id, claims
+    the planning attempt and plans under it. A story published to the architect
+    without it would be planned as ordinary prose work, and the requirement the
+    user confirmed would silently stop being the thing being built.
+    """
+    bind = ProductBriefStoryBind(story_id=story_id)
+    response = await _get_api().post_raw(
+        f"product-briefs/{brief_id}/story", json=bind.model_dump(mode="json"), headers=headers
+    )
+    if response.is_success:
+        return None
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        detail = response.text
+    logger.error(
+        "po_product_brief_bind_failed",
+        brief_id=brief_id,
+        story_id=story_id,
+        status_code=response.status_code,
+        detail=detail,
+    )
+    return (
+        f"Story {story_id} was created but the confirmed Product Brief {brief_id} could "
+        f"not be bound to it ({detail}), so it was NOT sent to the architect. Ask a human "
+        "to review it — do not create a second story."
+    )
+
+
 @tool
 async def create_story(
     project_id: str,
@@ -42,6 +107,7 @@ async def create_story(
     description: str,
     story_type: str = "feature",
     parent_story_id: str | None = None,
+    product_brief_id: str | None = None,
     *,
     config: RunnableConfig,
 ) -> str:
@@ -50,6 +116,10 @@ async def create_story(
     This is the main way to request work on a project — whether creating it
     from scratch, adding features, or fixing bugs. The architect will decompose
     the story into tasks and start engineering work automatically.
+
+    New product work needs a confirmed Product Brief: present it with
+    `present_product_brief`, confirm it with `confirm_product_brief` once the
+    user says yes, and pass the brief id here. Without it no story is created.
 
     IMPORTANT: The description should contain the full gathered requirements —
     not just the user's original short message. Compose a detailed spec from
@@ -64,6 +134,9 @@ async def create_story(
         story_type: "feature" (new functionality or project creation),
             "fix" (bug fix).
         parent_story_id: Story this work retries or continues, if any.
+        product_brief_id: The confirmed Product Brief this story is planned
+            against. Required for new product work; leave unset for a fix on an
+            existing project.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -76,6 +149,24 @@ async def create_story(
         proj_resp.raise_for_status()
         project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
         action = "create" if project_status == ProjectStatus.DRAFT else "feature"
+
+    if action == "create" and not product_brief_id:
+        # The prose-summary path is not a fallback for a missing brief: the
+        # architect would plan against a re-derived interpretation of the
+        # conversation instead of what the user confirmed.
+        logger.warning("po_story_without_confirmed_brief", project_id=project_id)
+        return (
+            "No story was created: new product work needs a confirmed Product Brief. "
+            "Call present_product_brief, send the user the message it returns, and after "
+            "their yes call confirm_product_brief — then call create_story again with "
+            "product_brief_id."
+        )
+
+    brief = None
+    if product_brief_id:
+        brief, refusal = await _confirmed_brief(project_id, product_brief_id, headers)
+        if refusal is not None:
+            return refusal
 
     stories_resp = await api.get_raw(f"stories/?project_id={project_id}", headers=headers)
     stories_resp.raise_for_status()
@@ -129,6 +220,13 @@ async def create_story(
     story_id = resp.json()["id"]
     logger.info("po_story_created", story_id=story_id, project_id=project_id, title=title)
 
+    # Bind before anything can hand the story on. Whether it is published now or
+    # queued behind an active story, what the architect eventually picks up must
+    # already be brief-backed.
+    if brief is not None:
+        if failure := await _bind_brief_to_story(brief.id, story_id, headers):
+            return failure
+
     # The architect needs this spec when decomposing a newly created project.
     # Persist it before any path can publish the story for downstream work.
     if action == "create" and description:
@@ -140,6 +238,13 @@ async def create_story(
             headers=headers,
         )
         patch_resp.raise_for_status()
+
+    # The presented-brief pointer is spent once the brief is bound: the brief is
+    # reachable by its story from here on. Cleared after the spec write above,
+    # which writes back a config read before the bind and would otherwise put
+    # the pointer back.
+    if brief is not None:
+        await clear_brief_pointer(project_id, headers)
 
     # 2. Check if project already has an active story (sequential processing)
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
