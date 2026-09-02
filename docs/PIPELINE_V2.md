@@ -284,7 +284,9 @@ The `SETTINGS_WRITE_CAPABILITY` comes only from this deploy's in-memory
 `secret_values` and travels as a header — never a URL, log, event or persisted
 diagnostic. Every setting's disposition is recorded in
 `DeployRunResult.settings_seed`. A transport failure or an unproved readback
-holds the deploy back as `OWNER_ACCESS_PROOF_FAILED` (bounded retry); an
+holds the deploy back as `SETTINGS_SEED_FAILED` — its own outcome and its own
+bounded supervisor route, because the owner-grant outcome is reconciled to
+SUCCESS once that grant is applied and would launder the failure away; an
 undeclared key, a schema-refused value, or a pinned product whose contract
 predates the capability is reported beside the successful deploy, because
 redeploying the same artifact would answer identically. A story with no brief,
@@ -296,6 +298,8 @@ carries typed initial settings, and never a secret".
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
 - RETRY → redeploy with counter (max 3 consecutive failures)
+- SETTINGS_SEED_FAILED → redeploy the same commit under that same counter, never
+  reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.

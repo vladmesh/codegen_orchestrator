@@ -26,14 +26,27 @@
   closed-set failure kind, no value and no capability. The two halves of that record are routed
   differently on purpose: a transport failure, a refusal that is not the product's own contract,
   and a readback that was refused, malformed or disagreeing say the product did not answer the way
-  a working product answers, so they hold the deploy back through the existing
-  `owner_access_proof_failed` outcome and go round under the bound that already stops a failing
+  a working product answers, so they hold the deploy back as the new
+  `settings_seed_failed` deploy outcome and go round under the bound that already stops a failing
   deploy from looping; an undeclared key (404), a value its declared schema refuses (422), and a
   pinned product whose environment contract predates the capability are deterministic in this
   commit — redeploying the same artifact answers identically — so they are reported beside the
   successful deploy instead of becoming a retry that cannot converge. Neither is a silent skip.
   A secret is never written as a setting and no project secret *value* is read on this path: the
   brief's own refusal of credential-shaped keys and values stays the one policy.
+
+  A held-back seed travels on its own outcome rather than borrowing
+  `owner_access_proof_failed`, because that one means "the owner grant was not proved" and the
+  supervisor reconciles it to SUCCESS as soon as the grant turns out to be applied. On the very
+  deploy where a brief's `initial_settings` first exist — a new `tg_bot` product whose first story
+  is brief-backed — the initial-owner grant is applied before the seed runs, so a confirmed
+  setting the product never accepted would have been laundered into a success handed to QA, with
+  no retry and the readback evidence gone. The invariant now lives in one place, on
+  `DeployRunResult`: a result may not say `success` while it records a settings-seed failure that
+  holds the deploy back, which a reconciliation reaches by re-validating instead of copying.
+  `settings_seed_failed` has its own supervisor route that never consults the grant-intent
+  lifecycle and redeploys the same commit under the same `deploy:retries:{story_id}` bound;
+  spending that bound fails the story visibly.
 
 - Gave the Product Brief boundary its producer: the user's requirement is durable typed data
   before the story exists. Two new PO tools work the released endpoints and store nothing of

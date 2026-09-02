@@ -30,6 +30,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
     DeployRunResult,
 )
+from shared.contracts.dto.settings_seed import SETTINGS_SEED_RETRYABLE_FAILURES
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
@@ -146,7 +147,7 @@ def _deploy_retry_ttl() -> int:
 #: `POST stories/{id}/human-review` is what moves a story into the human-review
 #: queue. Posting `waiting_human_review` instead is a 404 — an escalation that
 #: reaches nobody — so the action lives here once and every caller uses it.
-async def supervise_deploying_stories(  # noqa: C901, PLR0912
+async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
@@ -257,6 +258,20 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912
             elif retry_action is DeployRetryAction.RECONCILED:
                 tested += 1
             elif retry_action is DeployRetryAction.FAILED:
+                failed += 1
+
+        elif outcome is DeployOutcome.SETTINGS_SEED_FAILED:
+            # The application is up; a confirmed setting of the story's brief is
+            # not in it. This is its own route on purpose — the retry branch
+            # above reconciles an applied owner grant straight to SUCCESS, which
+            # would hand QA a deploy presented as successful with the readback
+            # evidence gone.
+            retry_action = await _handle_settings_seed_retry(
+                api_client, redis_client, redis, story_id, project_id, run, log
+            )
+            if retry_action is DeployRetryAction.RETRIED:
+                retried += 1
+            else:
                 failed += 1
 
         elif outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
@@ -666,9 +681,16 @@ async def _handle_deploy_retry(
         if lifecycle.disposition is GrantIntentLifecycleDisposition.ALREADY_APPLIED:
             if run.result is None:
                 return DeployRetryAction.FAILED
-            success_result = run.result.model_copy(
-                update={"deploy_outcome": DeployOutcome.SUCCESS, "error_details": None}
-            )
+            success_result = _reconciled_success_result(run.result)
+            if success_result is None:
+                # The grant is applied, and this run records a confirmed setting
+                # the product did not accept. Reconciling it would present the
+                # deploy to QA as successful with that evidence gone, so it goes
+                # round under the ordinary bound below instead.
+                log.warning("deploy_supervisor_reconcile_refused_settings_seed", run_id=run.id)
+                return await _redispatch_deploy_under_bound(
+                    api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+                )
             reconciled = await _handle_deploy_success_story(
                 api_client, redis_client, story_id, project_id, run, success_result, log
             )
@@ -687,6 +709,92 @@ async def _handle_deploy_retry(
             log.info("deploy_supervisor_owner_intent_stale_target", source_run_id=run.id)
         return DeployRetryAction.IN_FLIGHT
 
+    return await _redispatch_deploy_under_bound(
+        api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+    )
+
+
+async def _handle_settings_seed_retry(  # noqa: PLR0913
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    redis,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> DeployRetryAction:
+    """The product is up and refused, or did not prove, a confirmed setting.
+
+    This route deliberately does not consult the initial-owner grant intent.
+    The seed runs after that grant is applied, so the intent lifecycle can only
+    answer ``ALREADY_APPLIED`` here and reconciling on it would turn a setting
+    that never arrived into a successful deploy. The run goes round under the
+    same ``deploy:retries:{story_id}`` bound that stops any failing deploy from
+    looping; the seed itself is idempotent on ``(key, scope, subject_id)``.
+    """
+    head_sha = _deploy_run_head_sha(run)
+    if not head_sha:
+        log.error("deploy_settings_seed_retry_head_sha_missing", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "settings-seed retry could not find original head_sha"
+        )
+        return DeployRetryAction.FAILED
+    log.warning(
+        "deploy_supervisor_settings_seed_retry",
+        run_id=run.id,
+        failures=_held_back_settings_seed_failures(run.result),
+    )
+    return await _redispatch_deploy_under_bound(
+        api_client, redis_client, redis, story_id, project_id, run, head_sha, log
+    )
+
+
+def _held_back_settings_seed_failures(result: DeployRunResult | None) -> list[str]:
+    """The bounded failure kinds that hold this run's deploy back, deduplicated.
+
+    Kinds only — never a key, a value or a capability, because this goes into a
+    log line.
+    """
+    if result is None:
+        return []
+    return sorted(
+        {
+            outcome.failure.value
+            for outcome in result.settings_seed
+            if outcome.failure in SETTINGS_SEED_RETRYABLE_FAILURES
+        }
+    )
+
+
+def _reconciled_success_result(result: DeployRunResult) -> DeployRunResult | None:
+    """This run's result as a SUCCESS, or ``None`` if it may not become one.
+
+    ``DeployRunResult`` holds the invariant that a success cannot carry a
+    settings-seed failure that holds the deploy back, so re-validating here —
+    rather than ``model_copy``, which runs no validators — is what makes this
+    reconciliation reach it. Any future reconciliation that builds a success
+    the same way inherits the check instead of having to remember it.
+    """
+    try:
+        return DeployRunResult.model_validate(
+            result.model_dump() | {"deploy_outcome": DeployOutcome.SUCCESS, "error_details": None}
+        )
+    except ValidationError:
+        return None
+
+
+async def _redispatch_deploy_under_bound(  # noqa: PLR0913
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    redis,
+    story_id: str,
+    project_id: str,
+    run,
+    head_sha: str,
+    log: structlog.stdlib.BoundLogger,
+) -> DeployRetryAction:
+    """Deploy the same commit again, or fail the story once the bound is spent."""
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
     attempts = await redis.incr(retry_key)
     await redis.expire(retry_key, _deploy_retry_ttl())

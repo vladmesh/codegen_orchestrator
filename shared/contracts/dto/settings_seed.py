@@ -16,8 +16,13 @@ result is read back by the scheduler, by QA, and by people.
 The split that matters is `SETTINGS_SEED_RETRYABLE_FAILURES`. A failure in that
 set says the product did not answer the way a working product answers, and the
 same commit deployed again may well seed cleanly — so it holds the deploy back
-and goes round under the bound that already stops a failing deploy from
-looping. Every other failure is deterministic in this commit: an undeclared key
+as `DeployOutcome.SETTINGS_SEED_FAILED` and goes round under the bound that
+already stops a failing deploy from looping. That outcome is deliberately its
+own: `DeployRunResult` refuses to call a run successful while it records a
+failure from this set, so no producer and no reconciliation can turn a setting
+that never arrived into a deploy handed to QA.
+
+Every other failure is deterministic in this commit: an undeclared key
 stays undeclared and a schema-refused value stays refused however often the
 same artifact is redeployed, so retrying is a loop that cannot converge. Those
 are reported alongside the successful deploy instead, where the run's readers

@@ -16,7 +16,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.settings_seed import SettingSeedOutcome
+from shared.contracts.dto.settings_seed import (
+    SETTINGS_SEED_RETRYABLE_FAILURES,
+    SettingSeedOutcome,
+)
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 
@@ -127,6 +130,39 @@ class DeployRunResult(BaseModel):
         if missing:
             raise ValueError(
                 f"{DeployOutcome.WAITING_INFRASTRUCTURE.value} requires {', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _success_means_every_confirmed_setting_arrived(self) -> DeployRunResult:
+        """A deploy is not a success while a confirmed setting is still missing.
+
+        This is the one place the invariant lives, so that every producer and
+        every reconciliation reaches it rather than each remembering to check:
+        a result may not say SUCCESS while it also records a settings-seed
+        failure that a second deploy of the same commit could answer
+        differently. Such a run belongs to
+        `DeployOutcome.SETTINGS_SEED_FAILED`, which goes round under a bound.
+
+        The deterministic failures — an undeclared key, a schema-refused value,
+        a pinned product whose contract predates the write capability — are
+        deliberately not covered: no redeploy of this artifact changes them, so
+        they are reported beside the successful deploy instead of blocking it.
+        """
+        if self.deploy_outcome is not DeployOutcome.SUCCESS:
+            return self
+        held_back = sorted(
+            {
+                outcome.failure.value
+                for outcome in self.settings_seed
+                if outcome.failure in SETTINGS_SEED_RETRYABLE_FAILURES
+            }
+        )
+        if held_back:
+            raise ValueError(
+                f"{DeployOutcome.SUCCESS.value} cannot carry a settings-seed failure that holds "
+                f"the deploy back ({', '.join(held_back)}); use "
+                f"{DeployOutcome.SETTINGS_SEED_FAILED.value}"
             )
         return self
 

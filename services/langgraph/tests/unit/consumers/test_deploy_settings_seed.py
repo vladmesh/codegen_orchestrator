@@ -318,7 +318,10 @@ class TestFailClosedAndVisibly:
         assert result["status"] == "failed"
         assert _stored_status(mock_api) == RunStatus.FAILED.value
         stored = _stored_result(mock_api)
-        assert stored["deploy_outcome"] == DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value
+        # Its own outcome, not the owner-grant one: the supervisor reconciles
+        # that one to SUCCESS once the grant is applied, which would launder a
+        # setting the product never accepted into a deploy handed to QA.
+        assert stored["deploy_outcome"] == DeployOutcome.SETTINGS_SEED_FAILED.value
         assert stored["error_details"] == f"settings_seed:{failure.value}"
         # The record of what did and did not reach the product survives the refusal.
         assert stored["settings_seed"] == [

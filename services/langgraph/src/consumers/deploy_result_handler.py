@@ -177,14 +177,14 @@ async def _handle_deploy_success(  # noqa: PLR0913
         secret_values=result.get("secret_values", {}),
     )
     if blocking_seed_failure is not None:
-        return await _handle_owner_access_failure(
+        return await _handle_settings_seed_failure(
             result=result,
             task_id=task_id,
             project_id=project_id,
             callback_stream=callback_stream,
             telegram_chat_id=telegram_chat_id,
             redis=redis,
-            reason=blocking_seed_failure,
+            failure=blocking_seed_failure,
             application_id=application_id,
             settings_seed=settings_seed,
         )
@@ -353,13 +353,13 @@ async def _seed_initial_settings(
     story_id: str,
     deployed_url: str,
     secret_values: dict,
-) -> tuple[list[SettingSeedOutcome], str | None]:
+) -> tuple[list[SettingSeedOutcome], SettingsSeedFailureKind | None]:
     """Write the confirmed brief's typed settings into the deployed product.
 
-    Returns `(record, blocking_reason)`. The record is one bounded outcome per
+    Returns `(record, blocking_failure)`. The record is one bounded outcome per
     confirmed setting, in the order the user confirmed them, and it is stored
-    on the run whether the deploy is held back or not. A blocking reason is
-    returned only for a failure a second deploy of this commit could answer
+    on the run whether the deploy is held back or not. A blocking failure is
+    returned only for one a second deploy of this commit could answer
     differently — see `SETTINGS_SEED_RETRYABLE_FAILURES`.
 
     Nothing here is derived from prose, from project config or from an
@@ -411,7 +411,7 @@ async def _seed_initial_settings(
     blocking = next(
         (failure for failure in failures if failure in SETTINGS_SEED_RETRYABLE_FAILURES), None
     )
-    return record, f"settings_seed:{blocking.value}" if blocking is not None else None
+    return record, blocking
 
 
 def _seed_outcome(
@@ -441,7 +441,6 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
     redis: RedisStreamClient,
     reason: str,
     application_id: int | None,
-    settings_seed: list[SettingSeedOutcome] | None = None,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
     error_msg = f"Deployed service did not verify generated access: {reason}"
@@ -459,7 +458,63 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
                 application_id=application_id,
                 bot_username=result.get("bot_username"),
                 error_details=reason,
-                settings_seed=settings_seed or [],
+            ).model_dump(mode="json"),
+        },
+    )
+    await publish_callback_event(
+        redis,
+        callback_stream,
+        "failed",
+        task_id,
+        error_msg,
+        telegram_chat_id=telegram_chat_id,
+        project_id=project_id,
+    )
+    return live_work_unsettled(
+        {"status": "failed", "error": error_msg, "deployed_url": result["deployed_url"]}
+    )
+
+
+async def _handle_settings_seed_failure(  # noqa: PLR0913
+    *,
+    result: dict,
+    task_id: str,
+    project_id: str,
+    callback_stream: str,
+    telegram_chat_id: str,
+    redis: RedisStreamClient,
+    failure: SettingsSeedFailureKind,
+    application_id: int | None,
+    settings_seed: list[SettingSeedOutcome],
+) -> dict:
+    """The application is up and a confirmed setting did not arrive in it.
+
+    This has its own outcome rather than borrowing the owner-grant one on
+    purpose. `OWNER_ACCESS_PROOF_FAILED` means "the owner grant was not proved",
+    and the supervisor reconciles it to SUCCESS as soon as that grant turns out
+    to be applied — which on a brief-backed first deploy would hand QA a run
+    presented as successful while a confirmed setting the product never
+    accepted is only a line in the result nobody routes on.
+
+    The record travels whole: every setting's disposition, the failure kind that
+    holds the deploy back, and no value, no capability and no response body.
+    """
+    error_msg = f"Deployed service did not accept a confirmed setting: {failure.value}"
+    logger.warning("deploy_settings_seed_failed", task_id=task_id, failure=failure.value)
+    await api_client.patch(
+        f"runs/{task_id}",
+        json={
+            "status": RunStatus.FAILED.value,
+            "error_message": error_msg,
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+                deployed_url=result["deployed_url"],
+                deployment_result=result.get("deployment_result"),
+                smoke_result=result.get("smoke_result"),
+                application_id=application_id,
+                bot_username=result.get("bot_username"),
+                error_details=f"settings_seed:{failure.value}",
+                settings_seed=settings_seed,
             ).model_dump(mode="json"),
         },
     )

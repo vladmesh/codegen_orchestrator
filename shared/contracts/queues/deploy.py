@@ -42,6 +42,15 @@ class DeployOutcome(StrEnum):
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     OWNER_ACCESS_PROOF_FAILED = "owner_access_proof_failed"
+    # The application is up, and a confirmed `initial_settings` value of the
+    # story's Product Brief did not arrive in it for a reason a second deploy of
+    # the same commit can answer differently — see
+    # `shared/contracts/dto/settings_seed.py::SETTINGS_SEED_RETRYABLE_FAILURES`.
+    # It is deliberately its own outcome rather than a flavour of
+    # `OWNER_ACCESS_PROOF_FAILED`: that one means "the owner grant was not
+    # proved", and its consumers reconcile it to SUCCESS once the grant is
+    # applied — which would launder away a setting the product never accepted.
+    SETTINGS_SEED_FAILED = "settings_seed_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
     # The deploy never started: no server could be allocated for the application,
     # for a reason that is about the platform and not about the project (see
