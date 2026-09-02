@@ -211,6 +211,46 @@ def test_a_failed_paid_run_arrives_with_its_stage_reason_and_service_tails(tmp_p
     assert scan_artifact(output, canaries=("not-present",)) == []
 
 
+def test_a_debug_dump_named_with_an_underscore_reaches_the_handoff(tmp_path):
+    """A dump name the harness can actually produce is collected, not dropped."""
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True)
+    )
+    dump = "debug-test_full_pipeline_LLM-20260902-081500.md"
+    (run_dir / dump).write_text("# Debug\n- task_status: `failed`\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert (output / dump).is_file()
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
+def test_a_dump_shaped_file_the_handoff_cannot_carry_is_named_not_dropped(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True)
+    )
+    dump = "debug-no-timestamp.md"
+    (run_dir / dump).write_text("# Debug\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"debug_dump_name_unadmissible:{dump}" in _incompleteness(output)
+    assert not (output / dump).exists()
+
+
+def test_a_debug_dump_the_run_declared_but_did_not_arrive_is_named(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["debug_dumps"] = ["debug-full-llm-engineering-20260902-081500.md"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert (
+        "debug_dump_not_collected:debug-full-llm-engineering-20260902-081500.md"
+        in _incompleteness(output)
+    )
+
+
 def test_a_failed_paid_run_without_a_control_plane_reason_is_refused(tmp_path):
     evidence = _run_evidence(paid=True, failed=True)
     evidence["failure"]["control_plane_reason"] = {

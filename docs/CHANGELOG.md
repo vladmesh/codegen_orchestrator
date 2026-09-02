@@ -6,7 +6,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-02
 
 - A failed paid stand run's acceptance artifact now names the failing stage, the control-plane
-  reason from its engineering Run records, redacted service log tails and the harness debug dump.
+  reason from its engineering Run records, redacted service tails and every debug dump, or why one is missing.
 - Removed the central QA API fallback (`QA_LLM_*`, the ReactAgent graph and its LangChain tool
   wrapper): QA has one executor, and a failure to start it is a typed terminal outcome.
 - Removed the `worker_type` cutover migration and its startup hooks after a read-only Redis scan

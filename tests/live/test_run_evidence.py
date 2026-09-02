@@ -1155,7 +1155,10 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "collection": {
             "status": CaptureStatus.MISSED.value,
             "value": None,
-            "reason": run_evidence.ENGINEERING_EVIDENCE_NEVER_COLLECTED_REASON,
+            "reason": run_evidence.ENGINEERING_EVIDENCE_ESCAPED_REASON.format(
+                subject=f"engineering task {ctx['task_id']}, last observed status "
+                f"{TaskStatus.FAILED}"
+            ),
         },
         "runs": [],
     }
@@ -1341,15 +1344,55 @@ def test_a_stage_with_no_engineering_run_says_the_control_plane_holds_none(codex
     assert "holds no engineering Run" in reason["reason"]
 
 
-def test_a_run_that_never_collected_engineering_evidence_says_so(codex_docker, tmp_path):
-    artifact = build_artifact(base_ctx(collector_for(codex_docker)), root=tmp_path)
+def test_an_error_escaping_the_engineering_phase_does_not_claim_it_was_never_reached(
+    codex_docker, tmp_path
+):
+    """The reviewer's transient poll failure: entered, collected nothing, said so.
+
+    `record_engineering_evidence` never runs, so the artifact carries a stated
+    `missed`. What it must not do is assert the run never reached engineering:
+    it did, and Run records the artifact never read may well exist.
+    """
+    ctx = base_ctx(collector_for(codex_docker))
+
+    artifact = build_artifact(ctx, root=tmp_path)
     engineering = artifact["engineering"]
 
     assert engineering["collection"]["status"] == CaptureStatus.MISSED.value
+    reason = engineering["collection"]["reason"]
+    assert "entered the engineering phase" in reason
+    assert "never reached" not in reason
+    assert ctx["task_id"] in reason
+    assert TaskStatus.FAILED in reason
+    assert engineering["runs"] == []
+    assert (
+        "entered the engineering phase" in (artifact["failure"]["control_plane_reason"]["reason"])
+    )
+
+
+def test_a_run_that_never_entered_the_engineering_phase_says_exactly_that(codex_docker, tmp_path):
+    ctx = base_ctx(collector_for(codex_docker))
+    del ctx["task_id"]
+    del ctx["story_id"]
+
+    engineering = build_artifact(ctx, root=tmp_path)["engineering"]
+
     assert engineering["collection"]["reason"] == (
-        run_evidence.ENGINEERING_EVIDENCE_NEVER_COLLECTED_REASON
+        run_evidence.ENGINEERING_PHASE_NEVER_ENTERED_REASON
     )
     assert engineering["runs"] == []
+
+
+def test_a_phase_that_died_before_its_task_existed_is_not_called_never_entered(
+    codex_docker, tmp_path
+):
+    ctx = base_ctx(collector_for(codex_docker))
+    del ctx["task_id"]
+
+    reason = build_artifact(ctx, root=tmp_path)["engineering"]["collection"]["reason"]
+
+    assert "entered the engineering phase" in reason
+    assert ctx["story_id"] in reason
 
 
 def test_a_paid_missed_worker_executed_is_red_with_a_control_plane_reason(tmp_path):

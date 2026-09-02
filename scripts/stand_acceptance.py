@@ -33,7 +33,13 @@ RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
 SUITE_DIAGNOSTIC_FILES = ("suite-services.log",)
 # The harness's own post-mortem dump, written beside the run evidence so it
 # reaches the handoff instead of dying with the ephemeral host.
-DEBUG_DUMP = re.compile(r"debug-[a-z0-9-]+-\d{8}-\d{6}\.md\Z")
+# The dump name is `debug-<test name>-<date>-<time>.md`, and a test name is a
+# Python identifier or a prefix built from one, so underscores and capitals are
+# names the codebase can actually produce.  Anything else still shaped like a
+# dump is not quietly left behind: `DEBUG_DUMP_CANDIDATE` catches it so the
+# drop is named in the final report rather than being silently absent.
+DEBUG_DUMP = re.compile(r"debug-[A-Za-z0-9_-]+-\d{8}-\d{6}\.md\Z")
+DEBUG_DUMP_CANDIDATE = re.compile(r"debug-.*\.md\Z")
 # A private-key PEM header is sensitive even when its body was reformatted by a
 # traceback or serialized by a logger.  This intentionally does not inspect
 # credential names or assignments, so value-free preflight diagnostics remain
@@ -153,6 +159,8 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
                 shutil.copyfile(source, output / source.name)
             if source.is_file() and DEBUG_DUMP.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
+            elif source.is_file() and DEBUG_DUMP_CANDIDATE.fullmatch(source.name):
+                errors.append(f"debug_dump_name_unadmissible:{source.name}")
         for name in (
             REMOTE_INVOCATION_LOG,
             *PROVISIONING_DIAGNOSTIC_FILES,
@@ -200,6 +208,24 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _uncollected_debug_dumps(output: Path, artifact: dict[str, Any]) -> list[str]:
+    """Name every dump the run wrote that did not reach the artifact.
+
+    The run-evidence artifact records the dumps the harness wrote, so the two
+    halves can be compared here: a name the run declared and the handoff does
+    not carry is a piece that could not be collected, and it is named with why
+    instead of disappearing between the stand and the reader.
+    """
+    declared = artifact.get("debug_dumps")
+    if not isinstance(declared, list):
+        return []
+    return [
+        f"debug_dump_not_collected:{name}"
+        for name in declared
+        if isinstance(name, str) and not (output / name).is_file()
+    ]
+
+
 def _run_evidence_errors(output: Path) -> list[str]:
     """Read back every collected run-evidence artifact and fail closed on a gap.
 
@@ -223,6 +249,7 @@ def _run_evidence_errors(output: Path) -> list[str]:
         if isinstance(failure, dict) and isinstance(verdict, dict):
             paid_failure = paid_failure or bool(verdict.get("paid") and failure.get("failed"))
         errors += _paid_failure_errors(path.name, artifact)
+        errors += _uncollected_debug_dumps(output, artifact)
     if paid_failure and not any((output / name).is_file() for name in SUITE_DIAGNOSTIC_FILES):
         errors.append("paid_failure_service_diagnostics_missing")
     return errors

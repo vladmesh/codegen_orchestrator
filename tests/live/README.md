@@ -209,6 +209,13 @@ combination, each with its Run record, its work-admission outcome and the execut
 snapshot in force at that moment. It is read inside the engineering phase, on failure exactly as on
 success, because after teardown there is nothing left to read.
 
+When that collection never ran at all, the section says which of the two things happened rather
+than guessing: a run that entered no engineering phase created no Run for the artifact to read, and
+a run that entered it and lost an error on the way out — a transient 5xx on an engineering poll,
+say — may well have left Run records nobody read. The context already tells them apart, and a
+canned line asserting the phase was never reached when the terminal state says `stopped_at_engineering`
+is exactly the misstatement this artifact exists to remove.
+
 `verdict` is `green` or `red` with the reasons for red, and it is where a paid run's *missing*
 evidence stops being silent. On a paid combination, `worker_executed` coming back `missed` — and
 `qa_executed` when the suite asked for an LLM QA executor — is a red reason carrying the
@@ -227,7 +234,10 @@ suite fails — through the same `shared.diagnostics.redact_diagnostic` helper a
 protected-name allow-list the provisioning-failure branch uses, with the stated reason published in
 place of the tails if that pipe cannot complete. And `dump_debug` now writes beside the run evidence,
 in the runner-owned directory the workflow collects from, rather than under the ephemeral checkout;
-the artifact lists the dumps the run wrote under `debug_dumps`.
+the artifact lists the dumps the run wrote under `debug_dumps`. A dump that does not reach the
+handoff is named there too: acceptance refuses a candidate whose `debug_dumps` names a file it does
+not carry, and a dump-shaped file whose name the allow-list cannot admit is reported as
+`debug_dump_name_unadmissible:<name>` instead of being dropped in silence.
 
 ## Run-scoped cleanup
 

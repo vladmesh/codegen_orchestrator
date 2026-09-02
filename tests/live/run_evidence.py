@@ -315,11 +315,45 @@ class ReasonSource(StrEnum):
 # free `mega-noop` suite and the paid ones.
 FREE_AGENT_TYPE = "noop"
 
-ENGINEERING_EVIDENCE_NEVER_COLLECTED_REASON = (
+# The two distinct ways `record_engineering_evidence` never ran. They are not
+# interchangeable: one says the control plane never created a Run to read, the
+# other says Runs may well exist and nothing read them. Telling a reader the
+# first when the second happened asserts something untrue about the run, which
+# is the exact failure this artifact exists to remove.
+ENGINEERING_PHASE_NEVER_ENTERED_REASON = (
     "no engineering Run evidence was collected for this combination: the run "
-    "never reached the engineering phase, so the control plane created no Run "
+    "never entered the engineering phase, so the control plane created no Run "
     "record this artifact could have read a reason from"
 )
+ENGINEERING_EVIDENCE_ESCAPED_REASON = (
+    "no engineering Run evidence was collected for this combination: the run "
+    "entered the engineering phase ({subject}), but an error escaped it before "
+    "the collection ran, so whatever Run records the control plane holds for "
+    "this combination were never read"
+)
+
+
+def engineering_collection_missed_reason(ctx: dict) -> str:
+    """Which of the two ways the engineering collection never ran happened here.
+
+    The engineering phase is the only place this run creates a story and a
+    task, so a context carrying neither never entered it and the control plane
+    holds no Run to read. A context carrying either did enter it, and the
+    collection that follows the phase never ran — an error escaped first, and
+    Runs may well exist unread. Nothing new is observed to tell them apart:
+    both facts are already on the context when the artifact is built.
+    """
+    task_id = ctx.get("task_id")
+    if task_id:
+        subject = (
+            f"engineering task {task_id}, last observed status "
+            f"{ctx.get('task_status') or 'unobserved'}"
+        )
+    elif ctx.get("story_id"):
+        subject = f"story {ctx['story_id']}, before any engineering task was created"
+    else:
+        return ENGINEERING_PHASE_NEVER_ENTERED_REASON
+    return ENGINEERING_EVIDENCE_ESCAPED_REASON.format(subject=subject)
 
 
 @dataclass(frozen=True)
@@ -1253,7 +1287,7 @@ def engineering_evidence(ctx: dict) -> dict:
         collection = Capture.missed(ctx["engineering_evidence_error"])
         records = ctx.get("engineering_runs") or []
     elif "engineering_runs" not in ctx:
-        collection = Capture.missed(ENGINEERING_EVIDENCE_NEVER_COLLECTED_REASON)
+        collection = Capture.missed(engineering_collection_missed_reason(ctx))
         records = []
     else:
         records = ctx["engineering_runs"]
