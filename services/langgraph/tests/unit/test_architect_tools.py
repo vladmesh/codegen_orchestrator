@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
 from tests.unit.factories import make_project, make_story, make_task
@@ -25,7 +24,6 @@ def mock_api():
         )
         api.get_tasks_by_story = AsyncMock(return_value=[])
         api.create_task = AsyncMock(return_value=make_task(id="task-new", title="New task"))
-        api.transition_story = AsyncMock(return_value=make_story(status="in_progress"))
         yield api
 
 
@@ -194,36 +192,29 @@ class TestCreateTaskTool:
         assert second_call["blocked_by_task_id"] == "task-001"
 
 
-class TestTransitionStoryTool:
-    @pytest.mark.asyncio
-    async def test_transitions_story(self, mock_api):
-        from src.agents.architect.tools import transition_story
+class TestArchitectToolSurface:
+    """The architect decomposes; it does not move the story.
 
-        result = await transition_story.ainvoke({"story_id": "story-abc", "action": "start"})
+    The consumer already transitions the story around this agent's run, so a
+    story-transition tool here gave one code path two Story transitions for the
+    same story — and hid the API's refusal of the second one behind a 422
+    fallback that re-read the story and reported success.
+    """
 
-        assert result["status"] == "in_progress"
-        mock_api.transition_story.assert_called_once_with("story-abc", "start")
+    def test_exposes_no_story_lifecycle_tool(self):
+        from src.agents.architect import tools
 
-    @pytest.mark.asyncio
-    async def test_reads_current_story_only_for_http_422(self, mock_api):
-        from src.agents.architect.tools import transition_story
+        assert not hasattr(tools, "transition_story")
+        names = {tool.name for tool in tools.get_architect_tools()}
+        assert names == {
+            "get_story",
+            "get_project_spec",
+            "get_tasks_by_story",
+            "create_task",
+            "update_acceptance_criteria",
+        }
 
-        response = MagicMock(status_code=422)
-        mock_api.transition_story.side_effect = httpx.HTTPStatusError(
-            "unprocessable", request=MagicMock(), response=response
-        )
+    def test_prompt_does_not_ask_the_agent_to_move_the_story(self):
+        from src.prompts.architect import SYSTEM_PROMPT
 
-        result = await transition_story.ainvoke({"story_id": "story-abc", "action": "start"})
-
-        assert result["id"] == "story-abc"
-        mock_api.get_story.assert_called_once_with("story-abc")
-
-    @pytest.mark.asyncio
-    async def test_does_not_match_422_in_unexpected_error_text(self, mock_api):
-        from src.agents.architect.tools import transition_story
-
-        mock_api.transition_story.side_effect = RuntimeError("upstream mentioned 422")
-
-        with pytest.raises(RuntimeError, match="upstream mentioned 422"):
-            await transition_story.ainvoke({"story_id": "story-abc", "action": "start"})
-        mock_api.get_story.assert_not_called()
+        assert "transition_story" not in SYSTEM_PROMPT

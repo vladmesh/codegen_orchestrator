@@ -168,6 +168,12 @@ async def supervise_failed_tasks(
     tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
     retried = 0
     escalated = 0
+    # One story reaches the human-review queue once per tick. Several failed
+    # tasks can share a story, and escalating each of them issued a second
+    # `human-review` transition for a story already in it — refused by the API
+    # and swallowed here. The queue entry is about the story, so the first one
+    # is the whole move.
+    escalated_stories: set[str] = set()
 
     for task in tasks:
         task_id = task.id
@@ -181,7 +187,9 @@ async def supervise_failed_tasks(
         max_iter = task.max_iterations
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
 
-        if await _park_task_waiting_resources(api_client, redis_client, task, log):
+        if await _park_task_waiting_resources(
+            api_client, redis_client, task, log, escalated_stories
+        ):
             continue
 
         if current_iter < max_iter:
@@ -208,7 +216,8 @@ async def supervise_failed_tasks(
             except Exception:
                 log.warning("task_whr_transition_failed", task_id=task_id, exc_info=True)
 
-            if story_id:
+            if story_id not in escalated_stories:
+                escalated_stories.add(story_id)
                 try:
                     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
                 except Exception:
@@ -228,6 +237,7 @@ async def _park_task_waiting_resources(
     redis_client: RedisStreamClient,
     task,
     log: structlog.stdlib.BoundLogger,
+    escalated_stories: set[str],
 ) -> bool:
     """Route a failed engineering run by what its allocation refusal actually was.
 
@@ -275,6 +285,7 @@ async def _park_task_waiting_resources(
             api_client,
             task,
             "allocation request exceeds every managed server's capacity",
+            escalated_stories,
         )
         await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         log.warning("task_allocation_impossible")
@@ -289,6 +300,7 @@ async def _park_task_waiting_resources(
             api_client,
             task,
             f"placement could not be evaluated: {reason.value}",
+            escalated_stories,
         )
         log.warning("task_allocation_unevaluable", reason=reason.value)
         return True
@@ -329,15 +341,18 @@ async def _escalate_task_to_human_review(
     api_client: SchedulerAPIClient,
     task,
     detail: str,
+    escalated_stories: set[str],
 ) -> None:
     """Hand a task the platform cannot place to the human-review queue.
 
     The story moves through the `human-review` action, which is the endpoint the
     API exposes for that queue; the status value is not a route, and posting it
-    as one reached nothing.
+    as one reached nothing.  `escalated_stories` carries the stories this tick
+    has already queued, so a story with several unplaceable tasks is moved once.
     """
     await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
-    if task.story_id:
+    if task.story_id and task.story_id not in escalated_stories:
+        escalated_stories.add(task.story_id)
         await api_client.transition_story(task.story_id, STORY_HUMAN_REVIEW_ACTION)
     await _notify_admin_failure(task.id, str(task.project_id), detail)
 

@@ -178,9 +178,10 @@ async def _handle_failed_run(
         "failure_metadata": {"ci_failure": evidence},
     }
     await api_client.create_task(task_data)
-    await api_client.transition_story(story_id, "fail")
-    await api_client.transition_story(story_id, "reopen")
-    await api_client.transition_story(story_id, "start")
+    # One server-side move: the API walks failed -> reopened -> in_progress in a
+    # single transaction on the locked row, so a crash cannot park the story in
+    # an intermediate status the way three separate calls could.
+    await api_client.retry_story_after_ci_failure(story_id)
     return True
 
 
@@ -241,9 +242,6 @@ async def poll_merged_prs(
             merged_at=merged_pr["merged_at"],
         )
 
-        # Transition story to deploying
-        await api_client.transition_story(story_id, "deploy")
-
         recipient = await resolve_project_recipient(
             api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
         )
@@ -256,22 +254,23 @@ async def poll_merged_prs(
         # Initial access is an intent lifecycle, never a stable deploy Run.
         # Every merged PR has its own immutable attempt even before a story has
         # completed, which prevents QA/fix cycles from reusing an old SHA.
+        seed_lifecycle = None
         if await _needs_initial_owner_seed(api_client, project_id, action):
-            lifecycle = GrantIntentLifecycleResult.model_validate(
+            seed_lifecycle = GrantIntentLifecycleResult.model_validate(
                 await api_client.resume_initial_owner_grant(
                     project_id, story_id=story_id, head_sha=head_sha
                 )
             )
             log.info(
                 "poll_merged_initial_owner_lifecycle",
-                intent_id=lifecycle.intent_id,
-                disposition=lifecycle.disposition.value,
-                run_id=lifecycle.execution_run_id,
+                intent_id=seed_lifecycle.intent_id,
+                disposition=seed_lifecycle.disposition.value,
+                run_id=seed_lifecycle.execution_run_id,
             )
-            if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
-                deployed += 1
-                continue
-            if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+                # Failed straight out of PR_REVIEW. Moving the story to DEPLOYING
+                # first and then failing it here was two Story transitions on one
+                # code path, and the intermediate DEPLOYING had no owner.
                 await api_client.fail_story(story_id)
                 await notify_admins_best_effort(
                     f"Grant intent deployment retries exhausted for story {story_id}",
@@ -279,14 +278,25 @@ async def poll_merged_prs(
                     story_id=story_id,
                 )
                 continue
-            if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+
+        # The story leaves PR_REVIEW exactly once, on the paths that are actually
+        # taking it further.
+        await api_client.transition_story(story_id, "deploy")
+
+        if seed_lifecycle is not None:
+            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+                deployed += 1
+                continue
+            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
                 log.info(
-                    "poll_merged_initial_owner_intent_in_flight", intent_id=lifecycle.intent_id
+                    "poll_merged_initial_owner_intent_in_flight",
+                    intent_id=seed_lifecycle.intent_id,
                 )
                 continue
-            if lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
+            if seed_lifecycle.disposition is GrantIntentLifecycleDisposition.STALE_TARGET:
                 log.info(
-                    "poll_merged_initial_owner_intent_stale_target", intent_id=lifecycle.intent_id
+                    "poll_merged_initial_owner_intent_stale_target",
+                    intent_id=seed_lifecycle.intent_id,
                 )
                 continue
 
