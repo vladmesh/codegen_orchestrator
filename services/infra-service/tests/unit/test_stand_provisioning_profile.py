@@ -6,6 +6,7 @@ import yaml
 
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
+SITE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "site.yml"
 QA_IDENTITY_TASKS = ANSIBLE_DIR / "roles" / "qa_identity" / "tasks" / "main.yml"
 PROVISION_VARS = ANSIBLE_DIR / "group_vars" / "provision_vars.yml"
 
@@ -52,3 +53,10 @@ def test_provisioning_emits_bounded_phase_timings_for_live_comparison():
         "Record roles and monitoring finished",
         "Report provisioning phase timings",
     }.issubset(names)
+
+
+def test_site_playbook_provisions_the_base_roles():
+    [play] = yaml.safe_load(SITE_PLAYBOOK.read_text())
+    roles = {role["role"] for role in play["roles"]}
+
+    assert {"common", "security", "docker", "services"} <= roles

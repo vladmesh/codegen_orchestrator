@@ -1,5 +1,6 @@
 """Unit tests for DevOps subgraph topology."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from langgraph.graph import END, START, StateGraph
@@ -133,3 +134,18 @@ class TestSmokeResultPropagation:
         assert result["smoke_result"]["status"] == "pass"
         assert result["smoke_result"]["checks"][0]["module"] == "backend"
         assert result["smoke_result"]["checks"][0]["result"] == "pass"
+
+
+def test_deploy_environment_path_has_no_llm_dependency():
+    """Environment resolution on the deploy path is deterministic, never an LLM call."""
+    devops_dir = Path(__file__).parents[2] / "src/subgraphs/devops"
+    deploy_files = [
+        *devops_dir.glob("*.py"),
+        *(devops_dir.parents[1] / "consumers").glob("deploy*.py"),
+        devops_dir.parents[1] / "nodes/resource_allocator.py",
+    ]
+    deploy_path = "\n".join(file.read_text() for file in deploy_files)
+
+    forbidden_dependencies = ("LLMFactory", "ChatOpenAI", "get_agent_config")
+
+    assert not any(dependency in deploy_path for dependency in forbidden_dependencies)
