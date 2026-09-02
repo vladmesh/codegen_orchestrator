@@ -142,7 +142,6 @@ class WorkerCommandConsumer:
                 worker_type=cmd.config.worker_type,
                 ownership=cmd.config.ownership,
                 repo_id=cmd.config.repo_id,
-                scaffold_config=cmd.config.scaffold_config,
                 branch=cmd.config.branch,
             )
             # No return — early ACK already sent, status is RUNNING in Redis

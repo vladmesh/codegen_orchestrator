@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 from shared.contracts.base import QueueMeta
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
-from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
 
 __all__ = [
@@ -16,7 +15,6 @@ __all__ = [
     "WorkerChannels",
     "WorkerLabel",
     "WorkerOwnership",
-    "ScaffoldConfig",
     "WorkerConfig",
     "CreateWorkerCommand",
     "DeleteWorkerCommand",
@@ -140,16 +138,6 @@ class WorkerOwnership(BaseModel):
         }
 
 
-class ScaffoldConfig(BaseModel):
-    """Configuration for scaffolding a new project via copier."""
-
-    template_repo: ServiceTemplateSource
-    template_ref: ServiceTemplateRef
-    project_name: str  # sanitized name for copier
-    modules: str  # "backend,tg_bot"
-    task_description: str = ""
-
-
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
 
@@ -179,7 +167,6 @@ class WorkerConfig(BaseModel):
     # project field, because two of them could disagree.
     ownership: WorkerOwnership
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
-    scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
     branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")
 
     @model_validator(mode="after")
