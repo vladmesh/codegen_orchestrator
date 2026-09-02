@@ -24,7 +24,18 @@ async def _create_run(
     project_id: str | None,
     planning_task_id: str | None = None,
 ):
-    """Create the engineering fixture through the paid-run boundary."""
+    """Create the engineering fixture through the paid-run boundary.
+
+    The planning task is named in `run_metadata` and not in the command's
+    `task_id`. A paid engineering start whose `task_id` names an existing Task
+    row is a dispatch of that Task, and a Task dispatch is admitted in exactly
+    one place — `POST /work-admission/engineering-dispatches` — so this route
+    refuses it. These tests are about the worker's side of the queue rather than
+    about admission, and the projects they seed are deliberately in states
+    admission would refuse (draft, no workspace), so the fixture stays on the
+    paid-run boundary in the shape that boundary supports. Nothing here reads
+    `run.task_id`; the worker follows `msg.planning_task_id`.
+    """
     assert project_id is not None
     response = await api_client.post(
         "/api/work-admission/paid-runs",
@@ -32,7 +43,6 @@ async def _create_run(
             "id": run_id,
             "type": "engineering",
             "project_id": project_id,
-            "task_id": planning_task_id,
             "run_metadata": {
                 "triggered_by": "integration_test",
                 "task_id": planning_task_id,

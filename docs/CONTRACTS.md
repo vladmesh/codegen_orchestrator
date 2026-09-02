@@ -157,9 +157,34 @@ An operator spawn may walk past a condition only by naming it: a command carries
 `overrides`, a list of `EngineeringDispatchRefusal` values restricted to
 `OVERRIDABLE_REFUSALS`, the decision returns the ones it applied in `overridden`,
 and the attempt records them in `run_metadata["admission_overrides"]`. The paid
-gate and the project conditions are never overridable. Rows are taken in one
-order — the candidate Task and its blocker in ascending task id, then the story,
-then the paid-work controls — so a reciprocal `blocked_by` cannot deadlock.
+gate and the project conditions are never overridable.
+
+Two invariants hold the one-point guarantee up, and both are enforced in the API.
+
+**One lock ladder, and every condition row on it.** `LOCK_LADDER` in
+`engineering_dispatch_admission.py` declares the order once: Task rows — the
+candidate, its blocker and its story's roster — in ascending task id, then the
+Story, then the Project, then the engineering Run rows of those tasks, then the
+paid-work control rows `start_paid_run` takes. Every row a condition reads is
+taken through it with a locking reader (`get_task_for_update`,
+`_get_story_for_update`, `load_locked_project`, `SELECT ... FOR UPDATE`).
+Ascending task id is what keeps a reciprocal `blocked_by` from deadlocking. An
+unlocked query is permitted only to learn *which* row to lock next, must be
+column-only, and never supplies a value a condition uses. Its corollary binds
+callers: no caller may materialise a subject row before calling admission,
+because SQLAlchemy's identity map would then serve the locking read that stale
+entity; a route that must know something first asks a column-only question, as
+`spawn-worker` does. A story roster can still grow by INSERT, which no row lock
+fences, so the roster is re-read under the story lock and a member the decision
+does not hold ends the tick with `story_roster_changed`.
+
+**One entry to paid engineering work on a Task.** A paid engineering run bound to
+an existing Task row is created only by the admission point.
+`POST /work-admission/paid-runs` refuses a `type=engineering` command whose
+`task_id` names an existing Task with HTTP 409 and the typed code
+`engineering_task_dispatch_requires_admission`. It remains the paid gate for
+everything else, including the deploy supervisor's code-fix handoff, whose
+`task_id` is a synthesised run id with no Task row behind it.
 
 The paid-run command locks its controls, evaluates count admission and (for
 engineering) money admission, then creates the queued Run in one transaction.

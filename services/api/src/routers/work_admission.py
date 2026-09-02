@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_TASK_REQUIRES_ADMISSION,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
@@ -13,6 +14,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnosticSnapshot,
 )
+from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
@@ -27,7 +29,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionRead,
 )
 from shared.contracts.vocab import AgentType
-from shared.models import SystemConfig, User, WorkAdmissionAudit
+from shared.models import SystemConfig, Task, User, WorkAdmissionAudit
 
 from ..database import get_async_session
 from ..dependencies import (
@@ -310,6 +312,23 @@ async def start_paid_run_endpoint(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> PaidRunStartRead:
+    # Invariant B: a paid engineering run bound to an existing Task row is
+    # created only by the admission point. This route is the paid gate for
+    # everything else, and it stays that: only a command that *is* a Task
+    # dispatch is refused, so the deploy-fix handoff — whose `task_id` is a
+    # synthesised run id with no Task row behind it — is untouched. The question
+    # is decided here, server-side, from a column-only existence check that
+    # materialises no entity for the transaction that follows.
+    if command.type is RunType.ENGINEERING and command.task_id is not None:
+        names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
+        if names_a_task is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": ENGINEERING_TASK_REQUIRES_ADMISSION,
+                    "task_id": command.task_id,
+                },
+            )
     try:
         result = await start_paid_run(command, db)
     except PaidRunCommandConflict as exc:

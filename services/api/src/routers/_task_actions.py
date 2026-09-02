@@ -1,6 +1,7 @@
 """Task action endpoints — state machine transitions."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -26,7 +27,6 @@ from ..work_admission import abort_paid_run_pre_handoff
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import (
     create_status_event,
-    get_task,
     get_task_for_update,
     to_read,
     validate_transition,
@@ -266,14 +266,27 @@ async def spawn_worker(
     """
     body = body or SpawnWorkerRequest()
 
-    # Unlocked, and only to reject a status this route could not move anyway:
-    # admission takes the row locks, in its own order. Refusing here means no
-    # reservation was consumed by a request that was never going to transition.
-    peeked = await get_task(task_id, db)
-    if TaskStatus(peeked.status) not in _SPAWNABLE_FROM:
+    # Column-only, unlocked, and only to reject a status this route could not
+    # move anyway: admission takes the row locks, in its own order. Refusing here
+    # means no reservation was consumed by a request that was never going to
+    # transition.
+    #
+    # It must not be `get_task`. Materialising the Task here would put the entity
+    # in this session, and SQLAlchemy's identity map then hands admission's
+    # `SELECT ... FOR UPDATE` that same object with its already-loaded
+    # attributes: the conditions would be decided on the status this read saw
+    # rather than on the locked one, and the transition below would write over
+    # whatever committed in between. A column-only read materialises nothing, so
+    # the locking read that follows is the only view of the row this request has.
+    peeked_status = await db.scalar(select(Task.status).where(Task.id == task_id))
+    if peeked_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Task {task_id} not found"
+        )
+    if TaskStatus(peeked_status) not in _SPAWNABLE_FROM:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot spawn worker for task in status '{peeked.status}'",
+            detail=f"Cannot spawn worker for task in status '{peeked_status}'",
         )
 
     decision = await admit_engineering_dispatch(

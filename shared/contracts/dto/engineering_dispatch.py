@@ -81,6 +81,13 @@ class EngineeringDispatchRefusal(StrEnum):
     STORY_BUSY = "story_busy"
     #: A sibling was handed to a human, so the story takes no new work at all.
     STORY_WAITING_HUMAN_REVIEW = "story_waiting_human_review"
+    #: The story's roster changed under the decision: a task was inserted into
+    #: the story, or moved into it, after the admission point had chosen which
+    #: rows to lock. A row lock fences updates, not inserts, so the roster is
+    #: re-read under the story lock and a member the decision does not hold ends
+    #: the tick rather than being taken out of ladder order. The next tick sees
+    #: the roster that exists.
+    STORY_ROSTER_CHANGED = "story_roster_changed"
     #: An attempt is still open on this task; the decision carries the repair.
     LIVE_ATTEMPT_IN_FLIGHT = "live_attempt_in_flight"
     #: The paid gate refused. One value per `WorkAdmissionReason` that reaches
@@ -107,6 +114,14 @@ PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
         EngineeringDispatchRefusal.EXECUTOR_CONFIRMATION_REQUIRED
     ),
 }
+
+
+#: The typed error `POST /work-admission/paid-runs` returns for a paid
+#: engineering start whose `task_id` names an existing Task row. That command is
+#: a Task dispatch, and a Task dispatch is admitted in exactly one place — every
+#: other paid start still goes through the paid gate unchanged, including the
+#: deploy-fix handoff, whose `task_id` is a synthesised run id and not a Task.
+ENGINEERING_TASK_REQUIRES_ADMISSION = "engineering_task_dispatch_requires_admission"
 
 
 #: The refusals an authorised operator may override, and the only values a

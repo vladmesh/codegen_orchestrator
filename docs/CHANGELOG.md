@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Put every condition row of engineering dispatch admission on one declared lock ladder, and shut
+  the lower entry to paid engineering work on a Task. `LOCK_LADDER` in
+  `services/api/src/engineering_dispatch_admission.py` states the order once — Task rows (the
+  candidate, its blocker and its story's roster) in ascending task id, then the Story, then the
+  Project, then the engineering Run rows of those tasks, then the paid-work controls `start_paid_run`
+  takes — and every row a condition reads is now taken through it with a locking reader. Three rows
+  were not: the Project was read with a plain `select()` while every project writer takes
+  `load_locked_project`, so a concurrent PATCH could clear `workspace_ready` between the decision and
+  the run; the story fence read sibling Task rows and their Run rows unlocked, so a sibling's status
+  or attempt could change under it. An unlocked query is now permitted for one purpose only —
+  learning which row to lock next — and must be column-only. A story roster can still grow by INSERT,
+  which no row lock fences, so the roster is re-read under the story lock and a member the decision
+  does not hold ends the tick with the new `story_roster_changed` refusal instead of being locked out
+  of ladder order.
+- No caller may materialise a subject row before calling admission. `POST /api/tasks/{id}/spawn-worker`
+  loaded the Task as an entity for the status hop it is able to perform, and SQLAlchemy's identity map
+  then handed admission's `SELECT ... FOR UPDATE` that same object without refreshing it, so the
+  conditions were decided on the pre-read status and blocker and the route's transition wrote over
+  whatever committed in between. The route now peeks `Task.status` column-only, which materialises
+  nothing. `services/api/tests/service/test_engineering_dispatch_invariants.py` proves both halves
+  against the database: a real concurrent write between the peek and the lock is refused, and the
+  counterfactual next to it shows the same call admitting a stale row when the caller holds the
+  entity first.
+- `POST /work-admission/paid-runs` refuses a `type=engineering` command whose `task_id` names an
+  existing Task row, with HTTP 409 and the typed code `engineering_task_dispatch_requires_admission`.
+  That command is a dispatch of a Task, and a Task dispatch is admitted in exactly one place; an
+  authorised internal or admin caller could otherwise create a queued billable engineering attempt
+  naming a real Task with none of the admission conditions run. The route stays the paid gate for
+  everything else, and the deploy supervisor's code-fix handoff is untouched because its `task_id` is
+  a synthesised run id with no Task row behind it.
 - Gave paid engineering dispatch one declared admission point.
   `services/api/src/engineering_dispatch_admission.py` is that module, reached over
   `POST /work-admission/engineering-dispatches`, and every dispatch of an engineering Task now

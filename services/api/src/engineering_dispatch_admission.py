@@ -12,17 +12,22 @@ A new condition — the Product Brief admission is the next one — is one more 
 in `admit_engineering_dispatch` and one more value in `EngineeringDispatchRefusal`.
 It is not a new surface.
 
-Lock order is Task rows first — the candidate and, when it has one, its blocker,
-taken in ascending task id, never in dependency order — then the story, then the
-paid-work control rows `start_paid_run` takes. Ascending id is what makes a
-reciprocal dependency safe: two dispatches of tasks that block each other take
-the same two rows in the same order, so one waits instead of both deadlocking.
-Nothing in this service locks a story before a task, so this order adds no cycle
-to the existing ones.
+There is one lock ladder — `LOCK_LADDER` below — and every row any condition
+reads is taken through it with a locking reader. A column-only query is used for
+one purpose only: learning *which* row to lock next. It never materialises an
+entity, and no condition ever reads a value out of one.
+
+The corollary binds callers as well: no caller may materialise a subject row
+before calling admission. This module owns the session's view of the Task, Story
+and Project, because SQLAlchemy's identity map hands a later
+`SELECT ... FOR UPDATE` the entity a plain read already put in the session, stale
+attributes and all. A route that must know something first asks a column-only
+question, as `spawn-worker` does for the hop it is able to perform.
 """
 
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,7 +48,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Project, Run, Task
+from shared.models import Run, Task
 
 from .work_admission import start_paid_run
 
@@ -56,6 +61,26 @@ INTERNAL_PROJECT_ID = uuid.UUID("033c2033-fc75-4d86-ade2-08efe7b15a5e")
 #: Statuses of a run the engineering pipeline still owns: the worker either has
 #: not picked it up yet or is working on it.
 _LIVE_RUN_STATUSES = (RunStatus.QUEUED.value, RunStatus.RUNNING.value)
+
+#: The one lock ladder of engineering dispatch admission, declared once and
+#: descended in this order by `admit_engineering_dispatch`. Every row a condition
+#: reads is taken with a locking reader at the rung named here; a rung is skipped
+#: only by a decision that refuses before reaching it, which still descends.
+#:
+#: Ascending task id is what makes a reciprocal dependency safe: two dispatches
+#: of tasks that block each other take the same rows in the same order, so one
+#: waits instead of both deadlocking. The story's whole roster is on rung 1
+#: because the story fence reads sibling *Task* rows, and a Task row belongs on
+#: the Task rung wherever the condition that reads it lives. Nothing in this
+#: service locks a story before a task, a project before a story, or a run before
+#: a task, so this order adds no cycle to the ones that already exist.
+LOCK_LADDER: tuple[str, ...] = (
+    "Task rows — the candidate, its blocker and its story's roster — ascending task id",
+    "the candidate's Story",
+    "the candidate's Project",
+    "the engineering Run rows of those tasks — ascending run id",
+    "the paid-work control rows `start_paid_run` takes",
+)
 
 
 class _Overrides:
@@ -86,47 +111,148 @@ def _refused(reason: EngineeringDispatchRefusal, overrides: _Overrides) -> Engin
     )
 
 
-async def _engineering_attempts(task: Task, db: AsyncSession) -> list[Run]:
-    """This task's engineering runs, newest first, minus the aborted ones.
+async def _peek_edges(task_id: str, db: AsyncSession) -> tuple[str | None, str | None]:
+    """The candidate's blocker and story ids, read to learn which rows to lock.
+
+    Column-only and unlocked, which is the one thing an unlocked read is allowed
+    to be used for. It puts no entity in the session, so it cannot leave a stale
+    one behind for the locking reads that follow, and neither value is trusted as
+    a fact: both are re-read off the locked rows before any condition uses them.
+    A missing task is left to `get_task_for_update`, which raises the same 404
+    every other route raises.
+    """
+    row = (
+        await db.execute(select(Task.blocked_by_task_id, Task.story_id).where(Task.id == task_id))
+    ).one_or_none()
+    return (None, None) if row is None else (row[0], row[1])
+
+
+async def _lock_engineering_runs(task_ids: list[str], db: AsyncSession) -> list[Run]:
+    """Rung 4: every engineering Run row of the tasks this decision holds.
+
+    Both run-reading conditions — the story fence and the prior-attempt fence —
+    decide from a run's status, so the rows are taken for update rather than
+    read. Ascending run id gives them one acquisition order. No engineering run
+    can be inserted for these tasks while they are held: the only writer that
+    creates one is this module, and it holds the whole roster on rung 1.
+    """
+    if not task_ids:
+        return []
+    return list(
+        (
+            await db.scalars(
+                select(Run)
+                .where(Run.task_id.in_(task_ids), Run.type == RunType.ENGINEERING.value)
+                .order_by(Run.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+
+
+def _attempts_of(task_id: str, runs: list[Run]) -> list[Run]:
+    """One task's engineering runs, newest first, minus the aborted ones.
 
     A run aborted before queue handoff is proof that no message reached a worker,
     so it is not an attempt anything can be recovered from.
     """
-    runs = (
-        await db.scalars(
-            select(Run)
-            .where(Run.task_id == task.id, Run.type == RunType.ENGINEERING.value)
-            .order_by(Run.created_at.desc())
-        )
-    ).all()
-    return [run for run in runs if not (run.run_metadata or {}).get("pre_handoff_aborted")]
+    mine = [
+        run
+        for run in runs
+        if run.task_id == task_id and not (run.run_metadata or {}).get("pre_handoff_aborted")
+    ]
+    return sorted(mine, key=lambda run: run.created_at, reverse=True)
 
 
-async def _story_has_live_engineering_run(task: Task, db: AsyncSession) -> bool:
+def _story_has_live_engineering_run(task: Task, sibling_ids: set[str], runs: list[Run]) -> bool:
     """Does a sibling of this task still hold a live engineering run?
 
-    Read under the story lock, and deliberately about runs rather than statuses:
-    the status write that would have made a sibling visible as `in_dev` locks only
-    its own row, so a published attempt whose transition failed is still `todo`.
-    Its run is not. The candidate's own runs are excluded — an attempt of the task
-    being admitted is the prior-attempt fence's subject, and it answers with a
-    repair rather than with "the story is busy".
+    Decided from the locked run rows, and deliberately about runs rather than
+    statuses: the status write that would have made a sibling visible as `in_dev`
+    locks only its own row, so a published attempt whose transition failed is
+    still `todo`. Its run is not. The candidate's own runs are excluded — an
+    attempt of the task being admitted is the prior-attempt fence's subject, and
+    it answers with a repair rather than with "the story is busy".
     """
-    runs = (
-        await db.scalars(
-            select(Run)
-            .join(Task, Task.id == Run.task_id)
-            .where(
-                Task.story_id == task.story_id,
-                Task.id != task.id,
-                Run.type == RunType.ENGINEERING.value,
-                Run.status.in_(_LIVE_RUN_STATUSES),
-            )
-        )
-    ).all()
-    # A run aborted before queue handoff never reached a worker, so it holds
-    # nothing — the same rule `_engineering_attempts` applies to the candidate.
-    return any(not (run.run_metadata or {}).get("pre_handoff_aborted") for run in runs)
+    return any(
+        run.task_id in sibling_ids
+        and run.task_id != task.id
+        and run.status in _LIVE_RUN_STATUSES
+        # A run aborted before queue handoff never reached a worker, so it holds
+        # nothing — the same rule `_attempts_of` applies to the candidate.
+        and not (run.run_metadata or {}).get("pre_handoff_aborted")
+        for run in runs
+    )
+
+
+async def _take_story_roster(
+    task: Task,
+    peeked_story_id: str | None,
+    locked: dict[str, Task],
+    db: AsyncSession,
+) -> tuple[set[str], EngineeringDispatchRefusal | None]:
+    """Rung 2: take the story, confirm its roster, and name the siblings.
+
+    The story row is the fence: two tasks of one story would otherwise both read
+    a roster without the other's attempt in it. It is taken before the roster is
+    confirmed, so the confirmation is read under it.
+
+    A Task row can be inserted into a story, or moved into one, between the peek
+    and the locks — an insert is fenced by no row lock. So the roster is re-read
+    under the story lock and compared against the rows this decision holds: a
+    member it does not hold cannot be taken now without descending the ladder
+    backwards, and the tick refuses instead. A task that *left* the story is
+    still held and simply is not a sibling any more, so the fence reads the
+    roster that exists.
+    """
+    from .routers._story_helpers import _get_story_for_update
+
+    if not task.story_id:
+        return set(), None
+    if task.story_id != peeked_story_id:
+        # The locked row names a story the peek did not, so the roster this
+        # decision holds is not the roster that exists. Same answer as a
+        # rewritten blocker edge: refuse, and let the next tick peek again.
+        return set(), EngineeringDispatchRefusal.STORY_ROSTER_CHANGED
+    await _get_story_for_update(task.story_id, db)
+    roster = set((await db.scalars(select(Task.id).where(Task.story_id == task.story_id))).all())
+    if roster - set(locked):
+        return set(), EngineeringDispatchRefusal.STORY_ROSTER_CHANGED
+    return roster - {task.id}, None
+
+
+def _story_fence(
+    task: Task,
+    sibling_ids: set[str],
+    locked: dict[str, Task],
+    runs: list[Run],
+    overrides: "_Overrides",
+) -> EngineeringDispatchRead | None:
+    """One task in flight per story, and none once a sibling reached review.
+
+    Siblings, not the candidate: this condition asks what *else* holds the
+    branch. A caller that overrode the dispatchability status — an operator
+    respawning a worker for a task already in_dev — must not be refused by its
+    own row showing up in the scan.
+    """
+    if not task.story_id:
+        return None
+    siblings = [locked[sibling_id] for sibling_id in sorted(sibling_ids)]
+    # A sibling's status is not the whole of "in flight". A sibling that was
+    # admitted and published but whose transition out of todo failed is a
+    # supported recovery state: still todo, with a live run whose worker holds
+    # the story branch. The fence therefore observes the runs as well, and
+    # refuses the same way — this is one condition, not two.
+    busy = any(
+        sibling.status == TaskStatus.IN_DEV.value for sibling in siblings
+    ) or _story_has_live_engineering_run(task, sibling_ids, runs)
+    if busy and not overrides.clears(EngineeringDispatchRefusal.STORY_BUSY):
+        return _refused(EngineeringDispatchRefusal.STORY_BUSY, overrides)
+    if any(
+        sibling.status == TaskStatus.WAITING_HUMAN_REVIEW.value for sibling in siblings
+    ) and not overrides.clears(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW):
+        return _refused(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW, overrides)
+    return None
 
 
 def _prior_attempt(
@@ -193,23 +319,26 @@ async def admit_engineering_dispatch(
     transition endpoints it used before.
     """
     # Deferred: `src.routers` imports this module for its endpoint, and the
-    # locking row readers card 1237 declared live under it. Importing them here
-    # keeps that one cycle out of module import order.
-    from .routers._story_helpers import _get_story_for_update
+    # locking row readers cards 1237 and this one declared live under it.
+    # Importing them here keeps that one cycle out of module import order.
     from .routers._task_helpers import get_task_for_update
+    from .routers.projects_guards import load_locked_project
 
     overrides = _Overrides(command)
 
-    # Both Task rows this decision may read are taken here, in ascending id, so
-    # a pair of tasks that block each other cannot be locked in opposite orders
-    # by two concurrent dispatches. The edge is peeked at first, unlocked and
-    # with a column-only query that puts no stale entity in the session, purely
-    # to learn which second row to take.
-    peeked_blocker_id = await db.scalar(
-        select(Task.blocked_by_task_id).where(Task.id == command.task_id)
-    )
+    # --- rung 1: every Task row any condition reads ------------------------
+    # The edges are peeked at first — unlocked, column-only, materialising no
+    # entity — purely to learn which rows to take. Which rows: the candidate,
+    # the task it declares as its blocker, and, when it belongs to a story, that
+    # story's whole roster, because the story fence decides from sibling rows.
+    peeked_blocker_id, peeked_story_id = await _peek_edges(command.task_id, db)
+    peeked_roster: set[str] = set()
+    if peeked_story_id:
+        peeked_roster = set(
+            (await db.scalars(select(Task.id).where(Task.story_id == peeked_story_id))).all()
+        )
     locked: dict[str, Task] = {}
-    for task_id in sorted({command.task_id, peeked_blocker_id} - {None}):
+    for task_id in sorted(({command.task_id, peeked_blocker_id} | peeked_roster) - {None}):
         locked[task_id] = await get_task_for_update(task_id, db)
     task = locked[command.task_id]
 
@@ -234,14 +363,24 @@ async def admit_engineering_dispatch(
     ):
         return _refused(EngineeringDispatchRefusal.INTERNAL_PROJECT, overrides)
 
-    # The project decides whether this task may be dispatched at all, and it
-    # carries the run that initiated the work, which the message has to hand on
-    # to the worker.
-    project = await db.scalar(select(Project).where(Project.id == task.project_id))
-    if project is None:
+    # --- rung 2: the story -------------------------------------------------
+    sibling_ids, roster_refusal = await _take_story_roster(task, peeked_story_id, locked, db)
+    if roster_refusal is not None:
+        return _refused(roster_refusal, overrides)
+
+    # --- rung 3: the project -----------------------------------------------
+    # Locked, not read: the project decides whether this task may be dispatched
+    # at all, and every project writer takes this same row lock, so a concurrent
+    # PATCH that clears `workspace_ready` either lands before this decision or
+    # waits for the run it creates.
+    try:
+        project = await load_locked_project(db, task.project_id)
+    except HTTPException as gone:
         # Unreachable through the schema — `tasks.project_id` is a non-nullable
         # foreign key — so this is a broken database, not a refusal to name.
-        raise RuntimeError(f"Project {task.project_id} does not exist")
+        raise RuntimeError(f"Project {task.project_id} does not exist") from gone
+    # The project also carries the run that initiated the work, which the message
+    # has to hand on to the worker.
     try:
         initiating_run_id = require_initiating_run(project)
     except ProjectPredatesRunOwnership:
@@ -251,44 +390,22 @@ async def admit_engineering_dispatch(
     if not (project.config or {}).get("workspace_ready"):
         return _refused(EngineeringDispatchRefusal.WORKSPACE_NOT_READY, overrides)
 
-    if task.story_id:
-        # The story row is the fence: two tasks of one story lock their own rows
-        # and would otherwise both read a sibling list without the other in it.
-        # Taking the story serializes them, so the scan below decides on a state
-        # nobody is concurrently adding a second worker to.
-        await _get_story_for_update(task.story_id, db)
-        # Siblings, not the candidate: this condition asks what *else* holds the
-        # branch. A caller that overrode the dispatchability status — an operator
-        # respawning a worker for a task already in_dev — must not be refused by
-        # its own row showing up in the scan.
-        siblings = (
-            await db.scalars(select(Task).where(Task.story_id == task.story_id, Task.id != task.id))
-        ).all()
-        # One task in flight per story, and none at all once a sibling has been
-        # handed to a human: a story branch is written by one worker at a time.
-        busy = any(sibling.status == TaskStatus.IN_DEV.value for sibling in siblings)
-        # A sibling's status is not the whole of "in flight". A sibling that was
-        # admitted and published but whose transition out of todo failed is a
-        # supported recovery state: still todo, with a live run whose worker holds
-        # the story branch. The fence therefore observes the runs as well, and
-        # refuses the same way — this is one condition, not two.
-        busy = busy or await _story_has_live_engineering_run(task, db)
-        if busy and not overrides.clears(EngineeringDispatchRefusal.STORY_BUSY):
-            return _refused(EngineeringDispatchRefusal.STORY_BUSY, overrides)
-        if any(
-            sibling.status == TaskStatus.WAITING_HUMAN_REVIEW.value for sibling in siblings
-        ) and not overrides.clears(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW):
-            return _refused(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW, overrides)
+    # --- rung 4: the attempt rows the last two conditions read --------------
+    runs = await _lock_engineering_runs(sorted(locked), db)
+
+    story_refusal = _story_fence(task, sibling_ids, locked, runs, overrides)
+    if story_refusal is not None:
+        return story_refusal
 
     # Evaluated whether or not the caller may walk past it, so an override is
     # recorded only when it actually walked past something.
-    attempts = await _engineering_attempts(task, db)
-    prior = _prior_attempt(task, attempts, initiating_run_id)
+    prior = _prior_attempt(task, _attempts_of(task.id, runs), initiating_run_id)
     if prior is not None and not overrides.clears(
         EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT
     ):
         return prior.model_copy(update={"overridden": list(overrides.applied)})
 
+    # --- rung 5: the paid-work control rows --------------------------------
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
     started = await start_paid_run(
         PaidRunStartCommand(
