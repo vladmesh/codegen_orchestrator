@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -43,7 +43,6 @@ help:
 	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
 	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
 	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
-	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
 	@echo "Git Hooks:"
@@ -436,19 +435,6 @@ test-live-clean:
 #       --allow-telegram-id 625038902 --ssh-key ~/.ssh/codegen_server_ed25519"
 danger-prod-reset:
 	@uv run python scripts/danger_prod_reset.py $(ARGS)
-
-
-# E2E Scaffold Test: runs against running `make up` stack
-# Creates GitHub repo, publishes CreateWorkerCommand with ScaffoldConfig,
-# verifies scaffold files pushed to GitHub, cleans up repo + worker container
-test-e2e-scaffold:
-	@echo "🧪 Running E2E scaffold test against running stack..."
-	@docker compose exec -T langgraph python < scripts/e2e_scaffold_test.py; \
-	EXIT_CODE=$$?; \
-	echo "🧹 Cleaning up scaffold test containers..."; \
-	docker ps -a --filter "name=dev-scaffold-e2e-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
 
 
 # Cleanup test containers and volumes (all test projects)
