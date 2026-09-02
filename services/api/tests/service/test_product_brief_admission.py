@@ -424,7 +424,7 @@ async def test_a_covering_task_must_belong_to_this_attempt(async_client: AsyncCl
 
     refused = await _cover(async_client, brief_id, "r1", attempt, task_id=foreign)
 
-    assert refused.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, refused.text
+    assert refused.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, refused.text
     assert other_brief != brief_id
 
 
@@ -474,7 +474,7 @@ async def test_the_brief_refusal_cannot_be_overridden(async_client: AsyncClient)
         },
     )
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, response.text
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
 
 
 @pytest.mark.asyncio
@@ -655,6 +655,6 @@ async def test_an_unconfirmed_brief_cannot_be_planned(async_client: AsyncClient)
     brief_id = created.json()["id"]
 
     bound = await async_client.post(f"{BRIEFS_URL}/{brief_id}/story", json={"story_id": story_id})
-    assert bound.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, bound.text
+    assert bound.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, bound.text
     claim = await async_client.post(f"{BRIEFS_URL}/{brief_id}/planning-attempts/claim")
-    assert claim.status_code == HTTPStatus.UNPROCESSABLE_CONTENT, claim.text
+    assert claim.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, claim.text
