@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Gave an unadmitted story a recovery path. `supervise_stuck_stories` used to skip any `created`
+  story that had tasks, which left a brief-backed story whose architect died mid-plan stranded for
+  ever: its tasks exist, so nothing retried the story, and they are unadmitted, so the dispatch
+  admission point refuses every one of them. It now retries such a story through the same architect
+  path, the same Redis-persisted retry budget and the same sequential-per-project skip a task-less
+  story takes — but only when all three hold: every task of the story is unadmitted, the story is
+  backed by a Product Brief, and no architect owns the incomplete plan (the attempt is inactive, or
+  its heartbeat is older than `PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS`). A live planner is left
+  alone, and one admitted task keeps the old skip — which is also why this can never re-dispatch an
+  admitted plan, since admission releases the whole release set at once. The scheduler reads brief
+  state only through the new typed `SchedulerAPIClient.get_product_brief_by_story` over the existing
+  `GET /api/product-briefs/by-story/{story_id}`; it decides no admission and writes no brief state.
+  Known limitation: a new claim issues a new attempt id, and admission counts coverage and releases
+  tasks only for the active attempt, so the previous attempt's unadmitted tasks and coverage rows
+  stay behind with nothing to clean them up — and those tasks, never dispatchable and never done,
+  keep `complete_stories` from ever completing the recovered story.
 - Added the Product Brief admission to the declared dispatch admission point. A brief-backed Task is
   no longer dispatchable because it is `todo`: `tasks.dispatch_admitted` is the coverage-to-dispatch
   boundary, and `admit_engineering_dispatch` refuses a task whose column is false with the new typed

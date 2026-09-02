@@ -129,7 +129,14 @@ class TestSuperviseStuckStories:
 
     @pytest.mark.asyncio
     async def test_skips_story_with_tasks(self, api_client, redis_client):
-        """Story in created but has tasks -> architect ran, skip."""
+        """Story in created with dispatchable tasks -> architect ran, skip.
+
+        `_make_task` builds an admitted task, which is what an ordinary
+        (non-brief-backed) plan produces, so this is the unchanged branch. The
+        one shape that is now retried instead — a plan whose tasks are all
+        unadmitted and whose planner is gone — is in
+        `test_supervisor_unadmitted_story_recovery.py`.
+        """
         from src.tasks.supervisor import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
@@ -142,7 +149,9 @@ class TestSuperviseStuckStories:
             if status == "created"
             else []
         )
-        api_client.get_tasks_by_story.return_value = [_make_task(id="task-1")]
+        task = _make_task(id="task-1")
+        assert task.dispatch_admitted
+        api_client.get_tasks_by_story.return_value = [task]
 
         result = await supervise_stuck_stories(api_client, redis_client)
 
