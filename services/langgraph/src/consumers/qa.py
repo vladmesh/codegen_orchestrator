@@ -537,7 +537,6 @@ async def _run_exploratory_qa(
         # check above refuses on — so it is written to the same journal, against
         # the same handle, rather than ending as a blocked run nobody looks at.
         provisioning_journal=ServerProvisioningJournal(server_info),
-        settings=get_settings(),
         established_facts=established_facts,
         jobs=jobs,
     )

@@ -1,12 +1,9 @@
 """QA tester prompt — black-box regression testing of a deployed project.
 
-Exploratory QA is performed by a central ephemeral coding agent on the
-management host (see ``clients/qa_worker`` and ``consumers/_qa_runner``), and by
-an in-process ReactAgent when no subscription session is available and the
-optional API triplet is (see ``agents/qa/graph``). The two reach the deployment
-through the same closed set of calls — one over the run's capability endpoint,
-one as LangChain tools — so the rules below are written once and only the
-"how you call them" section differs.
+Exploratory QA is performed by exactly one executor: a central ephemeral coding
+agent on the management host (see ``clients/qa_worker`` and
+``consumers/_qa_runner``). It reaches the deployment through one closed set of
+calls, over the run's capability endpoint, and this prompt is what it is given.
 
 The rules themselves are unchanged from the on-target Claude Code run they
 replaced: test the running application, never read implementation for evidence,
@@ -24,47 +21,15 @@ are the same whether or not that list is there.
 """
 
 from collections.abc import Sequence
-from enum import StrEnum
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.qa_probe_cli import QA_PROBE_NAME, QA_PROBE_USAGE
 
 __all__ = [
     "QA_TEST_TELEGRAM_ID",
-    "QAExecutorKind",
     "build_qa_instructions",
     "build_qa_prompt",
 ]
-
-
-class QAExecutorKind(StrEnum):
-    """Which executor is being prompted, and therefore how calls are spelled."""
-
-    # A coding agent in its own container, calling the run's capability endpoint
-    # through the injected `qa` command.
-    CENTRAL_AGENT = "central_agent"
-    # The in-process ReactAgent fallback, calling LangChain tools.
-    IN_PROCESS_TOOLS = "in_process_tools"
-
-
-_TOOL_SECTION = """\
-## Your tools
-- `http_get(path)` — request a path on the deployed URL. Returns status,
-  headers and body.
-- `localhost_http_get(port, path)` — the same, from inside the target, for a
-  service that is not published publicly.
-- `container_inspect(container)` — is the container running, healthy, restarting?
-- `container_logs(container, tail)` — what the container logged.
-- `remote_exec(command)` — one read-only command as an argument vector, e.g.
-  `["docker", "ps", "-a"]`. No shell, no pipes, no redirection.
-- `remote_read(path)` — read a file from the deployment directory.
-- `fire_job(name)` — invoke one scheduled behaviour of the product by name.
-  Only a name this run's criteria declared, and only the name: the arguments and
-  the command identity are the run's. Firing the same name twice re-reads the
-  same execution.
-- `job_evidence(name)` — read back what the product recorded for this run's fire.
-- `write_qa_report(markdown)` — store the report.
-"""
 
 _DISPATCH_RULE = """\
 - A fired job answers with a dispatch record. `dispatch_status: dispatched`
@@ -113,17 +78,9 @@ deployment this run is bound to and prints the JSON answer.
 """
 
 
-def _bot_section(bot_username: str, executor: QAExecutorKind) -> str:
-    message_call = (
-        f"`{QA_PROBE_NAME} telegram_probe <message>`"
-        if executor is QAExecutorKind.CENTRAL_AGENT
-        else "the `telegram_probe` tool"
-    )
-    callback_call = (
-        f"`{QA_PROBE_NAME} telegram_click_button <message id> <callback data>`"
-        if executor is QAExecutorKind.CENTRAL_AGENT
-        else "the `telegram_click_button` tool"
-    )
+def _bot_section(bot_username: str) -> str:
+    message_call = f"`{QA_PROBE_NAME} telegram_probe <message>`"
+    callback_call = f"`{QA_PROBE_NAME} telegram_click_button <message id> <callback data>`"
     return f"""
 ### Telegram bot
 - Bot: @{bot_username}
@@ -169,22 +126,16 @@ def _container_checklist_item(facts: Sequence[str]) -> str:
     return "Containers running and healthy (no restart loops)"
 
 
-def _report_section(executor: QAExecutorKind) -> str:
-    if executor is QAExecutorKind.CENTRAL_AGENT:
-        return f"""\
+def _report_section() -> str:
+    return f"""\
 ## Report
 Write the Markdown below to a file and store it with
 `{QA_PROBE_NAME} report <file>`.\
 """
-    return """\
-## Report
-Call `write_qa_report` with the Markdown below.\
-"""
 
 
-def _output_section(executor: QAExecutorKind) -> str:
-    if executor is QAExecutorKind.CENTRAL_AGENT:
-        return f"""\
+def _output_section() -> str:
+    return f"""\
 ## Output
 After storing the report, write this JSON to a file and submit it with
 `{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
@@ -193,11 +144,6 @@ and only after every check is done.
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as
 a passing or failing product.\
-"""
-    return f"""\
-## Output
-After calling `write_qa_report`, return ONLY this JSON as your final message:
-{_RESULT_JSON}\
 """
 
 
@@ -243,7 +189,6 @@ def build_qa_prompt(
     deployed_url: str,
     bot_username: str | None = None,
     *,
-    executor: QAExecutorKind = QAExecutorKind.IN_PROCESS_TOOLS,
     established_facts: Sequence[str] = (),
 ) -> str:
     """Build the QA prompt for the executor that will carry out this run.
@@ -252,21 +197,15 @@ def build_qa_prompt(
         acceptance_criteria: Full regression test criteria from the repository.
         deployed_url: URL where the application is deployed.
         bot_username: Telegram bot username (if applicable).
-        executor: which executor is being prompted. It changes only how the
-            calls are spelled, never what they are or what is allowed.
         established_facts: what the runner already established about this
             deployment without an LLM. They are stated as given and taken off
             the checklist; nothing else about the run changes, and the result
             JSON the executor must return is the same either way.
     """
-    central = executor is QAExecutorKind.CENTRAL_AGENT
-    bot_section = _bot_section(bot_username, executor) if bot_username else ""
+    bot_section = _bot_section(bot_username) if bot_username else ""
     write_rule = (
         f"`{QA_PROBE_NAME} http_get` and `{QA_PROBE_NAME} localhost_http_get` send GET only, "
         f"and `{QA_PROBE_NAME} remote_exec` refuses anything that is not a read-only command"
-        if central
-        else "The HTTP tools send GET\n  only, and `remote_exec` refuses anything that is not "
-        "a read-only command"
     )
 
     return f"""\
@@ -302,14 +241,14 @@ CRITICAL RULES:
 ## Deployment
 - URL: {deployed_url}
 {bot_section}{_established_section(established_facts)}
-{_PROBE_SECTION if central else _TOOL_SECTION}{_DISPATCH_RULE}
+{_PROBE_SECTION}{_DISPATCH_RULE}
 ## Checklist
 1. Health endpoint responds with 200
 2. Every check from acceptance criteria — execute and verify
 3. {_container_checklist_item(established_facts)}
 4. Edge cases — empty input, missing parameters, invalid values
 
-{_report_section(executor)}
+{_report_section()}
 In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste the actual
 output you got. Do not describe code.
 
@@ -330,7 +269,7 @@ output you got. Do not describe code.
 (any problems found, or "None")
 ```
 
-{_output_section(executor)}
+{_output_section()}
 
 Do not claim cleanup results in this JSON. The QA runner records any detected
 residual state itself; it does not attempt a generic rollback.

@@ -173,20 +173,15 @@ def mock_redis():
 
 @pytest.fixture(autouse=True)
 def _qa_runtime_configured():
-    """The production configuration: a subscription executor and no API triplet.
+    """The production configuration: one assigned subscription QA executor.
 
-    Every consumer test below runs with `QA_LLM_*` empty on purpose. That is
-    what a deployment looks like when exploratory QA is performed by the
-    assigned coding agent, and nothing in the consumer may treat it as missing
-    configuration.
+    Exploratory QA is performed by the assigned coding agent and by nothing
+    else, so the consumer needs no LLM configuration of its own to start a run.
     """
     with patch("src.consumers.qa.get_settings") as get_settings:
         get_settings.return_value = SimpleNamespace(
             qa_executor_agent_type=AgentType.CLAUDE,
             qa_capability_host="qa-worker",
-            qa_llm_model=None,
-            qa_llm_base_url=None,
-            qa_llm_api_key=None,
         )
         yield
 
@@ -627,16 +622,14 @@ class TestProcessQAJobFail:
         mock_api_client.create_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_an_empty_api_triplet_does_not_stop_a_run(
+    async def test_no_llm_configuration_is_a_prerequisite_of_a_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):
-        """`QA_LLM_*` empty is a production configuration, not a missing prerequisite.
+        """The consumer holds no QA model configuration and needs none.
 
-        This replaces a test that asserted the opposite — that a run without the
-        triplet is blocked before anything is attempted. That was true while the
-        triplet was the only executor. It is now an optional fallback behind the
-        assigned subscription agent, so refusing the run here would refuse every
-        correctly configured deployment.
+        Exploratory QA runs on the assigned subscription executor, so a
+        deployment that configures no LLM for QA is the correct one and its runs
+        start normally.
         """
         from src.consumers._qa_runner import QAResult
 
@@ -657,8 +650,8 @@ class TestProcessQAJobFail:
         blocker = QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted="run exploratory QA on the assigned executor (claude)",
-            sent="QA_LLM_MODEL, QA_LLM_BASE_URL, QA_LLM_API_KEY",
-            received="the subscription session is not usable",
+            sent="2 start attempt(s) of the claude QA executor against http://1.2.3.4:8000",
+            received="the assigned QA executor (claude) did not run: no subscription session",
         )
         with (
             patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
@@ -680,7 +673,7 @@ class TestProcessQAJobFail:
         assert "story-1" in alert
         assert "proj-1" in alert
         assert "qa-run-1" in alert
-        assert "QA_LLM_MODEL" in alert
+        assert "claude QA executor" in alert
 
     @pytest.mark.asyncio
     async def test_max_qa_loops_stores_exhausted_outcome(

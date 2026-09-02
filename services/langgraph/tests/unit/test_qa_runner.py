@@ -32,10 +32,10 @@ class TestBuildQAPrompt:
         assert "cannot write to the application" in prompt
 
     def test_prompt_never_offers_a_shell_or_a_second_target(self):
-        """The rules must match the tools: no shell, one deployment."""
+        """The rules must match the calls: the shell reaches nothing, one deployment."""
         prompt = build_qa_prompt("- GET /health returns 200", "https://api.example.com")
 
-        assert "No shell" in prompt
+        assert "You have a shell, and it reaches nothing" in prompt
         assert "exactly one deployment" in prompt
         # Nothing from the on-target runtime survives in the prompt.
         assert "claude" not in prompt.lower()
@@ -125,7 +125,7 @@ class TestEstablishedFactsKeepTheContract:
             assert '"pass": true/false' in prompt
             assert '"checks": [{"name": "check name", "pass": true/false' in prompt
             assert '"summary": "brief summary"' in prompt
-            assert "write_qa_report" in prompt
+            assert "qa report <file>" in prompt
 
 
 class TestParseQAResult:

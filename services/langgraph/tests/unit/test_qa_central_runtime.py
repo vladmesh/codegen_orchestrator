@@ -86,15 +86,9 @@ RUNNING_STATE = (
 )
 
 # Claude Code on the host's subscription session, addressing the runtime over
-# loopback because in a test the "container" is this process. No API triplet:
-# `NO_API_FALLBACK` is the production configuration these runs must work in.
+# loopback because in a test the "container" is this process. It is the run's
+# only executor.
 RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
-NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
-API_FALLBACK = SimpleNamespace(
-    qa_llm_model="m",
-    qa_llm_base_url="http://llm.invalid/v1",
-    qa_llm_api_key="sk-qa-fallback-not-real",
-)
 PASSING_JSON = (
     '{"pass": true, "checks": [{"name": "health", "pass": true, "detail": "200"}], "summary": "OK"}'
 )
@@ -234,26 +228,6 @@ class FakeConn:
         return False
 
 
-class FakeGraph:
-    """Stands in for the compiled ReactAgent; drives the tools it was built with."""
-
-    def __init__(self, tools, behaviour):
-        self.tools = {tool.name: tool for tool in tools}
-        self._behaviour = behaviour
-
-    async def ainvoke(self, state, config=None):
-        return {"messages": [SimpleNamespace(content=await self._behaviour(self))]}
-
-
-def _graph_factory(behaviour):
-    def create(*, model, base_url, api_key, tools, prompt):
-        create.graph = FakeGraph(tools, behaviour)
-        create.prompt = prompt
-        return create.graph
-
-    return create
-
-
 class RemoteCall:
     """One named call, made the way the executor's container makes it."""
 
@@ -348,7 +322,6 @@ def central_run(tmp_path):
         target=TARGET,
         journal=None,
         provisioning=None,
-        settings=NO_API_FALLBACK,
         unavailable=None,
         runtime=RUNTIME,
     ):
@@ -372,7 +345,6 @@ def central_run(tmp_path):
                 runtime=runtime,
                 grant_journal=record,
                 provisioning_journal=provisioning_record,
-                settings=settings,
                 established_facts=[],
             )
         return result, connection, factory, record
@@ -442,7 +414,6 @@ class TestCleanTargetPassesExploratoryQA:
                 runtime=runtime,
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
-                settings=API_FALLBACK,
                 established_facts=[],
             )
 
@@ -451,7 +422,6 @@ class TestCleanTargetPassesExploratoryQA:
         for secret in (
             *secrets.values(),
             "BEGIN OPENSSH PRIVATE KEY",
-            API_FALLBACK.qa_llm_api_key,
             "ANTHROPIC_API_KEY",
             "CLAUDE_CONFIG_DIR",
             "CODEX_HOME",
@@ -487,7 +457,6 @@ class TestCleanTargetPassesExploratoryQA:
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
-                settings=NO_API_FALLBACK,
                 established_facts=[],
             )
 
@@ -538,7 +507,6 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
-                settings=NO_API_FALLBACK,
                 established_facts=[],
             )
 
@@ -763,25 +731,19 @@ class TestASecondProjectOnTheSameHost:
         assert shlex.quote(PHYSICAL_ROOT) in command
         assert "infra/compose.yml" in command
 
-    async def test_tools_carry_the_refusal_back_to_the_agent(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
+    async def test_calls_carry_the_refusal_back_to_the_agent(self, tmp_path):
+        from src.agents.qa.tools import build_qa_callables
 
         with qa_workspace(root=str(tmp_path)) as workspace:
-            tools = {
-                tool.name: tool for tool in build_qa_tools(session=_session(), workspace=workspace)
-            }
-            container = await tools["container_logs"].ainvoke(
-                {"container": OTHER_PROJECT_CONTAINER}
-            )
-            port = await tools["localhost_http_get"].ainvoke(
-                {"port": OTHER_PROJECT_PORT, "path": "/private"}
-            )
+            calls = build_qa_callables(session=_session(), workspace=workspace)
+            container = await calls["container_logs"](OTHER_PROJECT_CONTAINER)
+            port = await calls["localhost_http_get"](OTHER_PROJECT_PORT, "/private")
 
         assert "is not a container of this run's deployment" in container["error"]
         assert "not allocated to this run's deployment" in port["error"]
 
-    async def test_the_telegram_tool_addresses_the_bot_in_the_capability_set(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
+    async def test_the_telegram_call_addresses_the_bot_in_the_capability_set(self, tmp_path):
+        from src.agents.qa.tools import build_qa_callables
 
         with_bot = QACapabilities(
             deployed_url=TARGET.deployed_url,
@@ -806,23 +768,19 @@ class TestASecondProjectOnTheSameHost:
             )
 
         with qa_workspace(root=str(tmp_path)) as workspace:
-            tools = {
-                tool.name: tool
-                for tool in build_qa_tools(
-                    session=_session(capabilities=with_bot),
-                    workspace=workspace,
-                    telethon_env={"TELETHON_SESSION": "s"},
-                    probe_runner=probe,
-                )
-            }
-            answer = await tools["telegram_probe"].ainvoke({"message": "/start"})
+            calls = build_qa_callables(
+                session=_session(capabilities=with_bot),
+                workspace=workspace,
+                telethon_env={"TELETHON_SESSION": "s"},
+                probe_runner=probe,
+            )
+            answer = await calls["telegram_probe"]("/start")
 
         assert answer["replies"][0]["text"] == "hi"
         assert "@weather_bot" in sent[0]
-        assert "@weather_bot" in tools["telegram_probe"].description
 
     async def test_a_visible_inline_button_is_invoked_only_through_this_run(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
+        from src.agents.qa.tools import build_qa_callables
 
         with_bot = QACapabilities(
             deployed_url=TARGET.deployed_url,
@@ -861,18 +819,15 @@ class TestASecondProjectOnTheSameHost:
             )
 
         with qa_workspace(root=str(tmp_path)) as workspace:
-            tools = {
-                tool.name: tool
-                for tool in build_qa_tools(
-                    session=_session(capabilities=with_bot),
-                    workspace=workspace,
-                    telethon_env={"TELETHON_SESSION": "s"},
-                    probe_runner=probe,
-                )
-            }
-            first = await tools["telegram_probe"].ainvoke({"message": "/start"})
-            callback = await tools["telegram_click_button"].ainvoke(
-                {"message_id": first["replies"][0]["id"], "callback_data": "ZGV0YWlscw=="}
+            calls = build_qa_callables(
+                session=_session(capabilities=with_bot),
+                workspace=workspace,
+                telethon_env={"TELETHON_SESSION": "s"},
+                probe_runner=probe,
+            )
+            first = await calls["telegram_probe"]("/start")
+            callback = await calls["telegram_click_button"](
+                first["replies"][0]["id"], "ZGV0YWlscw=="
             )
 
         assert callback["callback"]["text"] == "opened"
@@ -947,26 +902,13 @@ class TestASecondProjectOnTheSameHost:
         assert result.blocker.category is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
         assert result.telegram_probe_evidence[0].delivered is False
 
-    async def test_a_run_without_a_bot_has_no_telegram_tool(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
+    async def test_a_run_without_a_bot_has_no_telegram_call(self, tmp_path):
+        from src.agents.qa.tools import build_qa_callables
 
         with qa_workspace(root=str(tmp_path)) as workspace:
-            names = {tool.name for tool in build_qa_tools(session=_session(), workspace=workspace)}
+            names = set(build_qa_callables(session=_session(), workspace=workspace))
 
         assert "telegram_probe" not in names
-
-    async def test_tool_descriptions_name_the_capability_that_bounds_them(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
-
-        with qa_workspace(root=str(tmp_path)) as workspace:
-            tools = {
-                tool.name: tool for tool in build_qa_tools(session=_session(), workspace=workspace)
-            }
-
-        assert PHYSICAL_ROOT in tools["remote_read"].description
-        assert "8000" in tools["localhost_http_get"].description
-        assert OWN_CONTAINERS[0] in tools["container_logs"].description
-        assert OTHER_PROJECT_CONTAINER not in tools["remote_exec"].description
 
 
 class TestTheAgentHasNoShellAndNoHostView:
@@ -1085,7 +1027,6 @@ class TestGrantIsDurableAndDestroyed:
                 runtime=RUNTIME,
                 grant_journal=journal,
                 provisioning_journal=RecordingProvisioningJournal(),
-                settings=NO_API_FALLBACK,
                 established_facts=[],
             )
 
@@ -1204,13 +1145,11 @@ class TestWriteGuard:
         assert result.state_changes[0]["resource"] == "POST http://1.2.3.4:8000/users"
 
     async def test_the_trace_is_written_by_the_runner_not_the_agent(self, tmp_path):
-        from src.agents.qa.tools import build_qa_tools
+        from src.agents.qa.tools import build_qa_callables
 
         with qa_workspace(root=str(tmp_path)) as workspace:
-            tools = {
-                tool.name: tool for tool in build_qa_tools(session=_session(), workspace=workspace)
-            }
-            await tools["remote_exec"].ainvoke({"command": ["docker", "top", OWN_CONTAINERS[0]]})
+            calls = build_qa_callables(session=_session(), workspace=workspace)
+            await calls["remote_exec"](["docker", "top", OWN_CONTAINERS[0]])
             trace = workspace.trace_path.read_text()
 
         assert '"tool": "remote_exec"' in trace

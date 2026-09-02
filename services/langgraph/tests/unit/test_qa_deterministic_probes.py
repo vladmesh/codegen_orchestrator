@@ -61,7 +61,6 @@ TARGET = QATarget(
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 CONTAINERS = ("weather-bot-backend-1", "weather-bot-db-1")
 RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
-NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
 PASSING_JSON = '{"pass": true, "checks": [], "summary": "OK"}'
 
 RUNNING = '{"Status":"running","Running":true,"Restarting":false,"ExitCode":0}'
@@ -198,7 +197,6 @@ async def _run_qa(conn: FakeConn, executor, tmp_path, established_facts=None):
             runtime=RUNTIME,
             grant_journal=Journal(),
             provisioning_journal=ProvisioningJournal(),
-            settings=NO_API_FALLBACK,
             established_facts=established_facts or [],
         )
 
@@ -472,9 +470,6 @@ async def _process(api, bot_message, redis, *, liveness_effect, sleeps=None):
         get_settings.return_value = SimpleNamespace(
             qa_executor_agent_type=AgentType.CLAUDE,
             qa_capability_host="qa-worker",
-            qa_llm_model=None,
-            qa_llm_base_url=None,
-            qa_llm_api_key=None,
         )
         run_centrally.return_value = QAResult(passed=True, summary="OK")
         result = await process_qa_job(bot_message, redis)

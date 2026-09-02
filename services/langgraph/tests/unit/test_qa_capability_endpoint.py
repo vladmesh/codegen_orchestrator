@@ -221,12 +221,11 @@ class TestTheExecutorHoldsNoCredential:
             assert secret not in QA_PROBE_SCRIPT
 
     def test_the_command_and_the_prompt_cannot_describe_different_calls(self):
-        from src.prompts.qa import QAExecutorKind, build_qa_prompt
+        from src.prompts.qa import build_qa_prompt
 
         prompt = build_qa_prompt(
             "- GET /health returns 200",
             TARGET.deployed_url,
-            executor=QAExecutorKind.CENTRAL_AGENT,
         )
 
         assert QA_PROBE_USAGE in prompt

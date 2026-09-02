@@ -278,9 +278,8 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
     run's CONNECT proxy, and the only thing that tells the CLI the proxy exists
     is these four variables. Dropping them on the way to the child turns a
     working subscription into `qa_executor_unavailable` — the executor never
-    reaches its model backend, and with the intended empty `QA_LLM_*` there is
-    nothing to fall back to. The container's environment proves nothing about
-    this; the child's does.
+    reaches its model backend, and QA has no second executor to fall back to.
+    The container's environment proves nothing about this; the child's does.
     """
 
     async def test_the_run_s_egress_proxy_reaches_the_cli(self):

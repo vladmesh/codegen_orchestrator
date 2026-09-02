@@ -144,11 +144,6 @@ services:
       # How that container addresses this service's per-run capability endpoint.
       # It must be this service's name on the worker network below.
       QA_CAPABILITY_HOST: ${QA_CAPABILITY_HOST:-qa-worker}
-      # Optional API fallback, read only after the assigned executor has failed.
-      # Empty is a valid production configuration.
-      QA_LLM_MODEL: ${QA_LLM_MODEL:-}
-      QA_LLM_BASE_URL: ${QA_LLM_BASE_URL:-}
-      QA_LLM_API_KEY: ${QA_LLM_API_KEY:-}
       # The QA Telegram account lives here and nowhere else.
       TELETHON_API_ID: ${TELETHON_API_ID:-}
       TELETHON_API_HASH: ${TELETHON_API_HASH:-}
