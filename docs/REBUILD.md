@@ -156,8 +156,8 @@ pass:
   passing with an unknown one.
 
 `WORKER_SOURCE_HASH` itself is computed by `source_hash()` in `scripts/shared_freshness.py` and nowhere
-else. `make`, the check and the two fixtures that build worker base images
-(`tests/integration/backend/conftest.py`, `tests/e2e/conftest.py`) all call that one function, so what
+else. `make`, the check and the fixture that builds worker base images
+(`tests/integration/backend/conftest.py`) all call that one function, so what
 a build stamps on an image and what the check expects cannot drift apart. The only other hash in that
 area is `_child_image_hash` in the backend fixture, which is a cache key for a derived worker image and
 is never written as `SOURCE_HASH`.

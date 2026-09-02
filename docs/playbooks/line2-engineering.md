@@ -80,7 +80,7 @@ Worker reports are collected via task events API after each task completes.
 > **BLOCKER**: Steps 1-2 must pass. If scaffold doesn't work, Line 2 will silently
 > skip it and Claude Code will waste time building from scratch on an empty repo.
 
-1. **Line 1 scaffold test passes**: Run `make test-e2e-scaffold` and verify it succeeds.
+1. **Line 1 scaffold test passes**: Run `make test-live-smoke` and verify it succeeds.
    This validates the scaffold phase (copier + make setup + git push) inside a worker container.
 2. **Stack is running and healthy**:
    ```bash
