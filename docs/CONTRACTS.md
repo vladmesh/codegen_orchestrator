@@ -269,9 +269,52 @@ product's core settings contract uses (`service-template`, `docs/CONTRACTS.md`,
 not an interpretation. `(key, scope, subject_id)` is unique within one brief. A
 credential is not a setting: a credential-shaped key or value is refused by the
 type, and the PO additionally refuses a key that names one of the project's
-stored secrets, reading only the secret *names*. Writing these values into a
-generated product through `settings.set` is a later card; this contract only
-carries them on the brief.
+stored secrets, reading only the secret *names*. There is exactly one policy
+about credentials on this path, and it lives here; nothing downstream reads a
+project secret *value* to seed a setting.
+
+**Those settings reach the product twice: as a plan, and as a value.**
+
+*As a plan.* The architect receives `initial_settings` on its graph state
+(`ArchitectState.initial_settings`) and named in its instructions, the same way
+it receives the must-requirements. They are not disposed of one by one — that is
+what a must-requirement is — because the platform, not the plan, writes them.
+What the plan owes them is the declaration that makes them writable at all: each
+key declared in the generated product's own `services/<service>/manifest.yaml`
+`settings_schema` with a schema the confirmed value satisfies, and read where
+the product uses it. An undeclared key is refused by the product, so an
+undeclared key means the value the user confirmed never arrives.
+
+*As a value.* After a successful deploy of a brief-backed story, the deploy
+result handler reads the brief through `GET /api/product-briefs/by-story/{story_id}`
+and writes every `initial_settings` entry into the deployed product through the
+product's own released `POST /settings/set` — nothing reconstructed from prose,
+from project config or from an environment variable, and no second storage
+path. Each write is proved, not assumed: `POST /settings/get` must answer with
+the key, scope, subject and value that were just written, the shape
+`grant_and_resolve` already uses. `SETTINGS_WRITE_CAPABILITY` comes only from
+this deploy's in-memory `secret_values`, travels as the `X-Settings-Capability`
+header, and appears in no URL, log, error, event, callback, persisted
+diagnostic or LLM-facing text. Writing is idempotent by `(key, scope,
+subject_id)`, so redeploying the same story writes the same values and ends in
+the same state; a story with no brief and a brief with no settings touch
+nothing.
+
+`DeployRunResult.settings_seed` is the durable record — one
+`SettingSeedOutcome` per confirmed setting, naming it the way the product
+identifies it plus one closed-set `SettingsSeedFailureKind`, never a value, a
+response body or the capability. The split is
+`SETTINGS_SEED_RETRYABLE_FAILURES`: transport, a refusal that is not the
+product's own contract, and a readback that was refused, malformed or
+disagreeing say the product did not answer the way a working product answers,
+so they hold the deploy back through the existing
+`OWNER_ACCESS_PROOF_FAILED` outcome and go round under the bound that already
+stops a failing deploy from looping. An undeclared key (404), a value its
+declared schema refuses (422) and a product whose environment contract does not
+declare the capability at all — an existing pinned product — are deterministic
+in this commit: redeploying the same artifact answers identically, so they are
+reported *beside* the successful deploy in `settings_seed` rather than becoming
+a retry that cannot converge. Neither is ever a silent skip.
 
 **The producer of the confirmed brief is the PO consumer.**
 `present_product_brief` opens the revision and returns the exact text the user is

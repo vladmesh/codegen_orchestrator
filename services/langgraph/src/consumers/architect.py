@@ -8,12 +8,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass
+import json
 import uuid
 
 import structlog
 
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
+    InitialSetting,
     MustRequirement,
     ProductBriefAdmissionOutcome,
     ProductBriefPlanningAttemptOutcome,
@@ -51,6 +53,7 @@ class _PlanningAttempt:
     brief_id: str
     planning_attempt_id: str
     must_requirements: list[MustRequirement]
+    initial_settings: list[InitialSetting]
 
 
 async def _heartbeat_planning_attempt(brief_id: str, planning_attempt_id: str, log) -> None:
@@ -148,6 +151,7 @@ async def _claim_planning_attempt(
                     brief_id=brief.id,
                     planning_attempt_id=claim.planning_attempt_id,
                     must_requirements=list(brief.content.must_requirements),
+                    initial_settings=list(brief.content.initial_settings),
                 ),
                 None,
             )
@@ -225,11 +229,17 @@ def _planning_state(attempt: _PlanningAttempt | None) -> dict:
     state reads one shape whether or not this story is brief-backed.
     """
     if attempt is None:
-        return {"product_brief_id": None, "planning_attempt_id": None, "must_requirements": []}
+        return {
+            "product_brief_id": None,
+            "planning_attempt_id": None,
+            "must_requirements": [],
+            "initial_settings": [],
+        }
     return {
         "product_brief_id": attempt.brief_id,
         "planning_attempt_id": attempt.planning_attempt_id,
         "must_requirements": attempt.must_requirements,
+        "initial_settings": attempt.initial_settings,
     }
 
 
@@ -243,12 +253,46 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
     if attempt is None:
         return ""
     listed = "\n".join(f"- {r.id}: {r.text}" for r in attempt.must_requirements)
-    return (
+    briefing = (
         "\n\nThis story is backed by a confirmed Product Brief. Its must-requirements are:\n"
         f"{listed}\n"
         "Record exactly one disposition for EVERY id above with "
         "record_requirement_coverage — the task that covers it, or the reason it is "
         "returned. Nothing you plan is dispatched until all of them are recorded."
+    )
+    return briefing + _settings_briefing(attempt)
+
+
+def _settings_briefing(attempt: _PlanningAttempt) -> str:
+    """The typed values the confirmed product starts life with.
+
+    They are named here rather than described, because the platform writes them
+    into the deployed product itself, through the product's own settings write
+    path, exactly as the user confirmed them. What the architect owes them is
+    the declaration that makes them writable at all: a key absent from the
+    product's `settings_schema` is refused by the product, and the confirmed
+    value never arrives.
+    """
+    if not attempt.initial_settings:
+        return ""
+    listed = "\n".join(
+        f"- {s.key} (scope: {s.scope.value}"
+        + (f", subject_id: {s.subject_id}" if s.subject_id is not None else "")
+        + f") = {json.dumps(s.value, ensure_ascii=False)}"
+        for s in attempt.initial_settings
+    )
+    return (
+        "\n\nThe same confirmed brief carries the typed settings this product starts "
+        "life with:\n"
+        f"{listed}\n"
+        "Do NOT plan work that writes these values: the platform writes them into the "
+        "deployed product after deploy, through the product's own settings write path. "
+        "Your plan must make every key above writable — each one has to be declared in "
+        "the product's own services/<service>/manifest.yaml settings_schema, with a "
+        "JSON Schema the value shown above satisfies, and the product has to read the "
+        "setting where it uses it. A key the manifest does not declare is refused by "
+        "the product, and the value the user confirmed never arrives. Cover that work "
+        "in the tasks you create."
     )
 
 

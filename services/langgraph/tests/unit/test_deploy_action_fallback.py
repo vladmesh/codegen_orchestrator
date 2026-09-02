@@ -47,6 +47,9 @@ def _configure_api_mock(api):
     )
     api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
     api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
+    # A story with no Product Brief: nothing is seeded and the deploy path
+    # is the one it has always been.
+    api.get_product_brief_by_story = AsyncMock(return_value=None)
 
 
 @pytest.fixture

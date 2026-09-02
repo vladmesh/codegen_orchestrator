@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Made the typed settings the user confirmed reach the generated product as data, through the
+  product's own released write path. The confirmed brief's `initial_settings` now travel to the
+  architect exactly as its must-requirements do — on `ArchitectState.initial_settings` and named
+  in the run's instructions — with one difference the prompt states: the architect does not plan
+  work that writes those values, it plans the declaration that makes each key writable at all, in
+  the generated product's own `services/<service>/manifest.yaml` `settings_schema` with a schema
+  the confirmed value satisfies. An undeclared key is refused by the product, so without that
+  declaration the value the user confirmed never arrives. Nothing about claim, coverage or
+  admission changed. After a successful deploy of a brief-backed story, the deploy result handler
+  reads the brief through `GET /api/product-briefs/by-story/{story_id}` and writes every
+  `initial_settings` entry into the deployed product through its own `POST /settings/set` — the
+  confirmed values, never reconstructed from prose, from project config or from an environment
+  variable, and never through a second storage path. Each write is proved rather than assumed:
+  `POST /settings/get` has to answer with the key, scope, subject and value just written, the
+  shape `grant_and_resolve` already uses. `SETTINGS_WRITE_CAPABILITY` comes only from this
+  deploy's in-memory `secret_values`, travels as the `X-Settings-Capability` header, and is in no
+  URL, log, error, event, callback, persisted diagnostic or LLM-facing text. `settings.set` is
+  idempotent on `(key, scope, subject_id)`, so redeploying the same story writes the same values
+  and ends in the same state; a story with no brief and a brief with no settings leave the deploy
+  path exactly as it was. Every setting's disposition is durable in the new
+  `DeployRunResult.settings_seed` — one bounded `SettingSeedOutcome` per confirmed setting, one
+  closed-set failure kind, no value and no capability. The two halves of that record are routed
+  differently on purpose: a transport failure, a refusal that is not the product's own contract,
+  and a readback that was refused, malformed or disagreeing say the product did not answer the way
+  a working product answers, so they hold the deploy back through the existing
+  `owner_access_proof_failed` outcome and go round under the bound that already stops a failing
+  deploy from looping; an undeclared key (404), a value its declared schema refuses (422), and a
+  pinned product whose environment contract predates the capability are deterministic in this
+  commit — redeploying the same artifact answers identically — so they are reported beside the
+  successful deploy instead of becoming a retry that cannot converge. Neither is a silent skip.
+  A secret is never written as a setting and no project secret *value* is read on this path: the
+  brief's own refusal of credential-shaped keys and values stays the one policy.
+
 - Gave the Product Brief boundary its producer: the user's requirement is durable typed data
   before the story exists. Two new PO tools work the released endpoints and store nothing of
   their own — `present_product_brief` opens the revision through `POST /api/product-briefs/`

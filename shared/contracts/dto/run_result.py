@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.settings_seed import SettingSeedOutcome
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 
@@ -96,6 +97,11 @@ class DeployRunResult(BaseModel):
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+    #: What became of each `initial_settings` value of the confirmed Product
+    #: Brief backing this story — see `shared/contracts/dto/settings_seed.py`.
+    #: Empty is the ordinary case: a standalone deploy, a story with no brief,
+    #: or a brief that confirmed no settings.
+    settings_seed: list[SettingSeedOutcome] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _infrastructure_wait_carries_its_classification(self) -> DeployRunResult:

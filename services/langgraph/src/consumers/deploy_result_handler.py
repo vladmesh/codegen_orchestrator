@@ -10,9 +10,15 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.settings_seed import (
+    SETTINGS_SEED_RETRYABLE_FAILURES,
+    SettingSeedOutcome,
+    SettingsSeedFailureKind,
+)
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.dto.users_grant import (
     GrantIntent,
@@ -23,6 +29,7 @@ from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..clients.product_settings import GeneratedServiceSettingsClient
 from ..clients.users_grant import GeneratedServiceGrantClient
 from ._events import publish_callback_event
 from ._live_work import live_work_settled, live_work_unsettled
@@ -30,6 +37,7 @@ from ._live_work import live_work_settled, live_work_unsettled
 logger = structlog.get_logger(__name__)
 
 _USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
+_SETTINGS_WRITE_CAPABILITY = "SETTINGS_WRITE_CAPABILITY"  # noqa: S105
 
 
 async def _handle_smoke_failure(
@@ -162,6 +170,25 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 application_id=application_id,
             )
 
+    settings_seed, blocking_seed_failure = await _seed_initial_settings(
+        task_id=task_id,
+        story_id=story_id,
+        deployed_url=result["deployed_url"],
+        secret_values=result.get("secret_values", {}),
+    )
+    if blocking_seed_failure is not None:
+        return await _handle_owner_access_failure(
+            result=result,
+            task_id=task_id,
+            project_id=project_id,
+            callback_stream=callback_stream,
+            telegram_chat_id=telegram_chat_id,
+            redis=redis,
+            reason=blocking_seed_failure,
+            application_id=application_id,
+            settings_seed=settings_seed,
+        )
+
     logger.info(
         "deploy_job_success",
         task_id=task_id,
@@ -174,6 +201,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
         smoke_result=smoke_result,
         application_id=application_id,
         bot_username=result.get("bot_username"),
+        settings_seed=settings_seed,
     )
     await api_client.patch(
         f"runs/{task_id}",
@@ -319,7 +347,91 @@ async def _apply_temporary_access_operation(
     return proof.failure.value if proof.failure is not None else "unverified"
 
 
-async def _handle_owner_access_failure(
+async def _seed_initial_settings(
+    *,
+    task_id: str,
+    story_id: str,
+    deployed_url: str,
+    secret_values: dict,
+) -> tuple[list[SettingSeedOutcome], str | None]:
+    """Write the confirmed brief's typed settings into the deployed product.
+
+    Returns `(record, blocking_reason)`. The record is one bounded outcome per
+    confirmed setting, in the order the user confirmed them, and it is stored
+    on the run whether the deploy is held back or not. A blocking reason is
+    returned only for a failure a second deploy of this commit could answer
+    differently — see `SETTINGS_SEED_RETRYABLE_FAILURES`.
+
+    Nothing here is derived from prose, from project config or from an
+    environment variable: the values are the confirmed ones, read through the
+    released brief endpoint, and the capability is this deploy's in-memory
+    resolver output. Neither the capability nor a setting value is logged.
+    """
+    if not story_id:
+        return [], None
+    brief = await api_client.get_product_brief_by_story(story_id)
+    if brief is None or brief.confirmed_at is None:
+        return [], None
+    settings = list(brief.content.initial_settings)
+    if not settings:
+        return [], None
+
+    capability = secret_values.get(_SETTINGS_WRITE_CAPABILITY)
+    if not isinstance(capability, str) or not capability:
+        # An existing pinned product, generated before the settings core
+        # declared its write capability. It seeds nothing and says so; that is
+        # not a deploy failure, and no later deploy of the same pin would go
+        # any differently.
+        logger.info(
+            "deploy_settings_seed_capability_unavailable",
+            task_id=task_id,
+            brief_id=brief.id,
+            settings_count=len(settings),
+        )
+        return [
+            _seed_outcome(setting, SettingsSeedFailureKind.CAPABILITY_UNAVAILABLE)
+            for setting in settings
+        ], None
+
+    proofs = await GeneratedServiceSettingsClient(deployed_url).seed_and_resolve(
+        settings, capability=capability
+    )
+    record = [
+        _seed_outcome(setting, None if proof.written else proof.failure)
+        for setting, proof in zip(settings, proofs, strict=True)
+    ]
+    failures = [outcome.failure for outcome in record if outcome.failure is not None]
+    logger.info(
+        "deploy_settings_seeded",
+        task_id=task_id,
+        brief_id=brief.id,
+        written=sum(1 for outcome in record if outcome.written),
+        failures=[failure.value for failure in failures],
+    )
+    blocking = next(
+        (failure for failure in failures if failure in SETTINGS_SEED_RETRYABLE_FAILURES), None
+    )
+    return record, f"settings_seed:{blocking.value}" if blocking is not None else None
+
+
+def _seed_outcome(
+    setting: InitialSetting, failure: SettingsSeedFailureKind | None
+) -> SettingSeedOutcome:
+    """One setting's disposition, named the way the product identifies it.
+
+    A proof that is neither written nor refused is a defect of the client,
+    not a state the run may record: the outcome model refuses it here.
+    """
+    return SettingSeedOutcome(
+        key=setting.key,
+        scope=setting.scope,
+        subject_id=setting.subject_id,
+        written=failure is None,
+        failure=failure,
+    )
+
+
+async def _handle_owner_access_failure(  # noqa: PLR0913
     *,
     result: dict,
     task_id: str,
@@ -329,6 +441,7 @@ async def _handle_owner_access_failure(
     redis: RedisStreamClient,
     reason: str,
     application_id: int | None,
+    settings_seed: list[SettingSeedOutcome] | None = None,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
     error_msg = f"Deployed service did not verify generated access: {reason}"
@@ -346,6 +459,7 @@ async def _handle_owner_access_failure(
                 application_id=application_id,
                 bot_username=result.get("bot_username"),
                 error_details=reason,
+                settings_seed=settings_seed or [],
             ).model_dump(mode="json"),
         },
     )

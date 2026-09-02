@@ -97,6 +97,8 @@ class TestHandleDeploySuccess:
 
         with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
             mock_api.patch = AsyncMock()
+            # This story has no Product Brief, so nothing is seeded.
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
             result = await _handle_deploy_success(
                 result={"deployed_url": "https://example.com", "bot_username": "test_bot"},
                 smoke_result=None,
@@ -139,6 +141,8 @@ class TestHandleDeploySuccess:
 
         with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
             mock_api.patch = AsyncMock()
+            # This story has no Product Brief, so nothing is seeded.
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
             await _handle_deploy_success(
                 result={"deployed_url": "https://example.com"},
                 smoke_result=None,
@@ -171,6 +175,8 @@ class TestHandleDeploySuccess:
             patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
         ):
             mock_api.patch = AsyncMock()
+            # This story has no Product Brief, so nothing is seeded.
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
             mock_api.get_temporary_access_grant = AsyncMock(return_value=grant)
             grant_client.return_value.revoke_and_resolve = AsyncMock(
                 return_value=SimpleNamespace(active=False, failure=None)
@@ -210,6 +216,8 @@ class TestHandleDeploySuccess:
             patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
         ):
             mock_api.patch = AsyncMock()
+            # This story has no Product Brief, so nothing is seeded.
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
             mock_api.get_temporary_access_grant = AsyncMock(return_value=_temporary_grant())
             grant_client.return_value.grant_and_resolve = AsyncMock(
                 return_value=SimpleNamespace(
@@ -367,6 +375,8 @@ class TestHandleSmokeFailure:
 
         with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
             mock_api.patch = AsyncMock()
+            # This story has no Product Brief, so nothing is seeded.
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
             result = await _handle_smoke_failure(
                 result={"deployed_url": "https://example.com"},
                 smoke_result={
