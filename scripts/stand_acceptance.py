@@ -31,6 +31,13 @@ RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
 # The redacted service log tails the runner collects when the suite itself
 # failed, the counterpart of the provisioning-failure diagnostics above.
 SUITE_DIAGNOSTIC_FILES = ("suite-services.log",)
+# The bounded, redacted snapshot taken from the *target* host — the machine the
+# application itself runs on — when a run's evidence says a successful deploy
+# was followed by a deployed URL that answered nobody.  The orchestrator's own
+# services cannot say whether the application container was down, up but
+# unreachable, or answering something QA rejected; this file is where that half
+# of the answer lives, and the run evidence is what asks for it.
+TARGET_DIAGNOSTIC_FILES = ("target-app.log",)
 # The harness's own post-mortem dump, written beside the run evidence so it
 # reaches the handoff instead of dying with the ephemeral host.
 # The dump name is `debug-<test name>-<date>-<time>.md`, and a test name is a
@@ -165,6 +172,7 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
             REMOTE_INVOCATION_LOG,
             *PROVISIONING_DIAGNOSTIC_FILES,
             *SUITE_DIAGNOSTIC_FILES,
+            *TARGET_DIAGNOSTIC_FILES,
         ):
             source = run_dir / name
             if source.is_file():
@@ -203,9 +211,81 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     engineering = artifact.get("engineering")
     if not isinstance(engineering, dict) or not _capture_is_stated(engineering.get("collection")):
         errors.append(f"paid_failure_engineering_evidence_missing:{name}")
+    qa = artifact.get("qa")
+    if not isinstance(qa, dict) or not _capture_is_stated(qa.get("run_record")):
+        errors.append(f"paid_failure_qa_run_record_missing:{name}")
+    deployment = artifact.get("deployment")
+    if not isinstance(deployment, dict) or not _capture_is_stated(deployment.get("run_record")):
+        errors.append(f"paid_failure_deploy_run_record_missing:{name}")
+    errors += _reachability_errors(name, deployment)
     if not verdict.get("reasons"):
         errors.append(f"paid_failure_verdict_silent:{name}")
     return errors
+
+
+def _reachability_errors(name: str, deployment: object) -> list[str]:
+    """Refuse a paid failure that cannot say what the deployed URL answered.
+
+    The three reads that separate "the app was down", "the app was up but
+    unreachable from the orchestrator" and "the app answered something QA
+    rejected" are the deploy's own smoke, the harness's probe and QA's probe.
+    Each is admissible as a stated missed capture — an unread probe is a
+    finding — but none of them may simply be absent.
+    """
+    if not isinstance(deployment, dict):
+        return [f"paid_failure_reachability_missing:{name}"]
+    reachability = deployment.get("reachability")
+    if not isinstance(reachability, dict):
+        return [f"paid_failure_reachability_missing:{name}"]
+    errors = [
+        f"paid_failure_reachability_read_missing:{name}:{read}"
+        for read in ("deploy_smoke", "harness_probe", "qa_probe")
+        if not _capture_is_stated(reachability.get(read))
+    ]
+    snapshot = reachability.get("target_host_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot.get("reason"):
+        errors.append(f"paid_failure_target_snapshot_requirement_missing:{name}")
+    elif not _capture_is_stated(snapshot.get("collection")):
+        # The requirement alone does not say whether the snapshot was taken. A
+        # run that asked for one and cannot say what became of it is the silence
+        # this admission exists to refuse.
+        errors.append(f"paid_failure_target_snapshot_collection_missing:{name}")
+    return errors
+
+
+def target_snapshot_required(artifact: dict[str, Any]) -> bool:
+    """Whether one run-evidence artifact asks for a snapshot of the target host.
+
+    The artifact decides — this only reads its answer — so the step that
+    collects and the boundary that refuses cannot disagree about which runs owe
+    a target-host snapshot.
+    """
+    deployment = artifact.get("deployment")
+    reachability = deployment.get("reachability") if isinstance(deployment, dict) else None
+    snapshot = reachability.get("target_host_snapshot") if isinstance(reachability, dict) else None
+    return bool(isinstance(snapshot, dict) and snapshot.get("required"))
+
+
+def run_dir_needs_target_snapshot(run_dir: Path) -> bool:
+    """Whether any collected run evidence in one runner directory asks for one.
+
+    Unreadable or absent evidence answers "no": the artifact is what asks, so a
+    directory that holds no answerable artifact asks for nothing here.  It is
+    refused elsewhere — a paid failure with no readable evidence is already an
+    admission error of its own.
+    """
+    if not run_dir.is_dir():
+        return False
+    for path in sorted(run_dir.iterdir()):
+        if not path.is_file() or not RUN_EVIDENCE.fullmatch(path.name):
+            continue
+        try:
+            artifact = _load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if target_snapshot_required(artifact):
+            return True
+    return False
 
 
 def _uncollected_debug_dumps(output: Path, artifact: dict[str, Any]) -> list[str]:
@@ -238,6 +318,7 @@ def _run_evidence_errors(output: Path) -> list[str]:
     errors: list[str] = []
     evidence = [path for path in sorted(output.iterdir()) if RUN_EVIDENCE.fullmatch(path.name)]
     paid_failure = False
+    wants_target_snapshot = False
     for path in evidence:
         try:
             artifact = _load_json(path)
@@ -248,10 +329,15 @@ def _run_evidence_errors(output: Path) -> list[str]:
         verdict = artifact.get("verdict")
         if isinstance(failure, dict) and isinstance(verdict, dict):
             paid_failure = paid_failure or bool(verdict.get("paid") and failure.get("failed"))
+        wants_target_snapshot = wants_target_snapshot or target_snapshot_required(artifact)
         errors += _paid_failure_errors(path.name, artifact)
         errors += _uncollected_debug_dumps(output, artifact)
     if paid_failure and not any((output / name).is_file() for name in SUITE_DIAGNOSTIC_FILES):
         errors.append("paid_failure_service_diagnostics_missing")
+    if wants_target_snapshot and not any(
+        (output / name).is_file() for name in TARGET_DIAGNOSTIC_FILES
+    ):
+        errors.append("paid_failure_target_snapshot_missing")
     return errors
 
 
@@ -488,6 +574,8 @@ def _scan_artifact_issues(
         *(f"run/{name}" for name in PROVISIONING_DIAGNOSTIC_FILES),
         *SUITE_DIAGNOSTIC_FILES,
         *(f"run/{name}" for name in SUITE_DIAGNOSTIC_FILES),
+        *TARGET_DIAGNOSTIC_FILES,
+        *(f"run/{name}" for name in TARGET_DIAGNOSTIC_FILES),
     }
     for path in sorted(artifact.rglob("*")) if artifact.is_dir() else []:
         if path.is_dir():
@@ -653,7 +741,11 @@ def main() -> int:
         action="store_true",
         help="derive needles only from the fixed protected environment allow-list",
     )
+    needs = sub.add_parser("needs-target-snapshot")
+    needs.add_argument("--run-dir", required=True, type=Path)
     args = parser.parse_args()
+    if args.command == "needs-target-snapshot":
+        return 0 if run_dir_needs_target_snapshot(args.run_dir) else 1
     if args.command == "build":
         try:
             complete = build_acceptance_artifact(

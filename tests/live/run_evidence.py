@@ -63,6 +63,7 @@ from live_harness import resolve_repo_root
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
@@ -123,7 +124,11 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 # v6: the failing stage and its control-plane reason are named in `failure`, the
 #     engineering Run records that reason is read from are carried in
 #     `engineering`, and `verdict` states red or green with the reasons for it.
-EVIDENCE_SCHEMA_VERSION = 6
+# v7: the QA and deploy Run records are carried in `qa.run_record` and
+#     `deployment.run_record`, `deployment.reachability` holds every read of the
+#     deployed URL this run has, and a run whose deploy succeeded over a URL
+#     that answered nobody asks there for a snapshot of the target host.
+EVIDENCE_SCHEMA_VERSION = 7
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -140,6 +145,13 @@ WORKER_TYPE_LABEL = f"{WorkerLabel.TYPE.value}=worker"
 # The container side of the transcript bind mount
 # (worker-manager container_config.TRANSCRIPT_MOUNT).
 TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
+
+# The bounded, redacted snapshot the workflow takes from the *target* host when
+# this artifact says the deployed URL stopped answering after a successful
+# deploy. It is named here because the artifact is what asks for it: the file
+# travels beside this one in the same handoff, and `scripts/stand_acceptance.py`
+# refuses a paid failure that asked for it and did not get it.
+TARGET_SNAPSHOT_FILENAME = "target-app.log"
 
 # Written on the deployment host by infra/scripts/pull-worker-images.sh, copied
 # back by .github/workflows/deploy.yml: the digest record of the worker image
@@ -299,6 +311,43 @@ class VerdictReason(StrEnum):
     RUN_FAILED = "run_failed"
     WORKER_EXECUTED_MISSED = "worker_executed_missed"
     QA_EXECUTED_MISSED = "qa_executed_missed"
+
+
+class QARunLookup(StrEnum):
+    """What the last read of this story's QA runs before teardown found."""
+
+    # The record was read inside the QA wait, where the run was found.
+    QA_WAIT = "qa_wait"
+    # The phase left before the wait ran, and the teardown read found a run.
+    TEARDOWN = "teardown"
+    # The teardown read ran and the control plane held no terminal QA run.
+    NONE_TERMINAL = "none_terminal"
+
+
+class ReachedBasis(StrEnum):
+    """What a `reached_the_url` value rests on, which is not one kind of thing."""
+
+    # QA's own closed blocker category: its probe of the URL got no response.
+    QA_BLOCKER = "qa_blocker_category"
+    # Derived from QA reaching a product verdict, not from a read of the URL.
+    INFERRED_FROM_OUTCOME = "inferred_from_qa_outcome"
+    UNDETERMINED = "undetermined"
+
+
+REACHED_BASIS_NOTE = {
+    ReachedBasis.QA_BLOCKER: (
+        "observed: the QA consumer's own pre-executor probe of the deployed URL received no "
+        "response, and its transport error is in `received`"
+    ),
+    ReachedBasis.INFERRED_FROM_OUTCOME: (
+        "inferred: QA reached a verdict about the product, which an HTTP-checked product can "
+        "only be given over a response; a product QA verifies entirely over Telegram could "
+        "reach the same verdict without reading the deployed URL at all"
+    ),
+    ReachedBasis.UNDETERMINED: (
+        "neither: this QA run was stopped by something that says nothing about the deployed URL"
+    ),
+}
 
 
 class ReasonSource(StrEnum):
@@ -1140,6 +1189,13 @@ def qa_cell(ctx: dict) -> dict:
         "executor_workers": collector.worker_ids(WorkerRole.QA_EXECUTOR),
         "run_id": None,
         "outcome": None,
+        # The Run record itself, not only its outcome: an outcome of `blocked`
+        # says QA stopped, and the blocker inside the record says what QA tried
+        # and what did not answer.
+        "run_record": _qa_run_capture(ctx).as_dict(),
+        # Where that record was read: inside the QA wait, or by the last read
+        # before teardown for a run that left the phase before the wait.
+        "run_record_source": ctx.get("qa_run_lookup"),
     }
     qa_run = ctx.get("qa_run")
     if qa_run is not None:
@@ -1189,7 +1245,306 @@ def _qa_not_exercised_reason(ctx: dict) -> str:
             f"(deploy_outcome={ctx.get('deploy_outcome')}, "
             f"app_status={ctx.get('final_app_status')})"
         )
-    return "the deploy succeeded but no QA run for this story reached a terminal state"
+    # Only what was observed. A run whose deploy succeeded and whose harness
+    # never looked for a QA run may well have one — run 33711527100 did, and it
+    # carried the blocker this artifact exists to name — so "no QA run reached a
+    # terminal state" may not be asserted unless something actually looked.
+    if ctx.get("qa_run_lookup_error"):
+        return (
+            "the deploy succeeded and whether the control plane holds a QA run for this story "
+            f"is unread: {ctx['qa_run_lookup_error']}"
+        )
+    if ctx.get("qa_run_lookup") == QARunLookup.NONE_TERMINAL:
+        return (
+            "the deploy succeeded and the control plane held no terminal QA run for this story "
+            "when the harness read the runs of this story before teardown"
+        )
+    return (
+        "the deploy succeeded and no QA run for this story was ever read: the run left the "
+        "phase before anything looked, so whether a QA run exists is unobserved, not absent"
+    )
+
+
+def qa_run_facts(run: dict) -> dict:
+    """The control-plane facts one QA Run record carries.
+
+    Read off the Run the QA consumer wrote, not reconstructed from what the
+    harness watched. A QA run that ended `blocked` never judged the product at
+    all, and the blocker is the only place that says which of the closed
+    `QABlockerCategory` reasons stopped it, what QA attempted, what it sent and
+    what came back — the three fields `QABlocker` actually carries.
+    """
+    result = run.get("result") or {}
+    blocker = result.get("blocker")
+    return {
+        "id": run.get("id"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+        "qa_outcome": result.get("qa_outcome"),
+        "summary": result.get("summary"),
+        "error": result.get("error"),
+        "qa_attempt": result.get("qa_attempt"),
+        "deployed_url": result.get("deployed_url"),
+        "failed_checks": result.get("failed_checks") or [],
+        "blocker": (
+            {
+                "category": blocker.get("category"),
+                "attempted": blocker.get("attempted"),
+                "sent": blocker.get("sent"),
+                "received": blocker.get("received"),
+            }
+            if blocker
+            else None
+        ),
+    }
+
+
+def deploy_run_facts(run: dict) -> dict:
+    """The control-plane facts one deploy Run record carries.
+
+    `smoke_result` is the point of reading it here: it is what the application
+    answered the deploy, and a run where the deploy smoke passed and QA then
+    could not reach the same URL is a different finding from one where the
+    deploy never proved the application answered anything.
+    """
+    result = run.get("result") or {}
+    return {
+        "id": run.get("id"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+        "head_sha": (run.get("run_metadata") or {}).get("head_sha"),
+        "deploy_outcome": result.get("deploy_outcome"),
+        "deployed_url": result.get("deployed_url"),
+        "application_id": result.get("application_id"),
+        "deploy_fix_attempt": result.get("deploy_fix_attempt"),
+        "error_details": result.get("error_details"),
+        "action": result.get("action"),
+        "smoke_result": result.get("smoke_result"),
+    }
+
+
+def _qa_run_capture(ctx: dict) -> Capture:
+    """The QA Run record of this combination, or why there is none."""
+    if ctx.get("qa_run_record_error"):
+        return Capture.missed(ctx["qa_run_record_error"])
+    record = ctx.get("qa_run_record")
+    if record is not None:
+        return Capture.captured(record)
+    if ctx.get("qa_run") is not None:
+        return Capture.missed(
+            f"a terminal QA Run ({ctx['qa_run'].get('id')}) was observed and no record of it "
+            "was read into evidence: the collection inside the QA wait did not run"
+        )
+    return Capture.missed(f"no QA Run record was read: {_qa_not_exercised_reason(ctx)}")
+
+
+def _deploy_run_capture(ctx: dict) -> Capture:
+    """The deploy Run record of this combination, or why there is none."""
+    if ctx.get("deploy_run_record_error"):
+        return Capture.missed(ctx["deploy_run_record_error"])
+    record = ctx.get("deploy_run_record")
+    if record is not None:
+        return Capture.captured(record)
+    if ctx.get("deploy_run_id"):
+        return Capture.missed(
+            f"deploy Run {ctx['deploy_run_id']} was found and no record of it was read into "
+            "evidence: the wait for its outcome did not record it"
+        )
+    return Capture.missed(
+        "no deploy Run record was read: "
+        + (ctx.get("deploy_run_error") or "this combination never reached a deploy Run")
+    )
+
+
+def _deploy_smoke_capture(deploy: Capture) -> Capture:
+    """What the application answered the deploy's own smoke check."""
+    if not deploy.is_captured:
+        return Capture.missed(
+            f"the deploy smoke evidence is unread with its Run record: {deploy.reason}"
+        )
+    smoke = deploy.value.get("smoke_result")
+    if smoke is None:
+        return Capture.missed(
+            f"deploy Run {deploy.value.get('id')} ended "
+            f"{deploy.value.get('deploy_outcome')} and its result carries no smoke_result, so "
+            "nothing in the control plane says what the application answered the deploy"
+        )
+    return Capture.captured(smoke)
+
+
+def _harness_probe_capture(ctx: dict) -> Capture:
+    """This suite's own HTTP read of the deployed URL from the orchestrator host."""
+    probe = ctx.get("health_probe_before_undeploy")
+    if probe is not None:
+        return Capture.captured(probe)
+    if ctx.get("health_probe_error"):
+        return Capture.missed(
+            "the harness read the deployed URL from the orchestrator host and got no usable "
+            f"response: {ctx['health_probe_error']}"
+        )
+    return Capture.missed(
+        "the harness ran no health probe of its own: it probes only a successful deploy of a "
+        f"running application (deploy_outcome={ctx.get('deploy_outcome')}, "
+        f"app_status={ctx.get('final_app_status')})"
+    )
+
+
+def _qa_probe_capture(qa_run: Capture) -> Capture:
+    """What QA itself got from the deployed URL, as its own Run record states it.
+
+    `reached_the_url` is the distinction the whole section exists for, and it
+    carries the basis it rests on rather than reading as one kind of fact. Only
+    `false` is observed: QA's own closed blocker category says its probe of the
+    deployed URL got nothing. `true` is an inference from a product verdict —
+    sound for an HTTP-checked product, and an overclaim for one QA verifies
+    entirely over Telegram without ever reading the deployed URL — so the field
+    says so instead of presenting both as the same reading. `null` asserts
+    nothing about a run stopped by something else.
+    """
+    if not qa_run.is_captured:
+        return Capture.missed(
+            f"what QA got from the deployed URL is unread with its Run record: {qa_run.reason}"
+        )
+    facts = qa_run.value
+    blocker = facts.get("blocker") or {}
+    outcome = facts.get("qa_outcome")
+    reached: bool | None = None
+    basis = ReachedBasis.UNDETERMINED
+    if blocker.get("category") == QABlockerCategory.DEPLOYED_URL_UNREACHABLE.value:
+        reached = False
+        basis = ReachedBasis.QA_BLOCKER
+    elif outcome in {QAOutcome.PASSED.value, QAOutcome.FAILED.value, QAOutcome.EXHAUSTED.value}:
+        reached = True
+        basis = ReachedBasis.INFERRED_FROM_OUTCOME
+    return Capture.captured(
+        {
+            "qa_outcome": outcome,
+            "reached_the_url": reached,
+            "reached_the_url_basis": basis.value,
+            "reached_the_url_note": REACHED_BASIS_NOTE[basis],
+            "deployed_url": facts.get("deployed_url"),
+            "blocker_category": blocker.get("category") or None,
+            "attempted": blocker.get("attempted"),
+            "sent": blocker.get("sent"),
+            "received": blocker.get("received"),
+            "failed_checks": facts.get("failed_checks") or [],
+        }
+    )
+
+
+def target_snapshot_requirement(ctx: dict) -> dict:
+    """Whether this run owes a target-host snapshot, and why — for the collector.
+
+    The suite asks this *inside the phase*, before its own teardown removes the
+    deployment's containers, and the artifact publishes the same answer. One
+    predicate, so the collection and the artifact that reports it cannot
+    disagree about which runs owe a snapshot.
+    """
+    return _target_snapshot_requirement(ctx, _qa_probe_capture(_qa_run_capture(ctx)))
+
+
+def _target_snapshot_capture(ctx: dict, *, required: bool) -> Capture:
+    """What became of the snapshot this run asked the suite to take."""
+    if not required:
+        return Capture.missed("this run asked for no snapshot of the target host")
+    if ctx.get("target_snapshot_error"):
+        return Capture.missed(ctx["target_snapshot_error"])
+    snapshot = ctx.get("target_snapshot")
+    if snapshot is not None:
+        return Capture.captured(snapshot)
+    return Capture.missed(
+        "this run asked for a snapshot of the target host and the suite never attempted one: "
+        "the collection that takes it, before teardown removes the deployment, did not run"
+    )
+
+
+def _target_snapshot_requirement(ctx: dict, qa_probe: Capture) -> dict:
+    """Whether the rest of the answer is only readable on the target host.
+
+    A deploy that reported success and a deployed URL that then answered nobody
+    is the one case this artifact cannot close from the orchestrator side: the
+    application container's own state and log tail live on the target machine,
+    which the workflow deletes minutes later. The requirement is stated here, in
+    the artifact, so the workflow collects on the artifact's own account and the
+    admission refuses a paid failure that asked and was not answered.
+    """
+    entry = {"required": False, "file": TARGET_SNAPSHOT_FILENAME, "reason": ""}
+    if not is_paid_run(ctx):
+        entry["reason"] = (
+            "this is the free deterministic route, whose captures are what they have always "
+            "been: it asks for nothing from the target host"
+        )
+        return entry
+    if ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value:
+        entry["reason"] = (
+            f"the deploy did not report success (deploy_outcome={ctx.get('deploy_outcome')}), so "
+            "an unanswered deployed URL is already accounted for by the deploy stage"
+        )
+        return entry
+    findings: list[str] = []
+    if qa_probe.is_captured and qa_probe.value["reached_the_url"] is False:
+        findings.append(f"QA's own probe got no response ({qa_probe.value['received']})")
+    if ctx.get("health_probe_error"):
+        findings.append(f"the harness probe got no usable response ({ctx['health_probe_error']})")
+    if ctx.get("final_app_status") != ApplicationStatus.RUNNING.value:
+        findings.append(
+            f"the application was last read as {ctx.get('final_app_status')}, not running"
+        )
+    if not findings:
+        entry["reason"] = (
+            "the deploy reported success and every read of the deployed URL recorded here got a "
+            "response, so nothing is waiting on the target host"
+        )
+        return entry
+    entry["required"] = True
+    entry["reason"] = (
+        "the deploy reported success and " + "; ".join(findings) + " — whether the application "
+        "container was down, up but unreachable, or answering something QA rejected is readable "
+        "only on the target host, so the suite takes that snapshot before its own teardown "
+        f"removes the deployment and writes it beside this artifact as {TARGET_SNAPSHOT_FILENAME}"
+    )
+    return entry
+
+
+REACHABILITY_NOTE = (
+    "Three fields separate 'the app was down', 'the app was up but unreachable from the "
+    "orchestrator' and 'the app answered something QA rejected'. `deploy_smoke` is what the "
+    "application answered the deploy itself. `harness_probe` is this suite's own HTTP read of "
+    "the same URL from the orchestrator host, with the status code and a bounded body slice. "
+    "`qa_probe` is what the QA consumer got: `reached_the_url=false` carries the blocker's own "
+    "transport error, so QA received nothing, while `reached_the_url=true` means QA read a "
+    "response and judged its content, which `failed_checks` then names. The container's own "
+    f"side is not readable from the orchestrator: it is {TARGET_SNAPSHOT_FILENAME}, which the "
+    "suite takes from the target host — before its own teardown removes those containers — "
+    "whenever `target_host_snapshot.required` is true, and whose collection is reported under "
+    "`target_host_snapshot.collection`."
+)
+
+
+def _target_snapshot_entry(ctx: dict, qa_probe: Capture) -> dict:
+    """The requirement and what became of it, in the one place a reader looks."""
+    entry = _target_snapshot_requirement(ctx, qa_probe)
+    entry["collection"] = _target_snapshot_capture(ctx, required=entry["required"]).as_dict()
+    return entry
+
+
+def deployment_evidence(ctx: dict) -> dict:
+    """The deploy Run, and every read of the deployed URL this run holds."""
+    deploy_run = _deploy_run_capture(ctx)
+    qa_probe = _qa_probe_capture(_qa_run_capture(ctx))
+    return {
+        "deployed_url": ctx.get("deployed_url"),
+        "run_record": deploy_run.as_dict(),
+        "reachability": {
+            "deploy_smoke": _deploy_smoke_capture(deploy_run).as_dict(),
+            "harness_probe": _harness_probe_capture(ctx).as_dict(),
+            "qa_probe": qa_probe.as_dict(),
+            "target_host_snapshot": _target_snapshot_entry(ctx, qa_probe),
+        },
+        "note": REACHABILITY_NOTE,
+    }
 
 
 def release_evidence(root: Path | None = None) -> dict:
@@ -1418,6 +1773,10 @@ def control_plane_reason(
                 "deploy_error_details": ctx.get("deploy_error_details"),
                 "app_status": ctx.get("final_app_status"),
                 "env_contract_errors": _env_contract_errors(ctx),
+                # The deploy Run itself, for the same reason the engineering
+                # Runs travel with the story-branch reason: the outcome says the
+                # stage ended, the record says what it did.
+                "deploy_run_record": _deploy_run_capture(ctx).as_dict(),
             }
         )
     qa_run = ctx.get("qa_run") or {}
@@ -1427,6 +1786,12 @@ def control_plane_reason(
             "qa_run_id": qa_run.get("id"),
             "qa_outcome": (qa_run.get("result") or {}).get("qa_outcome"),
             "detail": _qa_not_exercised_reason(ctx) if not qa_run else "the QA run did not pass",
+            # `qa_outcome=blocked` says QA stopped and nothing else. The record
+            # carries the blocker QA wrote — its category, what QA attempted and
+            # what came back — and the deploy that handed QA this deployment,
+            # which is the other half of a QA stage that failed on reachability.
+            "qa_run_record": _qa_run_capture(ctx).as_dict(),
+            "deploy_run_record": _deploy_run_capture(ctx).as_dict(),
         }
     )
 
@@ -1548,6 +1913,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             qa_executed=qa["executor_executed"],
         ),
         "engineering": engineering_evidence(ctx),
+        "deployment": deployment_evidence(ctx),
         "debug_dumps": sorted(ctx.get("debug_dumps") or []),
         "project": {
             "id": ctx.get("project_id"),

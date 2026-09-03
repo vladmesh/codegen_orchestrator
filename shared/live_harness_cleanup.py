@@ -30,6 +30,13 @@ STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
+# Read-only counterpart of the cleanup script: the live suite's last look at a
+# deployment target before its own teardown removes the containers.
+REMOTE_DIAGNOSTICS_SCRIPT = Path(__file__).with_name("live_harness_remote_diagnostics.sh")
+# Bounds the snapshot the remote script may return, so an unbounded application
+# log cannot become an unbounded artifact. The script bounds each container's
+# tail as well; this is the ceiling for the whole thing.
+DIAGNOSTICS_MAX_CHARS = 200_000
 
 
 class _CleanupServerPolicyAdapter:
@@ -295,6 +302,10 @@ def build_remote_cleanup_command(project_name: str, service_base: str = "/opt/se
     return shlex.join(["sh", "-s", "--", project_name, service_base.rstrip("/")])
 
 
+def build_remote_diagnostics_command(project_name: str) -> str:
+    return shlex.join(["sh", "-s", "--", project_name])
+
+
 def tolerant_prefix_pattern(prefix: str) -> str:
     """Match a stack-name prefix whether Docker kept or replaced its dashes."""
     return "".join("[-_]" if char == "-" else char for char in prefix)
@@ -361,14 +372,15 @@ async def _resolve_cleanup_targets(
     return [validate_managed_cleanup_target(target) for target in targets]
 
 
-async def cleanup_server_deployment(
-    *,
-    project_name: str,
-    api_url: str,
-    server_handle: str | None = None,
-    remote_script_path: Path = REMOTE_CLEANUP_SCRIPT,
-) -> None:
-    logger = structlog.get_logger()
+async def _resolve_ssh_targets(
+    api_url: str, server_handle: str | None
+) -> list[tuple[str, str, str]]:
+    """Destination, key and handle for every managed target of one deploy.
+
+    One resolution for both callers — the teardown that removes the deployment
+    and the read-only snapshot taken just before it — so neither can grow its
+    own idea of which host a run may open, or with which key.
+    """
     headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
     targets: list[tuple[str, str, str]] = []
     async with httpx.AsyncClient(base_url=api_url, timeout=10, headers=headers) as client:
@@ -383,41 +395,99 @@ async def cleanup_server_deployment(
             if not key.endswith("\n"):
                 key += "\n"
             # ssh_user and public_ip come from the same DTO deploy authorizes
-            # against, so teardown cannot target a host the key does not open.
+            # against, so neither caller can target a host the key does not open.
             targets.append((f"{srv['ssh_user']}@{srv['public_ip']}", key, handle))
+    return targets
 
+
+def _run_over_ssh(
+    destination: str, key: str, remote_command: str, remote_script: str, *, timeout: int
+) -> subprocess.CompletedProcess:
+    """Stream one script to a target over ssh with a short-lived key file."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
+        f.write(key)
+        key_path = f.name
+    os.chmod(key_path, 0o600)
+    try:
+        return subprocess.run(
+            [  # noqa: S607
+                "ssh",
+                "-i",
+                key_path,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "BatchMode=yes",
+                destination,
+                remote_command,
+            ],
+            input=remote_script,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        os.unlink(key_path)
+
+
+async def collect_server_diagnostics(
+    *,
+    project_name: str,
+    api_url: str,
+    server_handle: str | None = None,
+    remote_script_path: Path = REMOTE_DIAGNOSTICS_SCRIPT,
+) -> str:
+    """The deployment's own container state and log tail, read before teardown.
+
+    The counterpart of `cleanup_server_deployment`, and it must run *before* it:
+    that teardown removes the containers, and `docker ps -a` cannot list a
+    container that was removed rather than stopped. This is the only place the
+    question "was the application down, up but unreachable, or answering
+    something QA rejected" has an answer, and the answer lives on the target for
+    a few minutes only.
+
+    A target that could not be read is named in the returned text rather than
+    raising: a snapshot of the hosts that answered is worth more than nothing,
+    and the reader is told which host is missing from it.
+    """
+    remote_script = remote_script_path.read_text()
+    remote_cmd = build_remote_diagnostics_command(project_name)
+    sections: list[str] = []
+    for destination, key, handle in await _resolve_ssh_targets(api_url, server_handle):
+        sections.append(f"== target server={handle} destination={destination} ==")
+        try:
+            result = _run_over_ssh(destination, key, remote_cmd, remote_script, timeout=60)
+        except subprocess.SubprocessError as error:
+            sections.append(f"target snapshot unavailable for {handle}: {type(error).__name__}")
+            continue
+        if result.returncode != 0:
+            sections.append(
+                f"target snapshot unavailable for {handle}: ssh exited {result.returncode}: "
+                f"{result.stderr.strip()[:300]}"
+            )
+            continue
+        sections.append(result.stdout.strip())
+    return "\n".join(sections)[:DIAGNOSTICS_MAX_CHARS]
+
+
+async def cleanup_server_deployment(
+    *,
+    project_name: str,
+    api_url: str,
+    server_handle: str | None = None,
+    remote_script_path: Path = REMOTE_CLEANUP_SCRIPT,
+) -> None:
+    logger = structlog.get_logger()
+    targets = await _resolve_ssh_targets(api_url, server_handle)
     remote_script = remote_script_path.read_text()
     remote_cmd = build_remote_cleanup_command(project_name)
     for destination, key, handle in targets:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-            f.write(key)
-            key_path = f.name
-        os.chmod(key_path, 0o600)
-        try:
-            result = subprocess.run(
-                [  # noqa: S607
-                    "ssh",
-                    "-i",
-                    key_path,
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-o",
-                    "BatchMode=yes",
-                    destination,
-                    remote_cmd,
-                ],
-                input=remote_script,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"cleanup ssh failed: {result.returncode} {result.stderr[:300]}")
-            logger.info("cleanup_server_done", project=project_name, server=handle, ssh=destination)
-        finally:
-            os.unlink(key_path)
+        result = _run_over_ssh(destination, key, remote_cmd, remote_script, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(f"cleanup ssh failed: {result.returncode} {result.stderr[:300]}")
+        logger.info("cleanup_server_done", project=project_name, server=handle, ssh=destination)
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -445,6 +515,16 @@ async def _run(args: argparse.Namespace) -> None:
             project_name=args.project_name,
             server_handle=args.server_handle,
             api_url=args.api_url,
+        )
+    elif args.command == "server-diagnostics":
+        # stdout is the snapshot itself: the live suite redacts and retains what
+        # this prints, so nothing else may be written to it.
+        print(
+            await collect_server_diagnostics(
+                project_name=args.project_name,
+                server_handle=args.server_handle,
+                api_url=args.api_url,
+            )
         )
     else:  # pragma: no cover - argparse rejects this
         raise RuntimeError(f"unknown command: {args.command}")
@@ -480,6 +560,11 @@ def _parser() -> argparse.ArgumentParser:
     # the stack name is cleared on every server the API lists.
     server.add_argument("--server-handle")
     server.add_argument("--api-url", required=True)
+
+    diagnostics = sub.add_parser("server-diagnostics")
+    diagnostics.add_argument("--project-name", required=True)
+    diagnostics.add_argument("--server-handle")
+    diagnostics.add_argument("--api-url", required=True)
 
     return parser
 

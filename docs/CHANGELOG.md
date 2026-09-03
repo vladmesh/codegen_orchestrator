@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- The stand handoff collects each evidence file only once it exists, so a run that wrote no target
+  snapshot no longer kills the step that collects the service tails and names what is missing.
+- A paid stand failure at QA now carries the QA and deploy Run records, the `qa-worker` and
+  `deploy-worker` tails and, when a successful deploy left an unreachable URL, a pre-teardown target snapshot.
 - The paid LLM stand suite now asks for a per-run marker field in the health payload, so the worker
   has something to commit, and it fails at once when the story branch is not ahead of `main`.
 - A `stand_token` worker now reaches container creation: the manager asks its `ExecutorDiagnostics`

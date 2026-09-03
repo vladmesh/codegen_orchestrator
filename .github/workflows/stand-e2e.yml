@@ -516,6 +516,11 @@ jobs:
           # cause nobody here observed, so the account is built where the attempt
           # happens rather than inferred from the absent file.
           services_attempt="no collection was attempted, because no stand host address was recorded for this run"
+          # Whether this run owes a target-host snapshot, and what happened to
+          # it, are recorded where the attempt is made — never inferred from the
+          # absent file below.
+          target_required=no
+          target_attempt="no snapshot was attempted, because no stand host address was recorded for this run"
           test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
           test -f "${RUNNER_TEMP}/remote-invocation.log" && \
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
@@ -561,17 +566,9 @@ jobs:
               # removes its containers. The dumps used to be written under the
               # checkout and died with the host, so a failed paid run left no
               # post-mortem at all.
-              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
-                set -euo pipefail
-                cd /root/e2e-runs/latest
-                shopt -s nullglob
-                files=(run-evidence-*.json debug-*.md)
-                if [ "${#files[@]}" -eq 0 ]; then
-                  tar -cf - --files-from=/dev/null
-                else
-                  tar -cf - -- "${files[@]}"
-                fi
-              ' | tar -C "${run_dir}" -xf -
+              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+                'bash -s /root/e2e-runs/latest' \
+                < scripts/stand_collect_run_evidence.sh | tar -C "${run_dir}" -xf -
             fi
 
             # A suite that failed after provisioning succeeded gets the same
@@ -593,7 +590,8 @@ jobs:
                 # are piped straight into it, and a run that could not complete
                 # that pipe publishes the stated reason instead of the input.
                 if ${COMPOSE} logs --no-color --tail 300 \
-                     scheduler engineering-worker worker-manager worker-broker api 2>&1 | \
+                     scheduler engineering-worker worker-manager worker-broker api \
+                     qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
@@ -612,6 +610,27 @@ jobs:
                 "${run_dir}/suite-services.log"; then
                 services_attempt="${services_attempt}, and copying the collected file to the runner failed"
               fi
+
+              # The one question the orchestrator's own services cannot answer
+              # is not answered from here. Whether the application container was
+              # down, up but unreachable, or answering something QA rejected is
+              # readable only on the target host, and only until the suite's own
+              # teardown removes those containers — long before this step runs.
+              # So the suite takes that snapshot inside its phase and writes
+              # `target-app.log` into the runner directory the block above
+              # collects from; what is left here is the fail-closed half: this
+              # run's evidence is asked whether it wanted one, and a snapshot
+              # that was wanted and did not arrive is named below.
+              if python3 -m scripts.stand_acceptance needs-target-snapshot --run-dir "${run_dir}"; then
+                target_required=yes
+                if [ -f "${run_dir}/target-app.log" ]; then
+                  target_attempt="the suite collected it before its own teardown"
+                else
+                  target_attempt="the suite asked for a target host snapshot and none reached the runner directory"
+                fi
+              else
+                target_attempt="no snapshot was asked for by the collected run evidence"
+              fi
             fi
           fi
           if [ "${SUITE_OUTCOME}" != "success" ] && [ ! -f "${run_dir}/suite-services.log" ]; then
@@ -624,6 +643,13 @@ jobs:
             # for the same absent file.
             printf '%s\n' "service log tails are unavailable: ${services_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
               > "${run_dir}/suite-services.log"
+          fi
+          if [ "${target_required}" = "yes" ] && [ ! -f "${run_dir}/target-app.log" ]; then
+            # Named, not silently absent: this run's evidence asked for the
+            # target host and the admission below requires the answer. It states
+            # only what this step observed about the attempt.
+            printf '%s\n' "the target host snapshot is unavailable: ${target_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
+              > "${run_dir}/target-app.log"
           fi
 
       # This is the admission boundary for the inter-job handoff. It derives

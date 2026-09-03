@@ -228,9 +228,38 @@ or the redacted service log tails — the same admission the handoff already fai
 same redaction canary still guards it. A piece that genuinely could not be collected is admissible
 *as a stated missed capture*; a piece that is simply absent is not.
 
+`qa` and `deployment` are where a run that got as far as QA says what stopped it. `qa.run_record`
+is the terminal QA Run itself, so a `blocked` outcome arrives with the blocker the consumer wrote —
+its category, what QA attempted, what it sent and what came back — instead of the word `blocked`
+alone. `deployment.run_record` is the deploy Run beside it, carrying the `smoke_result` that made
+that deploy a success. `deployment.reachability` holds the three reads of the deployed URL this run
+has: the deploy's own smoke, the harness's HTTP probe from the orchestrator host, and QA's probe,
+whose `reached_the_url` separates "QA received nothing" from "QA read a response and rejected its
+content" — and says which of the two readings it is, because only the first is observed (QA's own
+blocker category) while the second is inferred from QA reaching a product verdict. Each is a
+capture: an unread probe is a stated missed one, never a blank.
+
+The QA Run is read wherever the run ends. Normally that is inside the QA wait; a run that left the
+phase earlier — the harness health probe raises when the deployed URL does not answer, which is
+exactly the shape this section exists for — has it read again before teardown. Nothing asserts what
+was not looked at: "no QA run reached a terminal state" is published only when something actually
+listed this story's runs, and `qa.run_record_source` says where the record came from.
+
+What none of those reads can see is the application container itself, which lives on the *target*
+machine. So when a deploy reported success and one of them got nothing, the artifact says so in
+`deployment.reachability.target_host_snapshot` and the suite takes `target-app.log` — a bounded,
+redacted `docker ps -a`, `docker inspect` state and log tail — from the target host **inside the
+phase, before `cleanup_all` runs**. That deadline is not the machine's deletion: teardown's first
+step streams the remote cleanup script to the target, which removes those containers, and
+`docker ps -a` cannot list a container that was removed rather than stopped. The requirement flag is
+the single predicate: the suite collects on it, `stand-e2e.yml` carries the file out of the runner
+directory with the run evidence and names it when one was asked for and did not arrive, and
+`scripts/stand_acceptance.py` refuses a paid failure that asked for the snapshot and can say neither
+what became of it nor where it is. The free `mega-noop` route asks for nothing from the target host.
+
 Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of `scheduler`,
-`engineering-worker`, `worker-manager`, `worker-broker` and `api` into `suite-services.log` when the
-suite fails — through the same `shared.diagnostics.redact_diagnostic` helper and the same
+`engineering-worker`, `worker-manager`, `worker-broker`, `api`, `qa-worker` and `deploy-worker` into
+`suite-services.log` when the suite fails — through the same `shared.diagnostics.redact_diagnostic` helper and the same
 protected-name allow-list the provisioning-failure branch uses, with the stated reason published in
 place of the tails if that pipe cannot complete. And `dump_debug` now writes beside the run evidence,
 in the runner-owned directory the workflow collects from, rather than under the ephemeral checkout;
