@@ -126,7 +126,16 @@ class DockerRegistryClient:
             ) from error
         if response.status_code == httpx.codes.NOT_FOUND:
             return None
-        response.raise_for_status()
+        if response.is_error:
+            # Only 404 is an answer about the image. Every other status — 401 on
+            # rotated credentials, 5xx from the registry — is the read failing,
+            # and it has to keep the name it fails under: the deploy routes
+            # `RegistryError` to IMAGE_REGISTRY_UNREADABLE, while an
+            # `httpx.HTTPStatusError` escaping here would arrive at the generic
+            # handler as an untyped "deploy failed".
+            raise RegistryError(
+                f"registry answered HTTP {response.status_code} for {repository}:{tag}"
+            )
         digest = response.headers.get("Docker-Content-Digest")
         if not digest:
             raise RegistryError(f"registry returned no digest for {repository}:{tag}")

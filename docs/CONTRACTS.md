@@ -604,9 +604,11 @@ its in-flight ids so one process does not reclaim its own active dispatch.
 3. A durable deploy Run is created once that is true, before `DeployMessage`
    publication. Inside the deploy, before any external effect, the deployer reads
    the registry once for exactly the `*_IMAGE` references it resolved: absent
-   images are `IMAGES_NOT_PUBLISHED`, and a registry that cannot be read at all
-   is `IMAGE_REGISTRY_UNREADABLE`, which is a separate outcome because "not
-   asked" is not an answer about the project. **A deploy Run's SUCCESS is a claim
+   images — the registry's `404`, the only status that answers the question —
+   are `IMAGES_NOT_PUBLISHED`, and a registry that cannot be read at all,
+   whether it is unreachable or answers any other error status, is
+   `IMAGE_REGISTRY_UNREADABLE`, which is a separate outcome because "not asked"
+   is not an answer about the project. **A deploy Run's SUCCESS is a claim
    about images, not about a SHA**: it names the references and digests it
    deployed in `deployment_result`, and the service-deployment record carries the
    same.

@@ -321,8 +321,10 @@ still mean "deploy.yml + smoke", while the suite's wait for the Run to *appear*
 (`DEPLOY_RUN_TIMEOUT`) is the one that spans the project's CI.
 
 Inside the deploy, before any external effect, the deployer reads the registry
-once for exactly the references it resolved. Absent images are
-`DeployOutcome.IMAGES_NOT_PUBLISHED`; a registry that cannot be read at all is
+once for exactly the references it resolved. Only the registry's `404` is an
+answer about the image: an absent image is `DeployOutcome.IMAGES_NOT_PUBLISHED`,
+while a registry that cannot be read at all — unreachable, or answering any
+other error status such as a `401` on rotated credentials — is
 `DeployOutcome.IMAGE_REGISTRY_UNREADABLE`, kept apart because "not asked" is not
 an answer about the project. Both are redeployed under the ordinary retry bound.
 A successful deploy names the references, their digests and the built commit in

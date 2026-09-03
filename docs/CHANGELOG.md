@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   `deployed_commit_sha` — because no merge method makes a branch's new head equal the pull request head.
 - No deploy Run is created until the project's CI has published that commit's images, bounded at 15 minutes
   from the merge; a refusal lands typed on the story instead of spending a Run's budget on somebody's CI.
+- Only a `404` from the registry means "no image for this commit": every other read failure keeps its own
+  name as `IMAGE_REGISTRY_UNREADABLE`, so a registry we cannot reach never gets reported as a project's fault.
 - A deploy Run's `success` names the image references and digests it deployed, and the live suites compare the
   deployed tag with `main`'s head, read from GitHub, before spending a QA attempt on code that may not run.
 - Recreating a stand service and waiting for it are one operation: the runner's only `up` returns when the
