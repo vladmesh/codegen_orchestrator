@@ -24,6 +24,9 @@ from live_harness import (
 import pipeline_helpers
 from pipeline_helpers import (
     _build_server_remote_cleanup_command,
+    po_tool_boundary,
+    read_product_setting,
+    read_qa_job_evidence,
     run_non_llm_qa,
 )
 import pytest
@@ -242,6 +245,234 @@ def test_compose_routes_public_registry_hostname_to_internal_caddy():
 
     assert "aliases:" in caddy
     assert "- ${ORCHESTRATOR_HOSTNAME}" in caddy
+
+
+def _load_po_tool_modules(monkeypatch):
+    """Load the LangGraph PO boundary that ``po_tool_boundary`` must use."""
+    root = resolve_repo_root(Path(__file__))
+    monkeypatch.syspath_prepend(str(root))
+    monkeypatch.syspath_prepend(str(root / "services" / "langgraph"))
+    from shared import redis
+    from shared.clients import internal_api
+    from src.agents.po import tools_shared
+
+    return internal_api, redis, tools_shared
+
+
+def test_po_tool_boundary_wires_real_tool_modules_and_releases_every_client(monkeypatch):
+    internal_api, redis, tools_shared = _load_po_tool_modules(monkeypatch)
+    events = []
+
+    class FakeAPI:
+        async def close(self):
+            events.append("api.close")
+
+    class FakeStream:
+        async def connect(self):
+            events.append("stream.connect")
+
+        async def close(self):
+            events.append("stream.close")
+
+    api = FakeAPI()
+    stream = FakeStream()
+    monkeypatch.setattr(internal_api, "InternalAPIClient", lambda url: api)
+    monkeypatch.setattr(redis, "RedisStreamClient", lambda: stream)
+
+    async def exercise():
+        async with po_tool_boundary(api_url="http://po-boundary.test") as tools:
+            assert set(tools) == {
+                "create_project",
+                "present_product_brief",
+                "confirm_product_brief",
+                "create_story",
+            }
+            assert tools_shared._api_client is api
+            assert tools_shared._stream_client is stream
+
+    asyncio.run(exercise())
+
+    assert events == ["stream.connect", "stream.close", "api.close"]
+    assert tools_shared._api_client is None
+    assert tools_shared._stream_client is None
+
+
+def test_po_tool_boundary_closes_api_when_stream_connection_fails(monkeypatch):
+    internal_api, redis, _ = _load_po_tool_modules(monkeypatch)
+    events = []
+
+    class FakeAPI:
+        async def close(self):
+            events.append("api.close")
+
+    class FailingStream:
+        async def connect(self):
+            events.append("stream.connect")
+            raise RuntimeError("redis unavailable")
+
+        async def close(self):
+            events.append("stream.close")
+
+    monkeypatch.setattr(internal_api, "InternalAPIClient", lambda url: FakeAPI())
+    monkeypatch.setattr(redis, "RedisStreamClient", FailingStream)
+
+    async def exercise():
+        with pytest.raises(RuntimeError, match="redis unavailable"):
+            async with po_tool_boundary(api_url="http://po-boundary.test"):
+                pytest.fail("a failed connection cannot yield tools")
+
+    asyncio.run(exercise())
+
+    assert events == ["stream.connect", "stream.close", "api.close"]
+
+
+class _ProductResponse:
+    def __init__(self, payload, *, error: Exception | None = None):
+        self._payload = payload
+        self._error = error
+        self.status_checked = False
+
+    def raise_for_status(self):
+        self.status_checked = True
+        if self._error is not None:
+            raise self._error
+
+    def json(self):
+        return self._payload
+
+
+class _ProductClient:
+    def __init__(self, response, requests):
+        self.response = response
+        self.requests = requests
+
+    async def __aenter__(self):
+        self.requests.append(("enter",))
+        return self
+
+    async def __aexit__(self, *args):
+        self.requests.append(("exit",))
+        return False
+
+    async def post(self, url, *, json):
+        self.requests.append(("post", url, json))
+        return self.response
+
+
+def test_read_product_setting_posts_exact_contract_without_subject(monkeypatch):
+    requests = []
+    response = _ProductResponse({"key": "settings.languages", "value": ["ru", "en"]})
+    client = _ProductClient(response, requests)
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+
+    body = asyncio.run(
+        read_product_setting({"deployed_url": "https://product.example/"}, key="settings.languages")
+    )
+
+    assert body == {"key": "settings.languages", "value": ["ru", "en"]}
+    assert requests == [
+        ("enter",),
+        (
+            "post",
+            "https://product.example//settings/get",
+            {"contract_version": 1, "key": "settings.languages", "scope": "product"},
+        ),
+        ("exit",),
+    ]
+    assert response.status_checked is True
+
+
+def test_read_product_setting_posts_subject_and_rejects_failed_or_non_object_responses(monkeypatch):
+    requests = []
+    error = RuntimeError("settings unavailable")
+    response = _ProductResponse({"ignored": True}, error=error)
+    client = _ProductClient(response, requests)
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+
+    with pytest.raises(RuntimeError, match="settings unavailable"):
+        asyncio.run(
+            read_product_setting(
+                {"deployed_url": "https://product.example"},
+                key="timezone",
+                scope="user",
+                subject_id=99,
+            )
+        )
+
+    assert requests[1] == (
+        "post",
+        "https://product.example/settings/get",
+        {"contract_version": 1, "key": "timezone", "scope": "user", "subject_id": 99},
+    )
+    response = _ProductResponse([])
+    monkeypatch.setattr(
+        pipeline_helpers.httpx,
+        "AsyncClient",
+        lambda **kwargs: _ProductClient(response, []),
+    )
+    with pytest.raises(RuntimeError, match="settings readback was not an object"):
+        asyncio.run(
+            read_product_setting({"deployed_url": "https://product.example"}, key="timezone")
+        )
+
+
+def test_read_qa_job_evidence_posts_exact_contract_and_retains_object(monkeypatch):
+    requests = []
+    response = _ProductResponse({"command_id": "qa-qa-42-multilingual_digest"})
+    client = _ProductClient(response, requests)
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+    ctx = {
+        "deployed_url": "https://product.example",
+        "project_id": "project-1",
+        "qa_result": {"run_id": "qa-42"},
+    }
+
+    body = asyncio.run(read_qa_job_evidence(ctx, job_name="multilingual_digest"))
+
+    assert body == {"command_id": "qa-qa-42-multilingual_digest"}
+    assert ctx["brief_job_evidence"] == body
+    assert requests == [
+        ("enter",),
+        (
+            "post",
+            "https://product.example/jobs/evidence",
+            {
+                "contract_version": 1,
+                "command_id": "qa-qa-42-multilingual_digest",
+                "fired_by_product": "project-1",
+            },
+        ),
+        ("exit",),
+    ]
+    assert response.status_checked is True
+
+
+def test_read_qa_job_evidence_rejects_failed_or_non_object_responses(monkeypatch):
+    ctx = {
+        "deployed_url": "https://product.example",
+        "project_id": "project-1",
+        "qa_result": {"run_id": "qa-42"},
+    }
+    response = _ProductResponse({}, error=RuntimeError("job evidence unavailable"))
+    monkeypatch.setattr(
+        pipeline_helpers.httpx,
+        "AsyncClient",
+        lambda **kwargs: _ProductClient(response, []),
+    )
+
+    with pytest.raises(RuntimeError, match="job evidence unavailable"):
+        asyncio.run(read_qa_job_evidence(ctx, job_name="multilingual_digest"))
+    assert "brief_job_evidence" not in ctx
+
+    response = _ProductResponse([])
+    monkeypatch.setattr(
+        pipeline_helpers.httpx,
+        "AsyncClient",
+        lambda **kwargs: _ProductClient(response, []),
+    )
+    with pytest.raises(RuntimeError, match="job evidence was not an object"):
+        asyncio.run(read_qa_job_evidence(ctx, job_name="multilingual_digest"))
+    assert "brief_job_evidence" not in ctx
 
 
 def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
@@ -1345,6 +1576,62 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     marker = ctx["health_marker"]
     assert ctx["task_description"] == pipeline_helpers.llm_backend_task_description(marker)
     assert marker in config["detailed_spec"]
+
+
+@pytest.mark.asyncio
+async def test_product_brief_admission_releases_every_task_in_the_current_plan():
+    """Coverage is a requirement mapping, not the complete Architect task roster."""
+    requests: list[tuple[str, str, dict[str, str]]] = []
+    coverage = [
+        {"id": 1, "brief_id": "brief-1", "requirement_id": "digest", "task_id": "task-1"},
+        {"id": 2, "brief_id": "brief-1", "requirement_id": "languages", "task_id": "task-2"},
+    ]
+    current_plan_tasks = [
+        {"id": "task-1", "planning_attempt_id": "plan-1", "dispatch_admitted": True},
+        {"id": "task-2", "planning_attempt_id": "plan-1", "dispatch_admitted": True},
+        # An Architect may add a plan task that is not itself a coverage row.
+        {"id": "task-3", "planning_attempt_id": "plan-1", "dispatch_admitted": True},
+        {"id": "task-old", "planning_attempt_id": "plan-old", "dispatch_admitted": True},
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/api/product-briefs/brief-1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "brief-1",
+                    "planning_attempt_id": "plan-1",
+                    "coverage_admitted_at": "2026-09-03T10:00:00+00:00",
+                },
+            )
+        if request.url.path == "/api/product-briefs/brief-1/coverage":
+            return httpx.Response(200, json=coverage)
+        if request.url.path == "/api/tasks/":
+            assert dict(request.url.params) == {"story_id": "story-1"}
+            return httpx.Response(200, json=current_plan_tasks)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "brief_id": "brief-1",
+        "brief_requirement_ids": {"digest", "languages"},
+        "story_id": "story-1",
+    }
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        admitted = await pipeline_helpers.wait_product_brief_admission(
+            api, ctx, timeout=1, poll_interval=0
+        )
+
+    assert admitted is not None
+    assert [task["id"] for task in ctx["brief_planned_tasks"]] == [
+        "task-1",
+        "task-2",
+        "task-3",
+    ]
+    assert [row["task_id"] for row in ctx["brief_coverage"]] == ["task-1", "task-2"]
+    assert ctx["brief_admission"]["released_task_ids"] == ["task-1", "task-2", "task-3"]
+    assert ("GET", "/api/tasks/", {"story_id": "story-1"}) in requests
 
 
 @pytest.mark.asyncio

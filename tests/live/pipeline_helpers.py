@@ -6,12 +6,14 @@ These are plain functions, not pytest fixtures.
 
 import asyncio
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import time
 import uuid
 
@@ -179,6 +181,38 @@ Requirements:
 
 LLM_BACKEND_TASK_TITLE = "Add the run marker to the backend health payload"
 
+# ``mega-brief`` is intentionally a backend-only product.  It proves the
+# requirement-as-data path through the generated jobs core without making a
+# Telegram delivery account (and its unrelated operational credentials) a
+# prerequisite for that proof.
+BRIEF_JOB_NAME = "multilingual_digest"
+BRIEF_LANGUAGES = ["ru", "en"]
+BRIEF_SETTINGS_KEY = "settings.languages"
+
+
+def brief_detailed_spec() -> str:
+    """The product contract a real Architect and developer must implement.
+
+    This is deliberately an outcome contract, not a proposed implementation.
+    The developer has to use the generated product's declared settings/jobs
+    capability rather than a test-only route or a harness-created event.
+    """
+    return f"""Build a backend-only multilingual digest product.
+
+The confirmed product setting is `{BRIEF_SETTINGS_KEY}`. Declare it in the generated
+backend service manifest's settings_schema as a product-scoped JSON array of language
+codes, and make the product read it when producing a digest.
+
+Declare the scheduled behaviour `{BRIEF_JOB_NAME}` in the generated backend manifest's
+jobs_schema. It has no arguments. When the generated jobs core fires that named job,
+the product must consume the resulting job_fired event and produce one digest record for
+every language currently stored in `{BRIEF_SETTINGS_KEY}`.
+
+Make the resulting bilingual behaviour observable enough for QA to judge after
+`{BRIEF_JOB_NAME}` fires. Do not require a user-provided secret, external provider,
+or Telegram account. Add focused tests for the job and its observable behaviour.
+"""
+
 
 def llm_backend_task_description(marker: str) -> str:
     """The engineering task the paid suite drives, in the shape the plan names."""
@@ -294,6 +328,60 @@ def _api_client(headers: dict[str, str], **kwargs) -> httpx.AsyncClient:
     kwargs.setdefault("base_url", API_URL)
     kwargs.setdefault("timeout", 10)
     return httpx.AsyncClient(headers=headers, **kwargs)
+
+
+@asynccontextmanager
+async def po_tool_boundary(*, api_url: str = API_URL):
+    """Yield real PO Product-Brief tools wired to the live API and Redis.
+
+    A mega scenario must not reproduce the PO's HTTP sequence itself: doing so
+    would prove only API routes and leave the user-facing tool boundary
+    unexercised. The PO consumer normally owns these process-global clients;
+    this short-lived harness owner initializes that same boundary without
+    starting a PO LLM turn.
+
+    ``src`` is owned by multiple services in this monorepo. Put LangGraph
+    ahead of the API source and verify the resolved module, so an import-order
+    accident cannot silently make this a test of the API package.
+    """
+    root = resolve_repo_root(Path(__file__))
+    for entry in (root, root / "services" / "langgraph"):
+        entry_text = str(entry)
+        while entry_text in sys.path:
+            sys.path.remove(entry_text)
+        sys.path.insert(0, entry_text)
+
+    from shared.clients.internal_api import InternalAPIClient
+    from shared.redis import RedisStreamClient
+    from src.agents.po import tools_briefs, tools_projects, tools_stories
+    from src.agents.po.tools_shared import init_po_clients
+
+    expected = root / "services" / "langgraph" / "src" / "agents" / "po" / "tools_briefs.py"
+    if Path(tools_briefs.__file__).resolve() != expected.resolve():
+        raise RuntimeError(
+            "mega-brief PO tool import resolved outside the LangGraph checkout: "
+            f"{tools_briefs.__file__}"
+        )
+
+    api = InternalAPIClient(api_url)
+    stream = RedisStreamClient()
+    try:
+        await stream.connect()
+        init_po_clients(api, stream)
+        try:
+            yield {
+                "create_project": tools_projects.create_project,
+                "present_product_brief": tools_briefs.present_product_brief,
+                "confirm_product_brief": tools_briefs.confirm_product_brief,
+                "create_story": tools_stories.create_story,
+            }
+        finally:
+            init_po_clients(None, None)
+    finally:
+        try:
+            await stream.close()
+        finally:
+            await api.close()
 
 
 def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -436,6 +524,7 @@ async def create_pipeline_project(
         "repo_name": project_name,
         "manifest": manifest,
         "agent_type": agent_type,
+        "modules": ["backend"],
         "scaffold_task_description": task_description,
         "task_title": task_title,
         "task_description": task_description,
@@ -587,6 +676,158 @@ async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFO
         timeout,
     )
     ctx["scaffold_status"] = status
+
+
+async def wait_product_brief_admission(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = LLM_ENGINEERING_TIMEOUT,
+    poll_interval: float = 5,
+) -> dict | None:
+    """Wait for the real Architect to cover and release this brief-backed plan.
+
+    The architect's success log is not admission evidence.  This reads the
+    durable brief and coverage rows until the *one* admission timestamp exists,
+    every confirmed requirement has a task disposition, and the release made
+    those task rows dispatchable.  A returned requirement deliberately does
+    not satisfy this suite: its product scenario promises that every requested
+    behaviour is built.
+    """
+    brief_id = ctx["brief_id"]
+    expected_requirements = set(ctx["brief_requirement_ids"])
+    deadline = time.monotonic() + timeout
+    last_brief: dict | None = None
+    last_coverage: list[dict] = []
+    while time.monotonic() < deadline:
+        brief_response = await api.get(f"/api/product-briefs/{brief_id}")
+        brief_response.raise_for_status()
+        last_brief = brief_response.json()
+        coverage_response = await api.get(f"/api/product-briefs/{brief_id}/coverage")
+        coverage_response.raise_for_status()
+        last_coverage = coverage_response.json()
+        covered = {row.get("requirement_id"): row for row in last_coverage}
+        coverage_task_ids = [row.get("task_id") for row in covered.values() if row.get("task_id")]
+        planning_attempt_id = last_brief.get("planning_attempt_id")
+        if (
+            last_brief.get("coverage_admitted_at")
+            and set(covered) == expected_requirements
+            and len(coverage_task_ids) == len(expected_requirements)
+            and isinstance(planning_attempt_id, str)
+            and planning_attempt_id
+        ):
+            response = await api.get("/api/tasks/", params={"story_id": ctx["story_id"]})
+            response.raise_for_status()
+            tasks = [
+                task
+                for task in response.json()
+                if task.get("planning_attempt_id") == planning_attempt_id
+            ]
+            released_task_ids = [task.get("id") for task in tasks]
+            roster_is_readable = bool(released_task_ids) and all(
+                isinstance(task_id, str) and task_id for task_id in released_task_ids
+            )
+            if (
+                roster_is_readable
+                and len(set(released_task_ids)) == len(released_task_ids)
+                and set(coverage_task_ids) <= set(released_task_ids)
+                and all(task.get("dispatch_admitted") is True for task in tasks)
+            ):
+                ctx["brief_read"] = last_brief
+                ctx["brief_coverage"] = last_coverage
+                ctx["brief_planned_tasks"] = tasks
+                ctx["brief_plan_task_ids"] = released_task_ids
+                ctx["task_ids"] = released_task_ids
+                ctx["task_id"] = released_task_ids[0]
+                ctx["brief_admission"] = {
+                    "brief_id": brief_id,
+                    "coverage_admitted_at": last_brief["coverage_admitted_at"],
+                    "planning_attempt_id": planning_attempt_id,
+                    "released_task_ids": released_task_ids,
+                }
+                return last_brief
+        await asyncio.sleep(poll_interval)
+
+    ctx["brief_admission_error"] = (
+        f"Product Brief {brief_id} was not admitted within {timeout}s: "
+        f"brief={last_brief}, coverage={last_coverage}"
+    )
+    return None
+
+
+async def wait_brief_engineering(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = LLM_ENGINEERING_TIMEOUT,
+    poll_interval: float = 5,
+    on_poll: Callable[[], None] | None = None,
+) -> list[dict] | None:
+    """Wait until every task the admitted Architect plan created is terminal."""
+    deadline = time.monotonic() + timeout
+    last_tasks: list[dict] = []
+    while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
+        tasks = []
+        for task_id in ctx["task_ids"]:
+            response = await api.get(f"/api/tasks/{task_id}")
+            response.raise_for_status()
+            tasks.append(response.json())
+        last_tasks = tasks
+        statuses = {task.get("status") for task in tasks}
+        if statuses <= {TaskStatus.DONE.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
+            ctx["brief_engineering_tasks"] = tasks
+            ctx["task_status"] = (
+                TaskStatus.DONE if statuses == {TaskStatus.DONE.value} else next(iter(statuses))
+            )
+            return tasks
+        await asyncio.sleep(poll_interval)
+
+    ctx["brief_engineering_error"] = (
+        f"Architect plan tasks did not reach terminal status within {timeout}s: {last_tasks}"
+    )
+    return None
+
+
+async def read_product_setting(
+    ctx: dict, *, key: str, scope: str = "product", subject_id: int | None = None
+) -> dict:
+    """Read the deployed product setting independently of deploy's seed receipt."""
+    payload: dict[str, object] = {"contract_version": 1, "key": key, "scope": scope}
+    if subject_id is not None:
+        payload["subject_id"] = subject_id
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as product:
+        response = await product.post(f"{ctx['deployed_url']}/settings/get", json=payload)
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("product settings readback was not an object")
+    return body
+
+
+async def read_qa_job_evidence(ctx: dict, *, job_name: str) -> dict:
+    """Read the generated product's read-only evidence for this QA fire.
+
+    The QA capability itself never leaves the QA runner.  This endpoint needs
+    no capability, so calling it here independently proves the stable command
+    identity and provenance after the QA container has gone away.
+    """
+    qa_run_id = ctx["qa_result"]["run_id"]
+    command_id = f"qa-{qa_run_id}-{job_name}"
+    payload = {
+        "contract_version": 1,
+        "command_id": command_id,
+        "fired_by_product": ctx["project_id"],
+    }
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as product:
+        response = await product.post(f"{ctx['deployed_url']}/jobs/evidence", json=payload)
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("product job evidence was not an object")
+    ctx["brief_job_evidence"] = body
+    return body
 
 
 def own_deploy_ahead(ctx: dict) -> None:

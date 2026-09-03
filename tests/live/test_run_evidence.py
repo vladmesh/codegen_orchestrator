@@ -1661,6 +1661,257 @@ def test_a_combination_with_no_agent_type_is_refused_rather_than_judged_free():
         run_evidence.is_paid_run({"agent_type": None})
 
 
+def _brief_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A completed deterministic run carrying the durable brief-to-job facts."""
+    ctx = base_ctx(
+        collector,
+        agent_type="noop",
+        qa_requires_executor=False,
+        qa_agent_type_requested=None,
+        qa_agent_type=None,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        brief_scenario=True,
+        brief_id="brief-1",
+        brief_read={
+            "id": "brief-1",
+            "confirmed_at": "2026-09-03T10:00:00+00:00",
+            "planning_attempt_id": "plan-1",
+            "content": {
+                "summary": "Send a digest in every selected language",
+                "must_requirements": [
+                    {"id": "scheduled_digest", "text": "Send a scheduled digest"},
+                    {"id": "multilingual", "text": "Use the selected languages"},
+                ],
+                "initial_settings": [
+                    {
+                        "key": "settings.languages",
+                        "scope": "product",
+                        "value": ["ru", "en"],
+                    }
+                ],
+            },
+        },
+        brief_coverage=[
+            {
+                "id": 1,
+                "brief_id": "brief-1",
+                "requirement_id": "scheduled_digest",
+                "task_id": "task-1",
+            },
+            {
+                "id": 2,
+                "brief_id": "brief-1",
+                "requirement_id": "multilingual",
+                "task_id": "task-2",
+            },
+        ],
+        brief_admission={
+            "brief_id": "brief-1",
+            "coverage_admitted_at": "2026-09-03T10:01:00+00:00",
+            "planning_attempt_id": "plan-1",
+            "released_task_ids": ["task-1", "task-2"],
+        },
+        brief_plan_task_ids=["task-1", "task-2"],
+        brief_planned_tasks=[
+            {"id": "task-1", "planning_attempt_id": "plan-1", "dispatch_admitted": True},
+            {"id": "task-2", "planning_attempt_id": "plan-1", "dispatch_admitted": True},
+        ],
+        brief_acceptance={
+            "criterion": {
+                "name": "multilingual_digest",
+                "arguments": {},
+                "observable": "a digest is produced in every selected language",
+            }
+        },
+        brief_settings_readback={
+            "key": "settings.languages",
+            "scope": "product",
+            "value": ["ru", "en"],
+        },
+        brief_settings_seed=[
+            {
+                "key": "settings.languages",
+                "scope": "product",
+                "subject_id": None,
+                "written": True,
+                "failure": None,
+            }
+        ],
+        brief_job_evidence={
+            "command_id": "qa-qa-1-multilingual_digest",
+            "name": "multilingual_digest",
+            "arguments": {},
+            "fired_by_product": PROJECT_ID,
+            "fired_by_run": "qa-1",
+            "dispatch_status": "dispatched",
+            "accepted_at": "2026-09-03T10:02:00+00:00",
+            "dispatched_at": "2026-09-03T10:02:01+00:00",
+        },
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_brief_scenario_artifact_captures_the_durable_brief_to_job_chain(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+
+    brief = build_artifact(_brief_scenario_ctx(collector), root=tmp_path)["brief"]
+
+    assert brief["required"] is True
+    assert brief["confirmed"] == {
+        "status": "captured",
+        "value": {
+            "id": "brief-1",
+            "confirmed_at": "2026-09-03T10:00:00+00:00",
+            "content": {
+                "summary": "Send a digest in every selected language",
+                "must_requirements": [
+                    {"id": "scheduled_digest", "text": "Send a scheduled digest"},
+                    {"id": "multilingual", "text": "Use the selected languages"},
+                ],
+                "initial_settings": [
+                    {
+                        "key": "settings.languages",
+                        "scope": "product",
+                        "value": ["ru", "en"],
+                    }
+                ],
+            },
+        },
+        "reason": None,
+    }
+    assert [row["task_id"] for row in brief["coverage"]["value"]] == ["task-1", "task-2"]
+    assert brief["admission"]["value"] == {
+        "brief_id": "brief-1",
+        "coverage_admitted_at": "2026-09-03T10:01:00+00:00",
+        "planning_attempt_id": "plan-1",
+        "released_task_ids": ["task-1", "task-2"],
+    }
+    assert brief["acceptance"]["value"] == {
+        "name": "multilingual_digest",
+        "arguments": {},
+        "observable": "a digest is produced in every selected language",
+    }
+    assert brief["settings_readback"]["value"] == {
+        "key": "settings.languages",
+        "scope": "product",
+        "value": ["ru", "en"],
+    }
+    assert brief["settings_seed"]["value"] == {
+        "key": "settings.languages",
+        "scope": "product",
+        "subject_id": None,
+        "written": True,
+        "failure": None,
+    }
+    assert brief["job_evidence"]["value"]["fired_by_run"] == "qa-1"
+    assert brief["job_evidence"]["value"]["dispatch_status"] == "dispatched"
+
+
+@pytest.mark.parametrize(
+    ("brief_acceptance", "expected_reason"),
+    [
+        (None, "acceptance"),
+        (
+            {
+                "criterion": {
+                    "name": "different_job",
+                    "arguments": {"unexpected": True},
+                    "observable": "a different job",
+                }
+            },
+            "multilingual_digest",
+        ),
+        (
+            {
+                "criterion": {
+                    "name": "multilingual_digest",
+                    "arguments": {"unexpected": True},
+                    "observable": "a different job",
+                }
+            },
+            "arguments {}",
+        ),
+    ],
+)
+def test_brief_scenario_with_missing_or_mismatched_architect_criterion_is_red(
+    tmp_path, brief_acceptance, expected_reason
+):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    if brief_acceptance is None:
+        del ctx["brief_acceptance"]
+    else:
+        ctx["brief_acceptance"] = brief_acceptance
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["acceptance"]["status"] == CaptureStatus.MISSED.value
+    assert expected_reason in artifact["brief"]["acceptance"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert any(
+        reason["code"] == run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+        and "acceptance" in reason["detail"]
+        for reason in artifact["verdict"]["reasons"]
+    )
+
+
+def test_brief_scenario_without_job_evidence_is_red_even_when_the_run_completed(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    del ctx["brief_job_evidence"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["failure"]["failed"] is False
+    assert artifact["brief"]["job_evidence"]["status"] == CaptureStatus.MISSED.value
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in artifact["verdict"]["reasons"]] == [
+        run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+    ]
+    assert "job_evidence" in artifact["verdict"]["reasons"][0]["detail"]
+
+
+@pytest.mark.parametrize(
+    ("job_evidence", "expected_reason"),
+    [
+        (
+            {"name": "different_job", "arguments": {}},
+            "name='different_job'",
+        ),
+        (
+            {"name": "multilingual_digest", "arguments": {"locale": "ru"}},
+            "arguments={'locale': 'ru'}",
+        ),
+    ],
+)
+def test_brief_scenario_job_evidence_must_match_the_architect_criterion(
+    tmp_path, job_evidence, expected_reason
+):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    ctx["brief_job_evidence"].update(job_evidence)
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["job_evidence"]["status"] == CaptureStatus.MISSED.value
+    assert expected_reason in artifact["brief"]["job_evidence"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert any(
+        reason["code"] == run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+        and "job_evidence" in reason["detail"]
+        for reason in artifact["verdict"]["reasons"]
+    )
+
+
 def test_the_artifact_names_the_debug_dumps_this_run_wrote(codex_docker, tmp_path):
     ctx = base_ctx(codex_docker and collector_for(codex_docker))
     ctx["debug_dumps"] = ["debug-full-llm-engineering-20260902-101500.md"]

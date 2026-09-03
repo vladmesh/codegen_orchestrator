@@ -37,7 +37,8 @@ make test-live-mega            # Full pipeline with deploy (~7-10 min)
 make test-live-pipeline        # All live tests
 
 # E2E
-make stand-run SUITE=mega-llm  # Full stand pipeline with real coding and QA agents
+make stand-run SUITE=mega-llm    # Full stand pipeline with real coding and QA agents
+make stand-run SUITE=mega-brief  # Confirmed Product Brief through Architect, engineering, deploy and QA
 
 # Cleanup
 make test-clean                # Remove all test containers/volumes
@@ -93,8 +94,9 @@ needs a checkout that exists only inside a worker container).
 
 Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
 `stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
-exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair, and
-`matrix` runs all supported pairs.
+exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair,
+`mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
+one selected pair, and `matrix` runs all supported pairs.
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 

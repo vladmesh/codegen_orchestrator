@@ -14,6 +14,7 @@ on:
         options:
           - mega-noop
           - mega-llm
+          - mega-brief
           - matrix
           - custom
       target:
@@ -21,7 +22,7 @@ on:
         required: false
         type: string
       worker:
-        description: 'Coding agent for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'Coding agent for mega-llm, mega-brief or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'claude'
         type: choice
@@ -29,7 +30,7 @@ on:
           - claude
           - codex
       qa:
-        description: 'QA executor for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'QA executor for mega-llm, mega-brief or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'codex'
         type: choice

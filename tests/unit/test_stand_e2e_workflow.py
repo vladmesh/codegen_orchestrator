@@ -67,7 +67,7 @@ def test_only_one_e2e_at_a_time():
 def test_every_named_suite_is_offered_plus_an_arbitrary_target():
     options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
 
-    assert set(options) == {"mega-noop", "mega-llm", "matrix", "custom"}
+    assert set(options) == {"mega-noop", "mega-llm", "mega-brief", "matrix", "custom"}
     assert "custom" in options, "an e2e invented later must be startable without a code change"
 
 
@@ -85,6 +85,7 @@ def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
     for name in ("worker", "qa"):
         description = inputs[name]["description"]
         assert "mega-llm" in description
+        assert "mega-brief" in description
         assert "matrix" in description
         assert "mega-noop" in description
 
@@ -352,6 +353,10 @@ def test_make_targets_preserve_the_canonical_suite_contract():
     assert "test-live-mega: test-live-mega-noop" in makefile
     assert 'test-live-mega-llm:\n\t@echo "Running mega-llm' in makefile
     assert "pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v" in makefile
+    assert 'test-live-mega-brief:\n\t@echo "Running mega-brief' in makefile
+    assert (
+        "pytest tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline -v" in makefile
+    )
     assert "test-live-matrix:\n\t@$(MAKE) --no-print-directory stand-run SUITE=matrix" in makefile
     assert "# Legacy aggregate, not a named suite:" in makefile
 

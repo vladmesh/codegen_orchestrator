@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -42,6 +42,7 @@ help:
 	@echo "  make test-live N=health   - Run specific live test file"
 	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
 	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
+	@echo "  make test-live-mega-brief - Run the Product Brief E2E class for one selected pair"
 	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
@@ -330,6 +331,7 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_ci_prompt.py \
 	--ignore=tests/live/test_deploy_infra.py \
 	--ignore=tests/live/test_full_pipeline.py \
+	--ignore=tests/live/test_product_brief_pipeline.py \
 	--ignore=tests/live/test_sprint_dod.py \
 	--ignore=tests/live/test_health.py \
 	--ignore=tests/live/test_parallel_engineering.py \
@@ -371,6 +373,10 @@ test-live-mega-llm:
 	@echo "Running mega-llm: TestFullPipelineLLM only (one selected developer/QA pair)..."
 	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v --tb=long -x -s
 
+test-live-mega-brief:
+	@echo "Running mega-brief: TestProductBriefPipeline only (one selected developer/QA pair)..."
+	@uv run pytest tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline -v --tb=long -x -s
+
 # Four paid stand cells: Claude/Codex developer × Claude/Codex QA.
 test-live-matrix:
 	@$(MAKE) --no-print-directory stand-run SUITE=matrix
@@ -392,10 +398,11 @@ stand-preflight:
 	uv run python -m scripts.stand_preflight
 
 # One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-llm,
-# matrix — or any pytest target, so a new scenario needs no new plumbing.
+# mega-brief, matrix — or any pytest target, so a new scenario needs no new plumbing.
 #
 #   make stand-run SUITE=mega-noop
 #   make stand-run SUITE=mega-llm WORKER=codex QA=claude
+#   make stand-run SUITE=mega-brief WORKER=codex QA=claude
 #   make stand-run SUITE=matrix
 #   make stand-run SUITE=tests/live/test_api_crud.py
 #
