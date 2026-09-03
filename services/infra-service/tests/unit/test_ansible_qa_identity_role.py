@@ -839,8 +839,11 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
         assert "qa_residue_left.results" in report["left_in_place"]
         assert "selectattr('stat.exists')" in report["left_in_place"]
         assert "map(attribute='item')" in report["left_in_place"]
-        # And what the target said about the account, not what the role intended.
-        assert "qa_identity_proof.stdout" in report["identity_proof"]
+        # And what the target said about the account, not what the role intended,
+        # under the key the provisioner cuts this line out of the play output by
+        # — the same one `provision_software.yml` reports under, because one
+        # marker has to find whichever play created the seat.
+        assert "qa_identity_proof.stdout" in report["qa_identity_proof"]
 
 
 class TestTheTargetRefusesWhatWrites:

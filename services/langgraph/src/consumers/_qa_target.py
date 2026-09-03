@@ -638,9 +638,17 @@ async def qa_target_grant(
         # reached the file: the script refuses before it takes the lock, so no
         # append can have happened. That is a definite answer rather than a lost
         # one, so this run carries no cleanup residue for it and the permission
-        # problem reaches the verdict as itself. The durable record still says
-        # `ISSUING` and the sweep still reconciles it, which is what makes it
-        # safe to say nothing was left behind here.
+        # problem reaches the verdict as itself.
+        #
+        # What the durable record does after that is a weaker thing than it
+        # looks: it still says `ISSUING`, and the sweep will keep trying to
+        # revoke a key that provably never existed, keep meeting the same
+        # permission refusal, and eventually escalate it as
+        # `qa_cleanup_failed` against a run that has already settled. That is
+        # over-reporting in the safe direction and it cannot corrupt this
+        # verdict, but it is not "the sweep closes it": closing a record on a
+        # host with this permission shape is a sprint follow-up, not something
+        # this branch does.
         raise
     except QAGrantError:
         # The install may or may not have landed. The record already says a key

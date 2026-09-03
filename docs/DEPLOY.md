@@ -553,7 +553,7 @@ cannot be told apart from ordinary interactive data:
   user applications is an outage, not cleanup. The swap and its `fstab` entry stay.
 
 Remove those by hand if you know they are the platform's. The playbook's last task prints, per host,
-`identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
+`qa_identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
 each surviving path with the reason it survived and the exact command that removes it, e.g.
 `swapoff /swapfile && rm -f /swapfile && sed -i '\|^/swapfile|d' /etc/fstab`. A fleet-wide run is
 therefore readable per machine, and the decision the playbook refuses to make is handed over with

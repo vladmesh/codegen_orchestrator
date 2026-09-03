@@ -60,9 +60,11 @@ def _play_recap(stdout: str) -> str:
 def _qa_identity_report(stdout: str) -> str:
     """What the play said about the QA seat, or the fact that it said nothing.
 
-    Taken from the last mention, because the report task is the play's own last
-    word on the role and a retrofit play mentions the variable once more than a
-    provisioning one does.
+    Both plays that create the seat report it under this one key —
+    `provision_software.yml` and `qa_identity_retrofit.yml` — so one marker
+    finds either. Taken from the last mention because the report task is the
+    play's own last word on the role, and the role's own tasks name the
+    variable earlier in the output.
     """
     index = stdout.rfind(QA_IDENTITY_MARKER)
     if index < 0:

@@ -121,7 +121,12 @@
           # What the target itself said about the account, not what the role
           # meant to do to it. A host that got this far has an account that was
           # proved unable to become root; one that did not never reaches here.
-          identity_proof: "{{ qa_identity_proof.stdout | trim }}"
+          #
+          # The key is the same one `provision_software.yml` reports under,
+          # because the provisioner cuts this line out of the play output by
+          # that name: a retrofit that proved a seat under a different key was
+          # reported as a play that proved none.
+          qa_identity_proof: "{{ qa_identity_proof.stdout | trim }}"
           removed_paths: >-
             {{ qa_residue_removed.results
                | selectattr('changed')
