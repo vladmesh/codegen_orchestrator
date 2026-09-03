@@ -12,6 +12,7 @@ from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from shared.redis.client import decode_redis_fields
 
+BUILT_SHA = "e" * 40
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -104,7 +105,13 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
             "type": "deploy",
             "project_id": project_id,
             "story_id": story_id,
-            "run_metadata": {"application_id": application_id, "head_sha": head_sha},
+            # A deploy receipt names both commits: the story's, and the built
+            # commit whose images and tree the recheck has to deploy again.
+            "run_metadata": {
+                "application_id": application_id,
+                "head_sha": head_sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         },
     )
     assert deploy_receipt.status_code == HTTPStatus.CREATED, deploy_receipt.text
@@ -211,6 +218,7 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  #
     assert message["story_id"] == story_id
     assert message["application_id"] == application_id
     assert message["head_sha"] == head_sha
+    assert message["deployed_commit_sha"] == BUILT_SHA
     target = await async_client.get(f"/api/applications/{application_id}")
     assert target.json()["status"] == "deploying"
     run = await async_client.get(f"/api/runs/{message['task_id']}")
@@ -220,6 +228,7 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  #
     assert run.json()["run_metadata"]["recheck_id"] == audit["id"]
     assert run.json()["run_metadata"]["source_deploy_run_id"] == deploy_receipt_id
     assert run.json()["run_metadata"]["head_sha"] == head_sha
+    assert run.json()["run_metadata"]["deployed_commit_sha"] == BUILT_SHA
 
     repeated = await async_client.post(
         f"/api/stories/{story_id}/recheck-qa",
