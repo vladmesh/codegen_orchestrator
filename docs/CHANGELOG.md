@@ -45,6 +45,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   collaborator for stand-token failures instead of a method it lost in the collaborator extraction.
 - Added the `mega-brief` live path from confirmed Product Brief through Architect admission, settings
   readback, QA job evidence and cleanup, so it proves the brief-driven delivery contract end to end.
+- The host-side Product Brief harness now publishes through compose Redis, so stand runs require no host
+  `REDIS_URL` while retaining queue message envelopes.
 
 ## 2026-09-02
 

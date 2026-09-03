@@ -35,6 +35,7 @@ import structlog
 from shared import live_harness_cleanup
 from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.project import ServiceModule
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.service_ports import (
     DEPLOY_INFRA_PORT_SERVICES,
@@ -260,24 +261,22 @@ def _load_po_tool_modules(monkeypatch):
 
 
 def test_po_tool_boundary_wires_real_tool_modules_and_releases_every_client(monkeypatch):
-    internal_api, redis, tools_shared = _load_po_tool_modules(monkeypatch)
+    internal_api, _redis, tools_shared = _load_po_tool_modules(monkeypatch)
     events = []
 
     class FakeAPI:
         async def close(self):
             events.append("api.close")
 
-    class FakeStream:
-        async def connect(self):
-            events.append("stream.connect")
-
-        async def close(self):
-            events.append("stream.close")
-
     api = FakeAPI()
-    stream = FakeStream()
     monkeypatch.setattr(internal_api, "InternalAPIClient", lambda url: api)
-    monkeypatch.setattr(redis, "RedisStreamClient", lambda: stream)
+
+    def redis_command(*args):
+        assert args == ("PING",)
+        events.append("stream.connect")
+        return "PONG"
+
+    monkeypatch.setattr(pipeline_helpers, "_redis_json", redis_command)
 
     async def exercise():
         async with po_tool_boundary(api_url="http://po-boundary.test") as tools:
@@ -288,33 +287,100 @@ def test_po_tool_boundary_wires_real_tool_modules_and_releases_every_client(monk
                 "create_story",
             }
             assert tools_shared._api_client is api
-            assert tools_shared._stream_client is stream
+            assert isinstance(
+                tools_shared._stream_client, pipeline_helpers._ComposeRedisStreamClient
+            )
 
     asyncio.run(exercise())
 
-    assert events == ["stream.connect", "stream.close", "api.close"]
+    assert events == ["stream.connect", "api.close"]
     assert tools_shared._api_client is None
     assert tools_shared._stream_client is None
 
 
-def test_po_tool_boundary_closes_api_when_stream_connection_fails(monkeypatch):
-    internal_api, redis, _ = _load_po_tool_modules(monkeypatch)
+def test_po_tool_boundary_uses_compose_redis_when_host_has_no_redis_url(monkeypatch):
+    """The stand runner is a host process; its Redis boundary is compose exec."""
+    internal_api, _redis, tools_shared = _load_po_tool_modules(monkeypatch)
     events = []
 
     class FakeAPI:
         async def close(self):
             events.append("api.close")
 
-    class FailingStream:
-        async def connect(self):
-            events.append("stream.connect")
-            raise RuntimeError("redis unavailable")
+    def redis_command(*args):
+        events.append(("redis", *args))
+        assert args == ("PING",)
+        return "PONG"
 
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(internal_api, "InternalAPIClient", lambda url: FakeAPI())
+    monkeypatch.setattr(pipeline_helpers, "_redis_json", redis_command)
+
+    async def exercise():
+        async with po_tool_boundary(api_url="http://po-boundary.test"):
+            assert tools_shared._stream_client is not None
+
+    asyncio.run(exercise())
+
+    assert events == [("redis", "PING"), "api.close"]
+    assert tools_shared._api_client is None
+    assert tools_shared._stream_client is None
+
+
+def test_compose_redis_stream_client_preserves_po_message_envelope_and_maxlen(monkeypatch):
+    """The host adapter writes the same stream shape the PO consumer writes."""
+    commands = []
+
+    def redis_command(*args):
+        commands.append(args)
+        return "PONG" if args == ("PING",) else "1-0"
+
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(pipeline_helpers, "_redis_json", redis_command)
+    message = ArchitectMessage(
+        story_id="story-1",
+        project_id="project-1",
+        telegram_chat_id="123",
+    )
+
+    async def exercise():
+        stream = pipeline_helpers._ComposeRedisStreamClient()
+        await stream.connect()
+        return await stream.publish_message("architect:queue", message)
+
+    assert asyncio.run(exercise()) == "1-0"
+
+    from shared.redis.client import DEFAULT_STREAM_MAXLEN
+
+    assert commands[0] == ("PING",)
+    assert commands[1][:-1] == (
+        "XADD",
+        "architect:queue",
+        "MAXLEN",
+        "~",
+        str(DEFAULT_STREAM_MAXLEN),
+        "*",
+        "data",
+    )
+    assert json.loads(commands[1][-1]) == message.model_dump(mode="json")
+
+
+def test_po_tool_boundary_closes_api_when_stream_connection_fails(monkeypatch):
+    internal_api, _redis, _ = _load_po_tool_modules(monkeypatch)
+    events = []
+
+    class FakeAPI:
         async def close(self):
-            events.append("stream.close")
+            events.append("api.close")
 
     monkeypatch.setattr(internal_api, "InternalAPIClient", lambda url: FakeAPI())
-    monkeypatch.setattr(redis, "RedisStreamClient", FailingStream)
+
+    def redis_command(*args):
+        assert args == ("PING",)
+        events.append("stream.connect")
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(pipeline_helpers, "_redis_json", redis_command)
 
     async def exercise():
         with pytest.raises(RuntimeError, match="redis unavailable"):
@@ -323,7 +389,7 @@ def test_po_tool_boundary_closes_api_when_stream_connection_fails(monkeypatch):
 
     asyncio.run(exercise())
 
-    assert events == ["stream.connect", "stream.close", "api.close"]
+    assert events == ["stream.connect", "api.close"]
 
 
 class _ProductResponse:
