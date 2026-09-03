@@ -834,7 +834,11 @@ def test_qa_cell_is_not_exercised_when_the_worker_died_first(codex_docker, tmp_p
     )
     assert cell["run_id"] is None
     assert cell["outcome"] is None
-    assert cell["executor_selected"] == "claude"
+    # No QA Run exists, so no executor was ever selected for one. The request is
+    # not an answer to that question and is never copied into it.
+    assert cell["executor_selected"]["status"] == CaptureStatus.MISSED.value
+    assert cell["executor_selected"]["value"] is None
+    assert "the worker died before QA" in cell["executor_selected"]["reason"]
     assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
     assert cell["executor_executed"]["value"] is None
     assert (
@@ -898,7 +902,11 @@ def test_qa_executor_that_was_never_observed_is_not_claimed_from_configuration(
     artifact = build_artifact(ctx, root=tmp_path)
     cell = artifact["qa"]
     assert cell["state"] == QAExercise.EXERCISED.value
-    assert cell["executor_selected"] == "claude"
+    # A QA Run was observed but no record of it was read, so the decision it was
+    # admitted under is unreadable — stated as such, not answered from the request.
+    assert cell["executor_selected"]["status"] == CaptureStatus.MISSED.value
+    assert cell["executor_selected"]["value"] is None
+    assert "not evidenced" in cell["executor_selected"]["reason"]
     assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
     assert "not evidenced" in cell["executor_executed"]["reason"]
     assert artifact["combination"]["qa_executed"] == cell["executor_executed"]
@@ -1973,6 +1981,87 @@ def test_a_qa_run_read_at_teardown_says_where_it_was_read(codex_docker, tmp_path
 
     assert artifact["qa"]["run_record_source"] == run_evidence.QARunLookup.TEARDOWN
     assert artifact["qa"]["run_record"]["value"]["qa_outcome"] == QAOutcome.BLOCKED.value
+
+
+QA_EXECUTOR_DECISION = {
+    "attempt_kind": "qa",
+    "agent_type": "codex",
+    "source": "qa_api_setting",
+    "policy_version": "v2",
+    "reason": "QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
+}
+
+
+def _qa_run_admitted_under(agent_type: str) -> dict:
+    """A terminal QA Run carrying the executor decision the API persisted on it."""
+    return {
+        **QA_BLOCKED_RUN,
+        "run_metadata": {"executor_decision": {**QA_EXECUTOR_DECISION, "agent_type": agent_type}},
+    }
+
+
+def test_a_run_admitted_under_another_executor_reports_the_disagreement(codex_docker, tmp_path):
+    """Requested, selected and executed are three facts, and this run has three.
+
+    Run 33743251165 asked for `claude`, the API resolved `codex` from the settings
+    of a container the switch never recreated, and QA ran on Codex. The artifact
+    reported `claude` twice because `executor_selected` was a copy of the request.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+    run = _qa_run_admitted_under("codex")
+
+    cell = build_artifact(
+        qa_stage_ctx(
+            collector,
+            qa_agent_type_requested="claude",
+            qa_run=run,
+            qa_run_record=run_evidence.qa_run_facts(run),
+        ),
+        root=tmp_path,
+    )["qa"]
+
+    assert cell["executor_requested"] == "claude"
+    assert cell["executor_selected"] == {"status": "captured", "value": "codex", "reason": None}
+    assert cell["executor_selected"]["value"] != cell["executor_requested"]
+    assert cell["run_record"]["value"]["executor_decision"]["source"] == "qa_api_setting"
+
+
+def test_a_run_admitted_under_the_requested_executor_agrees(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    run = _qa_run_admitted_under("claude")
+
+    cell = build_artifact(
+        qa_stage_ctx(
+            collector,
+            qa_agent_type_requested="claude",
+            qa_run=run,
+            qa_run_record=run_evidence.qa_run_facts(run),
+        ),
+        root=tmp_path,
+    )["qa"]
+
+    assert cell["executor_requested"] == "claude"
+    assert cell["executor_selected"]["value"] == "claude"
+
+
+def test_a_run_with_no_persisted_decision_says_so_instead_of_repeating_the_request(
+    codex_docker, tmp_path
+):
+    """The fallback is the defect: it makes the field agree by construction."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    cell = build_artifact(qa_stage_ctx(collector, qa_agent_type_requested="claude"), root=tmp_path)[
+        "qa"
+    ]
+
+    assert cell["executor_requested"] == "claude"
+    assert cell["executor_selected"]["status"] == CaptureStatus.MISSED.value
+    assert cell["executor_selected"]["value"] is None
+    assert "carries no executor decision" in cell["executor_selected"]["reason"]
+    assert QA_BLOCKED_RUN["id"] in cell["executor_selected"]["reason"]
 
 
 def test_reached_the_url_carries_the_basis_it_rests_on(codex_docker, tmp_path):

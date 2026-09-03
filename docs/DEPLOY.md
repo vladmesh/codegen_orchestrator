@@ -383,7 +383,10 @@ Exploratory QA is performed on the management host by an ephemeral coding agent 
 Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon session.
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
-- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `codex` by default; `claude` remains an explicit
+- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. Read by the API's executor resolver, which
+  decides once at paid-run admission and persists the choice on the Run; `qa-worker` carries out that
+  record rather than its own copy, so this value only takes effect after the `api` container is
+  recreated with it. `codex` by default; `claude` remains an explicit
   subscription-agent override, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
   are refused when the configuration is read, and a `qa` worker command carrying either is refused
   by worker-manager before a container exists. The session itself is `HOST_CLAUDE_DIR` /

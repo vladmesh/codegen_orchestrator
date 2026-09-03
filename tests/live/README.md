@@ -62,6 +62,28 @@ The local target names reflect that same contract:
   classes. It is not a named suite and intentionally remains visible until duplicate coverage is
   removed in a later iteration.
 
+### Switching the QA executor
+
+An LLM cell asks for a QA executor, and the runner has to make that true before pytest starts.
+`QA_EXECUTOR_AGENT_TYPE` is written to the deployed `.env`, and every compose service the variable
+is passed to is force-recreated — the set is read out of the compose files by
+`stand_run.qa_executor_services`, never transcribed, so a service that starts reading it tomorrow is
+recreated without anyone editing the runner. Today that set is `api` and `qa-worker`.
+
+The switch is then confirmed by asking the resolver itself: `docker compose exec api` runs the same
+`resolve_executor_decision` call paid-run admission makes, in the process whose settings are its
+input, creating no Run. A consumer's local setting is not an acceptable confirmation — it flips the
+moment that consumer is recreated and says nothing about the service that decides. Until the
+resolver answers the requested executor the switch is unconfirmed, and a cell whose switch never
+lands is reported `qa_executor_switch_failed` instead of running. The database-backed break-glass
+executor override outranks this variable by design and is not applied by the dry run: a stand under
+an active QA override is not switchable from `.env` at all.
+
+Run 33743251165 is why all of this is written down. It recreated `qa-worker` alone and confirmed the
+switch by reading that same container, so the `api` container kept its start-up `codex`, and a run
+that asked for Claude spent Codex — silently, from 2026-08-27, until Codex hit its weekly limit and
+could not log in.
+
 ### Timeout budget
 
 The timeout values are deliberate bounds, not duration estimates. The noop lifecycle's explicit
@@ -177,9 +199,15 @@ omitted worker reads as "nothing ran", which is the failure this evidence exists
 collection never fails a run: a probe error, an unreadable removal record, or a failed ownership
 refresh is recorded under `capture_errors`.
 
-The QA cell reports `executor_executed` from the QA container this run's label selected, never from
-the qa-worker's configured selector: that selector is reported separately as `executor_selected`,
-and appears in the missed capture's reason when no QA container was seen.
+The QA cell reports three independent executor facts. `executor_requested` is what the runner asked
+for. `executor_selected` is a capture read from the QA Run's persisted `executor_decision` — the
+choice the API's resolver made at admission — so a run admitted under an executor nobody asked for
+shows up as a disagreement; when no Run record could be read the field is a stated missed capture
+naming why, never the request, because a field derived from the request agrees with it by
+construction. `executor_executed` comes from the QA container this run's label selected, never from
+the qa-worker's configured selector; that selector appears only in the missed capture's reason when
+no QA container was seen. Run 33743251165 is why: it asked for `claude`, was admitted under `codex`
+and ran on Codex, and the artifact reported `claude` twice.
 
 Agent stdout stays out of it. The log tail is the container's own log (worker-wrapper's structlog),
 bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret
