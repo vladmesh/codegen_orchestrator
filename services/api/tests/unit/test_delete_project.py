@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.tests.project_cleanup import PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
 from src.database import get_async_session
 from src.main import app
 
@@ -109,7 +110,18 @@ async def test_delete_project_success():
 
     # Repositories carry the Telegram bot binding, so they must go with the project.
     deleted_tables = {call.args[0].table.name for call in session.execute.call_args_list}
-    assert {"repositories", "applications", "tasks", "runs"} <= deleted_tables
+    assert {
+        "repositories",
+        "applications",
+        "product_briefs",
+        "requirement_coverages",
+        "tasks",
+        "runs",
+    } <= deleted_tables
+    delete_order = [call.args[0].table.name for call in session.execute.call_args_list]
+    assert [
+        table for table in delete_order if table in PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
+    ] == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)
     session.delete.assert_called_once_with(project)
     session.commit.assert_called_once()
 

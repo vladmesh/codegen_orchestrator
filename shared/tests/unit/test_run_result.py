@@ -25,7 +25,6 @@ from shared.contracts.dto.run_result import (
     QAStateChangeCleanup,
 )
 from shared.contracts.dto.settings_seed import (
-    SETTINGS_SEED_RETRYABLE_FAILURES,
     SettingSeedOutcome,
     SettingsSeedFailureKind,
 )
@@ -343,8 +342,8 @@ class TestSuccessMeansEveryConfirmedSettingArrived:
     reconciliation that builds a success out of a failed run reaches it too.
     """
 
-    @pytest.mark.parametrize("failure", sorted(SETTINGS_SEED_RETRYABLE_FAILURES))
-    def test_success_carrying_a_held_back_seed_failure_is_refused(self, failure):
+    @pytest.mark.parametrize("failure", sorted(SettingsSeedFailureKind))
+    def test_success_carrying_any_seed_failure_is_refused(self, failure):
         with pytest.raises(ValidationError, match="settings-seed failure"):
             DeployRunResult(
                 deploy_outcome=DeployOutcome.SUCCESS,
@@ -352,30 +351,32 @@ class TestSuccessMeansEveryConfirmedSettingArrived:
                 settings_seed=[_seed(failure)],
             )
 
-    @pytest.mark.parametrize(
-        "failure",
-        sorted(set(SettingsSeedFailureKind) - SETTINGS_SEED_RETRYABLE_FAILURES),
-    )
-    def test_success_reports_a_deterministic_seed_failure_beside_itself(self, failure):
-        """An undeclared key or a refused value is repaired by a new plan, not a redeploy."""
-        result = DeployRunResult(
-            deploy_outcome=DeployOutcome.SUCCESS,
-            deployed_url="https://example.com",
-            settings_seed=[_seed(failure)],
-        )
-
-        assert result.settings_seed[0].failure is failure
-
-    def test_the_seed_failure_outcome_carries_the_same_record(self):
+    def test_the_seed_failure_outcome_carries_a_deterministic_record(self):
         result = DeployRunResult(
             deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
             deployed_url="https://example.com",
-            error_details="settings_seed:transport",
-            settings_seed=[_seed(SettingsSeedFailureKind.TRANSPORT)],
+            error_details="settings_seed:key_not_declared",
+            settings_seed=[_seed(SettingsSeedFailureKind.KEY_NOT_DECLARED)],
         )
 
         assert result.deploy_outcome is DeployOutcome.SETTINGS_SEED_FAILED
         assert result.settings_seed[0].written is False
+
+    def test_seed_failure_properties_are_complete_stable_and_drive_convergence(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+            settings_seed=[
+                _seed(SettingsSeedFailureKind.KEY_NOT_DECLARED),
+                _seed(SettingsSeedFailureKind.TRANSPORT),
+            ],
+        )
+
+        assert result.settings_seed_failure_detail == "key_not_declared,transport"
+        assert result.settings_seed_can_converge is True
+
+    def test_the_seed_failure_outcome_requires_a_recorded_failure(self):
+        with pytest.raises(ValidationError, match="settings_seed failure"):
+            DeployRunResult(deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED)
 
     def test_a_reconciliation_that_revalidates_cannot_launder_the_failure(self):
         """`model_copy` runs no validators; re-validating is what reaches the invariant."""

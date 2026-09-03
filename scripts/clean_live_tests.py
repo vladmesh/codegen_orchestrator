@@ -530,6 +530,7 @@ def clean_database():
     sub = f"SELECT id FROM projects WHERE {conditions}"  # noqa: S608
     tables = [
         "runs",
+        "product_briefs",
         "tasks",
         "stories",
         "brainstorms",
@@ -542,6 +543,10 @@ def clean_database():
     stmts = [
         f"DELETE FROM task_events WHERE task_id IN ("  # noqa: S608
         f"SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id "
+        f"WHERE {_build_conditions('p')});",
+        "DELETE FROM requirement_coverages WHERE brief_id IN ("
+        "SELECT b.id FROM product_briefs b "
+        "JOIN projects p ON b.project_id = p.id "
         f"WHERE {_build_conditions('p')});",
     ]
     stmts.extend(f"DELETE FROM {t} WHERE project_id IN ({sub});" for t in tables)  # noqa: S608

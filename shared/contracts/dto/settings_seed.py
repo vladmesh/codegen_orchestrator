@@ -13,25 +13,22 @@ closed-set reason. It never carries the deployment capability, the value that
 was written, a response body, or an exception string, because a deploy run
 result is read back by the scheduler, by QA, and by people.
 
-The split that matters is `SETTINGS_SEED_RETRYABLE_FAILURES`. A failure in that
-set says the product did not answer the way a working product answers, and the
-same commit deployed again may well seed cleanly — so it holds the deploy back
-as `DeployOutcome.SETTINGS_SEED_FAILED` and goes round under the bound that
-already stops a failing deploy from looping. That outcome is deliberately its
-own: `DeployRunResult` refuses to call a run successful while it records a
-failure from this set, so no producer and no reconciliation can turn a setting
-that never arrived into a deploy handed to QA.
+Every failure makes the deploy `DeployOutcome.SETTINGS_SEED_FAILED`:
+`DeployRunResult` refuses to call a run successful while it records any seed
+failure, so no producer and no reconciliation can turn a setting that never
+arrived into a deploy handed to QA.
 
-Every other failure is deterministic in this commit: an undeclared key
-stays undeclared and a schema-refused value stays refused however often the
-same artifact is redeployed, so retrying is a loop that cannot converge. Those
-are reported alongside the successful deploy instead, where the run's readers
-see that a confirmed setting did not reach the product and that the repair is a
-new plan, not another deploy.
+`SETTINGS_SEED_CONVERGENT_FAILURES` answers a narrower routing question. A
+failure in that set may answer differently after a same-commit redeploy, so a
+mixed result retries if it contains even one such failure. An all-deterministic
+result — an undeclared key, schema-refused value, or missing write capability —
+goes straight to the artifact-repair terminal path instead of consuming the
+deploy retry bound.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -44,7 +41,7 @@ class SettingsSeedFailureKind(StrEnum):
 
     #: The deployed product's environment contract does not declare
     #: `SETTINGS_WRITE_CAPABILITY` — an existing pinned product, generated
-    #: before the settings core. Nothing was attempted and nothing failed.
+    #: before the settings core. The confirmed value cannot be written.
     CAPABILITY_UNAVAILABLE = "capability_unavailable"
     #: The product could not be reached at all.
     TRANSPORT = "transport"
@@ -64,9 +61,17 @@ class SettingsSeedFailureKind(StrEnum):
     READBACK_MISMATCH = "readback_mismatch"
 
 
-#: The failures that hold the deploy back. See the module docstring: these are
-#: the ones a second deploy of the same commit can answer differently.
-SETTINGS_SEED_RETRYABLE_FAILURES = frozenset(
+#: The exact Core settings v1 response detail for an undeclared manifest key.
+#: It distinguishes the documented endpoint response from a generic route 404.
+CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL = "Setting key not declared"
+
+#: The exact Core settings v1 response detail for a manifest-schema rejection.
+CORE_SETTINGS_V1_VALUE_REJECTED_DETAIL = "Setting value does not satisfy its declared schema"
+
+
+#: The failures a second deploy of the same commit may answer differently.
+#: This controls supervisor routing only: every failure still blocks SUCCESS.
+SETTINGS_SEED_CONVERGENT_FAILURES = frozenset(
     {
         SettingsSeedFailureKind.TRANSPORT,
         SettingsSeedFailureKind.SET_REJECTED,
@@ -99,3 +104,15 @@ class SettingSeedOutcome(BaseModel):
                 "a seeded setting is either proved written or carries exactly one failure kind"
             )
         return self
+
+
+def settings_seed_failure_kinds(
+    outcomes: Sequence[SettingSeedOutcome],
+) -> tuple[SettingsSeedFailureKind, ...]:
+    """Return every failure kind once, in stable diagnostic order."""
+    return tuple(sorted({outcome.failure for outcome in outcomes if outcome.failure is not None}))
+
+
+def settings_seed_failure_detail(failures: Sequence[SettingsSeedFailureKind]) -> str:
+    """Render an already-canonical failure set for bounded diagnostics."""
+    return ",".join(failure.value for failure in failures)

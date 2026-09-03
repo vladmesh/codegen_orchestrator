@@ -17,8 +17,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.settings_seed import (
-    SETTINGS_SEED_RETRYABLE_FAILURES,
+    SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingSeedOutcome,
+    SettingsSeedFailureKind,
+    settings_seed_failure_detail,
+    settings_seed_failure_kinds,
 )
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
@@ -106,6 +109,23 @@ class DeployRunResult(BaseModel):
     #: or a brief that confirmed no settings.
     settings_seed: list[SettingSeedOutcome] = Field(default_factory=list)
 
+    @property
+    def settings_seed_failures(self) -> tuple[SettingsSeedFailureKind, ...]:
+        """The complete, sorted failure set the deploy outcome records."""
+        return settings_seed_failure_kinds(self.settings_seed)
+
+    @property
+    def settings_seed_can_converge(self) -> bool:
+        """Whether this failed seed should consume the same-commit retry bound."""
+        return any(
+            failure in SETTINGS_SEED_CONVERGENT_FAILURES for failure in self.settings_seed_failures
+        )
+
+    @property
+    def settings_seed_failure_detail(self) -> str:
+        """A bounded diagnostic suitable for persisted errors and notifications."""
+        return settings_seed_failure_detail(self.settings_seed_failures)
+
     @model_validator(mode="after")
     def _infrastructure_wait_carries_its_classification(self) -> DeployRunResult:
         """A wait the scheduler cannot re-check is not a wait, it is a stall.
@@ -134,34 +154,34 @@ class DeployRunResult(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _settings_seed_failure_carries_its_evidence(self) -> DeployRunResult:
+        """A routing outcome without a failed setting is invalid evidence."""
+        if (
+            self.deploy_outcome is DeployOutcome.SETTINGS_SEED_FAILED
+            and not self.settings_seed_failures
+        ):
+            raise ValueError(
+                f"{DeployOutcome.SETTINGS_SEED_FAILED.value} requires a settings_seed failure"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _success_means_every_confirmed_setting_arrived(self) -> DeployRunResult:
         """A deploy is not a success while a confirmed setting is still missing.
 
         This is the one place the invariant lives, so that every producer and
         every reconciliation reaches it rather than each remembering to check:
         a result may not say SUCCESS while it also records a settings-seed
-        failure that a second deploy of the same commit could answer
-        differently. Such a run belongs to
-        `DeployOutcome.SETTINGS_SEED_FAILED`, which goes round under a bound.
-
-        The deterministic failures — an undeclared key, a schema-refused value,
-        a pinned product whose contract predates the write capability — are
-        deliberately not covered: no redeploy of this artifact changes them, so
-        they are reported beside the successful deploy instead of blocking it.
+        failure. Such a run belongs to `DeployOutcome.SETTINGS_SEED_FAILED`.
+        The supervisor decides whether it can converge through a same-commit
+        retry or needs an artifact repair; neither is a successful QA handoff.
         """
         if self.deploy_outcome is not DeployOutcome.SUCCESS:
             return self
-        held_back = sorted(
-            {
-                outcome.failure.value
-                for outcome in self.settings_seed
-                if outcome.failure in SETTINGS_SEED_RETRYABLE_FAILURES
-            }
-        )
-        if held_back:
+        if self.settings_seed_failures:
             raise ValueError(
-                f"{DeployOutcome.SUCCESS.value} cannot carry a settings-seed failure that holds "
-                f"the deploy back ({', '.join(held_back)}); use "
+                f"{DeployOutcome.SUCCESS.value} cannot carry a settings-seed failure "
+                f"({self.settings_seed_failure_detail}); use "
                 f"{DeployOutcome.SETTINGS_SEED_FAILED.value}"
             )
         return self

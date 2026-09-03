@@ -43,9 +43,10 @@ class DeployOutcome(StrEnum):
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     OWNER_ACCESS_PROOF_FAILED = "owner_access_proof_failed"
     # The application is up, and a confirmed `initial_settings` value of the
-    # story's Product Brief did not arrive in it for a reason a second deploy of
-    # the same commit can answer differently — see
-    # `shared/contracts/dto/settings_seed.py::SETTINGS_SEED_RETRYABLE_FAILURES`.
+    # story's Product Brief did not arrive in it. The supervisor uses
+    # `shared/contracts/dto/settings_seed.py::SETTINGS_SEED_CONVERGENT_FAILURES`
+    # to decide whether a same-commit retry can converge or artifact repair is
+    # terminal.
     # It is deliberately its own outcome rather than a flavour of
     # `OWNER_ACCESS_PROOF_FAILED`: that one means "the owner grant was not
     # proved", and its consumers reconcile it to SUCCESS once the grant is
