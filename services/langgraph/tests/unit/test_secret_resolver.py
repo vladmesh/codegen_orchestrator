@@ -9,6 +9,7 @@ from shared.clients.registry import sha_image_tag
 from src.subgraphs.devops.secret_resolver import SecretResolutionError, SecretResolverNode
 
 HEAD_SHA = "6e2fd5b4" + "0" * 32
+BUILT_SHA = "c13d21b9" + "1" * 32
 
 
 class TestSecretResolverComputeSecret:
@@ -30,17 +31,17 @@ class TestSecretResolverComputeSecret:
             "repo_info": {
                 "html_url": "https://github.com/project-factory-org/reverse-bot",
             },
-            "head_sha": HEAD_SHA,
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
         assert result == (
-            f"testhost.example.com/project-factory-org/reverse-bot-backend:sha-{HEAD_SHA[:7]}"
+            f"testhost.example.com/project-factory-org/reverse-bot-backend:sha-{BUILT_SHA[:7]}"
         )
 
         result = self.node._compute_secret("TG_BOT_IMAGE", project_spec, state)
         assert result == (
-            f"testhost.example.com/project-factory-org/reverse-bot-tg-bot:sha-{HEAD_SHA[:7]}"
+            f"testhost.example.com/project-factory-org/reverse-bot-tg-bot:sha-{BUILT_SHA[:7]}"
         )
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
@@ -51,26 +52,34 @@ class TestSecretResolverComputeSecret:
             "repo_info": {
                 "html_url": "https://github.com/my-org/my-app",
             },
-            "head_sha": HEAD_SHA,
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         result = self.node._compute_secret("FRONTEND_IMAGE", project_spec, state)
-        assert result == f"testhost.example.com/my-org/my-app-frontend:{sha_image_tag(HEAD_SHA)}"
+        assert result == f"testhost.example.com/my-org/my-app-frontend:{sha_image_tag(BUILT_SHA)}"
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_without_a_commit_raises(self):
-        """Without a commit there is no image to name, so nothing is guessed."""
-        project_spec = {"title": "My App", "slug": "my-app-0000"}
-        state = {"repo_info": {"html_url": "https://github.com/my-org/my-app"}}
+    def test_compute_image_without_the_deployed_commit_raises(self):
+        """The story commit is not the built commit, and neither is guessed from the other.
 
-        with pytest.raises(SecretResolutionError, match="commit SHA is required"):
+        No merge method makes the branch head equal the pull request head, and
+        the project's CI publishes images from the branch, so a state carrying
+        only `head_sha` names an image that can never exist.
+        """
+        project_spec = {"title": "My App", "slug": "my-app-0000"}
+        state = {
+            "repo_info": {"html_url": "https://github.com/my-org/my-app"},
+            "head_sha": HEAD_SHA,
+        }
+
+        with pytest.raises(SecretResolutionError, match="deployed commit SHA is required"):
             self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_without_repo_info_raises(self):
         """Image variables require complete repository metadata."""
         project_spec = {"title": "Orphan Project", "slug": "orphan-project-0000"}
-        state = {"head_sha": HEAD_SHA}
+        state = {"deployed_commit_sha": BUILT_SHA}
 
         with pytest.raises(SecretResolutionError, match="repository metadata"):
             self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
@@ -80,7 +89,7 @@ class TestSecretResolverComputeSecret:
         """A partial repository URL cannot become a Docker image name."""
         state = {
             "repo_info": {"html_url": "https://github.com/project-factory-org"},
-            "head_sha": HEAD_SHA,
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         with pytest.raises(SecretResolutionError, match="repository metadata is malformed"):
@@ -92,7 +101,7 @@ class TestSecretResolverComputeSecret:
         project_spec = {"slug": "test-0000"}
         state = {
             "repo_info": {"html_url": "https://github.com/org/repo"},
-            "head_sha": HEAD_SHA,
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         with pytest.raises(RuntimeError, match="ORCHESTRATOR_HOSTNAME"):

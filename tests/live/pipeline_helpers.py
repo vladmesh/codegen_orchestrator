@@ -60,6 +60,7 @@ from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
 from shared.live_harness_cleanup import (
+    MAIN_HEAD_PROBE_MARKER,
     STORY_BRANCH_PROBE_MARKER,
     build_remote_cleanup_command,
 )
@@ -84,7 +85,15 @@ LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 SCAFFOLD_FENCE_TIMEOUT = 900
 # Merged PR → pr_poller cycle → deploy run carrying the merged head SHA.
-DEPLOY_RUN_TIMEOUT = 420
+# The wait for a deploy Run to *appear*. It now legitimately spans the project's
+# own CI: no Run is created until the merged commit's images are observed
+# published, which is what keeps DEPLOY_TIMEOUT below meaning "deploy.yml +
+# smoke" instead of quietly absorbing somebody else's build. So it is the old
+# 420 s of merge detection and Run creation plus the producer's full image bound
+# (`image_publication.IMAGE_PUBLICATION_TIMEOUT_SECONDS`, 900 s), after which the
+# story is refused and no Run can ever appear. Derived rather than measured on
+# purpose: it is the ceiling the gate itself imposes, so it cannot be too small.
+DEPLOY_RUN_TIMEOUT = 1320
 DEPLOY_RUN_POLL_INTERVAL = 5
 # The deploy consumer writes the run result right after the app reports its
 # status, so this only covers that last write.
@@ -1772,26 +1781,59 @@ async def wait_deploy_outcome(
     # it came with, so the references are in the artifact whether or not the
     # comparison below is ever reached.
     ctx["deployed_image_references"] = (result.deployment_result or {}).get("image_references")
+    ctx["deployed_commit_sha"] = (result.deployment_result or {}).get("deployed_commit_sha")
     return result
 
 
-def record_deployed_image_tags(ctx: dict) -> bool:
-    """True when every deployed image reference is tagged with the merged commit.
+def parse_main_head_probe(stdout: str) -> dict:
+    """The `main` head probe payload the harness container printed."""
+    return parse_probe_payload(stdout, MAIN_HEAD_PROBE_MARKER, subject="main head probe")
 
-    A deploy Run reporting SUCCESS on a merged SHA, and an application answering
-    HTTP 200, together say nothing about which code is running: the target pulls
-    images, and a mutable tag resolves to whatever was published last. The image
-    tag is the one thing that names the bytes, so the suite reads it before it
-    spends a QA attempt — otherwise a stale deployment reaches QA and comes back
-    as a product defect (paid run 33753667796) instead of a deploy defect.
+
+def probe_main_head(repo_name: str) -> dict:
+    """Ask GitHub which commit `main` points at, through the stand's GitHub App."""
+    args = ["main-head-probe", "--owner", GITHUB_ORG, "--repo", repo_name]
+    result = docker_exec_python_module("langgraph", "shared.live_harness_cleanup", args, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"main head probe for {repo_name} failed: {result.stderr or result.stdout}"
+        )
+    return parse_main_head_probe(result.stdout)
+
+
+def record_deployed_image_tags(ctx: dict) -> bool:
+    """True when every deployed image reference is tagged with the built commit.
+
+    A deploy Run reporting SUCCESS, and an application answering HTTP 200,
+    together say nothing about which code is running: the target pulls images,
+    and a mutable tag resolves to whatever was published last. The image tag is
+    the one thing that names the bytes, so the suite reads it before it spends a
+    QA attempt — otherwise a stale deployment reaches QA and comes back as a
+    product defect (paid run 33753667796) instead of a deploy defect.
+
+    The commit the tag is expected to name comes from GitHub — `main`'s head,
+    which is what the project's CI built — and never from the deploy's own
+    input. An expectation computed from the value the resolver used agrees with
+    itself by construction and would pass on the wrong tag, which is the one
+    thing this assertion exists to catch.
     """
-    expected = sha_image_tag(ctx["deploy_head_sha"])
+    try:
+        probe = probe_main_head(ctx["repo_name"])
+    except Exception as error:
+        ctx["deployed_image_error"] = (
+            f"the commit main points at could not be read, so it is unknown which images the "
+            f"project's CI built: {type(error).__name__}: {error}"
+        )
+        return False
+    ctx["main_head_probe"] = probe
+    built_sha = probe["sha"]
+    expected = sha_image_tag(built_sha)
     ctx["deployed_image_tag_expected"] = expected
     references = ctx.get("deployed_image_references")
     if not references:
         ctx["deployed_image_error"] = (
             f"deploy run {ctx.get('deploy_run_id')} named no image references, so nothing "
-            f"says the deployment runs {ctx['deploy_head_sha']}"
+            f"says the deployment runs the commit main points at ({built_sha})"
         )
         return False
     mismatched = {
@@ -1801,8 +1843,8 @@ def record_deployed_image_tags(ctx: dict) -> bool:
     }
     if mismatched:
         ctx["deployed_image_error"] = (
-            f"deployed images are not tagged {expected} for merged SHA "
-            f"{ctx['deploy_head_sha']}: {mismatched}"
+            f"deployed images are not tagged {expected} for the built commit {built_sha} "
+            f"that main points at: {mismatched}"
         )
         return False
     return True

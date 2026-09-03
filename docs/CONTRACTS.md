@@ -584,20 +584,37 @@ its in-flight ids so one process does not reclaim its own active dispatch.
 
 ### Deploy and QA
 
-1. A durable deploy Run is created before `DeployMessage` publication.
-2. Before any external effect, the deployer proves the merged commit's images
-   exist. `*_IMAGE` resolves to the `sha-<short sha>` tag the project's CI
-   publishes for that commit, and the deployer reads the registry for exactly
-   those references, bounded at 15 minutes. It never builds or retriggers the
-   project's CI: images absent at the bound are `IMAGES_NOT_PUBLISHED` and
-   nothing is deployed. **A deploy Run's SUCCESS is a claim about images, not
-   about a SHA**: it names the references and digests it deployed in
-   `deployment_result`, and the service-deployment record carries the same.
-3. The deploy consumer records the dispatch boundary before GitHub Actions is
+1. **A commit deploy names two commits and never conflates them.** `head_sha` is
+   what the story produced — the pull request head — and story evidence, the
+   access grants and the redundant-deploy key (`Deployment.deployed_sha`) are all
+   keyed on it. `deployed_commit_sha` is the built commit on the default branch:
+   the project's CI tagged its images with it, the checkout is pinned to it, and
+   `Deployment.deployment_info.deployed_commit_sha` records it. No merge method
+   makes a branch's new head equal the pull request head, so the two differ on
+   every PR-merge deploy. Both travel on `DeployMessage` and in the deploy Run's
+   metadata; the resolver refuses to name images without the second.
+2. **No deploy Run exists until that commit's images are observed published.**
+   The producer waits, bounded at 15 minutes from the merge and fail-closed, for
+   the project's own `ci.yml` run for the built commit on its default branch —
+   that run's `build-and-push` is the publication. Nothing retriggers or repairs
+   it. A run that will never publish refuses at once; the bound refuses the rest.
+   A refusal creates no Run, so its typed reason lands on the story
+   (`quarantine_reason.deploy_outcome = images_not_published`, with the commits
+   and CI run it looked at) and the story goes to human review.
+3. A durable deploy Run is created once that is true, before `DeployMessage`
+   publication. Inside the deploy, before any external effect, the deployer reads
+   the registry once for exactly the `*_IMAGE` references it resolved: absent
+   images are `IMAGES_NOT_PUBLISHED`, and a registry that cannot be read at all
+   is `IMAGE_REGISTRY_UNREADABLE`, which is a separate outcome because "not
+   asked" is not an answer about the project. **A deploy Run's SUCCESS is a claim
+   about images, not about a SHA**: it names the references and digests it
+   deployed in `deployment_result`, and the service-deployment record carries the
+   same.
+4. The deploy consumer records the dispatch boundary before GitHub Actions is
    no longer safely stoppable, then writes its typed terminal result.
-4. The supervisor reads that typed result, creates QA work only with resolved
+5. The supervisor reads that typed result, creates QA work only with resolved
    repository criteria, and routes the typed QA outcome.
-5. A terminal owner notification is persisted before it is published to PO.
+6. A terminal owner notification is persisted before it is published to PO.
    Recovery retries the owned notification record; it does not duplicate an
    already settled owner event.
 

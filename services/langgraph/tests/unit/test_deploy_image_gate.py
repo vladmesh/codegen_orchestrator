@@ -6,6 +6,7 @@ from shared.clients.registry import sha_image_tag
 from src.subgraphs.devops.image_gate import (
     ImagesNotPublishedError,
     image_references,
+    verify_published_images,
     wait_for_published_images,
 )
 
@@ -110,3 +111,18 @@ async def test_a_registry_that_cannot_be_read_is_not_reported_as_unpublished():
         )
 
     assert not isinstance(error.value, ImagesNotPublishedError)
+
+
+@pytest.mark.asyncio
+async def test_the_deploys_own_check_is_one_read_and_never_a_wait():
+    """Inside a deploy there is nothing left to wait for, so it must not wait.
+
+    The wait lives ahead of the deploy Run. A deploy that waited again would
+    spend a budget documented as "deploy.yml + smoke" on somebody else's CI.
+    """
+    registry = FakeRegistry({"my-org/my-repo-backend": 1})
+
+    with pytest.raises(ImagesNotPublishedError):
+        await verify_published_images({"BACKEND_IMAGE": BACKEND}, registry=registry)
+
+    assert registry.reads == [("my-org/my-repo-backend", TAG)]

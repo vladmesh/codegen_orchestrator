@@ -1,5 +1,6 @@
 """Unit tests for poll_merged_prs — exact PR lookup via story.pr_number."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +16,18 @@ def _make_story(story_id="story-1", project_id="proj-1", pr_number=None):
     s.project_id = project_id
     s.pr_number = pr_number
     return s
+
+
+def _published_ci_run(head_sha="e" * 40):
+    """A finished `main` CI run for one commit: the images of it are published."""
+    return {
+        "id": 900,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/org/my-repo/actions/runs/900",
+        "created_at": "2026-03-20T03:16:00Z",
+        "head_sha": head_sha,
+    }
 
 
 def _make_repo(git_url="https://github.com/org/my-repo"):
@@ -40,9 +53,11 @@ async def test_uses_pr_number_for_exact_lookup(mock_gh_cls):
     api.get_primary_repository.return_value = _make_repo()
     api.get_stories_by_project.return_value = []
 
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
         "head": {"sha": "a" * 40},
     }
 
@@ -122,9 +137,11 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     api.get_stories_by_project.return_value = []
 
     # PR #5 is merged with the fix SHA
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
         "number": 5,
         "merged_at": "2026-03-20T03:30:00Z",
+        "merge_commit_sha": "e" * 40,
         "head": {"sha": "b" * 40},
     }
 
@@ -157,16 +174,23 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
         "execution_run_id": "deploy-grant-attempt",
         "target": {"application_id": None, "deployment_id": None, "sha": "a" * 40},
     }
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
         "head": {"sha": "a" * 40},
     }
 
     assert await poll_merged_prs(api, redis) == 1
 
+    # Both commits: the story's, which the grant is recorded against, and the
+    # merge commit, whose images the grant's deploy has to pull.
     api.resume_initial_owner_grant.assert_awaited_once_with(
-        "00000000-0000-0000-0000-000000000001", story_id="story-1", head_sha="a" * 40
+        "00000000-0000-0000-0000-000000000001",
+        story_id="story-1",
+        head_sha="a" * 40,
+        deployed_commit_sha="e" * 40,
     )
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
@@ -194,9 +218,11 @@ async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deplo
         "disposition": "exhausted",
         "status": "failed",
     }
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
         "head": {"sha": "a" * 40},
     }
 
@@ -236,9 +262,11 @@ async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(
         "status": "applied",
     }
     recipient.return_value = SimpleNamespace(telegram_chat_id="84", unaddressed_reason="")
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
     gh.get_pull_request.return_value = {
         "number": 43,
         "merged_at": "2026-03-20T03:30:00Z",
+        "merge_commit_sha": "e" * 40,
         "head": {"sha": "b" * 40},
     }
 
@@ -536,3 +564,155 @@ def test_ci_failure_fingerprint_ignores_log_excerpt():
     )
 
     assert first == second
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock_gh_cls):
+    """The wait sits ahead of the Run, so a slow CI costs no Run and no budget.
+
+    The deploy used to be dispatched nine seconds after the merge, against a
+    mutable tag. Now the story simply stays where it is and the next tick asks
+    again — nothing is created, nothing is transitioned, nothing is published.
+    """
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = {
+        "id": 900,
+        "status": "in_progress",
+        "conclusion": None,
+        "html_url": "https://github.com/org/my-repo/actions/runs/900",
+        "created_at": "2026-03-20T03:16:00Z",
+        "head_sha": "e" * 40,
+    }
+    # A merge that happened moments ago: inside the bound, so still pending.
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "merge_commit_sha": "e" * 40,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    api.create_run.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+    api.update_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably(
+    mock_gh_cls, notify
+):
+    """No Run must not mean no evidence.
+
+    A finished CI run that did not publish never will, so the refusal happens at
+    once and lands on the story: the typed outcome and the commits it looked for,
+    then the human-review queue. Nothing is failed — a project's CI not
+    publishing is not proof the project is broken — and nothing is deployed.
+    """
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = {
+        "id": 900,
+        "status": "completed",
+        "conclusion": "failure",
+        "html_url": "https://github.com/org/my-repo/actions/runs/900",
+        "created_at": "2026-03-20T03:16:00Z",
+        "head_sha": "e" * 40,
+    }
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args[0][1]["quarantine_reason"]
+    assert reason["deploy_outcome"] == "images_not_published"
+    assert reason["deployed_commit_sha"] == "e" * 40
+    assert reason["head_sha"] == "a" * 40
+    assert reason["ci_run_id"] == 900
+    api.transition_story.assert_awaited_once_with("story-1", "human_review")
+    api.create_run.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+    api.fail_story.assert_not_awaited()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_the_deploy_names_the_merge_commit_not_the_pull_request_head(mock_gh_cls):
+    """The two commits are different facts and the deploy carries both.
+
+    No merge method makes the branch's new HEAD equal the pull request head, and
+    the project's CI publishes images from the branch, so a deploy that asked for
+    the PR head's tag would ask for an image that can never exist.
+    """
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 1
+
+    deploy_msg = redis.publish_message.call_args[0][1]
+    assert deploy_msg.head_sha == "a" * 40
+    assert deploy_msg.deployed_commit_sha == "e" * 40
+    run_metadata = api.create_run.await_args[0][0]["run_metadata"]
+    assert run_metadata["head_sha"] == "a" * 40
+    assert run_metadata["deployed_commit_sha"] == "e" * 40
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_merge_with_no_merge_commit_deploys_nothing(mock_gh_cls):
+    """Fail closed: the pull request head's images are never published."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": None,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.get_latest_workflow_run.assert_not_awaited()
+    api.create_run.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()

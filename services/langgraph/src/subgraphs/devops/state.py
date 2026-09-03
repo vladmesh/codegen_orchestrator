@@ -41,7 +41,12 @@ class DevOpsState(TypedDict):
     non_secret_values: dict[str, str]
 
     # Deploy target
-    head_sha: str | None  # exact commit SHA to deploy (from merged PR)
+    head_sha: str | None  # the story's commit, the PR head (from merged PR)
+    # The commit that is actually deployed: the built commit on the default
+    # branch whose images the target pulls and whose tree it checks out. See
+    # DeployMessage.deployed_commit_sha — never the same value as head_sha on a
+    # PR-merge deploy, and never a substitute for it.
+    deployed_commit_sha: str | None
     # Whether this deploy must be the last writer, see DeployMessage.fence_active_deploys
     fence_active_deploys: bool
 

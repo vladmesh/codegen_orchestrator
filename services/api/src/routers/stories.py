@@ -405,7 +405,7 @@ async def _complete_story(
 
 async def _recheck_target(
     story: Story, db: AsyncSession
-) -> tuple[Application, Repository, str, str]:
+) -> tuple[Application, Repository, str, str, str]:
     """Return the exact QA target which produced the typed quarantine.
 
     The newest story-linked QA Run is the capability receipt. It binds the
@@ -490,13 +490,27 @@ async def _recheck_target(
         .scalars()
         .first()
     )
-    head_sha = (deploy_receipt.run_metadata or {}).get("head_sha") if deploy_receipt else None
+    receipt_metadata = (deploy_receipt.run_metadata or {}) if deploy_receipt else {}
+    head_sha = receipt_metadata.get("head_sha")
     if not isinstance(head_sha, str) or len(head_sha) not in _COMMIT_SHA_LENGTHS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="recheck-qa target has no deployed SHA in its capability receipt",
         )
-    return application, repository, deploy_receipt.id, head_sha
+    # A recheck redeploys the same artifact, so it has to ask for the same
+    # images and the same tree: the built commit, which the receipt records
+    # beside the story commit. A receipt that names only the story commit cannot
+    # be repeated without guessing, and says so instead.
+    deployed_commit_sha = receipt_metadata.get("deployed_commit_sha")
+    if (
+        not isinstance(deployed_commit_sha, str)
+        or len(deployed_commit_sha) not in _COMMIT_SHA_LENGTHS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa target does not name the commit its deploy actually deployed",
+        )
+    return application, repository, deploy_receipt.id, head_sha, deployed_commit_sha
 
 
 async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> None:
@@ -679,7 +693,13 @@ async def recheck_story_qa(
                 detail="recheck-qa is already running for this quarantine episode",
             )
 
-    application, _repository, source_deploy_run_id, head_sha = await _recheck_target(story, db)
+    (
+        application,
+        _repository,
+        source_deploy_run_id,
+        head_sha,
+        deployed_commit_sha,
+    ) = await _recheck_target(story, db)
     recheck_id = f"recheck-{uuid.uuid4().hex}"
 
     if application.status == ApplicationStatus.STOPPING.value:
@@ -710,6 +730,7 @@ async def recheck_story_qa(
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
         head_sha=head_sha,
+        deployed_commit_sha=deployed_commit_sha,
         application_id=application.id,
     )
     db.add(
@@ -722,6 +743,7 @@ async def recheck_story_qa(
                 "application_id": application.id,
                 "recheck_id": recheck_id,
                 "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
                 "source_deploy_run_id": source_deploy_run_id,
                 "recheck_message": message.model_dump(mode="json"),
             },

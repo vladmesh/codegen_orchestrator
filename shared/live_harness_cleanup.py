@@ -27,6 +27,7 @@ GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
 ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
+MAIN_HEAD_PROBE_MARKER = "MAIN_HEAD_PROBE:"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
@@ -223,6 +224,38 @@ async def probe_story_branch(
         "ahead_by": comparison["ahead_by"],
         "behind_by": comparison["behind_by"],
     }
+    print(marker + json.dumps(payload))
+    return payload
+
+
+async def probe_main_head(
+    *,
+    owner: str,
+    repo: str,
+    marker: str = MAIN_HEAD_PROBE_MARKER,
+) -> dict[str, Any]:
+    """Print the commit `main` points at, read from GitHub and nothing else.
+
+    This exists so the live suite can say which commit the project's CI built
+    without asking the deploy what it thought it was deploying. An assertion
+    derived from the deploy's own input agrees with itself by construction and
+    would pass on the wrong tag, which is exactly the failure it is there to
+    catch (paid run 33753667796).
+    """
+    gh = GitHubAppClient()
+    token = await gh.get_token(owner, repo)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/main",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        resp.raise_for_status()
+        commit = resp.json()
+
+    payload = {"branch": "main", "sha": commit["sha"]}
     print(marker + json.dumps(payload))
     return payload
 
@@ -506,6 +539,8 @@ async def _run(args: argparse.Namespace) -> None:
             branch=args.branch,
             marker=args.marker,
         )
+    elif args.command == "main-head-probe":
+        await probe_main_head(owner=args.owner, repo=args.repo, marker=args.marker)
     elif args.command == "github-cleanup":
         await cleanup_github_repo(owner=args.owner, repo=args.repo)
     elif args.command == "registry-cleanup":
@@ -546,6 +581,11 @@ def _parser() -> argparse.ArgumentParser:
     story_branch.add_argument("--repo", required=True)
     story_branch.add_argument("--branch", required=True)
     story_branch.add_argument("--marker", default=STORY_BRANCH_PROBE_MARKER)
+
+    main_head = sub.add_parser("main-head-probe")
+    main_head.add_argument("--owner", required=True)
+    main_head.add_argument("--repo", required=True)
+    main_head.add_argument("--marker", default=MAIN_HEAD_PROBE_MARKER)
 
     github = sub.add_parser("github-cleanup")
     github.add_argument("--owner", required=True)

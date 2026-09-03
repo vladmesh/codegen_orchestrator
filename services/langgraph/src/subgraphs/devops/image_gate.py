@@ -22,14 +22,17 @@ from shared.clients.registry import DockerRegistryClient, parse_image_reference
 
 logger = structlog.get_logger()
 
-# How long the deploy waits for the merged commit's images. The project's CI
-# starts at the merge and has to run tests and then build and push one image per
+# How long a deploy waits for the built commit's images. The project's CI starts
+# at the merge and has to run tests and then build and push one image per
 # service, so the bound has to cover a cold multi-service buildx run — minutes,
 # not seconds. It also has to stay well inside the deploy lock (1 h) that
 # serialises deploys of one project, together with the deploy run itself (600 s)
-# and its one rerun (600 s): 900 + 600 + 600 is comfortably under that, so a
-# gate that waits its full bound can still refuse under its own lock instead of
-# having it expire underneath.
+# and its one rerun (600 s): 900 + 600 + 600 is comfortably under that.
+#
+# The waiting itself does not happen here. It happens ahead of the deploy Run,
+# in the producer that would otherwise create one — a Run that spends its budget
+# waiting for somebody else's CI is a budget that has stopped meaning what it
+# says. What runs inside the deploy is `verify_published_images`, a single read.
 IMAGE_PUBLICATION_TIMEOUT_SECONDS = 900
 IMAGE_PUBLICATION_POLL_SECONDS = 10
 
@@ -46,6 +49,23 @@ def image_references(values: dict[str, str]) -> dict[str, str]:
     writes into the target's `.env`.
     """
     return {key: value for key, value in values.items() if key.endswith("_IMAGE") and value}
+
+
+async def verify_published_images(
+    references: dict[str, str],
+    *,
+    registry: DockerRegistryClient | None = None,
+) -> dict[str, str]:
+    """Read every reference once and return its digest, or refuse.
+
+    The deploy's own check: by the time a deploy Run exists the images were
+    already observed published, so there is nothing left to wait for and one
+    read is the whole question. It is still fail-closed — an image that has gone
+    away, or a deploy that never passed a producer's wait at all, refuses here.
+    """
+    return await wait_for_published_images(
+        references, timeout_seconds=0, poll_seconds=0, registry=registry
+    )
 
 
 async def wait_for_published_images(

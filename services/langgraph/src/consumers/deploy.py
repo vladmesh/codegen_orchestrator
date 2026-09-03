@@ -166,6 +166,7 @@ def _build_subgraph_input(
     allocated_resources: dict,
     job_data: dict,
     head_sha: str,
+    deployed_commit_sha: str,
     fence_active_deploys: bool,
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
@@ -185,6 +186,7 @@ def _build_subgraph_input(
         "provided_secrets": job_data.get("provided_secrets", {}),
         "env_overrides": _effective_env_overrides(project, job_data.get("env_overrides", {})),
         "head_sha": head_sha,
+        "deployed_commit_sha": deployed_commit_sha,
         "fence_active_deploys": fence_active_deploys,
         "messages": [],
         "environment_contract": None,
@@ -637,6 +639,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             allocated_resources,
             job_data,
             head_sha=msg.head_sha,
+            deployed_commit_sha=msg.deployed_commit_sha,
             fence_active_deploys=msg.fence_active_deploys,
         )
         result = await devops_subgraph.ainvoke(subgraph_input)

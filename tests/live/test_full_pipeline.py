@@ -427,8 +427,8 @@ class TestFullPipeline:
         assert probe["url"] == pipeline["deployed_url"]
         assert probe["status_code"] == 200, probe
 
-    async def test_deployed_images_are_this_commits(self, pipeline):
-        """The deployment runs the images the merged commit built."""
+    async def test_deployed_images_are_the_built_commits(self, pipeline):
+        """The deployment runs the images the built commit produced."""
         if (
             pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
             or pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
@@ -584,13 +584,18 @@ class TestFullPipelineLLM:
         assert probe, "No health probe was recorded"
         assert probe["status_code"] == 200, probe
 
-    async def test_deployed_image_tag_is_the_merged_sha_before_qa_runs(self, llm_pipeline):
+    async def test_deployed_image_tag_is_the_built_commit_before_qa_runs(self, llm_pipeline):
         """QA is only worth spending once the right code is proven to be running.
 
         Paid run 33753667796 is why this is asserted here and not only inside the
-        deploy path: the deploy reported success on the merged SHA, the service
-        answered HTTP 200, and the wrong code was running. Only the marker
-        assertion, several steps and one paid QA turn later, said so.
+        deploy path: the deploy reported success, the service answered HTTP 200,
+        and the wrong code was running. Only the marker assertion, several steps
+        and one paid QA turn later, said so.
+
+        The expectation comes from GitHub — the commit `main` points at, which is
+        the commit the project's CI built — not from the deploy's own input. An
+        assertion derived from what the resolver was given agrees with itself and
+        would pass on the wrong tag.
         """
         if (
             llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
@@ -600,12 +605,20 @@ class TestFullPipelineLLM:
         assert llm_pipeline.get("deployed_image_error") is None, llm_pipeline[
             "deployed_image_error"
         ]
+        built_sha = llm_pipeline["main_head_probe"]["sha"]
+        expected = llm_pipeline["deployed_image_tag_expected"]
+        assert expected.endswith(built_sha[:7]), (
+            f"the expected tag {expected} was not derived from main's head {built_sha}"
+        )
         references = llm_pipeline.get("deployed_image_references")
         assert references, "the deploy run named no image references"
-        expected = llm_pipeline["deployed_image_tag_expected"]
         assert all(reference.endswith(f":{expected}") for reference in references.values()), (
-            f"deployed images {references} are not tagged {expected} for merged SHA "
-            f"{llm_pipeline['deploy_head_sha']}"
+            f"deployed images {references} are not tagged {expected} for the built commit "
+            f"{built_sha}"
+        )
+        assert llm_pipeline.get("deployed_commit_sha") == built_sha, (
+            f"the deploy says it deployed {llm_pipeline.get('deployed_commit_sha')}, "
+            f"main points at {built_sha}"
         )
 
     async def test_non_llm_qa_passed(self, llm_pipeline):
