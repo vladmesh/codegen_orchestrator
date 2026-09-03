@@ -144,6 +144,49 @@ def test_provisioning_failure_evidence_survives_a_pre_pytest_failure():
     assert "if [ -d /root/e2e-runs/latest ]" in collect
 
 
+def _provisioning_remote_script() -> list[str]:
+    """The part of the provisioning step that runs on the stand host."""
+    provision = _steps()["Register and provision dynamic target"]["run"]
+    remote = provision.split('root@"${PROD_HOST}" \'\n', maxsplit=1)[1].rsplit("\n'", maxsplit=1)[0]
+    return remote.splitlines()
+
+
+def test_the_provisioning_service_tails_are_kept_when_provisioning_succeeds():
+    """ "Did the qa_identity role run" is a question about a *successful* run.
+
+    Run 33718999040 recorded a target complete and QA then found its account
+    had no `authorized_keys`; infra-service, which logs each play recap and the
+    report closing the software phase, was collected only when provisioning
+    failed, so the artifact could not answer it. The tail is now taken either
+    way, through the same helper and the same protected-name allow-list, and a
+    redaction path that did not complete publishes its own reason rather than
+    the input it could not redact.
+    """
+    lines = _provisioning_remote_script()
+    collection = next(
+        index
+        for index, line in enumerate(lines)
+        if "logs --no-color --tail 300 infra-service scheduler" in line
+    )
+    guard = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == 'if [ "${wait_status}" -ne 0 ]; then'
+    )
+
+    assert collection < guard, "the tail must be collected before the step leaves on a failure"
+    # Nothing but leaving is left in the failure branch, so success and failure
+    # reach the collection by the same path.
+    assert [line.strip() for line in lines[guard + 1 : guard + 3]] == [
+        'exit "${wait_status}"',
+        "fi",
+    ]
+    script = "\n".join(lines)
+    assert "redact_diagnostic" in script
+    assert "provisioning-services.log" in script
+    assert "the redaction path did not complete" in script
+
+
 def test_suite_failure_captures_every_service_that_carries_the_pipeline():
     """QA and deploy are stages of the pipeline, so their services are tails too."""
     collect = _steps()["Record machine manifest"]["run"]

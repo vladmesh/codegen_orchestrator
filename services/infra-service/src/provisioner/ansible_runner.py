@@ -15,6 +15,14 @@ logger = structlog.get_logger()
 
 MAX_LOG_LENGTH = 1000
 
+# The recap block ansible prints last, and enough of the output before it to
+# carry the play's own closing statements. A successful provisioning used to
+# leave nothing behind but a debug line truncated to its first 1000 characters,
+# so the one question an acceptance artifact could not answer was whether a role
+# had run at all. Both are bounded, and both are redacted before they are logged.
+PLAY_RECAP_MARKER = "PLAY RECAP"
+PLAY_TAIL_LENGTH = 3000
+
 # Configuration from centralized constants
 PROVISIONING_TIMEOUT = Timeouts.PROVISIONING
 REINSTALL_TIMEOUT = Timeouts.REINSTALL
@@ -25,6 +33,19 @@ def _redact_private_key(value: str, private_key: str | None) -> str:
     if private_key:
         return value.replace(private_key, "[REDACTED SSH PRIVATE KEY]")
     return value
+
+
+def _play_recap(stdout: str) -> str:
+    """The play's own account of what ran on the host, or the fact that it has none.
+
+    Kept for every outcome, not only failure: "which roles ran on the target
+    this run recorded complete" is a question about a *successful* provisioning,
+    and the run that raised it had no answer to read.
+    """
+    index = stdout.rfind(PLAY_RECAP_MARKER)
+    if index < 0:
+        return "no PLAY RECAP: this run produced no recap of its own play"
+    return stdout[index:].strip()
 
 
 class AnsibleRunner:
@@ -180,6 +201,18 @@ class AnsibleRunner:
                 server_handle=server_handle,
                 exit_code=process.returncode,
                 duration_sec=round(duration, 2),
+            )
+            # The play's own last words, at a level a service log tail keeps.
+            # The tail is where the playbook's closing report sits — for the
+            # software phase, what the target said about the QA identity it
+            # lends — and the recap is which hosts the play touched and how it
+            # ended on each.
+            logger.info(
+                "ansible_play_recap",
+                playbook=playbook_name,
+                server_handle=server_handle,
+                recap=_play_recap(stdout),
+                tail=stdout[-PLAY_TAIL_LENGTH:],
             )
             if success:
                 output = stdout

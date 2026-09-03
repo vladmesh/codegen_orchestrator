@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- Provisioning now proves the QA seat the way a QA run takes it — `authorized_keys` present and a
+  real login as `qa-observer` — so a host that cannot lend one fails instead of being recorded complete.
+- The stand keeps the provisioning play recap and the redacted `infra-service` tail when provisioning
+  succeeds too, so an artifact can show whether the `qa_identity` role ran on the target.
 - The stand handoff collects each evidence file only once it exists, so a run that wrote no target
   snapshot no longer kills the step that collects the service tails and names what is missing.
 - A paid stand failure at QA now carries the QA and deploy Run records, the `qa-worker` and

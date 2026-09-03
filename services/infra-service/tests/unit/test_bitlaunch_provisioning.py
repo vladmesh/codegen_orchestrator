@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from shared.contracts.dto.incident import IncidentType
 from shared.provisioning_policy import authorize_run_owned_target
+from shared.qa_identity import QA_SSH_USER_LABEL
 from src.provisioner.bitlaunch import BitLaunchClient
 from src.provisioner.node import ProvisionerNode
 
@@ -211,3 +213,56 @@ async def test_bitlaunch_stand_profile_reaches_software_playbook_as_an_explicit_
     assert ansible.run_playbook.call_args_list[1].kwargs["extra_vars"] == {
         "provisioning_profile": "stand_e2e"
     }
+
+
+@pytest.mark.asyncio
+async def test_a_software_phase_that_failed_records_no_completion_and_no_qa_account(monkeypatch):
+    """The whole point of the proof at the end of the software phase.
+
+    A host whose QA identity could not be proved fails that playbook, and a
+    failed playbook must leave the server row saying what is true: no
+    `provisioning_phase=complete`, no QA-account label, and a provisioning
+    incident carrying the playbook output — the same journal entry
+    `retrofit_qa_identity` writes when the same role refuses the same host.
+    Run 33718999040 met the opposite: a row that said the account was there.
+    """
+    monkeypatch.setenv("STAND_RUN_TAG", "gha-41-1")
+    ansible = MagicMock()
+    # Access succeeds, the software phase fails the way a failed proof fails it.
+    ansible.run_playbook.side_effect = [
+        (True, "ok"),
+        (False, "STDOUT TAIL:\nqa-identity-proof: qa-observer has no authorized_keys"),
+    ]
+    ssh_manager = MagicMock()
+    ssh_manager.get_public_key.return_value = "provisioner-public-key"
+    node = ProvisionerNode(ssh_manager=ssh_manager, ansible_runner=ansible)
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_target()))
+    monkeypatch.setattr(
+        "src.provisioner.node.reserve_provisioning_attempt",
+        AsyncMock(return_value=(1, "e1")),
+    )
+    monkeypatch.setattr(node, "_init_bitlaunch_client", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "src.provisioner.node.get_server_ssh_key", AsyncMock(return_value="creation-key")
+    )
+    monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
+    labels = AsyncMock()
+    complete = AsyncMock()
+    incident = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_labels", labels)
+    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
+    monkeypatch.setattr("src.provisioner.node.create_incident", incident)
+
+    result = await node.run(
+        {"server_to_provision": "bitlaunch-6a9905aed77393390012fc3e", "errors": []}
+    )
+
+    complete.assert_not_awaited()
+    written = [call.args[1] for call in labels.await_args_list]
+    assert written == [{"provisioning_phase": "software_installation"}]
+    assert not any(QA_SSH_USER_LABEL in labels_written for labels_written in written)
+    incident.assert_awaited_once()
+    journalled = incident.await_args.args
+    assert journalled[1] is IncidentType.PROVISIONING_FAILED
+    assert "authorized_keys" in journalled[2]["output"]
+    assert "Phase 2 failed" in result["errors"]

@@ -456,15 +456,23 @@ anything records that this host has an identity:
   the role fails there: it changes nothing, deletes nobody's sudoers file, and the host is left with
   no QA identity. Rename or remove that account by hand and run provisioning again.
 - **the seat itself**, asked of the machine rather than assumed from the tasks that ran
-  (`roles/qa_identity/files/qa-identity-proof`, the role's last task): `uid != 0`, no `docker`,
-  `root`, `sudo` or `wheel` group, everything `sudo -l -U qa-observer` grants is exactly the one
-  wrapper rule, and the account itself cannot read or write `/var/run/docker.sock` (which answers
-  group, file mode and ACL in one question). Anything unproved fails the role.
+  (`roles/qa_identity/files/qa-identity-proof`, the role's last task). Its ceiling: `uid != 0`, no
+  `docker`, `root`, `sudo` or `wheel` group, everything `sudo -l -U qa-observer` grants is exactly
+  the one wrapper rule, and the account itself cannot read or write `/var/run/docker.sock` (which
+  answers group, file mode and ACL in one question). And that the seat can actually be taken: its
+  `authorized_keys` exists and still carries the line the role opens it with, and the proof does what
+  a run does — appends a throwaway key, logs in over the loopback as `qa-observer`, and removes it
+  again, on the way out of a failure too. Anything unproved fails the role.
 
 Because both run inside `provision_software.yml`, a failure is an ordinary provisioning failure: the
-phase does not complete, `labels.qa_ssh_user` is never written, and the host keeps refusing QA. On
-the retrofit path the same failure is recorded as a `provisioning_failed` incident against that
-handle with `details.step = qa_identity` and the playbook output that says what was found.
+phase does not complete, `labels.qa_ssh_user` is never written, and the host keeps refusing QA — the
+software phase journals it as a `provisioning_failed` incident with `details.step = software_setup`
+and the playbook output. On the retrofit path the same failure is recorded the same way, with
+`details.step = qa_identity`. The play's last task reports what the target said about the account,
+and it reads a variable only the role's proof registers, so a play that skipped the role — under any
+profile or task selection — fails there rather than completing without a QA seat. That report and
+the play recap are logged by the provisioner (`ansible_play_recap`), which is how an acceptance
+artifact can show whether the role ran on a host that provisioned successfully.
 
 That account cannot become root: its primary group is its own (`qa-observer`, set explicitly, so a
 retrofit moves an account somebody created inside `docker` out of it), it is in no secondary group
