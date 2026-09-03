@@ -1265,6 +1265,77 @@ def engineering_records(
     ]
 
 
+def test_a_story_branch_with_no_commit_is_the_reason_not_a_missing_deploy_run(
+    codex_docker, tmp_path
+):
+    """The empty branch names itself, instead of an expired deploy wait naming it.
+
+    Run 33706516335 ended `stopped_at_deploy` / `deploy_run_missing` after 420 s
+    of waiting: true about the symptom, silent about the cause. A task the
+    control plane called done over a branch carrying no commit stops at
+    engineering, and the reason says so.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        engineering_runs=engineering_records(),
+        story_branch="story/story-1",
+        story_branch_compare={
+            "branch": "story/story-1",
+            "status": "identical",
+            "ahead_by": 0,
+            "behind_by": 0,
+        },
+        story_branch_error=(
+            "no commit was made for this story: story/story-1 is not ahead of main"
+        ),
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    failure = artifact["failure"]
+    assert failure["stage"] == TerminalState.STOPPED_AT_ENGINEERING.value
+    assert failure["failure_kind"] == FailureKind.STORY_BRANCH_NOT_AHEAD.value
+    reason = failure["control_plane_reason"]
+    assert reason["value"]["source"] == run_evidence.ReasonSource.STORY_BRANCH.value
+    assert reason["value"]["branch"] == "story/story-1"
+    assert reason["value"]["compare"]["ahead_by"] == 0
+    assert "no commit was made for this story" in reason["value"]["detail"]
+    # The engineering Runs that called this task done travel with it.
+    engineering = reason["value"]["engineering"]["value"]
+    assert engineering["runs"][0]["run_id"] == ENGINEERING_RUN_ID
+    assert artifact["run"]["failure_kind"] == FailureKind.STORY_BRANCH_NOT_AHEAD.value
+    assert "no commit was made for this story" in artifact["qa"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def test_a_story_branch_ahead_of_main_leaves_the_deploy_classification_alone(
+    codex_docker, tmp_path
+):
+    """A branch that carries a commit is not a finding; the run classifies as before."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        engineering_runs=engineering_records(),
+        story_branch="story/story-1",
+        story_branch_compare={
+            "branch": "story/story-1",
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+        },
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["failure"]["stage"] == TerminalState.STOPPED_AT_DEPLOY.value
+    assert artifact["failure"]["failure_kind"] == FailureKind.DEPLOY_RUN_MISSING.value
+
+
 def test_a_failed_paid_run_names_the_stage_and_the_control_plane_reason(codex_docker, tmp_path):
     collector = collector_for(codex_docker)
     collector.capture()

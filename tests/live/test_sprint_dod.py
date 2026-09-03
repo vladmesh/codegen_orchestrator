@@ -356,10 +356,10 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
             assert ctx.get("scaffold_status") == ProjectStatus.ACTIVE
-            # The shared health task can be honestly closed with no commit once the
-            # scaffold already ships GET /health, and a turn that lands no commit is
-            # judged failed regardless of adoption. This proof needs a turn whose
-            # result is a real push, so it asks for an endpoint the scaffold lacks.
+            # A turn that lands no commit is judged failed regardless of adoption,
+            # so this proof needs a turn whose result is a real push. It keeps its
+            # own endpoint task rather than inheriting the mega's marker task: what
+            # is proved here is the restart, not the payload of /health.
             ctx["task_title"] = RESTART_TASK_TITLE
             ctx["task_description"] = RESTART_TASK_DESCRIPTION
             await create_story_and_task(api, ctx)

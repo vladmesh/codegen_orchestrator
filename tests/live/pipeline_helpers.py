@@ -52,7 +52,10 @@ from shared.contracts.service_ports import is_http_health_port_service
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
-from shared.live_harness_cleanup import build_remote_cleanup_command
+from shared.live_harness_cleanup import (
+    STORY_BRANCH_PROBE_MARKER,
+    build_remote_cleanup_command,
+)
 from shared.queues import SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -124,26 +127,67 @@ LLM_BACKEND_PROJECT_DESCRIPTION = (
     "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
     "without any user-provided secrets."
 )
-LLM_BACKEND_DETAILED_SPEC = """Implement a backend-only service.
+# The field the paid suite asks the developer worker to add to the scaffolded
+# health payload. The scaffold serves GET /health already, so a task phrased
+# around the endpoint itself asks for nothing: the third paid run (33706516335)
+# ended with an empty story branch because the worker correctly found the work
+# already done. One field the template does not render is a change the worker
+# has to write, and one the harness can see afterwards.
+LLM_HEALTH_MARKER_FIELD = "e2e_marker"
+
+
+def new_health_marker() -> str:
+    """The marker value this run asks for, and only this run can be satisfied by.
+
+    Minted per run, so no artifact left behind by an earlier run — a committed
+    file, a cached image, a template that grew the field — can answer for this
+    one. A run that shows the marker shows that this run's worker wrote it.
+    """
+    return f"e2e-{secrets.token_hex(6)}"
+
+
+def llm_backend_detailed_spec(marker: str) -> str:
+    """The project-level spec of the paid backend, carrying this run's marker."""
+    return f"""Implement a backend-only service.
 
 Requirements:
 - Keep the project backend-only. Do not add frontend, Telegram, notification, or bot modules.
 - Do not require any user-provided secrets or environment variables.
 - Keep the existing deploy contract limited to generated, computed, or literal values.
-- Ensure GET /health returns HTTP 200 with a small JSON payload.
-- Add or update a focused backend test for the health endpoint if the scaffold does not already
-  cover it.
+- GET /health returns HTTP 200 and a JSON object that carries the field
+  "{LLM_HEALTH_MARKER_FIELD}" with the exact string value "{marker}".
+- Cover that field with one focused backend test.
 - Run the repository's normal formatting, linting, and unit tests before committing.
 """
-LLM_BACKEND_TASK_TITLE = "Implement backend health API"
-LLM_BACKEND_TASK_DESCRIPTION = (
-    "Use the scaffolded backend service and make the smallest code change needed to implement "
-    "a production-safe GET /health endpoint that returns HTTP 200 JSON. The app must deploy "
-    "with backend-only modules and no user-required secrets."
-)
-LLM_QA_ACCEPTANCE_CRITERIA = """- GET /health returns HTTP 200.
-- Inspect the JSON returned by GET /health and report the observed non-empty status value.
+
+
+LLM_BACKEND_TASK_TITLE = "Add the run marker to the backend health payload"
+
+
+def llm_backend_task_description(marker: str) -> str:
+    """The engineering task the paid suite drives, in the shape the plan names."""
+    return (
+        "The scaffolded backend already serves GET /health, so this task is about what that "
+        f'endpoint returns. Add the field "{LLM_HEALTH_MARKER_FIELD}" to its JSON response '
+        f'with the exact string value "{marker}", keeping the response HTTP 200 and the rest '
+        "of the payload as it is. Add or update one focused backend test asserting that "
+        f'GET /health answers 200 and that its JSON carries "{LLM_HEALTH_MARKER_FIELD}" equal '
+        f'to "{marker}". Keep the app backend-only and deployable with no user-required secrets.'
+    )
+
+
+def llm_qa_acceptance_criteria(marker: str) -> str:
+    """What QA is told to observe: the field this run's task added, and nothing else.
+
+    The transport contract only — the change is observable and the executor
+    really ran. Architecture, diff size and style are not QA's to grade.
+    """
+    return f"""- GET /health returns HTTP 200.
+- Inspect the JSON returned by GET /health and report the observed value of the field
+  "{LLM_HEALTH_MARKER_FIELD}"; it must be exactly "{marker}".
 """
+
+
 LIVE_WORKER_AGENT_TYPE_ENV = "LIVE_WORKER_AGENT_TYPE"
 LIVE_LLM_QA_ENV = "LIVE_LLM_QA"
 LIVE_MATRIX_AGENT_TYPES = frozenset({"claude", "codex"})
@@ -414,22 +458,30 @@ async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncC
 async def create_llm_backend_project(
     api: httpx.AsyncClient, api_internal: httpx.AsyncClient
 ) -> dict:
-    """Create project + repository for the live LLM backend pipeline."""
+    """Create project + repository for the live LLM backend pipeline.
+
+    The marker is minted here, once, and every string this run drives the LLM
+    path with is derived from it: the spec, the engineering task and — when the
+    run asks for an LLM QA executor — the acceptance criteria. They cannot drift
+    apart, because there is only one value and one place it comes from.
+    """
+    marker = new_health_marker()
     ctx = await create_pipeline_project(
         api,
         api_internal,
         project_prefix=require_live_contour().llm_pipeline,
         description=LLM_BACKEND_PROJECT_DESCRIPTION,
-        detailed_spec=LLM_BACKEND_DETAILED_SPEC,
+        detailed_spec=llm_backend_detailed_spec(marker),
         agent_type=live_worker_agent_type(),
         task_title=LLM_BACKEND_TASK_TITLE,
-        task_description=LLM_BACKEND_TASK_DESCRIPTION,
+        task_description=llm_backend_task_description(marker),
     )
+    ctx["health_marker"] = marker
     ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
     if ctx["qa_requires_executor"]:
         response = await api.patch(
             f"/api/repositories/{ctx['repo_id']}",
-            json={"acceptance_criteria": LLM_QA_ACCEPTANCE_CRITERIA},
+            json={"acceptance_criteria": llm_qa_acceptance_criteria(marker)},
         )
         response.raise_for_status()
     return ctx
@@ -1224,12 +1276,24 @@ async def wait_deploy(
 # ── Environment contract probes ──────────────────────────────────────────
 
 
+def parse_probe_payload(stdout: str, marker: str, *, subject: str) -> dict:
+    """Read a marked probe payload out of the container's stdout."""
+    for line in stdout.splitlines():
+        if line.startswith(marker):
+            return json.loads(line[len(marker) :])
+    raise RuntimeError(f"{subject} printed no payload: {stdout[:300]}")
+
+
 def parse_env_contract_probe(stdout: str) -> dict:
     """Read the probe payload out of the container's stdout."""
-    for line in stdout.splitlines():
-        if line.startswith(ENV_CONTRACT_PROBE_MARKER):
-            return json.loads(line[len(ENV_CONTRACT_PROBE_MARKER) :])
-    raise RuntimeError(f"environment contract probe printed no payload: {stdout[:300]}")
+    return parse_probe_payload(
+        stdout, ENV_CONTRACT_PROBE_MARKER, subject="environment contract probe"
+    )
+
+
+def parse_story_branch_probe(stdout: str) -> dict:
+    """Read the story-branch comparison out of the container's stdout."""
+    return parse_probe_payload(stdout, STORY_BRANCH_PROBE_MARKER, subject="story branch probe")
 
 
 def probe_env_contract(repo_name: str, ref: str, *, verify_merged_into_main: bool = False) -> dict:
@@ -1305,6 +1369,74 @@ def record_env_contract(
     error = _env_contract_failure(probe, phase, verify_merged_into_main)
     if error:
         ctx.setdefault("env_contract_errors", {})[phase] = error
+        return False
+    return True
+
+
+# ── Story branch ─────────────────────────────────────────────────────────
+
+
+def story_branch_name(story_id: str) -> str:
+    """The branch the pipeline commits a story's work to."""
+    return f"story/{story_id}"
+
+
+def probe_story_branch(repo_name: str, branch: str) -> dict:
+    """Compare one story branch with main through the stand's GitHub App."""
+    args = [
+        "story-branch-probe",
+        "--owner",
+        GITHUB_ORG,
+        "--repo",
+        repo_name,
+        "--branch",
+        branch,
+        "--marker",
+        STORY_BRANCH_PROBE_MARKER,
+    ]
+    result = docker_exec_python_module("langgraph", "shared.live_harness_cleanup", args, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"story branch probe for {repo_name}@{branch} failed: {result.stderr or result.stdout}"
+        )
+    return parse_story_branch_probe(result.stdout)
+
+
+def record_story_branch_ahead(ctx: dict) -> bool:
+    """Whether this story's branch carries a commit of its own. Records why not.
+
+    This is the assertion that stands between engineering and the deploy wait.
+    Engineering has just reported its task done, so whether a commit exists is
+    settled — and it is the earliest moment it is settled, because before that
+    the worker may still be writing one. The scheduler's ``complete_stories``
+    is already retrying the story PR by now, every 30 s, and GitHub answers it
+    422 "No commits between main and <branch>" every time; nothing about that
+    loop can make a commit appear. So an empty branch is reported here, in one
+    GitHub comparison, instead of by a 420-second deploy wait for a Run that no
+    merge can ever create.
+
+    A probe that cannot run at all is recorded the same way a probe that answers
+    "not ahead" is — the run stops either way, and the reason says which
+    happened, rather than an exception losing the evidence artifact.
+    """
+    branch = story_branch_name(ctx["story_id"])
+    ctx["story_branch"] = branch
+    try:
+        probe = probe_story_branch(ctx["repo_name"], branch)
+    except Exception as error:
+        ctx["story_branch_error"] = (
+            f"the story branch {branch} could not be compared with main, so it is unknown "
+            f"whether engineering committed anything: {type(error).__name__}: {error}"
+        )
+        return False
+    ctx["story_branch_compare"] = probe
+    if probe["ahead_by"] < 1:
+        ctx["story_branch_error"] = (
+            f"no commit was made for this story: {branch} is not ahead of main "
+            f"(compare status {probe['status']}, ahead_by {probe['ahead_by']}). The story PR "
+            "GitHub refuses with 422 'No commits between main and this branch' can never be "
+            "opened, so no merge, and no deploy run, can follow."
+        )
         return False
     return True
 
@@ -1682,8 +1814,17 @@ async def wait_service_deployment(
     return None
 
 
-async def probe_health_endpoint(url: str, *, attempts: int = 5, retry_delay: float = 5) -> dict:
-    """Probe the public health endpoint while the application is still running."""
+async def probe_health_endpoint(
+    url: str, *, attempts: int = 5, retry_delay: float = 5, expect_marker: str | None = None
+) -> dict:
+    """Probe the public health endpoint while the application is still running.
+
+    ``expect_marker`` is the value this run asked engineering to put in the
+    payload. It is judged here, against the whole response, because the retained
+    body is a bounded slice of it and a marker past that bound would be
+    unreadable afterwards. A run that asks for no marker records exactly what it
+    always did.
+    """
     last_error = None
     async with httpx.AsyncClient(timeout=30) as client:
         for attempt in range(1, attempts + 1):
@@ -1700,6 +1841,8 @@ async def probe_health_endpoint(url: str, *, attempts: int = 5, retry_delay: flo
                     "body": response.text[:200],
                     "attempt": attempt,
                 }
+                if expect_marker is not None:
+                    evidence["marker_present"] = expect_marker in response.text
                 if response.status_code == 200:
                     return evidence
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
@@ -2560,6 +2703,9 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         f"- task_id: `{ctx.get('task_id')}`",
         f"- task_status: `{ctx.get('task_status')}`",
         f"- story_status: `{ctx.get('story_status')}`",
+        f"- story_branch: `{ctx.get('story_branch')}`",
+        f"- story_branch_compare: `{json.dumps(ctx.get('story_branch_compare'), sort_keys=True)}`",
+        f"- story_branch_error: `{ctx.get('story_branch_error')}`",
         f"- final_app_status: `{ctx.get('final_app_status')}`",
         f"- deployed_url: `{ctx.get('deployed_url')}`",
         f"- engineering_elapsed: `{ctx.get('engineering_elapsed')}`",

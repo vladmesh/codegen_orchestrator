@@ -26,6 +26,7 @@ from shared.provisioning_policy import (
 GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
 ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
+STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
@@ -177,6 +178,43 @@ async def probe_env_contract(
         "user_secret_entries": user_secret_entries,
         "required_user_secret_entries": required_user_secret_entries,
         "merged_into_main": merged_into_main,
+    }
+    print(marker + json.dumps(payload))
+    return payload
+
+
+async def probe_story_branch(
+    *,
+    owner: str,
+    repo: str,
+    branch: str,
+    marker: str = STORY_BRANCH_PROBE_MARKER,
+) -> dict[str, Any]:
+    """Compare one story branch with main and print how far ahead of it it is.
+
+    ``ahead_by`` is the whole answer the live harness needs: a story branch that
+    is not ahead of main carries no commit of its own, and the PR the scheduler
+    keeps trying to open for it is the 422 GitHub answers with "No commits
+    between main and <branch>".
+    """
+    gh = GitHubAppClient()
+    token = await gh.get_token(owner, repo)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/compare/main...{branch}",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        resp.raise_for_status()
+        comparison = resp.json()
+
+    payload = {
+        "branch": branch,
+        "status": comparison["status"],
+        "ahead_by": comparison["ahead_by"],
+        "behind_by": comparison["behind_by"],
     }
     print(marker + json.dumps(payload))
     return payload
@@ -391,6 +429,13 @@ async def _run(args: argparse.Namespace) -> None:
             verify_merged_into_main=args.verify_merged_into_main,
             marker=args.marker,
         )
+    elif args.command == "story-branch-probe":
+        await probe_story_branch(
+            owner=args.owner,
+            repo=args.repo,
+            branch=args.branch,
+            marker=args.marker,
+        )
     elif args.command == "github-cleanup":
         await cleanup_github_repo(owner=args.owner, repo=args.repo)
     elif args.command == "registry-cleanup":
@@ -415,6 +460,12 @@ def _parser() -> argparse.ArgumentParser:
     probe.add_argument("--ref", required=True)
     probe.add_argument("--verify-merged-into-main", action="store_true")
     probe.add_argument("--marker", default=ENV_CONTRACT_PROBE_MARKER)
+
+    story_branch = sub.add_parser("story-branch-probe")
+    story_branch.add_argument("--owner", required=True)
+    story_branch.add_argument("--repo", required=True)
+    story_branch.add_argument("--branch", required=True)
+    story_branch.add_argument("--marker", default=STORY_BRANCH_PROBE_MARKER)
 
     github = sub.add_parser("github-cleanup")
     github.add_argument("--owner", required=True)
