@@ -42,6 +42,7 @@ from ._qa_target import (
     QAGrantJournal,
     QAGrantOutcome,
     QAIdentityAbsentError,
+    QAIdentityUnreadableError,
     QATarget,
     new_grant_marker,
     qa_target_grant,
@@ -909,13 +910,22 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 reason=QAIdentityRejection.ABSENT_ON_TARGET,
                 detail=str(exc),
             )
+        # A permission problem on the target is named as one. It is not
+        # `server_unavailable`: the run reached the host, and the repair is the
+        # server row's administrative account rather than the host's
+        # provisioning.
+        category = (
+            QABlockerCategory.QA_IDENTITY_UNREADABLE
+            if isinstance(exc, QAIdentityUnreadableError)
+            else QABlockerCategory.SERVER_UNAVAILABLE
+        )
         # An unconfirmed grant remains cleanup residue.
         return _apply_cleanup_residue(
             QAResult(
                 passed=False,
                 summary=f"QA could not obtain access to {target.server_ip}: {exc}",
                 blocker=QABlocker(
-                    category=QABlockerCategory.SERVER_UNAVAILABLE,
+                    category=category,
                     attempted="issue a one-shot QA identity on the target",
                     sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
                     received=str(exc),

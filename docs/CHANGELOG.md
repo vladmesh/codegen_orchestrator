@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- The dynamic stand target is registered with the production administrative account, so the QA grant's
+  admin connection can write the QA account's `authorized_keys` instead of blocking on a seat it cannot read.
+- The QA grant and revoke scripts separate "cannot read this account's home" from "no such file", so an
+  unreadable `authorized_keys` is a permission blocker and never a revoke that reports zero surviving keys.
+- The provisioner logs the play's QA-identity report as its own field, so it reaches an artifact even when
+  later roles push it out of the play tail.
 - Provisioning now proves the QA seat the way a QA run takes it — `authorized_keys` present and a
   real login as `qa-observer` — so a host that cannot lend one fails instead of being recorded complete.
 - The stand keeps the provisioning play recap and the redacted `infra-service` tail when provisioning

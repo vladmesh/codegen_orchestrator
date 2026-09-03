@@ -210,6 +210,101 @@ class TestWhatASuccessfulPlaybookLeavesBehind:
         assert "qa-identity-proof: qa-observer login=ok" in recap
         assert "TASK [Create the QA run identity]" not in recap
 
+    # What run 33729987635 actually produced: the role's report, then the roles
+    # after it printing more than the tail keeps. The proof is in the output and
+    # not in its last 3000 characters.
+    BURIED = (
+        "TASK [Report the QA identity this host lends] ***\n"
+        'ok: [1.2.3.4] => {"msg": {"qa_identity_proof": '
+        '"qa-identity-proof: qa-observer login=ok uid=1001 sudo=wrapper-only"}}\n'
+        + "TASK [monitoring : something noisy] ***\nchanged: [1.2.3.4]\n" * 300
+        + "\nPLAY RECAP ***\n1.2.3.4 : ok=61 changed=12 unreachable=0 failed=0 skipped=2\n"
+    )
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_qa_identity_report_survives_a_tail_it_no_longer_fits_in(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """The closing line is cut out by name, not left to the tail's luck.
+
+        `codegen-orchestrator-1254` exists to make the target state this line,
+        and the artifact of the paid run that produced it still could not show
+        the text, because the roles that run after the report print more than
+        the tail keeps. Evidence that only survives when the output is short
+        enough is not evidence.
+        """
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=self.BURIED, stderr="")
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+        )
+
+        recap = self._recap(capsys)
+
+        assert "qa-identity-proof: qa-observer login=ok" in recap
+        assert "failed=0" in recap
+        # And the field is its own, so the tail is still just the tail.
+        assert "qa_identity=" in recap
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_a_play_that_never_reported_an_identity_says_so_rather_than_nothing(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """A named absence, like the recap's: the field is never silently empty."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="PLAY RECAP ***\n1.2.3.4 : ok=1 failed=0\n", stderr=""
+        )
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_access.yml",
+        )
+
+        assert "no qa_identity_proof" in self._recap(capsys)
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_private_key_is_redacted_out_of_the_identity_report_too(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """Every path out of this function goes through the same redaction."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----"
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=f'ok: [1.2.3.4] => {{"qa_identity_proof": "took the seat with {key}"}}\n',
+            stderr="",
+        )
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            ssh_user="root",
+            ssh_private_key=key,
+        )
+
+        # Read whole: a redaction test must look at every byte the service
+        # stream received, not at one line of it.
+        printed = capsys.readouterr().out
+
+        assert "BEGIN OPENSSH PRIVATE KEY" not in printed
+        assert "REDACTED SSH PRIVATE KEY" in printed
+        assert "qa_identity=" in printed
+
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_a_play_that_produced_no_recap_says_so_rather_than_nothing(
         self, mock_run, monkeypatch, capsys

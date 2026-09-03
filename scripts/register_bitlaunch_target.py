@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 import urllib.request
 
+from shared.contracts.dto.server import ServerCreate
 from shared.provisioning_policy import (
     BITLAUNCH_ID_LENGTH,
     BITLAUNCH_PROVIDER,
@@ -23,6 +24,15 @@ from shared.provisioning_policy import (
 )
 
 TARGET_ROLE = "target"
+
+# The administrative account the fleet key opens on this row, taken from the
+# same place a production row takes it: `server_sync` names no `ssh_user` at
+# all, so every production row carries this default. Stating it here from the
+# default rather than as a literal is what keeps the two contours one model —
+# a stand row that named its own account diverged for three paid runs, because
+# the QA grant writes another account's `authorized_keys` over this connection
+# and only an administrative account can do that.
+ADMIN_SSH_USER = ServerCreate.model_fields["ssh_user"].default
 
 
 def build_target_payload(
@@ -43,7 +53,7 @@ def build_target_payload(
         "handle": f"bitlaunch-{target_id}",
         "host": target_ip,
         "public_ip": target_ip,
-        "ssh_user": "deploy",
+        "ssh_user": ADMIN_SSH_USER,
         "ssh_key": ssh_private_key,
         "capacity_cpu": 4,
         "capacity_ram_mb": 8192,

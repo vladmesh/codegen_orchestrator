@@ -23,6 +23,15 @@ MAX_LOG_LENGTH = 1000
 PLAY_RECAP_MARKER = "PLAY RECAP"
 PLAY_TAIL_LENGTH = 3000
 
+# The play's closing statement about the QA seat this host lends, kept as its
+# own field instead of being left to the tail's luck. Run 33729987635 pushed it
+# out of the last 3000 characters — the roles after it print more than that —
+# so the artifact of a provisioning that *did* prove the seat still could not
+# show the proof. A marker and a bounded window, cut from the same redacted
+# output as everything else here.
+QA_IDENTITY_MARKER = "qa_identity_proof"
+QA_IDENTITY_REPORT_LENGTH = 1000
+
 # Configuration from centralized constants
 PROVISIONING_TIMEOUT = Timeouts.PROVISIONING
 REINSTALL_TIMEOUT = Timeouts.REINSTALL
@@ -46,6 +55,19 @@ def _play_recap(stdout: str) -> str:
     if index < 0:
         return "no PLAY RECAP: this run produced no recap of its own play"
     return stdout[index:].strip()
+
+
+def _qa_identity_report(stdout: str) -> str:
+    """What the play said about the QA seat, or the fact that it said nothing.
+
+    Taken from the last mention, because the report task is the play's own last
+    word on the role and a retrofit play mentions the variable once more than a
+    provisioning one does.
+    """
+    index = stdout.rfind(QA_IDENTITY_MARKER)
+    if index < 0:
+        return f"no {QA_IDENTITY_MARKER}: this play reported no QA identity"
+    return stdout[index : index + QA_IDENTITY_REPORT_LENGTH].strip()
 
 
 class AnsibleRunner:
@@ -203,16 +225,17 @@ class AnsibleRunner:
                 duration_sec=round(duration, 2),
             )
             # The play's own last words, at a level a service log tail keeps.
-            # The tail is where the playbook's closing report sits — for the
-            # software phase, what the target said about the QA identity it
-            # lends — and the recap is which hosts the play touched and how it
-            # ended on each.
+            # The recap is which hosts the play touched and how it ended on
+            # each; the tail is the closing output around it; and the QA
+            # identity report is cut out by name rather than left to fall
+            # inside a fixed number of trailing characters, because it did not.
             logger.info(
                 "ansible_play_recap",
                 playbook=playbook_name,
                 server_handle=server_handle,
                 recap=_play_recap(stdout),
                 tail=stdout[-PLAY_TAIL_LENGTH:],
+                qa_identity=_qa_identity_report(stdout),
             )
             if success:
                 output = stdout
