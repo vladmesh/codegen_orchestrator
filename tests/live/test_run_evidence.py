@@ -1660,3 +1660,258 @@ def test_the_artifact_names_the_debug_dumps_this_run_wrote(codex_docker, tmp_pat
     artifact = build_artifact(ctx, root=tmp_path)
 
     assert artifact["debug_dumps"] == ["debug-full-llm-engineering-20260902-101500.md"]
+
+
+# ── The QA stage that stopped run 33711527100 ───────────────────────────
+#
+# A paid run whose deploy reported success, whose application reached running,
+# and whose QA run ended `blocked` 0.9 s later on the pre-executor reachability
+# probe. The records below are the shapes `QARunResult` and `DeployRunResult`
+# actually serialize.
+
+DEPLOYED_URL = "http://198.51.100.7:8000"
+QA_BLOCKED_RUN = {
+    "id": "qa-deploy-poll-93440111",
+    "status": "completed",
+    "created_at": "2026-09-03T03:44:28+00:00",
+    "updated_at": "2026-09-03T03:44:29+00:00",
+    "result": {
+        "qa_outcome": QAOutcome.BLOCKED.value,
+        "summary": "QA could not verify the product",
+        "failed_checks": [],
+        "report": None,
+        "qa_attempt": None,
+        "deployed_url": DEPLOYED_URL,
+        "error": None,
+        "blocker": {
+            "category": "deployed_url_unreachable",
+            "attempted": "GET deployed URL before starting QA agent",
+            "sent": f"GET {DEPLOYED_URL}",
+            "received": "transport error: All connection attempts failed",
+        },
+        "telegram_probe_evidence": [],
+        "state_changes": [],
+    },
+}
+DEPLOY_SUCCESS_RUN = {
+    "id": "deploy-poll-ea0bed35",
+    "status": "completed",
+    "created_at": "2026-09-03T03:43:10+00:00",
+    "updated_at": "2026-09-03T03:44:20+00:00",
+    "run_metadata": {"head_sha": "4de2a99b"},
+    "result": {
+        "deploy_outcome": DeployOutcome.SUCCESS.value,
+        "deployed_url": DEPLOYED_URL,
+        "application_id": 7,
+        "deploy_fix_attempt": 0,
+        "error_details": None,
+        "action": None,
+        "smoke_result": {"passed": True, "url": f"{DEPLOYED_URL}/health", "status_code": 200},
+    },
+}
+
+
+def qa_stage_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """The context a run of run 33711527100's shape leaves behind."""
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        deploy_run_id=DEPLOY_SUCCESS_RUN["id"],
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        deployed_url=DEPLOYED_URL,
+        deploy_run_record=run_evidence.deploy_run_facts(DEPLOY_SUCCESS_RUN),
+        qa_run=QA_BLOCKED_RUN,
+        qa_run_record=run_evidence.qa_run_facts(QA_BLOCKED_RUN),
+        engineering_runs=[],
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_a_blocked_qa_run_names_the_blocker_the_consumer_wrote(codex_docker, tmp_path):
+    """`qa_outcome=blocked` is not the answer; the blocker inside the Run is."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(qa_stage_ctx(collector), root=tmp_path)
+
+    record = artifact["qa"]["run_record"]
+    assert record["status"] == CaptureStatus.CAPTURED.value
+    assert record["value"]["status"] == "completed"
+    assert record["value"]["qa_outcome"] == QAOutcome.BLOCKED.value
+    assert record["value"]["blocker"] == {
+        "category": "deployed_url_unreachable",
+        "attempted": "GET deployed URL before starting QA agent",
+        "sent": f"GET {DEPLOYED_URL}",
+        "received": "transport error: All connection attempts failed",
+    }
+    reason = artifact["failure"]["control_plane_reason"]["value"]
+    assert reason["qa_run_record"] == record
+    assert reason["deploy_run_record"]["value"]["id"] == DEPLOY_SUCCESS_RUN["id"]
+
+
+def test_the_deploy_run_arrives_with_the_smoke_that_made_it_a_success(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    deployment = build_artifact(qa_stage_ctx(collector), root=tmp_path)["deployment"]
+
+    assert deployment["deployed_url"] == DEPLOYED_URL
+    assert deployment["run_record"]["value"]["deploy_outcome"] == DeployOutcome.SUCCESS.value
+    assert deployment["run_record"]["value"]["head_sha"] == "4de2a99b"
+    assert deployment["reachability"]["deploy_smoke"]["value"] == {
+        "passed": True,
+        "url": f"{DEPLOYED_URL}/health",
+        "status_code": 200,
+    }
+
+
+def test_the_reader_can_tell_unreachable_from_rejected_and_is_told_what_is_not_here(
+    codex_docker, tmp_path
+):
+    """AC4: which of down / up-but-unreachable / answering-something-rejected."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(qa_stage_ctx(collector), root=tmp_path)
+    reachability = artifact["deployment"]["reachability"]
+
+    # QA received nothing at all, and says so in its own words.
+    qa_probe = reachability["qa_probe"]["value"]
+    assert qa_probe["reached_the_url"] is False
+    assert qa_probe["received"] == "transport error: All connection attempts failed"
+    assert qa_probe["failed_checks"] == []
+    # The deploy, a minute earlier, got a 200 from the same URL.
+    assert reachability["deploy_smoke"]["value"]["status_code"] == 200
+    # The container's own side is not readable from the orchestrator, so the
+    # artifact asks for it by name instead of leaving the question open.
+    snapshot = reachability["target_host_snapshot"]
+    assert snapshot["required"] is True
+    assert snapshot["file"] == run_evidence.TARGET_SNAPSHOT_FILENAME
+    assert "QA's own probe got no response" in snapshot["reason"]
+    assert "unreachable" in snapshot["reason"]
+    assert "reached_the_url" in artifact["deployment"]["note"]
+
+
+def test_a_url_that_answered_something_qa_rejected_asks_for_no_target_host(codex_docker, tmp_path):
+    """QA reached a verdict, so it read a response: nothing waits on the target."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    rejected = {
+        **QA_BLOCKED_RUN,
+        "result": {
+            **QA_BLOCKED_RUN["result"],
+            "qa_outcome": QAOutcome.FAILED.value,
+            "blocker": None,
+            "failed_checks": [{"name": "GET /health returns 200", "detail": "got 503"}],
+        },
+    }
+    ctx = qa_stage_ctx(
+        collector,
+        qa_run=rejected,
+        qa_run_record=run_evidence.qa_run_facts(rejected),
+        health_probe_before_undeploy={"url": DEPLOYED_URL, "status_code": 200, "body": "{}"},
+    )
+
+    reachability = build_artifact(ctx, root=tmp_path)["deployment"]["reachability"]
+
+    assert reachability["qa_probe"]["value"]["reached_the_url"] is True
+    assert reachability["qa_probe"]["value"]["failed_checks"] == [
+        {"name": "GET /health returns 200", "detail": "got 503"}
+    ]
+    assert reachability["harness_probe"]["value"]["status_code"] == 200
+    assert reachability["target_host_snapshot"]["required"] is False
+    assert "got a response" in reachability["target_host_snapshot"]["reason"]
+
+
+def test_a_harness_probe_that_got_nothing_is_a_stated_read_not_a_blank(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(
+        collector,
+        health_probe_error=f"health endpoint not reachable at {DEPLOYED_URL} after 5 attempts",
+    )
+
+    reachability = build_artifact(ctx, root=tmp_path)["deployment"]["reachability"]
+
+    assert reachability["harness_probe"]["status"] == CaptureStatus.MISSED.value
+    assert "no usable response" in reachability["harness_probe"]["reason"]
+    assert (
+        "the harness probe got no usable response"
+        in (reachability["target_host_snapshot"]["reason"])
+    )
+
+
+def test_an_unread_qa_or_deploy_record_says_which_read_never_happened(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(collector)
+    del ctx["qa_run_record"]
+    del ctx["deploy_run_record"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    qa_record = artifact["qa"]["run_record"]
+    assert qa_record["status"] == CaptureStatus.MISSED.value
+    assert QA_BLOCKED_RUN["id"] in qa_record["reason"]
+    assert "did not run" in qa_record["reason"]
+    deploy_record = artifact["deployment"]["run_record"]
+    assert deploy_record["status"] == CaptureStatus.MISSED.value
+    assert DEPLOY_SUCCESS_RUN["id"] in deploy_record["reason"]
+    reachability = artifact["deployment"]["reachability"]
+    assert reachability["deploy_smoke"]["status"] == CaptureStatus.MISSED.value
+    assert reachability["qa_probe"]["status"] == CaptureStatus.MISSED.value
+    # Nothing is asserted about a URL nobody could read a record for.
+    assert reachability["target_host_snapshot"]["required"] is False
+
+
+def test_a_qa_record_that_could_not_be_read_carries_the_error_that_stopped_it(
+    codex_docker, tmp_path
+):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(collector, qa_run_record_error="the terminal QA Run could not be read")
+    del ctx["qa_run_record"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["qa"]["run_record"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "the terminal QA Run could not be read",
+    }
+
+
+def test_a_run_that_never_reached_qa_says_why_there_is_no_qa_record(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+
+    record = artifact["qa"]["run_record"]
+    assert record["status"] == CaptureStatus.MISSED.value
+    assert "the worker died before QA" in record["reason"]
+    assert artifact["deployment"]["run_record"]["reason"].endswith(
+        "this combination never reached a deploy Run"
+    )
+
+
+def test_the_free_noop_suite_asks_for_nothing_from_the_target_host(codex_docker, tmp_path):
+    """AC6: the deterministic route's captures stay exactly what they were."""
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = qa_stage_ctx(
+        collector,
+        agent_type="noop",
+        qa_requires_executor=False,
+        qa_agent_type=None,
+        qa_agent_type_requested=None,
+    )
+
+    snapshot = build_artifact(ctx, root=tmp_path)["deployment"]["reachability"][
+        "target_host_snapshot"
+    ]
+
+    assert snapshot["required"] is False
+    assert "free deterministic route" in snapshot["reason"]

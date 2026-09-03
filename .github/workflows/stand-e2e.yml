@@ -502,6 +502,7 @@ jobs:
         if: always()
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          TARGET_IP: ${{ steps.create.outputs.target_ip }}
           SUITE: ${{ steps.suite.outputs.value }}
           WORKER: ${{ inputs.worker }}
           QA: ${{ inputs.qa }}
@@ -516,6 +517,11 @@ jobs:
           # cause nobody here observed, so the account is built where the attempt
           # happens rather than inferred from the absent file.
           services_attempt="no collection was attempted, because no stand host address was recorded for this run"
+          # Whether this run owes a target-host snapshot, and what happened to
+          # it, are recorded where the attempt is made — never inferred from the
+          # absent file below.
+          target_required=no
+          target_attempt="no snapshot was attempted, because no stand host address was recorded for this run"
           test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
           test -f "${RUNNER_TEMP}/remote-invocation.log" && \
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
@@ -593,7 +599,8 @@ jobs:
                 # are piped straight into it, and a run that could not complete
                 # that pipe publishes the stated reason instead of the input.
                 if ${COMPOSE} logs --no-color --tail 300 \
-                     scheduler engineering-worker worker-manager worker-broker api 2>&1 | \
+                     scheduler engineering-worker worker-manager worker-broker api \
+                     qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
@@ -612,6 +619,64 @@ jobs:
                 "${run_dir}/suite-services.log"; then
                 services_attempt="${services_attempt}, and copying the collected file to the runner failed"
               fi
+
+              # The one question the orchestrator's own services cannot answer.
+              # When a paid run's evidence says a deploy reported success and the
+              # deployed URL then answered nobody, whether the application
+              # container was down, up but unreachable, or answering something QA
+              # rejected is readable only on the *target* machine — which cleanup
+              # deletes minutes later. The run evidence collected above is what
+              # asks, through the same predicate the admission refuses on, so the
+              # collection and the boundary cannot disagree.
+              target_attempt="no snapshot was attempted, because the collected run evidence asked for none"
+              if python3 -m scripts.stand_acceptance needs-target-snapshot --run-dir "${run_dir}"; then
+                target_required=yes
+                target_attempt="no snapshot was attempted, because no target host address was recorded for this run"
+                if [ -n "${TARGET_IP}" ]; then
+                  # Bounded on the target, redacted on the orchestrator: the same
+                  # helper and the same protected-name allow-list as every other
+                  # tail, with no second redaction path and nothing unredacted
+                  # ever written to the runner.
+                  if ssh -i "${key_path}" ${SSH_OPTS} root@"${TARGET_IP}" '
+                    set -euo pipefail
+                    echo "== containers =="
+                    docker ps -a --format "{{.Names}} image={{.Image}} state={{.State}} status={{.Status}} ports={{.Ports}}"
+                    for name in $(docker ps -a --format "{{.Names}}"); do
+                      echo "== logs ${name} =="
+                      docker logs --tail 200 "${name}" 2>&1 | tail -c 20000
+                    done
+                  ' 2>&1 | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+                    set -euo pipefail
+                    cd /opt/codegen_orchestrator
+                    COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+                    protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+                    out=/root/e2e-runs/target-app.log
+                    partial="${out}.partial"
+                    rm -f "${partial}"
+                    if ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+                       python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+                       > "${partial}"; then
+                      mv "${partial}" "${out}"
+                    else
+                      printf "%s\n" "the target host snapshot was not collected: the redaction path did not complete, so no unredacted target output is published" > "${out}"
+                      rm -f "${partial}"
+                    fi
+                  '; then
+                    target_attempt="the remote snapshot command completed"
+                    # Only a completed pipe has a file worth copying: a broken
+                    # one may have left an empty or partial file on the
+                    # orchestrator, and an empty file would read as "the target
+                    # had nothing to say" rather than "this was not collected".
+                    if ! scp -i "${key_path}" ${SSH_OPTS} \
+                      root@"${PROD_HOST}":/root/e2e-runs/target-app.log \
+                      "${run_dir}/target-app.log"; then
+                      target_attempt="${target_attempt}, and copying the collected file to the runner failed"
+                    fi
+                  else
+                    target_attempt="the remote snapshot command over ssh did not complete"
+                  fi
+                fi
+              fi
             fi
           fi
           if [ "${SUITE_OUTCOME}" != "success" ] && [ ! -f "${run_dir}/suite-services.log" ]; then
@@ -624,6 +689,13 @@ jobs:
             # for the same absent file.
             printf '%s\n' "service log tails are unavailable: ${services_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
               > "${run_dir}/suite-services.log"
+          fi
+          if [ "${target_required}" = "yes" ] && [ ! -f "${run_dir}/target-app.log" ]; then
+            # Named, not silently absent: this run's evidence asked for the
+            # target host and the admission below requires the answer. It states
+            # only what this step observed about the attempt.
+            printf '%s\n' "the target host snapshot is unavailable: ${target_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
+              > "${run_dir}/target-app.log"
           fi
 
       # This is the admission boundary for the inter-job handoff. It derives

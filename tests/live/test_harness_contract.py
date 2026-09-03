@@ -3317,3 +3317,169 @@ def test_a_debug_dump_is_written_where_the_handoff_collects_it(monkeypatch, tmp_
     dump = next(runner_dir.glob("debug-full-llm-engineering-*.md"))
     assert not (tmp_path / "checkout" / "docs").exists()
     assert ctx["debug_dumps"] == [dump.name]
+
+
+# ── The QA and deploy Run records the stand holds only until teardown ────
+
+
+def _blocked_qa_run(**overrides) -> dict:
+    """The record the QA consumer writes for a pre-executor blocker."""
+    run = {
+        "id": "qa-deploy-poll-93440111",
+        "story_id": "story-1",
+        "status": "completed",
+        "created_at": "2026-09-03T03:44:28+00:00",
+        "updated_at": "2026-09-03T03:44:29+00:00",
+        "result": {
+            "qa_outcome": "blocked",
+            "summary": "QA could not verify the product",
+            "failed_checks": [],
+            "deployed_url": "http://198.51.100.7:8000",
+            "error": None,
+            "blocker": {
+                "category": "deployed_url_unreachable",
+                "attempted": "GET deployed URL before starting QA agent",
+                "sent": "GET http://198.51.100.7:8000",
+                "received": "transport error: All connection attempts failed",
+            },
+        },
+    }
+    run.update(overrides)
+    return run
+
+
+def test_a_blocked_qa_run_is_read_into_evidence_where_the_wait_found_it():
+    ctx: dict = {}
+
+    pipeline_helpers.record_qa_run(ctx, _blocked_qa_run())
+
+    assert ctx["qa_run"]["id"] == "qa-deploy-poll-93440111"
+    record = ctx["qa_run_record"]
+    assert record["status"] == "completed"
+    assert record["qa_outcome"] == "blocked"
+    assert record["blocker"]["category"] == "deployed_url_unreachable"
+    assert record["blocker"]["received"] == "transport error: All connection attempts failed"
+    assert "qa_run_record_error" not in ctx
+
+
+def test_a_qa_run_record_is_redacted_before_it_is_retained(monkeypatch):
+    monkeypatch.setenv("STAND_QA_TOKEN", "super-secret-token")
+    ctx: dict = {}
+    run = _blocked_qa_run()
+    run["result"]["error"] = "auth failed for super-secret-token"
+
+    pipeline_helpers.record_qa_run(ctx, run)
+
+    assert "super-secret-token" not in json.dumps(ctx["qa_run_record"])
+    assert "[redacted]" in ctx["qa_run_record"]["error"]
+
+
+def test_a_qa_run_that_cannot_be_read_never_fails_the_run_it_diagnoses():
+    ctx: dict = {}
+
+    pipeline_helpers.record_qa_run(ctx, {"id": "qa-1", "result": ["not an object"]})
+
+    assert "qa_run_record" not in ctx
+    assert "could not be read into evidence" in ctx["qa_run_record_error"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_reads_the_smoke_that_made_the_deploy_a_success(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    payload = {
+        "id": "deploy-poll-1",
+        "status": "completed",
+        "run_metadata": {"head_sha": "4de2a99b"},
+        "result": {
+            "deploy_outcome": "success",
+            "deployed_url": "http://198.51.100.7:8000",
+            "smoke_result": {"passed": True, "status_code": 200},
+        },
+    }
+
+    async def get(url, headers=None):
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    await pipeline_helpers.wait_deploy_outcome(
+        SimpleNamespace(get=get), ctx, timeout=1, poll_interval=0
+    )
+
+    record = ctx["deploy_run_record"]
+    assert record["deploy_outcome"] == "success"
+    assert record["head_sha"] == "4de2a99b"
+    assert record["smoke_result"] == {"passed": True, "status_code": 200}
+
+
+@pytest.mark.asyncio
+async def test_a_deploy_run_that_never_settled_says_why_its_record_is_absent(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={"id": "deploy-poll-1", "status": "running", "result": None},
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    await pipeline_helpers.wait_deploy_outcome(
+        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
+    )
+
+    assert "deploy_run_record" not in ctx
+    assert "did not reach a terminal state" in ctx["deploy_run_record_error"]
+
+
+@pytest.mark.asyncio
+async def test_an_untyped_deploy_result_still_leaves_its_record_behind(monkeypatch):
+    """The record is read before the result is typed, so both facts survive."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={
+                "id": "deploy-poll-1",
+                "status": "completed",
+                "result": {"qa_outcome": "passed"},
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(
+        SimpleNamespace(get=get), ctx, timeout=1, poll_interval=0
+    )
+
+    assert result is None
+    assert "not a DeployRunResult" in ctx["deploy_outcome_error"]
+    assert ctx["deploy_run_record"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_health_probe_that_answers_is_kept_and_one_that_does_not_is_named(monkeypatch):
+    """The probe keeps its raise; the failure stops being unnameable."""
+    ctx: dict = {}
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "probe_health_endpoint",
+        AsyncMock(return_value={"url": "http://198.51.100.7:8000", "status_code": 200}),
+    )
+
+    await pipeline_helpers.record_health_probe(ctx, "http://198.51.100.7:8000")
+
+    assert ctx["health_probe_before_undeploy"]["status_code"] == 200
+
+    ctx = {}
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "probe_health_endpoint",
+        AsyncMock(side_effect=AssertionError("health endpoint not reachable after 5 attempts")),
+    )
+
+    with pytest.raises(AssertionError, match="not reachable"):
+        await pipeline_helpers.record_health_probe(ctx, "http://198.51.100.7:8000")
+
+    assert "health_probe_before_undeploy" not in ctx
+    assert "not reachable" in ctx["health_probe_error"]

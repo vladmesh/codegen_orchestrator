@@ -39,10 +39,11 @@ from pipeline_helpers import (
     ensure_test_user,
     evidence_pass,
     po_input_cursor,
-    probe_health_endpoint,
     record_engineering_evidence,
     record_env_contract,
+    record_health_probe,
     record_noop_settlement_evidence,
+    record_qa_run,
     record_story_branch_ahead,
     request_undeploy,
     run_non_llm_qa,
@@ -277,9 +278,10 @@ async def _pipeline_phases(
     ):
         # The external probe happens while the application is running, but its
         # evidence remains available after the noop lifecycle undeploys it.
-        ctx["health_probe_before_undeploy"] = await probe_health_endpoint(
-            ctx["deployed_url"], expect_marker=ctx.get("health_marker")
-        )
+        # The probe keeps its raise; what it also does now is leave the
+        # failure behind it, so an orchestrator that could not reach the
+        # deployment is a stated read rather than an absent one.
+        await record_health_probe(ctx, ctx["deployed_url"], expect_marker=ctx.get("health_marker"))
         # The QA run is recorded before it is judged, so a QA cell can say
         # "exercised and failed" instead of falling back to "not exercised".
         # Every poll takes an evidence pass too: the QA executor's container is
@@ -289,7 +291,7 @@ async def _pipeline_phases(
             api_internal,
             ctx["story_id"],
             timeout=QA_RUN_TIMEOUT,
-            record=lambda run: ctx.__setitem__("qa_run", run),
+            record=lambda run: record_qa_run(ctx, run),
             on_poll=lambda: evidence_pass(ctx),
         )
 

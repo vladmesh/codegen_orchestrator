@@ -26,9 +26,11 @@ from run_evidence import (
     Capture,
     RunEvidenceCollector,
     WorkerRole,
+    deploy_run_facts,
     engineering_run_facts,
     engineering_run_record,
     evidence_output_directory,
+    qa_run_facts,
 )
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -756,6 +758,64 @@ def redacted_payload(payload: object) -> object:
     """
     serialized = json.dumps(payload, sort_keys=True, default=str)
     return json.loads(redact_diagnostic(serialized, secrets=secret_env_values(dict(os.environ))))
+
+
+def record_qa_run(ctx: dict, run: dict) -> None:
+    """Read the terminal QA Run into evidence, inside the wait that found it.
+
+    The run this receives is the record the QA consumer wrote, so its blocker —
+    the category, what QA attempted, and what came back — is already in hand and
+    needs no second call to a stand that is about to be deleted. Only the outcome
+    used to be kept, and `qa_outcome=blocked` names no cause at all: run
+    33711527100 stopped on `DEPLOYED_URL_UNREACHABLE` 0.9 s after a deploy the
+    same pipeline had just called a success, and the artifact could not say so.
+
+    This is evidence collection, so it never fails the run: a record that could
+    not be read is a stated missed capture.
+    """
+    ctx["qa_run"] = run
+    try:
+        ctx["qa_run_record"] = redacted_payload(qa_run_facts(run))
+    except (AttributeError, TypeError, ValueError) as error:
+        ctx["qa_run_record_error"] = (
+            f"the terminal QA Run could not be read into evidence: {type(error).__name__}: {error}"
+        )
+
+
+def record_deploy_run(ctx: dict, run: dict) -> None:
+    """Read the terminal deploy Run into evidence, beside the QA Run it fed.
+
+    The smoke evidence that made this deploy a success is the counter-fact to a
+    QA stage that could not reach the same URL, and it exists only in this Run's
+    result. Recorded whatever the outcome was: a deploy that failed is read here
+    too, so the deploy stage's own reason no longer depends on the typed outcome
+    alone.
+    """
+    try:
+        ctx["deploy_run_record"] = redacted_payload(deploy_run_facts(run))
+    except (AttributeError, TypeError, ValueError) as error:
+        ctx["deploy_run_record_error"] = (
+            f"deploy run {run.get('id')} could not be read into evidence: "
+            f"{type(error).__name__}: {error}"
+        )
+
+
+async def record_health_probe(ctx: dict, url: str, *, expect_marker: str | None = None) -> dict:
+    """Probe the deployed URL from the orchestrator host and keep either answer.
+
+    `probe_health_endpoint` raises when the URL does not answer, and that raise
+    is the harness contract — it stays. What changes is that the failure stops
+    being unnameable: the error is recorded before it propagates, so the artifact
+    can say the orchestrator itself could not reach the deployment either,
+    instead of leaving a blank where the third reachability read should be.
+    """
+    try:
+        evidence = await probe_health_endpoint(url, expect_marker=expect_marker)
+    except AssertionError as error:
+        ctx["health_probe_error"] = str(error)
+        raise
+    ctx["health_probe_before_undeploy"] = evidence
+    return evidence
 
 
 async def _executor_diagnostics_snapshot(api_internal: httpx.AsyncClient) -> Capture:
@@ -1537,9 +1597,17 @@ async def wait_deploy_outcome(
         ctx["deploy_outcome_error"] = (
             f"deploy run {run_id} did not reach a terminal state in {timeout}s"
         )
+        ctx["deploy_run_record_error"] = (
+            f"deploy run {run_id} was never read into evidence: it did not reach a terminal "
+            f"state in {timeout}s, so the record carries no result to read"
+        )
         return None
 
     ctx["deploy_run_status"] = run["status"]
+    # Read before the result is typed, so a run whose result is absent or does
+    # not validate still leaves its record in the artifact rather than only the
+    # error that typing it raised.
+    record_deploy_run(ctx, run)
     if run["result"] is None:
         ctx["deploy_outcome_error"] = (
             f"deploy run {run_id} is {run['status']} but carries no result"

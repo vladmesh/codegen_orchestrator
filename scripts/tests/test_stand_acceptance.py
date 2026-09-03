@@ -10,7 +10,9 @@ from scripts.stand_acceptance import (
     admit_artifact_from_environment,
     build_acceptance_artifact,
     protected_values_from_environment,
+    run_dir_needs_target_snapshot,
     scan_artifact,
+    target_snapshot_required,
 )
 from scripts.stand_preflight import check_stand_token_credentials
 
@@ -133,10 +135,18 @@ NOOP_EVIDENCE_NAME = "run-evidence-worker-noop-qa-health-20260831T225500.json"
 PAID_EVIDENCE_NAME = "run-evidence-worker-claude-qa-codex-20260902T081500.json"
 
 
+def _missed(reason: str) -> dict:
+    return {"status": "missed", "value": None, "reason": reason}
+
+
+def _captured(value: object) -> dict:
+    return {"status": "captured", "value": value, "reason": None}
+
+
 def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
     """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 6,
+        "schema_version": 7,
         "kind": "worker_failure_attribution",
         "failure": {
             "failed": failed,
@@ -166,8 +176,63 @@ def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
             }
         },
         "workers": [{"exit_code": {"value": 7}, "log_tail": {"text": "safe tail"}}],
+        "qa": {
+            "run_record": _missed(
+                "no QA Run record was read: the worker died before QA: the engineering task "
+                "ended failed, so nothing was ever handed to QA"
+            ),
+        },
+        "deployment": {
+            "deployed_url": None,
+            "run_record": _missed(
+                "no deploy Run record was read: this combination never reached a deploy Run"
+            ),
+            "reachability": {
+                "deploy_smoke": _missed("the deploy smoke evidence is unread with its Run record"),
+                "harness_probe": _missed("the harness ran no health probe of its own"),
+                "qa_probe": _missed("what QA got from the deployed URL is unread"),
+                "target_host_snapshot": {
+                    "required": False,
+                    "file": "target-app.log",
+                    "reason": "the deploy did not report success, so an unanswered deployed "
+                    "URL is already accounted for by the deploy stage",
+                },
+            },
+        },
     }
     evidence.update(overrides)
+    return evidence
+
+
+def _qa_stage_evidence(*, paid: bool = True, required: bool = True) -> dict:
+    """A run of run 33711527100's shape: deploy success, QA blocked unreachable."""
+    evidence = _run_evidence(paid=paid, failed=True)
+    evidence["failure"]["stage"] = "stopped_at_qa"
+    evidence["failure"]["failure_kind"] = "qa_not_passed"
+    evidence["qa"]["run_record"] = _captured(
+        {
+            "id": "qa-deploy-poll-93440111",
+            "status": "completed",
+            "qa_outcome": "blocked",
+            "blocker": {
+                "category": "deployed_url_unreachable",
+                "attempted": "GET deployed URL before starting QA agent",
+                "sent": "GET http://198.51.100.7:8000",
+                "received": "transport error: All connection attempts failed",
+            },
+        }
+    )
+    deployment = evidence["deployment"]
+    deployment["run_record"] = _captured(
+        {"id": "deploy-1", "deploy_outcome": "success", "smoke_result": {"passed": True}}
+    )
+    deployment["reachability"]["deploy_smoke"] = _captured({"passed": True})
+    deployment["reachability"]["qa_probe"] = _captured({"reached_the_url": False})
+    deployment["reachability"]["target_host_snapshot"] = {
+        "required": required,
+        "file": "target-app.log",
+        "reason": "the deploy reported success and QA's own probe got no response",
+    }
     return evidence
 
 
@@ -306,6 +371,92 @@ def test_a_passing_paid_run_needs_no_service_log_tails(tmp_path):
     output = tmp_path / "acceptance"
 
     assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_qa_stage_failure_arrives_with_the_target_host_snapshot_it_asked_for(tmp_path):
+    """Run 33711527100's shape: the artifact asks, and the snapshot is admitted."""
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, _qa_stage_evidence())
+    (run_dir / "target-app.log").write_text(
+        "== containers ==\nbackend image=ghcr.io/org/app state=exited status=Exited (1)\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert "exited" in (output / "target-app.log").read_text(encoding="utf-8")
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
+def test_a_qa_stage_failure_without_the_target_snapshot_it_asked_for_is_refused(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, _qa_stage_evidence())
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert "paid_failure_target_snapshot_missing" in _incompleteness(output)
+
+
+def test_a_failure_that_asked_for_no_target_snapshot_needs_none(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, _qa_stage_evidence(required=False))
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_failed_paid_run_without_a_qa_or_deploy_run_record_is_refused(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    del evidence["qa"]["run_record"]
+    evidence["deployment"]["run_record"] = {"status": "captured", "value": None, "reason": None}
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    incompleteness = _incompleteness(output)
+    assert f"paid_failure_qa_run_record_missing:{PAID_EVIDENCE_NAME}" in incompleteness
+    assert f"paid_failure_deploy_run_record_missing:{PAID_EVIDENCE_NAME}" in incompleteness
+
+
+def test_a_failed_paid_run_that_cannot_say_what_the_url_answered_is_refused(tmp_path):
+    evidence = _qa_stage_evidence()
+    del evidence["deployment"]["reachability"]["harness_probe"]
+    evidence["deployment"]["reachability"]["target_host_snapshot"] = {"required": True}
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    (run_dir / "target-app.log").write_text("== containers ==\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    incompleteness = _incompleteness(output)
+    assert (
+        f"paid_failure_reachability_read_missing:{PAID_EVIDENCE_NAME}:harness_probe"
+        in incompleteness
+    )
+    assert (
+        f"paid_failure_target_snapshot_requirement_missing:{PAID_EVIDENCE_NAME}" in incompleteness
+    )
+
+
+def test_the_workflow_and_the_admission_read_one_target_snapshot_predicate(tmp_path):
+    """The step that collects and the boundary that refuses cannot disagree."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    assert run_dir_needs_target_snapshot(run_dir) is False
+
+    (run_dir / PAID_EVIDENCE_NAME).write_text(
+        json.dumps(_qa_stage_evidence(required=False)), encoding="utf-8"
+    )
+    assert run_dir_needs_target_snapshot(run_dir) is False
+
+    (run_dir / PAID_EVIDENCE_NAME).write_text(json.dumps(_qa_stage_evidence()), encoding="utf-8")
+    assert run_dir_needs_target_snapshot(run_dir) is True
+    assert target_snapshot_required(_qa_stage_evidence()) is True
+
+
+def test_unreadable_evidence_asks_for_no_target_snapshot_and_is_refused_on_its_own(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / PAID_EVIDENCE_NAME).write_text("{not json", encoding="utf-8")
+
+    assert run_dir_needs_target_snapshot(run_dir) is False
 
 
 def test_an_unreadable_run_evidence_file_is_named_not_skipped(tmp_path):
