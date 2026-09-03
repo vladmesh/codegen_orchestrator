@@ -627,7 +627,11 @@ class WorkerManager:
                     + ", ".join(sorted(supplied))
                 )
             failure = next(
-                (item for item in self._stand_token_failures() if item.name == f"{agent_type.value.title()} token"),
+                (
+                    item
+                    for item in self._executor_diagnostics.stand_token_failures()
+                    if item.name == f"{agent_type.value.title()} token"
+                ),
                 None,
             )
             if failure is not None:

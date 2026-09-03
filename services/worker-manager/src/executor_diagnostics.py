@@ -163,7 +163,7 @@ class ExecutorDiagnostics:
         leases: dict[AgentType, int] | None,
     ) -> ExecutorDiagnostic:
         if settings.LIVE_CONTOUR == "stand":
-            failures = self._stand_token_failures()
+            failures = self.stand_token_failures()
             failure = next((item for item in failures if item.name == f"{executor.value.title()} token"), None)
             if leases is None:
                 return ExecutorDiagnostic(
@@ -260,8 +260,13 @@ class ExecutorDiagnostics:
         )
 
     @staticmethod
-    def _stand_token_failures():
-        """Read stand secrets only at the protected manager boundary."""
+    def stand_token_failures():
+        """Read stand secrets only at the protected manager boundary.
+
+        Public because the manager boundary has two callers: this snapshot and
+        `WorkerManager.create_worker_with_capabilities`, which must refuse a
+        stand-token worker on the same reading rather than keeping a second one.
+        """
         from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
 
         return validate_stand_token_credentials(

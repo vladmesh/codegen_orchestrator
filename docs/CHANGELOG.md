@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-03
+
+- A `stand_token` worker now reaches container creation: the manager asks its `ExecutorDiagnostics`
+  collaborator for stand-token failures instead of a method it lost in the collaborator extraction.
+
 ## 2026-09-02
 
 - A failed paid stand run's acceptance artifact now names the failing stage, the control-plane
