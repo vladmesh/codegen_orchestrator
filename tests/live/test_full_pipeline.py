@@ -45,6 +45,7 @@ from pipeline_helpers import (
     record_noop_settlement_evidence,
     record_qa_run,
     record_story_branch_ahead,
+    record_terminal_stage_evidence,
     request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
@@ -130,7 +131,10 @@ async def _pipeline_run(
                 finally:
                     # Always ahead of cleanup_all, which is what removes the
                     # containers — and removal, not death, is what ends the
-                    # readability of a labelled worker.
+                    # readability of a labelled worker. The same deadline holds
+                    # for the deployment on the target host and for the QA Run a
+                    # phase that raised never looked for, so both are read here.
+                    await record_terminal_stage_evidence(api_internal, ctx)
                     evidence_pass(ctx)
                     emit_run_evidence(ctx)
 

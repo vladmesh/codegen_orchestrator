@@ -124,6 +124,10 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 # v6: the failing stage and its control-plane reason are named in `failure`, the
 #     engineering Run records that reason is read from are carried in
 #     `engineering`, and `verdict` states red or green with the reasons for it.
+# v7: the QA and deploy Run records are carried in `qa.run_record` and
+#     `deployment.run_record`, `deployment.reachability` holds every read of the
+#     deployed URL this run has, and a run whose deploy succeeded over a URL
+#     that answered nobody asks there for a snapshot of the target host.
 EVIDENCE_SCHEMA_VERSION = 7
 EVIDENCE_KIND = "worker_failure_attribution"
 
@@ -307,6 +311,43 @@ class VerdictReason(StrEnum):
     RUN_FAILED = "run_failed"
     WORKER_EXECUTED_MISSED = "worker_executed_missed"
     QA_EXECUTED_MISSED = "qa_executed_missed"
+
+
+class QARunLookup(StrEnum):
+    """What the last read of this story's QA runs before teardown found."""
+
+    # The record was read inside the QA wait, where the run was found.
+    QA_WAIT = "qa_wait"
+    # The phase left before the wait ran, and the teardown read found a run.
+    TEARDOWN = "teardown"
+    # The teardown read ran and the control plane held no terminal QA run.
+    NONE_TERMINAL = "none_terminal"
+
+
+class ReachedBasis(StrEnum):
+    """What a `reached_the_url` value rests on, which is not one kind of thing."""
+
+    # QA's own closed blocker category: its probe of the URL got no response.
+    QA_BLOCKER = "qa_blocker_category"
+    # Derived from QA reaching a product verdict, not from a read of the URL.
+    INFERRED_FROM_OUTCOME = "inferred_from_qa_outcome"
+    UNDETERMINED = "undetermined"
+
+
+REACHED_BASIS_NOTE = {
+    ReachedBasis.QA_BLOCKER: (
+        "observed: the QA consumer's own pre-executor probe of the deployed URL received no "
+        "response, and its transport error is in `received`"
+    ),
+    ReachedBasis.INFERRED_FROM_OUTCOME: (
+        "inferred: QA reached a verdict about the product, which an HTTP-checked product can "
+        "only be given over a response; a product QA verifies entirely over Telegram could "
+        "reach the same verdict without reading the deployed URL at all"
+    ),
+    ReachedBasis.UNDETERMINED: (
+        "neither: this QA run was stopped by something that says nothing about the deployed URL"
+    ),
+}
 
 
 class ReasonSource(StrEnum):
@@ -1152,6 +1193,9 @@ def qa_cell(ctx: dict) -> dict:
         # says QA stopped, and the blocker inside the record says what QA tried
         # and what did not answer.
         "run_record": _qa_run_capture(ctx).as_dict(),
+        # Where that record was read: inside the QA wait, or by the last read
+        # before teardown for a run that left the phase before the wait.
+        "run_record_source": ctx.get("qa_run_lookup"),
     }
     qa_run = ctx.get("qa_run")
     if qa_run is not None:
@@ -1201,7 +1245,24 @@ def _qa_not_exercised_reason(ctx: dict) -> str:
             f"(deploy_outcome={ctx.get('deploy_outcome')}, "
             f"app_status={ctx.get('final_app_status')})"
         )
-    return "the deploy succeeded but no QA run for this story reached a terminal state"
+    # Only what was observed. A run whose deploy succeeded and whose harness
+    # never looked for a QA run may well have one — run 33711527100 did, and it
+    # carried the blocker this artifact exists to name — so "no QA run reached a
+    # terminal state" may not be asserted unless something actually looked.
+    if ctx.get("qa_run_lookup_error"):
+        return (
+            "the deploy succeeded and whether the control plane holds a QA run for this story "
+            f"is unread: {ctx['qa_run_lookup_error']}"
+        )
+    if ctx.get("qa_run_lookup") == QARunLookup.NONE_TERMINAL:
+        return (
+            "the deploy succeeded and the control plane held no terminal QA run for this story "
+            "when the harness read the runs of this story before teardown"
+        )
+    return (
+        "the deploy succeeded and no QA run for this story was ever read: the run left the "
+        "phase before anything looked, so whether a QA run exists is unobserved, not absent"
+    )
 
 
 def qa_run_facts(run: dict) -> dict:
@@ -1333,12 +1394,14 @@ def _harness_probe_capture(ctx: dict) -> Capture:
 def _qa_probe_capture(qa_run: Capture) -> Capture:
     """What QA itself got from the deployed URL, as its own Run record states it.
 
-    `reached_the_url` is the distinction the whole section exists for, and it is
-    read from the record rather than guessed: `false` only when QA's own closed
-    blocker category says the URL was unreachable, `true` when QA reached a
-    verdict about the product — which it can only do over a response — and
-    `null` when the record says neither, so nothing is asserted about a run that
-    was stopped by something else.
+    `reached_the_url` is the distinction the whole section exists for, and it
+    carries the basis it rests on rather than reading as one kind of fact. Only
+    `false` is observed: QA's own closed blocker category says its probe of the
+    deployed URL got nothing. `true` is an inference from a product verdict —
+    sound for an HTTP-checked product, and an overclaim for one QA verifies
+    entirely over Telegram without ever reading the deployed URL — so the field
+    says so instead of presenting both as the same reading. `null` asserts
+    nothing about a run stopped by something else.
     """
     if not qa_run.is_captured:
         return Capture.missed(
@@ -1348,14 +1411,19 @@ def _qa_probe_capture(qa_run: Capture) -> Capture:
     blocker = facts.get("blocker") or {}
     outcome = facts.get("qa_outcome")
     reached: bool | None = None
+    basis = ReachedBasis.UNDETERMINED
     if blocker.get("category") == QABlockerCategory.DEPLOYED_URL_UNREACHABLE.value:
         reached = False
+        basis = ReachedBasis.QA_BLOCKER
     elif outcome in {QAOutcome.PASSED.value, QAOutcome.FAILED.value, QAOutcome.EXHAUSTED.value}:
         reached = True
+        basis = ReachedBasis.INFERRED_FROM_OUTCOME
     return Capture.captured(
         {
             "qa_outcome": outcome,
             "reached_the_url": reached,
+            "reached_the_url_basis": basis.value,
+            "reached_the_url_note": REACHED_BASIS_NOTE[basis],
             "deployed_url": facts.get("deployed_url"),
             "blocker_category": blocker.get("category") or None,
             "attempted": blocker.get("attempted"),
@@ -1363,6 +1431,32 @@ def _qa_probe_capture(qa_run: Capture) -> Capture:
             "received": blocker.get("received"),
             "failed_checks": facts.get("failed_checks") or [],
         }
+    )
+
+
+def target_snapshot_requirement(ctx: dict) -> dict:
+    """Whether this run owes a target-host snapshot, and why — for the collector.
+
+    The suite asks this *inside the phase*, before its own teardown removes the
+    deployment's containers, and the artifact publishes the same answer. One
+    predicate, so the collection and the artifact that reports it cannot
+    disagree about which runs owe a snapshot.
+    """
+    return _target_snapshot_requirement(ctx, _qa_probe_capture(_qa_run_capture(ctx)))
+
+
+def _target_snapshot_capture(ctx: dict, *, required: bool) -> Capture:
+    """What became of the snapshot this run asked the suite to take."""
+    if not required:
+        return Capture.missed("this run asked for no snapshot of the target host")
+    if ctx.get("target_snapshot_error"):
+        return Capture.missed(ctx["target_snapshot_error"])
+    snapshot = ctx.get("target_snapshot")
+    if snapshot is not None:
+        return Capture.captured(snapshot)
+    return Capture.missed(
+        "this run asked for a snapshot of the target host and the suite never attempted one: "
+        "the collection that takes it, before teardown removes the deployment, did not run"
     )
 
 
@@ -1408,7 +1502,8 @@ def _target_snapshot_requirement(ctx: dict, qa_probe: Capture) -> dict:
     entry["reason"] = (
         "the deploy reported success and " + "; ".join(findings) + " — whether the application "
         "container was down, up but unreachable, or answering something QA rejected is readable "
-        f"only on the target host, so {TARGET_SNAPSHOT_FILENAME} is collected beside this artifact"
+        "only on the target host, so the suite takes that snapshot before its own teardown "
+        f"removes the deployment and writes it beside this artifact as {TARGET_SNAPSHOT_FILENAME}"
     )
     return entry
 
@@ -1421,9 +1516,18 @@ REACHABILITY_NOTE = (
     "`qa_probe` is what the QA consumer got: `reached_the_url=false` carries the blocker's own "
     "transport error, so QA received nothing, while `reached_the_url=true` means QA read a "
     "response and judged its content, which `failed_checks` then names. The container's own "
-    f"side is not readable from the orchestrator: it is the workflow's {TARGET_SNAPSHOT_FILENAME} "
-    "snapshot, taken from the target host whenever `target_host_snapshot.required` is true."
+    f"side is not readable from the orchestrator: it is {TARGET_SNAPSHOT_FILENAME}, which the "
+    "suite takes from the target host — before its own teardown removes those containers — "
+    "whenever `target_host_snapshot.required` is true, and whose collection is reported under "
+    "`target_host_snapshot.collection`."
 )
+
+
+def _target_snapshot_entry(ctx: dict, qa_probe: Capture) -> dict:
+    """The requirement and what became of it, in the one place a reader looks."""
+    entry = _target_snapshot_requirement(ctx, qa_probe)
+    entry["collection"] = _target_snapshot_capture(ctx, required=entry["required"]).as_dict()
+    return entry
 
 
 def deployment_evidence(ctx: dict) -> dict:
@@ -1437,7 +1541,7 @@ def deployment_evidence(ctx: dict) -> dict:
             "deploy_smoke": _deploy_smoke_capture(deploy_run).as_dict(),
             "harness_probe": _harness_probe_capture(ctx).as_dict(),
             "qa_probe": qa_probe.as_dict(),
-            "target_host_snapshot": _target_snapshot_requirement(ctx, qa_probe),
+            "target_host_snapshot": _target_snapshot_entry(ctx, qa_probe),
         },
         "note": REACHABILITY_NOTE,
     }

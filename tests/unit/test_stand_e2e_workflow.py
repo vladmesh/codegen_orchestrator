@@ -144,27 +144,26 @@ def test_suite_failure_captures_every_service_that_carries_the_pipeline():
     assert "logs --no-color --tail 300" in collect
     assert "scheduler engineering-worker worker-manager worker-broker api" in collect
     assert "qa-worker deploy-worker" in collect
-    # Both suite-failure captures leave through the one helper: the service
-    # tails and the target-host snapshot, and no second redaction path.
-    assert collect.count("from shared.diagnostics import redact_diagnostic") == 2
+    # One redaction path on this side: the service tails. The target-host
+    # snapshot is redacted by the suite that takes it, through the same helper.
+    assert collect.count("from shared.diagnostics import redact_diagnostic") == 1
     assert "suite-services.log" in collect
 
 
-def test_a_deploy_that_succeeded_over_an_unreachable_url_is_read_on_the_target_host():
+def test_the_target_snapshot_travels_from_the_suite_not_an_ssh_after_teardown():
+    """The runner cannot photograph containers the suite's own teardown removed."""
     collect = _steps()["Record machine manifest"]
-
-    assert collect["env"]["TARGET_IP"] == "${{ steps.create.outputs.target_ip }}"
     script = collect["run"]
-    # The artifact decides, through the one predicate the admission refuses on.
+
+    # It travels with the run evidence the suite wrote, out of the runner directory.
+    assert "files=(run-evidence-*.json debug-*.md target-app.log)" in script
+    # And nothing here ssh's to the target host after the suite has ended.
+    assert "TARGET_IP" not in script
+    assert "TARGET_IP" not in (collect.get("env") or {})
+    # The artifact still decides, through the one predicate the admission uses.
     assert (
         'python3 -m scripts.stand_acceptance needs-target-snapshot --run-dir "${run_dir}"' in script
     )
-    assert 'root@"${TARGET_IP}"' in script
-    assert "docker ps -a --format" in script
-    assert "docker logs --tail 200" in script
-    # Bounded on the target, redacted on the orchestrator, by the same helper.
-    assert "tail -c 20000" in script
-    assert "/root/e2e-runs/target-app.log" in script
 
 
 def test_a_target_snapshot_that_could_not_be_taken_is_named_not_absent():
@@ -174,7 +173,7 @@ def test_a_target_snapshot_that_could_not_be_taken_is_named_not_absent():
         script
     )
     assert "the target host snapshot is unavailable: ${target_attempt}" in script
-    assert "no unredacted target output is published" in script
+    assert "none reached the runner directory" in script
 
 
 def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_probe():

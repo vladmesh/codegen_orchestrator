@@ -245,6 +245,11 @@ def _reachability_errors(name: str, deployment: object) -> list[str]:
     snapshot = reachability.get("target_host_snapshot")
     if not isinstance(snapshot, dict) or not snapshot.get("reason"):
         errors.append(f"paid_failure_target_snapshot_requirement_missing:{name}")
+    elif not _capture_is_stated(snapshot.get("collection")):
+        # The requirement alone does not say whether the snapshot was taken. A
+        # run that asked for one and cannot say what became of it is the silence
+        # this admission exists to refuse.
+        errors.append(f"paid_failure_target_snapshot_collection_missing:{name}")
     return errors
 
 

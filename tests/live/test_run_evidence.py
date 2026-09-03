@@ -1915,3 +1915,141 @@ def test_the_free_noop_suite_asks_for_nothing_from_the_target_host(codex_docker,
 
     assert snapshot["required"] is False
     assert "free deterministic route" in snapshot["reason"]
+
+
+def test_a_deploy_that_left_before_qa_does_not_claim_no_qa_run_exists(codex_docker, tmp_path):
+    """The false absence: nothing looked, so nothing may be asserted."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(collector)
+    del ctx["qa_run"]
+    del ctx["qa_run_record"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    reason = artifact["qa"]["run_record"]["reason"]
+    assert "no QA run for this story was ever read" in reason
+    assert "unobserved, not absent" in reason
+    assert "reached a terminal state" not in reason
+    assert artifact["qa"]["run_record_source"] is None
+
+
+def test_a_teardown_read_that_found_no_qa_run_may_say_so(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(collector, qa_run_lookup=run_evidence.QARunLookup.NONE_TERMINAL)
+    del ctx["qa_run"]
+    del ctx["qa_run_record"]
+
+    reason = build_artifact(ctx, root=tmp_path)["qa"]["run_record"]["reason"]
+
+    assert "held no terminal QA run for this story" in reason
+    assert "before teardown" in reason
+
+
+def test_a_teardown_read_that_failed_says_the_question_is_unread(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(
+        collector,
+        qa_run_lookup_error="the QA runs of story story-1 were read before teardown and could "
+        "not be listed: ReadTimeout: timed out",
+    )
+    del ctx["qa_run"]
+    del ctx["qa_run_record"]
+
+    reason = build_artifact(ctx, root=tmp_path)["qa"]["run_record"]["reason"]
+
+    assert "is unread" in reason
+    assert "ReadTimeout" in reason
+
+
+def test_a_qa_run_read_at_teardown_says_where_it_was_read(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = qa_stage_ctx(collector, qa_run_lookup=run_evidence.QARunLookup.TEARDOWN)
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["qa"]["run_record_source"] == run_evidence.QARunLookup.TEARDOWN
+    assert artifact["qa"]["run_record"]["value"]["qa_outcome"] == QAOutcome.BLOCKED.value
+
+
+def test_reached_the_url_carries_the_basis_it_rests_on(codex_docker, tmp_path):
+    """`false` is observed; `true` is an inference, and the field says which."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    blocked = build_artifact(qa_stage_ctx(collector), root=tmp_path)
+    probe = blocked["deployment"]["reachability"]["qa_probe"]["value"]
+    assert probe["reached_the_url"] is False
+    assert probe["reached_the_url_basis"] == run_evidence.ReachedBasis.QA_BLOCKER.value
+    assert "observed" in probe["reached_the_url_note"]
+
+    passed = {**QA_BLOCKED_RUN}
+    passed["result"] = {
+        **QA_BLOCKED_RUN["result"],
+        "qa_outcome": QAOutcome.PASSED.value,
+        "blocker": None,
+    }
+    ctx = qa_stage_ctx(collector, qa_run=passed, qa_run_record=run_evidence.qa_run_facts(passed))
+    probe = build_artifact(ctx, root=tmp_path)["deployment"]["reachability"]["qa_probe"]["value"]
+    assert probe["reached_the_url"] is True
+    assert probe["reached_the_url_basis"] == run_evidence.ReachedBasis.INFERRED_FROM_OUTCOME.value
+    assert "inferred" in probe["reached_the_url_note"]
+    assert "Telegram" in probe["reached_the_url_note"]
+
+
+def test_the_snapshot_the_run_asked_for_reports_what_became_of_it(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    never_ran = build_artifact(qa_stage_ctx(collector), root=tmp_path)
+    entry = never_ran["deployment"]["reachability"]["target_host_snapshot"]
+    assert entry["required"] is True
+    assert entry["collection"]["status"] == CaptureStatus.MISSED.value
+    assert "never attempted one" in entry["collection"]["reason"]
+
+    collected = build_artifact(
+        qa_stage_ctx(
+            collector,
+            target_snapshot={"file": "target-app.log", "characters": 812, "server_handle": "srv-1"},
+        ),
+        root=tmp_path,
+    )
+    entry = collected["deployment"]["reachability"]["target_host_snapshot"]
+    assert entry["collection"]["value"]["file"] == run_evidence.TARGET_SNAPSHOT_FILENAME
+    assert entry["reason"].endswith(
+        f"beside this artifact as {run_evidence.TARGET_SNAPSHOT_FILENAME}"
+    )
+
+    failed = build_artifact(
+        qa_stage_ctx(
+            collector, target_snapshot_error="the target host snapshot command exited 255"
+        ),
+        root=tmp_path,
+    )
+    entry = failed["deployment"]["reachability"]["target_host_snapshot"]
+    assert entry["collection"]["reason"] == "the target host snapshot command exited 255"
+
+
+def test_the_collector_and_the_artifact_read_one_snapshot_predicate(codex_docker):
+    """The suite asks the same question the artifact publishes and the gate reads."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    assert run_evidence.target_snapshot_requirement(qa_stage_ctx(collector))["required"] is True
+    reachable = qa_stage_ctx(
+        collector,
+        qa_run_record=run_evidence.qa_run_facts(
+            {
+                **QA_BLOCKED_RUN,
+                "result": {
+                    **QA_BLOCKED_RUN["result"],
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "blocker": None,
+                },
+            }
+        ),
+    )
+    assert run_evidence.target_snapshot_requirement(reachable)["required"] is False

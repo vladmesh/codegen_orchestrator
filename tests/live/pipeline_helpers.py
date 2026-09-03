@@ -23,7 +23,9 @@ import run_cleanup
 from run_evidence import (
     LOG_TAIL_LINES,
     LOG_TAIL_MAX_CHARS,
+    TARGET_SNAPSHOT_FILENAME,
     Capture,
+    QARunLookup,
     RunEvidenceCollector,
     WorkerRole,
     deploy_run_facts,
@@ -31,6 +33,7 @@ from run_evidence import (
     engineering_run_record,
     evidence_output_directory,
     qa_run_facts,
+    target_snapshot_requirement,
 )
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -48,6 +51,7 @@ from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResul
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
@@ -760,7 +764,14 @@ def redacted_payload(payload: object) -> object:
     return json.loads(redact_diagnostic(serialized, secrets=secret_env_values(dict(os.environ))))
 
 
-def record_qa_run(ctx: dict, run: dict) -> None:
+# The suite's own snapshot of the target host is bounded twice: the remote
+# script bounds each container's tail, and this bounds the whole text before it
+# is written down.
+TARGET_SNAPSHOT_MAX_CHARS = 200_000
+TARGET_SNAPSHOT_TIMEOUT = 120
+
+
+def record_qa_run(ctx: dict, run: dict, *, source: QARunLookup = QARunLookup.QA_WAIT) -> None:
     """Read the terminal QA Run into evidence, inside the wait that found it.
 
     The run this receives is the record the QA consumer wrote, so its blocker —
@@ -774,6 +785,7 @@ def record_qa_run(ctx: dict, run: dict) -> None:
     not be read is a stated missed capture.
     """
     ctx["qa_run"] = run
+    ctx["qa_run_lookup"] = source
     try:
         ctx["qa_run_record"] = redacted_payload(qa_run_facts(run))
     except (AttributeError, TypeError, ValueError) as error:
@@ -798,6 +810,139 @@ def record_deploy_run(ctx: dict, run: dict) -> None:
             f"deploy run {run.get('id')} could not be read into evidence: "
             f"{type(error).__name__}: {error}"
         )
+
+
+async def backfill_qa_run(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Read this story's terminal QA Run when the phase never got to look.
+
+    `record_qa_run` is called from inside the QA wait, and a run that left the
+    phase before that wait — the harness health probe raises when the deployed
+    URL does not answer, which is exactly the shape this card exists for — would
+    otherwise have no QA record at all. The artifact then said "no QA run for
+    this story reached a terminal state", which in run 33711527100 would have
+    been false: the QA Run existed, was terminal in 0.9 s, and carried the
+    blocker the whole artifact is for. Nothing here asserts; it looks, and what
+    it finds — a run, no run, or a listing that failed — is recorded as itself.
+
+    Only for a run whose deploy succeeded onto a running application: that is
+    the only shape in which QA is handed anything, so the deterministic route's
+    reads are unchanged everywhere else.
+    """
+    if ctx.get("qa_run") is not None or ctx.get("qa_run_record_error"):
+        return
+    story_id = ctx.get("story_id")
+    if (
+        not story_id
+        or ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        or ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
+    ):
+        return
+    try:
+        require_unscoped_run_observer(api_internal)
+        response = await api_internal.get(
+            "/api/runs/", params={"story_id": story_id, "run_type": RunType.QA.value}
+        )
+        response.raise_for_status()
+        # The API orders runs newest first, and a project can carry QA runs of
+        # other stories, so the story is checked here as it is in the wait.
+        terminal = [
+            run
+            for run in response.json()
+            if run["story_id"] == story_id and run["status"] in _TERMINAL_RUN_STATUSES
+        ]
+    except (httpx.HTTPError, KeyError, TypeError, ValueError, RuntimeError) as error:
+        ctx["qa_run_lookup_error"] = (
+            f"the QA runs of story {story_id} were read before teardown and could not be "
+            f"listed: {type(error).__name__}: {error}"
+        )
+        return
+    if not terminal:
+        ctx["qa_run_lookup"] = QARunLookup.NONE_TERMINAL
+        return
+    record_qa_run(ctx, terminal[0], source=QARunLookup.TEARDOWN)
+
+
+def _target_snapshot_args(project_name: str, server_handle: str | None) -> list[str]:
+    args = ["server-diagnostics", "--project-name", project_name, "--api-url", "http://api:8000"]
+    if server_handle is not None:
+        args += ["--server-handle", server_handle]
+    return args
+
+
+def record_target_host_snapshot(ctx: dict) -> None:
+    """Photograph the deployment before this run's own teardown removes it.
+
+    The deadline is not the machine's deletion, it is `cleanup_all`: its first
+    step streams the remote cleanup script to the target, which runs
+    `docker compose down -v` and `docker rm -f -v`. A container that was removed
+    rather than stopped is not listed by `docker ps -a` and has no log to tail,
+    so a snapshot taken after that is systematically empty. This runs inside the
+    phase's `finally`, before the cleanup guard fires.
+
+    The snapshot goes through `redacted_dump_text` — the same helper and the
+    same rule the debug dump and the worker log tails follow — and is bounded
+    before it is written. Evidence collection, so it never fails the run: what
+    could not be collected is recorded as the reason it could not be.
+    """
+    requirement = target_snapshot_requirement(ctx)
+    if not requirement["required"]:
+        return
+    try:
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            _target_snapshot_args(ctx["project_name"], ctx.get("server_handle")),
+            timeout=TARGET_SNAPSHOT_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        ctx["target_snapshot_error"] = (
+            "the target host snapshot could not be taken: "
+            f"{type(error).__name__}: {redacted_dump_text(str(error))[:300]}"
+        )
+        return
+    if result.returncode != 0:
+        ctx["target_snapshot_error"] = (
+            f"the target host snapshot command exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr).strip()[:500]}"
+        )
+        return
+    text = redacted_dump_text(result.stdout)[:TARGET_SNAPSHOT_MAX_CHARS]
+    directory = evidence_output_directory(ORCHESTRATOR_ROOT)
+    path = directory / TARGET_SNAPSHOT_FILENAME
+    header = (
+        f"== snapshot project={ctx['project_name']} "
+        f"deployed_url={ctx.get('deployed_url')} at={datetime.now(tz=UTC).isoformat()} ==\n"
+    )
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # Appended: one runner directory can hold several combinations, and a
+        # second one must not erase the first one's answer.
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(header + text + "\n")
+    except OSError as error:
+        ctx["target_snapshot_error"] = (
+            f"the target host snapshot was taken and could not be written to {path.name}: "
+            f"{type(error).__name__}"
+        )
+        return
+    ctx["target_snapshot"] = {
+        "file": TARGET_SNAPSHOT_FILENAME,
+        "characters": len(text),
+        "collected_at": datetime.now(tz=UTC).isoformat(),
+        "server_handle": ctx.get("server_handle"),
+    }
+
+
+async def record_terminal_stage_evidence(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """The last reads before teardown, whatever ended the phase.
+
+    Both of them exist because the phase can be left by a raise: the QA Run that
+    names why QA stopped, and the target host that holds the half of the
+    reachability answer the orchestrator cannot see. Both are gone minutes
+    later — the Run with the machine, the containers with `cleanup_all`.
+    """
+    await backfill_qa_run(api_internal, ctx)
+    record_target_host_snapshot(ctx)
 
 
 async def record_health_probe(ctx: dict, url: str, *, expect_marker: str | None = None) -> dict:

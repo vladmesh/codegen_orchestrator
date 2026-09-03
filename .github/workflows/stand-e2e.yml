@@ -502,7 +502,6 @@ jobs:
         if: always()
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
-          TARGET_IP: ${{ steps.create.outputs.target_ip }}
           SUITE: ${{ steps.suite.outputs.value }}
           WORKER: ${{ inputs.worker }}
           QA: ${{ inputs.qa }}
@@ -571,7 +570,7 @@ jobs:
                 set -euo pipefail
                 cd /root/e2e-runs/latest
                 shopt -s nullglob
-                files=(run-evidence-*.json debug-*.md)
+                files=(run-evidence-*.json debug-*.md target-app.log)
                 if [ "${#files[@]}" -eq 0 ]; then
                   tar -cf - --files-from=/dev/null
                 else
@@ -620,62 +619,25 @@ jobs:
                 services_attempt="${services_attempt}, and copying the collected file to the runner failed"
               fi
 
-              # The one question the orchestrator's own services cannot answer.
-              # When a paid run's evidence says a deploy reported success and the
-              # deployed URL then answered nobody, whether the application
-              # container was down, up but unreachable, or answering something QA
-              # rejected is readable only on the *target* machine — which cleanup
-              # deletes minutes later. The run evidence collected above is what
-              # asks, through the same predicate the admission refuses on, so the
-              # collection and the boundary cannot disagree.
-              target_attempt="no snapshot was attempted, because the collected run evidence asked for none"
+              # The one question the orchestrator's own services cannot answer
+              # is not answered from here. Whether the application container was
+              # down, up but unreachable, or answering something QA rejected is
+              # readable only on the target host, and only until the suite's own
+              # teardown removes those containers — long before this step runs.
+              # So the suite takes that snapshot inside its phase and writes
+              # `target-app.log` into the runner directory the block above
+              # collects from; what is left here is the fail-closed half: this
+              # run's evidence is asked whether it wanted one, and a snapshot
+              # that was wanted and did not arrive is named below.
               if python3 -m scripts.stand_acceptance needs-target-snapshot --run-dir "${run_dir}"; then
                 target_required=yes
-                target_attempt="no snapshot was attempted, because no target host address was recorded for this run"
-                if [ -n "${TARGET_IP}" ]; then
-                  # Bounded on the target, redacted on the orchestrator: the same
-                  # helper and the same protected-name allow-list as every other
-                  # tail, with no second redaction path and nothing unredacted
-                  # ever written to the runner.
-                  if ssh -i "${key_path}" ${SSH_OPTS} root@"${TARGET_IP}" '
-                    set -euo pipefail
-                    echo "== containers =="
-                    docker ps -a --format "{{.Names}} image={{.Image}} state={{.State}} status={{.Status}} ports={{.Ports}}"
-                    for name in $(docker ps -a --format "{{.Names}}"); do
-                      echo "== logs ${name} =="
-                      docker logs --tail 200 "${name}" 2>&1 | tail -c 20000
-                    done
-                  ' 2>&1 | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
-                    set -euo pipefail
-                    cd /opt/codegen_orchestrator
-                    COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-                    protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
-                    out=/root/e2e-runs/target-app.log
-                    partial="${out}.partial"
-                    rm -f "${partial}"
-                    if ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
-                       python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
-                       > "${partial}"; then
-                      mv "${partial}" "${out}"
-                    else
-                      printf "%s\n" "the target host snapshot was not collected: the redaction path did not complete, so no unredacted target output is published" > "${out}"
-                      rm -f "${partial}"
-                    fi
-                  '; then
-                    target_attempt="the remote snapshot command completed"
-                    # Only a completed pipe has a file worth copying: a broken
-                    # one may have left an empty or partial file on the
-                    # orchestrator, and an empty file would read as "the target
-                    # had nothing to say" rather than "this was not collected".
-                    if ! scp -i "${key_path}" ${SSH_OPTS} \
-                      root@"${PROD_HOST}":/root/e2e-runs/target-app.log \
-                      "${run_dir}/target-app.log"; then
-                      target_attempt="${target_attempt}, and copying the collected file to the runner failed"
-                    fi
-                  else
-                    target_attempt="the remote snapshot command over ssh did not complete"
-                  fi
+                if [ -f "${run_dir}/target-app.log" ]; then
+                  target_attempt="the suite collected it before its own teardown"
+                else
+                  target_attempt="the suite asked for a target host snapshot and none reached the runner directory"
                 fi
+              else
+                target_attempt="no snapshot was asked for by the collected run evidence"
               fi
             fi
           fi

@@ -196,6 +196,7 @@ def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
                     "file": "target-app.log",
                     "reason": "the deploy did not report success, so an unanswered deployed "
                     "URL is already accounted for by the deploy stage",
+                    "collection": _missed("this run asked for no snapshot of the target host"),
                 },
             },
         },
@@ -232,6 +233,11 @@ def _qa_stage_evidence(*, paid: bool = True, required: bool = True) -> dict:
         "required": required,
         "file": "target-app.log",
         "reason": "the deploy reported success and QA's own probe got no response",
+        "collection": (
+            _captured({"file": "target-app.log", "characters": 812})
+            if required
+            else _missed("this run asked for no snapshot of the target host")
+        ),
     }
     return evidence
 
@@ -431,6 +437,40 @@ def test_a_failed_paid_run_that_cannot_say_what_the_url_answered_is_refused(tmp_
     )
     assert (
         f"paid_failure_target_snapshot_requirement_missing:{PAID_EVIDENCE_NAME}" in incompleteness
+    )
+
+
+def test_a_run_that_cannot_say_what_became_of_its_snapshot_is_refused(tmp_path):
+    evidence = _qa_stage_evidence()
+    del evidence["deployment"]["reachability"]["target_host_snapshot"]["collection"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    (run_dir / "target-app.log").write_text("== containers ==\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert (
+        f"paid_failure_target_snapshot_collection_missing:{PAID_EVIDENCE_NAME}"
+        in _incompleteness(output)
+    )
+
+
+def test_a_snapshot_the_suite_could_not_take_is_admitted_with_the_stated_why(tmp_path):
+    """The suite names why it could not collect; the workflow names the absent file."""
+    evidence = _qa_stage_evidence()
+    evidence["deployment"]["reachability"]["target_host_snapshot"]["collection"] = _missed(
+        "the target host snapshot command exited 255: ssh: connect refused"
+    )
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    (run_dir / "target-app.log").write_text(
+        "the target host snapshot is unavailable: the suite asked for a target host snapshot "
+        "and none reached the runner directory (suite step outcome: failure)\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert "none reached the runner directory" in (
+        (output / "target-app.log").read_text(encoding="utf-8")
     )
 
 
