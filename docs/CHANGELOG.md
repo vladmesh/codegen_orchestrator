@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- Host-side stand scripts are held to the system interpreter they actually run under: the administrative
+  account moved to stdlib-only `shared.provisioning_policy`, and a test parses the workflow to guard every one.
 - The dynamic stand target is registered with the production administrative account, so the QA grant's
   admin connection can write the QA account's `authorized_keys` instead of blocking on a seat it cannot read.
 - The QA grant and revoke scripts separate "cannot read this account's home" from "no such file", so an

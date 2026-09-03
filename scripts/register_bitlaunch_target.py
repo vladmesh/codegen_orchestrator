@@ -16,23 +16,21 @@ from pathlib import Path
 import sys
 import urllib.request
 
-from shared.contracts.dto.server import ServerCreate
+# This module runs under the host's system interpreter, which has no
+# third-party packages: every import here has to be stdlib-only, transitively.
+# `shared.provisioning_policy` is, and it is where the administrative account
+# lives, so the row this script writes and the `ServerCreate.ssh_user` default a
+# production row carries read the same constant and cannot drift. Reaching for
+# the model itself instead cost paid run 33739202480, which died importing
+# pydantic before the suite began.
 from shared.provisioning_policy import (
+    ADMIN_SSH_USER,
     BITLAUNCH_ID_LENGTH,
     BITLAUNCH_PROVIDER,
     parse_bitlaunch_server_id,
 )
 
 TARGET_ROLE = "target"
-
-# The administrative account the fleet key opens on this row, taken from the
-# same place a production row takes it: `server_sync` names no `ssh_user` at
-# all, so every production row carries this default. Stating it here from the
-# default rather than as a literal is what keeps the two contours one model —
-# a stand row that named its own account diverged for three paid runs, because
-# the QA grant writes another account's `authorized_keys` over this connection
-# and only an administrative account can do that.
-ADMIN_SSH_USER = ServerCreate.model_fields["ssh_user"].default
 
 
 def build_target_payload(

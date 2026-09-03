@@ -774,6 +774,22 @@ infrastructure blockers: its repair is the server row's administrative account. 
 answers zero surviving keys only from a file it read: an unreadable one is
 residue the cleanup verdict carries, never a clean result.
 
+### Host-side scripts and the system interpreter
+
+Every `python3 -m scripts.<module>` line in `.github/workflows/stand-e2e.yml`
+runs under a machine's system interpreter — the runner's, and on the target the
+one behind `ssh ... python3` — never the repository environment, which is not
+guaranteed to exist at that point in the workflow. Such a module, and everything
+it imports transitively, may use the standard library only. Reaching into
+`shared` is allowed exactly as far as that holds: `shared.provisioning_policy`,
+`shared.stand_credentials` and `shared.constants` are stdlib-only and are on
+this path; anything importing `pydantic` — `shared.contracts` above all — is
+not. `ADMIN_SSH_USER` lives in `shared.provisioning_policy` for this reason, so
+`ServerCreate.ssh_user` and the stand registration share one constant without
+the script importing the model. `tests/unit/test_host_script_interpreter.py`
+enumerates the invocations from the workflow file and imports each module with
+site-packages off; a new invocation is covered by that parse automatically.
+
 ### Terminal owner notification
 
 `dto/owner_notification.py` and `shared/contracts/queues/po.py` define the

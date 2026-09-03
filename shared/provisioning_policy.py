@@ -7,6 +7,16 @@ TIME4VPS_PROVIDER = "time4vps"
 BITLAUNCH_PROVIDER = "bitlaunch"
 TIME4VPS_MANAGED_IDS_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
 
+# The administrative account the fleet key opens on a managed row. It lives in
+# this stdlib-only module because both readers need it: `ServerCreate.ssh_user`
+# defaults to it, and `scripts/register_bitlaunch_target.py` stamps it on the
+# stand row while running under the host's system interpreter, which has no
+# third-party packages. One constant is what keeps the two contours one model —
+# a stand row that named its own account diverged for three paid runs, because
+# the QA grant writes another account's `authorized_keys` over this connection
+# and only an administrative account can do that.
+ADMIN_SSH_USER = "root"
+
 
 class DestructiveOperationPolicy(Protocol):
     """One provider's stable-ID authorization contract."""
