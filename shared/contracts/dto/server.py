@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.provisioning_policy import ADMIN_SSH_USER
 
 SSHUser = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]*$")]
 
@@ -45,7 +46,7 @@ class ServerCreate(BaseModel):
     handle: str
     host: str
     public_ip: str
-    ssh_user: SSHUser = "root"
+    ssh_user: SSHUser = ADMIN_SSH_USER
     ssh_key: str | None = Field(default=None, description="Raw SSH private key to be encrypted")
     capacity_cpu: int = 1
     capacity_ram_mb: int = 1024
