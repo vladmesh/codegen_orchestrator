@@ -69,6 +69,7 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
     expected_targets = {
         "mega-noop": "tests/live/test_full_pipeline.py::TestFullPipeline",
         "mega-llm": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
+        "mega-brief": "tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
         "matrix": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
     }
 
@@ -121,6 +122,12 @@ def test_unknown_suite_is_a_non_llm_pytest_target():
 
 def test_mega_llm_runs_the_one_requested_agent_pair():
     assert SUITES["mega-llm"].combinations == ()
+
+
+def test_mega_brief_runs_the_one_requested_agent_pair():
+    """The Product Brief proof spends one developer and one QA executor pair."""
+    assert SUITES["mega-brief"].llm is True
+    assert SUITES["mega-brief"].combinations == ()
 
 
 def test_named_suites_state_what_they_run():

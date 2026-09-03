@@ -133,7 +133,11 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #     `executor_decision` — the control plane's own answer — instead of a second
 #     copy of the runner's request, so requested/selected/executed are three
 #     independent facts and a disagreement between them is visible.
-EVIDENCE_SCHEMA_VERSION = 8
+# v9: a Product Brief scenario carries its confirmed document, coverage and
+#     admission facts through the product settings and job evidence it exercised.
+# v10: the Architect-owned parsed scheduled criterion and the whole admitted
+#      planning roster are retained, so the job identity cannot drift from it.
+EVIDENCE_SCHEMA_VERSION = 10
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -316,6 +320,7 @@ class VerdictReason(StrEnum):
     RUN_FAILED = "run_failed"
     WORKER_EXECUTED_MISSED = "worker_executed_missed"
     QA_EXECUTED_MISSED = "qa_executed_missed"
+    BRIEF_EVIDENCE_MISSED = "brief_evidence_missed"
 
 
 class QARunLookup(StrEnum):
@@ -1858,6 +1863,360 @@ def failure_summary(
     }
 
 
+def _brief_not_required_capture(name: str) -> Capture:
+    return Capture.missed(f"this is not a Product Brief scenario, so {name} is not required")
+
+
+def _brief_confirmed_capture(ctx: dict) -> Capture:
+    brief_id = ctx.get("brief_id")
+    brief = ctx.get("brief_read")
+    if not isinstance(brief_id, str) or not brief_id:
+        return Capture.missed("the Product Brief id was not retained by the scenario")
+    if not isinstance(brief, dict):
+        return Capture.missed(f"Product Brief {brief_id!r} was not read from the API")
+    if brief.get("id") != brief_id:
+        return Capture.missed(
+            f"the Product Brief API read named {brief.get('id')!r}, not expected {brief_id!r}"
+        )
+    if not brief.get("confirmed_at"):
+        return Capture.missed(f"Product Brief {brief_id!r} has no confirmed_at fact")
+    content = brief.get("content")
+    if not isinstance(content, dict):
+        return Capture.missed(f"confirmed Product Brief {brief_id!r} carries no content object")
+    return Capture.captured(
+        {"id": brief_id, "confirmed_at": brief["confirmed_at"], "content": content}
+    )
+
+
+def _brief_coverage_capture(ctx: dict, confirmed: Capture) -> Capture:
+    if not confirmed.is_captured:
+        return Capture.missed(
+            f"coverage is unread because confirmation is unread: {confirmed.reason}"
+        )
+    rows = ctx.get("brief_coverage")
+    if not isinstance(rows, list):
+        return Capture.missed("Product Brief coverage rows were not read from the API")
+    brief_id = confirmed.value["id"]
+    must_requirements = confirmed.value["content"].get("must_requirements")
+    if not isinstance(must_requirements, list):
+        return Capture.missed(f"confirmed Product Brief {brief_id!r} has no must-requirements list")
+    requirement_ids = {
+        requirement.get("id")
+        for requirement in must_requirements
+        if isinstance(requirement, dict) and isinstance(requirement.get("id"), str)
+    }
+    if not requirement_ids:
+        return Capture.missed(
+            f"confirmed Product Brief {brief_id!r} names no readable requirements"
+        )
+
+    retained: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return Capture.missed("a Product Brief coverage row was not an object")
+        if row.get("brief_id") != brief_id:
+            return Capture.missed(
+                f"a coverage row belongs to {row.get('brief_id')!r}, not Product Brief {brief_id!r}"
+            )
+        requirement_id = row.get("requirement_id")
+        task_id = row.get("task_id")
+        if (
+            not isinstance(row.get("id"), int)
+            or not isinstance(requirement_id, str)
+            or not requirement_id
+        ):
+            return Capture.missed(
+                "a Product Brief coverage row lacks its durable id or requirement id"
+            )
+        if not isinstance(task_id, str) or not task_id:
+            return Capture.missed(
+                f"Product Brief requirement {requirement_id!r} is not covered by a planning task"
+            )
+        retained.append(
+            {
+                "id": row["id"],
+                "brief_id": brief_id,
+                "requirement_id": requirement_id,
+                "task_id": task_id,
+            }
+        )
+    covered_ids = {row["requirement_id"] for row in retained}
+    if covered_ids != requirement_ids:
+        return Capture.missed(
+            f"Product Brief {brief_id!r} coverage ids {sorted(covered_ids)!r} do not equal its "
+            f"must-requirements {sorted(requirement_ids)!r}"
+        )
+    return Capture.captured(retained)
+
+
+def _brief_admission_capture(  # noqa: PLR0911 - each unread durable fact has its own reason
+    ctx: dict, confirmed: Capture, coverage: Capture
+) -> Capture:
+    if not confirmed.is_captured:
+        return Capture.missed(
+            f"admission is unread because confirmation is unread: {confirmed.reason}"
+        )
+    admission = ctx.get("brief_admission")
+    brief_id = confirmed.value["id"]
+    if not isinstance(admission, dict):
+        return Capture.missed(f"Product Brief {brief_id!r} admission was not retained")
+    if admission.get("brief_id") != brief_id:
+        return Capture.missed(
+            f"admission names Product Brief {admission.get('brief_id')!r}, not {brief_id!r}"
+        )
+    admitted_at = admission.get("coverage_admitted_at")
+    planning_attempt_id = admission.get("planning_attempt_id")
+    released_task_ids = admission.get("released_task_ids")
+    if not isinstance(admitted_at, str) or not admitted_at:
+        return Capture.missed(f"Product Brief {brief_id!r} admission has no coverage_admitted_at")
+    if not isinstance(released_task_ids, list) or not all(
+        isinstance(task_id, str) and task_id for task_id in released_task_ids
+    ):
+        return Capture.missed(
+            f"Product Brief {brief_id!r} admission has no readable released task ids"
+        )
+    if len(set(released_task_ids)) != len(released_task_ids):
+        return Capture.missed(f"Product Brief {brief_id!r} admission repeats a released task id")
+    planned_task_ids = ctx.get("brief_plan_task_ids")
+    if planned_task_ids != released_task_ids:
+        return Capture.missed(
+            f"Product Brief {brief_id!r} admission released {released_task_ids!r}, not the "
+            f"current planning roster {planned_task_ids!r}"
+        )
+    if not isinstance(planning_attempt_id, str) or not planning_attempt_id:
+        return Capture.missed(f"Product Brief {brief_id!r} admission has no planning attempt id")
+    planned_tasks = ctx.get("brief_planned_tasks")
+    if not isinstance(planned_tasks, list):
+        return Capture.missed(
+            f"Product Brief {brief_id!r} has no readable dispatch-admitted current planning roster"
+        )
+    observed_task_ids: list[str] = []
+    for task in planned_tasks:
+        if (
+            not isinstance(task, dict)
+            or not isinstance(task.get("id"), str)
+            or task.get("planning_attempt_id") != planning_attempt_id
+            or task.get("dispatch_admitted") is not True
+        ):
+            return Capture.missed(
+                f"Product Brief {brief_id!r} has no readable dispatch-admitted current "
+                "planning roster"
+            )
+        observed_task_ids.append(task["id"])
+    if observed_task_ids != released_task_ids:
+        return Capture.missed(
+            f"Product Brief {brief_id!r} admission released {released_task_ids!r}, not the "
+            f"read current planning roster {observed_task_ids!r}"
+        )
+    if coverage.is_captured and not {row["task_id"] for row in coverage.value} <= set(
+        released_task_ids
+    ):
+        return Capture.missed(
+            f"Product Brief {brief_id!r} admission did not release every task coverage names"
+        )
+    return Capture.captured(
+        {
+            "brief_id": brief_id,
+            "coverage_admitted_at": admitted_at,
+            "planning_attempt_id": planning_attempt_id,
+            "released_task_ids": released_task_ids,
+        }
+    )
+
+
+def _brief_settings_readback_capture(ctx: dict, confirmed: Capture) -> Capture:
+    if not confirmed.is_captured:
+        return Capture.missed(
+            f"settings readback is unread because confirmation is unread: {confirmed.reason}"
+        )
+    readback = ctx.get("brief_settings_readback")
+    if not isinstance(readback, dict):
+        return Capture.missed("the product settings/get response was not retained")
+    if not isinstance(readback.get("key"), str) or not isinstance(readback.get("scope"), str):
+        return Capture.missed("the product settings/get response lacks key or scope")
+    if "value" not in readback:
+        return Capture.missed("the product settings/get response lacks value")
+    expected = confirmed.value["content"].get("initial_settings")
+    if not isinstance(expected, list) or not any(
+        isinstance(setting, dict)
+        and setting.get("key") == readback["key"]
+        and setting.get("scope") == readback["scope"]
+        and setting.get("value") == readback["value"]
+        for setting in expected
+    ):
+        return Capture.missed(
+            "the product settings/get response does not equal an initial setting in the "
+            "confirmed Product Brief"
+        )
+    return Capture.captured(
+        {"key": readback["key"], "scope": readback["scope"], "value": readback["value"]}
+    )
+
+
+def _brief_settings_seed_capture(ctx: dict, readback: Capture) -> Capture:
+    if not readback.is_captured:
+        return Capture.missed(
+            f"deploy settings seed is unread because settings readback is unread: {readback.reason}"
+        )
+    outcomes = ctx.get("brief_settings_seed")
+    if not isinstance(outcomes, list):
+        return Capture.missed("the deploy Run settings_seed record was not retained")
+    expected = readback.value
+    matching = [
+        outcome
+        for outcome in outcomes
+        if isinstance(outcome, dict)
+        and outcome.get("key") == expected["key"]
+        and outcome.get("scope") == expected["scope"]
+    ]
+    if len(matching) != 1:
+        return Capture.missed(
+            "the deploy Run settings_seed record does not name exactly one matching confirmed "
+            "setting"
+        )
+    outcome = matching[0]
+    if outcome.get("written") is not True or outcome.get("failure") is not None:
+        return Capture.missed(
+            "the deploy Run settings_seed record does not prove the confirmed setting was written"
+        )
+    subject_id = outcome.get("subject_id")
+    if subject_id is not None and not isinstance(subject_id, int):
+        return Capture.missed("the deploy Run settings_seed record has an unreadable subject id")
+    return Capture.captured(
+        {
+            "key": outcome["key"],
+            "scope": outcome["scope"],
+            "subject_id": subject_id,
+            "written": True,
+            "failure": None,
+        }
+    )
+
+
+def _brief_acceptance_capture(ctx: dict) -> Capture:
+    acceptance = ctx.get("brief_acceptance")
+    criterion = acceptance.get("criterion") if isinstance(acceptance, dict) else None
+    if not isinstance(criterion, dict):
+        return Capture.missed(
+            "the Architect parsed scheduled acceptance criterion was not retained"
+        )
+    name = criterion.get("name")
+    arguments = criterion.get("arguments")
+    observable = criterion.get("observable")
+    if name != "multilingual_digest":
+        return Capture.missed(
+            f"the Architect criterion must name exactly 'multilingual_digest', got {name!r}"
+        )
+    if arguments != {}:
+        return Capture.missed(
+            "the Architect criterion for 'multilingual_digest' must have arguments {}, got "
+            f"{arguments!r}"
+        )
+    if not isinstance(observable, str) or not observable:
+        return Capture.missed("the Architect criterion has no observable")
+    return Capture.captured({"name": name, "arguments": arguments, "observable": observable})
+
+
+def _brief_job_evidence_capture(ctx: dict, acceptance: Capture) -> Capture:
+    if not acceptance.is_captured:
+        return Capture.missed(
+            f"job evidence is unread because the Architect criterion is unread: {acceptance.reason}"
+        )
+    evidence = ctx.get("brief_job_evidence")
+    if not isinstance(evidence, dict):
+        return Capture.missed("the product jobs/evidence response was not retained")
+    required_fields = (
+        "command_id",
+        "name",
+        "fired_by_product",
+        "fired_by_run",
+        "dispatch_status",
+        "accepted_at",
+    )
+    absent = [
+        field
+        for field in required_fields
+        if not isinstance(evidence.get(field), str) or not evidence[field]
+    ]
+    if absent:
+        return Capture.missed(
+            "the product jobs/evidence response lacks command provenance fields: "
+            + ", ".join(absent)
+        )
+    if "arguments" not in evidence:
+        return Capture.missed("the product jobs/evidence response lacks command arguments")
+    if evidence["dispatch_status"] != "dispatched" or not evidence.get("dispatched_at"):
+        return Capture.missed(
+            "the product jobs/evidence response does not prove that job_fired was dispatched"
+        )
+    qa_run_id = (ctx.get("qa_run") or {}).get("id")
+    if evidence["fired_by_run"] != qa_run_id:
+        return Capture.missed(
+            f"job evidence was fired by {evidence['fired_by_run']!r}, not QA Run {qa_run_id!r}"
+        )
+    criterion = acceptance.value
+    if evidence["name"] != criterion["name"] or evidence["arguments"] != criterion["arguments"]:
+        return Capture.missed(
+            "job evidence does not match the Architect criterion: "
+            f"name={evidence['name']!r}, arguments={evidence['arguments']!r}"
+        )
+    expected_command_id = f"qa-{qa_run_id}-{criterion['name']}"
+    if evidence["command_id"] != expected_command_id:
+        return Capture.missed(
+            f"job evidence command id {evidence['command_id']!r} is not {expected_command_id!r}"
+        )
+    if evidence["fired_by_product"] != ctx.get("project_id"):
+        return Capture.missed(
+            f"job evidence names product {evidence['fired_by_product']!r}, not "
+            f"{ctx.get('project_id')!r}"
+        )
+    return Capture.captured(
+        {
+            "command_id": evidence["command_id"],
+            "name": evidence["name"],
+            "arguments": evidence["arguments"],
+            "fired_by_product": evidence["fired_by_product"],
+            "fired_by_run": evidence["fired_by_run"],
+            "dispatch_status": evidence["dispatch_status"],
+            "accepted_at": evidence["accepted_at"],
+            "dispatched_at": evidence["dispatched_at"],
+        }
+    )
+
+
+def brief_evidence(ctx: dict) -> dict:
+    """Evidence only the named Product Brief live scenario is obliged to collect."""
+    required = bool(ctx.get("brief_scenario"))
+    if not required:
+        return {
+            "required": False,
+            "confirmed": _brief_not_required_capture("confirmation").as_dict(),
+            "coverage": _brief_not_required_capture("coverage").as_dict(),
+            "admission": _brief_not_required_capture("admission").as_dict(),
+            "acceptance": _brief_not_required_capture("acceptance criterion").as_dict(),
+            "settings_readback": _brief_not_required_capture("settings readback").as_dict(),
+            "settings_seed": _brief_not_required_capture("deploy settings seed").as_dict(),
+            "job_evidence": _brief_not_required_capture("job evidence").as_dict(),
+        }
+    confirmed = _brief_confirmed_capture(ctx)
+    coverage = _brief_coverage_capture(ctx, confirmed)
+    admission = _brief_admission_capture(ctx, confirmed, coverage)
+    acceptance = _brief_acceptance_capture(ctx)
+    settings = _brief_settings_readback_capture(ctx, confirmed)
+    settings_seed = _brief_settings_seed_capture(ctx, settings)
+    job = _brief_job_evidence_capture(ctx, acceptance)
+    return {
+        "required": True,
+        "confirmed": confirmed.as_dict(),
+        "coverage": coverage.as_dict(),
+        "admission": admission.as_dict(),
+        "acceptance": acceptance.as_dict(),
+        "settings_readback": settings.as_dict(),
+        "settings_seed": settings_seed.as_dict(),
+        "job_evidence": job.as_dict(),
+    }
+
+
 def verdict(
     ctx: dict,
     terminal_state: TerminalState,
@@ -1866,6 +2225,7 @@ def verdict(
     *,
     worker_executed: dict,
     qa_executed: dict,
+    brief: dict,
 ) -> dict:
     """Red or green, and every reason for red carrying its control-plane reason.
 
@@ -1911,6 +2271,28 @@ def verdict(
                     "control_plane_reason": reason.as_dict(),
                 }
             )
+    if brief["required"]:
+        for name in (
+            "confirmed",
+            "coverage",
+            "admission",
+            "acceptance",
+            "settings_readback",
+            "settings_seed",
+            "job_evidence",
+        ):
+            capture = brief[name]
+            if capture["status"] == CaptureStatus.MISSED.value:
+                reasons.append(
+                    {
+                        "code": VerdictReason.BRIEF_EVIDENCE_MISSED.value,
+                        "detail": (
+                            f"the required Product Brief {name} evidence is missed: "
+                            f"{capture['reason']}"
+                        ),
+                        "control_plane_reason": reason.as_dict(),
+                    }
+                )
     return {
         "paid": paid,
         "status": (Verdict.RED if reasons else Verdict.GREEN).value,
@@ -1937,6 +2319,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     reason = control_plane_reason(ctx, terminal_state, failure_kind)
     worker_executed = collector.executed_worker_agent().as_dict()
     qa = qa_cell(ctx)
+    brief = brief_evidence(ctx)
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "kind": EVIDENCE_KIND,
@@ -1956,6 +2339,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             reason,
             worker_executed=worker_executed,
             qa_executed=qa["executor_executed"],
+            brief=brief,
         ),
         "engineering": engineering_evidence(ctx),
         "deployment": deployment_evidence(ctx),
@@ -1996,6 +2380,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "app_status": ctx.get("final_app_status"),
         },
         "qa": qa,
+        "brief": brief,
         "workers": collector.records(),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,

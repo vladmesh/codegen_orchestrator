@@ -30,6 +30,7 @@ Suites are a table, not code paths, so a new one is a line:
 
     ./scripts/stand_run.py --suite mega-noop
     ./scripts/stand_run.py --suite mega-llm --worker codex --qa claude
+    ./scripts/stand_run.py --suite mega-brief --worker codex --qa claude
     ./scripts/stand_run.py --suite matrix
     ./scripts/stand_run.py --suite tests/live/test_api_crud.py
 """
@@ -90,6 +91,10 @@ _INSIDE_RECREATE_GATE = False
 # acceptance yet. See tests/live/README.md for the ledger.
 NOOP_SUITE_TIMEOUT_SECONDS = 4500
 LLM_SUITE_TIMEOUT_SECONDS = 3600
+# The Product Brief proof includes an Architect planning turn and can release
+# more than one engineering Task before it reaches the same deploy and QA
+# stages as mega-llm. Its named cap accounts for that bounded extra work.
+BRIEF_SUITE_TIMEOUT_SECONDS = 5400
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
@@ -159,6 +164,14 @@ SUITES: dict[str, Suite] = {
         llm=True,
         timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
         description="the full pipeline with a real coding agent and a real QA executor",
+    ),
+    "mega-brief": Suite(
+        target="tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
+        llm=True,
+        timeout_seconds=BRIEF_SUITE_TIMEOUT_SECONDS,
+        description=(
+            "the confirmed Product Brief path with a real architect, coding agent, and QA executor"
+        ),
     ),
     "matrix": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",

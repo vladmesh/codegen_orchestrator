@@ -50,6 +50,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two noop engineering Tasks and deterministic QA | 1 | one project; paid admission evidence; two ordered noop Tasks on one Story worker; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port release | 75 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 90 min | measured from stand artifacts; no baseline measurement yet |
 | `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
 The local target names reflect that same contract:
@@ -57,6 +58,7 @@ The local target names reflect that same contract:
 - `make test-live-mega-noop` runs only the noop class.
 - `make test-live-mega` is a compatibility alias for `test-live-mega-noop`.
 - `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
+- `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
 - `make test-live-matrix` delegates the four paid cells to the stand runner.
 - `make test-live-pipeline` is a legacy aggregate of scaffold, engineering, and both full-pipeline
   classes. It is not a named suite and intentionally remains visible until duplicate coverage is
@@ -113,7 +115,8 @@ probe (up to two 30-second paths per attempt); deterministic QA; completed-story
 delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
 release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnostics. The LLM pipeline
 remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
-acceptance. A recreate's readiness wait and the QA executor switch that follows it are separately
+acceptance. `mega-brief` has a 90-minute cap because it adds an Architect planning turn and may
+release multiple sequential engineering Tasks before the deploy and QA stages. A recreate's readiness wait and the QA executor switch that follows it are separately
 limited to three minutes each; runner preflight and final sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include

@@ -43,6 +43,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   has something to commit, and it fails at once when the story branch is not ahead of `main`.
 - A `stand_token` worker now reaches container creation: the manager asks its `ExecutorDiagnostics`
   collaborator for stand-token failures instead of a method it lost in the collaborator extraction.
+- Added the `mega-brief` live path from confirmed Product Brief through Architect admission, settings
+  readback, QA job evidence and cleanup, so it proves the brief-driven delivery contract end to end.
 
 ## 2026-09-02
 
