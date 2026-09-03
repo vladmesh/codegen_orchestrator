@@ -12,6 +12,7 @@ from shared.clients.github import GitHubAppClient, deploy_pin_tag
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.diagnostics import redact_diagnostic
 
@@ -19,6 +20,7 @@ from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
 from .dotenv_builder import build_dotenv, encode_dotenv
+from .image_gate import ImagesNotPublishedError, image_references, wait_for_published_images
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -53,6 +55,10 @@ class DeployPinTagLeakedError(DeployRefusedError):
 
 class DeployFenceUnprovenError(DeployRefusedError):
     """An older deploy run may still be able to write, so this one cannot be the last word."""
+
+
+class DeployImagesUnpublishedError(DeployRefusedError):
+    """The merged commit's images are not in the registry, so there is nothing to deploy."""
 
 
 class DeployDispatchWithdrawnError(RuntimeError):
@@ -151,6 +157,25 @@ async def _create_deployment_record(
             error_type=type(e).__name__,
         )
         return None
+
+
+def _modules_label(project_spec: dict) -> str:
+    """The project's modules as the deployment record stores them."""
+    modules = (project_spec.get("config") or {}).get("modules", "backend")
+    return ",".join(modules) if isinstance(modules, list) else modules
+
+
+def _encode_deploy_payload(
+    values: dict[str, str], project_id: str, diagnostic_secrets: list[str]
+) -> str:
+    """The `.env` this deploy writes to the target, base64-encoded.
+
+    The encoded payload is added to the diagnostic secrets as it is built, so no
+    later error path can name it: it carries every resolved secret of the deploy.
+    """
+    dotenv_b64 = encode_dotenv(build_dotenv({**values, "CODEGEN_PROJECT_ID": project_id}))
+    diagnostic_secrets.append(dotenv_b64)
+    return dotenv_b64
 
 
 async def _write_deploy_secrets(
@@ -511,6 +536,49 @@ class DeployerNode(FunctionalNode):
             )
         return claim
 
+    @staticmethod
+    async def _published_images(
+        references: dict[str, str],
+        project_id: str,
+        head_sha: str,
+        diagnostic_secrets: Iterable[str],
+    ) -> tuple[dict[str, str], dict | None]:
+        """Digests of this commit's images, or the typed refusal that replaces the deploy.
+
+        The refusal is `IMAGES_NOT_PUBLISHED` rather than a generic failure: the
+        thing that did not happen is named, so a slow CI is legible as itself and
+        the supervisor can redeploy the same commit under the ordinary bound.
+        """
+        try:
+            return await wait_for_published_images(references), None
+        except ImagesNotPublishedError as error:
+            logger.error(
+                "deploy_images_not_published",
+                project_id=project_id,
+                head_sha=head_sha,
+                error=redact_diagnostic(error, secrets=diagnostic_secrets),
+            )
+            reason = redact_diagnostic(error, secrets=diagnostic_secrets)
+            return {}, {
+                "deployment_result": {
+                    "status": "failed",
+                    "error": reason,
+                    "image_references": references,
+                },
+                "resolution_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED,
+                "errors": [f"Deploy refused: {reason}"],
+            }
+
+    @staticmethod
+    async def _server_credentials(server_handle: str | None) -> tuple[object | None, str | None]:
+        """The target server record and its stored SSH key, both absent without a handle."""
+        if not server_handle:
+            return None, None
+        return (
+            await api_client.get_server(server_handle),
+            await api_client.get_server_ssh_key(server_handle),
+        )
+
     async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
@@ -553,9 +621,23 @@ class DeployerNode(FunctionalNode):
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
-            # 0. Fetch connection credentials for the same target server.
-            server = await api_client.get_server(server_handle) if server_handle else None
-            ssh_key = await api_client.get_server_ssh_key(server_handle) if server_handle else None
+            # 0. Nothing may be deployed before this commit's images exist. The
+            # references come from the resolved environment, so the gate asks
+            # about exactly the tags the target will pull, and it runs before any
+            # of this deploy's external effects — the payload write, the fence,
+            # the Actions run — so a refusal costs nothing and changes nothing.
+            resolved_images = image_references({**non_secret_values, **secret_values})
+            image_digests, refusal = await self._published_images(
+                resolved_images, project_id, head_sha, diagnostic_secrets
+            )
+            if refusal is not None:
+                return refusal
+
+            if await self._run_cancelled(run_id):
+                return {"deployment_result": {"status": "cancelled"}}
+
+            # 0.5 Fetch connection credentials for the same target server.
+            server, ssh_key = await self._server_credentials(server_handle)
             if not ssh_key:
                 logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
                 return {
@@ -567,14 +649,9 @@ class DeployerNode(FunctionalNode):
                 }
 
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
-            all_env = {
-                **non_secret_values,
-                **secret_values,
-                "CODEGEN_PROJECT_ID": project_id,
-            }
-            dotenv_content = build_dotenv(all_env)
-            dotenv_b64 = encode_dotenv(dotenv_content)
-            diagnostic_secrets.append(dotenv_b64)
+            dotenv_b64 = _encode_deploy_payload(
+                {**non_secret_values, **secret_values}, project_id, diagnostic_secrets
+            )
 
             # 2. Write deploy secrets to GitHub
             logger.info(
@@ -681,10 +758,7 @@ class DeployerNode(FunctionalNode):
             )
 
             # 4. Create service deployment record
-            config = project_spec.get("config") or {}
-            modules = config.get("modules", "backend")
-            if isinstance(modules, list):
-                modules = ",".join(modules)
+            modules = _modules_label(project_spec)
 
             application_id = await _create_deployment_record(
                 project_id=project_id,
@@ -696,6 +770,11 @@ class DeployerNode(FunctionalNode):
                     "branch": "main",
                     "modules": modules,
                     "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
+                    # What ran, not what was asked for. A SHA alone is a claim
+                    # about a commit; these are the references the target pulled
+                    # and the digests they resolved to when the gate read them.
+                    "image_references": resolved_images,
+                    "image_digests": image_digests,
                 },
                 deployed_sha=run_info.get("head_sha"),
                 diagnostic_secrets=diagnostic_secrets,
@@ -704,7 +783,12 @@ class DeployerNode(FunctionalNode):
             deployed_url = f"http://{server_ip}:{port}"
             suffix = " (after rerun)" if rerun else ""
             return {
-                "deployment_result": {"status": "success", "run_id": run_info["id"]},
+                "deployment_result": {
+                    "status": "success",
+                    "run_id": run_info["id"],
+                    "image_references": resolved_images,
+                    "image_digests": image_digests,
+                },
                 "deployed_url": deployed_url,
                 "application_id": application_id,
                 "messages": [

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import structlog
 
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.run_result import MissingUserSecret
 from shared.contracts.env_contract import (
     AllocationEntry,
@@ -415,7 +416,22 @@ class SecretResolverNode(FunctionalNode):
         raise SecretResolutionError(f"Missing allocation for service {service}")
 
     def _resolve_docker_image(self, key_upper: str, state: DevOpsState) -> str:
-        """Build Docker image URL from self-hosted registry."""
+        """Name the image of the commit being deployed, in the self-hosted registry.
+
+        The tag is the commit's, never `:latest`. A mutable tag is resolved at
+        `docker compose pull` time on the target host, which is minutes after the
+        merge and therefore whatever the previous commit published: the deploy
+        then reports the merged SHA while running older code. Naming the SHA tag
+        makes the reference say which bytes are meant, and the gate in the
+        deployer refuses when those bytes are not published yet.
+        """
+        head_sha = state.get("head_sha") or ""
+        try:
+            tag = sha_image_tag(head_sha)
+        except ValueError as error:
+            raise SecretResolutionError(
+                "a commit SHA is required to name the images of this deploy"
+            ) from error
         registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
         if not registry_host:
             raise SecretResolutionError("ORCHESTRATOR_HOSTNAME is not set")
@@ -440,7 +456,7 @@ class SecretResolverNode(FunctionalNode):
 
         owner, repo = path_parts
         service = key_upper.removesuffix("_IMAGE").lower().replace("_", "-")
-        return f"{registry_host}/{owner}/{repo}-{service}:latest"
+        return f"{registry_host}/{owner}/{repo}-{service}:{tag}"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.

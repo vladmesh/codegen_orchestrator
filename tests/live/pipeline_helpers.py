@@ -36,6 +36,7 @@ from run_evidence import (
     target_snapshot_requirement,
 )
 
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_budget_policy import (
@@ -1767,7 +1768,44 @@ async def wait_deploy_outcome(
         return None
     ctx["deploy_outcome"] = result.deploy_outcome.value
     ctx["deploy_error_details"] = result.error_details
+    # What the deploy says it put on the host. Recorded here, beside the outcome
+    # it came with, so the references are in the artifact whether or not the
+    # comparison below is ever reached.
+    ctx["deployed_image_references"] = (result.deployment_result or {}).get("image_references")
     return result
+
+
+def record_deployed_image_tags(ctx: dict) -> bool:
+    """True when every deployed image reference is tagged with the merged commit.
+
+    A deploy Run reporting SUCCESS on a merged SHA, and an application answering
+    HTTP 200, together say nothing about which code is running: the target pulls
+    images, and a mutable tag resolves to whatever was published last. The image
+    tag is the one thing that names the bytes, so the suite reads it before it
+    spends a QA attempt — otherwise a stale deployment reaches QA and comes back
+    as a product defect (paid run 33753667796) instead of a deploy defect.
+    """
+    expected = sha_image_tag(ctx["deploy_head_sha"])
+    ctx["deployed_image_tag_expected"] = expected
+    references = ctx.get("deployed_image_references")
+    if not references:
+        ctx["deployed_image_error"] = (
+            f"deploy run {ctx.get('deploy_run_id')} named no image references, so nothing "
+            f"says the deployment runs {ctx['deploy_head_sha']}"
+        )
+        return False
+    mismatched = {
+        key: reference
+        for key, reference in references.items()
+        if not reference.endswith(f":{expected}")
+    }
+    if mismatched:
+        ctx["deployed_image_error"] = (
+            f"deployed images are not tagged {expected} for merged SHA "
+            f"{ctx['deploy_head_sha']}: {mismatched}"
+        )
+        return False
+    return True
 
 
 # ── QA run outcome ───────────────────────────────────────────────────────

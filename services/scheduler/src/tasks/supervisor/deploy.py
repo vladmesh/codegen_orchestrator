@@ -242,14 +242,23 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
             DeployOutcome.RETRY,
             DeployOutcome.CANCELLED,
             DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            DeployOutcome.IMAGES_NOT_PUBLISHED,
         ):
             # A cancelled deploy did not fail and did not deploy: something took
             # the project away from it — the fence a temporary-access revoke
             # takes, or another deploy holding the lock. The story still needs
             # its commit deployed, so it goes round again under the same bound
             # that stops a failing deploy from looping.
+            #
+            # A deploy refused for unpublished images is the same shape: nothing
+            # was deployed and the commit still needs to be. A CI that is merely
+            # slow answers the next attempt; one that never publishes runs the
+            # retry bound out and the story fails, which is the honest end for a
+            # commit whose images do not exist.
             if outcome is DeployOutcome.CANCELLED:
                 log.info("deploy_supervisor_redeploy_after_cancel", run_id=run.id)
+            if outcome is DeployOutcome.IMAGES_NOT_PUBLISHED:
+                log.info("deploy_supervisor_redeploy_after_unpublished_images", run_id=run.id)
             retry_action = await _handle_deploy_retry(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )

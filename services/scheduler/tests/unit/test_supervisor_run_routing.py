@@ -1091,6 +1091,38 @@ class TestSuperviseDeployingStories:
         assert deploy_calls[0][0][1].head_sha == "a" * 40
 
     @pytest.mark.asyncio
+    async def test_a_deploy_refused_for_unpublished_images_is_redeployed(
+        self, api_client, redis_client
+    ):
+        """Nothing was deployed and the commit still needs to be.
+
+        The gate in front of the deploy refuses while the project's CI has not
+        published the merged commit's images. A CI that is merely slow answers
+        the next attempt; one that never publishes runs the same retry bound out.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={"head_sha": "a" * 40},
+            result={"deploy_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED.value},
+        )
+        api_client.create_run.return_value = {}
+        redis_client._redis.incr.return_value = 1
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert len(deploy_calls) == 1
+        assert deploy_calls[0][0][1].head_sha == "a" * 40
+
+    @pytest.mark.asyncio
     async def test_a_cancelled_deploy_stops_looping_at_the_retry_bound(
         self, api_client, redis_client
     ):

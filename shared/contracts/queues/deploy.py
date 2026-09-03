@@ -52,6 +52,13 @@ class DeployOutcome(StrEnum):
     # applied — which would launder away a setting the product never accepted.
     SETTINGS_SEED_FAILED = "settings_seed_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
+    # The project's CI had not published the images of the merged commit when
+    # the bounded gate in front of the deploy ran out. Nothing was deployed: the
+    # only images the target could have pulled would have been another commit's.
+    # Its own outcome rather than a flavour of RETRY, because the thing to wait
+    # for is named — this SHA's images — and a reader that cannot tell it from a
+    # failed deploy cannot tell a slow CI from a broken one either.
+    IMAGES_NOT_PUBLISHED = "images_not_published"
     # The deploy never started: no server could be allocated for the application,
     # for a reason that is about the platform and not about the project (see
     # `shared/allocation_disposition.py`). The story is not failed — it waits and

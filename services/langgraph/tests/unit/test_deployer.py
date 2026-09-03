@@ -9,13 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.clients.github import deploy_pin_tag
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.queues.deploy import DeployOutcome
 from src.subgraphs.devops.deployer import DeployerNode
+from src.subgraphs.devops.image_gate import ImagesNotPublishedError
 from tests.unit.factories import make_repository
 
 PINNED_SHA = "c" * 40
 PIN_TAG = deploy_pin_tag(PINNED_SHA)
+BACKEND_IMAGE = f"registry.example.com/my-org/my-repo-backend:{sha_image_tag(PINNED_SHA)}"
+IMAGE_DIGEST = "sha256:" + "d" * 64
 TELEGRAM_TOKEN = "123456789:AA-deployer-redaction-canary"  # noqa: S105
 USERS_GRANT_CAPABILITY = "users-grant-deployer-redaction-canary"
 
@@ -31,6 +36,21 @@ class WorkflowCancellationUnprovenError(RuntimeError):
 @pytest.fixture
 def deployer():
     return DeployerNode()
+
+
+@pytest.fixture(autouse=True)
+def published_images():
+    """Every deploy here runs with this commit's images already in the registry.
+
+    The gate in front of the deploy is a registry read, and the tests below are
+    about what happens after it passes. The gate's own behaviour — refusing when
+    the images are absent — has its tests in ``TestDeployerImageGate``.
+    """
+    with patch(
+        "src.subgraphs.devops.deployer.wait_for_published_images",
+        AsyncMock(return_value={"BACKEND_IMAGE": IMAGE_DIGEST}),
+    ) as gate:
+        yield gate
 
 
 @pytest.fixture
@@ -54,7 +74,11 @@ def base_state():
                 "service_name": "backend",
             }
         },
-        "non_secret_values": {"DB_HOST": "localhost", "DB_PORT": "5432"},
+        "non_secret_values": {
+            "DB_HOST": "localhost",
+            "DB_PORT": "5432",
+            "BACKEND_IMAGE": BACKEND_IMAGE,
+        },
         "messages": [],
         "errors": [],
     }
@@ -925,3 +949,69 @@ class TestDispatchBoundary:
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.rerun_failed_jobs.assert_not_called()
+
+
+@patch.dict(
+    os.environ,
+    {
+        "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+        "REGISTRY_USER": "testuser",
+        "REGISTRY_PASSWORD": "testpass",  # noqa: S105
+    },
+)
+class TestDeployerImageGate:
+    """Nothing is deployed before this commit's images are published."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_gate_asks_about_the_references_the_target_will_pull(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        published_images.assert_awaited_once_with({"BACKEND_IMAGE": BACKEND_IMAGE})
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_unpublished_images_refuse_the_deploy_before_it_costs_anything(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        """A missing image is a typed refusal, never a success on stale bytes."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        published_images.side_effect = ImagesNotPublishedError(
+            f"the project's CI did not publish {BACKEND_IMAGE} within 900s"
+        )
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert result["resolution_outcome"] is DeployOutcome.IMAGES_NOT_PUBLISHED
+        assert result["deployment_result"]["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        # No payload written, no fence taken, no Actions run: a refusal costs nothing.
+        gh.set_repository_secrets.assert_not_called()
+        gh.trigger_workflow_dispatch.assert_not_called()
+        mock_api.claim_deploy_dispatch.assert_not_called()
+        mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_success_and_the_deployment_record_name_the_images(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """A deploy is a claim about images, so both surfaces name them."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "success"
+        assert result["deployment_result"]["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        assert result["deployment_result"]["image_digests"] == {"BACKEND_IMAGE": IMAGE_DIGEST}
+        deployment_info = mock_api.create_deployment.call_args[0][0]["deployment_info"]
+        assert deployment_info["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        assert deployment_info["image_digests"] == {"BACKEND_IMAGE": IMAGE_DIGEST}

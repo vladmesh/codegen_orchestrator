@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- A deploy runs the images the merged commit built: `*_IMAGE` resolves to that commit's `sha-` tag and the
+  deploy waits, bounded and fail-closed, for the registry to hold them, so `:latest` can no longer win a race.
+- A deploy Run's `success` names the image references and digests it deployed, and the LLM suite compares the
+  deployed tag with the merged SHA before spending a QA attempt on code that may not be running.
 - Recreating a stand service and waiting for it are one operation: the runner's only `up` returns when the
   API answers `/health` on the suite's own URL and each consumer has logged its start, never before pytest.
 - The stand switches the QA executor in every compose service given `QA_EXECUTOR_AGENT_TYPE`, derived from

@@ -585,11 +585,19 @@ its in-flight ids so one process does not reclaim its own active dispatch.
 ### Deploy and QA
 
 1. A durable deploy Run is created before `DeployMessage` publication.
-2. The deploy consumer records the dispatch boundary before GitHub Actions is
+2. Before any external effect, the deployer proves the merged commit's images
+   exist. `*_IMAGE` resolves to the `sha-<short sha>` tag the project's CI
+   publishes for that commit, and the deployer reads the registry for exactly
+   those references, bounded at 15 minutes. It never builds or retriggers the
+   project's CI: images absent at the bound are `IMAGES_NOT_PUBLISHED` and
+   nothing is deployed. **A deploy Run's SUCCESS is a claim about images, not
+   about a SHA**: it names the references and digests it deployed in
+   `deployment_result`, and the service-deployment record carries the same.
+3. The deploy consumer records the dispatch boundary before GitHub Actions is
    no longer safely stoppable, then writes its typed terminal result.
-3. The supervisor reads that typed result, creates QA work only with resolved
+4. The supervisor reads that typed result, creates QA work only with resolved
    repository criteria, and routes the typed QA outcome.
-4. A terminal owner notification is persisted before it is published to PO.
+5. A terminal owner notification is persisted before it is published to PO.
    Recovery retries the owned notification record; it does not duplicate an
    already settled owner event.
 

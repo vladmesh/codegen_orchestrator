@@ -278,16 +278,30 @@ If the developer agent encounters an unsolvable problem:
 **Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger OR Admin API
 
 1. Resolve server for the project (or provision new one)
-2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
-3. Trigger GitHub Actions deploy workflow
-4. Wait for deploy to complete
-5. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
-6. Resolve failures deterministically: typed environment failures keep their specific outcome;
+2. Wait, bounded and fail-closed, for the merged commit's images — see below
+3. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
+4. Trigger GitHub Actions deploy workflow
+5. Wait for deploy to complete
+6. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
+7. Resolve failures deterministically: typed environment failures keep their specific outcome;
    unclassified subgraph and smoke failures become RETRY
-7. Seed the confirmed Product Brief's `initial_settings` into the deployed product
+8. Seed the confirmed Product Brief's `initial_settings` into the deployed product
    (brief-backed stories only) — see below
-8. Write `DeployOutcome` to `run.result`
-9. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+9. Write `DeployOutcome` to `run.result`, naming the image references it deployed
+10. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+
+**Deploying a commit means deploying its images**: the environment contract's
+`*_IMAGE` entries resolve to `<registry>/<owner>/<repo>-<service>:sha-<short sha>`
+— the tag the generated project's CI publishes for that exact commit through
+`docker/metadata-action`'s `type=sha` — never a mutable `:latest`. The deploy is
+dispatched seconds after the merge, while the project's CI is still building, so
+before any external effect the deployer reads the registry for exactly those
+references and waits up to 15 minutes for all of them. It never builds,
+retriggers or repairs the project's CI. Images still absent at the bound are
+`DeployOutcome.IMAGES_NOT_PUBLISHED`: nothing was deployed, and the supervisor
+redeploys the same commit under the ordinary retry bound. A successful deploy
+names the references and their digests in `DeployRunResult.deployment_result`
+and in the service-deployment record.
 
 **Seeding the confirmed settings**: after health checks, the handler reads the
 brief bound to this story and writes each `initial_settings` entry through the
@@ -309,7 +323,7 @@ carries typed initial settings, and never a secret".
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
-- RETRY → redeploy with counter (max 3 consecutive failures)
+- RETRY / IMAGES_NOT_PUBLISHED → redeploy with counter (max 3 consecutive failures)
 - SETTINGS_SEED_FAILED → redeploy the same commit under that same counter, never
   reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
