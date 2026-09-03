@@ -43,6 +43,7 @@ from pipeline_helpers import (
     record_engineering_evidence,
     record_env_contract,
     record_noop_settlement_evidence,
+    record_story_branch_ahead,
     request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
@@ -74,7 +75,12 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
 async def _pipeline_run(
-    create_project, *, engineering_timeout: int, debug_prefix: str, lifecycle_undeploy: bool = False
+    create_project,
+    *,
+    engineering_timeout: int,
+    debug_prefix: str,
+    lifecycle_undeploy: bool = False,
+    require_story_commit: bool = False,
 ):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
     async with api_client_as_test_user() as api:
@@ -117,6 +123,7 @@ async def _pipeline_run(
                         engineering_timeout=engineering_timeout,
                         debug_prefix=debug_prefix,
                         lifecycle_undeploy=lifecycle_undeploy,
+                        require_story_commit=require_story_commit,
                     ):
                         yield value
                 finally:
@@ -177,6 +184,7 @@ async def _pipeline_phases(
     engineering_timeout: int,
     debug_prefix: str,
     lifecycle_undeploy: bool,
+    require_story_commit: bool = False,
 ):
     """The pipeline phases themselves, so evidence can wrap every exit from them."""
     if ctx.get("qa_requires_executor"):
@@ -229,6 +237,19 @@ async def _pipeline_phases(
         dump_debug(ctx, f"{debug_prefix}-engineering")
         return
 
+    # The deploy that follows exists only if engineering committed something.
+    # Task-done is the first moment that is settled and this is the last one
+    # before the suite starts waiting on it, so the branch is compared with main
+    # here — one GitHub call — instead of being inferred from a 420-second wait
+    # for a deploy run that an unopenable story PR can never produce. Only the
+    # paid path asks a real developer for a change, so only it can end with an
+    # empty story branch; the deterministic route always commits, and its
+    # phases, waits and evidence stay exactly as they were.
+    if require_story_commit and not record_story_branch_ahead(ctx):
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-story-branch")
+        return
+
     # Phase 3: Deploy. The story branch merges into main and only then
     # does a deploy run appear carrying the merged head SHA. The ref
     # deploy reads the contract at. Re-check the contract there: the
@@ -256,7 +277,9 @@ async def _pipeline_phases(
     ):
         # The external probe happens while the application is running, but its
         # evidence remains available after the noop lifecycle undeploys it.
-        ctx["health_probe_before_undeploy"] = await probe_health_endpoint(ctx["deployed_url"])
+        ctx["health_probe_before_undeploy"] = await probe_health_endpoint(
+            ctx["deployed_url"], expect_marker=ctx.get("health_marker")
+        )
         # The QA run is recorded before it is judged, so a QA cell can say
         # "exercised and failed" instead of falling back to "not exercised".
         # Every poll takes an evidence pass too: the QA executor's container is
@@ -304,6 +327,7 @@ async def llm_pipeline():
         create_llm_backend_project,
         engineering_timeout=LLM_ENGINEERING_TIMEOUT,
         debug_prefix="full-llm",
+        require_story_commit=True,
     ):
         yield ctx
 
@@ -464,6 +488,34 @@ class TestFullPipelineLLM:
         )
         assert llm_pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed, app_status: {llm_pipeline.get('final_app_status')}"
+        )
+
+    async def test_story_branch_carries_the_worker_commit(self, llm_pipeline):
+        """The paid task must leave a commit, and that is asserted before deploy.
+
+        A story branch that is not ahead of main means the worker committed
+        nothing: the story PR is refused 422 and no deploy run can ever exist.
+        The suite says so here rather than expiring the deploy wait and
+        reporting the missing run as if it were the reason.
+        """
+        if llm_pipeline.get("task_status") != TaskStatus.DONE:
+            pytest.skip("engineering failed")
+        assert llm_pipeline.get("story_branch_error") is None, llm_pipeline["story_branch_error"]
+        compare = llm_pipeline.get("story_branch_compare") or {}
+        assert compare.get("ahead_by", 0) >= 1, compare
+
+    async def test_health_payload_carries_this_run_marker(self, llm_pipeline):
+        """The change the task asked for is visible on the deployed service.
+
+        The marker is minted per run, so no scaffolded file and no artifact of
+        an earlier run can answer for this one: seeing it in the live payload is
+        what proves this run's worker made an observable change.
+        """
+        probe = llm_pipeline.get("health_probe_before_undeploy")
+        if not probe:
+            pytest.skip("no health probe was recorded")
+        assert probe.get("marker_present") is True, (
+            f"GET {probe['endpoint']} does not carry {llm_pipeline['health_marker']}: {probe}"
         )
 
     async def test_requested_qa_executor_is_active(self, llm_pipeline):

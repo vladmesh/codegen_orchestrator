@@ -1342,7 +1342,9 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     assert ctx["repo_name"] == "live-test-llm-slug"
     assert ctx["repo_id"] == "repo-1"
     assert ctx["task_title"] == pipeline_helpers.LLM_BACKEND_TASK_TITLE
-    assert ctx["task_description"] == pipeline_helpers.LLM_BACKEND_TASK_DESCRIPTION
+    marker = ctx["health_marker"]
+    assert ctx["task_description"] == pipeline_helpers.llm_backend_task_description(marker)
+    assert marker in config["detailed_spec"]
 
 
 @pytest.mark.asyncio
@@ -1366,14 +1368,82 @@ async def test_llm_matrix_project_selects_worker_and_forces_exploratory_qa(monke
         ctx = await pipeline_helpers.create_llm_backend_project(api, api)
 
     assert requests[0][2]["config"]["agent_type"] == "codex"
+    criteria = pipeline_helpers.llm_qa_acceptance_criteria(ctx["health_marker"])
     assert requests[2] == (
         "PATCH",
         "/api/repositories/repo-1",
-        {"acceptance_criteria": pipeline_helpers.LLM_QA_ACCEPTANCE_CRITERIA},
+        {"acceptance_criteria": criteria},
     )
     assert ctx["agent_type"] == "codex"
     assert ctx["qa_requires_executor"] is True
-    assert parse_health_only_criteria(pipeline_helpers.LLM_QA_ACCEPTANCE_CRITERIA) is None
+    assert parse_health_only_criteria(criteria) is None
+
+
+def test_llm_task_asks_for_a_change_the_scaffold_does_not_have(monkeypatch):
+    """The paid task names the marker field, its exact value, and the test for it.
+
+    The scaffold already serves GET /health, so a task phrased around the
+    endpoint asks for nothing and the worker commits nothing. What the task
+    asks for has to be a field the template does not render.
+    """
+    marker = pipeline_helpers.new_health_marker()
+    description = pipeline_helpers.llm_backend_task_description(marker)
+
+    assert pipeline_helpers.LLM_HEALTH_MARKER_FIELD in description
+    assert marker in description
+    assert "test" in description.lower()
+    assert marker in pipeline_helpers.llm_backend_detailed_spec(marker)
+    assert "marker" in pipeline_helpers.LLM_BACKEND_TASK_TITLE.lower()
+
+
+def test_each_run_asks_for_its_own_marker(monkeypatch):
+    """A stale artifact cannot satisfy this run: the value is minted per run."""
+    markers = {pipeline_helpers.new_health_marker() for _ in range(20)}
+
+    assert len(markers) == 20
+    for marker in markers:
+        assert marker.startswith("e2e-")
+
+
+def test_llm_qa_criteria_grade_the_marker_and_nothing_else(monkeypatch):
+    """QA is told to observe what the task added, on the transport contract only."""
+    marker = pipeline_helpers.new_health_marker()
+    criteria = pipeline_helpers.llm_qa_acceptance_criteria(marker)
+
+    assert marker in criteria
+    assert pipeline_helpers.LLM_HEALTH_MARKER_FIELD in criteria
+    assert "GET /health returns HTTP 200." in criteria
+    # An LLM executor is needed to read a field out of a payload, so these
+    # criteria must not collapse into deterministic GET-only checks.
+    assert parse_health_only_criteria(criteria) is None
+    lowered = criteria.lower()
+    for ungraded in ("architecture", "diff", "style", "readable", "design"):
+        assert ungraded not in lowered
+
+
+@pytest.mark.asyncio
+async def test_llm_project_drives_every_string_from_one_marker(monkeypatch, tmp_path):
+    """Spec, task and criteria carry the same value, from the one place it is minted."""
+    patched = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        if request.url.path == "/api/projects/":
+            return httpx.Response(201, json={"id": "project", "slug": "llm-slug"})
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "repo-1"})
+        patched.append(body)
+        return httpx.Response(200, json={"id": "repo-1", **body})
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setenv("LIVE_LLM_QA", "1")
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
+
+    marker = ctx["health_marker"]
+    assert marker in ctx["task_description"]
+    assert marker in patched[0]["acceptance_criteria"]
 
 
 def test_llm_matrix_rejects_unknown_worker(monkeypatch):
@@ -2687,6 +2757,103 @@ def test_env_contract_probe_reports_a_repo_without_fragments(monkeypatch, capsys
 
     assert probe["fragment_paths"] == []
     assert probe["entries"] == []
+
+
+def _story_branch_stdout(**payload) -> str:
+    return (
+        "[info] container noise\n"
+        + pipeline_helpers.STORY_BRANCH_PROBE_MARKER
+        + json.dumps({"branch": "story/story-1", **payload})
+        + "\n"
+    )
+
+
+def test_story_branch_probe_reports_how_far_ahead_of_main_a_branch_is(monkeypatch, capsys):
+    requested = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested.append(url)
+            return httpx.Response(
+                200,
+                json={"status": "ahead", "ahead_by": 1, "behind_by": 0},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(live_harness_cleanup, "GitHubAppClient", _FakeGitHub)
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
+    asyncio.run(
+        live_harness_cleanup.probe_story_branch(
+            owner="project-factory-organization",
+            repo="run-repo",
+            branch="story/story-1",
+            marker=pipeline_helpers.STORY_BRANCH_PROBE_MARKER,
+        )
+    )
+
+    probe = pipeline_helpers.parse_story_branch_probe(capsys.readouterr().out)
+    assert probe == {"branch": "story/story-1", "status": "ahead", "ahead_by": 1, "behind_by": 0}
+    assert requested == [
+        "https://api.github.com/repos/project-factory-organization/run-repo/"
+        "compare/main...story/story-1"
+    ]
+
+
+def test_story_branch_ahead_of_main_lets_the_run_wait_for_a_deploy(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=_story_branch_stdout(status="ahead", ahead_by=2, behind_by=0),
+            stderr="",
+        ),
+    )
+    ctx = {"repo_name": "run-repo", "story_id": "story-1"}
+
+    assert pipeline_helpers.record_story_branch_ahead(ctx) is True
+    assert ctx["story_branch"] == "story/story-1"
+    assert ctx["story_branch_compare"]["ahead_by"] == 2
+    assert "story_branch_error" not in ctx
+
+
+def test_a_story_branch_with_no_commits_fails_immediately_and_says_so(monkeypatch):
+    """The failure the 420-second deploy wait used to report as a missing run."""
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=_story_branch_stdout(status="identical", ahead_by=0, behind_by=0),
+            stderr="",
+        ),
+    )
+    ctx = {"repo_name": "run-repo", "story_id": "story-1"}
+
+    assert pipeline_helpers.record_story_branch_ahead(ctx) is False
+    assert "no commit was made for this story" in ctx["story_branch_error"]
+    assert "story/story-1" in ctx["story_branch_error"]
+    assert ctx["story_branch_compare"]["status"] == "identical"
+
+
+def test_a_story_branch_probe_that_cannot_run_is_recorded_not_raised(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="502 Bad Gateway"),
+    )
+    ctx = {"repo_name": "run-repo", "story_id": "story-1"}
+
+    assert pipeline_helpers.record_story_branch_ahead(ctx) is False
+    assert "could not be compared with main" in ctx["story_branch_error"]
+    assert "502 Bad Gateway" in ctx["story_branch_error"]
+    assert "story_branch_compare" not in ctx
 
 
 def test_record_env_contract_records_unreachable_probe_instead_of_raising(monkeypatch):

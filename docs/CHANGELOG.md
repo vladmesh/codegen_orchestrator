@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- The paid LLM stand suite now asks for a per-run marker field in the health payload, so the worker
+  has something to commit, and it fails at once when the story branch is not ahead of `main`.
 - A `stand_token` worker now reaches container creation: the manager asks its `ExecutorDiagnostics`
   collaborator for stand-token failures instead of a method it lost in the collaborator extraction.
 

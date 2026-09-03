@@ -272,6 +272,7 @@ class FailureKind(StrEnum):
     SCAFFOLD_FAILED = "scaffold_failed"
     ENV_CONTRACT_MISSING = "env_contract_missing"
     WORKER_DID_NOT_FINISH = "worker_did_not_finish"
+    STORY_BRANCH_NOT_AHEAD = "story_branch_not_ahead"
     DEPLOY_RUN_MISSING = "deploy_run_missing"
     DEPLOY_FAILED = "deploy_failed"
     QA_NEVER_RAN = "qa_never_ran"
@@ -306,6 +307,7 @@ class ReasonSource(StrEnum):
     NO_FAILURE = "no_failure"
     SCAFFOLD = "scaffold"
     ENGINEERING_RUN = "engineering_run"
+    STORY_BRANCH = "story_branch"
     DEPLOY_RUN = "deploy_run"
     QA_RUN = "qa_run"
 
@@ -1094,6 +1096,12 @@ def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
         return TerminalState.STOPPED_AT_SCAFFOLD, FailureKind.ENV_CONTRACT_MISSING
     if ctx.get("task_status") != TaskStatus.DONE:
         return TerminalState.STOPPED_AT_ENGINEERING, FailureKind.WORKER_DID_NOT_FINISH
+    # A task the control plane called done over a story branch that carries no
+    # commit stopped at engineering, not at deploy: there is nothing to deploy,
+    # and saying `deploy_run_missing` here would name the symptom the harness
+    # used to wait 420 s for instead of the reason.
+    if ctx.get("story_branch_error"):
+        return TerminalState.STOPPED_AT_ENGINEERING, FailureKind.STORY_BRANCH_NOT_AHEAD
     if not ctx.get("deploy_run_id"):
         return TerminalState.STOPPED_AT_DEPLOY, FailureKind.DEPLOY_RUN_MISSING
     if "merged" in contract_errors:
@@ -1170,6 +1178,8 @@ def _qa_not_exercised_reason(ctx: dict) -> str:
             "the worker died before QA: the engineering task ended "
             f"{ctx.get('task_status')}, so nothing was ever handed to QA"
         )
+    if ctx.get("story_branch_error"):
+        return f"nothing was deployed for QA to run against: {ctx['story_branch_error']}"
     if (
         ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
         or ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
@@ -1367,7 +1377,9 @@ def _env_contract_errors(ctx: dict) -> dict[str, str]:
     }
 
 
-def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
+def control_plane_reason(
+    ctx: dict, terminal_state: TerminalState, failure_kind: FailureKind
+) -> Capture:
     """The control plane's own account of why the run ended where it did."""
     if terminal_state is TerminalState.COMPLETED:
         return Capture.captured(
@@ -1379,6 +1391,20 @@ def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
                 "source": ReasonSource.SCAFFOLD.value,
                 "scaffold_status": ctx.get("scaffold_status"),
                 "env_contract_errors": _env_contract_errors(ctx),
+            }
+        )
+    if failure_kind is FailureKind.STORY_BRANCH_NOT_AHEAD:
+        return Capture.captured(
+            {
+                "source": ReasonSource.STORY_BRANCH.value,
+                "story_id": ctx.get("story_id"),
+                "branch": ctx.get("story_branch"),
+                "compare": ctx.get("story_branch_compare"),
+                "detail": ctx["story_branch_error"],
+                # The engineering Runs are kept alongside it: they are what
+                # called this task done without a commit, and a reader chasing
+                # that needs both halves in one place.
+                "engineering": _engineering_reason(ctx).as_dict(),
             }
         )
     if terminal_state is TerminalState.STOPPED_AT_ENGINEERING:
@@ -1498,7 +1524,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     generated_at = now if now is not None else datetime.now(tz=UTC)
     terminal_state, failure_kind = classify_outcome(ctx)
     started_at = collector.started_at
-    reason = control_plane_reason(ctx, terminal_state)
+    reason = control_plane_reason(ctx, terminal_state, failure_kind)
     worker_executed = collector.executed_worker_agent().as_dict()
     qa = qa_cell(ctx)
     return {
