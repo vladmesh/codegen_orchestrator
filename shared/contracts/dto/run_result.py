@@ -210,6 +210,13 @@ class QABlockerCategory(StrEnum):
     # about its behaviour can reach the engineering-fix loop.
     TELEGRAM_PROBE_UNDELIVERED = "telegram_probe_undelivered"
     SERVER_UNAVAILABLE = "server_unavailable"
+    # The administrative connection reached the target and was refused a read of
+    # the QA account's home or `.ssh`. Deliberately not `server_unavailable`:
+    # that one is repaired by looking at the host or its provisioning, and three
+    # paid stand runs were spent doing exactly that for what was a fact about
+    # which account the server row names as administrative. Nothing here says
+    # the QA seat is missing — the run never got to see it.
+    QA_IDENTITY_UNREADABLE = "qa_identity_unreadable"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"
     # The temporary identity QA tests private bots with: never handed over, or
     # taken back while the run was still using it.

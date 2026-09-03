@@ -430,7 +430,10 @@ proves it against a real daemon: a recording application, a real executor contai
 requests in the application's own ledger.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
-fleet key opens (`root` on every row `server_sync` creates), and a run holding it would have the
+fleet key opens (`root` on every row `server_sync` creates, and on the dynamic stand target too —
+`scripts/register_bitlaunch_target.py` takes the value from the same `ServerCreate` default a
+production row takes it from, because the grant below writes *another* account's `authorized_keys`
+over that connection and only an administrative account can), and a run holding it would have the
 platform's own authority over the deployment it is testing. The run uses `qa-observer`, an account
 **provisioning** creates — the `qa_identity` role, included by `provision_software.yml`, which is the
 phase that writes `labels.provisioning_phase=complete`. The same completion write records
@@ -485,7 +488,12 @@ named ACL entry (`u:qa-observer:rx` on `/opt/services`) and can write nothing un
 **What the run does to the target**: for each run the runtime mints a one-shot ed25519 key and
 appends it, with `restrict` and an `expiry-time`, to `qa-observer`'s `authorized_keys` — the file the
 provisioning role opened, with a comment line that is never a key. The runtime creates no account and
-no file: a target where either is missing refuses the install. The fleet key is used only for that
+no file: a target where either is missing refuses the install. "Missing" is a claim the install may
+make only when it could look: a connection that cannot search the account's home or `.ssh` exits `5`
+instead of `4`, and the run is blocked as `qa_identity_unreadable` — a permission fact about the
+server row's administrative account, not drift on the target, and so not journalled against its
+provisioning. The revoke reads the same way: it reports zero surviving keys only from a file it
+actually read, and an unreadable one stays residue for the sweep rather than closing the record. The fleet key is used only for that
 append and for the removal, which reads the file back to prove the key is gone. The fact that a key
 may be installed is written to the QA run's `run_metadata` (`qa_ssh_grant`) *before* the install is
 attempted, so an install whose answer is lost still leaves a record; a sweep in `qa-worker`
@@ -545,7 +553,7 @@ cannot be told apart from ordinary interactive data:
   user applications is an outage, not cleanup. The swap and its `fstab` entry stay.
 
 Remove those by hand if you know they are the platform's. The playbook's last task prints, per host,
-`identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
+`qa_identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
 each surviving path with the reason it survived and the exact command that removes it, e.g.
 `swapoff /swapfile && rm -f /swapfile && sed -i '\|^/swapfile|d' /etc/fstab`. A fleet-wide run is
 therefore readable per machine, and the decision the playbook refuses to make is handed over with

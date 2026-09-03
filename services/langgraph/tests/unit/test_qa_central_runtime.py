@@ -601,6 +601,85 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
         assert result.passed is False
         assert provisioning.entries == []
 
+    async def test_an_unreadable_seat_is_a_permission_fact_and_not_a_missing_account(
+        self, central_run
+    ):
+        """The three misdiagnosed paid runs, as a test.
+
+        The account the fleet key opened could not stat the QA account's
+        `.ssh`, and the install reported that as "this host has no QA seat" —
+        so the provisioning journal took the blame and two rounds of
+        investigation went into provisioning. The seat was there. What the run
+        must say instead is which account could not look, and it must not be
+        journalled as drift on the target.
+        """
+        provisioning = RecordingProvisioningJournal()
+        conn = FakeConn()
+
+        async def refuse_the_read(command, *, check=False, timeout=None):
+            conn.commands.append(command)
+            return SimpleNamespace(
+                exit_status=5,
+                stdout="",
+                stderr=f"cannot search /home/{TARGET.qa_ssh_user} as deploy",
+            )
+
+        conn.run = refuse_the_read
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        result, _, _, _ = await central_run(
+            behaviour=behaviour, conn=conn, provisioning=provisioning
+        )
+
+        assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category is QABlockerCategory.QA_IDENTITY_UNREADABLE
+        assert "cannot read" in result.summary
+        assert "records a QA account but" not in result.summary
+        # Not drift on the target: nothing was learned about the seat, so
+        # nothing is written against the host's provisioning.
+        assert provisioning.entries == []
+        # And no invented cleanup residue: the script refuses before it takes
+        # the lock, so this is a definite "nothing was appended" rather than a
+        # lost answer — which is what lets the permission problem be the
+        # verdict's own category instead of a cleanup failure.
+        assert result.state_changes == []
+
+    async def test_a_revoke_that_could_not_read_the_file_never_reports_it_clean(self):
+        """The fail-open half, and the sharper one.
+
+        A revoke that cannot read `authorized_keys` used to answer zero — a
+        cleanup verdict of "this run's key is gone" taken from a file nobody
+        opened. It has to be residue, and the residue has to say why.
+        """
+        conn = FakeConn()
+
+        async def refuse_the_read(command, *, check=False, timeout=None):
+            conn.commands.append(command)
+            return SimpleNamespace(
+                exit_status=5, stdout="", stderr="cannot search /home/qa-observer as deploy"
+            )
+
+        conn.run = refuse_the_read
+
+        with (
+            patch("src.consumers._qa_target._import", lambda key: key),
+            patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+        ):
+            residual = await revoke_grant(
+                server_ip="1.2.3.4",
+                ssh_user="deploy",
+                qa_ssh_user="qa-observer",
+                fleet_key="fleet-key",
+                marker="codegen-qa-run-abc",
+            )
+
+        assert residual is not None
+        assert "never looked at" in residual
+        assert "codegen-qa-run-abc" in residual
+
     async def test_a_revoke_that_cannot_be_read_back_is_residue_not_success(self):
         """Silence is not "the key is gone"; it is a record the sweep keeps."""
         conn = FakeConn()

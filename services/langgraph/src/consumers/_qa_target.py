@@ -35,6 +35,13 @@ READ_OUTSIDE_ROOT = 4
 # Provisioning-identity refusal statuses.
 IDENTITY_ABSENT = 3
 IDENTITY_KEYS_ABSENT = 4
+# The administrative connection could not look. Distinct from the two above,
+# and the distinction is the whole point: "absent" is a statement about the
+# target's provisioning, and only an account that can search the directory it
+# is asking about is entitled to make it. Three paid stand runs read a `deploy`
+# account's inability to stat `/home/qa-observer/.ssh/authorized_keys` as a
+# missing QA seat, and sent two rounds of investigation into provisioning.
+IDENTITY_UNREADABLE = 5
 # Docker's authoritative deployment-container label.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 
@@ -75,27 +82,60 @@ head -c "$limit" -- "$resolved"
 """
 
 # Append only to an account and authorized_keys file provisioning already created.
+#
+# Every "it is not there" below is preceded by the question that entitles this
+# connection to say so: can it search the directory the thing would be in. An
+# account that cannot search `/home/qa-observer` learns nothing about what is
+# inside it, and reporting that silence as an absent file is how a permission
+# problem came to be read as unprovisioned host. So the two answers are two
+# exit statuses, and the unreadable one names the account that was looking.
 _INSTALL_GRANT = """
 set -eu
 user=$1; entry=$2
+whoami=$(id -un)
 home=$(getent passwd "$user" | cut -d: -f6)
 [ -n "$home" ] || { echo "no such account: $user" >&2; exit 3; }
-keys=$home/.ssh/authorized_keys
-[ -f "$keys" ] || { echo "no authorized_keys for $user" >&2; exit 4; }
-exec 9>"$home/.ssh/.codegen-qa.lock"
+parent=$(dirname "$home")
+[ -x "$parent" ] || { echo "cannot search $parent as $whoami" >&2; exit 5; }
+[ -e "$home" ] || { echo "no home directory $home for $user" >&2; exit 3; }
+[ -x "$home" ] || { echo "cannot search $home as $whoami" >&2; exit 5; }
+ssh_dir=$home/.ssh
+[ -e "$ssh_dir" ] || { echo "no .ssh for $user" >&2; exit 4; }
+[ -x "$ssh_dir" ] && [ -w "$ssh_dir" ] || { echo "cannot use $ssh_dir as $whoami" >&2; exit 5; }
+keys=$ssh_dir/authorized_keys
+[ -e "$keys" ] || { echo "no authorized_keys for $user" >&2; exit 4; }
+[ -r "$keys" ] && [ -w "$keys" ] || { echo "cannot write $keys as $whoami" >&2; exit 5; }
+exec 9>"$ssh_dir/.codegen-qa.lock"
 flock 9
 printf '%s\\n' "$entry" >> "$keys"
 """
 
 # Preserve authorized_keys when filtering produces no replacement content.
+#
+# `echo 0` is this script's way of saying "the file that would hold the key is
+# not there, so no key of this run survives on it", and it is a claim about the
+# target that only a connection able to look may make. Answering it from a
+# directory this account cannot search would be a cleanup that reports a key
+# removed without ever having read the file — fail-open, and worse than a
+# failure, because the record would be closed on it. Unreadable is a failure
+# here, with the same status the install uses.
 _REVOKE_GRANT = """
 set -eu
 user=$1; marker=$2
+whoami=$(id -un)
 home=$(getent passwd "$user" | cut -d: -f6)
 [ -n "$home" ] || { echo 0; exit 0; }
-keys=$home/.ssh/authorized_keys
-[ -f "$keys" ] || { echo 0; exit 0; }
-exec 9>"$home/.ssh/.codegen-qa.lock"
+parent=$(dirname "$home")
+[ -x "$parent" ] || { echo "cannot search $parent as $whoami" >&2; exit 5; }
+[ -e "$home" ] || { echo 0; exit 0; }
+[ -x "$home" ] || { echo "cannot search $home as $whoami" >&2; exit 5; }
+ssh_dir=$home/.ssh
+[ -e "$ssh_dir" ] || { echo 0; exit 0; }
+[ -x "$ssh_dir" ] && [ -w "$ssh_dir" ] || { echo "cannot use $ssh_dir as $whoami" >&2; exit 5; }
+keys=$ssh_dir/authorized_keys
+[ -e "$keys" ] || { echo 0; exit 0; }
+[ -r "$keys" ] && [ -w "$keys" ] || { echo "cannot rewrite $keys as $whoami" >&2; exit 5; }
+exec 9>"$ssh_dir/.codegen-qa.lock"
 flock 9
 grep -v -F "$marker" "$keys" > "$keys.qa-tmp" || true
 if [ -s "$keys.qa-tmp" ]; then cat "$keys.qa-tmp" > "$keys"; fi
@@ -114,6 +154,17 @@ class QAGrantError(RuntimeError):
 
 class QAIdentityAbsentError(QAGrantError):
     """The target lacks the provisioning-owned QA account or authorized_keys."""
+
+
+class QAIdentityUnreadableError(QAGrantError):
+    """The administrative connection could not read the QA account's files.
+
+    Not :class:`QAIdentityAbsentError`: nothing was learned about the QA seat,
+    so nothing may be said about it. This is a fact about which account the
+    fleet key opens on this host, it is repaired by looking at the server row's
+    administrative account, and it is deliberately not journalled against the
+    target's provisioning — the seat may well be there.
+    """
 
 
 class QACapabilityError(RuntimeError):
@@ -467,6 +518,12 @@ async def _install_grant(target: QATarget, fleet_key: str, entry: str) -> None:
     # other way an append can fail, and the difference matters to the caller:
     # one is a fact about the host's provisioning that an administrator has to
     # see, the other is this run's bad luck.
+    if result.exit_status == IDENTITY_UNREADABLE:
+        raise QAIdentityUnreadableError(
+            f"the administrative account {target.ssh_user}@{target.server_ip} cannot read "
+            f"{target.qa_ssh_user}'s authorized_keys, so whether {target.server_handle} lends a "
+            f"QA seat was never established: {detail}"
+        )
     if result.exit_status in (IDENTITY_ABSENT, IDENTITY_KEYS_ABSENT):
         raise QAIdentityAbsentError(
             f"{target.server_handle} records a QA account but {target.server_ip} has none: "
@@ -492,15 +549,21 @@ async def revoke_grant(
     """
     async with await _connect(server_ip, ssh_user, _import(fleet_key)) as admin:
         check = await admin.run(_script(_REVOKE_GRANT, qa_ssh_user, marker), check=False)
+    detail = (check.stderr or check.stdout or "").strip()[:300]
+    # A revoke that could not read the file did not remove anything and did not
+    # find nothing: it never looked. Saying so keeps the record open for the
+    # sweep instead of closing it on a zero this connection was not entitled to.
+    if check.exit_status == IDENTITY_UNREADABLE:
+        return (
+            f"{marker} on {server_ip} was never looked at: the administrative account "
+            f"{ssh_user} cannot read {qa_ssh_user}'s authorized_keys: {detail or 'no answer'}"
+        )
     lines = (check.stdout or "").strip().splitlines()
     count = lines[-1].strip() if lines else ""
     # No answer is not "the key is gone". Only a count read back off the file
     # closes a grant; anything else is residue for the sweep to keep working on.
     if check.exit_status != 0 or not count.isdigit():
-        return (
-            f"the target did not report whether {marker} is gone: "
-            f"{(check.stderr or check.stdout or '').strip()[:300] or 'no answer'}"
-        )
+        return f"the target did not report whether {marker} is gone: {detail or 'no answer'}"
     if count != "0":
         return f"{count} authorized_keys line(s) matching {marker} survived revocation"
     return None
@@ -570,6 +633,23 @@ async def qa_target_grant(
     public_key = run_key.export_public_key("openssh").decode()
     try:
         await _install_grant(target, fleet_ssh_key, _grant_entry(public_key, outcome.marker))
+    except QAIdentityUnreadableError:
+        # The target answered, and its answer is that this connection never
+        # reached the file: the script refuses before it takes the lock, so no
+        # append can have happened. That is a definite answer rather than a lost
+        # one, so this run carries no cleanup residue for it and the permission
+        # problem reaches the verdict as itself.
+        #
+        # What the durable record does after that is a weaker thing than it
+        # looks: it still says `ISSUING`, and the sweep will keep trying to
+        # revoke a key that provably never existed, keep meeting the same
+        # permission refusal, and eventually escalate it as
+        # `qa_cleanup_failed` against a run that has already settled. That is
+        # over-reporting in the safe direction and it cannot corrupt this
+        # verdict, but it is not "the sweep closes it": closing a record on a
+        # host with this permission shape is a sprint follow-up, not something
+        # this branch does.
+        raise
     except QAGrantError:
         # The install may or may not have landed. The record already says a key
         # might be there, and it stays that way until a readback disagrees.

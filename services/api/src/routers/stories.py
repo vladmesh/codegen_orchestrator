@@ -76,6 +76,13 @@ _RECHECKABLE_BLOCKERS = frozenset(
         QABlockerCategory.QA_PROBE_UNAVAILABLE,
         QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED,
         QABlockerCategory.SERVER_UNAVAILABLE,
+        # The same failure this used to arrive as before it was given its own
+        # name: the administrative account on the server row could not read the
+        # QA account's files. Its repair is putting that account back on the
+        # row, which is repaired outside the code and then wants exactly this
+        # recheck — naming the problem better must not take the operator's
+        # route out of `waiting_human_review` away with it.
+        QABlockerCategory.QA_IDENTITY_UNREADABLE,
         QABlockerCategory.QA_ACCESS_GRANT_FAILED,
         QABlockerCategory.QA_ACCESS_EXPIRED,
     }

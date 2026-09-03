@@ -13,7 +13,10 @@ os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
-from src.provisioner.ansible_runner import AnsibleRunner  # noqa: E402
+from src.provisioner.ansible_runner import (  # noqa: E402
+    QA_IDENTITY_MARKER,
+    AnsibleRunner,
+)
 
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 
@@ -209,6 +212,151 @@ class TestWhatASuccessfulPlaybookLeavesBehind:
         # host lends, which is what makes "did the role run" readable.
         assert "qa-identity-proof: qa-observer login=ok" in recap
         assert "TASK [Create the QA run identity]" not in recap
+
+    # What run 33729987635 actually produced: the role's report, then the roles
+    # after it printing more than the tail keeps. The proof is in the output and
+    # not in its last 3000 characters.
+    BURIED = (
+        "TASK [Report the QA identity this host lends] ***\n"
+        'ok: [1.2.3.4] => {"msg": {"qa_identity_proof": '
+        '"qa-identity-proof: qa-observer login=ok uid=1001 sudo=wrapper-only"}}\n'
+        + "TASK [monitoring : something noisy] ***\nchanged: [1.2.3.4]\n" * 300
+        + "\nPLAY RECAP ***\n1.2.3.4 : ok=61 changed=12 unreachable=0 failed=0 skipped=2\n"
+    )
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_qa_identity_report_survives_a_tail_it_no_longer_fits_in(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """The closing line is cut out by name, not left to the tail's luck.
+
+        `codegen-orchestrator-1254` exists to make the target state this line,
+        and the artifact of the paid run that produced it still could not show
+        the text, because the roles that run after the report print more than
+        the tail keeps. Evidence that only survives when the output is short
+        enough is not evidence.
+        """
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=self.BURIED, stderr="")
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+        )
+
+        recap = self._recap(capsys)
+
+        assert "qa-identity-proof: qa-observer login=ok" in recap
+        assert "failed=0" in recap
+        # And the field is its own, so the tail is still just the tail.
+        assert "qa_identity=" in recap
+
+    # The retrofit play repairs a pre-existing host with the same role and the
+    # same proof, and reports it under the same key — which is the whole reason
+    # one marker can find either. It named the key `identity_proof` until this
+    # was noticed, so a retrofit that proved a seat read as a play that proved
+    # none: a false negative in exactly the evidence this field exists for.
+    RETROFIT = (
+        "TASK [Report what this host changed and what it left] ***\n"
+        'ok: [1.2.3.4] => {"msg": {"qa_ssh_user": "qa-observer", "qa_identity_proof": '
+        '"qa-identity-proof: qa-observer login=ok uid=1001 sudo=wrapper-only", '
+        '"removed_paths": [], "left_in_place": ["/swapfile"]}}\n'
+        "\nPLAY RECAP ***\n1.2.3.4 : ok=24 changed=3 unreachable=0 failed=0 skipped=0\n"
+    )
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_retrofit_play_reports_its_seat_under_the_same_key(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """One marker has to find both plays that create the seat."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=self.RETROFIT, stderr="")
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="qa_identity_retrofit.yml",
+        )
+
+        recap = self._recap(capsys)
+
+        assert "qa-identity-proof: qa-observer login=ok" in recap
+        assert "no qa_identity_proof" not in recap
+
+    def test_both_plays_that_create_the_seat_report_it_under_the_marker(self):
+        """Asked of the playbooks themselves, so a rename cannot pass silently.
+
+        One marker finds either play only for as long as both name the key the
+        same way, and nothing about a `debug:` key makes that self-evident.
+        """
+        for name, task_name in (
+            ("provision_software.yml", "Report the QA identity this host lends"),
+            ("qa_identity_retrofit.yml", "Report what this host changed and what it left"),
+        ):
+            play = yaml.safe_load((ANSIBLE_DIR / "playbooks" / name).read_text())[0]
+            [task] = [t for t in play["tasks"] if t.get("name") == task_name]
+
+            assert QA_IDENTITY_MARKER in task["ansible.builtin.debug"]["msg"], name
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_a_play_that_never_reported_an_identity_says_so_rather_than_nothing(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """A named absence, like the recap's: the field is never silently empty."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="PLAY RECAP ***\n1.2.3.4 : ok=1 failed=0\n", stderr=""
+        )
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_access.yml",
+        )
+
+        assert "no qa_identity_proof" in self._recap(capsys)
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_private_key_is_redacted_out_of_the_identity_report_too(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """Every path out of this function goes through the same redaction."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----"
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=f'ok: [1.2.3.4] => {{"qa_identity_proof": "took the seat with {key}"}}\n',
+            stderr="",
+        )
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            ssh_user="root",
+            ssh_private_key=key,
+        )
+
+        # Read whole: a redaction test must look at every byte the service
+        # stream received, not at one line of it.
+        printed = capsys.readouterr().out
+
+        assert "BEGIN OPENSSH PRIVATE KEY" not in printed
+        assert "REDACTED SSH PRIVATE KEY" in printed
+        assert "qa_identity=" in printed
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_a_play_that_produced_no_recap_says_so_rather_than_nothing(

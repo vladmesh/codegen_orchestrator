@@ -761,6 +761,19 @@ probe inability, unavailable target runtime, bot liveness failures, access
 denials, and product check failures retain distinct typed classifications.
 Only a typed failed product result is eligible for an engineering fix loop.
 
+`servers.ssh_user` is the administrative account the fleet key opens, and every
+contour registers the same one: the QA grant writes *another* account's
+`authorized_keys` over that connection, which no non-administrative account can
+do. The one-shot grant and revoke scripts carry typed exit statuses: `3` no such
+account or home, `4` no `.ssh` or no `authorized_keys`, `5` the connection could
+not read or rewrite them. `4` is a claim about the target's provisioning and is
+journalled as one; `5` is a claim about the connection, is classified
+`qa_identity_unreadable`, and is never reported as an absent seat. That category
+is operator-recheckable like the other repaired-outside-the-code QA
+infrastructure blockers: its repair is the server row's administrative account. A revoke
+answers zero surviving keys only from a file it read: an unreadable one is
+residue the cleanup verdict carries, never a clean result.
+
 ### Terminal owner notification
 
 `dto/owner_notification.py` and `shared/contracts/queues/po.py` define the
