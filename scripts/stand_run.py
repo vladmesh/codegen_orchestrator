@@ -37,6 +37,8 @@ Suites are a table, not code paths, so a new one is a line:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
@@ -44,6 +46,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import urllib.request
 from xml.etree import ElementTree
 
 import yaml
@@ -54,6 +57,31 @@ QA_EXECUTOR_ENV = "QA_EXECUTOR_AGENT_TYPE"
 AGENTS = ("claude", "codex")
 RUN_ROOT = Path.home() / "e2e-runs"
 EXECUTOR_SWITCH_TIMEOUT_SECONDS = 180
+# Recreating a container and waiting for it are one operation here, and this is
+# that wait's budget. Deliberately the same policy as the workflow's own wait
+# (.github/workflows/stand-e2e.yml, "Bring up dynamic orchestrator and wait for
+# API"): probe, and on failure sleep five seconds, until 180 seconds are spent.
+# The two cannot literally share code — that one is bash on the host, this one is
+# Python in the runner — so the behaviour is copied and the policy stays single.
+READINESS_TIMEOUT_SECONDS = 180
+READINESS_POLL_SECONDS = 5
+# The base URL `tests/live/conftest.py` builds every client on. Readiness is
+# established from here, over the network the suite uses, and not with
+# `compose exec … curl 127.0.0.1` the way the workflow can afford to: run
+# 33749154999 died of an `httpx.ReadError` raised in the pytest process while
+# the container itself was already answering itself. An in-container probe would
+# have passed and the suite would still have failed.
+SUITE_API_BASE_URL = "http://localhost:8000"
+API_HEALTH_PATH = "/health"
+API_HEALTH_OK_STATUS = 200
+# Every compose verb that can leave a container running. Each one has to go
+# through the gate, so that "recreate" and "wait" cannot be separated by a
+# future caller who only needs the first half.
+COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
+#: Set only inside `recreate_and_wait`; `_compose` refuses a lifecycle verb
+#: outside it. This is what makes the gate the only door rather than the
+#: politest one.
+_INSIDE_RECREATE_GATE = False
 # The noop lifecycle has 3,680s of explicit waits at its worst case: scaffold,
 # two ordered engineering Tasks, story aggregation, deploy/run/outcome, the
 # bounded public health probe, QA, completed-story/PO delivery, deployment
@@ -76,11 +104,12 @@ STAND_PROVISIONING_TIMEOUT_SECONDS = 2700
 # switch; runner preflight and the fail-closed sweep have their own bounds.
 MATRIX_RUNNER_TIMEOUT_SECONDS = (
     PREFLIGHT_TIMEOUT_SECONDS
-    + len(("claude", "codex")) ** 2 * (LLM_SUITE_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
+    + len(("claude", "codex")) ** 2
+    * (LLM_SUITE_TIMEOUT_SECONDS + READINESS_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
     + SWEEP_TIMEOUT_SECONDS
 )
-# 360 minutes leaves a strict 53-minute reserve after the largest possible
-# provision + matrix-runner path (307 minutes). Lifecycle cleanup has its own
+# 360 minutes leaves a strict 41-minute reserve after the largest possible
+# provision + matrix-runner path (319 minutes). Lifecycle cleanup has its own
 # bounded workflow job because GitHub jobs cannot share one timeout.
 STAND_JOB_TIMEOUT_MINUTES = 360
 STAND_CLEANUP_JOB_TIMEOUT_MINUTES = 30
@@ -228,6 +257,11 @@ def write_junit_report(
 
 
 def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
+    if args and args[0] in COMPOSE_LIFECYCLE_COMMANDS and not _INSIDE_RECREATE_GATE:
+        raise RuntimeError(
+            f"docker compose {args[0]!r} brings containers up; call recreate_and_wait() so the "
+            "runner waits for what it started instead of racing it"
+        )
     command = ["docker", "compose"]
     for name in COMPOSE_FILES:
         command += ["-f", name]
@@ -335,14 +369,102 @@ def resolved_qa_executor(env: dict[str, str]) -> str | None:
     return result.stdout.strip() or None
 
 
+def api_serves_health() -> bool:
+    """Does the API answer `GET /health` with 200 where the suite will ask?
+
+    From this process, over the network `tests/live/conftest.py` uses. The
+    container answering its own `curl` is a different fact, and it is the one
+    that was true at 11:30:08 on run 33749154999 while the suite's first request
+    was failing with `httpx.ReadError`.
+    """
+    try:
+        with urllib.request.urlopen(  # noqa: S310 — a fixed loopback http URL
+            SUITE_API_BASE_URL + API_HEALTH_PATH, timeout=READINESS_POLL_SECONDS
+        ) as response:
+            return response.status == API_HEALTH_OK_STATUS
+    except OSError:  # HTTPError is one, so a 503 answers False like a refused connection
+        return False
+
+
+def consumer_past_startup(env: dict[str, str], service: str) -> bool:
+    """Has a queue consumer finished starting, rather than merely being up?
+
+    `run_queue_worker` (services/langgraph/src/consumers/_base.py) logs
+    `<service>_started` once, after it has connected to Redis and read its slot
+    configuration — that is, once it is actually reading its queue. Before that
+    line the container is running and the work the suite queues would sit
+    unclaimed. The recreate removed the previous container, so these logs belong
+    to the one just started.
+    """
+    result = _compose(env, "logs", "--no-color", service, capture=True)
+    return result.returncode == 0 and f"{service}_started" in result.stdout
+
+
+def service_is_ready(env: dict[str, str], service: str) -> bool:
+    """Is this service usable the way the suite will use it?
+
+    `api` is used over HTTP, so it is asked over HTTP. Everything else the
+    recreate set can name is a queue consumer of `run_queue_worker`, and is ready
+    when it says it started. A service that is neither never reports ready, so the
+    gate times out and the cell is refused — the runner's failure mode here is to
+    stop, never to proceed on an unready stack.
+    """
+    if service == QA_EXECUTOR_RESOLVER_SERVICE:
+        return api_serves_health()
+    return consumer_past_startup(env, service)
+
+
+@contextmanager
+def _recreate_gate() -> Iterator[None]:
+    global _INSIDE_RECREATE_GATE
+    _INSIDE_RECREATE_GATE = True
+    try:
+        yield
+    finally:
+        _INSIDE_RECREATE_GATE = False
+
+
+def recreate_and_wait(env: dict[str, str], services: tuple[str, ...], log) -> bool:
+    """Force-recreate services and return only once the suite could use them.
+
+    The runner's one way to bring a container up: `_compose` refuses `up`,
+    `start` and `restart` anywhere else. Recreating and waiting are therefore one
+    operation, and a caller who needs the first half inherits the second instead
+    of having to remember it — which is what run 33749154999 cost. There the
+    recreate returned, the resolver answered from the new `api` process as soon
+    as its Python could import, and pytest started 4 seconds before uvicorn
+    listened.
+    """
+    with _recreate_gate():
+        _compose(env, "up", "-d", "--no-deps", "--force-recreate", *services, capture=True)
+
+    deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+    for service in services:
+        while not service_is_ready(env, service):
+            if time.monotonic() >= deadline:
+                log(
+                    f"{service} was not usable {READINESS_TIMEOUT_SECONDS}s after being "
+                    f"recreated with {', '.join(services)}"
+                )
+                return False
+            time.sleep(READINESS_POLL_SECONDS)
+    return True
+
+
 def ensure_qa_executor(env: dict[str, str], executor: str, log) -> bool:
-    """Switch the QA executor everywhere, and wait for the resolver to say so."""
+    """Switch the QA executor everywhere, and wait for the resolver to say so.
+
+    Recreate, then readiness as the suite reaches it, then the resolver's own
+    answer, then — and only then — the cell. A timeout at either wait returns
+    `False`, which the caller records as `qa_executor_switch_failed` and skips.
+    """
     if resolved_qa_executor(env) == executor:
         return True
 
     write_qa_executor(REPO / ".env", executor)
     services = qa_executor_services()
-    _compose(env, "up", "-d", "--no-deps", "--force-recreate", *services, capture=True)
+    if not recreate_and_wait(env, services, log):
+        return False
 
     deadline = time.monotonic() + EXECUTOR_SWITCH_TIMEOUT_SECONDS
     while True:

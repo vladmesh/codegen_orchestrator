@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- Recreating a stand service and waiting for it are one operation: the runner's only `up` returns when the
+  API answers `/health` on the suite's own URL and each consumer has logged its start, never before pytest.
 - The stand switches the QA executor in every compose service given `QA_EXECUTOR_AGENT_TYPE`, derived from
   the compose files, and confirms it through the API resolver's own answer rather than a consumer's setting.
 - Run evidence reads `qa.executor_selected` from the Run's persisted `executor_decision`, so a QA run admitted
