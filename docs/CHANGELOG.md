@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-03
 
+- The stand switches the QA executor in every compose service given `QA_EXECUTOR_AGENT_TYPE`, derived from
+  the compose files, and confirms it through the API resolver's own answer rather than a consumer's setting.
+- Run evidence reads `qa.executor_selected` from the Run's persisted `executor_decision`, so a QA run admitted
+  under an executor nobody requested is visible as a disagreement instead of echoing the request.
 - Host-side stand scripts are held to the system interpreter they actually run under: the administrative
   account moved to stdlib-only `shared.provisioning_policy`, and a test parses the workflow to guard every one.
 - The dynamic stand target is registered with the production administrative account, so the QA grant's

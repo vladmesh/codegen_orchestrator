@@ -62,6 +62,7 @@ import subprocess
 from live_harness import resolve_repo_root
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.task import TaskStatus
@@ -128,7 +129,11 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #     `deployment.run_record`, `deployment.reachability` holds every read of the
 #     deployed URL this run has, and a run whose deploy succeeded over a URL
 #     that answered nobody asks there for a snapshot of the target host.
-EVIDENCE_SCHEMA_VERSION = 7
+# v8: qa.executor_selected is a capture read from the QA Run's persisted
+#     `executor_decision` — the control plane's own answer — instead of a second
+#     copy of the runner's request, so requested/selected/executed are three
+#     independent facts and a disagreement between them is visible.
+EVIDENCE_SCHEMA_VERSION = 8
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -1179,12 +1184,19 @@ def qa_cell(ctx: dict) -> dict:
     The executor is reported from the QA containers this run's label selected,
     never from the selector the qa-worker was configured with: a configured
     selector is a plan, and this artifact only claims what it saw run.
+
+    The three executor fields are three independent facts: what the runner asked
+    for, what the control plane persisted on the Run it admitted, and what a
+    container was observed running. `executor_selected` used to be a second copy
+    of `executor_requested`, so the two could never disagree; run 33743251165
+    asked for `claude`, was admitted under `codex`, and the artifact reported
+    `claude` twice.
     """
     collector: RunEvidenceCollector = ctx["run_evidence"]
     cell = {
         "mode": "llm_executor" if ctx.get("qa_requires_executor") else "deterministic_health",
         "executor_requested": ctx.get("qa_agent_type_requested"),
-        "executor_selected": ctx.get("qa_agent_type"),
+        "executor_selected": _qa_selected_executor(ctx).as_dict(),
         "executor_executed": _qa_executor_evidence(ctx).as_dict(),
         "executor_workers": collector.worker_ids(WorkerRole.QA_EXECUTOR),
         "run_id": None,
@@ -1207,6 +1219,36 @@ def qa_cell(ctx: dict) -> dict:
     cell["state"] = QAExercise.NOT_EXERCISED.value
     cell["reason"] = _qa_not_exercised_reason(ctx)
     return cell
+
+
+def _qa_selected_executor(ctx: dict) -> Capture:
+    """Which executor the control plane selected, read from the Run it admitted.
+
+    The executor decision is resolved once, by the API, and persisted on the paid
+    QA Run's `run_metadata` (`ExecutorDecision.as_run_metadata`); the QA consumer
+    obeys it. That record is therefore the only place the *selected* executor
+    exists as a fact rather than as somebody's intention — the runner's request is
+    an input to it, and a consumer's configured selector is a copy of the same
+    input that can be out of date.
+
+    A decision that cannot be read is a stated missed capture, never the request:
+    falling back to the request is exactly the defect, because it re-creates a
+    field that agrees with the request by construction.
+    """
+    record = _qa_run_capture(ctx)
+    if not record.is_captured:
+        return Capture.missed(
+            "the QA Run's persisted executor decision could not be read, so the "
+            f"executor the control plane selected is not evidenced: {record.reason}"
+        )
+    decision = record.value.get("executor_decision")
+    agent_type = decision.get("agent_type") if isinstance(decision, dict) else None
+    if not agent_type:
+        return Capture.missed(
+            f"QA Run {record.value.get('id')!r} carries no executor decision in its "
+            "run_metadata, so the executor the control plane selected is not evidenced"
+        )
+    return Capture.captured(agent_type)
 
 
 def _qa_executor_evidence(ctx: dict) -> Capture:
@@ -1285,6 +1327,9 @@ def qa_run_facts(run: dict) -> dict:
         "summary": result.get("summary"),
         "error": result.get("error"),
         "qa_attempt": result.get("qa_attempt"),
+        # The executor this Run was admitted under, as the API resolved and
+        # persisted it. `qa.executor_selected` is read from here.
+        "executor_decision": (run.get("run_metadata") or {}).get(EXECUTOR_DECISION_METADATA_KEY),
         "deployed_url": result.get("deployed_url"),
         "failed_checks": result.get("failed_checks") or [],
         "blocker": (

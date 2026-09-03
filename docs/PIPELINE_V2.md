@@ -355,8 +355,11 @@ carries typed initial settings, and never a secret".
 **Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
 nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon session there.
 
-**QA runtime prerequisites** (orchestrator `.env`, read by `qa-worker`):
-- `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly
+**QA runtime prerequisites** (orchestrator `.env`):
+- `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly.
+  Compose passes it to `api` and `qa-worker`, but only the API's copy decides: the resolver reads it
+  at paid-run admission and persists the choice on the Run, and `qa-worker` obeys that record. A
+  change therefore takes effect only once the `api` container has been recreated with it.
 - `TELETHON_API_ID` / `TELETHON_API_HASH` / `TELETHON_SESSION` — only for projects with a bot
 
 **Outputs**: `QAOutcome` in run.result for supervisor
