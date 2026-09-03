@@ -14,7 +14,7 @@ def test_manager_keeps_only_public_diagnostic_and_removal_facades():
     for private_implementation in (
         "_executor_leases",
         "_executor_diagnostic",
-        "_stand_token_failures",
+        "stand_token_failures",
         "_ownership_from_meta",
         "_capture_removal_evidence",
         "_unreadable_removal_evidence",
