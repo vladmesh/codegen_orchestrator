@@ -20,7 +20,7 @@ import uuid
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 import run_cleanup
 from run_evidence import (
     LOG_TAIL_LINES,
@@ -352,7 +352,6 @@ async def po_tool_boundary(*, api_url: str = API_URL):
         sys.path.insert(0, entry_text)
 
     from shared.clients.internal_api import InternalAPIClient
-    from shared.redis import RedisStreamClient
     from src.agents.po import tools_briefs, tools_projects, tools_stories
     from src.agents.po.tools_shared import init_po_clients
 
@@ -364,7 +363,7 @@ async def po_tool_boundary(*, api_url: str = API_URL):
         )
 
     api = InternalAPIClient(api_url)
-    stream = RedisStreamClient()
+    stream = _ComposeRedisStreamClient()
     try:
         await stream.connect()
         init_po_clients(api, stream)
@@ -382,6 +381,44 @@ async def po_tool_boundary(*, api_url: str = API_URL):
             await stream.close()
         finally:
             await api.close()
+
+
+class _ComposeRedisStreamClient:
+    """Minimal host-side PO stream boundary backed by the compose Redis service.
+
+    Live pytest runs on the stand host, where Redis is deliberately unexposed;
+    the stack itself addresses it as ``redis`` on the compose network.  This
+    adapter uses the same compose-exec boundary as the rest of the live harness
+    instead of inventing a host URL or relying on an ambient ``REDIS_URL``.
+    """
+
+    async def connect(self) -> None:
+        response = await asyncio.to_thread(_redis_json, "PING")
+        if response != "PONG":
+            raise RuntimeError(f"live Redis compose boundary returned {response!r} to PING")
+
+    async def close(self) -> None:
+        """Compose exec owns no persistent host-side connection."""
+
+    async def publish_message(self, stream: str, message: BaseModel) -> str:
+        from shared.redis.client import DEFAULT_STREAM_MAXLEN
+
+        message_id = await asyncio.to_thread(
+            _redis_json,
+            "XADD",
+            stream,
+            "MAXLEN",
+            "~",
+            str(DEFAULT_STREAM_MAXLEN),
+            "*",
+            "data",
+            json.dumps(message.model_dump(mode="json")),
+        )
+        if not isinstance(message_id, str) or not message_id:
+            raise RuntimeError(
+                f"live Redis compose boundary returned invalid XADD id: {message_id!r}"
+            )
+        return message_id
 
 
 def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
