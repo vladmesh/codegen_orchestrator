@@ -70,14 +70,34 @@ is passed to is force-recreated — the set is read out of the compose files by
 `stand_run.qa_executor_services`, never transcribed, so a service that starts reading it tomorrow is
 recreated without anyone editing the runner. Today that set is `api` and `qa-worker`.
 
+The recreate does not return until every service it recreated is usable the way the suite will use
+it: `stand_run.recreate_and_wait` is the runner's only way to bring a container up — `_compose`
+refuses `up`, `start` and `restart` anywhere else — so recreating and waiting cannot be separated by
+a later caller. `api` is asked for `GET /health` on `http://localhost:8000`, the base URL
+`conftest.py` builds every client on, because that is the fact the suite depends on; a consumer such
+as `qa-worker` is ready when its container has logged `<service>_started`, the line
+`run_queue_worker` prints once it is connected to Redis and reading its queue. The wait copies the
+workflow's own policy — probe, sleep five seconds, give up at 180 (`stand-e2e.yml`, "Bring up
+dynamic orchestrator and wait for API") — rather than inventing a second one; it cannot literally
+share that loop, which is bash on the host, and it deliberately probes from outside the container
+instead of `exec … curl 127.0.0.1`.
+
 The switch is then confirmed by asking the resolver itself: `docker compose exec api` runs the same
 `resolve_executor_decision` call paid-run admission makes, in the process whose settings are its
 input, creating no Run. A consumer's local setting is not an acceptable confirmation — it flips the
 moment that consumer is recreated and says nothing about the service that decides. Until the
 resolver answers the requested executor the switch is unconfirmed, and a cell whose switch never
-lands is reported `qa_executor_switch_failed` instead of running. The database-backed break-glass
+lands is reported `qa_executor_switch_failed` instead of running, and so is one whose stack never
+became reachable: a timeout at either wait ends the cell rather than starting pytest against a stack
+that is coming up. The database-backed break-glass
 executor override outranks this variable by design and is not applied by the dry run: a stand under
 an active QA override is not switchable from `.env` at all.
+
+Run 33749154999 is why the wait is part of the recreate. The widened recreate set was correct, and
+the resolver answered `claude` from the new `api` process as soon as its Python could import — some
+seconds before uvicorn listened. pytest started at 11:30:08 and `ensure_test_user` died of an
+`httpx.ReadError`; `api` logged `Application startup complete` at 11:30:12. A probe run inside the
+container would have passed throughout.
 
 Run 33743251165 is why all of this is written down. It recreated `qa-worker` alone and confirmed the
 switch by reading that same container, so the `api` container kept its start-up `codex`, and a run
@@ -93,17 +113,17 @@ probe (up to two 30-second paths per attempt); deterministic QA; completed-story
 delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
 release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnostics. The LLM pipeline
 remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
-acceptance. A QA executor switch is separately limited to three minutes; runner preflight and final
-sweep are each five minutes.
+acceptance. A recreate's readiness wait and the QA executor switch that follows it are separately
+limited to three minutes each; runner preflight and final sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include
 two 10-minute machine allocations, five minutes for DNS, three minutes for API readiness, and 20
 minutes for target provisioning; the remainder is bootstrap/Ansible reserve. The previous broad
 control-plane bootstrap measured about seven minutes. It now uses a stand-only minimal playbook
 whose expected 2–3 minute duration is pending live confirmation; that expectation does not change
-the overall provisioning budget. The matrix runner is bounded at 262 minutes (`5m preflight + 4 ×
-(60m cell + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict 53-minute reserve over
-provisioning plus that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
+the overall provisioning budget. The matrix runner is bounded at 274 minutes (`5m preflight + 4 ×
+(60m cell + 3m readiness + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict
+41-minute reserve over provisioning plus that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
 jobs do not share an outer timeout.
 
 ### Invariant map and first-iteration baseline

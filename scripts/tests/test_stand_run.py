@@ -346,26 +346,62 @@ def test_no_service_reading_the_variable_is_a_refusal(tmp_path):
 
 
 class _ComposeStand:
-    """A compose stack whose services each hold their own copy of the value."""
+    """A compose stack whose services each hold their own copy of the value.
 
-    def __init__(self, *, initial: str, flips: tuple[str, ...]):
+    It also models the thing run 33749154999 exposed: a container answers
+    `docker compose exec` well before it serves the port the suite calls, so
+    `serves_health` and the consumer's startup line lag the recreate by a
+    configurable number of probes.
+    """
+
+    def __init__(
+        self,
+        *,
+        initial: str,
+        flips: tuple[str, ...],
+        http_ready_after: int = 0,
+        started_after: int = 0,
+    ):
         #: The services a recreate is allowed to change. `flips` is how the old
         #: defect is reproduced: recreate qa-worker, leave api where it was.
         self.values = dict.fromkeys(qa_executor_services(), initial)
         self.flips = flips
         self.recreated: list[str] = []
         self.env_path = None
+        #: How many health probes fail before uvicorn listens, and how many log
+        #: reads come back empty before the consumer announces it started.
+        self.http_ready_after = http_ready_after
+        self.started_after = started_after
+        self.health_probes = 0
+        self.log_reads: dict[str, int] = {}
+        #: Everything the runner did, in order: this is what proves the wait
+        #: happens before the decision and the decision before pytest.
+        self.events: list[str] = []
+
+    def serves_health(self) -> bool:
+        self.health_probes += 1
+        self.events.append("health")
+        return self.health_probes > self.http_ready_after
 
     def __call__(self, env, *args, capture=False):
         if args[0] == "up":
             recreated = [name for name in args if name in self.values]
             self.recreated.extend(recreated)
+            self.events.append("up")
             for name in recreated:
                 if name in self.flips:
                     self.values[name] = read_env_file(self.env_path)[QA_EXECUTOR_ENV]
             return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        if args[0] == "logs":
+            service = args[-1]
+            self.events.append(f"logs:{service}")
+            self.log_reads[service] = self.log_reads.get(service, 0) + 1
+            started = self.log_reads[service] > self.started_after
+            body = f'{{"event": "{service}_started"}}\n' if started else ""
+            return subprocess.CompletedProcess([], 0, stdout=body, stderr="")
         assert args[0] == "exec"
         service = args[2]
+        self.events.append("resolve")
         return subprocess.CompletedProcess([], 0, stdout=f"{self.values[service]}\n", stderr="")
 
 
@@ -375,6 +411,7 @@ def _stand_env(tmp_path, monkeypatch, stand):
     stand.env_path = env_path
     monkeypatch.setattr(stand_run, "REPO", tmp_path)
     monkeypatch.setattr(stand_run, "_compose", stand)
+    monkeypatch.setattr(stand_run, "api_serves_health", stand.serves_health)
     monkeypatch.setattr(stand_run, "EXECUTOR_SWITCH_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(stand_run.time, "sleep", lambda _seconds: None)
     return env_path
@@ -417,3 +454,134 @@ def test_the_confirmation_asks_the_api_for_the_resolver_s_own_decision(monkeypat
     assert "resolve_executor_decision" in snippet
     assert "RunType.QA" in snippet
     assert "qa_executor_agent_type" not in snippet
+
+
+def test_bringing_a_service_up_outside_the_gate_is_refused(monkeypatch):
+    """Recreating and waiting are one operation, enforced rather than remembered.
+
+    1257 widened the recreate set correctly and 33749154999 still died, because a
+    caller could bring a container up and walk straight into pytest. A lifecycle
+    verb outside `recreate_and_wait` is now an error, so the next caller inherits
+    the wait instead of having to remember it.
+    """
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        stand_run.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            ran.append(command) or subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        ),
+    )
+
+    for verb in stand_run.COMPOSE_LIFECYCLE_COMMANDS:
+        with pytest.raises(RuntimeError, match="recreate_and_wait"):
+            stand_run._compose({}, verb, "-d", "api")
+
+    assert ran == []
+    # The same call inside the gate is the one legitimate way through.
+    with stand_run._recreate_gate():
+        stand_run._compose({}, "up", "-d", "--force-recreate", "api")
+    assert ran and ran[0][-3:] == ["-d", "--force-recreate", "api"]
+
+
+def test_readiness_asks_for_health_over_http_the_way_the_suite_does(monkeypatch):
+    """An in-container probe passed on 33749154999 while the suite could not connect."""
+    asked: list[tuple[str, object]] = []
+
+    class _Response:
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def fake_urlopen(url, timeout=None):
+        asked.append((url, timeout))
+        if len(asked) == 1:
+            raise OSError("connection refused")
+        return _Response(200)
+
+    monkeypatch.setattr(stand_run.urllib.request, "urlopen", fake_urlopen)
+
+    assert stand_run.api_serves_health() is False
+    assert stand_run.api_serves_health() is True
+    assert asked[0][0] == "http://localhost:8000/health"
+    assert asked[0][1] == stand_run.READINESS_POLL_SECONDS
+
+
+def test_the_probe_uses_the_base_url_the_live_suite_builds_its_clients_on():
+    """One URL, read from the suite: a probe of a different host proves nothing."""
+    conftest = (stand_run.REPO / "tests" / "live" / "conftest.py").read_text(encoding="utf-8")
+
+    assert f'API_URL = "{stand_run.SUITE_API_BASE_URL}"' in conftest
+
+
+def test_a_consumer_is_ready_only_once_it_says_it_started(tmp_path, monkeypatch):
+    """`qa-worker` running is not `qa-worker` consuming its queue."""
+    stand = _ComposeStand(initial="codex", flips=qa_executor_services(), started_after=1)
+    _stand_env(tmp_path, monkeypatch, stand)
+
+    assert stand_run.service_is_ready({}, "qa-worker") is False
+    assert stand_run.service_is_ready({}, "qa-worker") is True
+
+
+def test_the_runner_waits_for_http_while_the_resolver_already_answers(tmp_path, monkeypatch):
+    """The discriminating case of run 33749154999.
+
+    The recreated `api` can import the resolver — and therefore answer the
+    decision — seconds before uvicorn listens. The runner must not take that
+    answer as permission to start pytest.
+    """
+    stand = _ComposeStand(initial="codex", flips=qa_executor_services(), http_ready_after=3)
+    _stand_env(tmp_path, monkeypatch, stand)
+    lines: list[str] = []
+
+    assert stand_run.ensure_qa_executor({}, "claude", lines.append) is True
+
+    after_recreate = stand.events[stand.events.index("up") :]
+    assert after_recreate.count("health") == 4
+    # Readiness first, the resolver's decision after it, and no decision taken
+    # from the window in which the suite could not have connected.
+    assert after_recreate.index("logs:qa-worker") > _last_index(after_recreate, "health")
+    assert _last_index(after_recreate, "resolve") > _last_index(after_recreate, "health")
+    assert lines == []
+
+
+def test_a_readiness_timeout_refuses_the_cell_instead_of_starting_pytest(tmp_path, monkeypatch):
+    stand = _ComposeStand(initial="codex", flips=qa_executor_services(), http_ready_after=1_000)
+    _stand_env(tmp_path, monkeypatch, stand)
+    monkeypatch.setattr(stand_run, "READINESS_TIMEOUT_SECONDS", 0)
+    lines: list[str] = []
+
+    assert stand_run.ensure_qa_executor({}, "claude", lines.append) is False
+    assert stand.recreated  # it did recreate; it simply refused to proceed
+    assert "resolve" not in stand.events[stand.events.index("up") :]
+    assert lines and "api was not usable" in lines[0]
+
+
+def test_an_unready_stack_is_reported_as_a_failed_switch_and_skips_the_cell(tmp_path, monkeypatch):
+    """A switch that never became usable ends the cell the way 1257 ends one."""
+    started: list[str] = []
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda _env, _qa, _log: False)
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append(args[0]) or True)
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-llm"])
+
+    assert stand_run.main() == 1
+    assert started == []
+    run_dir = next(
+        path for path in (tmp_path / "runs").iterdir() if path.is_dir() and not path.is_symlink()
+    )
+    assert "\tqa_executor_switch_failed\t0\n" in (run_dir / "report.tsv").read_text(
+        encoding="utf-8"
+    )
+
+
+def _last_index(events: list[str], name: str) -> int:
+    return len(events) - 1 - events[::-1].index(name)
