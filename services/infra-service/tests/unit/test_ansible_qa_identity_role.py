@@ -128,7 +128,7 @@ class TestTheAccountIsCreatedByProvisioning:
 
 
 OWNERSHIP_GUARD = "Refuse an account of this name that this role did not create"
-PROOF_TASK = "Prove on the target that this account cannot become root"
+PROOF_TASK = "Prove on the target that this account is a QA seat that cannot become root"
 
 
 def _task_index(name: str) -> int:
@@ -236,6 +236,66 @@ def _stub(directory: Path, name: str, body: str) -> None:
     script.chmod(0o755)
 
 
+SENTINEL = _defaults()["qa_authorized_keys_sentinel"].strip()
+
+# `ssh-keygen` writes the throwaway key pair the login is attempted with, and
+# `ssh` is the login itself. Both are stubbed by behaviour rather than by
+# outcome: the client below admits exactly the key it finds in the file the
+# proof wrote into, so a proof that stopped appending — or stopped putting the
+# key where the account would read it — stops being admitted here too.
+SSH_KEYGEN_STUB = """
+out=""
+comment=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f) out=$2; shift ;;
+    -C) comment=$2; shift ;;
+  esac
+  shift
+done
+[ -n "$out" ] || exit 2
+echo "PRIVATE $comment" > "$out"
+echo "ssh-ed25519 AAAAPROOFKEY $comment" > "$out.pub"
+"""
+
+SSH_STUB = """
+key=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i) key=$2; shift ;;
+  esac
+  shift
+done
+if [ "${STUB_SSHD:-admits}" != "admits" ]; then
+  echo "Permission denied (publickey)." >&2
+  exit 255
+fi
+if [ -z "$key" ] || [ ! -f "$key.pub" ]; then
+  echo "no identity was offered" >&2
+  exit 255
+fi
+if grep -q -F -- "$(cat "$key.pub")" "$STUB_KEYS" 2>/dev/null; then
+  echo "${STUB_LOGIN_AS:-qa-observer}"
+else
+  echo "Permission denied (publickey)." >&2
+  exit 255
+fi
+"""
+
+
+def _seat(tmp_path: Path, *, keys: str | None = SENTINEL) -> Path:
+    """The account home the target's passwd database will point the proof at.
+
+    `keys=None` is the state run 33718999040 found: the account is there, its
+    `.ssh` is there, and the file a QA run appends to is not.
+    """
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True, exist_ok=True)
+    if keys is not None:
+        (home / ".ssh" / "authorized_keys").write_text(keys + "\n")
+    return home
+
+
 SUDO_ONE_WRAPPER = """Matching Defaults entries for qa-observer on target:
     !requiretty
 
@@ -259,7 +319,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         path.touch()
         return path
 
-    def _target(
+    def _target(  # noqa: PLR0913
         self,
         tmp_path,
         *,
@@ -268,10 +328,18 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         groups: str = "qa-observer",
         sudo: str | None = SUDO_ONE_WRAPPER,
         socket_reachable: bool = False,
+        keys: str | None = SENTINEL,
     ) -> Path:
         stubs = tmp_path / "bin"
         stubs.mkdir(exist_ok=True)
-        _stub(stubs, "getent", f"exit {0 if exists else 2}")
+        home = _seat(tmp_path, keys=keys)
+        _stub(
+            stubs,
+            "getent",
+            "exit 2" if not exists else f'echo "{QA_SSH_USER}:x:1001:1001::{home}:/bin/bash"',
+        )
+        _stub(stubs, "ssh-keygen", SSH_KEYGEN_STUB)
+        _stub(stubs, "ssh", SSH_STUB)
         _stub(
             stubs,
             "id",
@@ -285,12 +353,25 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         _stub(stubs, "runuser", f"exit {0 if socket_reachable else 1}")
         return stubs
 
-    def _prove(self, stubs: Path, socket: Path) -> subprocess.CompletedProcess:
+    def _prove(
+        self,
+        stubs: Path,
+        socket: Path,
+        *,
+        sshd: str = "admits",
+        login_as: str = QA_SSH_USER,
+    ) -> subprocess.CompletedProcess:
+        keys = stubs.parent / "home" / ".ssh" / "authorized_keys"
         return subprocess.run(
-            [str(PROOF), QA_SSH_USER, "/usr/local/bin/qa-docker", str(socket)],
+            [str(PROOF), QA_SSH_USER, "/usr/local/bin/qa-docker", str(socket), SENTINEL],
             capture_output=True,
             text=True,
-            env={"PATH": f"{stubs}:/usr/bin:/bin"},
+            env={
+                "PATH": f"{stubs}:/usr/bin:/bin",
+                "STUB_KEYS": str(keys),
+                "STUB_SSHD": sshd,
+                "STUB_LOGIN_AS": login_as,
+            },
         )
 
     def test_the_account_the_role_creates_passes(self, tmp_path, socket):
@@ -360,6 +441,10 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert "{{ qa_ssh_user | quote }}" in proof["cmd"]
         assert "{{ qa_docker_wrapper | quote }}" in proof["cmd"]
         assert "{{ qa_docker_socket | quote }}" in proof["cmd"]
+        # The line the role opens `authorized_keys` with travels into the proof,
+        # so "this file is the one this role wrote" is asked with the role's own
+        # sentinel rather than with a copy of it kept in the script.
+        assert "{{ qa_authorized_keys_sentinel | quote }}" in proof["cmd"]
         assert _task_index(PROOF_TASK) == len(_tasks()) - 1
 
     def test_a_failed_proof_is_what_stops_the_identity_being_recorded(self):
@@ -377,6 +462,103 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
             # Nothing in either playbook goes on regardless of the role failing.
             assert "ignore_errors" not in include
             assert "failed_when" not in include
+
+
+class TestTheTargetProvesAQARunCanTakeTheSeat:
+    """The other half of the proof, and the half run 33718999040 needed.
+
+    That host was recorded `complete` with the QA-account label, and its
+    `qa-observer` had no `authorized_keys` at all: every check that existed then
+    was about what the account may not do, and none of them about whether
+    anybody could sit in it. So the proof ends by doing what the runtime does —
+    append one key, log in with it, take it back out — against a stubbed
+    `ssh-keygen` and a stubbed client that admits exactly the key it finds in
+    the file the proof wrote into.
+    """
+
+    @pytest.fixture
+    def socket(self, tmp_path) -> Path:
+        path = tmp_path / "docker.sock"
+        path.touch()
+        return path
+
+    _target = TestTheTargetProvesTheAccountCannotBecomeRoot._target
+    _prove = TestTheTargetProvesTheAccountCannotBecomeRoot._prove
+
+    def _keys(self, tmp_path) -> Path:
+        return tmp_path / "home" / ".ssh" / "authorized_keys"
+
+    def test_a_seat_that_can_be_taken_passes_and_keeps_no_key_of_the_proof(self, tmp_path, socket):
+        result = self._prove(self._target(tmp_path), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert "login=ok" in result.stdout
+        # The file is handed back exactly as provisioning left it: the proof
+        # writes into a live `authorized_keys`, and a key of its own left behind
+        # would be a standing login nobody issued.
+        assert self._keys(tmp_path).read_text() == SENTINEL + "\n"
+
+    def test_an_account_with_no_authorized_keys_is_refused(self, tmp_path, socket):
+        """The state the fifth paid run reached, made a provisioning failure."""
+        result = self._prove(self._target(tmp_path, keys=None), socket)
+
+        assert result.returncode != 0
+        assert "nothing to write its key into" in result.stderr
+
+    def test_an_authorized_keys_this_role_did_not_open_is_refused(self, tmp_path, socket):
+        """A file of that name whose provenance is unknown proves nothing.
+
+        The runtime removes a run key by filtering this file and refuses to
+        write back an empty result, which only holds while the line the role
+        opened it with is still in it.
+        """
+        result = self._prove(
+            self._target(tmp_path, keys="ssh-ed25519 AAAASOMEBODYELSE somebody@else"),
+            socket,
+        )
+
+        assert result.returncode != 0
+        assert "does not carry the line this role opens it with" in result.stderr
+
+    def test_an_account_sshd_will_not_admit_is_refused_and_the_key_still_comes_out(
+        self, tmp_path, socket
+    ):
+        """A locked account, a group-writable home, an sshd that names its users.
+
+        None of them are visible in the file, so the file is not what is asked.
+        The key still has to come back out of a host that failed: the proof must
+        not leave a login behind on a target it is about to fail provisioning on.
+        """
+        result = self._prove(self._target(tmp_path), socket, sshd="refuses")
+
+        assert result.returncode != 0
+        assert "sshd refused a key written into" in result.stderr
+        assert "Permission denied" in result.stderr
+        assert self._keys(tmp_path).read_text() == SENTINEL + "\n"
+
+    def test_a_login_that_lands_on_another_account_is_refused(self, tmp_path, socket):
+        """The seat has to be this account, not merely some account on the host."""
+        result = self._prove(self._target(tmp_path), socket, login_as="root")
+
+        assert result.returncode != 0
+        assert "instead" in result.stderr
+
+    def test_the_role_puts_the_ssh_client_the_proof_needs_on_the_target(self):
+        """The proof takes the seat, so the target needs a client to take it with.
+
+        A fresh provider image is not promised to carry one, and the retrofit
+        runs this role on hosts nobody chose the image of.
+        """
+        names = {task["name"] for task in _tasks()}
+        install = next(
+            task
+            for task in _tasks()
+            if task.get("ansible.builtin.apt", {}).get("name") == "openssh-client"
+        )
+
+        assert install["ansible.builtin.apt"]["state"] == "present"
+        assert _task_index(install["name"]) < _task_index(PROOF_TASK)
+        assert PROOF_TASK in names
 
 
 def _apply_user_module(before: dict, params: dict) -> dict:

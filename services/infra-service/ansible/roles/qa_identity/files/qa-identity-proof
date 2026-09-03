@@ -3,27 +3,62 @@
 # and before anything records that this host has a QA identity.
 #
 # The role's tasks are statements of intent: this primary group, this sudoers
-# file, no docker group. An account that was already on the host when the role
-# arrived can carry things the role never wrote and does not remove — `uid 0`, a
-# rule in somebody else's file under `/etc/sudoers.d`, a POSIX ACL straight onto
-# the docker socket. None of those are visible in what the role declares, and
-# all of them mean the account can become root. So the seat is not assumed from
-# the tasks that ran; it is asked of the machine, with the same tools somebody
-# looking for a way up would use.
+# file, no docker group, this `authorized_keys`. An account that was already on
+# the host when the role arrived can carry things the role never wrote and does
+# not remove — `uid 0`, a rule in somebody else's file under `/etc/sudoers.d`, a
+# POSIX ACL straight onto the docker socket. None of those are visible in what
+# the role declares, and all of them mean the account can become root. So the
+# seat is not assumed from the tasks that ran; it is asked of the machine, with
+# the same tools somebody looking for a way up would use.
+#
+# Two questions are asked, and a host has to answer both:
+#
+# * can this account become root — the ceiling the identity exists under.
+# * can a QA run actually borrow it — its `authorized_keys` is there and holds
+#   the line the role opens it with, and sshd really lets a key written into
+#   that file in. Everything above is a statement about a seat nobody has sat
+#   in; run 33718999040 reached a host recorded `complete` whose `qa-observer`
+#   had no `authorized_keys` at all, and every check that existed then passed on
+#   it. So the last thing this does is the thing the runtime will do: append one
+#   key, log in with it, and take it back out.
 #
 # Whatever cannot be proved here is a failure. The role fails with it, the
 # provisioner never records the identity, and the host stays one exploratory QA
-# refuses — which is the honest state for a host whose QA account might be root.
+# refuses — which is the honest state for a host whose QA account might be root,
+# and for one no QA run could ever log in to.
 #
 # Everything is asked of the running system rather than of files: `sudo -l -U`
-# is sudo's own computation over every sudoers file on the host, and `test -r`
-# run as the account is the kernel's answer over mode, group and ACL together.
+# is sudo's own computation over every sudoers file on the host, `test -r` run
+# as the account is the kernel's answer over mode, group and ACL together, and
+# the login is sshd's answer over `authorized_keys`, the home directory's modes
+# and whatever the host's sshd configuration says about this account.
 
 set -eu
 
 user=${1:?the account to prove}
 wrapper=${2:?the one command it may run through sudo}
 socket=${3:?the docker socket it must not reach}
+sentinel=${4:?the line the role opens authorized_keys with}
+
+# The proof key is appended to a live `authorized_keys` and has to come back out
+# whichever way this script leaves, including a failure below it. Removal is a
+# read-filter-write over the same inode rather than an in-place edit, so the
+# file keeps the account's own ownership and mode — a root-owned
+# `authorized_keys` is one sshd refuses, which would turn this proof into the
+# defect it exists to catch.
+work=""
+keys=""
+marker=""
+cleanup() {
+    if [ -n "${keys}" ] && [ -n "${marker}" ] && [ -f "${keys}" ]; then
+        grep -v -F "${marker}" "${keys}" > "${work}/keys" 2>/dev/null || true
+        if [ -s "${work}/keys" ]; then
+            cat "${work}/keys" > "${keys}" || true
+        fi
+    fi
+    [ -z "${work}" ] || rm -rf "${work}" || true
+}
+trap cleanup EXIT INT TERM HUP
 
 fail() {
     echo "qa-identity-proof: $user $1" >&2
@@ -61,4 +96,55 @@ if [ -e "$socket" ]; then
     ! runuser -u "$user" -- test -w "$socket" || fail "can write $socket"
 fi
 
-echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable"
+# The file the runtime appends a run key to. It is asked for at the home the
+# *target's* passwd database gives, because that is the path the runtime resolves
+# too — a role that configured some other directory would be a role whose work
+# no QA run can find.
+home=$(getent passwd "$user" | cut -d: -f6)
+[ -n "$home" ] || fail "has no home directory in this target's passwd database"
+keys=$home/.ssh/authorized_keys
+[ -f "$keys" ] || fail "has no $keys: a QA run has nothing to write its key into"
+grep -q -F -- "$sentinel" "$keys" ||
+    fail "$keys does not carry the line this role opens it with, so what wrote it is unknown"
+
+# The last word, and the only one that is not a statement about a file: sshd's.
+# A file with the right name, owner and mode still admits nobody if the account
+# is locked out of ssh, if its home is group-writable, or if this host's sshd
+# only lets named accounts in. So the run's own move is made here, once.
+#
+# The login is made over the loopback, which is what this host can prove about
+# itself: that sshd accepts this account and a key written into that file. It
+# deliberately does not claim the orchestrator can reach port 22 from outside —
+# that is the firewall's business, and provisioning already comes through it.
+work=$(mktemp -d) || fail "cannot be proved: no writable temporary directory on this target"
+marker="qa-identity-proof-$$-$(date +%s)"
+command -v ssh-keygen >/dev/null ||
+    fail "cannot be proved: ssh-keygen is not on this target, so no login can be attempted"
+command -v ssh >/dev/null ||
+    fail "cannot be proved: no ssh client on this target, so no login can be attempted"
+ssh-keygen -q -t ed25519 -N '' -C "$marker" -f "$work/key" </dev/null ||
+    fail "cannot be proved: a throwaway key for the login attempt could not be generated"
+[ -f "$work/key.pub" ] || fail "cannot be proved: ssh-keygen wrote no public key"
+
+# Appended, never rewritten: `>>` keeps the file the account's own. The key
+# carries the marker as its comment, and that comment is what takes this one
+# line back out in `cleanup` above.
+cat "$work/key.pub" >> "$keys" ||
+    fail "cannot be proved: $keys could not be appended to"
+
+# `IdentitiesOnly` so the attempt is this key and nothing root happens to hold:
+# a login that succeeded on some other identity would prove nothing about the
+# file this writes into.
+logged_in=$(ssh -i "$work/key" \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PasswordAuthentication=no \
+    -o ConnectTimeout=20 \
+    "$user@127.0.0.1" 'id -un' 2>"$work/ssh.err") ||
+    fail "is not a seat anybody can take: sshd refused a key written into $keys [$(tail -c 400 "$work/ssh.err" | tr '\n' ' ')]"
+[ "$logged_in" = "$user" ] ||
+    fail "logged a key written into $keys in as [$logged_in] instead"
+
+echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable keys=$keys login=ok"

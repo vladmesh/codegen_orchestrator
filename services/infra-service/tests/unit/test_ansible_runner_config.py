@@ -152,3 +152,104 @@ class TestAnsibleRunnerConfiguration:
 
         assert {"deploy_target", "monitoring"}.issubset(included_roles)
         assert all((roles_root / role).is_dir() for role in included_roles)
+
+
+class TestWhatASuccessfulPlaybookLeavesBehind:
+    """A provisioning that succeeded used to leave no account of what ran.
+
+    Run 33718999040 recorded a target `complete` and QA then found no
+    `authorized_keys` for the account that row said was there. The one question
+    the artifact could not answer was whether the `qa_identity` role had run at
+    all, because on success the runner logged the first 1000 characters of the
+    output at debug and kept nothing else — no recap, and none of the closing
+    report the play writes about the identity the host lends.
+    """
+
+    OUTPUT = (
+        "TASK [Create the QA run identity] ***\n"
+        + "filler line\n" * 400
+        + 'ok: [1.2.3.4] => {"qa_identity_proof": "qa-identity-proof: qa-observer login=ok"}\n'
+        "\nPLAY RECAP ***\n1.2.3.4 : ok=57 changed=12 unreachable=0 failed=0 skipped=1\n"
+    )
+
+    @staticmethod
+    def _recap(capsys) -> str:
+        """The one log line this class is about, as the service log tail sees it.
+
+        The provisioner logs through structlog to the service stream, which is
+        what the stand collects and redacts; reading it back the same way is
+        what makes this a test of the evidence rather than of a call.
+        """
+        printed = capsys.readouterr().out
+        [line] = [line for line in printed.splitlines() if "ansible_play_recap" in line]
+        return line
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_a_successful_play_keeps_its_recap_and_its_closing_report(
+        self, mock_run, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=self.OUTPUT, stderr="")
+
+        success, _ = AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+        )
+
+        assert success is True
+        recap = self._recap(capsys)
+
+        assert "PLAY RECAP" in recap
+        assert "failed=0" in recap
+        # The tail is bounded and is where the play states the identity this
+        # host lends, which is what makes "did the role run" readable.
+        assert "qa-identity-proof: qa-observer login=ok" in recap
+        assert "TASK [Create the QA run identity]" not in recap
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_a_play_that_produced_no_recap_says_so_rather_than_nothing(
+        self, mock_run, monkeypatch, capsys
+    ):
+        """An absent recap is a named absence, never a silently empty field."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(returncode=1, stdout="it never started", stderr="boom")
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+        )
+
+        assert "no PLAY RECAP" in self._recap(capsys)
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_the_private_key_never_reaches_the_recap(self, mock_run, monkeypatch, capsys):
+        """The recap is a log line like any other: it leaves through the redaction."""
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="PLAY RECAP ***\nkey was -----BEGIN KEY----- here\n",
+            stderr="",
+        )
+
+        AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            ssh_user="root",
+            ssh_private_key="-----BEGIN KEY-----",
+        )
+        recap = self._recap(capsys)
+
+        assert "-----BEGIN KEY-----" not in recap
+        assert "REDACTED SSH PRIVATE KEY" in recap

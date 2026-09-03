@@ -149,6 +149,11 @@
     # succeeds, so a host that is recorded complete is a host on which this role
     # ran. "Provisioned but with no account for QA to borrow" is not a state
     # this path can produce.
+    #
+    # Deliberately unconditional. The profile above chooses how much of the
+    # system is upgraded and nothing else; a QA seat is not something a faster
+    # target does without, and the report at the end of this play is what makes
+    # a run that skipped this role fail instead of pass quietly.
     - name: Create the QA run identity
       ansible.builtin.include_role:
         name: qa_identity
@@ -231,6 +236,25 @@
           - "Docker version: {{ docker_version.stdout }}"
           - "UFW status: {{ ufw_status.stdout_lines[0] }}"
       tags: [verify]
+
+    # The retrofit reports the same line for the host it repairs; this is the
+    # provisioning path's copy of it, and it is here for two reasons.
+    #
+    # It is what the target itself said about the finished account, so the last
+    # thing a successful provisioning writes to the provisioner's log is the
+    # evidence that this host really lends a QA seat — the artifact of a run
+    # like 33718999040 kept a play recap of nothing and could not say whether
+    # this role had run at all.
+    #
+    # And it is undefined unless the role's proof ran, so a play that reaches
+    # the end having skipped the role — under any profile, by any `when:` or
+    # task selection somebody adds later — fails here instead of being recorded
+    # complete. That is the invariant the comment above the include states,
+    # enforced rather than asserted.
+    - name: Report the QA identity this host lends
+      ansible.builtin.debug:
+        msg:
+          qa_identity_proof: "{{ qa_identity_proof.stdout | trim }}"
 
   post_tasks:
     - name: Software provisioning complete

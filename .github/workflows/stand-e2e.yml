@@ -444,13 +444,32 @@ jobs:
                   tee -a "${diagnostics_dir}/provisioning-state.jsonl"
               fi
             fi
+            # Collected for a provisioning that succeeded as well as one that
+            # failed. "Did the qa_identity role run on the host this row calls
+            # complete" is a question about a *successful* provisioning, and
+            # infra-service — which logs the recap of each play and the
+            # closing report of that play — is the only place that answers it;
+            # run 33718999040 had to be argued about without it. Same helper and
+            # same protected-name allow-list as every other tail that leaves
+            # this host, and every byte of the file comes out of the redaction
+            # path: a pipe that did not complete publishes the stated reason
+            # instead of its input.
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+            services_out="${diagnostics_dir}/provisioning-services.log"
+            services_partial="${services_out}.partial"
+            rm -f "${services_partial}"
+            if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler 2>&1 | \
+              ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+              python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+              > "${services_partial}"; then
+              mv "${services_partial}" "${services_out}"
+            else
+              printf "%s\n" "the provisioning service tails were not collected: the redaction path did not complete, so no unredacted service output is published (provisioning wait status: ${wait_status})" \
+                > "${services_out}"
+              rm -f "${services_partial}"
+            fi
             if [ "${wait_status}" -ne 0 ]; then
-              COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-              protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
-              ${COMPOSE} logs --no-color --tail 300 infra-service scheduler 2>&1 | \
-                ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
-                python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
-                > "${diagnostics_dir}/provisioning-services.log" || true
               exit "${wait_status}"
             fi
           '

@@ -162,6 +162,14 @@
     name: acl
     state: present
 
+# The proof at the end of this role does what the runtime does: it writes a key
+# into the account's `authorized_keys` and logs in with it. That needs an ssh
+# client on the target, and a fresh Stand image is not promised to carry one.
+- name: Install the ssh client this role's own proof takes the account's seat with
+  ansible.builtin.apt:
+    name: openssh-client
+    state: present
+
 # The deployment root is `root:{{ deploy_user }}` and group-writable, so putting
 # the QA account in that group would give it writes over every deployment. It
 # gets one named ACL entry instead: search on the root directory, which is all
@@ -183,12 +191,20 @@
 # succeeded, so a proof that fails is a host that keeps refusing QA — visibly,
 # as the provisioning failure it is, rather than as a run that quietly cannot
 # find an account.
-- name: Prove on the target that this account cannot become root
+#
+# It proves two things, because a host can fail either one: that the account
+# cannot become root, and that a QA run can actually borrow it — the
+# `authorized_keys` above is really there, holds this role's own sentinel, and
+# sshd lets a key written into it in. The second half is here rather than in one
+# playbook so that every caller of this role inherits it: the retrofit repairs a
+# host with the same proof provisioning admits a fresh one on.
+- name: Prove on the target that this account is a QA seat that cannot become root
   ansible.builtin.script:
     cmd: >-
       qa-identity-proof
       {{ qa_ssh_user | quote }}
       {{ qa_docker_wrapper | quote }}
       {{ qa_docker_socket | quote }}
+      {{ qa_authorized_keys_sentinel | quote }}
   changed_when: false
   register: qa_identity_proof
