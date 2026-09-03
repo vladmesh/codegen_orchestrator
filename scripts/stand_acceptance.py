@@ -28,6 +28,18 @@ PROVISIONING_DIAGNOSTIC_FILES = (
 )
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
 RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
+# The redacted service log tails the runner collects when the suite itself
+# failed, the counterpart of the provisioning-failure diagnostics above.
+SUITE_DIAGNOSTIC_FILES = ("suite-services.log",)
+# The harness's own post-mortem dump, written beside the run evidence so it
+# reaches the handoff instead of dying with the ephemeral host.
+# The dump name is `debug-<test name>-<date>-<time>.md`, and a test name is a
+# Python identifier or a prefix built from one, so underscores and capitals are
+# names the codebase can actually produce.  Anything else still shaped like a
+# dump is not quietly left behind: `DEBUG_DUMP_CANDIDATE` catches it so the
+# drop is named in the final report rather than being silently absent.
+DEBUG_DUMP = re.compile(r"debug-[A-Za-z0-9_-]+-\d{8}-\d{6}\.md\Z")
+DEBUG_DUMP_CANDIDATE = re.compile(r"debug-.*\.md\Z")
 # A private-key PEM header is sensitive even when its body was reformatted by a
 # traceback or serialized by a logger.  This intentionally does not inspect
 # credential names or assignments, so value-free preflight diagnostics remain
@@ -145,10 +157,102 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
                 shutil.copyfile(source, output / source.name)
             if source.is_file() and RUN_EVIDENCE.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
-        for name in (REMOTE_INVOCATION_LOG, *PROVISIONING_DIAGNOSTIC_FILES):
+            if source.is_file() and DEBUG_DUMP.fullmatch(source.name):
+                shutil.copyfile(source, output / source.name)
+            elif source.is_file() and DEBUG_DUMP_CANDIDATE.fullmatch(source.name):
+                errors.append(f"debug_dump_name_unadmissible:{source.name}")
+        for name in (
+            REMOTE_INVOCATION_LOG,
+            *PROVISIONING_DIAGNOSTIC_FILES,
+            *SUITE_DIAGNOSTIC_FILES,
+        ):
             source = run_dir / name
             if source.is_file():
                 shutil.copyfile(source, output / source.name)
+
+
+def _capture_is_stated(capture: object) -> bool:
+    """Whether one evidence field is a collected value or a stated absence.
+
+    The run-evidence artifact never carries a bare empty field: every fact is
+    either ``captured`` with a value or ``missed`` with the reason it could not
+    be read.  Both are admissible — a piece that genuinely could not be
+    collected is named with why.  Anything else is silence, and silence about a
+    paid failure is what this admission refuses.
+    """
+    if not isinstance(capture, dict):
+        return False
+    if capture.get("status") == "captured":
+        return capture.get("value") is not None
+    return capture.get("status") == "missed" and bool(capture.get("reason"))
+
+
+def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
+    """Refuse a paid failure whose artifact cannot say where it stopped or why."""
+    failure = artifact.get("failure")
+    verdict = artifact.get("verdict")
+    if not isinstance(failure, dict) or not isinstance(verdict, dict):
+        return [f"run_evidence_failure_section_missing:{name}"]
+    if not verdict.get("paid") or not failure.get("failed"):
+        return []
+    errors: list[str] = []
+    if not failure.get("stage") or not failure.get("failure_kind"):
+        errors.append(f"paid_failure_stage_missing:{name}")
+    if not _capture_is_stated(failure.get("control_plane_reason")):
+        errors.append(f"paid_failure_reason_missing:{name}")
+    engineering = artifact.get("engineering")
+    if not isinstance(engineering, dict) or not _capture_is_stated(engineering.get("collection")):
+        errors.append(f"paid_failure_engineering_evidence_missing:{name}")
+    if not verdict.get("reasons"):
+        errors.append(f"paid_failure_verdict_silent:{name}")
+    return errors
+
+
+def _uncollected_debug_dumps(output: Path, artifact: dict[str, Any]) -> list[str]:
+    """Name every dump the run wrote that did not reach the artifact.
+
+    The run-evidence artifact records the dumps the harness wrote, so the two
+    halves can be compared here: a name the run declared and the handoff does
+    not carry is a piece that could not be collected, and it is named with why
+    instead of disappearing between the stand and the reader.
+    """
+    declared = artifact.get("debug_dumps")
+    if not isinstance(declared, list):
+        return []
+    return [
+        f"debug_dump_not_collected:{name}"
+        for name in declared
+        if isinstance(name, str) and not (output / name).is_file()
+    ]
+
+
+def _run_evidence_errors(output: Path) -> list[str]:
+    """Read back every collected run-evidence artifact and fail closed on a gap.
+
+    This is the same admission the workflow already fails closed on, extended to
+    the one thing it could not see before: a paid run that failed after
+    provisioning succeeded and whose artifact names neither the failing stage
+    nor the control plane's reason for it.  Such an artifact is refused here
+    rather than uploaded as if it explained anything.
+    """
+    errors: list[str] = []
+    evidence = [path for path in sorted(output.iterdir()) if RUN_EVIDENCE.fullmatch(path.name)]
+    paid_failure = False
+    for path in evidence:
+        try:
+            artifact = _load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append(f"run_evidence_unreadable:{path.name}")
+            continue
+        failure = artifact.get("failure")
+        verdict = artifact.get("verdict")
+        if isinstance(failure, dict) and isinstance(verdict, dict):
+            paid_failure = paid_failure or bool(verdict.get("paid") and failure.get("failed"))
+        errors += _paid_failure_errors(path.name, artifact)
+        errors += _uncollected_debug_dumps(output, artifact)
+    if paid_failure and not any((output / name).is_file() for name in SUITE_DIAGNOSTIC_FILES):
+        errors.append("paid_failure_service_diagnostics_missing")
+    return errors
 
 
 def _cleanup_proof(
@@ -300,6 +404,7 @@ def build_acceptance_artifact(
     shutil.copyfile(manifest_path, output / "machines.json")
     errors: list[str] = []
     _copy_run_outputs(run_dir, output, errors)
+    errors += _run_evidence_errors(output)
 
     run_tag = manifest.get("run_tag")
     if not isinstance(run_tag, str) or not run_tag:
@@ -381,6 +486,8 @@ def _scan_artifact_issues(
         *(f"run/{name}" for name in REQUIRED_RUN_FILES),
         f"run/{REMOTE_INVOCATION_LOG}",
         *(f"run/{name}" for name in PROVISIONING_DIAGNOSTIC_FILES),
+        *SUITE_DIAGNOSTIC_FILES,
+        *(f"run/{name}" for name in SUITE_DIAGNOSTIC_FILES),
     }
     for path in sorted(artifact.rglob("*")) if artifact.is_dir() else []:
         if path.is_dir():
@@ -399,7 +506,15 @@ def _scan_artifact_issues(
         valid_run_evidence = RUN_EVIDENCE.fullmatch(path.name) and (
             path.parent == artifact or path.parent == artifact / "run"
         )
-        if relative not in allowed and not valid_combination and not valid_run_evidence:
+        valid_debug_dump = DEBUG_DUMP.fullmatch(path.name) and (
+            path.parent == artifact or path.parent == artifact / "run"
+        )
+        if (
+            relative not in allowed
+            and not valid_combination
+            and not valid_run_evidence
+            and not valid_debug_dump
+        ):
             issues.append(AdmissionIssue("candidate contains an unapproved file", relative))
             continue
         if not path.is_file() or path.is_symlink():

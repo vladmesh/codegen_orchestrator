@@ -129,12 +129,36 @@ def test_build_acceptance_artifact_records_observed_lifetime_and_rate_estimate(t
     ]
 
 
-def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
-    manifest, run_dir, cleanup = _write_inputs(tmp_path)
-    evidence_name = "run-evidence-worker-noop-qa-health-20260831T225500.json"
+NOOP_EVIDENCE_NAME = "run-evidence-worker-noop-qa-health-20260831T225500.json"
+PAID_EVIDENCE_NAME = "run-evidence-worker-claude-qa-codex-20260902T081500.json"
+
+
+def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
+    """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 5,
+        "schema_version": 6,
         "kind": "worker_failure_attribution",
+        "failure": {
+            "failed": failed,
+            "stage": "stopped_at_engineering" if failed else "completed",
+            "failure_kind": "worker_did_not_finish" if failed else "none",
+            "control_plane_reason": {
+                "status": "captured",
+                "value": {"source": "engineering_run", "runs": [{"run_status": "failed"}]},
+                "reason": None,
+            },
+        },
+        "verdict": {
+            "paid": paid,
+            "status": "red" if failed else "green",
+            "reasons": [{"code": "run_failed", "detail": "stopped at engineering"}]
+            if failed
+            else [],
+        },
+        "engineering": {
+            "collection": {"status": "captured", "value": {"runs_read": 1}, "reason": None},
+            "runs": [{"run_id": "run-1"}],
+        },
         "tasks": {
             "task-1": {
                 "status": "waiting_human_review",
@@ -143,12 +167,169 @@ def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
         },
         "workers": [{"exit_code": {"value": 7}, "log_tail": {"text": "safe tail"}}],
     }
-    (run_dir / evidence_name).write_text(json.dumps(evidence), encoding="utf-8")
+    evidence.update(overrides)
+    return evidence
+
+
+def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    evidence = _run_evidence(paid=False, failed=False)
+    (run_dir / NOOP_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
     output = tmp_path / "acceptance"
 
     assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
-    assert json.loads((output / evidence_name).read_text(encoding="utf-8")) == evidence
+    assert json.loads((output / NOOP_EVIDENCE_NAME).read_text(encoding="utf-8")) == evidence
     assert scan_artifact(output, canaries=("not-present",)) == []
+
+
+def _paid_failure_inputs(tmp_path, evidence: dict, *, service_log: bool = True):
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    (run_dir / PAID_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    if service_log:
+        (run_dir / "suite-services.log").write_text(
+            "scheduler | admitted paid run\n", encoding="utf-8"
+        )
+    return manifest, run_dir, cleanup
+
+
+def _incompleteness(output) -> list[str]:
+    return json.loads((output / "final-report.json").read_text(encoding="utf-8"))["incompleteness"]
+
+
+def test_a_failed_paid_run_arrives_with_its_stage_reason_and_service_tails(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True)
+    )
+    (run_dir / "debug-full-llm-engineering-20260902-081500.md").write_text(
+        "# Debug\n- task_status: `failed`\n", encoding="utf-8"
+    )
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert (output / "suite-services.log").is_file()
+    assert (output / "debug-full-llm-engineering-20260902-081500.md").is_file()
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
+def test_a_debug_dump_named_with_an_underscore_reaches_the_handoff(tmp_path):
+    """A dump name the harness can actually produce is collected, not dropped."""
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True)
+    )
+    dump = "debug-test_full_pipeline_LLM-20260902-081500.md"
+    (run_dir / dump).write_text("# Debug\n- task_status: `failed`\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert (output / dump).is_file()
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
+def test_a_dump_shaped_file_the_handoff_cannot_carry_is_named_not_dropped(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True)
+    )
+    dump = "debug-no-timestamp.md"
+    (run_dir / dump).write_text("# Debug\n", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"debug_dump_name_unadmissible:{dump}" in _incompleteness(output)
+    assert not (output / dump).exists()
+
+
+def test_a_debug_dump_the_run_declared_but_did_not_arrive_is_named(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["debug_dumps"] = ["debug-full-llm-engineering-20260902-081500.md"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert (
+        "debug_dump_not_collected:debug-full-llm-engineering-20260902-081500.md"
+        in _incompleteness(output)
+    )
+
+
+def test_a_failed_paid_run_without_a_control_plane_reason_is_refused(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"]["control_plane_reason"] = {
+        "status": "captured",
+        "value": None,
+        "reason": None,
+    }
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"paid_failure_reason_missing:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_failed_paid_run_whose_reason_could_not_be_read_is_admitted_with_the_why(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"]["control_plane_reason"] = {
+        "status": "missed",
+        "value": None,
+        "reason": "the control plane holds no engineering Run for the failed task",
+    }
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_failed_paid_run_without_the_new_evidence_sections_is_refused(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    del evidence["failure"]
+    del evidence["verdict"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"run_evidence_failure_section_missing:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_failed_paid_run_without_service_log_tails_is_refused(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=True), service_log=False
+    )
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert "paid_failure_service_diagnostics_missing" in _incompleteness(output)
+
+
+def test_a_passing_paid_run_needs_no_service_log_tails(tmp_path):
+    manifest, run_dir, cleanup = _paid_failure_inputs(
+        tmp_path, _run_evidence(paid=True, failed=False), service_log=False
+    )
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_an_unreadable_run_evidence_file_is_named_not_skipped(tmp_path):
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    (run_dir / PAID_EVIDENCE_NAME).write_text("{not json", encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"run_evidence_unreadable:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_free_noop_failure_is_not_held_to_the_paid_failure_evidence(tmp_path):
+    """The free suite keeps its admission semantics exactly as they were."""
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    evidence = _run_evidence(paid=False, failed=True)
+    evidence["failure"]["control_plane_reason"] = {
+        "status": "captured",
+        "value": None,
+        "reason": None,
+    }
+    (run_dir / NOOP_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
 
 
 def test_build_and_admission_preserve_provisioning_failure_diagnostics(tmp_path):

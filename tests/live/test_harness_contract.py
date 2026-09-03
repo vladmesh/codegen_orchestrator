@@ -38,9 +38,26 @@ from shared.contracts.service_ports import (
     SERVICE_MODULE_PORT_ROLES,
     PortServiceRole,
 )
+from shared.contracts.worker_evidence import SECRET_ENV_NAME
 from shared.live_contour import require_live_contour
 
 pytestmark = pytest.mark.needs_no_api_credential
+
+
+@pytest.fixture
+def without_ambient_secrets(monkeypatch):
+    """Pin the environment a debug dump is redacted against.
+
+    `dump_debug` redacts its output against every secret-named value of the
+    process environment — the same rule the worker log tails follow — so a short
+    dummy value redacts ordinary words out of the body. The unit runner sets
+    `REGISTRY_PASSWORD=test`, which turns `pytest` into `py[redacted]`. A test
+    about what a dump *retains* pins that environment rather than asserting
+    around whatever the runner happens to export.
+    """
+    for name in list(os.environ):
+        if SECRET_ENV_NAME.search(name):
+            monkeypatch.delenv(name, raising=False)
 
 
 def test_task_failure_diagnostics_are_bounded_and_redacted(monkeypatch):
@@ -1127,7 +1144,7 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
     assert not (service_base / stack).exists()
 
 
-def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
+def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path, without_ambient_secrets):
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(
         pipeline_helpers.subprocess,
@@ -1157,7 +1174,9 @@ def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
     assert '"failed_steps": ["pytest"]' in text
 
 
-def test_debug_dump_captures_owned_dynamic_worker_before_cleanup(monkeypatch, tmp_path):
+def test_debug_dump_captures_owned_dynamic_worker_before_cleanup(
+    monkeypatch, tmp_path, without_ambient_secrets
+):
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     manifest = OwnershipManifest("project-1")
     manifest.own("worker", "dev-project-1", container="worker-dev-project-1")
@@ -2517,7 +2536,9 @@ async def test_wait_deploy_outcome_preserves_type_and_terminal_fences(
     assert context_value in ctx[context_key]
 
 
-def test_debug_dump_retains_env_contract_and_deploy_outcome(monkeypatch, tmp_path):
+def test_debug_dump_retains_env_contract_and_deploy_outcome(
+    monkeypatch, tmp_path, without_ambient_secrets
+):
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(
         pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
@@ -2706,7 +2727,9 @@ def test_record_env_contract_records_container_timeout(monkeypatch):
     assert "TimeoutExpired" in ctx["env_contract_errors"]["merged"]
 
 
-def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_path):
+def test_debug_dump_retains_probe_exception_without_a_probe(
+    monkeypatch, tmp_path, without_ambient_secrets
+):
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(
         pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
@@ -2902,3 +2925,228 @@ def test_live_modules_do_not_compose_auth_headers_of_their_own():
         source = (live_dir / name).read_text()
         assert "AUTH_HEADERS" not in source, f"{name} composes the user header itself"
         assert "internal_headers" not in source, f"{name} composes the internal key itself"
+
+
+# ── The control-plane evidence a failed paid run has to leave behind ─────
+
+
+def _engineering_evidence_handler(*, runs: list[dict], admission: httpx.Response | None = None):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={"version": "v1", "diagnostics": []})
+        if request.url.path == "/api/runs/":
+            return httpx.Response(200, json=runs)
+        if request.url.path.endswith("/admission"):
+            return (
+                admission
+                if admission is not None
+                else httpx.Response(
+                    200, json={"outcome": "admitted", "reason": None, "retryable": False}
+                )
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    return handler
+
+
+def _engineering_run(**overrides) -> dict:
+    run = {
+        "id": "run-eng-1",
+        "type": "engineering",
+        "task_id": "task-1",
+        "status": "failed",
+        "error_message": "Agent exited without reporting result",
+        "run_metadata": {
+            "stop_reason": "agent_limit_exceeded",
+            "executor_decision": {"agent_type": "claude"},
+        },
+        "result": {"engineering_status": "failed"},
+    }
+    run.update(overrides)
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_failed_engineering_stage_retains_its_run_admission_and_diagnostics():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(_engineering_evidence_handler(runs=[_engineering_run()]))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert ctx["engineering_evidence_error"] is None
+    assert ctx["engineering_runs"] == records
+    record = records[0]
+    assert record["run_id"] == "run-eng-1"
+    assert record["run"]["value"]["status"] == "failed"
+    assert record["run"]["value"]["stop_reason"] == "agent_limit_exceeded"
+    assert record["run"]["value"]["executor_decision"] == {"agent_type": "claude"}
+    assert record["admission"]["value"]["outcome"] == "admitted"
+    assert record["executor_diagnostics"]["value"] == {"version": "v1", "diagnostics": []}
+
+
+@pytest.mark.asyncio
+async def test_an_engineering_run_whose_admission_audit_is_absent_says_so():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(
+        _engineering_evidence_handler(
+            runs=[_engineering_run()], admission=httpx.Response(404, json={"detail": "absent"})
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    admission = records[0]["admission"]
+    assert admission["status"] == "missed"
+    assert "HTTP 404" in admission["reason"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_control_plane_names_the_collection_failure():
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={"version": "v1", "diagnostics": []})
+        raise httpx.ReadTimeout("runs listing timed out", request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert records == []
+    assert "could not be listed" in ctx["engineering_evidence_error"]
+    assert "ReadTimeout" in ctx["engineering_evidence_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_user_scoped_observer_is_named_rather_than_failing_the_run():
+    """A collector documented as never failing the run must not fail it here.
+
+    `_engineering_runs_for_task` goes through `require_unscoped_run_observer`,
+    which raises `RuntimeError` rather than an HTTP or shape error. No current
+    client reaches that branch, but a diagnostic collector that can kill the run
+    it is diagnosing is the wrong shape to leave lying around.
+    """
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(_engineering_evidence_handler(runs=[_engineering_run()]))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={pipeline_helpers.USER_AUTH_HEADER: "42"},
+    ) as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert records == []
+    assert "could not be listed" in ctx["engineering_evidence_error"]
+    assert "RuntimeError" in ctx["engineering_evidence_error"]
+
+
+@pytest.mark.asyncio
+async def test_engineering_evidence_redacts_secret_values_before_retaining_them(monkeypatch):
+    monkeypatch.setenv("STAND_WORKER_TOKEN", "super-secret-token")
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"]}
+    transport = httpx.MockTransport(
+        _engineering_evidence_handler(
+            runs=[_engineering_run(error_message="auth failed for super-secret-token")]
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert "super-secret-token" not in json.dumps(records)
+    assert "[redacted]" in records[0]["run"]["value"]["error_message"]
+
+
+def test_a_debug_dump_is_redacted_before_it_crosses_the_handoff(
+    monkeypatch, tmp_path, without_ambient_secrets
+):
+    """The dump now leaves the host, so nothing unredacted may leave with it.
+
+    A worker's stdout is not a trusted surface: worker-manager gives it an origin
+    of `https://x-access-token:<token>@github.com/...`, so an ordinary git failure
+    prints a usable credential into the very log this dump embeds.
+    """
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setenv("STAND_CLAUDE_CODE_OAUTH_TOKEN", "super-secret-token")
+    manifest = OwnershipManifest("project-1")
+    manifest.own("worker", "dev-project-1", container="worker-dev-project-1")
+    monkeypatch.setattr(pipeline_helpers, "capture_owned_workers", lambda ctx: None)
+
+    def run(command, **kwargs):
+        if command[:2] == ["docker", "logs"]:
+            stdout = (
+                "fatal: unable to access "
+                "'https://x-access-token:ghs-installation-token@github.com/acme/app.git/'\n"
+                "agent auth failed with super-secret-token"
+            )
+        else:
+            stdout = "scheduler saw super-secret-token"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+
+    pipeline_helpers.dump_debug({"project_id": "project-1", "manifest": manifest}, "redaction")
+
+    text = next((tmp_path / "docs" / "e2e_results").glob("debug-redaction-*.md")).read_text()
+    assert "super-secret-token" not in text
+    assert "ghs-installation-token" not in text
+    assert "https://[redacted]@github.com/acme/app.git" in text
+    assert "agent auth failed with [redacted]" in text
+    assert "scheduler saw [redacted]" in text
+
+
+def test_a_debug_dump_bounds_the_log_slices_it_embeds(
+    monkeypatch, tmp_path, without_ambient_secrets
+):
+    """The embedded tails carry the shared bounds, not an unbounded paste."""
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    manifest = OwnershipManifest("project-1")
+    manifest.own("worker", "dev-project-1", container="worker-dev-project-1")
+    monkeypatch.setattr(pipeline_helpers, "capture_owned_workers", lambda ctx: None)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="w" * 40_000, stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+
+    pipeline_helpers.dump_debug({"project_id": "project-1", "manifest": manifest}, "bounds")
+
+    text = next((tmp_path / "docs" / "e2e_results").glob("debug-bounds-*.md")).read_text()
+    embedded = [len(block) for block in re.findall(r"```\n(w+)\n```", text)]
+    assert (
+        embedded
+        == [pipeline_helpers.LOG_TAIL_MAX_CHARS]
+        + [pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS] * 4
+    )
+    assert [
+        "docker",
+        "logs",
+        f"--tail={pipeline_helpers.LOG_TAIL_LINES}",
+        "worker-dev-project-1",
+    ] in commands
+    assert [
+        "docker",
+        "compose",
+        "logs",
+        f"--tail={pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_LINES}",
+        "scheduler",
+    ] in commands
+
+
+def test_a_debug_dump_is_written_where_the_handoff_collects_it(monkeypatch, tmp_path):
+    """The stand checkout dies with the host; the runner directory is collected."""
+    runner_dir = tmp_path / "e2e-runs" / "mega-llm"
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path / "checkout")
+    monkeypatch.setenv("LIVE_EVIDENCE_OUTPUT_DIR", str(runner_dir))
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    ctx = {"project_id": "project-1"}
+
+    pipeline_helpers.dump_debug(ctx, "full-llm-engineering")
+
+    dump = next(runner_dir.glob("debug-full-llm-engineering-*.md"))
+    assert not (tmp_path / "checkout" / "docs").exists()
+    assert ctx["debug_dumps"] == [dump.name]

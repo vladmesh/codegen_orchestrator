@@ -92,11 +92,18 @@ LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
 
 
 def evidence_output_directory(root: Path | None = None) -> Path:
-    """Resolve the runner-owned destination before an ephemeral host disappears."""
+    """Resolve the runner-owned destination before an ephemeral host disappears.
+
+    The environment wins over any checkout, including one a caller names. On the
+    stand the checkout *is* the ephemeral host: everything written under it dies
+    with the machine, and the runner directory is the only place the workflow
+    collects from. A caller that knows its checkout still passes it, for the
+    local run where no runner directory exists.
+    """
+    configured = os.environ.get(LIVE_EVIDENCE_OUTPUT_DIR_ENV)
+    if configured:
+        return Path(configured)
     if root is None:
-        configured = os.environ.get(LIVE_EVIDENCE_OUTPUT_DIR_ENV)
-        if configured:
-            return Path(configured)
         root = orchestrator_root()
     return root / "docs" / "e2e_results"
 
@@ -113,7 +120,10 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #     such a record carries an exit code and a log tail like any other.
 # v5: task status, iteration and redacted failure metadata are retained beside
 #     the worker exit/log evidence.
-EVIDENCE_SCHEMA_VERSION = 5
+# v6: the failing stage and its control-plane reason are named in `failure`, the
+#     engineering Run records that reason is read from are carried in
+#     `engineering`, and `verdict` states red or green with the reasons for it.
+EVIDENCE_SCHEMA_VERSION = 6
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -273,6 +283,77 @@ class QAExercise(StrEnum):
 
     EXERCISED = "exercised"
     NOT_EXERCISED = "not_exercised"
+
+
+class Verdict(StrEnum):
+    """What this artifact concludes about the combination it describes."""
+
+    GREEN = "green"
+    RED = "red"
+
+
+class VerdictReason(StrEnum):
+    """Closed vocabulary of the things that make a combination red."""
+
+    RUN_FAILED = "run_failed"
+    WORKER_EXECUTED_MISSED = "worker_executed_missed"
+    QA_EXECUTED_MISSED = "qa_executed_missed"
+
+
+class ReasonSource(StrEnum):
+    """What the control-plane reason for a stage was read from."""
+
+    NO_FAILURE = "no_failure"
+    SCAFFOLD = "scaffold"
+    ENGINEERING_RUN = "engineering_run"
+    DEPLOY_RUN = "deploy_run"
+    QA_RUN = "qa_run"
+
+
+# The agent type that spends nothing. Everything else on the developer side is a
+# paid coding-agent subscription, and that is the whole difference between the
+# free `mega-noop` suite and the paid ones.
+FREE_AGENT_TYPE = "noop"
+
+# The two distinct ways `record_engineering_evidence` never ran. They are not
+# interchangeable: one says the control plane never created a Run to read, the
+# other says Runs may well exist and nothing read them. Telling a reader the
+# first when the second happened asserts something untrue about the run, which
+# is the exact failure this artifact exists to remove.
+ENGINEERING_PHASE_NEVER_ENTERED_REASON = (
+    "no engineering Run evidence was collected for this combination: the run "
+    "never entered the engineering phase, so the control plane created no Run "
+    "record this artifact could have read a reason from"
+)
+ENGINEERING_EVIDENCE_ESCAPED_REASON = (
+    "no engineering Run evidence was collected for this combination: the run "
+    "entered the engineering phase ({subject}), but an error escaped it before "
+    "the collection ran, so whatever Run records the control plane holds for "
+    "this combination were never read"
+)
+
+
+def engineering_collection_missed_reason(ctx: dict) -> str:
+    """Which of the two ways the engineering collection never ran happened here.
+
+    The engineering phase is the only place this run creates a story and a
+    task, so a context carrying neither never entered it and the control plane
+    holds no Run to read. A context carrying either did enter it, and the
+    collection that follows the phase never ran — an error escaped first, and
+    Runs may well exist unread. Nothing new is observed to tell them apart:
+    both facts are already on the context when the artifact is built.
+    """
+    task_id = ctx.get("task_id")
+    if task_id:
+        subject = (
+            f"engineering task {task_id}, last observed status "
+            f"{ctx.get('task_status') or 'unobserved'}"
+        )
+    elif ctx.get("story_id"):
+        subject = f"story {ctx['story_id']}, before any engineering task was created"
+    else:
+        return ENGINEERING_PHASE_NEVER_ENTERED_REASON
+    return ENGINEERING_EVIDENCE_ESCAPED_REASON.format(subject=subject)
 
 
 @dataclass(frozen=True)
@@ -1139,6 +1220,268 @@ def release_evidence(root: Path | None = None) -> dict:
     }
 
 
+def is_paid_run(ctx: dict) -> bool:
+    """Whether this combination spent a paid coding-agent subscription.
+
+    Read from the developer agent the project was created with, which is the
+    fact that decides it: `noop` is the free deterministic route, anything else
+    is a real agent on a real subscription. There is no default — a combination
+    with no agent type cannot be judged either way, and guessing "free" would
+    quietly switch off the paid verdict rules below.
+    """
+    agent_type = ctx.get("agent_type")
+    if not agent_type:
+        raise ValueError("a combination with no agent type is neither paid nor free")
+    return agent_type != FREE_AGENT_TYPE
+
+
+def engineering_run_facts(run: dict) -> dict:
+    """The control-plane facts one engineering Run record carries.
+
+    Read off the Run itself rather than reconstructed from anything the harness
+    watched: the status the control plane concluded, the message it wrote, the
+    stop reason it recorded in `run_metadata`, and the executor decision that
+    Run was dispatched under.
+    """
+    metadata = run.get("run_metadata") or {}
+    return {
+        "id": run.get("id"),
+        "status": run.get("status"),
+        "error_message": run.get("error_message"),
+        "stop_reason": metadata.get("stop_reason"),
+        "agent_limit_seconds": metadata.get("agent_limit_seconds"),
+        "executor_decision": metadata.get("executor_decision"),
+        "result": run.get("result"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+    }
+
+
+def engineering_run_record(
+    *,
+    run_id: str,
+    task_id: str,
+    run: Capture,
+    admission: Capture,
+    executor_diagnostics: Capture,
+) -> dict:
+    """One engineering Run of this combination, with what was in force for it.
+
+    Three facts, each collected or explicitly not: the Run record, the
+    work-admission outcome that allowed the Run to exist, and the executor
+    diagnostics snapshot in force at the moment it was read. A piece that could
+    not be read is a stated missed capture; none of them is ever simply absent.
+    """
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "run": run.as_dict(),
+        "admission": admission.as_dict(),
+        "executor_diagnostics": executor_diagnostics.as_dict(),
+    }
+
+
+def engineering_evidence(ctx: dict) -> dict:
+    """Every engineering Run of this combination, or why there are none."""
+    if ctx.get("engineering_evidence_error"):
+        collection = Capture.missed(ctx["engineering_evidence_error"])
+        records = ctx.get("engineering_runs") or []
+    elif "engineering_runs" not in ctx:
+        collection = Capture.missed(engineering_collection_missed_reason(ctx))
+        records = []
+    else:
+        records = ctx["engineering_runs"]
+        collection = Capture.captured({"runs_read": len(records)})
+    return {"collection": collection.as_dict(), "runs": records}
+
+
+def _engineering_reason_entry(record: dict) -> dict:
+    """One Run's contribution to the engineering stage's control-plane reason."""
+    run = record["run"]
+    entry: dict = {"run_id": record["run_id"], "task_id": record["task_id"]}
+    if run["status"] == CaptureStatus.CAPTURED.value:
+        facts = run["value"]
+        entry |= {
+            "run_status": facts["status"],
+            "error_message": facts["error_message"],
+            "stop_reason": facts["stop_reason"],
+            "executor_decision": facts["executor_decision"],
+        }
+    else:
+        entry["run_unread"] = run["reason"]
+    admission = record["admission"]
+    if admission["status"] == CaptureStatus.CAPTURED.value:
+        entry["admission_outcome"] = admission["value"].get("outcome")
+        entry["admission_reason"] = admission["value"].get("reason")
+    else:
+        entry["admission_unread"] = admission["reason"]
+    return entry
+
+
+def _engineering_reason(ctx: dict) -> Capture:
+    """Why the control plane stopped this combination at engineering.
+
+    The engineering Run is the only place that answer exists: the task status
+    says the work ended, and the Run says what ended it. When no Run could be
+    read the artifact says exactly that instead of leaving the question blank —
+    a reader with only this file still learns that the reason was unreadable
+    and why, which is a different finding from "the worker simply failed".
+    """
+    section = engineering_evidence(ctx)
+    task_id = ctx.get("task_id")
+    diagnostics = (ctx.get("task_diagnostics") or {}).get(task_id) or {}
+    if section["collection"]["status"] == CaptureStatus.MISSED.value:
+        return Capture.missed(
+            "the engineering stage stopped this run and its Run records could not "
+            f"be read, so no control-plane reason is available: {section['collection']['reason']}"
+        )
+    if not section["runs"]:
+        return Capture.missed(
+            f"the engineering task ended {ctx.get('task_status')} and the control plane "
+            "holds no engineering Run for it, so there is no record to read a reason from"
+        )
+    return Capture.captured(
+        {
+            "source": ReasonSource.ENGINEERING_RUN.value,
+            "task_status": ctx.get("task_status"),
+            "task_failure_metadata": diagnostics.get("failure_metadata"),
+            "task_iteration": diagnostics.get("current_iteration"),
+            "runs": [_engineering_reason_entry(record) for record in section["runs"]],
+        }
+    )
+
+
+def _env_contract_errors(ctx: dict) -> dict[str, str]:
+    """The environment-contract failures of this run, phase by phase, with what failed.
+
+    The phase key alone says which probe failed and not why; for a paid run that
+    stops at scaffold or deploy that key *is* the whole control-plane reason, so
+    the message travels with it. It is a probe's own text, so it goes through the
+    same redaction every other retained diagnostic does.
+    """
+    errors = ctx.get("env_contract_errors") or {}
+    secrets = secret_env_values(dict(os.environ))
+    return {
+        phase: redact_diagnostic(message, secrets=secrets)
+        for phase, message in sorted(errors.items())
+    }
+
+
+def control_plane_reason(ctx: dict, terminal_state: TerminalState) -> Capture:
+    """The control plane's own account of why the run ended where it did."""
+    if terminal_state is TerminalState.COMPLETED:
+        return Capture.captured(
+            {"source": ReasonSource.NO_FAILURE.value, "detail": "the combination completed"}
+        )
+    if terminal_state is TerminalState.STOPPED_AT_SCAFFOLD:
+        return Capture.captured(
+            {
+                "source": ReasonSource.SCAFFOLD.value,
+                "scaffold_status": ctx.get("scaffold_status"),
+                "env_contract_errors": _env_contract_errors(ctx),
+            }
+        )
+    if terminal_state is TerminalState.STOPPED_AT_ENGINEERING:
+        return _engineering_reason(ctx)
+    if terminal_state is TerminalState.STOPPED_AT_DEPLOY:
+        return Capture.captured(
+            {
+                "source": ReasonSource.DEPLOY_RUN.value,
+                "deploy_run_id": ctx.get("deploy_run_id"),
+                "deploy_outcome": ctx.get("deploy_outcome"),
+                "deploy_error_details": ctx.get("deploy_error_details"),
+                "app_status": ctx.get("final_app_status"),
+                "env_contract_errors": _env_contract_errors(ctx),
+            }
+        )
+    qa_run = ctx.get("qa_run") or {}
+    return Capture.captured(
+        {
+            "source": ReasonSource.QA_RUN.value,
+            "qa_run_id": qa_run.get("id"),
+            "qa_outcome": (qa_run.get("result") or {}).get("qa_outcome"),
+            "detail": _qa_not_exercised_reason(ctx) if not qa_run else "the QA run did not pass",
+        }
+    )
+
+
+def failure_summary(
+    ctx: dict, terminal_state: TerminalState, failure_kind: FailureKind, reason: Capture
+) -> dict:
+    """The failing stage and the control-plane reason for it, in one place.
+
+    A reader with only this artifact answers both questions here: where the run
+    stopped, and why the control plane says it stopped. No ssh to a host that no
+    longer exists, and no inference from an absent field.
+    """
+    return {
+        "failed": terminal_state is not TerminalState.COMPLETED,
+        "stage": terminal_state.value,
+        "failure_kind": failure_kind.value,
+        "control_plane_reason": reason.as_dict(),
+    }
+
+
+def verdict(
+    ctx: dict,
+    terminal_state: TerminalState,
+    failure_kind: FailureKind,
+    reason: Capture,
+    *,
+    worker_executed: dict,
+    qa_executed: dict,
+) -> dict:
+    """Red or green, and every reason for red carrying its control-plane reason.
+
+    On a paid run, executor evidence that came back `missed` is a finding, not a
+    silence: a combination that spent a subscription and cannot show which agent
+    ran is red, and the reason it is red is stated together with the control
+    plane's account of the stage that stopped it. The free deterministic route
+    starts no such container by design, so its verdict is what it always was —
+    the terminal state and nothing else.
+    """
+    paid = is_paid_run(ctx)
+    reasons: list[dict] = []
+    if terminal_state is not TerminalState.COMPLETED:
+        reasons.append(
+            {
+                "code": VerdictReason.RUN_FAILED.value,
+                "detail": (
+                    f"the combination stopped at {terminal_state.value} ({failure_kind.value})"
+                ),
+                "control_plane_reason": reason.as_dict(),
+            }
+        )
+    if paid:
+        if worker_executed["status"] == CaptureStatus.MISSED.value:
+            reasons.append(
+                {
+                    "code": VerdictReason.WORKER_EXECUTED_MISSED.value,
+                    "detail": (
+                        "this paid run cannot show which developer agent executed: "
+                        f"{worker_executed['reason']}"
+                    ),
+                    "control_plane_reason": reason.as_dict(),
+                }
+            )
+        if ctx.get("qa_requires_executor") and qa_executed["status"] == CaptureStatus.MISSED.value:
+            reasons.append(
+                {
+                    "code": VerdictReason.QA_EXECUTED_MISSED.value,
+                    "detail": (
+                        "this paid run asked for an LLM QA executor and cannot show which "
+                        f"one executed: {qa_executed['reason']}"
+                    ),
+                    "control_plane_reason": reason.as_dict(),
+                }
+            )
+    return {
+        "paid": paid,
+        "status": (Verdict.RED if reasons else Verdict.GREEN).value,
+        "reasons": reasons,
+    }
+
+
 def combination_label(ctx: dict) -> str:
     """The stable name of one worker/QA combination, used in the filename."""
     worker = ctx.get("agent_type") or "unknown"
@@ -1155,6 +1498,9 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     generated_at = now if now is not None else datetime.now(tz=UTC)
     terminal_state, failure_kind = classify_outcome(ctx)
     started_at = collector.started_at
+    reason = control_plane_reason(ctx, terminal_state)
+    worker_executed = collector.executed_worker_agent().as_dict()
+    qa = qa_cell(ctx)
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "kind": EVIDENCE_KIND,
@@ -1162,10 +1508,21 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "combination": {
             "label": combination_label(ctx),
             "worker_requested": ctx.get("agent_type"),
-            "worker_executed": collector.executed_worker_agent().as_dict(),
+            "worker_executed": worker_executed,
             "qa_requested": ctx.get("qa_agent_type_requested"),
-            "qa_executed": qa_cell(ctx)["executor_executed"],
+            "qa_executed": qa["executor_executed"],
         },
+        "failure": failure_summary(ctx, terminal_state, failure_kind, reason),
+        "verdict": verdict(
+            ctx,
+            terminal_state,
+            failure_kind,
+            reason,
+            worker_executed=worker_executed,
+            qa_executed=qa["executor_executed"],
+        ),
+        "engineering": engineering_evidence(ctx),
+        "debug_dumps": sorted(ctx.get("debug_dumps") or []),
         "project": {
             "id": ctx.get("project_id"),
             "name": ctx.get("project_name"),
@@ -1201,7 +1558,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "deploy_outcome": ctx.get("deploy_outcome"),
             "app_status": ctx.get("final_app_status"),
         },
-        "qa": qa_cell(ctx),
+        "qa": qa,
         "workers": collector.records(),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,

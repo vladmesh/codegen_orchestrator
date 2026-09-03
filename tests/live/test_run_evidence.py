@@ -1143,6 +1143,27 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
     assert run["failure_kind"] == FailureKind.WORKER_DID_NOT_FINISH.value
     assert run["task_status"] == TaskStatus.FAILED
 
+    assert artifact["failure"] == {
+        "failed": True,
+        "stage": TerminalState.STOPPED_AT_ENGINEERING.value,
+        "failure_kind": FailureKind.WORKER_DID_NOT_FINISH.value,
+        "control_plane_reason": artifact["failure"]["control_plane_reason"],
+    }
+    assert artifact["verdict"]["paid"] is True
+    assert artifact["verdict"]["status"] == "red"
+    assert artifact["engineering"] == {
+        "collection": {
+            "status": CaptureStatus.MISSED.value,
+            "value": None,
+            "reason": run_evidence.ENGINEERING_EVIDENCE_ESCAPED_REASON.format(
+                subject=f"engineering task {ctx['task_id']}, last observed status "
+                f"{TaskStatus.FAILED}"
+            ),
+        },
+        "runs": [],
+    }
+    assert artifact["debug_dumps"] == []
+
     assert artifact["qa"]["state"] == QAExercise.NOT_EXERCISED.value
     assert artifact["capture_errors"] == []
     assert "redact_diagnostic" in artifact["privacy"]
@@ -1192,3 +1213,379 @@ def test_combination_label_names_the_deterministic_qa_half():
     assert combination_label({"agent_type": "claude", "qa_requires_executor": False}) == (
         "worker-claude-qa-health"
     )
+
+
+# ── The failing stage, its control-plane reason, and the verdict ─────────
+
+
+ENGINEERING_RUN_ID = "run-eng-1"
+
+
+def engineering_run_payload(**overrides) -> dict:
+    """One engineering Run record as `/api/runs/` returns it."""
+    run = {
+        "id": ENGINEERING_RUN_ID,
+        "type": "engineering",
+        "task_id": "task-1",
+        "status": "failed",
+        "error_message": "Agent exited without reporting result",
+        "run_metadata": {
+            "stop_reason": "agent_limit_exceeded",
+            "agent_limit_seconds": 1800,
+            "executor_decision": {"agent_type": "codex", "source": "project_pin"},
+        },
+        "result": {"engineering_status": "failed"},
+        "created_at": "2026-08-13T12:00:00+00:00",
+        "updated_at": "2026-08-13T12:04:40+00:00",
+    }
+    run.update(overrides)
+    return run
+
+
+def engineering_records(
+    *,
+    run: Capture | None = None,
+    admission: Capture | None = None,
+    diagnostics: Capture | None = None,
+) -> list[dict]:
+    return [
+        run_evidence.engineering_run_record(
+            run_id=ENGINEERING_RUN_ID,
+            task_id="task-1",
+            run=run
+            if run is not None
+            else Capture.captured(run_evidence.engineering_run_facts(engineering_run_payload())),
+            admission=admission
+            if admission is not None
+            else Capture.captured({"outcome": "admitted", "reason": None}),
+            executor_diagnostics=diagnostics
+            if diagnostics is not None
+            else Capture.captured({"version": "v1", "diagnostics": []}),
+        )
+    ]
+
+
+def test_a_failed_paid_run_names_the_stage_and_the_control_plane_reason(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        engineering_runs=engineering_records(),
+        task_diagnostics={
+            "task-1": {
+                "status": TaskStatus.FAILED,
+                "current_iteration": 0,
+                "failure_metadata": None,
+            }
+        },
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    failure = artifact["failure"]
+    assert failure["failed"] is True
+    assert failure["stage"] == TerminalState.STOPPED_AT_ENGINEERING.value
+    assert failure["failure_kind"] == FailureKind.WORKER_DID_NOT_FINISH.value
+    reason = failure["control_plane_reason"]
+    assert reason["status"] == CaptureStatus.CAPTURED.value
+    assert reason["value"]["source"] == run_evidence.ReasonSource.ENGINEERING_RUN.value
+    assert reason["value"]["task_status"] == TaskStatus.FAILED
+    assert reason["value"]["task_failure_metadata"] is None
+    assert reason["value"]["task_iteration"] == 0
+    entry = reason["value"]["runs"][0]
+    assert entry["run_id"] == ENGINEERING_RUN_ID
+    assert entry["run_status"] == "failed"
+    assert entry["error_message"] == "Agent exited without reporting result"
+    assert entry["stop_reason"] == "agent_limit_exceeded"
+    assert entry["executor_decision"] == {"agent_type": "codex", "source": "project_pin"}
+    assert entry["admission_outcome"] == "admitted"
+
+
+def test_the_engineering_section_carries_every_run_with_what_was_in_force(codex_docker, tmp_path):
+    ctx = base_ctx(collector_for(codex_docker), engineering_runs=engineering_records())
+
+    engineering = build_artifact(ctx, root=tmp_path)["engineering"]
+
+    assert engineering["collection"] == {
+        "status": CaptureStatus.CAPTURED.value,
+        "value": {"runs_read": 1},
+        "reason": None,
+    }
+    record = engineering["runs"][0]
+    assert record["run_id"] == ENGINEERING_RUN_ID
+    assert record["run"]["value"]["status"] == "failed"
+    assert record["run"]["value"]["result"] == {"engineering_status": "failed"}
+    assert record["admission"]["value"]["outcome"] == "admitted"
+    assert record["executor_diagnostics"]["value"]["version"] == "v1"
+
+
+def test_an_engineering_collection_failure_is_named_rather_than_omitted(codex_docker, tmp_path):
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        engineering_evidence_error="the engineering Runs could not be listed: ReadTimeout",
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    collection = artifact["engineering"]["collection"]
+    assert collection["status"] == CaptureStatus.MISSED.value
+    assert "ReadTimeout" in collection["reason"]
+    reason = artifact["failure"]["control_plane_reason"]
+    assert reason["status"] == CaptureStatus.MISSED.value
+    assert "ReadTimeout" in reason["reason"]
+
+
+def test_a_scaffold_stage_reason_carries_what_the_contract_probe_said(codex_docker, tmp_path):
+    """The phase key alone is not a reason; for this stage the message is the reason."""
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        scaffold_status=ProjectStatus.ACTIVE,
+        env_contract_errors={"scaffold": "services/backend/env.contract.yaml declares no entries"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert reason["status"] == CaptureStatus.CAPTURED.value
+    assert reason["value"]["source"] == run_evidence.ReasonSource.SCAFFOLD.value
+    assert reason["value"]["env_contract_errors"] == {
+        "scaffold": "services/backend/env.contract.yaml declares no entries"
+    }
+
+
+def test_a_deploy_stage_reason_carries_what_the_contract_probe_said(codex_docker, tmp_path):
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        task_status=TaskStatus.DONE,
+        deploy_run_id="run-1",
+        env_contract_errors={"merged": "merged: fragments missing at abc123"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert reason["value"]["source"] == run_evidence.ReasonSource.DEPLOY_RUN.value
+    assert reason["value"]["env_contract_errors"] == {
+        "merged": "merged: fragments missing at abc123"
+    }
+
+
+def test_a_contract_probe_message_is_redacted_before_it_becomes_a_reason(
+    codex_docker, tmp_path, monkeypatch
+):
+    """A probe's own text is a diagnostic like any other, held to the same rule."""
+    monkeypatch.setenv("STAND_INTERNAL_API_KEY", "super-secret-token")
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        env_contract_errors={"scaffold": "probe could not run: auth super-secret-token rejected"},
+    )
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert "super-secret-token" not in json.dumps(reason)
+    assert "[redacted]" in reason["value"]["env_contract_errors"]["scaffold"]
+
+
+def test_a_stage_with_no_engineering_run_says_the_control_plane_holds_none(codex_docker, tmp_path):
+    ctx = base_ctx(collector_for(codex_docker), engineering_runs=[])
+
+    reason = build_artifact(ctx, root=tmp_path)["failure"]["control_plane_reason"]
+
+    assert reason["status"] == CaptureStatus.MISSED.value
+    assert "holds no engineering Run" in reason["reason"]
+
+
+def test_an_error_escaping_the_engineering_phase_does_not_claim_it_was_never_reached(
+    codex_docker, tmp_path
+):
+    """The reviewer's transient poll failure: entered, collected nothing, said so.
+
+    `record_engineering_evidence` never runs, so the artifact carries a stated
+    `missed`. What it must not do is assert the run never reached engineering:
+    it did, and Run records the artifact never read may well exist.
+    """
+    ctx = base_ctx(collector_for(codex_docker))
+
+    artifact = build_artifact(ctx, root=tmp_path)
+    engineering = artifact["engineering"]
+
+    assert engineering["collection"]["status"] == CaptureStatus.MISSED.value
+    reason = engineering["collection"]["reason"]
+    assert "entered the engineering phase" in reason
+    assert "never reached" not in reason
+    assert ctx["task_id"] in reason
+    assert TaskStatus.FAILED in reason
+    assert engineering["runs"] == []
+    assert (
+        "entered the engineering phase" in (artifact["failure"]["control_plane_reason"]["reason"])
+    )
+
+
+def test_a_run_that_never_entered_the_engineering_phase_says_exactly_that(codex_docker, tmp_path):
+    ctx = base_ctx(collector_for(codex_docker))
+    del ctx["task_id"]
+    del ctx["story_id"]
+
+    engineering = build_artifact(ctx, root=tmp_path)["engineering"]
+
+    assert engineering["collection"]["reason"] == (
+        run_evidence.ENGINEERING_PHASE_NEVER_ENTERED_REASON
+    )
+    assert engineering["runs"] == []
+
+
+def test_a_phase_that_died_before_its_task_existed_is_not_called_never_entered(
+    codex_docker, tmp_path
+):
+    ctx = base_ctx(collector_for(codex_docker))
+    del ctx["task_id"]
+
+    reason = build_artifact(ctx, root=tmp_path)["engineering"]["collection"]["reason"]
+
+    assert "entered the engineering phase" in reason
+    assert ctx["story_id"] in reason
+
+
+def test_a_paid_missed_worker_executed_is_red_with_a_control_plane_reason(tmp_path):
+    # No container was ever observed, exactly as in run 33683482667.
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = base_ctx(collector, engineering_runs=engineering_records())
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["combination"]["worker_executed"]["status"] == CaptureStatus.MISSED.value
+    assert artifact["verdict"]["paid"] is True
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    codes = [reason["code"] for reason in artifact["verdict"]["reasons"]]
+    assert run_evidence.VerdictReason.WORKER_EXECUTED_MISSED.value in codes
+    missed = next(
+        reason
+        for reason in artifact["verdict"]["reasons"]
+        if reason["code"] == run_evidence.VerdictReason.WORKER_EXECUTED_MISSED.value
+    )
+    assert "no developer worker container was observed" in missed["detail"]
+    assert missed["control_plane_reason"] == artifact["failure"]["control_plane_reason"]
+
+
+def test_a_paid_missed_qa_executor_is_red_with_a_control_plane_reason(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.FAILED.value}},
+        engineering_runs=engineering_records(),
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["combination"]["qa_executed"]["status"] == CaptureStatus.MISSED.value
+    qa_missed = next(
+        reason
+        for reason in artifact["verdict"]["reasons"]
+        if reason["code"] == run_evidence.VerdictReason.QA_EXECUTED_MISSED.value
+    )
+    assert "asked for an LLM QA executor" in qa_missed["detail"]
+    assert qa_missed["control_plane_reason"]["value"]["source"] == (
+        run_evidence.ReasonSource.QA_RUN.value
+    )
+
+
+def test_a_paid_run_that_completed_with_both_executors_observed_is_green(transcripts, tmp_path):
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=0,
+                transcript_source=str(transcripts),
+            ),
+            QA_CONTAINER: container_payload(
+                worker_id=QA_WORKER_ID,
+                agent_type="claude",
+                exit_code=0,
+                transcript_source=str(transcripts),
+                worker_type="qa",
+            ),
+        },
+        logs={DEV_CONTAINER: "done", QA_CONTAINER: "done"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        engineering_runs=engineering_records(
+            run=Capture.captured(
+                run_evidence.engineering_run_facts(
+                    engineering_run_payload(status="completed", error_message=None)
+                )
+            )
+        ),
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["failure"]["failed"] is False
+    assert artifact["failure"]["control_plane_reason"]["value"]["source"] == (
+        run_evidence.ReasonSource.NO_FAILURE.value
+    )
+    assert artifact["verdict"] == {"paid": True, "status": "green", "reasons": []}
+
+
+def test_the_free_noop_suite_keeps_its_verdict_semantics(codex_docker, tmp_path):
+    """A deterministic run starts no executor container, and that is not a finding."""
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        agent_type="noop",
+        qa_requires_executor=False,
+        qa_agent_type_requested=None,
+        qa_agent_type=None,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["combination"]["worker_executed"]["status"] == CaptureStatus.MISSED.value
+    assert artifact["combination"]["qa_executed"]["status"] == CaptureStatus.MISSED.value
+    assert artifact["verdict"] == {"paid": False, "status": "green", "reasons": []}
+
+
+def test_a_failed_noop_run_is_red_only_for_the_stage_it_stopped_at(codex_docker, tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = base_ctx(collector, agent_type="noop", qa_requires_executor=False, engineering_runs=[])
+
+    verdict = build_artifact(ctx, root=tmp_path)["verdict"]
+
+    assert verdict["paid"] is False
+    assert verdict["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in verdict["reasons"]] == [
+        run_evidence.VerdictReason.RUN_FAILED.value
+    ]
+
+
+def test_a_combination_with_no_agent_type_is_refused_rather_than_judged_free():
+    with pytest.raises(ValueError, match="neither paid nor free"):
+        run_evidence.is_paid_run({"agent_type": None})
+
+
+def test_the_artifact_names_the_debug_dumps_this_run_wrote(codex_docker, tmp_path):
+    ctx = base_ctx(codex_docker and collector_for(codex_docker))
+    ctx["debug_dumps"] = ["debug-full-llm-engineering-20260902-101500.md"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["debug_dumps"] == ["debug-full-llm-engineering-20260902-101500.md"]

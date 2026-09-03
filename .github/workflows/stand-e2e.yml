@@ -505,11 +505,17 @@ jobs:
           SUITE: ${{ steps.suite.outputs.value }}
           WORKER: ${{ inputs.worker }}
           QA: ${{ inputs.qa }}
+          SUITE_OUTCOME: ${{ steps.suite-run.outcome }}
         run: |
           set -euo pipefail
           evidence_dir="${RUNNER_TEMP}/stand-e2e-handoff"
           run_dir="${evidence_dir}/run"
           mkdir -p "${run_dir}"
+          # What this step actually observed about the service-tail collection.
+          # The fallback below may state a missing piece, but it may not assert a
+          # cause nobody here observed, so the account is built where the attempt
+          # happens rather than inferred from the absent file.
+          services_attempt="no collection was attempted, because no stand host address was recorded for this run"
           test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
           test -f "${RUNNER_TEMP}/remote-invocation.log" && \
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
@@ -550,13 +556,16 @@ jobs:
                 scp -i "${key_path}" ${SSH_OPTS} \
                   root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
               done
-              # The pytest fixture writes bounded, redacted worker evidence into
-              # the runner directory before cleanup removes its containers.
+              # The pytest fixture writes bounded, redacted worker evidence and
+              # its own debug dumps into the runner directory before cleanup
+              # removes its containers. The dumps used to be written under the
+              # checkout and died with the host, so a failed paid run left no
+              # post-mortem at all.
               ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
                 set -euo pipefail
                 cd /root/e2e-runs/latest
                 shopt -s nullglob
-                files=(run-evidence-*.json)
+                files=(run-evidence-*.json debug-*.md)
                 if [ "${#files[@]}" -eq 0 ]; then
                   tar -cf - --files-from=/dev/null
                 else
@@ -564,6 +573,57 @@ jobs:
                 fi
               ' | tar -C "${run_dir}" -xf -
             fi
+
+            # A suite that failed after provisioning succeeded gets the same
+            # redacted service tails the provisioning-failure branch already
+            # collects: the same helper, the same protected-name allow-list, and
+            # nothing unredacted crossing the boundary. Without them a paid
+            # failure is diagnosed from an acceptance artifact alone, against a
+            # host that no longer exists.
+            if [ "${SUITE_OUTCOME}" != "success" ]; then
+              if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+                set -euo pipefail
+                cd /opt/codegen_orchestrator
+                COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+                out=/root/e2e-runs/suite-services.log
+                partial="${out}.partial"
+                rm -f "${partial}"
+                # Every byte of this file leaves the redaction helper: the tails
+                # are piped straight into it, and a run that could not complete
+                # that pipe publishes the stated reason instead of the input.
+                if ${COMPOSE} logs --no-color --tail 300 \
+                     scheduler engineering-worker worker-manager worker-broker api 2>&1 | \
+                   ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+                   python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
+                   > "${partial}"; then
+                  mv "${partial}" "${out}"
+                else
+                  printf "%s\n" "service log tails were not collected: the redaction path did not complete, so no unredacted service output is published" > "${out}"
+                  rm -f "${partial}"
+                fi
+              '; then
+                services_attempt="the remote collection command completed"
+              else
+                services_attempt="the remote collection command over ssh did not complete"
+              fi
+              if ! scp -i "${key_path}" ${SSH_OPTS} \
+                root@"${PROD_HOST}":/root/e2e-runs/suite-services.log \
+                "${run_dir}/suite-services.log"; then
+                services_attempt="${services_attempt}, and copying the collected file to the runner failed"
+              fi
+            fi
+          fi
+          if [ "${SUITE_OUTCOME}" != "success" ] && [ ! -f "${run_dir}/suite-services.log" ]; then
+            # Named rather than silently absent: the admission below requires
+            # this file for a failed paid run. It states what this step observed
+            # — which collection step failed, and whether the suite ran at all —
+            # and never a cause it did not observe: an unreachable host, a
+            # `docker compose exec api` that could not start and a suite that
+            # never ran after a provisioning failure are three different reasons
+            # for the same absent file.
+            printf '%s\n' "service log tails are unavailable: ${services_attempt} (suite step outcome: ${SUITE_OUTCOME})" \
+              > "${run_dir}/suite-services.log"
           fi
 
       # This is the admission boundary for the inter-job handoff. It derives
