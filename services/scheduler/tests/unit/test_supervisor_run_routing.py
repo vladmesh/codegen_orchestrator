@@ -730,7 +730,11 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
+            },
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.create_run.return_value = {}
@@ -766,6 +770,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={
@@ -800,6 +805,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
@@ -830,6 +836,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
@@ -864,6 +871,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
@@ -894,6 +902,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result=refused_deploy_result().model_dump(mode="json"),
@@ -940,6 +949,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result=_WAITING_SECRET_RESULT,
@@ -986,6 +996,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result=refused_deploy_result().model_dump(mode="json"),
@@ -1032,6 +1043,7 @@ class TestSuperviseDeployingStories:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result=_WAITING_SECRET_RESULT,
@@ -1075,8 +1087,40 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.CANCELLED,
-            run_metadata={"head_sha": "a" * 40},
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={"deploy_outcome": DeployOutcome.CANCELLED.value},
+        )
+        api_client.create_run.return_value = {}
+        redis_client._redis.incr.return_value = 1
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert len(deploy_calls) == 1
+        assert deploy_calls[0][0][1].head_sha == "a" * 40
+
+    @pytest.mark.asyncio
+    async def test_a_deploy_refused_for_unpublished_images_is_redeployed(
+        self, api_client, redis_client
+    ):
+        """Nothing was deployed and the commit still needs to be.
+
+        The gate in front of the deploy refuses while the project's CI has not
+        published the merged commit's images. A CI that is merely slow answers
+        the next attempt; one that never publishes runs the same retry bound out.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
+            result={"deploy_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED.value},
         )
         api_client.create_run.return_value = {}
         redis_client._redis.incr.return_value = 1
@@ -1102,7 +1146,7 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.CANCELLED,
-            run_metadata={"head_sha": "a" * 40},
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={"deploy_outcome": DeployOutcome.CANCELLED.value},
         )
         redis_client._redis.incr.return_value = 3
@@ -1177,7 +1221,11 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
+            },
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.fail_story.return_value = {}
@@ -1351,7 +1399,11 @@ class TestSuperviseWaitingUserSecretStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
+            },
             result=_WAITING_SECRET_RESULT,
         )
         api_client.list_project_secret_keys.return_value = ["TELEGRAM_BOT_TOKEN", "OTHER"]
@@ -1386,7 +1438,11 @@ class TestSuperviseWaitingUserSecretStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
+            },
             result=_WAITING_SECRET_RESULT,
         )
         api_client.list_project_secret_keys.return_value = ["OTHER"]
@@ -1442,7 +1498,7 @@ class TestSuperviseWaitingUserSecretStories:
         # Latest deploy run is terminal FAILED (the run that hit the missing secret).
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"head_sha": "a" * 40},
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result=_WAITING_SECRET_RESULT,
         )
         # Secret still not saved, so the story must simply keep waiting.
@@ -1998,7 +2054,7 @@ class TestDeployRefusedByAdmission:
 
     @staticmethod
     def _refused_run(reason=AllocationFailureReason.SERVER_NOT_PROVISIONED, **overrides):
-        run_metadata = {"head_sha": "b" * 40}
+        run_metadata = {"head_sha": "b" * 40, "deployed_commit_sha": "e" * 40}
         run_metadata.update(overrides.pop("run_metadata", {}))
         return _make_run(
             status=RunStatus.FAILED,
@@ -2295,7 +2351,11 @@ class TestSettingsSeedFailureRouting:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            run_metadata={
+                "triggered_by": "pr_poll",
+                "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
+            },
             result={
                 "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
                 "deployed_url": "https://example.com",
@@ -2339,6 +2399,7 @@ class TestSettingsSeedFailureRouting:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={
@@ -2385,6 +2446,7 @@ class TestSettingsSeedFailureRouting:
             status=RunStatus.FAILED,
             run_metadata={
                 "head_sha": "a" * 40,
+                "deployed_commit_sha": "e" * 40,
                 USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
             },
             result={
@@ -2417,7 +2479,7 @@ class TestSettingsSeedFailureRouting:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"head_sha": "a" * 40},
+            run_metadata={"head_sha": "a" * 40, "deployed_commit_sha": "e" * 40},
             result={
                 "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
                 "deployed_url": "https://example.com",

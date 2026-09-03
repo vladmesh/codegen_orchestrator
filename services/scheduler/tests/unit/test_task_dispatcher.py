@@ -82,6 +82,18 @@ def _task_event(**overrides) -> TaskEventDTO:
     return TaskEventDTO.model_validate(defaults)
 
 
+def _published_ci_run():
+    """A finished `main` CI run: the merged commit's images are published."""
+    return {
+        "id": 900,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/o/r/actions/runs/900",
+        "created_at": "2026-03-16T12:01:00Z",
+        "head_sha": "e" * 40,
+    }
+
+
 def _story(**overrides) -> StoryDTO:
     defaults = {
         "id": "story-1",
@@ -1233,9 +1245,11 @@ class TestPollMergedPRs:
         api_client.transition_story.return_value = {}
 
         mock_github = AsyncMock()
+        mock_github.get_latest_workflow_run.return_value = _published_ci_run()
         mock_github.get_pull_request.return_value = {
             "number": 42,
             "merged_at": "2026-03-16T12:00:00Z",
+            "merge_commit_sha": "e" * 40,
             "head": {"sha": "a" * 40},
         }
 
@@ -1276,9 +1290,11 @@ class TestPollMergedPRs:
         api_client.transition_story.return_value = {}
 
         mock_github = AsyncMock()
+        mock_github.get_latest_workflow_run.return_value = _published_ci_run()
         mock_github.get_pull_request.return_value = {
             "number": 43,
             "merged_at": "2026-03-16T13:00:00Z",
+            "merge_commit_sha": "e" * 40,
             "head": {"sha": "d" * 40},
         }
 
@@ -1306,6 +1322,7 @@ class TestPollMergedPRs:
         )
 
         mock_github = AsyncMock()
+        mock_github.get_latest_workflow_run.return_value = _published_ci_run()
         mock_github.get_pull_request.return_value = {
             "number": 42,
             "merged_at": None,
@@ -1360,9 +1377,15 @@ class TestPollMergedPRs:
         api_client.transition_story.return_value = {}
 
         mock_github = AsyncMock()
+        mock_github.get_latest_workflow_run.return_value = _published_ci_run()
         mock_github.get_pull_request.side_effect = [
             Exception("GitHub API error"),
-            {"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "d" * 40}},
+            {
+                "number": 10,
+                "merged_at": "2026-03-16T12:00:00Z",
+                "merge_commit_sha": "e" * 40,
+                "head": {"sha": "d" * 40},
+            },
         ]
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):

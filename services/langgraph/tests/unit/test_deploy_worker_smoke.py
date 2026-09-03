@@ -325,6 +325,7 @@ async def test_build_subgraph_input_includes_smoke_result():
         allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
         job_data={},
         head_sha="a" * 40,
+        deployed_commit_sha="e" * 40,
         fence_active_deploys=False,
     )
     assert "smoke_result" in result, "smoke_result must be initialized in subgraph input"

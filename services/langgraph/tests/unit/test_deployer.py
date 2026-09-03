@@ -9,13 +9,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.clients.github import deploy_pin_tag
+from shared.clients.registry import RegistryError, sha_image_tag
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.queues.deploy import DeployOutcome
 from src.subgraphs.devops.deployer import DeployerNode
+from src.subgraphs.devops.image_gate import ImagesNotPublishedError
 from tests.unit.factories import make_repository
 
 PINNED_SHA = "c" * 40
-PIN_TAG = deploy_pin_tag(PINNED_SHA)
+BUILT_SHA = "b" * 40
+PIN_TAG = deploy_pin_tag(BUILT_SHA)
+BACKEND_IMAGE = f"registry.example.com/my-org/my-repo-backend:{sha_image_tag(BUILT_SHA)}"
+IMAGE_DIGEST = "sha256:" + "d" * 64
 TELEGRAM_TOKEN = "123456789:AA-deployer-redaction-canary"  # noqa: S105
 USERS_GRANT_CAPABILITY = "users-grant-deployer-redaction-canary"
 
@@ -31,6 +37,22 @@ class WorkflowCancellationUnprovenError(RuntimeError):
 @pytest.fixture
 def deployer():
     return DeployerNode()
+
+
+@pytest.fixture(autouse=True)
+def published_images():
+    """Every deploy here runs with the built commit's images already in the registry.
+
+    The deploy's check is a registry read, and the tests below are about what
+    happens after it passes. Its own behaviour — refusing when the images are
+    absent, and refusing differently when the registry cannot be read — has its
+    tests in ``TestDeployerImageGate``.
+    """
+    with patch(
+        "src.subgraphs.devops.deployer.verify_published_images",
+        AsyncMock(return_value={"BACKEND_IMAGE": IMAGE_DIGEST}),
+    ) as gate:
+        yield gate
 
 
 @pytest.fixture
@@ -54,7 +76,11 @@ def base_state():
                 "service_name": "backend",
             }
         },
-        "non_secret_values": {"DB_HOST": "localhost", "DB_PORT": "5432"},
+        "non_secret_values": {
+            "DB_HOST": "localhost",
+            "DB_PORT": "5432",
+            "BACKEND_IMAGE": BACKEND_IMAGE,
+        },
         "messages": [],
         "errors": [],
     }
@@ -257,16 +283,24 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
-    async def test_creates_deployment_record_with_sha(
+    async def test_creates_deployment_record_with_both_commits(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):
-        _setup_happy_mocks(mock_api, mock_gh_cls)
+        """`deployed_sha` stays the story's commit; the built one is named beside it.
 
-        await deployer.run(base_state)
+        The redundant-deploy key and the story evidence read `deployed_sha`, so
+        moving it to the built commit would change what every existing record
+        means. The record has to be able to say both, and now does.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
 
         mock_api.create_deployment.assert_called_once()
         payload = mock_api.create_deployment.call_args[0][0]
-        assert payload["deployed_sha"] == "abc123"
+        assert payload["deployed_sha"] == PINNED_SHA
+        assert payload["deployment_info"]["deployed_commit_sha"] == BUILT_SHA
         assert payload["result"] == "success"
         assert payload["application_id"] == 1
 
@@ -412,7 +446,7 @@ class TestDeployerNodeFailures:
         mock_api.patch.assert_not_called()
 
 
-def _pinned_run(head_sha=PINNED_SHA):
+def _pinned_run(head_sha=BUILT_SHA):
     return {**_SUCCESS_RUN, "head_sha": head_sha}
 
 
@@ -437,13 +471,15 @@ class TestDeployerPinnedToCommit:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.wait_for_workflow_completion.return_value = _pinned_run()
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
-        gh.create_or_reset_tag.assert_awaited_once_with("my-org", "my-repo", PIN_TAG, PINNED_SHA)
+        gh.create_or_reset_tag.assert_awaited_once_with("my-org", "my-repo", PIN_TAG, BUILT_SHA)
         assert gh.trigger_workflow_dispatch.call_args[1]["ref"] == PIN_TAG
         wait_kwargs = gh.wait_for_workflow_completion.call_args[1]
         assert wait_kwargs["branch"] == PIN_TAG
-        assert wait_kwargs["head_sha"] == PINNED_SHA
+        assert wait_kwargs["head_sha"] == BUILT_SHA
         assert result["deployment_result"]["status"] == "success"
 
     @pytest.mark.asyncio
@@ -455,7 +491,7 @@ class TestDeployerPinnedToCommit:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.wait_for_workflow_completion.return_value = _pinned_run()
 
-        await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
 
         assert mock_api.create_deployment.call_args[0][0]["deployed_sha"] == PINNED_SHA
 
@@ -468,7 +504,7 @@ class TestDeployerPinnedToCommit:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.wait_for_workflow_completion.return_value = _pinned_run()
 
-        await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
 
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
@@ -482,7 +518,9 @@ class TestDeployerPinnedToCommit:
         gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
         gh.get_latest_workflow_run.return_value = None  # rerun not possible
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["errors"]
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
@@ -497,7 +535,14 @@ class TestDeployerPinnedToCommit:
         mock_api.get = AsyncMock(return_value={"status": "running"})
         gh.wait_for_workflow_completion.side_effect = WorkflowCancelledError("cancelled")
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
@@ -512,7 +557,9 @@ class TestDeployerPinnedToCommit:
         gh.wait_for_workflow_completion.side_effect = WorkflowCancellationUnprovenError("unproven")
 
         with pytest.raises(WorkflowCancellationUnprovenError):
-            await deployer.run({**base_state, "head_sha": PINNED_SHA})
+            await deployer.run(
+                {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+            )
 
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
@@ -525,10 +572,12 @@ class TestDeployerPinnedToCommit:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.wait_for_workflow_completion.return_value = _pinned_run(head_sha="d" * 40)
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "failed"
-        assert PINNED_SHA in result["errors"][0]
+        assert BUILT_SHA in result["errors"][0]
         mock_api.create_deployment.assert_not_called()
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
@@ -541,12 +590,14 @@ class TestDeployerPinnedToCommit:
         gh.get_latest_workflow_run.return_value = _pinned_run()
         gh.wait_for_run_completion.return_value = _pinned_run()
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "success"
         rerun_lookup = gh.get_latest_workflow_run.call_args
         assert rerun_lookup[0][3] == PIN_TAG
-        assert rerun_lookup[1]["head_sha"] == PINNED_SHA
+        assert rerun_lookup[1]["head_sha"] == BUILT_SHA
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
     @pytest.mark.asyncio
@@ -560,7 +611,9 @@ class TestDeployerPinnedToCommit:
         gh.get_latest_workflow_run.return_value = _pinned_run()
         gh.wait_for_run_completion.return_value = _pinned_run(head_sha="d" * 40)
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "failed"
         mock_api.create_deployment.assert_not_called()
@@ -576,7 +629,9 @@ class TestDeployerPinnedToCommit:
         gh.wait_for_workflow_completion.return_value = _pinned_run()
         gh.delete_ref.side_effect = RuntimeError("502 from GitHub")
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "failed"
         assert PIN_TAG in result["errors"][0]
@@ -593,7 +648,9 @@ class TestDeployerPinnedToCommit:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.create_or_reset_tag.side_effect = RuntimeError("connection reset after PATCH")
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "failed"
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
@@ -609,7 +666,9 @@ class TestDeployerPinnedToCommit:
         gh.create_or_reset_tag.side_effect = asyncio.CancelledError()
 
         with pytest.raises(asyncio.CancelledError):
-            await deployer.run({**base_state, "head_sha": PINNED_SHA})
+            await deployer.run(
+                {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+            )
 
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
@@ -626,7 +685,14 @@ class TestDeployerPinnedToCommit:
         gh.get_latest_workflow_run.return_value = _pinned_run()
         gh.wait_for_run_completion.return_value = _pinned_run()
 
-        await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         cancel_check = gh.wait_for_run_completion.call_args[1]["cancel_check"]
         mock_api.get.return_value = {"status": "cancelled"}
@@ -645,7 +711,14 @@ class TestDeployerPinnedToCommit:
         gh.get_latest_workflow_run.return_value = _pinned_run()
         gh.wait_for_run_completion.side_effect = WorkflowCancelledError("rerun cancelled")
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
@@ -664,7 +737,14 @@ class TestDeployerPinnedToCommit:
         gh.wait_for_run_completion.side_effect = WorkflowCancellationUnprovenError("unproven")
 
         with pytest.raises(WorkflowCancellationUnprovenError):
-            await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+            await deployer.run(
+                {
+                    **base_state,
+                    "head_sha": PINNED_SHA,
+                    "deployed_commit_sha": BUILT_SHA,
+                    "run_id": "deploy-1",
+                }
+            )
 
         gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
@@ -778,7 +858,9 @@ class TestDeployerFencesEarlierRuns:
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
         gh.wait_for_workflow_completion.side_effect = WorkflowCancelledError("run 7 was cancelled")
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
 
         assert result["deployment_result"]["status"] == "cancelled"
         gh.rerun_failed_jobs.assert_not_called()
@@ -810,7 +892,14 @@ class TestDispatchBoundary:
             )
         )
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.trigger_workflow_dispatch.assert_not_called()
@@ -838,7 +927,14 @@ class TestDispatchBoundary:
         gh.create_or_reset_tag.side_effect = lambda *a: order.append("tag")
         gh.trigger_workflow_dispatch.side_effect = lambda *a, **kw: order.append("dispatch")
 
-        await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert order == ["tag", "claim", "dispatch"]
 
@@ -859,7 +955,14 @@ class TestDispatchBoundary:
         ]
         mock_api.claim_deploy_dispatch = AsyncMock(side_effect=claims)
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.rerun_failed_jobs.assert_not_called()
@@ -888,7 +991,14 @@ class TestDispatchBoundary:
             )
         )
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.trigger_workflow_dispatch.assert_not_called()
@@ -921,7 +1031,107 @@ class TestDispatchBoundary:
         ]
         mock_api.claim_deploy_dispatch = AsyncMock(side_effect=claims)
 
-        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+        result = await deployer.run(
+            {
+                **base_state,
+                "head_sha": PINNED_SHA,
+                "deployed_commit_sha": BUILT_SHA,
+                "run_id": "deploy-1",
+            }
+        )
 
         assert result["deployment_result"] == {"status": "cancelled"}
         gh.rerun_failed_jobs.assert_not_called()
+
+
+@patch.dict(
+    os.environ,
+    {
+        "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+        "REGISTRY_USER": "testuser",
+        "REGISTRY_PASSWORD": "testpass",  # noqa: S105
+    },
+)
+class TestDeployerImageGate:
+    """Nothing is deployed before the built commit's images are read back."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_gate_asks_about_the_references_the_target_will_pull(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
+
+        published_images.assert_awaited_once_with({"BACKEND_IMAGE": BACKEND_IMAGE})
+        assert BACKEND_IMAGE.endswith(f":sha-{BUILT_SHA[:7]}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_unpublished_images_refuse_the_deploy_before_it_costs_anything(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        """A missing image is a typed refusal, never a success on stale bytes."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        published_images.side_effect = ImagesNotPublishedError(
+            f"the project's CI did not publish {BACKEND_IMAGE} within 900s"
+        )
+
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert result["resolution_outcome"] is DeployOutcome.IMAGES_NOT_PUBLISHED
+        assert result["deployment_result"]["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        # No payload written, no fence taken, no Actions run: a refusal costs nothing.
+        gh.set_repository_secrets.assert_not_called()
+        gh.trigger_workflow_dispatch.assert_not_called()
+        mock_api.claim_deploy_dispatch.assert_not_called()
+        mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_success_and_the_deployment_record_name_the_images(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """A deploy is a claim about images, so both surfaces name them."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
+
+        assert result["deployment_result"]["status"] == "success"
+        assert result["deployment_result"]["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        assert result["deployment_result"]["image_digests"] == {"BACKEND_IMAGE": IMAGE_DIGEST}
+        deployment_info = mock_api.create_deployment.call_args[0][0]["deployment_info"]
+        assert deployment_info["image_references"] == {"BACKEND_IMAGE": BACKEND_IMAGE}
+        assert deployment_info["image_digests"] == {"BACKEND_IMAGE": IMAGE_DIGEST}
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_an_unreadable_registry_is_not_reported_as_unpublished_images(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        """Not asked and not there are different answers, and keep different names.
+
+        Reporting an unreachable registry as "the project never published" blames
+        a project for something on our side, and hides the one failure a human
+        can actually fix.
+        """
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+        published_images.side_effect = RegistryError("registry could not be read")
+
+        result = await deployer.run(
+            {**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA}
+        )
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert result["resolution_outcome"] is DeployOutcome.IMAGE_REGISTRY_UNREADABLE

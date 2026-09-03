@@ -61,6 +61,10 @@ class GrantIntentLifecycleRequest(BaseModel):
     kind: GrantIntentKind
     story_id: str | None = None
     head_sha: str | None = Field(default=None, min_length=40, max_length=40)
+    # The built commit the grant's deploy has to deploy — see
+    # `DeployMessage.deployed_commit_sha`. Distinct from `head_sha`, which is the
+    # story commit the grant is recorded against.
+    deployed_commit_sha: str | None = Field(default=None, min_length=40, max_length=40)
 
 
 class GrantIntentCompletion(BaseModel):
@@ -91,6 +95,24 @@ async def _live_target(db: AsyncSession, project_id: uuid.UUID) -> tuple[int, in
             detail="permanent access requires a healthy deployed service with a recorded SHA",
         )
     return row[0], row[1], row[2]
+
+
+async def _deployed_commit_for_deployment(db: AsyncSession, deployment_id: int) -> str:
+    """The built commit a recorded deployment actually put on its target.
+
+    A permanent-access grant redeploys the artifact that is running, so it has to
+    ask for that artifact's images and tree, not for the story commit the
+    deployment is keyed on. A record that predates both being written cannot be
+    redeployed without guessing, and refuses instead.
+    """
+    info = await db.scalar(select(Deployment.deployment_info).where(Deployment.id == deployment_id))
+    deployed_commit_sha = (info or {}).get("deployed_commit_sha")
+    if not isinstance(deployed_commit_sha, str) or not deployed_commit_sha:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the running deployment does not name the commit it deployed",
+        )
+    return deployed_commit_sha
 
 
 async def _verified_user(db: AsyncSession, telegram_id: int) -> User:
@@ -183,6 +205,7 @@ async def _lifecycle(  # noqa: PLR0913
     kind: GrantIntentKind,
     actor: str,
     target: tuple[int | None, int | None, str],
+    deployed_commit_sha: str,
     story_id: str | None,
     explicit_user_retry: bool = False,
 ) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
@@ -298,6 +321,7 @@ async def _lifecycle(  # noqa: PLR0913
         status=RunStatus.QUEUED.value,
         run_metadata={
             "head_sha": target[2],
+            "deployed_commit_sha": deployed_commit_sha,
             "triggered_by": "users_grant_intent",
             "deploy_action": (
                 DeployAction.CREATE.value if target[0] is None else DeployAction.FEATURE.value
@@ -328,6 +352,16 @@ async def _dispatch_lifecycle(
     if run is None:
         await db.commit()
     if run is not None and intent.status == GrantIntentStatus.PUBLISH_OWED.value:
+        # A Run this lifecycle is resuming, rather than one it just created, can
+        # be older than the field. Refuse it by name instead of raising a
+        # KeyError: the deploy would otherwise have to guess which commit to
+        # deploy, and that guess is the defect this whole change removes.
+        deployed_commit_sha = run.run_metadata.get("deployed_commit_sha")
+        if not deployed_commit_sha:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="this grant's deploy run does not name the commit it deploys",
+            )
         recipient = await resolve_project_recipient(db, project.id, event="users_grant_intent")
         message = DeployMessage(
             task_id=run.id,
@@ -337,6 +371,7 @@ async def _dispatch_lifecycle(
             triggered_by=DeployTrigger.PO,
             action=DeployAction(run.run_metadata["deploy_action"]),
             head_sha=intent.target_sha,
+            deployed_commit_sha=deployed_commit_sha,
         )
         await db.commit()
         try:
@@ -386,6 +421,7 @@ async def _stage_live_intent(  # noqa: PLR0913
         kind=kind,
         actor=actor,
         target=target,
+        deployed_commit_sha=await _deployed_commit_for_deployment(db, target[1]),
         story_id=None,
         explicit_user_retry=True,
     )
@@ -458,6 +494,11 @@ async def resume_initial_owner_intent(
         raise HTTPException(
             status_code=422, detail="only initial-owner lifecycle requires an exact SHA"
         )
+    if body.deployed_commit_sha is None:
+        raise HTTPException(
+            status_code=422,
+            detail="initial-owner lifecycle must name the built commit its deploy deploys",
+        )
     project = await load_locked_project(db, project_id)
     if "tg_bot" not in (project.config or {}).get("modules", []):
         raise HTTPException(
@@ -475,6 +516,7 @@ async def resume_initial_owner_intent(
         kind=body.kind,
         actor="deploy_lifecycle",
         target=(None, None, body.head_sha),
+        deployed_commit_sha=body.deployed_commit_sha,
         story_id=body.story_id,
     )
     return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)

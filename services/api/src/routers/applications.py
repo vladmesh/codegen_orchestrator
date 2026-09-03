@@ -569,6 +569,11 @@ async def redeploy_application(
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
         head_sha=head_sha,
+        # An administrative deploy is not tied to a merge: it deploys what the
+        # default branch holds now, which is also the commit the project's CI
+        # built and tagged its images with. The two identities coincide here, and
+        # they are still both named so nothing has to infer that they do.
+        deployed_commit_sha=head_sha,
     )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
@@ -803,6 +808,11 @@ async def create_from_repo(
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
         head_sha=head_sha,
+        # An administrative deploy is not tied to a merge: it deploys what the
+        # default branch holds now, which is also the commit the project's CI
+        # built and tagged its images with. The two identities coincide here, and
+        # they are still both named so nothing has to infer that they do.
+        deployed_commit_sha=head_sha,
     )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 

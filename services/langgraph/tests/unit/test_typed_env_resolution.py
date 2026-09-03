@@ -23,6 +23,10 @@ def _template_fixture() -> Path:
     return _REPO_ROOT / "shared/tests/fixtures" / f"service-template-{refs[0]}"
 
 
+HEAD_SHA = "6e2fd5b4" + "0" * 32
+BUILT_SHA = "c13d21b9" + "1" * 32
+
+
 def _state(entries: dict, resources: dict | None = None, secrets: dict | None = None) -> dict:
     return {
         "project_id": "project-1",
@@ -34,6 +38,11 @@ def _state(entries: dict, resources: dict | None = None, secrets: dict | None = 
         "provided_secrets": {"USER_TOKEN": "provided-token"},
         "allocated_resources": resources or {},
         "repo_info": {"html_url": "https://github.com/org/repo"},
+        # A deploy always names both commits — what the story produced and the
+        # built commit that is deployed — and the image entries are resolved
+        # against the second, so the state a resolver test builds carries both.
+        "head_sha": HEAD_SHA,
+        "deployed_commit_sha": BUILT_SHA,
         "environment_contract": {"entries": entries},
     }
 
@@ -332,3 +341,7 @@ async def test_template_contract_fixture_resolves_production_entries(_decrypt, a
     assert result["missing_user_secrets"] == []
     assert result["non_secret_values"]["POSTGRES_DB"] == "db_project_1"
     assert result["non_secret_values"]["POSTGRES_REQUIRE_SSL"] == "false"
+    # The pinned template's own contract resolves its images to the built commit
+    # that is deployed, which is the tag its CI publishes for that commit.
+    assert result["non_secret_values"]["BACKEND_IMAGE"].endswith(f":sha-{BUILT_SHA[:7]}")
+    assert result["non_secret_values"]["TG_BOT_IMAGE"].endswith(f":sha-{BUILT_SHA[:7]}")

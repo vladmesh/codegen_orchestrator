@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 from typing import TYPE_CHECKING
@@ -16,13 +17,19 @@ from shared.contracts.dto.users_grant import (
     GrantIntentLifecycleDisposition,
     GrantIntentLifecycleResult,
 )
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 
 from .. import startup
 from ._recipients import resolve_project_recipient
+from .image_publication import (
+    IMAGE_PUBLICATION_TIMEOUT_SECONDS,
+    ImagePublication,
+    PublicationVerdict,
+    image_publication_for_commit,
+)
 from .story_completion import _parse_owner_repo
 
 if TYPE_CHECKING:
@@ -32,6 +39,16 @@ logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
+
+
+def _parse_github_timestamp(value: object) -> datetime | None:
+    """A GitHub `...Z` timestamp as an aware datetime, or None when unusable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _ci_failure_limit() -> int:
@@ -107,6 +124,88 @@ def _build_failure_description(evidence: dict) -> str:
         return "\n".join(lines)
     lines.extend(["", "Fix all reported failures, run local checks, then push once."])
     return "\n".join(lines)
+
+
+async def _images_ready_for_deploy(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    story_id: str,
+    head_sha: str,
+    deployed_commit_sha: str,
+    merged_at: datetime | None,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Whether this merged commit may be deployed yet, refusing it when it never can.
+
+    True only once the images are observed published. Still building means False
+    with the story left exactly where it was, so the next tick asks again and no
+    deploy Run has been created to sit there spending a budget on somebody
+    else's CI. Never coming means the story is refused, typed and durably, here.
+    """
+    verdict = await image_publication_for_commit(
+        github, owner, repo_name, deployed_commit_sha, waiting_since=merged_at
+    )
+    if verdict.state is ImagePublication.PUBLISHED:
+        log.info(
+            "poll_merged_images_published",
+            deployed_commit_sha=deployed_commit_sha,
+            ci_run_id=verdict.ci_run_id,
+        )
+        return True
+    if verdict.state is ImagePublication.PENDING:
+        log.info(
+            "poll_merged_awaiting_image_publication",
+            deployed_commit_sha=deployed_commit_sha,
+            detail=verdict.detail,
+            timeout_seconds=IMAGE_PUBLICATION_TIMEOUT_SECONDS,
+        )
+        return False
+    await _refuse_unpublished_images(
+        api_client,
+        story_id=story_id,
+        head_sha=head_sha,
+        deployed_commit_sha=deployed_commit_sha,
+        verdict=verdict,
+        log=log,
+    )
+    return False
+
+
+async def _refuse_unpublished_images(
+    api_client: SchedulerAPIClient,
+    *,
+    story_id: str,
+    head_sha: str,
+    deployed_commit_sha: str,
+    verdict: PublicationVerdict,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """End a story whose images never appeared in a state that names that.
+
+    No deploy Run exists yet and none is created: nothing was dispatched, so
+    there is nothing for a Run to be the record of. The typed reason therefore
+    goes on the story, the same way an infrastructure refusal does, and the story
+    joins the human-review queue rather than being failed — a project whose CI
+    did not publish is not evidence that the project is broken, and it is not a
+    condition another wait can resolve.
+    """
+    reason = {
+        "deploy_outcome": DeployOutcome.IMAGES_NOT_PUBLISHED.value,
+        "head_sha": head_sha,
+        "deployed_commit_sha": deployed_commit_sha,
+        **verdict.evidence(),
+    }
+    log.error("poll_merged_images_not_published", **reason)
+    await api_client.update_story(story_id, {"quarantine_reason": reason})
+    await api_client.transition_story(story_id, "human_review")
+    await notify_admins_best_effort(
+        f"Story {story_id} was not deployed: {verdict.detail}",
+        level="error",
+        story_id=story_id,
+    )
 
 
 async def _handle_failed_run(
@@ -236,11 +335,41 @@ async def poll_merged_prs(
 
         merged_pr = pr_data
         head_sha = merged_pr.get("head", {}).get("sha", "")
+        # What the story produced and what gets deployed are two different
+        # commits. No merge method makes the branch's new HEAD equal the pull
+        # request head — a merge creates a commit, squash and rebase rewrite
+        # one — and the project's CI publishes images from the branch, so the
+        # deployed commit is the merge commit and nothing else.
+        deployed_commit_sha = merged_pr.get("merge_commit_sha") or ""
         log.info(
             "poll_merged_pr_found",
             pr_number=merged_pr["number"],
             merged_at=merged_pr["merged_at"],
+            deployed_commit_sha=deployed_commit_sha,
         )
+        if not deployed_commit_sha:
+            # Fail closed rather than deploying the pull request head: its
+            # images are never published, so the deploy would pull nothing or,
+            # worse, something else.
+            log.error("poll_merged_no_merge_commit_sha", pr_number=merged_pr["number"])
+            continue
+
+        # Nothing is created until this commit's images exist. The story stays in
+        # PR_REVIEW while the project's CI is still building, so the next tick
+        # asks again; the bound is measured from the merge, so it cannot be
+        # restarted by asking.
+        if not await _images_ready_for_deploy(
+            api_client,
+            github,
+            owner=owner,
+            repo_name=repo_name,
+            story_id=story_id,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+            merged_at=_parse_github_timestamp(merged_pr.get("merged_at")),
+            log=log,
+        ):
+            continue
 
         recipient = await resolve_project_recipient(
             api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
@@ -258,7 +387,10 @@ async def poll_merged_prs(
         if await _needs_initial_owner_seed(api_client, project_id, action):
             seed_lifecycle = GrantIntentLifecycleResult.model_validate(
                 await api_client.resume_initial_owner_grant(
-                    project_id, story_id=story_id, head_sha=head_sha
+                    project_id,
+                    story_id=story_id,
+                    head_sha=head_sha,
+                    deployed_commit_sha=deployed_commit_sha,
                 )
             )
             log.info(
@@ -309,6 +441,7 @@ async def poll_merged_prs(
             "run_metadata": {
                 "triggered_by": "pr_poll",
                 "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
             },
         }
         await api_client.create_run(run_data)
@@ -322,6 +455,7 @@ async def poll_merged_prs(
             triggered_by=DeployTrigger.WEBHOOK,
             action=action,
             head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
         )
         await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
 

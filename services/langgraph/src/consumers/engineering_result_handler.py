@@ -515,6 +515,12 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 action=action,
                 deploy_fix_attempt=deploy_fix_attempt,
                 head_sha=result["commit_sha"],
+                # Deliberately no `deployed_commit_sha`: this path deploys the
+                # worker's own commit, which lives on a story branch, and the
+                # generated project's CI publishes images only from its default
+                # branch. There is no built commit to name, so the deploy is
+                # refused by the resolver instead of pulling whatever the
+                # registry happens to hold — which is what it used to do.
             )
             await redis.publish_message(DEPLOY_QUEUE, deploy_msg)
             logger.info(

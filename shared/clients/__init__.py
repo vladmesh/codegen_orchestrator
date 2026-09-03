@@ -4,9 +4,11 @@ from .embedding import EmbeddingClient, EmbeddingResult, generate_embeddings
 from .github import GitHubAppClient
 from .infra_client import check_http_health
 from .internal_api import InternalAPIClient
+from .registry import DockerRegistryClient, sha_image_tag
 from .time4vps import Time4VPSClient
 
 __all__ = [
+    "DockerRegistryClient",
     "EmbeddingClient",
     "EmbeddingResult",
     "GitHubAppClient",
@@ -14,4 +16,5 @@ __all__ = [
     "Time4VPSClient",
     "check_http_health",
     "generate_embeddings",
+    "sha_image_tag",
 ]

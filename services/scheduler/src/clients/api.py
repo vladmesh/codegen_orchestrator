@@ -179,14 +179,37 @@ class SchedulerAPIClient(InternalAPIClient):
         return RunDTO.model_validate(resp.json())
 
     async def resume_initial_owner_grant(
-        self, project_id: str, *, story_id: str, head_sha: str
+        self, project_id: str, *, story_id: str, head_sha: str, deployed_commit_sha: str
     ) -> GrantIntentLifecycleResult:
         resp = await self.request(
             "POST",
             f"projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "story_id": story_id, "head_sha": head_sha},
+            json={
+                "kind": "initial_owner",
+                "story_id": story_id,
+                "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
+            },
         )
         return GrantIntentLifecycleResult.model_validate(resp.json())
+
+    async def latest_deployed_commit_sha(self, application_id: int) -> str | None:
+        """The built commit the newest successful deployment of one application put there.
+
+        A redeploy that exists to change a capability has to re-deploy the same
+        artifact, and only this record says which commit that artifact is.
+        """
+        resp = await self.request(
+            "GET",
+            "service-deployments/",
+            params={"application_id": application_id, "result": "success"},
+        )
+        deployments = resp.json()
+        if not deployments:
+            return None
+        info = deployments[0].get("deployment_info") or {}
+        deployed_commit_sha = info.get("deployed_commit_sha")
+        return deployed_commit_sha if isinstance(deployed_commit_sha, str) else None
 
     async def create_run_if_absent(self, run_data: dict) -> RunDTO:
         """Create a run, or return the one already carrying this id.

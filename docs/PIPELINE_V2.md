@@ -277,17 +277,59 @@ If the developer agent encounters an unsolvable problem:
 
 **Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger OR Admin API
 
+0. (Before the deploy Run exists) The producer waits for the merged commit's
+   images — see below. No Run is created until they are published.
 1. Resolve server for the project (or provision new one)
-2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
-3. Trigger GitHub Actions deploy workflow
-4. Wait for deploy to complete
-5. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
-6. Resolve failures deterministically: typed environment failures keep their specific outcome;
+2. Read the registry once for the images this deploy resolved
+3. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
+4. Trigger GitHub Actions deploy workflow, pinned to the built commit
+5. Wait for deploy to complete
+6. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
+7. Resolve failures deterministically: typed environment failures keep their specific outcome;
    unclassified subgraph and smoke failures become RETRY
-7. Seed the confirmed Product Brief's `initial_settings` into the deployed product
+8. Seed the confirmed Product Brief's `initial_settings` into the deployed product
    (brief-backed stories only) — see below
-8. Write `DeployOutcome` to `run.result`
-9. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+9. Write `DeployOutcome` to `run.result`, naming the image references it deployed
+10. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
+
+**Two commits, never one**: `head_sha` is the story's commit, the pull request
+head, and it stays the key for story evidence, the access grants and the
+redundant-deploy check. `deployed_commit_sha` is the built commit on `main` —
+`merged_pr["merge_commit_sha"]` — and it is what the images are tagged with and
+what the checkout is pinned to. GitHub offers no fast-forward merge and squash
+and rebase rewrite the commit, so `main`'s new head is never the PR head; asking
+for the PR head's image tag asks for an image that can never exist. Both travel
+on `DeployMessage` and in the deploy Run's metadata.
+
+**Deploying a commit means deploying its images**: the environment contract's
+`*_IMAGE` entries resolve to `<registry>/<owner>/<repo>-<service>:sha-<short sha>`
+of the *built* commit — the tag the generated project's CI publishes through
+`docker/metadata-action`'s `type=sha` — never a mutable `:latest`.
+
+**The wait sits ahead of the deploy Run.** `poll_merged_prs` will not create a
+Run until the project's own `ci.yml` run for the built commit on `main` has
+concluded successfully; that run's `build-and-push` is the publication. It waits
+up to 15 minutes from the merge, measured from GitHub's own `merged_at` so no
+state of ours can restart it, and the story simply stays in `pr_review` between
+ticks. A finished run that did not publish refuses immediately. Nothing here
+builds, retriggers or repairs the project's CI. A refusal creates no Run, so it
+is recorded on the story — `quarantine_reason` carrying
+`deploy_outcome: images_not_published`, both commits and the CI run it read —
+and the story goes to `waiting_human_review`. This is why
+`DEPLOY_TIMEOUT_SECONDS` (600 s) and the live suite's `DEPLOY_TIMEOUT` (420 s)
+still mean "deploy.yml + smoke", while the suite's wait for the Run to *appear*
+(`DEPLOY_RUN_TIMEOUT`) is the one that spans the project's CI.
+
+Inside the deploy, before any external effect, the deployer reads the registry
+once for exactly the references it resolved. Only the registry's `404` is an
+answer about the image: an absent image is `DeployOutcome.IMAGES_NOT_PUBLISHED`,
+while a registry that cannot be read at all — unreachable, or answering any
+other error status such as a `401` on rotated credentials — is
+`DeployOutcome.IMAGE_REGISTRY_UNREADABLE`, kept apart because "not asked" is not
+an answer about the project. Both are redeployed under the ordinary retry bound.
+A successful deploy names the references, their digests and the built commit in
+`DeployRunResult.deployment_result` and in the service-deployment record, beside
+the story commit in `deployed_sha`.
 
 **Seeding the confirmed settings**: after health checks, the handler reads the
 brief bound to this story and writes each `initial_settings` entry through the
@@ -309,7 +351,8 @@ carries typed initial settings, and never a secret".
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
-- RETRY → redeploy with counter (max 3 consecutive failures)
+- RETRY / IMAGES_NOT_PUBLISHED / IMAGE_REGISTRY_UNREADABLE → redeploy with counter
+  (max 3 consecutive failures)
 - SETTINGS_SEED_FAILED → redeploy the same commit under that same counter, never
   reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified

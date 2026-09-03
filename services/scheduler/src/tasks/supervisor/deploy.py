@@ -242,14 +242,28 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
             DeployOutcome.RETRY,
             DeployOutcome.CANCELLED,
             DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            DeployOutcome.IMAGES_NOT_PUBLISHED,
+            DeployOutcome.IMAGE_REGISTRY_UNREADABLE,
         ):
             # A cancelled deploy did not fail and did not deploy: something took
             # the project away from it — the fence a temporary-access revoke
             # takes, or another deploy holding the lock. The story still needs
             # its commit deployed, so it goes round again under the same bound
             # that stops a failing deploy from looping.
+            #
+            # A deploy refused over images is the same shape: nothing was
+            # deployed and the commit still needs to be. Both refusals reach
+            # this route because both are answerable by trying again — an image
+            # that has gone from the registry and a registry that could not be
+            # read are different facts, which is why they are different
+            # outcomes, but neither is settled by giving up on the first look.
+            # The bound that stops a failing deploy from looping stops these too.
             if outcome is DeployOutcome.CANCELLED:
                 log.info("deploy_supervisor_redeploy_after_cancel", run_id=run.id)
+            if outcome is DeployOutcome.IMAGES_NOT_PUBLISHED:
+                log.info("deploy_supervisor_redeploy_after_unpublished_images", run_id=run.id)
+            if outcome is DeployOutcome.IMAGE_REGISTRY_UNREADABLE:
+                log.info("deploy_supervisor_redeploy_after_unreadable_registry", run_id=run.id)
             retry_action = await _handle_deploy_retry(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )
@@ -794,7 +808,22 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
     head_sha: str,
     log: structlog.stdlib.BoundLogger,
 ) -> DeployRetryAction:
-    """Deploy the same commit again, or fail the story once the bound is spent."""
+    """Deploy the same commit again, or fail the story once the bound is spent.
+
+    "The same commit" is both of them: the story commit the evidence is keyed on
+    and the built commit whose images and tree the retry has to ask for again. A
+    run that recorded only the first cannot be repeated without guessing the
+    second, so it goes to a human instead.
+    """
+    deployed_commit_sha = _deploy_run_deployed_commit_sha(run)
+    if not deployed_commit_sha:
+        log.error("deploy_retry_deployed_commit_sha_missing", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "deploy retry could not find the commit that was deployed"
+        )
+        return DeployRetryAction.FAILED
+
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
     attempts = await redis.incr(retry_key)
     await redis.expire(retry_key, _deploy_retry_ttl())
@@ -824,6 +853,7 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
                 "triggered_by": "supervisor_retry",
                 "attempt": attempts,
                 "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
             },
         }
     )
@@ -840,6 +870,7 @@ async def _redispatch_deploy_under_bound(  # noqa: PLR0913
         triggered_by=DeployTrigger.WEBHOOK,
         action="feature",
         head_sha=head_sha,
+        deployed_commit_sha=deployed_commit_sha,
     )
     await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
     log.info(
@@ -866,21 +897,43 @@ async def _handle_deploy_give_up(
 
 
 def _deploy_run_head_sha(run) -> str | None:
-    """Read the exact commit a deploy run targeted, from its run_metadata."""
+    """Read the story commit a deploy run targeted, from its run_metadata."""
     run_metadata = getattr(run, "run_metadata", None) or {}
     return run_metadata.get("head_sha")
+
+
+def _deploy_run_deployed_commit_sha(run) -> str | None:
+    """Read the built commit a deploy run actually deployed, from its run_metadata.
+
+    Separate from `_deploy_run_head_sha` on purpose: a redeploy has to ask for
+    the same images and the same tree as the run it repeats, and those are the
+    built commit's, not the story commit's.
+    """
+    run_metadata = getattr(run, "run_metadata", None) or {}
+    return run_metadata.get("deployed_commit_sha")
 
 
 async def _resume_initial_owner_intent(
     api_client: SchedulerAPIClient, project_id: str, story_id: str, run, head_sha: str
 ) -> GrantIntentLifecycleResult | None:
-    """Recover only the API-owned initial-owner intent referenced by this run."""
+    """Recover only the API-owned initial-owner intent referenced by this run.
+
+    The resumed grant deploys what this run was deploying, so it is handed both
+    commits from the run's own metadata. A run that does not name the built one
+    is not resumed: it would deploy a commit nobody chose.
+    """
     intent_id = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
     if not isinstance(intent_id, str) or not intent_id.startswith("users-grant-initial_owner-"):
         return None
+    deployed_commit_sha = _deploy_run_deployed_commit_sha(run)
+    if not deployed_commit_sha:
+        return None
     return GrantIntentLifecycleResult.model_validate(
         await api_client.resume_initial_owner_grant(
-            project_id, story_id=story_id, head_sha=head_sha
+            project_id,
+            story_id=story_id,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
         )
     )
 
@@ -1137,6 +1190,25 @@ async def _handle_deploy_infrastructure_wait(
         )
         return RefusedDeployAction.ESCALATED
 
+    deployed_commit_sha = _deploy_run_deployed_commit_sha(run)
+    if not deployed_commit_sha:
+        # Same shape as the missing head_sha above, and the same reason: the
+        # resumed deploy has to ask for the images this run was going to deploy,
+        # and nothing here can invent them.
+        log.error("deploy_infrastructure_wait_deployed_commit_sha_missing", run_id=run.id)
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=False,
+            detail="deploy run does not name the commit it was going to deploy",
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
+
     lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
     if lifecycle is not None:
         if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
@@ -1163,6 +1235,7 @@ async def _handle_deploy_infrastructure_wait(
             "run_metadata": {
                 "triggered_by": "supervisor_infrastructure_wait",
                 "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
                 INFRASTRUCTURE_WAIT_STARTED_KEY: waiting_since.isoformat(),
             },
         }
@@ -1181,6 +1254,7 @@ async def _handle_deploy_infrastructure_wait(
             triggered_by=DeployTrigger.WEBHOOK,
             action=DeployAction.FEATURE,
             head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
         ),
     )
     log.info("deploy_infrastructure_wait_redispatched", run_id=run.id, new_run_id=new_run_id)
@@ -1381,6 +1455,15 @@ async def _redispatch_waiting_deploy(
         log.info("waiting_secret_owner_intent_stale_target", run_id=run.id)
         return True
 
+    deployed_commit_sha = _deploy_run_deployed_commit_sha(run)
+    if not deployed_commit_sha:
+        log.error("waiting_user_secret_deployed_commit_sha_missing", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "user-secret redeploy could not find the commit that was deployed"
+        )
+        return False
+
     new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
         {
@@ -1392,6 +1475,7 @@ async def _redispatch_waiting_deploy(
             "run_metadata": {
                 "triggered_by": "supervisor_user_secret",
                 "head_sha": head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
             },
         }
     )
@@ -1408,6 +1492,7 @@ async def _redispatch_waiting_deploy(
         triggered_by=DeployTrigger.WEBHOOK,
         action="feature",
         head_sha=head_sha,
+        deployed_commit_sha=deployed_commit_sha,
     )
     await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
     log.info("waiting_user_secret_redispatched", story_id=story_id, new_run_id=new_run_id)

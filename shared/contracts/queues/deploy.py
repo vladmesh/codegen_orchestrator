@@ -52,6 +52,19 @@ class DeployOutcome(StrEnum):
     # applied — which would launder away a setting the product never accepted.
     SETTINGS_SEED_FAILED = "settings_seed_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
+    # The project's CI had not published the images of the merged commit when
+    # the bounded gate in front of the deploy ran out. Nothing was deployed: the
+    # only images the target could have pulled would have been another commit's.
+    # Its own outcome rather than a flavour of RETRY, because the thing to wait
+    # for is named — this SHA's images — and a reader that cannot tell it from a
+    # failed deploy cannot tell a slow CI from a broken one either.
+    IMAGES_NOT_PUBLISHED = "images_not_published"
+    # The registry could not be read at all, so nothing is known about the
+    # images. Deliberately not `IMAGES_NOT_PUBLISHED`: "not asked" and "not
+    # there" are different answers, and only the second one is about the
+    # project. Kept apart so an unreachable registry or missing registry
+    # credentials cannot be read as a project whose CI never published.
+    IMAGE_REGISTRY_UNREADABLE = "image_registry_unreadable"
     # The deploy never started: no server could be allocated for the application,
     # for a reason that is about the platform and not about the project (see
     # `shared/allocation_disposition.py`). The story is not failed — it waits and
@@ -85,6 +98,18 @@ class DeployMessage(BaseMessage):
     # accepted here, so a caller that failed to resolve a SHA cannot silently
     # fall back to deploying the default branch.
     head_sha: OptionalCommitSha = ""
+    # The commit the deploy actually puts on the target: the one on the default
+    # branch that the project's CI built, tagged its images with, and whose tree
+    # the deploy checks out. It is not `head_sha` and must never be conflated
+    # with it. No merge method makes the branch's new HEAD equal the pull
+    # request head — merge creates a commit, squash and rebase rewrite one — so
+    # `head_sha` names what the story produced and this names what runs.
+    # Required alongside `head_sha` for commit-deploy actions. It is enforced
+    # where it is consequential rather than here: the resolver refuses to name
+    # images without it, with a typed outcome, so a deploy of a commit nobody
+    # published images for is refused and recorded instead of pulling whatever
+    # the registry happens to hold.
+    deployed_commit_sha: OptionalCommitSha = ""
     # Which application a lifecycle action brings down. A project can run on
     # several servers, so the consumer must not pick one itself: it would stop a
     # container nobody asked about and leave the named one up.

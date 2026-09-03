@@ -45,6 +45,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
         allocated_resources={},
         job_data={"task_id": "deploy-1"},
         head_sha="a" * 40,
+        deployed_commit_sha="e" * 40,
         fence_active_deploys=False,
     )
     project_spec = deploy_input["project_spec"]

@@ -39,6 +39,7 @@ from pipeline_helpers import (
     ensure_test_user,
     evidence_pass,
     po_input_cursor,
+    record_deployed_image_tags,
     record_engineering_evidence,
     record_env_contract,
     record_health_probe,
@@ -286,18 +287,25 @@ async def _pipeline_phases(
         # failure behind it, so an orchestrator that could not reach the
         # deployment is a stated read rather than an absent one.
         await record_health_probe(ctx, ctx["deployed_url"], expect_marker=ctx.get("health_marker"))
-        # The QA run is recorded before it is judged, so a QA cell can say
-        # "exercised and failed" instead of falling back to "not exercised".
-        # Every poll takes an evidence pass too: the QA executor's container is
-        # removed as soon as the executor call returns, so this wait is the
-        # window its exit code and log tail are still readable in.
-        ctx["qa_result"] = await run_non_llm_qa(
-            api_internal,
-            ctx["story_id"],
-            timeout=QA_RUN_TIMEOUT,
-            record=lambda run: record_qa_run(ctx, run),
-            on_poll=lambda: evidence_pass(ctx),
-        )
+        # Before any QA attempt: the deployed images must be this commit's. A
+        # successful deploy Run and an HTTP 200 are both compatible with the
+        # host running an older image, and QA is where that shows up — as a
+        # product failure, several steps and one paid executor turn too late.
+        if record_deployed_image_tags(ctx):
+            # The QA run is recorded before it is judged, so a QA cell can say
+            # "exercised and failed" instead of falling back to "not exercised".
+            # Every poll takes an evidence pass too: the QA executor's container is
+            # removed as soon as the executor call returns, so this wait is the
+            # window its exit code and log tail are still readable in.
+            ctx["qa_result"] = await run_non_llm_qa(
+                api_internal,
+                ctx["story_id"],
+                timeout=QA_RUN_TIMEOUT,
+                record=lambda run: record_qa_run(ctx, run),
+                on_poll=lambda: evidence_pass(ctx),
+            )
+        else:
+            dump_debug(ctx, f"{debug_prefix}-deployed-images")
 
     if lifecycle_undeploy and not await _complete_noop_lifecycle(
         api, api_internal, ctx, debug_prefix=debug_prefix
@@ -418,6 +426,16 @@ class TestFullPipeline:
         assert probe, "No pre-undeploy health probe was recorded"
         assert probe["url"] == pipeline["deployed_url"]
         assert probe["status_code"] == 200, probe
+
+    async def test_deployed_images_are_the_built_commits(self, pipeline):
+        """The deployment runs the images the built commit produced."""
+        if (
+            pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
+            or pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        ):
+            pytest.skip("deploy failed")
+        assert pipeline.get("deployed_image_error") is None, pipeline["deployed_image_error"]
+        assert pipeline["deployed_image_references"], "the deploy run named no image references"
 
     async def test_non_llm_qa_passed(self, pipeline):
         """A separate post-deploy QA run must terminate as passed."""
@@ -565,6 +583,43 @@ class TestFullPipelineLLM:
         probe = llm_pipeline.get("health_probe_before_undeploy")
         assert probe, "No health probe was recorded"
         assert probe["status_code"] == 200, probe
+
+    async def test_deployed_image_tag_is_the_built_commit_before_qa_runs(self, llm_pipeline):
+        """QA is only worth spending once the right code is proven to be running.
+
+        Paid run 33753667796 is why this is asserted here and not only inside the
+        deploy path: the deploy reported success, the service answered HTTP 200,
+        and the wrong code was running. Only the marker assertion, several steps
+        and one paid QA turn later, said so.
+
+        The expectation comes from GitHub — the commit `main` points at, which is
+        the commit the project's CI built — not from the deploy's own input. An
+        assertion derived from what the resolver was given agrees with itself and
+        would pass on the wrong tag.
+        """
+        if (
+            llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
+            or llm_pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        ):
+            pytest.skip("deploy failed")
+        assert llm_pipeline.get("deployed_image_error") is None, llm_pipeline[
+            "deployed_image_error"
+        ]
+        built_sha = llm_pipeline["main_head_probe"]["sha"]
+        expected = llm_pipeline["deployed_image_tag_expected"]
+        assert expected.endswith(built_sha[:7]), (
+            f"the expected tag {expected} was not derived from main's head {built_sha}"
+        )
+        references = llm_pipeline.get("deployed_image_references")
+        assert references, "the deploy run named no image references"
+        assert all(reference.endswith(f":{expected}") for reference in references.values()), (
+            f"deployed images {references} are not tagged {expected} for the built commit "
+            f"{built_sha}"
+        )
+        assert llm_pipeline.get("deployed_commit_sha") == built_sha, (
+            f"the deploy says it deployed {llm_pipeline.get('deployed_commit_sha')}, "
+            f"main points at {built_sha}"
+        )
 
     async def test_non_llm_qa_passed(self, llm_pipeline):
         """A separate post-deploy QA run must terminate as passed."""

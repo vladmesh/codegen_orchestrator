@@ -9,9 +9,11 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient, deploy_pin_tag
+from shared.clients.registry import RegistryError
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.diagnostics import redact_diagnostic
 
@@ -19,6 +21,7 @@ from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
 from ...runtime_identity import project_spec_runtime_slug
 from .dotenv_builder import build_dotenv, encode_dotenv
+from .image_gate import ImagesNotPublishedError, image_references, verify_published_images
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -151,6 +154,25 @@ async def _create_deployment_record(
             error_type=type(e).__name__,
         )
         return None
+
+
+def _modules_label(project_spec: dict) -> str:
+    """The project's modules as the deployment record stores them."""
+    modules = (project_spec.get("config") or {}).get("modules", "backend")
+    return ",".join(modules) if isinstance(modules, list) else modules
+
+
+def _encode_deploy_payload(
+    values: dict[str, str], project_id: str, diagnostic_secrets: list[str]
+) -> str:
+    """The `.env` this deploy writes to the target, base64-encoded.
+
+    The encoded payload is added to the diagnostic secrets as it is built, so no
+    later error path can name it: it carries every resolved secret of the deploy.
+    """
+    dotenv_b64 = encode_dotenv(build_dotenv({**values, "CODEGEN_PROJECT_ID": project_id}))
+    diagnostic_secrets.append(dotenv_b64)
+    return dotenv_b64
 
 
 async def _write_deploy_secrets(
@@ -357,18 +379,21 @@ class DeployerNode(FunctionalNode):
         github: GitHubAppClient,
         owner: str,
         repo: str,
-        head_sha: str,
+        deployed_commit_sha: str,
         run_id: str | None,
         diagnostic_secrets: Iterable[str] = (),
     ) -> tuple[dict, bool]:
-        """Run deploy.yml, optionally pinned to one commit. Returns (run_info, was_rerun).
+        """Run deploy.yml pinned to the deployed commit. Returns (run_info, was_rerun).
 
         workflow_dispatch only accepts a branch or a tag in ``ref`` (a bare SHA is
-        rejected with 422), so a requested commit is pinned by a temporary tag that
-        is dropped on every outcome. Without ``head_sha`` this deploys whatever is on
-        main, as before.
+        rejected with 422), so the commit is pinned by a temporary tag that is
+        dropped on every outcome. The pin is the *built* commit, the one the
+        images are tagged with: the compose files come out of this checkout, and a
+        checkout of one commit running another commit's images is the same
+        inconsistency in a smaller costume. Without a commit this deploys whatever
+        the default branch holds now, which no repository-state deploy does.
         """
-        pin_tag = deploy_pin_tag(head_sha) if head_sha else None
+        pin_tag = deploy_pin_tag(deployed_commit_sha) if deployed_commit_sha else None
         ref = pin_tag or "main"
         rerun = False
         cleanup_error: Exception | None = None
@@ -376,7 +401,7 @@ class DeployerNode(FunctionalNode):
             # Inside the cleanup guard: an interrupted create can still have reached
             # GitHub, and a tag applied but not tracked is exactly the litter case.
             if pin_tag:
-                await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
+                await github.create_or_reset_tag(owner, repo, pin_tag, deployed_commit_sha)
 
             # Last thing before the deploy leaves the system. After this the run
             # exists on GitHub Actions and can only be stopped there.
@@ -398,7 +423,7 @@ class DeployerNode(FunctionalNode):
                     branch=ref,
                     timeout_seconds=DEPLOY_TIMEOUT_SECONDS,
                     created_after=dispatch_time,
-                    head_sha=head_sha or None,
+                    head_sha=deployed_commit_sha or None,
                     cancel_check=lambda: self._run_cancelled(run_id),
                 )
             except (RuntimeError, TimeoutError) as e:
@@ -416,7 +441,7 @@ class DeployerNode(FunctionalNode):
                     repo,
                     dispatch_time,
                     ref,
-                    head_sha or None,
+                    deployed_commit_sha or None,
                     run_id,
                     diagnostic_secrets,
                 )
@@ -433,19 +458,19 @@ class DeployerNode(FunctionalNode):
             raise DeployPinTagLeakedError(
                 f"deploy pin tag {pin_tag} survived in {owner}/{repo}: {cleanup_error}"
             )
-        self._verify_deployed_sha(run_info, head_sha)
+        self._verify_deployed_sha(run_info, deployed_commit_sha)
         return run_info, rerun
 
     @staticmethod
-    def _verify_deployed_sha(run_info: dict, head_sha: str) -> None:
+    def _verify_deployed_sha(run_info: dict, deployed_commit_sha: str) -> None:
         """Refuse the deploy unless the finished run is the commit that was asked for."""
-        if not head_sha:
+        if not deployed_commit_sha:
             return
         deployed = (run_info.get("head_sha") or "").lower()
-        if deployed != head_sha.lower():
+        if deployed != deployed_commit_sha.lower():
             raise DeployedShaMismatchError(
                 f"deploy run {run_info['id']} built commit {deployed or 'unknown'}, "
-                f"requested {head_sha}"
+                f"requested {deployed_commit_sha}"
             )
 
     def _extract_deploy_params(self, state: DevOpsState) -> dict | None:
@@ -511,6 +536,64 @@ class DeployerNode(FunctionalNode):
             )
         return claim
 
+    @staticmethod
+    async def _published_images(
+        references: dict[str, str],
+        project_id: str,
+        deployed_commit_sha: str,
+        diagnostic_secrets: Iterable[str],
+    ) -> tuple[dict[str, str], dict | None]:
+        """Digests of the deployed commit's images, or the refusal that replaces the deploy.
+
+        This is a verification, not a wait. The wait for the project's CI lives
+        ahead of the deploy Run, where a slow CI costs no Run and no budget; by
+        the time a Run exists the images were already observed. What is left here
+        is the last read before the external effects, so a deploy still cannot
+        proceed on images that are gone, and every deploy that never passed
+        through the producer's gate — an administrative deploy, a capability
+        redeploy — is held to the same rule.
+
+        Both refusals are typed, and they are deliberately different outcomes: an
+        absent image is about the project, while an unreadable registry is about
+        us, and reporting the second as the first would blame a project for a
+        registry we could not reach.
+        """
+        try:
+            return await verify_published_images(references), None
+        except (ImagesNotPublishedError, RegistryError) as error:
+            unreadable = isinstance(error, RegistryError)
+            outcome = (
+                DeployOutcome.IMAGE_REGISTRY_UNREADABLE
+                if unreadable
+                else DeployOutcome.IMAGES_NOT_PUBLISHED
+            )
+            reason = redact_diagnostic(error, secrets=diagnostic_secrets)
+            logger.error(
+                "deploy_image_registry_unreadable" if unreadable else "deploy_images_not_published",
+                project_id=project_id,
+                deployed_commit_sha=deployed_commit_sha,
+                error=reason,
+            )
+            return {}, {
+                "deployment_result": {
+                    "status": "failed",
+                    "error": reason,
+                    "image_references": references,
+                },
+                "resolution_outcome": outcome,
+                "errors": [f"Deploy refused: {reason}"],
+            }
+
+    @staticmethod
+    async def _server_credentials(server_handle: str | None) -> tuple[object | None, str | None]:
+        """The target server record and its stored SSH key, both absent without a handle."""
+        if not server_handle:
+            return None, None
+        return (
+            await api_client.get_server(server_handle),
+            await api_client.get_server_ssh_key(server_handle),
+        )
+
     async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
@@ -519,9 +602,20 @@ class DeployerNode(FunctionalNode):
         secret_values = state.get("secret_values", {})
         diagnostic_secrets = list(_resolved_secret_values(secret_values))
         non_secret_values = state.get("non_secret_values", {})
-        # Empty means "deploy whatever main holds now"; a SHA means that exact commit.
+        # What the story produced. Carried into the deployment record and the
+        # redundant-deploy key; never the commit whose images or tree are used.
         head_sha = state.get("head_sha") or ""
-        logger.info("deployer_start", project_id=project_id, head_sha=head_sha)
+        # What is deployed: the built commit on the default branch. Every deploy
+        # of repository state names one — the resolver refuses to name images
+        # without it — so this is the commit the checkout is pinned to and the
+        # commit the finished run is checked against.
+        deployed_commit_sha = state.get("deployed_commit_sha") or ""
+        logger.info(
+            "deployer_start",
+            project_id=project_id,
+            head_sha=head_sha,
+            deployed_commit_sha=deployed_commit_sha,
+        )
 
         if not project_id:
             return {
@@ -553,9 +647,24 @@ class DeployerNode(FunctionalNode):
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
-            # 0. Fetch connection credentials for the same target server.
-            server = await api_client.get_server(server_handle) if server_handle else None
-            ssh_key = await api_client.get_server_ssh_key(server_handle) if server_handle else None
+            # 0. Nothing is deployed before the deployed commit's images are
+            # read back. The references come from the resolved environment, so
+            # this asks about exactly the tags the target will pull, and it runs
+            # before any of this deploy's external effects — the payload write,
+            # the fence, the Actions run — so a refusal costs nothing and
+            # changes nothing.
+            resolved_images = image_references({**non_secret_values, **secret_values})
+            image_digests, refusal = await self._published_images(
+                resolved_images, project_id, deployed_commit_sha, diagnostic_secrets
+            )
+            if refusal is not None:
+                return refusal
+
+            if await self._run_cancelled(run_id):
+                return {"deployment_result": {"status": "cancelled"}}
+
+            # 0.5 Fetch connection credentials for the same target server.
+            server, ssh_key = await self._server_credentials(server_handle)
             if not ssh_key:
                 logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
                 return {
@@ -567,14 +676,9 @@ class DeployerNode(FunctionalNode):
                 }
 
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
-            all_env = {
-                **non_secret_values,
-                **secret_values,
-                "CODEGEN_PROJECT_ID": project_id,
-            }
-            dotenv_content = build_dotenv(all_env)
-            dotenv_b64 = encode_dotenv(dotenv_content)
-            diagnostic_secrets.append(dotenv_b64)
+            dotenv_b64 = _encode_deploy_payload(
+                {**non_secret_values, **secret_values}, project_id, diagnostic_secrets
+            )
 
             # 2. Write deploy secrets to GitHub
             logger.info(
@@ -639,10 +743,10 @@ class DeployerNode(FunctionalNode):
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
-            # 3. Dispatch deploy.yml and wait for it, pinned to head_sha when one is given
+            # 3. Dispatch deploy.yml and wait for it, pinned to the deployed commit
             try:
                 run_info, rerun = await self._dispatch_and_wait(
-                    github, owner, repo, head_sha, run_id, diagnostic_secrets
+                    github, owner, repo, deployed_commit_sha, run_id, diagnostic_secrets
                 )
             except DeployDispatchWithdrawnError as e:
                 # Stopped before anything left the system. Reported as cancelled,
@@ -681,10 +785,7 @@ class DeployerNode(FunctionalNode):
             )
 
             # 4. Create service deployment record
-            config = project_spec.get("config") or {}
-            modules = config.get("modules", "backend")
-            if isinstance(modules, list):
-                modules = ",".join(modules)
+            modules = _modules_label(project_spec)
 
             application_id = await _create_deployment_record(
                 project_id=project_id,
@@ -696,15 +797,36 @@ class DeployerNode(FunctionalNode):
                     "branch": "main",
                     "modules": modules,
                     "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
+                    # What ran, not what was asked for. A SHA alone is a claim
+                    # about a commit; these are the references the target pulled
+                    # and the digests they resolved to when the gate read them.
+                    "image_references": resolved_images,
+                    "image_digests": image_digests,
+                    # The commit these images and this checkout are, beside the
+                    # story commit `deployed_sha` names. The two differ on every
+                    # PR-merge deploy and the record has to be able to say both.
+                    "deployed_commit_sha": run_info.get("head_sha"),
                 },
-                deployed_sha=run_info.get("head_sha"),
+                # Stays the story's commit: the redundant-deploy key and the
+                # story evidence read it, and silently moving it to the built
+                # commit would change what every existing record means.
+                deployed_sha=head_sha,
                 diagnostic_secrets=diagnostic_secrets,
             )
 
             deployed_url = f"http://{server_ip}:{port}"
             suffix = " (after rerun)" if rerun else ""
             return {
-                "deployment_result": {"status": "success", "run_id": run_info["id"]},
+                "deployment_result": {
+                    "status": "success",
+                    "run_id": run_info["id"],
+                    "image_references": resolved_images,
+                    "image_digests": image_digests,
+                    # The commit these images and this checkout are, beside the
+                    # story commit `deployed_sha` names. The two differ on every
+                    # PR-merge deploy and the record has to be able to say both.
+                    "deployed_commit_sha": run_info.get("head_sha"),
+                },
                 "deployed_url": deployed_url,
                 "application_id": application_id,
                 "messages": [

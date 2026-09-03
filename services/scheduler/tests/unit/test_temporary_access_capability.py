@@ -83,6 +83,9 @@ async def test_grant_persists_the_verified_identity_and_exact_target_before_disp
     from src.tasks.temporary_access import grant_temporary_access
 
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.create_temporary_access_grant.side_effect = _stored
     api.get_run_if_missing_returns_none.return_value = None
     redis = AsyncMock()
@@ -115,6 +118,9 @@ async def test_target_holder_conflict_defers_only_this_handoff() -> None:
     from src.tasks.temporary_access import grant_temporary_access
 
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.create_temporary_access_grant.side_effect = httpx.HTTPStatusError(
         "conflict",
         request=httpx.Request("POST", "https://api/temporary-access-grants/"),
@@ -141,6 +147,9 @@ async def test_legacy_list_conflict_does_not_abort_the_access_sweep() -> None:
     from src.tasks.temporary_access import supervise_temporary_access
 
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.side_effect = httpx.HTTPStatusError(
         "legacy",
         request=httpx.Request("GET", "https://api/temporary-access-grants/"),
@@ -163,6 +172,9 @@ async def test_stale_grant_retries_the_stored_target_with_a_recorded_bound() -> 
 
     grant = _grant()
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.RUNNING, age_minutes=16
@@ -186,6 +198,9 @@ async def test_cancelled_grant_redispatches_the_exact_target_without_spending_bu
 
     grant = _grant(grant_attempts=2)
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
@@ -209,6 +224,9 @@ async def test_grant_attempt_exhaustion_fails_handoff_then_starts_cleanup() -> N
 
     grant = _grant(grant_attempts=3)
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.FAILED)
     redis = AsyncMock()
@@ -245,6 +263,9 @@ async def test_granted_access_starts_cleanup_for_terminal_missing_or_expired_qa(
 
     grant = _grant(status=TemporaryAccessStatus.GRANTED, **grant_overrides)
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = qa_run
     redis = AsyncMock()
@@ -265,6 +286,9 @@ async def test_cleanup_transitions_then_withdraws_and_fences_an_old_grant_dispat
 
     grant = _grant(status=TemporaryAccessStatus.GRANTED)
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.COMPLETED)
     api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
@@ -299,6 +323,9 @@ async def test_qa_is_released_once_only_after_grant_proof() -> None:
     grant = _grant()
     proved_grant = _grant(status=TemporaryAccessStatus.GRANTED)
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.side_effect = [
         _operation_run(RunStatus.COMPLETED, outcome=DeployOutcome.SUCCESS),
@@ -329,6 +356,9 @@ async def test_stale_revoke_is_replaced_before_it_can_hold_access_forever() -> N
         revoke_attempts=1,
     )
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.RUNNING, age_minutes=16
@@ -359,6 +389,9 @@ async def test_cancelled_revoke_redispatches_the_exact_target_without_spending_b
         revoke_attempts=2,
     )
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
@@ -397,6 +430,9 @@ async def test_cancelled_revoke_at_unrevoked_deadline_escalates_once_without_que
         granted_at=expired.granted_at,
     )
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
     )
@@ -432,6 +468,9 @@ async def test_revoke_marks_the_record_closed_only_after_a_proved_operation() ->
         revoke_attempts=1,
     )
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.list_temporary_access_grants_under_watch.return_value = [grant]
     api.get_run_if_missing_returns_none.return_value = _operation_run(
         RunStatus.COMPLETED, outcome=DeployOutcome.SUCCESS
@@ -456,6 +495,9 @@ async def test_exhausted_revoke_escalates_once_and_never_republishes_access() ->
         revoke_attempts=3,
     )
     api = AsyncMock()
+    # The target names the commit it is running, which is what a capability
+    # redeploy has to ask for again.
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
     api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.FAILED)
     counts = {
         "dispatched": 0,

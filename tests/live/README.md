@@ -136,8 +136,12 @@ a Run early. The two Tasks complete through one observed Story-worker lifecycle 
 can lead to deploy. It also proves the completed Story's durable `story_completed` owner record, its
 matching post-cursor PO input event and verified public URL, the successful service deployment's exact
 merged SHA, and a product API undeploy through terminal `not_deployed` plus owned port-allocation
-absence. The LLM suites additionally prove selected executor wiring; they do not yet claim the new
-lifecycle acceptance. The static baseline at this point is one two-Task noop run, one selected LLM
+absence. Every named suite also compares the deploy Run's image references with the commit `main` points at —
+read from GitHub, never from what the deploy was given — before it spends a QA attempt, so a
+deployment running an older image fails as a deploy defect rather than as a product one. Because no
+deploy Run is created until that commit's images are published, `DEPLOY_RUN_TIMEOUT` now spans the
+generated project's own CI while `DEPLOY_TIMEOUT` still means "deploy.yml + smoke". The LLM suites additionally prove selected executor wiring; they do not yet claim
+the new lifecycle acceptance. The static baseline at this point is one two-Task noop run, one selected LLM
 pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 
 | Invariant level | Primary evidence | Suites |
@@ -145,6 +149,7 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
 | Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
 | Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
+| Deployed artifact identity | the deploy Run's image references, tagged with `main`'s head as GitHub reports it, read before any QA attempt | all named suites |
 | Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
 | Failure attribution | the failing stage, its control-plane reason, the engineering Run records and the verdict | all named suites; the paid verdict rules apply to LLM/matrix |
 | Diagnostics | bounded debug dumps, redacted service tails on suite failure, runner log, and public report files | all named suites |

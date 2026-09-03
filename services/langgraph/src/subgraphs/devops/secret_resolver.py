@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import structlog
 
+from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.run_result import MissingUserSecret
 from shared.contracts.env_contract import (
     AllocationEntry,
@@ -415,7 +416,25 @@ class SecretResolverNode(FunctionalNode):
         raise SecretResolutionError(f"Missing allocation for service {service}")
 
     def _resolve_docker_image(self, key_upper: str, state: DevOpsState) -> str:
-        """Build Docker image URL from self-hosted registry."""
+        """Name the image of the commit being deployed, in the self-hosted registry.
+
+        The tag is the deployed commit's, never `:latest`. A mutable tag is
+        resolved at `docker compose pull` time on the target host, which is
+        minutes after the merge and therefore whatever the previous commit
+        published: the deploy then reports a SHA while running older code.
+
+        The commit is `deployed_commit_sha`, not `head_sha`. The project's CI
+        publishes from its default branch, so the images exist under the built
+        commit's tag; the pull request head that `head_sha` names is never that
+        commit, and asking for its tag would name an image that can never exist.
+        """
+        deployed_commit_sha = state.get("deployed_commit_sha") or ""
+        try:
+            tag = sha_image_tag(deployed_commit_sha)
+        except ValueError as error:
+            raise SecretResolutionError(
+                "the deployed commit SHA is required to name the images of this deploy"
+            ) from error
         registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
         if not registry_host:
             raise SecretResolutionError("ORCHESTRATOR_HOSTNAME is not set")
@@ -440,7 +459,7 @@ class SecretResolverNode(FunctionalNode):
 
         owner, repo = path_parts
         service = key_upper.removesuffix("_IMAGE").lower().replace("_", "-")
-        return f"{registry_host}/{owner}/{repo}-{service}:latest"
+        return f"{registry_host}/{owner}/{repo}-{service}:{tag}"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.

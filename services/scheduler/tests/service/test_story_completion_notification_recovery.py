@@ -455,7 +455,13 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
                 "type": "deploy",
                 "project_id": project_id,
                 "story_id": story_id,
-                "run_metadata": {"application_id": application_id, "head_sha": head_sha},
+                "run_metadata": {
+                    "application_id": application_id,
+                    "head_sha": head_sha,
+                    # The deploy receipt names the built commit too, which is
+                    # what a recheck redeploys.
+                    "deployed_commit_sha": "e" * 40,
+                },
             },
         )
         assert receipt.status_code == httpx.codes.CREATED, receipt.text

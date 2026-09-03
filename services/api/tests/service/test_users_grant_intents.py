@@ -7,6 +7,9 @@ import pytest
 
 from shared.contracts.dto.users_grant import GrantIntentStatus
 
+BUILT_SHA = "e" * 40
+REBOUND_BUILT_SHA = "f" * 40
+
 
 class _PublishRedis:
     def __init__(self, error: Exception | None = None) -> None:
@@ -84,6 +87,10 @@ async def _target(client):
             "port": 8080,
             "result": "success",
             "deployed_sha": sha,
+            # A deployment record names the built commit it put on the target
+            # beside the story commit: a permanent-access grant redeploys that
+            # artifact, so it has to ask for that artifact's images again.
+            "deployment_info": {"deployed_commit_sha": BUILT_SHA},
         },
     )
     for response in (owner, user, project, server, repo, app, deployment):
@@ -146,6 +153,7 @@ async def test_retryable_stale_intent_rebinds_and_applied_redelivery_stops(async
                 "port": 8080,
                 "result": "success",
                 "deployed_sha": "b" * 40,
+                "deployment_info": {"deployed_commit_sha": REBOUND_BUILT_SHA},
             },
         )
         rebound = await async_client.post(
@@ -184,7 +192,11 @@ async def test_initial_owner_lifecycle_returns_only_the_run_dispatched_by_this_c
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         assert first.json()["disposition"] == "dispatched"
         assert first.json()["execution_run_id"].startswith("deploy-grant-")
@@ -196,7 +208,11 @@ async def test_initial_owner_lifecycle_returns_only_the_run_dispatched_by_this_c
         assert applied.json()["status"] == GrantIntentStatus.APPLIED.value
         repeated = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -229,7 +245,11 @@ async def test_initial_owner_lifecycle_stops_at_the_configured_deploy_retry_ceil
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         assert first.json()["disposition"] == "dispatched"
         await async_client.post(
@@ -241,7 +261,11 @@ async def test_initial_owner_lifecycle_stops_at_the_configured_deploy_retry_ceil
         )
         second = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         assert second.json()["disposition"] == "dispatched"
         await async_client.post(
@@ -253,7 +277,11 @@ async def test_initial_owner_lifecycle_stops_at_the_configured_deploy_retry_ceil
         )
         exhausted = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -291,7 +319,11 @@ async def test_zero_retry_ceiling_persists_created_terminal_intent(async_client)
     try:
         exhausted = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -326,7 +358,11 @@ async def test_target_rebind_starts_a_fresh_bounded_retry_epoch(async_client):
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
@@ -337,7 +373,11 @@ async def test_target_rebind_starts_a_fresh_bounded_retry_epoch(async_client):
         )
         rebound = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -372,11 +412,19 @@ async def test_automatic_newer_seed_does_not_replace_a_live_execution(async_clie
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         newer = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -403,7 +451,11 @@ async def test_automatic_stale_recovery_after_replacement_returns_no_dispatch(as
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
@@ -414,7 +466,11 @@ async def test_automatic_stale_recovery_after_replacement_returns_no_dispatch(as
         )
         replacement = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{replacement.json()['intent_id']}/complete",
@@ -425,7 +481,11 @@ async def test_automatic_stale_recovery_after_replacement_returns_no_dispatch(as
         )
         stale = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -452,7 +512,11 @@ async def test_automatic_backwards_target_history_rebind_is_refused(async_client
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
@@ -463,7 +527,11 @@ async def test_automatic_backwards_target_history_rebind_is_refused(async_client
         )
         replacement = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{replacement.json()['intent_id']}/complete",
@@ -474,7 +542,11 @@ async def test_automatic_backwards_target_history_rebind_is_refused(async_client
         )
         refused = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
@@ -505,7 +577,11 @@ async def test_alternating_automatic_stale_shas_terminate_without_extra_publish(
     try:
         first = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
@@ -516,11 +592,19 @@ async def test_alternating_automatic_stale_shas_terminate_without_extra_publish(
         )
         second = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         stale_while_live = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/{second.json()['intent_id']}/complete",
@@ -531,11 +615,19 @@ async def test_alternating_automatic_stale_shas_terminate_without_extra_publish(
         )
         exhausted = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": "b" * 40},
+            json={
+                "kind": "initial_owner",
+                "head_sha": "b" * 40,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
         stale_after_terminal = await async_client.post(
             f"/api/projects/{project_id}/users/grant-intents/lifecycle",
-            json={"kind": "initial_owner", "head_sha": sha},
+            json={
+                "kind": "initial_owner",
+                "head_sha": sha,
+                "deployed_commit_sha": BUILT_SHA,
+            },
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)

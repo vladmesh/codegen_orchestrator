@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.clients.registry import sha_image_tag
 from src.subgraphs.devops.secret_resolver import SecretResolutionError, SecretResolverNode
+
+HEAD_SHA = "6e2fd5b4" + "0" * 32
+BUILT_SHA = "c13d21b9" + "1" * 32
 
 
 class TestSecretResolverComputeSecret:
@@ -16,20 +20,29 @@ class TestSecretResolverComputeSecret:
         self.node = SecretResolverNode()
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_value_with_repo_info(self):
-        """Image variables should generate registry URLs from repo_info in state."""
+    def test_compute_image_value_names_the_tag_the_projects_ci_published(self):
+        """An image reference names the merged commit, not a mutable `:latest`.
+
+        The tag is the one `docker/metadata-action`'s `type=sha` publishes for
+        this commit, so the target pulls the bytes the deploy claims to deploy.
+        """
         project_spec = {"title": "Reverse Bot", "slug": "reverse-bot-0000"}
         state = {
             "repo_info": {
                 "html_url": "https://github.com/project-factory-org/reverse-bot",
-            }
+            },
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
-        assert result == "testhost.example.com/project-factory-org/reverse-bot-backend:latest"
+        assert result == (
+            f"testhost.example.com/project-factory-org/reverse-bot-backend:sha-{BUILT_SHA[:7]}"
+        )
 
         result = self.node._compute_secret("TG_BOT_IMAGE", project_spec, state)
-        assert result == "testhost.example.com/project-factory-org/reverse-bot-tg-bot:latest"
+        assert result == (
+            f"testhost.example.com/project-factory-org/reverse-bot-tg-bot:sha-{BUILT_SHA[:7]}"
+        )
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_value_with_different_repo_info(self):
@@ -38,17 +51,35 @@ class TestSecretResolverComputeSecret:
         state = {
             "repo_info": {
                 "html_url": "https://github.com/my-org/my-app",
-            }
+            },
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         result = self.node._compute_secret("FRONTEND_IMAGE", project_spec, state)
-        assert result == "testhost.example.com/my-org/my-app-frontend:latest"
+        assert result == f"testhost.example.com/my-org/my-app-frontend:{sha_image_tag(BUILT_SHA)}"
+
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
+    def test_compute_image_without_the_deployed_commit_raises(self):
+        """The story commit is not the built commit, and neither is guessed from the other.
+
+        No merge method makes the branch head equal the pull request head, and
+        the project's CI publishes images from the branch, so a state carrying
+        only `head_sha` names an image that can never exist.
+        """
+        project_spec = {"title": "My App", "slug": "my-app-0000"}
+        state = {
+            "repo_info": {"html_url": "https://github.com/my-org/my-app"},
+            "head_sha": HEAD_SHA,
+        }
+
+        with pytest.raises(SecretResolutionError, match="deployed commit SHA is required"):
+            self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_without_repo_info_raises(self):
         """Image variables require complete repository metadata."""
         project_spec = {"title": "Orphan Project", "slug": "orphan-project-0000"}
-        state = {}
+        state = {"deployed_commit_sha": BUILT_SHA}
 
         with pytest.raises(SecretResolutionError, match="repository metadata"):
             self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
@@ -56,7 +87,10 @@ class TestSecretResolverComputeSecret:
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_with_malformed_repo_info_raises(self):
         """A partial repository URL cannot become a Docker image name."""
-        state = {"repo_info": {"html_url": "https://github.com/project-factory-org"}}
+        state = {
+            "repo_info": {"html_url": "https://github.com/project-factory-org"},
+            "deployed_commit_sha": BUILT_SHA,
+        }
 
         with pytest.raises(SecretResolutionError, match="repository metadata is malformed"):
             self.node._compute_secret("BACKEND_IMAGE", {"slug": "test-0000"}, state)
@@ -67,6 +101,7 @@ class TestSecretResolverComputeSecret:
         project_spec = {"slug": "test-0000"}
         state = {
             "repo_info": {"html_url": "https://github.com/org/repo"},
+            "deployed_commit_sha": BUILT_SHA,
         }
 
         with pytest.raises(RuntimeError, match="ORCHESTRATOR_HOSTNAME"):

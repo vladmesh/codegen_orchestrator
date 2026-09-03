@@ -165,6 +165,20 @@ async def _publish_operation(
     *,
     fence_active_deploys: bool = False,
 ) -> None:
+    """Redeploy the running artifact to write or take away the QA capability.
+
+    The grant records the story commit it belongs to; what has to be redeployed
+    is the artifact the target is running, and only the target's own deployment
+    record says which commit that is. Reading it here rather than reusing
+    `grant.head_sha` is the difference between redeploying the same images and
+    asking for images of a commit whose CI never published any.
+    """
+    deployed_commit_sha = await api_client.latest_deployed_commit_sha(grant.target_application_id)
+    if not deployed_commit_sha:
+        raise RuntimeError(
+            f"application {grant.target_application_id} has no deployment naming the commit "
+            f"it deployed, so grant {grant.id} cannot redeploy the same artifact"
+        )
     await api_client.create_run(
         {
             "id": run_id,
@@ -173,6 +187,7 @@ async def _publish_operation(
             "status": RunStatus.QUEUED.value,
             "run_metadata": {
                 "head_sha": grant.head_sha,
+                "deployed_commit_sha": deployed_commit_sha,
                 "temporary_access_grant_id": grant.id,
                 "temporary_access_operation": operation,
             },
@@ -188,6 +203,7 @@ async def _publish_operation(
             triggered_by=DeployTrigger.ADMIN,
             action=DeployAction.FEATURE,
             head_sha=grant.head_sha,
+            deployed_commit_sha=deployed_commit_sha,
             fence_active_deploys=fence_active_deploys,
         ),
     )
