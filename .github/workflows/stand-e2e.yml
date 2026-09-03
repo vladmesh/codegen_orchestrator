@@ -566,17 +566,9 @@ jobs:
               # removes its containers. The dumps used to be written under the
               # checkout and died with the host, so a failed paid run left no
               # post-mortem at all.
-              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
-                set -euo pipefail
-                cd /root/e2e-runs/latest
-                shopt -s nullglob
-                files=(run-evidence-*.json debug-*.md target-app.log)
-                if [ "${#files[@]}" -eq 0 ]; then
-                  tar -cf - --files-from=/dev/null
-                else
-                  tar -cf - -- "${files[@]}"
-                fi
-              ' | tar -C "${run_dir}" -xf -
+              ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+                'bash -s /root/e2e-runs/latest' \
+                < scripts/stand_collect_run_evidence.sh | tar -C "${run_dir}" -xf -
             fi
 
             # A suite that failed after provisioning succeeded gets the same

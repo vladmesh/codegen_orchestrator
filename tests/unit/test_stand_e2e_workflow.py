@@ -6,6 +6,8 @@ run trampling the first, or a failed run whose logs were never collected.
 """
 
 from pathlib import Path
+import subprocess
+import tempfile
 
 import yaml
 
@@ -19,6 +21,7 @@ from scripts.stand_run import (
 )
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
+COLLECTOR = Path(__file__).parents[2] / "scripts" / "stand_collect_run_evidence.sh"
 MAKEFILE = Path(__file__).parents[2] / "Makefile"
 CONTROL_PLANE_PLAYBOOK = (
     WORKFLOW.parents[2]
@@ -119,7 +122,11 @@ def test_handoff_collects_only_logs_the_selected_suite_can_produce():
 def test_worker_failure_evidence_is_copied_before_the_ephemeral_host_is_deleted():
     collect = _steps()["Record machine manifest"]["run"]
 
-    assert "run-evidence-*.json" in collect
+    # The collection itself lives in one executable file, exercised below, and
+    # the step streams it to the stand host rather than inlining a second copy.
+    assert "bash -s /root/e2e-runs/latest" in collect
+    assert "< scripts/stand_collect_run_evidence.sh" in collect
+    assert "run-evidence-*.json" in COLLECTOR.read_text(encoding="utf-8")
     assert 'tar -C "${run_dir}" -xf -' in collect
 
 
@@ -155,8 +162,10 @@ def test_the_target_snapshot_travels_from_the_suite_not_an_ssh_after_teardown():
     collect = _steps()["Record machine manifest"]
     script = collect["run"]
 
-    # It travels with the run evidence the suite wrote, out of the runner directory.
-    assert "files=(run-evidence-*.json debug-*.md target-app.log)" in script
+    # It travels with the run evidence the suite wrote, out of the runner
+    # directory, through the collector this step streams to the stand host.
+    assert "< scripts/stand_collect_run_evidence.sh" in script
+    assert "target-app.log" in COLLECTOR.read_text(encoding="utf-8")
     # And nothing here ssh's to the target host after the suite has ended.
     assert "TARGET_IP" not in script
     assert "TARGET_IP" not in (collect.get("env") or {})
@@ -164,6 +173,88 @@ def test_the_target_snapshot_travels_from_the_suite_not_an_ssh_after_teardown():
     assert (
         'python3 -m scripts.stand_acceptance needs-target-snapshot --run-dir "${run_dir}"' in script
     )
+
+
+def _collect(files: dict[str, str] | None) -> set[str]:
+    """Run the collection the way the workflow runs it, over one directory shape.
+
+    `files` is what the run left in the runner directory; `None` is a run that
+    never created it. The pipeline below is the workflow's own — the collector
+    under `set -euo pipefail`, its output extracted by a local `tar` — so a
+    `tar` that exits nonzero on a missing operand fails this call, which a text
+    assertion about the same line cannot notice.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "latest"
+        if files is not None:
+            source.mkdir()
+            for name, body in files.items():
+                (source / name).write_text(body, encoding="utf-8")
+        extracted = root / "run"
+        extracted.mkdir()
+        subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail; bash "$1" "$2" | tar -C "$3" -xf -',
+                "collect-run-evidence",
+                str(COLLECTOR),
+                str(source),
+                str(extracted),
+            ],
+            check=True,
+        )
+        return {path.name for path in extracted.iterdir()}
+
+
+def test_a_run_that_owes_no_target_snapshot_still_hands_over_its_evidence():
+    """The absent optional file is a named absence, never a failed collection.
+
+    This is the shape of every green run and of a failing run whose evidence
+    asks for no snapshot. A collection that aborts here takes the service tails
+    and both stated-reason fallbacks with it, silently.
+    """
+    collected = _collect(
+        {
+            "run-evidence-claude-claude.json": "{}",
+            "debug-engineering.md": "dump",
+            "junit.xml": "<testsuite/>",
+        }
+    )
+
+    assert collected == {"run-evidence-claude-claude.json", "debug-engineering.md"}
+
+
+def test_a_snapshot_the_suite_took_travels_with_the_run_evidence():
+    collected = _collect(
+        {
+            "run-evidence-claude-claude.json": "{}",
+            "debug-engineering.md": "dump",
+            "target-app.log": "== containers ==",
+        }
+    )
+
+    assert collected == {
+        "run-evidence-claude-claude.json",
+        "debug-engineering.md",
+        "target-app.log",
+    }
+
+
+def test_a_snapshot_that_was_wanted_and_failed_leaves_the_rest_collectable():
+    """The suite wanted one and wrote none: the path that most needs the tails."""
+    collected = _collect({"run-evidence-claude-claude.json": "{}"})
+
+    assert collected == {"run-evidence-claude-claude.json"}
+
+
+def test_a_run_directory_with_nothing_in_it_is_an_empty_handover_not_a_failure():
+    assert _collect({}) == set()
+
+
+def test_a_run_that_never_created_its_directory_is_an_empty_handover_too():
+    assert _collect(None) == set()
 
 
 def test_a_target_snapshot_that_could_not_be_taken_is_named_not_absent():
