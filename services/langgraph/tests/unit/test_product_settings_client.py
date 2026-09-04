@@ -6,7 +6,11 @@ import httpx
 import pytest
 
 from shared.contracts.dto.product_brief import InitialSetting, SettingScope
-from shared.contracts.dto.settings_seed import SettingsSeedFailureKind
+from shared.contracts.dto.settings_seed import (
+    CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL,
+    CORE_SETTINGS_V1_VALUE_REJECTED_DETAIL,
+    SettingsSeedFailureKind,
+)
 from src.clients.product_settings import GeneratedServiceSettingsClient
 
 _SET = httpx.Request("POST", "https://service/settings/set")
@@ -86,12 +90,32 @@ async def test_a_user_scoped_value_names_its_subject_on_both_calls():
     ("responses", "failure"),
     [
         (
-            [httpx.Response(404, json={"detail": "Setting key not declared"}, request=_SET)],
+            [
+                httpx.Response(
+                    404,
+                    json={"detail": CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL},
+                    request=_SET,
+                )
+            ],
             SettingsSeedFailureKind.KEY_NOT_DECLARED,
         ),
         (
-            [httpx.Response(422, json={"detail": "does not satisfy"}, request=_SET)],
+            [httpx.Response(404, json={"detail": "Not Found"}, request=_SET)],
+            SettingsSeedFailureKind.SET_REJECTED,
+        ),
+        (
+            [
+                httpx.Response(
+                    422,
+                    json={"detail": CORE_SETTINGS_V1_VALUE_REJECTED_DETAIL},
+                    request=_SET,
+                )
+            ],
             SettingsSeedFailureKind.VALUE_REJECTED,
+        ),
+        (
+            [httpx.Response(422, json={"detail": [{"msg": "not a string"}]}, request=_SET)],
+            SettingsSeedFailureKind.SET_REJECTED,
         ),
         (
             [httpx.Response(401, request=_SET)],
@@ -152,7 +176,11 @@ async def test_an_unreachable_product_is_transport_on_either_call(failing_call):
 async def test_a_refused_setting_does_not_stop_the_ones_after_it():
     transport = AsyncMock()
     transport.request.side_effect = [
-        httpx.Response(404, request=_SET),
+        httpx.Response(
+            404,
+            json={"detail": CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL},
+            request=_SET,
+        ),
         httpx.Response(200, json={}, request=_SET),
         _readback(key="reminders.locale", value="ru"),
     ]

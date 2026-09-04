@@ -303,12 +303,14 @@ nothing.
 `DeployRunResult.settings_seed` is the durable record — one
 `SettingSeedOutcome` per confirmed setting, naming it the way the product
 identifies it plus one closed-set `SettingsSeedFailureKind`, never a value, a
-response body or the capability. The split is
-`SETTINGS_SEED_RETRYABLE_FAILURES`: transport, a refusal that is not the
-product's own contract, and a readback that was refused, malformed or
-disagreeing say the product did not answer the way a working product answers,
-so they hold the deploy back as `DeployOutcome.SETTINGS_SEED_FAILED` and go
-round under the bound that already stops a failing deploy from looping.
+response body or the capability. Every seed failure is
+`DeployOutcome.SETTINGS_SEED_FAILED`, and `DeployRunResult` refuses SUCCESS
+while any one remains; that outcome itself requires at least one failed seed
+record. `SETTINGS_SEED_CONVERGENT_FAILURES` is only a supervisor routing set:
+transport, an unclassified set refusal, and refused, malformed or disagreeing
+readback may converge on a repeat. If a failed run has any one of those kinds
+it redeploys the same commit under the existing bound; an all-deterministic
+failure skips that bound for artifact repair.
 
 That is its own outcome, not a flavour of `OWNER_ACCESS_PROOF_FAILED`, because
 the invariant is **a deploy run may not be reported SUCCESS while a confirmed
@@ -317,18 +319,21 @@ means "the owner grant was not proved", and the supervisor reconciles it to
 SUCCESS as soon as that grant turns out to be applied — which on a brief-backed
 first deploy, where the grant is applied before the seed even runs, would hand
 QA a run presented as successful with the readback evidence gone. The invariant
-lives on `DeployRunResult` itself: a result carrying a held-back
-`settings_seed` failure cannot validate as `SUCCESS`, so every producer and
+lives on `DeployRunResult` itself: a result carrying a `settings_seed` failure
+cannot validate as `SUCCESS`, so every producer and
 every reconciliation reaches it rather than each remembering to check.
 `SETTINGS_SEED_FAILED` has its own supervisor route, which does not consult the
-grant-intent lifecycle at all and redeploys the same commit under the
-`deploy:retries:{story_id}` bound; the seed is idempotent, so a retry that
-succeeds writes exactly the confirmed values. An undeclared key (404), a value its
-declared schema refuses (422) and a product whose environment contract does not
-declare the capability at all — an existing pinned product — are deterministic
-in this commit: redeploying the same artifact answers identically, so they are
-reported *beside* the successful deploy in `settings_seed` rather than becoming
-a retry that cannot converge. Neither is ever a silent skip.
+grant-intent lifecycle at all. The seed is idempotent, so a convergent retry
+that succeeds writes exactly the confirmed values. An undeclared key (the Core
+settings v1 404 discriminator), a value its declared schema refuses (422), and
+a product whose environment contract does not declare the capability at all —
+an existing pinned product — fail the story with an actionable artifact-repair
+notification. None is a successful handoff or a silent skip.
+
+The deterministic 404 and 422 classifications are exact Core settings v1 response
+details, pinned against the vendored release fixture. A generic route 404 or
+framework-shaped 422 is `SET_REJECTED` instead: it remains bounded retry evidence,
+never proof that a product key or value schema is wrong.
 
 *As a fact QA asserts on.* For a brief-backed story the QA run is given the same
 confirmed `initial_settings` — key, scope and value — as an established fact,

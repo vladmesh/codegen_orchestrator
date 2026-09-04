@@ -22,12 +22,14 @@ from shared.models import (
     Brainstorm,
     Deployment,
     PortAllocation,
+    ProductBrief,
     Project,
     RAGChunk,
     RAGConversationSummary,
     RAGDocument,
     RAGMessage,
     Repository,
+    RequirementCoverage,
     Run,
     Story,
     Task,
@@ -307,17 +309,25 @@ async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> No
     """Clear everything pointing at the project, children before parents.
 
     None of these foreign keys cascade in the database, so a row left behind fails
-    the final delete. Repositories matter most for the bot binding: while the row
-    survives, its bot_username still reads as taken by a project that is gone.
+    the final delete. The live helper and recovery script repeat this dependency
+    order through their raw-SQL boundaries; `tests/live/test_cleanup_auth_fk.py`
+    asserts the invariant across all three adapters. Repositories matter most for
+    the bot binding: while the row survives, its bot_username still reads as taken
+    by a project that is gone.
     """
     repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
     app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
     task_ids_q = select(Task.id).where(Task.project_id == project_id)
+    brief_ids_q = select(ProductBrief.id).where(ProductBrief.project_id == project_id)
 
     # Runs reference stories and tasks as well as the project, so they go first.
     await db.execute(delete(Run).where(Run.project_id == project_id))
 
     await db.execute(delete(TaskEvent).where(TaskEvent.task_id.in_(task_ids_q)))
+    await db.execute(
+        delete(RequirementCoverage).where(RequirementCoverage.brief_id.in_(brief_ids_q))
+    )
+    await db.execute(delete(ProductBrief).where(ProductBrief.project_id == project_id))
     await db.execute(delete(Task).where(Task.project_id == project_id))
     await db.execute(delete(Story).where(Story.project_id == project_id))
     await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))

@@ -15,9 +15,10 @@ from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.settings_seed import (
-    SETTINGS_SEED_RETRYABLE_FAILURES,
     SettingSeedOutcome,
     SettingsSeedFailureKind,
+    settings_seed_failure_detail,
+    settings_seed_failure_kinds,
 )
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.dto.users_grant import (
@@ -170,13 +171,14 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 application_id=application_id,
             )
 
-    settings_seed, blocking_seed_failure = await _seed_initial_settings(
+    settings_seed = await _seed_initial_settings(
         task_id=task_id,
         story_id=story_id,
         deployed_url=result["deployed_url"],
         secret_values=result.get("secret_values", {}),
     )
-    if blocking_seed_failure is not None:
+    failures = settings_seed_failure_kinds(settings_seed)
+    if failures:
         return await _handle_settings_seed_failure(
             result=result,
             task_id=task_id,
@@ -184,7 +186,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
             callback_stream=callback_stream,
             telegram_chat_id=telegram_chat_id,
             redis=redis,
-            failure=blocking_seed_failure,
+            failures=failures,
             application_id=application_id,
             settings_seed=settings_seed,
         )
@@ -353,14 +355,13 @@ async def _seed_initial_settings(
     story_id: str,
     deployed_url: str,
     secret_values: dict,
-) -> tuple[list[SettingSeedOutcome], SettingsSeedFailureKind | None]:
+) -> list[SettingSeedOutcome]:
     """Write the confirmed brief's typed settings into the deployed product.
 
-    Returns `(record, blocking_failure)`. The record is one bounded outcome per
-    confirmed setting, in the order the user confirmed them, and it is stored
-    on the run whether the deploy is held back or not. A blocking failure is
-    returned only for one a second deploy of this commit could answer
-    differently — see `SETTINGS_SEED_RETRYABLE_FAILURES`.
+    Returns one bounded record per confirmed setting, in the order the user
+    confirmed them. Every failure blocks a successful handoff; the shared
+    deploy result decides whether that failed record can converge through the
+    retry bound or needs artifact repair.
 
     Nothing here is derived from prose, from project config or from an
     environment variable: the values are the confirmed ones, read through the
@@ -368,20 +369,19 @@ async def _seed_initial_settings(
     resolver output. Neither the capability nor a setting value is logged.
     """
     if not story_id:
-        return [], None
+        return []
     brief = await api_client.get_product_brief_by_story(story_id)
     if brief is None or brief.confirmed_at is None:
-        return [], None
+        return []
     settings = list(brief.content.initial_settings)
     if not settings:
-        return [], None
+        return []
 
     capability = secret_values.get(_SETTINGS_WRITE_CAPABILITY)
     if not isinstance(capability, str) or not capability:
         # An existing pinned product, generated before the settings core
-        # declared its write capability. It seeds nothing and says so; that is
-        # not a deploy failure, and no later deploy of the same pin would go
-        # any differently.
+        # declared its write capability. The setting did not arrive, so it
+        # must not be reported as a deploy QA may accept.
         logger.info(
             "deploy_settings_seed_capability_unavailable",
             task_id=task_id,
@@ -391,7 +391,7 @@ async def _seed_initial_settings(
         return [
             _seed_outcome(setting, SettingsSeedFailureKind.CAPABILITY_UNAVAILABLE)
             for setting in settings
-        ], None
+        ]
 
     proofs = await GeneratedServiceSettingsClient(deployed_url).seed_and_resolve(
         settings, capability=capability
@@ -400,18 +400,13 @@ async def _seed_initial_settings(
         _seed_outcome(setting, None if proof.written else proof.failure)
         for setting, proof in zip(settings, proofs, strict=True)
     ]
-    failures = [outcome.failure for outcome in record if outcome.failure is not None]
     logger.info(
         "deploy_settings_seeded",
         task_id=task_id,
         brief_id=brief.id,
         written=sum(1 for outcome in record if outcome.written),
-        failures=[failure.value for failure in failures],
     )
-    blocking = next(
-        (failure for failure in failures if failure in SETTINGS_SEED_RETRYABLE_FAILURES), None
-    )
-    return record, blocking
+    return record
 
 
 def _seed_outcome(
@@ -483,7 +478,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
     callback_stream: str,
     telegram_chat_id: str,
     redis: RedisStreamClient,
-    failure: SettingsSeedFailureKind,
+    failures: tuple[SettingsSeedFailureKind, ...],
     application_id: int | None,
     settings_seed: list[SettingSeedOutcome],
 ) -> dict:
@@ -496,26 +491,32 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
     presented as successful while a confirmed setting the product never
     accepted is only a line in the result nobody routes on.
 
-    The record travels whole: every setting's disposition, the failure kind that
-    holds the deploy back, and no value, no capability and no response body.
+    The record travels whole: every setting's disposition and every failure
+    kind, but no value, capability or response body.
     """
-    error_msg = f"Deployed service did not accept a confirmed setting: {failure.value}"
-    logger.warning("deploy_settings_seed_failed", task_id=task_id, failure=failure.value)
+    failure_detail = settings_seed_failure_detail(failures)
+    run_result = DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        deployed_url=result["deployed_url"],
+        deployment_result=result.get("deployment_result"),
+        smoke_result=result.get("smoke_result"),
+        application_id=application_id,
+        bot_username=result.get("bot_username"),
+        error_details=f"settings_seed:{failure_detail}",
+        settings_seed=settings_seed,
+    )
+    error_msg = f"Deployed service did not accept confirmed settings: {failure_detail}"
+    logger.warning(
+        "deploy_settings_seed_failed",
+        task_id=task_id,
+        failures=[failure.value for failure in failures],
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
             "status": RunStatus.FAILED.value,
             "error_message": error_msg,
-            "result": DeployRunResult(
-                deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
-                deployed_url=result["deployed_url"],
-                deployment_result=result.get("deployment_result"),
-                smoke_result=result.get("smoke_result"),
-                application_id=application_id,
-                bot_username=result.get("bot_username"),
-                error_details=f"settings_seed:{failure.value}",
-                settings_seed=settings_seed,
-            ).model_dump(mode="json"),
+            "result": run_result.model_dump(mode="json"),
         },
     )
     await publish_callback_event(

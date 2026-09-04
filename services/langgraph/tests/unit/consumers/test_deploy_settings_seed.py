@@ -252,13 +252,13 @@ class TestFailClosedAndVisibly:
     async def test_a_product_without_the_capability_seeds_nothing_and_says_so(
         self, mock_api, fake_settings_client
     ):
-        """An existing pinned product: a bounded diagnostic, not a deploy failure."""
+        """A confirmed setting cannot be silently skipped when its core is unavailable."""
         result = await _deploy(mock_api, secret_values={"USERS_GRANT_CAPABILITY": "other"})
 
-        assert result["status"] == "success"
+        assert result["status"] == "failed"
         assert _FakeSettingsClient.instances == []
         stored = _stored_result(mock_api)
-        assert stored["deploy_outcome"] == DeployOutcome.SUCCESS.value
+        assert stored["deploy_outcome"] == DeployOutcome.SETTINGS_SEED_FAILED.value
         assert stored["settings_seed"] == [
             {
                 "key": "reminders.default_hour",
@@ -272,47 +272,17 @@ class TestFailClosedAndVisibly:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "failure",
-        [SettingsSeedFailureKind.KEY_NOT_DECLARED, SettingsSeedFailureKind.VALUE_REJECTED],
-    )
-    async def test_a_products_own_refusal_is_reported_beside_the_successful_deploy(
-        self, mock_api, fake_settings_client, failure
-    ):
-        """404 and 422 are deterministic in this commit: redeploying cannot change them."""
-        fake_settings_client["reminders.default_hour"] = failure
-
-        result = await _deploy(mock_api)
-
-        assert result["status"] == "success"
-        stored = _stored_result(mock_api)
-        assert stored["deploy_outcome"] == DeployOutcome.SUCCESS.value
-        assert _stored_status(mock_api) == RunStatus.COMPLETED.value
-        assert stored["settings_seed"] == [
-            {
-                "key": "reminders.default_hour",
-                "scope": "product",
-                "subject_id": None,
-                "written": False,
-                "failure": failure.value,
-            }
-        ]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "failure",
         [
-            SettingsSeedFailureKind.TRANSPORT,
-            SettingsSeedFailureKind.READBACK_MISMATCH,
-            SettingsSeedFailureKind.READBACK_REJECTED,
-            SettingsSeedFailureKind.MALFORMED_READBACK,
-            SettingsSeedFailureKind.SET_REJECTED,
+            failure
+            for failure in SettingsSeedFailureKind
+            if failure is not SettingsSeedFailureKind.CAPABILITY_UNAVAILABLE
         ],
     )
-    async def test_an_unproved_write_holds_the_deploy_back(
+    async def test_every_unproved_confirmed_setting_holds_the_deploy_back(
         self, mock_api, fake_settings_client, failure
     ):
-        """The product did not answer the way a working product answers."""
+        """No current failure kind may turn a confirmed setting into deploy success."""
         fake_settings_client["reminders.default_hour"] = failure
-
         result = await _deploy(mock_api)
 
         assert result["status"] == "failed"
@@ -351,9 +321,32 @@ class TestFailClosedAndVisibly:
 
         result = await _deploy(mock_api)
 
-        assert result["status"] == "success"
+        assert result["status"] == "failed"
         stored = _stored_result(mock_api)
+        assert stored["deploy_outcome"] == DeployOutcome.SETTINGS_SEED_FAILED.value
         assert [(s["key"], s["written"], s["failure"]) for s in stored["settings_seed"]] == [
             ("reminders.default_hour", True, None),
             ("reminders.locale", False, SettingsSeedFailureKind.KEY_NOT_DECLARED.value),
         ]
+
+    @pytest.mark.asyncio
+    async def test_mixed_seed_failures_persist_one_complete_stable_detail(
+        self, mock_api, fake_settings_client
+    ):
+        mock_api.get_product_brief_by_story = AsyncMock(
+            return_value=_brief(
+                [
+                    InitialSetting(key="reminders.default_hour", value=9),
+                    InitialSetting(key="reminders.locale", value="ru"),
+                ]
+            )
+        )
+        fake_settings_client["reminders.default_hour"] = SettingsSeedFailureKind.TRANSPORT
+        fake_settings_client["reminders.locale"] = SettingsSeedFailureKind.KEY_NOT_DECLARED
+
+        result = await _deploy(mock_api)
+
+        assert result["status"] == "failed"
+        stored = _stored_result(mock_api)
+        assert stored["error_details"] == "settings_seed:key_not_declared,transport"
+        assert "key_not_declared,transport" in result["error"]

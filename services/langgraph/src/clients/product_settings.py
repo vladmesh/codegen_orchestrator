@@ -21,7 +21,11 @@ from typing import Any, Protocol
 import httpx
 
 from shared.contracts.dto.product_brief import InitialSetting
-from shared.contracts.dto.settings_seed import SettingsSeedFailureKind
+from shared.contracts.dto.settings_seed import (
+    CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL,
+    CORE_SETTINGS_V1_VALUE_REJECTED_DETAIL,
+    SettingsSeedFailureKind,
+)
 
 #: Both generated schemas carry it, and the product refuses any other value.
 _CONTRACT_VERSION = 1
@@ -84,7 +88,7 @@ class GeneratedServiceSettingsClient:
         except httpx.HTTPError:
             return SettingSeedProof(written=False, failure=SettingsSeedFailureKind.TRANSPORT)
         if not written.is_success:
-            return SettingSeedProof(written=False, failure=_set_refusal(written.status_code))
+            return SettingSeedProof(written=False, failure=_set_refusal(written))
         return await self._resolve(setting, identity)
 
     async def _resolve(self, setting: InitialSetting, identity: dict[str, Any]) -> SettingSeedProof:
@@ -125,10 +129,32 @@ class GeneratedServiceSettingsClient:
         return SettingSeedProof(written=True)
 
 
-def _set_refusal(status_code: int) -> SettingsSeedFailureKind:
-    """Two of the product's refusals are its own contract, and mean their own thing."""
-    if status_code == HTTPStatus.NOT_FOUND:
+def _set_refusal(response: httpx.Response) -> SettingsSeedFailureKind:
+    """Classify only a documented core refusal as deterministic.
+
+    Both an undeclared manifest key and a missing generated route answer 404.
+    The former has one exact released contract body; anything else means the
+    product did not demonstrate its settings core and must stay on the
+    fail-closed path.
+    """
+    if (
+        response.status_code == HTTPStatus.NOT_FOUND
+        and _response_detail(response) == CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL
+    ):
         return SettingsSeedFailureKind.KEY_NOT_DECLARED
-    if status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
+    if (
+        response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+        and _response_detail(response) == CORE_SETTINGS_V1_VALUE_REJECTED_DETAIL
+    ):
         return SettingsSeedFailureKind.VALUE_REJECTED
     return SettingsSeedFailureKind.SET_REJECTED
+
+
+def _response_detail(response: httpx.Response) -> str | None:
+    """Extract a scalar contract discriminator without retaining the response body."""
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return detail if isinstance(detail, str) else None

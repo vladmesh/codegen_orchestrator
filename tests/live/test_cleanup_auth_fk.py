@@ -3,9 +3,14 @@
 Reproduces the three teardown failures a live mega run hit:
 1. server ssh-key fetch -> 401 (unauthenticated /api/servers/*)
 2. port allocation lookup -> 401 (same auth-gated endpoint, no internal key)
-3. database project delete -> FK violation (applications removed before its
-   dependent rows in application_health_history / service_deployments /
-   port_allocations).
+3. database project delete -> FK violation (dependent rows, including Product
+   Brief coverage, removed after their parents).
+
+The API uses SQLAlchemy while the live helper and recovery script execute raw
+SQL over different project selectors, so sharing an executable deletion helper
+would hide those boundary differences. The two SQL-capture tests below and the
+API unit test mechanically keep their common child-before-parent invariant in
+sync.
 
 These run without a live stack: HTTP is driven through MockTransport and the
 SQL paths are captured at the subprocess boundary.
@@ -21,6 +26,7 @@ import pipeline_helpers
 import pytest
 
 from shared import live_harness_cleanup
+from shared.tests.project_cleanup import PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -39,6 +45,15 @@ def _assert_before(sql: str, earlier: str, later: str) -> None:
     assert e != -1, f"missing DELETE FROM {earlier}"
     assert ln != -1, f"missing DELETE FROM {later}"
     assert e < ln, f"DELETE {earlier} must precede DELETE {later}"
+
+
+def _cleanup_order(sql: str) -> list[str]:
+    """The canonical child-before-parent subset emitted by a cleanup adapter."""
+    positions = {
+        table: sql.find(f"DELETE FROM {table}") for table in PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
+    }
+    assert all(position >= 0 for position in positions.values())
+    return [table for table, _ in sorted(positions.items(), key=lambda item: item[1])]
 
 
 # ── ssh-key fetch is authenticated (bug #1) ──────────────────────────────
@@ -173,6 +188,7 @@ def test_cleanup_db_deletes_dependents_before_applications(monkeypatch):
     sql = captured["sql"]
     for dependent in _DEPENDENTS:
         _assert_before(sql, dependent, "applications")
+    assert _cleanup_order(sql) == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)
     _assert_before(sql, "applications", "repositories")
     _assert_before(sql, "repositories", "projects")
 
@@ -193,5 +209,6 @@ def test_clean_live_tests_deletes_dependents_before_applications(monkeypatch):
     sql = captured["sql"]
     for dependent in _DEPENDENTS:
         _assert_before(sql, dependent, "applications")
+    assert _cleanup_order(sql) == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)
     _assert_before(sql, "applications", "repositories")
     _assert_before(sql, "repositories", "projects")

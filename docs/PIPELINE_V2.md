@@ -337,15 +337,21 @@ product's own `POST /settings/set`, proving each one with `POST /settings/get`.
 The `SETTINGS_WRITE_CAPABILITY` comes only from this deploy's in-memory
 `secret_values` and travels as a header — never a URL, log, event or persisted
 diagnostic. Every setting's disposition is recorded in
-`DeployRunResult.settings_seed`. A transport failure or an unproved readback
-holds the deploy back as `SETTINGS_SEED_FAILED` — its own outcome and its own
-bounded supervisor route, because the owner-grant outcome is reconciled to
-SUCCESS once that grant is applied and would launder the failure away; an
-undeclared key, a schema-refused value, or a pinned product whose contract
-predates the capability is reported beside the successful deploy, because
-redeploying the same artifact would answer identically. A story with no brief,
-or a brief with no settings, seeds nothing. See `docs/CONTRACTS.md`, "A brief
-carries typed initial settings, and never a secret".
+`DeployRunResult.settings_seed`. Any unproved confirmed setting is
+`SETTINGS_SEED_FAILED`, never SUCCESS, because the owner-grant outcome is
+reconciled to SUCCESS once that grant is applied and would otherwise launder the
+failure away. That outcome must include a failed seed record. The supervisor
+retries the same commit only when at least one recorded failure is in
+`SETTINGS_SEED_CONVERGENT_FAILURES`; an undeclared key, schema-refused value,
+or pinned core is terminal artifact repair without spending that retry bound. A
+story with no brief, or a brief with no settings, seeds nothing. See
+`docs/CONTRACTS.md`, "A brief carries typed initial settings, and never a
+secret".
+
+Only the released Core settings v1's exact undeclared-key 404 and
+schema-rejection 422 are deterministic. Generic route/framework responses stay
+typed as `SET_REJECTED`, so a deployment that lost its settings route cannot
+pass as an ordinary schema error.
 
 **Supervisor routing** (`supervise_deploying_stories()` in scheduler, 30s poll):
 - Reads deploy run outcome from DB
@@ -353,8 +359,9 @@ carries typed initial settings, and never a secret".
 - CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
 - RETRY / IMAGES_NOT_PUBLISHED / IMAGE_REGISTRY_UNREADABLE → redeploy with counter
   (max 3 consecutive failures)
-- SETTINGS_SEED_FAILED → redeploy the same commit under that same counter, never
-  reconciled to SUCCESS by an applied owner grant
+- SETTINGS_SEED_FAILED → any convergent failure redeploys the same commit under
+  that counter; all-deterministic failures fail visibly for artifact repair,
+  never reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
