@@ -156,6 +156,19 @@ until the focused tests and file-level verification pass. If the task cannot
 make the provider deployable and its output observable, report `success:false`
 rather than a partial implementation.
 
+## Confirmed Product Brief Settings Gate
+
+When `TASK.md` or the story names confirmed initial settings, the deployer will
+write them only through the generated product settings contract. Before reporting
+success, declare every key in the owning service's `manifest.yaml`
+`settings_schema` with a schema that accepts its confirmed value. Run the generator
+and verify each exact key reaches the generated registry (for a backend,
+`services/backend/src/generated/settings_schemas.py`), then prove generated
+`POST /settings/set` and `POST /settings/get` set and read it under
+`SETTINGS_WRITE_CAPABILITY`. Do not replace this with an ad-hoc endpoint or claim
+an undeclared-key repair is complete from a manifest edit alone: deployment seeds
+the generated registry after deploy.
+
 ## Commit & Push
 
 After tests pass, commit and push your changes. You are working on a story feature branch —

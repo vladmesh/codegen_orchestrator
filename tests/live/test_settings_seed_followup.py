@@ -37,6 +37,22 @@ async def test_wait_settings_seed_followup_preserves_explicit_zero_budgets(
 
 
 @pytest.mark.asyncio
+async def test_wait_settings_seed_followup_can_limit_manifest_repairs_for_a_brief(monkeypatch):
+    observed: dict[str, int | None] = {}
+
+    async def follow(*_args, **kwargs):
+        observed["max_manifest_repairs"] = kwargs["max_manifest_repairs"]
+
+    monkeypatch.setattr(pipeline_helpers, "follow_settings_seed", follow)
+
+    await pipeline_helpers.wait_settings_seed_followup(
+        SimpleNamespace(), {}, SimpleNamespace(), max_manifest_repairs=1
+    )
+
+    assert observed == {"max_manifest_repairs": 1}
+
+
+@pytest.mark.asyncio
 async def test_wait_settings_seed_followup_default_budgets_cover_the_full_followup_deploy(
     monkeypatch,
 ):
@@ -621,7 +637,45 @@ async def test_wait_settings_seed_followup_stops_at_the_scheduler_repair_cap(mon
         result = await pipeline_helpers.wait_settings_seed_followup(client, ctx, failed)
 
     assert result is None
-    assert "scheduler cap" in ctx["settings_seed_repair_error"]
+    assert "scheduler repair cap 2" in ctx["settings_seed_repair_error"]
+
+
+@pytest.mark.asyncio
+async def test_wait_settings_seed_followup_applies_a_brief_repair_ceiling_before_a_second_repair(
+    monkeypatch,
+):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    failed = pipeline_helpers.DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        deploy_fix_attempt=1,
+        settings_seed=[
+            {
+                "key": "languages",
+                "scope": "product",
+                "written": False,
+                "failure": "key_not_declared",
+            }
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/system-configs/deploy.max_deploy_fix_attempts"
+        return httpx.Response(200, json={"value": 2})
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": "deploy-poll-old",
+        "deploy_run_created_at": "2026-09-04T00:00:00Z",
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            client, ctx, failed, max_manifest_repairs=1
+        )
+
+    assert result is None
+    assert "brief harness repair ceiling 1" in ctx["settings_seed_repair_error"]
 
 
 @pytest.mark.asyncio

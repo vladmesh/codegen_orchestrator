@@ -17,6 +17,15 @@ import sys
 import time
 import uuid
 
+from brief_telemetry import (
+    HEARTBEAT_SECONDS,
+    PRODUCTIVE_DEADLINE_SECONDS,
+    STATE_MAX_CHARS,
+    ProductiveDeadlineExceeded as _ProductiveDeadlineExceeded,
+    begin,
+    heartbeat,
+    stage,
+)
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
 from live_harness import (
@@ -126,6 +135,10 @@ SETTINGS_SEED_FOLLOWUP_TIMEOUT = (
     2 * SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT + SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT
 )
 SETTINGS_SEED_REPAIR_POLL_INTERVAL = 10
+# A failure result has no stable invariant identity beyond its typed category.
+# A one-repair brief ceiling is therefore safer than pretending retries can be
+# matched: it cannot pay for repeated undeclared-key repairs of any identity.
+BRIEF_MAX_MANIFEST_REPAIRS = 1
 # Deploy hands off to QA on the scheduler's next poll, then QA retries the health
 # check while the service finishes coming up.
 QA_RUN_TIMEOUT = 300
@@ -213,6 +226,31 @@ BRIEF_JOB_NAME = "multilingual_digest"
 BRIEF_LANGUAGES = ["ru", "en"]
 BRIEF_SETTINGS_KEY = "settings.languages"
 
+BRIEF_PRODUCTIVE_DEADLINE_SECONDS = PRODUCTIVE_DEADLINE_SECONDS
+BRIEF_HEARTBEAT_SECONDS = HEARTBEAT_SECONDS
+BRIEF_TELEMETRY_STATE_MAX_CHARS = STATE_MAX_CHARS
+ProductiveDeadlineExceeded = _ProductiveDeadlineExceeded
+
+
+def begin_brief_productive_window(ctx: dict) -> None:
+    begin(ctx)
+
+
+def report_brief_stage(
+    ctx: dict, stage_name: str, *, observed_state: str, enforce_deadline: bool = True
+) -> None:
+    stage(ctx, stage_name, observed_state=observed_state, enforce_deadline=enforce_deadline)
+
+
+def report_brief_heartbeat(ctx: dict, *, observed_state: str) -> None:
+    heartbeat(ctx, observed_state=observed_state)
+
+
+def brief_poll(ctx: dict, *, observed_state: str) -> None:
+    """Check the productive deadline before retaining poll evidence."""
+    report_brief_heartbeat(ctx, observed_state=observed_state)
+    evidence_pass(ctx)
+
 
 def brief_detailed_spec() -> str:
     """The product contract a real Architect and developer must implement.
@@ -225,7 +263,10 @@ def brief_detailed_spec() -> str:
 
 The confirmed product setting is `{BRIEF_SETTINGS_KEY}`. Declare it in the generated
 backend service manifest's settings_schema as a product-scoped JSON array of language
-codes, and make the product read it when producing a digest.
+codes, and make the product read it when producing a digest. Run the generator and
+prove that exact key reaches `services/backend/src/generated/settings_schemas.py`;
+then test generated `POST /settings/set` and `POST /settings/get` set and read it
+under `SETTINGS_WRITE_CAPABILITY`.
 
 Declare the scheduled behaviour `{BRIEF_JOB_NAME}` in the generated backend manifest's
 jobs_schema. It has no arguments. When the generated jobs core fires that named job,
@@ -514,10 +555,13 @@ async def poll_status(
     endpoint: str,
     target_statuses: set[str],
     timeout: int,
+    on_poll: Callable[[], None] | None = None,
 ) -> str | None:
     """Poll an API endpoint until status is in target_statuses or timeout."""
     status = None
     for _ in range(timeout // 3):
+        if on_poll is not None:
+            on_poll()
         await asyncio.sleep(3)
         resp = await api.get(endpoint)
         resp.raise_for_status()
@@ -724,7 +768,12 @@ def trigger_scaffold(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
-async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFOLD_TIMEOUT) -> None:
+async def wait_scaffold(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    timeout: int = SCAFFOLD_TIMEOUT,
+    on_poll: Callable[[], None] | None = None,
+) -> None:
     """Wait for scaffold to complete. Updates ctx['scaffold_status'].
 
     After ProjectStatus split (#22), scaffold success sets status to 'active'.
@@ -735,6 +784,7 @@ async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFO
         f"/api/projects/{ctx['project_id']}",
         {ProjectStatus.ACTIVE},
         timeout,
+        on_poll,
     )
     ctx["scaffold_status"] = status
 
@@ -745,6 +795,7 @@ async def wait_product_brief_admission(
     *,
     timeout: float = LLM_ENGINEERING_TIMEOUT,
     poll_interval: float = 5,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict | None:
     """Wait for the real Architect to cover and release this brief-backed plan.
 
@@ -761,6 +812,8 @@ async def wait_product_brief_admission(
     last_brief: dict | None = None
     last_coverage: list[dict] = []
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         brief_response = await api.get(f"/api/product-briefs/{brief_id}")
         brief_response.raise_for_status()
         last_brief = brief_response.json()
@@ -1794,6 +1847,7 @@ async def wait_deploy(
     ctx: dict,
     timeout: int = DEPLOY_TIMEOUT,
     expected_application_id: int | None = None,
+    on_poll: Callable[[], None] | None = None,
 ) -> None:
     """Wait for deploy to complete. Updates ctx with deployment info.
 
@@ -1817,6 +1871,8 @@ async def wait_deploy(
     found_allocation = False
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
+        if on_poll is not None:
+            on_poll()
         repos_resp = await api.get("/api/repositories/", params={"project_id": ctx["project_id"]})
         repos_resp.raise_for_status()
         for repo in repos_resp.json():
@@ -2265,6 +2321,7 @@ async def wait_settings_seed_followup(
     repair_budget: float | None = None,
     retry_budget: float | None = None,
     overall_budget: float | None = None,
+    max_manifest_repairs: int | None = None,
     poll_interval: float = SETTINGS_SEED_REPAIR_POLL_INTERVAL,
     on_poll: Callable[[], None] | None = None,
 ) -> DeployRunResult | None:
@@ -2292,6 +2349,7 @@ async def wait_settings_seed_followup(
         overall_budget=(
             overall_budget if overall_budget is not None else SETTINGS_SEED_FOLLOWUP_TIMEOUT
         ),
+        max_manifest_repairs=max_manifest_repairs,
         poll_interval=poll_interval,
         on_poll=on_poll,
         wait_followup=_wait_for_followup_deploy_result,
@@ -2597,12 +2655,15 @@ async def wait_story_completed(
     *,
     timeout: float = STORY_COMPLETION_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict | None:
     """Wait for this story's terminal completed state and preserve diagnostics."""
     story_id = ctx["story_id"]
     deadline = time.monotonic() + timeout
     last_story = None
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         response = await api.get(f"/api/stories/{story_id}")
         response.raise_for_status()
         last_story = response.json()
@@ -2800,12 +2861,15 @@ async def wait_undeploy_run(
     *,
     timeout: float = UNDEPLOY_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict | None:
     """Find the one post-request deploy Run bound to this application."""
     require_unscoped_run_observer(api_internal)
     before = ctx["deploy_run_ids_before_undeploy"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         response = await api_internal.get(
             "/api/runs/", params={"project_id": ctx["project_id"], "run_type": RunType.DEPLOY.value}
         )
@@ -2839,11 +2903,14 @@ async def wait_application_not_deployed(
     *,
     timeout: float = UNDEPLOY_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict | None:
     """Wait for the lifecycle target to report the product terminal status."""
     deadline = time.monotonic() + timeout
     last_application = None
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         response = await api.get(f"/api/applications/{ctx['application_id']}")
         response.raise_for_status()
         last_application = response.json()

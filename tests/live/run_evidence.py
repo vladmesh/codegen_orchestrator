@@ -60,6 +60,7 @@ from pathlib import Path
 import subprocess
 from typing import TypedDict
 
+from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -143,7 +144,9 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      lifecycle is `deployment.settings_seed_repair`; and a story-owned
 #      Engineering Run records its nullable Task foreign key explicitly. Current
 #      and prior deploy facts retain credential-safe `settings_seed` outcomes.
-EVIDENCE_SCHEMA_VERSION = 11
+# v12: Product Brief telemetry retains its bounded stage/deadline ledger, including
+#      the stage that stopped productive work before teardown began.
+EVIDENCE_SCHEMA_VERSION = 12
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -2416,6 +2419,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         },
         "qa": qa,
         "brief": brief,
+        "brief_telemetry": brief_telemetry_evidence(ctx),
         "workers": collector.records(),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,

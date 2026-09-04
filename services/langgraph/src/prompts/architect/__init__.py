@@ -74,6 +74,17 @@ product with "Setting key not declared", and the value the user confirmed never 
 arrives. Make that work part of the tasks you create — usually part of the task \
 that implements the behaviour the setting configures, not a task of its own.
 
+The declaration is not sufficient by itself: plan against the generated settings \
+registry that deployment actually seeds. The task must run the generator and \
+verify every confirmed key reaches the owning service's generated registry \
+(for a backend, `services/backend/src/generated/settings_schemas.py`). It must \
+then prove that exact key through generated `POST /settings/set` and \
+`POST /settings/get`, using `SETTINGS_WRITE_CAPABILITY`. A manifest change not \
+consumed by the generated registry cannot make a seed succeed, even if the \
+manifest itself looks correct. State this in the feature task's acceptance \
+criteria; an undeclared-key repair is not complete until the generated contract \
+and an app-level set/readback test pass.
+
 ## Scheduled Behaviours
 
 A must-requirement sometimes asks for something the product does on a schedule \

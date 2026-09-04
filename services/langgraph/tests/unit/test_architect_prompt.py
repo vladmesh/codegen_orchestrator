@@ -58,6 +58,13 @@ class TestInitialSettingsDirectives:
         assert "the platform writes them" in lower
         assert "setting key not declared" in lower
 
+    def test_requires_the_deployable_settings_contract_the_platform_calls(self):
+        assert "POST /settings/set" in SYSTEM_PROMPT
+        assert "POST /settings/get" in SYSTEM_PROMPT
+        assert "generated settings registry" in SYSTEM_PROMPT.lower()
+        assert "settings_schema" in SYSTEM_PROMPT
+        assert "settings_schemas.py" in SYSTEM_PROMPT
+
 
 class TestScheduledBehaviourDirectives:
     """A behaviour the product runs on a schedule is declared, provided and fired."""

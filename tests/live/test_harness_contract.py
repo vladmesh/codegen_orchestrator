@@ -97,6 +97,59 @@ def test_task_failure_diagnostics_are_bounded_and_redacted(monkeypatch):
     assert "description" not in diagnostic
 
 
+def test_brief_telemetry_is_redacted_bounded_and_stops_at_the_productive_deadline(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-state")
+    ctx: dict = {}
+
+    with structlog.testing.capture_logs() as logs:
+        pipeline_helpers.begin_brief_productive_window(ctx)
+        pipeline_helpers.report_brief_stage(
+            ctx, "scaffold", observed_state="protected-state " + "x" * 500
+        )
+        clock[0] += pipeline_helpers.BRIEF_HEARTBEAT_SECONDS
+        pipeline_helpers.report_brief_heartbeat(ctx, observed_state="healthy")
+
+    assert ctx["brief_telemetry"][0]["stage"] == "scaffold"
+    assert "protected-state" not in logs[0]["observed_state"]
+    assert logs[0]["observed_state"].endswith("…")
+    assert logs[1]["event"] == "brief_heartbeat"
+    assert logs[1]["elapsed_seconds"] == pipeline_helpers.BRIEF_HEARTBEAT_SECONDS
+
+    clock[0] += pipeline_helpers.BRIEF_PRODUCTIVE_DEADLINE_SECONDS
+    with pytest.raises(pipeline_helpers.ProductiveDeadlineExceeded):
+        pipeline_helpers.report_brief_heartbeat(ctx, observed_state="late")
+
+    assert ctx["brief_deadline_exhausted"] is True
+
+
+@pytest.mark.asyncio
+async def test_poll_status_calls_the_brief_heartbeat_before_waiting(monkeypatch):
+    observed: list[str] = []
+    api = SimpleNamespace(
+        get=AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"status": "active"},
+                request=httpx.Request("GET", "http://test/api/projects/project-1"),
+            )
+        )
+    )
+    monkeypatch.setattr(pipeline_helpers.asyncio, "sleep", AsyncMock())
+
+    status = await pipeline_helpers.poll_status(
+        api,
+        "/api/projects/project-1",
+        {"active"},
+        timeout=3,
+        on_poll=lambda: observed.append("heartbeat"),
+    )
+
+    assert status == "active"
+    assert observed == ["heartbeat"]
+
+
 @pytest.fixture(autouse=True)
 def repository_live_manifests_are_read_only():
     """Offline contract tests must never mutate the live recovery directory."""

@@ -96,7 +96,8 @@ Paid E2E tests are not part of required PR CI. Run the canonical named suites th
 `stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
 exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair,
 `mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
-one selected pair, and `matrix` runs all supported pairs.
+one selected pair. Its productive work stops at 50 minutes, then its fixture gets a separate
+10-minute evidence-and-cleanup grace; `matrix` runs all supported pairs.
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 

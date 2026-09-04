@@ -57,3 +57,10 @@ class TestDeveloperInstructions:
         assert "env.contract.yaml" in self.content
         assert "CI build/push matrix" in self.content
         assert "docker compose -f infra/compose.prod.yml config" not in self.content
+
+    def test_requires_the_generated_settings_contract_before_a_seed_can_succeed(self):
+        assert "POST /settings/set" in self.content
+        assert "POST /settings/get" in self.content
+        assert "SETTINGS_WRITE_CAPABILITY" in self.content
+        assert "settings_schema" in self.content
+        assert "settings_schemas.py" in self.content

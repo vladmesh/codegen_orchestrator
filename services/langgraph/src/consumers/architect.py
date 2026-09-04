@@ -290,9 +290,13 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
         "Your plan must make every key above writable — each one has to be declared in "
         "the product's own services/<service>/manifest.yaml settings_schema, with a "
         "JSON Schema the value shown above satisfies, and the product has to read the "
-        "setting where it uses it. A key the manifest does not declare is refused by "
-        "the product, and the value the user confirmed never arrives. Cover that work "
-        "in the tasks you create."
+        "setting where it uses it. The task must run the generator and verify each exact "
+        "key reaches the generated settings registry (for a backend, "
+        "services/backend/src/generated/settings_schemas.py), then test generated "
+        "POST /settings/set and POST /settings/get with SETTINGS_WRITE_CAPABILITY. A key "
+        "the manifest does not declare, or does not reach that registry, is refused by "
+        "the product and the confirmed value never arrives. Cover that work in the tasks "
+        "you create."
     )
 
 

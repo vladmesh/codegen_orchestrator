@@ -880,6 +880,9 @@ class TestProductBriefInitialSettings:
         # And what the architect owes them: the manifest declaration.
         assert "manifest.yaml" in user_msg
         assert "settings_schema" in user_msg
+        assert "settings_schemas.py" in user_msg
+        assert "POST /settings/set" in user_msg
+        assert "POST /settings/get" in user_msg
 
     @pytest.mark.asyncio
     async def test_a_brief_that_confirmed_no_settings_says_nothing_about_them(
