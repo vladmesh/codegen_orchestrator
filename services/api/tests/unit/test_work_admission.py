@@ -3,8 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from fastapi import HTTPException
 import pytest
 
+from shared.contracts.dto.engineering_dispatch import ENGINEERING_TASK_NOT_FOUND
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.executor_diagnostics import (
     ExecutorAuthMode,
@@ -15,7 +17,9 @@ from shared.contracts.dto.executor_diagnostics import (
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
+    PaidRunStartRead,
     WorkAdmissionOutcome,
+    WorkAdmissionRead,
     WorkAdmissionReason,
 )
 from shared.contracts.vocab import AgentType
@@ -24,6 +28,40 @@ from src.work_admission import (
     admit_project_creation,
     start_paid_run,
 )
+
+
+@pytest.mark.asyncio
+async def test_paid_run_start_refuses_an_unknown_engineering_task_before_admission(monkeypatch):
+    """A non-null task id must be a real planning Task, never an FK crash."""
+    from src.routers.work_admission import start_paid_run_endpoint
+
+    db = AsyncMock()
+    db.scalar.return_value = None
+    paid_start = AsyncMock(
+        return_value=PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)
+        )
+    )
+    monkeypatch.setattr("src.routers.work_admission.start_paid_run", paid_start)
+
+    with pytest.raises(HTTPException) as exc:
+        await start_paid_run_endpoint(
+            PaidRunStartCommand(
+                id="eng-unknown-task",
+                type=RunType.ENGINEERING,
+                project_id="00000000-0000-0000-0000-000000000001",
+                task_id="eng-deploy-fix-unknown-1",
+            ),
+            db,
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == {
+        "code": ENGINEERING_TASK_NOT_FOUND,
+        "task_id": "eng-deploy-fix-unknown-1",
+    }
+    paid_start.assert_not_awaited()
+    db.commit.assert_not_awaited()
 
 
 def _rows(values: dict[str, object]) -> MagicMock:

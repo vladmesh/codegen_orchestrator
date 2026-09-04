@@ -16,9 +16,11 @@ when a caller materialises it first. That counterfactual is the reason the route
 peeks column-only.
 
 **Invariant B — one entry to paid engineering work on a Task.**
-`POST /work-admission/paid-runs` refuses an engineering command whose `task_id`
-names a Task row, and still starts every paid engineering run that is not a Task
-dispatch — the deploy-fix handoff among them, which carries no Task row.
+`POST /work-admission/paid-runs` refuses an engineering command whose non-null
+`task_id` names a Task row with 409 `engineering_task_dispatch_requires_admission`,
+or names no row with 422 `engineering_task_not_found`. Only a taskless
+engineering start reaches the paid gate; the deploy-fix handoff is that
+story-owned shape.
 
 Every test drives the real endpoints against the real database; the monkeypatched
 wrappers below are scheduling points, not stubs — the write they interleave is a
@@ -36,6 +38,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_TASK_NOT_FOUND,
     ENGINEERING_TASK_REQUIRES_ADMISSION,
     EngineeringDispatchOutcome,
     EngineeringDispatchRefusal,
@@ -160,17 +163,10 @@ async def test_a_paid_engineering_start_that_is_no_task_dispatch_still_starts(
     """Everything Invariant B does not name is decided by the paid gate as before.
 
     The refusal asks one question — does this `task_id` name a Task row — so a
-    paid engineering start that is not a dispatch of a Task passes through
-    untouched. The deploy-fix handoff is that shape: no Task row backs it, and
-    `runs.task_id` is a foreign key onto `tasks.id`, so the only engineering run
-    the database can persist with a `task_id` at all is one naming a real Task.
-    That is what makes the existence check a complete fence rather than a partial
-    one.
-
-    The deploy supervisor still puts its synthesised id in `task_id`
-    (`supervisor/deploy.py`), which that foreign key rejects on main as it does
-    here: a defect this branch neither introduces nor repairs, and named in the
-    card report rather than fixed under an admission card.
+    paid engineering start with no Task row stays at the paid gate. The
+    deploy-fix handoff is that shape: it carries `task_id=None`, while any
+    non-null id must name a real Task and is refused before the FK becomes
+    relevant.
     """
     project_id = await _project(async_client, await _owner(async_client))
     fix_id = f"eng-deploy-fix-{uuid.uuid4().hex[:8]}-1"
@@ -191,6 +187,33 @@ async def test_a_paid_engineering_start_that_is_no_task_dispatch_still_starts(
     run = await db_session.get(Run, fix_id)
     assert run is not None
     assert run.status == RunStatus.QUEUED.value
+
+
+@pytest.mark.asyncio
+async def test_a_paid_engineering_start_naming_an_unknown_task_is_refused_before_fk(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """An unknown non-null Task reference is an input error, never a 500."""
+    project_id = await _project(async_client, await _owner(async_client))
+    unknown_task_id = f"eng-deploy-fix-{uuid.uuid4().hex[:8]}-1"
+    run_id = f"eng-{uuid.uuid4().hex[:12]}"
+
+    response = await async_client.post(
+        PAID_RUNS_URL,
+        json={
+            "id": run_id,
+            "type": RunType.ENGINEERING.value,
+            "project_id": project_id,
+            "task_id": unknown_task_id,
+        },
+    )
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+    assert response.json()["detail"] == {
+        "code": ENGINEERING_TASK_NOT_FOUND,
+        "task_id": unknown_task_id,
+    }
+    assert await db_session.get(Run, run_id) is None
 
 
 @pytest.mark.asyncio

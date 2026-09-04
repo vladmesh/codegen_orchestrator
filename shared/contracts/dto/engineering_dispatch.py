@@ -129,6 +129,12 @@ PAID_WORK_REFUSALS: dict[WorkAdmissionReason, EngineeringDispatchRefusal] = {
 ENGINEERING_TASK_REQUIRES_ADMISSION = "engineering_task_dispatch_requires_admission"
 
 
+#: The typed error `POST /work-admission/paid-runs` returns when an engineering
+#: command names no Task with a non-null `task_id`. Story-owned deploy fixes
+#: leave that field null; an unknown reference is refused before Run creation.
+ENGINEERING_TASK_NOT_FOUND = "engineering_task_not_found"
+
+
 #: The refusals an authorised operator may override, and the only values a
 #: command's `overrides` may contain. Everything absent from this set is refused
 #: no matter who asks: the paid gate's decisions, because overriding them would

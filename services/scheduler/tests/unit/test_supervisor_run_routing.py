@@ -561,7 +561,10 @@ class TestSuperviseDeployingStories:
         assert result["redispatched"] == 1
         command = api_client.start_paid_run.await_args.args[0]
         assert command.id == "eng-deploy-fix-deploy-1-1"
-        assert command.task_id == command.id
+        # A deploy repair is story-owned, not a re-dispatch of a planning Task.
+        # Its synthetic engineering Run id must never leak into runs.task_id,
+        # which is a foreign key to the planning tasks table.
+        assert command.task_id is None
         assert command.story_id == "story-1"
         assert command.project_id == _make_project().id
         api_client.create_run.assert_not_awaited()

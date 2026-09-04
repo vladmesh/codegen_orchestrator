@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_dispatch import (
+    ENGINEERING_TASK_NOT_FOUND,
     ENGINEERING_TASK_REQUIRES_ADMISSION,
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
@@ -315,22 +316,25 @@ async def start_paid_run_endpoint(
     # Invariant B: a paid engineering run bound to an existing Task row is
     # created only by the admission point. This route is the paid gate for
     # everything else, and it stays that: only a command that *is* a Task
-    # dispatch is refused, so the deploy-fix handoff — which names no Task row —
-    # is untouched. The existence check is a complete fence rather than a
-    # partial one because `runs.task_id` is a foreign key onto `tasks.id`: an
-    # engineering run whose `task_id` names no Task cannot be persisted at all.
-    # The question is decided here, server-side, from a column-only existence
-    # check that materialises no entity for the transaction that follows.
+    # dispatch is refused, so the deploy-fix handoff — which leaves task_id
+    # null — is untouched. A non-null task_id must name a Task row: the route
+    # rejects an unknown reference before the Run insert reaches its FK. The
+    # question is decided here, server-side, from a column-only existence check
+    # that materialises no entity for the transaction that follows.
     if command.type is RunType.ENGINEERING and command.task_id is not None:
         names_a_task = await db.scalar(select(Task.id).where(Task.id == command.task_id))
-        if names_a_task is not None:
+        if names_a_task is None:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": ENGINEERING_TASK_REQUIRES_ADMISSION,
-                    "task_id": command.task_id,
-                },
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": ENGINEERING_TASK_NOT_FOUND, "task_id": command.task_id},
             )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": ENGINEERING_TASK_REQUIRES_ADMISSION,
+                "task_id": command.task_id,
+            },
+        )
     try:
         result = await start_paid_run(command, db)
     except PaidRunCommandConflict as exc:
