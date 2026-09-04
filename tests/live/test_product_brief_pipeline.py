@@ -39,13 +39,11 @@ from pipeline_helpers import (
     po_input_cursor,
     po_tool_boundary,
     read_product_setting,
-    read_qa_job_evidence,
     record_deployed_image_tags,
-    record_qa_run,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
     request_undeploy,
-    run_non_llm_qa,
+    run_brief_qa_and_retain_job_evidence,
     trigger_scaffold,
     verify_undeploy_residue,
     wait_application_not_deployed,
@@ -329,11 +327,11 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                     ctx, key=BRIEF_SETTINGS_KEY
                 )
                 ctx["qa_agent_type"] = configured_qa_executor()
-                ctx["qa_result"] = await run_non_llm_qa(
+                ctx["qa_result"] = await run_brief_qa_and_retain_job_evidence(
                     api_internal,
-                    ctx["story_id"],
+                    ctx,
+                    job_name=BRIEF_JOB_NAME,
                     timeout=QA_RUN_TIMEOUT,
-                    record=lambda run: record_qa_run(ctx, run),
                     on_poll=lambda: evidence_pass(ctx),
                 )
                 # QA is scheduled by the normal QA consumer.  This helper only
@@ -343,7 +341,6 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 ctx["brief_qa_executor_executed"] = (
                     ctx["run_evidence"].executed_qa_agent().as_dict()
                 )
-                await read_qa_job_evidence(ctx, job_name=BRIEF_JOB_NAME)
                 if await wait_story_completed(api_internal, ctx) is None:
                     yield ctx
                     return

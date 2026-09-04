@@ -45,6 +45,7 @@ def test_worker_container_discovery_uses_manager_label(monkeypatch):
 
     assert find_worker_container("abc") == "custom-prefix-abc"
     assert "label=com.codegen.worker.id=abc" in calls[0]
+    assert "label=com.codegen.type=worker" in calls[0]
     assert "worker-abc" not in calls[0]
 
 

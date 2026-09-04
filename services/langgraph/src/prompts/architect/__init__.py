@@ -92,7 +92,18 @@ manifest does not declare is refused by the product with "Job name not \
 declared" (404), and arguments its schema refuses are refused with 422 — \
 without that declaration the behaviour can never be invoked at all.
 - **The provider.** Plan the module that subscribes to `job_fired` and performs \
-the work, because the core will not.
+the work, because the core will not. It must be a live provider in the deployed \
+topology. Prefer the existing deployable `notifications_worker` when it can own \
+the behaviour. If a new provider service is genuinely needed, make its complete \
+deployment path part of the same behaviour task: Dockerfile and production \
+entrypoint; `services.yml`; that service's `env.contract.yaml` image key; the CI \
+build/push matrix; and wiring in both `infra/compose.base.yml` and \
+`infra/compose.prod.yml` with its broker startup dependency. A handler that \
+exists only in source, a test, or a Compose profile that production does not \
+start is not a provider. The task's acceptance criteria must also require the \
+provider to leave the stated durable output observable by QA. `dispatch_status: \
+dispatched` proves only that the core emitted `job_fired`; it cannot complete \
+this requirement.
 
 Then name the behaviour in the acceptance criteria, so QA can fire it. \
 The line is read by the platform, not by a human, and its form is exactly:

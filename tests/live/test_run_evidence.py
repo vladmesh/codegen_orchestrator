@@ -1906,6 +1906,20 @@ def test_brief_scenario_without_job_evidence_is_red_even_when_the_run_completed(
     assert "job_evidence" in artifact["verdict"]["reasons"][0]["detail"]
 
 
+def test_brief_job_evidence_reports_when_no_terminal_qa_run_can_attribute_it(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    del ctx["brief_job_evidence"]
+    ctx["brief_job_evidence_error"] = (
+        "the product job evidence was not read because no terminal QA Run exists to attribute it"
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["job_evidence"]["reason"] == ctx["brief_job_evidence_error"]
+
+
 @pytest.mark.parametrize(
     ("job_evidence", "expected_reason"),
     [

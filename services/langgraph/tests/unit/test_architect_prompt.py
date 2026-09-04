@@ -75,6 +75,21 @@ class TestScheduledBehaviourDirectives:
         assert 'provides: ["jobs.fire"]' in SYSTEM_PROMPT
         assert "subscribes to `job_fired`" in SYSTEM_PROMPT
 
+    def test_requires_a_provider_that_is_live_in_the_deployed_topology(self):
+        lower = SYSTEM_PROMPT.lower()
+        assert "deployed topology" in lower
+        assert "services.yml" in SYSTEM_PROMPT
+        assert "compose.base.yml" in SYSTEM_PROMPT
+        assert "compose.prod.yml" in SYSTEM_PROMPT
+        assert "durable output" in lower
+        assert "dispatch_status" in SYSTEM_PROMPT
+
+    def test_prefers_the_existing_worker_and_makes_a_new_provider_fully_deployable(self):
+        assert "notifications_worker" in SYSTEM_PROMPT
+        assert "Dockerfile" in SYSTEM_PROMPT
+        assert "env.contract.yaml" in SYSTEM_PROMPT
+        assert "CI build/push matrix" in SYSTEM_PROMPT
+
     def test_teaches_the_criterion_form_qa_fires_from(self):
         assert '- FIRE JOB <name> WITH {"json": "arguments"} THEN <observable>' in SYSTEM_PROMPT
 

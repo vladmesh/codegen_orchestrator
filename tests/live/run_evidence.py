@@ -2157,6 +2157,8 @@ def _brief_job_evidence_capture(ctx: dict, acceptance: Capture) -> Capture:
         )
     evidence = ctx.get("brief_job_evidence")
     if not isinstance(evidence, dict):
+        if isinstance(error := ctx.get("brief_job_evidence_error"), str) and error:
+            return Capture.missed(error)
         return Capture.missed("the product jobs/evidence response was not retained")
     required_fields = (
         "command_id",
