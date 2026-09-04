@@ -616,11 +616,11 @@ class WorkerManager:
         workspace_path = None
         factory_api_key = None
         if auth_mode == "stand_token":
-            if agent_type not in {AgentType.CLAUDE, AgentType.CODEX}:
-                raise RuntimeError("stand_token authentication is supported only for Claude and Codex workers")
+            if agent_type is not AgentType.CLAUDE:
+                raise RuntimeError("stand_token authentication is supported only for Claude workers")
             if agent_type is AgentType.CLAUDE and (api_key or "ANTHROPIC_API_KEY" in env_vars):
                 raise RuntimeError("ANTHROPIC_API_KEY conflicts with Claude stand_token authentication")
-            supplied = {"CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"}.intersection(env_vars)
+            supplied = {"CLAUDE_CODE_OAUTH_TOKEN"}.intersection(env_vars)
             if supplied:
                 raise RuntimeError(
                     "stand token credentials must be local to worker-manager, not env_vars: "
@@ -752,7 +752,6 @@ class WorkerManager:
                 stand_claude_code_oauth_token=(
                     settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
                 ),
-                stand_codex_access_token=(settings.STAND_CODEX_ACCESS_TOKEN if auth_mode == "stand_token" else None),
                 transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )

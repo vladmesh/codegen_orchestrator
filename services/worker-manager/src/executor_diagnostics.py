@@ -162,7 +162,7 @@ class ExecutorDiagnostics:
         expires_at: datetime,
         leases: dict[AgentType, int] | None,
     ) -> ExecutorDiagnostic:
-        if settings.LIVE_CONTOUR == "stand":
+        if settings.LIVE_CONTOUR == "stand" and executor is AgentType.CLAUDE:
             failures = self.stand_token_failures()
             failure = next((item for item in failures if item.name == f"{executor.value.title()} token"), None)
             if leases is None:

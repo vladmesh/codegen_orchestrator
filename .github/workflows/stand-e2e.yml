@@ -112,7 +112,6 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
-          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
           TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
@@ -148,25 +147,67 @@ jobs:
           fi
           exit "${release_status}"
 
-      # Token shape and JWT expiry above cannot prove that OpenAI will accept it.
-      # Authenticate with the exact published CLI before creating billed machines.
-      # The token crosses only this process boundary on stdin; both CLI streams
-      # are discarded and its profile lives only in the removed tmpfs container.
-      - name: Authenticate Codex against exact worker image
+      # A ChatGPT session is a complete credential profile, not an access token.
+      # Keep it in a 0700 runner directory and validate only its structure here;
+      # neither its bytes nor an individual token cross a log or queue boundary.
+      - name: Restore refreshable Codex auth profile
         env:
-          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          umask 077
+          profile="${RUNNER_TEMP}/stand-codex-profile"
+          install -d -m 0700 "${profile}"
+          export STAND_CODEX_PROFILE="${profile}"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("CODEX_AUTH_JSON")
+          if not raw:
+              raise SystemExit("codex_auth_missing: CODEX_AUTH_JSON is not configured for the stand environment")
+          try:
+              auth = json.loads(raw)
+          except json.JSONDecodeError:
+              raise SystemExit("codex_auth_invalid: CODEX_AUTH_JSON is not valid JSON") from None
+          tokens = auth.get("tokens") if isinstance(auth, dict) else None
+          if not isinstance(tokens, dict) or not all(
+              isinstance(tokens.get(name), str) and tokens[name]
+              for name in ("access_token", "refresh_token")
+          ):
+              raise SystemExit("codex_auth_invalid: CODEX_AUTH_JSON is not a refresh-capable ChatGPT session")
+          profile = Path(os.environ["STAND_CODEX_PROFILE"])
+          auth_path = profile / "auth.json"
+          auth_path.write_text(json.dumps(auth, separators=(",", ":")) + "\n")
+          auth_path.chmod(0o600)
+          initial_auth_path = Path(os.environ["RUNNER_TEMP"]) / "stand-codex-initial-auth.json"
+          initial_auth_path.write_text(json.dumps(auth, separators=(",", ":")) + "\n")
+          initial_auth_path.chmod(0o600)
+          config_path = profile / "config.toml"
+          config_path.write_text('cli_auth_credentials_store = "file"\n')
+          config_path.chmod(0o600)
+          PY
+
+      # The structural check above cannot prove that the current Codex CLI can
+      # refresh and use the session. Exercise the exact pinned image before any
+      # billed machine exists. The profile is bind-mounted read-write so any
+      # refresh becomes the profile later sent to the stand host and persisted.
+      - name: Authenticate Codex against exact worker image
+        id: codex-auth-preflight
         run: |
           set -euo pipefail
           if python3 - <<'PY'
           import os
           import subprocess
           import sys
+          from pathlib import Path
 
           image = "worker-base-codex:latest"
           expected_version = b"codex-cli 0.144.6\n"
-          child_env = {
-              name: value for name, value in os.environ.items() if name != "CODEX_ACCESS_TOKEN"
-          }
+          profile = Path(os.environ["RUNNER_TEMP"]) / "stand-codex-profile"
+          if not (profile / "auth.json").is_file() or not (profile / "config.toml").is_file():
+              raise SystemExit(1)
           common = ["docker", "run", "--rm", "--entrypoint", "codex", image]
           try:
               version = subprocess.run(
@@ -176,39 +217,79 @@ jobs:
                   stderr=subprocess.DEVNULL,
                   timeout=30,
                   check=False,
-                  env=child_env,
               )
           except (OSError, subprocess.TimeoutExpired):
               raise SystemExit(2)
           if version.returncode != 0 or version.stdout != expected_version:
               raise SystemExit(3)
           try:
-              login = subprocess.run(
+              identity = subprocess.run(
+                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-u"],
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  timeout=30,
+                  check=False,
+              )
+              group = subprocess.run(
+                  ["docker", "run", "--rm", "--entrypoint", "id", image, "-g"],
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  timeout=30,
+                  check=False,
+              )
+              worker_uid = identity.stdout.decode().strip()
+              worker_gid = group.stdout.decode().strip()
+              if identity.returncode or group.returncode or not worker_uid.isdecimal() or not worker_gid.isdecimal():
+                  raise SystemExit(2)
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                  output.write(f"worker_uid={worker_uid}\nworker_gid={worker_gid}\n")
+              subprocess.run(
+                  ["sudo", "chown", "-R", f"{worker_uid}:{worker_gid}", str(profile)],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  timeout=30,
+                  check=True,
+              )
+              # `codex exec` is intentionally the small authenticated request:
+              # `login status` would only inspect local files and cannot exercise
+              # refresh-token use against the exact published CLI.
+              authenticated = subprocess.run(
                   [
                       "docker",
                       "run",
                       "--rm",
-                      "-i",
-                      "--tmpfs",
-                      "/home/worker/.codex:mode=1777",
+                      "--mount",
+                      f"type=bind,source={profile},target=/home/worker/.codex",
                       "--entrypoint",
-                      "sh",
+                      "codex",
                       image,
-                      "-c",
-                      'printf \'cli_auth_credentials_store = "file"\\n\' > "$CODEX_HOME/config.toml"\nexec codex login --with-access-token',
+                      "exec",
+                      "--skip-git-repo-check",
+                      "Reply with exactly OK.",
                   ],
-                  input=os.environ["CODEX_ACCESS_TOKEN"].encode(),
                   stdout=subprocess.DEVNULL,
                   stderr=subprocess.DEVNULL,
-                  timeout=90,
+                  timeout=180,
                   check=False,
-                  env=child_env,
               )
           except (OSError, subprocess.TimeoutExpired):
               raise SystemExit(2)
-          if login.returncode in {125, 126, 127}:
+          except subprocess.CalledProcessError:
               raise SystemExit(2)
-          raise SystemExit(0 if login.returncode == 0 else 1)
+          finally:
+              try:
+                  subprocess.run(
+                      ["sudo", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(profile)],
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                      timeout=30,
+                      check=True,
+                  )
+              except (OSError, subprocess.SubprocessError):
+                  raise SystemExit(2) from None
+          if authenticated.returncode in {125, 126, 127}:
+              raise SystemExit(2)
+          raise SystemExit(0 if authenticated.returncode == 0 else 1)
           PY
           then
             echo "codex_auth_preflight: authenticated with the exact published worker image."
@@ -218,7 +299,7 @@ jobs:
           fi
           case "${auth_status}" in
             1)
-              echo "codex_auth_not_confirmed: verify or rotate CODEX_ACCESS_TOKEN with an active Codex access token whose owner has Codex Local permission; retry if the external service is unavailable." >&2
+              echo "codex_auth_not_confirmed: replace CODEX_AUTH_JSON with a current ChatGPT session created by codex login; retry if the external service is unavailable." >&2
               ;;
             2)
               echo "codex_auth_unavailable: the pinned worker image could not complete its authentication check; retry after the external service recovers." >&2
@@ -231,6 +312,19 @@ jobs:
               ;;
           esac
           exit 1
+
+      # Persist before provisioning: the exact-image probe may already have
+      # rotated either session token, and a later infrastructure failure must
+      # not leave the next run seeded from the old value.
+      - name: Persist preflight-refreshed Codex auth profile
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN}" || { echo "codex_auth_persist_refused: STAND_GITHUB_SECRETS_WRITE_TOKEN is not configured" >&2; exit 1; }
+          profile="${RUNNER_TEMP}/stand-codex-profile"
+          gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${profile}/auth.json"
 
       - name: Preflight ephemeral machines
         env:
@@ -376,7 +470,8 @@ jobs:
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
-          STAND_CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          HOST_CODEX_HOME: /opt/secrets/stand-codex
+          HOST_CODEX_VALIDATION_PATH: /host-codex
           PO_LLM_MODEL: ${{ secrets.PO_LLM_MODEL }}
           PO_LLM_BASE_URL: ${{ secrets.PO_LLM_BASE_URL }}
           PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
@@ -409,7 +504,7 @@ jobs:
               "REGISTRY_USER", "REGISTRY_PASSWORD", "REGISTRY_PASSWORD_HASH", "LOKI_PUSH_USER",
               "LOKI_PUSH_PASSWORD", "LOKI_PUSH_PASSWORD_HASH", "LOKI_URL", "ADMIN_USER",
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
-              "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "STAND_CODEX_ACCESS_TOKEN", "PO_LLM_MODEL",
+              "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
               "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "SUMMARIZATION_MAX_TOKENS",
               "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS", "LIVE_CONTOUR",
@@ -426,6 +521,8 @@ jobs:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           RUNTIME_UID: ${{ steps.identity.outputs.runtime_uid }}
           RUNTIME_GID: ${{ steps.identity.outputs.runtime_gid }}
+          CODEX_WORKER_UID: ${{ steps.codex-auth-preflight.outputs.worker_uid }}
+          CODEX_WORKER_GID: ${{ steps.codex-auth-preflight.outputs.worker_gid }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
@@ -437,6 +534,16 @@ jobs:
           # as root and simply never did.
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets"
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID} /opt/secrets/stand-codex"
+          scp -p -i "${key_path}" ${SSH_OPTS} \
+            "${RUNNER_TEMP}/stand-codex-profile/auth.json" \
+            "${RUNNER_TEMP}/stand-codex-profile/config.toml" \
+            root@"${PROD_HOST}":/opt/secrets/stand-codex/
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "chown ${CODEX_WORKER_UID}:${CODEX_WORKER_GID} /opt/secrets/stand-codex /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml \
+             && chmod 0600 /opt/secrets/stand-codex/auth.json /opt/secrets/stand-codex/config.toml"
+          touch "${RUNNER_TEMP}/stand-codex-remote-profile-installed"
           scp -i "${key_path}" ${SSH_OPTS} .stand-github-app.pem \
             root@"${PROD_HOST}":/opt/secrets/github_app.pem
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
@@ -602,6 +709,50 @@ jobs:
           remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
+
+      # The stand is serialized, so one profile has one writer at a time. Pull a
+      # worker-refreshed file before cleanup tears down the only host that has
+      # it, then update the same protected Environment secret used for restore.
+      # If the host never became reachable, the authenticated runner preflight
+      # profile is still a safe current value to persist.
+      - name: Persist refreshed Codex auth profile
+        if: ${{ always() && steps.codex-auth-preflight.outcome == 'success' }}
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          GH_TOKEN: ${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          profile="${RUNNER_TEMP}/stand-codex-profile"
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          test -f "${RUNNER_TEMP}/stand-codex-remote-profile-installed" || exit 0
+          test -n "${PROD_HOST}" && test -f "${key_path}" || { echo "codex_auth_persist_refused: remote profile was installed but is no longer reachable" >&2; exit 1; }
+          remote_auth="${RUNNER_TEMP}/stand-codex-refreshed-auth.json"
+          scp -q -i "${key_path}" ${SSH_OPTS} \
+            root@"${PROD_HOST}":/opt/secrets/stand-codex/auth.json "${remote_auth}" || {
+              echo "codex_auth_persist_refused: refreshed remote profile could not be retrieved" >&2
+              exit 1
+          }
+          chmod 0600 "${remote_auth}"
+          python3 - "${remote_auth}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          try:
+              auth = json.loads(Path(sys.argv[1]).read_text())
+          except (OSError, json.JSONDecodeError):
+              raise SystemExit("codex_auth_persist_refused: refreshed profile is unreadable") from None
+          tokens = auth.get("tokens") if isinstance(auth, dict) else None
+          if not isinstance(tokens, dict) or not all(
+              isinstance(tokens.get(name), str) and tokens[name]
+              for name in ("access_token", "refresh_token")
+          ):
+              raise SystemExit("codex_auth_persist_refused: refreshed profile is not refresh-capable")
+          PY
+          touch "${RUNNER_TEMP}/stand-codex-refreshed-auth-valid"
+          test -n "${GH_TOKEN}" || { echo "codex_auth_persist_refused: STAND_GITHUB_SECRETS_WRITE_TOKEN is not configured" >&2; exit 1; }
+          gh secret set CODEX_AUTH_JSON --env stand --repo "${GITHUB_REPOSITORY}" < "${remote_auth}"
 
       # Copy only the runner's public reports.  This short-lived handoff is how
       # the fresh cleanup runner can build the one final acceptance artifact.
@@ -780,7 +931,6 @@ jobs:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          STAND_CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -797,11 +947,20 @@ jobs:
             echo 'redaction canary was not detected' >&2
             exit 2
           fi
+          profile_args=(
+            --protected-profile "${RUNNER_TEMP}/stand-codex-initial-auth.json"
+            --protected-profile "${RUNNER_TEMP}/stand-codex-profile/auth.json"
+          )
+          if [ -f "${RUNNER_TEMP}/stand-codex-refreshed-auth-valid" ]; then
+            profile_args+=(--protected-profile "${RUNNER_TEMP}/stand-codex-refreshed-auth.json")
+          fi
           python3 -m scripts.stand_acceptance admit \
             --artifact "${RUNNER_TEMP}/stand-e2e-handoff" \
             --status "${RUNNER_TEMP}/stand-e2e-handoff-admission.json" \
             --summary "${GITHUB_STEP_SUMMARY}" \
-            --protected-env
+            --protected-env \
+            "${profile_args[@]}" \
+            --profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json"
 
       - name: Upload cleanup handoff
         if: ${{ always() && steps.handoff-admission.outcome == 'success' }}
@@ -910,7 +1069,6 @@ jobs:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
           STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          STAND_CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -931,7 +1089,8 @@ jobs:
             --artifact "${RUNNER_TEMP}/stand-acceptance" \
             --status "${RUNNER_TEMP}/stand-acceptance-admission.json" \
             --summary "${GITHUB_STEP_SUMMARY}" \
-            --protected-env
+            --protected-env \
+            --require-profile-attestation "${RUNNER_TEMP}/stand-e2e-handoff/profile-redaction-attestation.json"
 
       - name: Upload acceptance artifact
         if: ${{ always() && steps.final-admission.outcome == 'success' }}

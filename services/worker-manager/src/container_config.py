@@ -30,7 +30,6 @@ class WorkerContainerConfig:
     host_codex_home: Optional[str] = None
     api_key: Optional[str] = None
     stand_claude_code_oauth_token: Optional[str] = None
-    stand_codex_access_token: Optional[str] = None
     workspace_host_path: Optional[str] = None
     transcript_host_path: Optional[str] = None
     transcript_max_bytes: int = 5 * 1024 * 1024
@@ -80,9 +79,6 @@ class WorkerContainerConfig:
         if self.auth_mode == "stand_token":
             if self.agent_type == AgentType.CLAUDE and self.stand_claude_code_oauth_token:
                 env["CLAUDE_CODE_OAUTH_TOKEN"] = self.stand_claude_code_oauth_token
-            if self.agent_type == AgentType.CODEX and self.stand_codex_access_token:
-                env["CODEX_ACCESS_TOKEN"] = self.stand_codex_access_token
-
         return env
 
     def to_volume_mounts(self) -> Dict[str, Dict[str, str]]:

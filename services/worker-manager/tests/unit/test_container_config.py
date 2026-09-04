@@ -153,24 +153,21 @@ class TestWorkerContainerConfig:
         assert "CLAUDE_CONFIG_DIR" not in env
         assert "/host/.claude" not in volumes
 
-    def test_stand_token_mode_injects_codex_token_without_a_profile_mount(self):
-        token = "codex-test-token"
+    def test_codex_host_session_mounts_a_refreshable_profile_read_write(self):
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
             agent_type="codex",
             capabilities=["GIT"],
-            auth_mode="stand_token",
-            stand_codex_access_token=token,
+            auth_mode="host_session",
             host_codex_home="/host/.codex",
         )
 
         env = config.to_env_vars(**BROKER_ARGS)
         volumes = config.to_volume_mounts()
 
-        assert env["CODEX_ACCESS_TOKEN"] == token
-        assert "/host/.codex" not in volumes
-        assert all(mount["bind"] != "/home/worker/.codex" for mount in volumes.values())
+        assert "CODEX_ACCESS_TOKEN" not in env
+        assert volumes["/host/.codex"] == {"bind": "/home/worker/.codex", "mode": "rw"}
 
     def test_to_docker_run_kwargs_requires_a_dedicated_network(self):
         """Coding workers fail closed instead of falling back to host networking."""

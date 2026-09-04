@@ -22,8 +22,8 @@ logger = structlog.get_logger()
 
 
 def resolve_local_auth_mode(*, requested_mode: str, agent_type, live_contour: str | None) -> str:
-    """Select the stand's local token mode without widening the queue producer API."""
-    if live_contour == "stand" and requested_mode == "host_session" and agent_type.value in {"claude", "codex"}:
+    """Select the stand's local auth without widening the queue producer API."""
+    if live_contour == "stand" and requested_mode == "host_session" and agent_type.value == "claude":
         return "stand_token"
     return requested_mode
 

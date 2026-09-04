@@ -1,11 +1,12 @@
 """Tests for the allowlisted environment passed to agent subprocesses."""
 
 import os
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
-from worker_wrapper.wrapper import WorkerWrapper
+from worker_wrapper.wrapper import WorkerWrapper, codex_profile_lock
 
 
 def _make_config(**overrides) -> WorkerWrapperConfig:
@@ -44,6 +45,35 @@ def _fake_subprocess(stdout: bytes = b"", stderr: bytes = b""):
         return proc
 
     return fake_exec, captured
+
+
+def test_codex_profile_lock_serializes_cross_container_session_use(tmp_path):
+    """An advisory lock in the mounted profile is shared by separate workers."""
+    acquired = threading.Event()
+
+    def contender():
+        with codex_profile_lock(tmp_path):
+            acquired.set()
+
+    with codex_profile_lock(tmp_path):
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert not acquired.wait(timeout=0.1)
+    assert acquired.wait(timeout=1)
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+
+
+@pytest.mark.asyncio
+async def test_codex_host_session_fails_fast_without_a_mounted_profile():
+    """A profile-backed Codex turn cannot silently run without its shared state."""
+    wrapper = _make_wrapper(agent_type="codex")
+
+    with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+        with pytest.raises(
+            RuntimeError, match="CODEX_HOME is not a mounted refreshable Codex profile"
+        ):
+            await wrapper.execute_agent({"prompt": "test"})
 
 
 class TestAgentSubprocessEnv:
@@ -238,59 +268,3 @@ class TestAgentSubprocessEnv:
         ):
             with pytest.raises(RuntimeError, match="auth failed"):
                 await wrapper.execute_agent({"prompt": "test"})
-
-    @pytest.mark.asyncio
-    async def test_codex_stand_token_login_uses_stdin_and_does_not_reach_subprocess_env_or_argv(
-        self, tmp_path
-    ):
-        wrapper = _make_wrapper(agent_type="codex", auth_mode="stand_token", worker_type="qa")
-        calls: list[tuple[tuple, dict, AsyncMock]] = []
-
-        async def fake_exec(*args, **kwargs):
-            proc = AsyncMock()
-            proc.communicate = AsyncMock(return_value=(b"", b""))
-            proc.returncode = 0
-            calls.append((args, kwargs, proc))
-            return proc
-
-        with (
-            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
-            patch.object(wrapper, "_resolve_prompt", return_value="do stuff"),
-            patch.dict(
-                "os.environ",
-                {
-                    "PATH": "/usr/bin",
-                    "HOME": "/home/worker",
-                    "CODEX_HOME": str(tmp_path / ".codex"),
-                    "CODEX_ACCESS_TOKEN": "fake-codex-token",
-                    "HTTPS_PROXY": "http://qa-proxy:3128",
-                    "https_proxy": "http://qa-proxy:3128",
-                    "NO_PROXY": "localhost,127.0.0.1",
-                    "no_proxy": "localhost,127.0.0.1",
-                },
-                clear=True,
-            ),
-        ):
-            await wrapper.execute_agent({"prompt": "test"})
-
-        login_args, login_kwargs, login_proc = calls[0]
-        agent_args, agent_kwargs, _agent_proc = calls[1]
-        assert login_args == ("codex", "login", "--with-access-token")
-        assert "fake-codex-token" not in login_args
-        assert "CODEX_ACCESS_TOKEN" not in login_kwargs["env"]
-        login_proc.communicate.assert_awaited_once_with(b"fake-codex-token")
-        assert login_kwargs["env"] == {
-            "HOME": "/home/worker",
-            "PATH": "/usr/bin",
-            "CODEX_HOME": str(tmp_path / ".codex"),
-            "HTTPS_PROXY": "http://qa-proxy:3128",
-            "https_proxy": "http://qa-proxy:3128",
-            "NO_PROXY": "localhost,127.0.0.1",
-            "no_proxy": "localhost,127.0.0.1",
-        }
-        assert "fake-codex-token" not in agent_args
-        assert "CODEX_ACCESS_TOKEN" not in agent_kwargs["env"]
-        assert (
-            tmp_path / ".codex" / "config.toml"
-        ).read_text() == 'cli_auth_credentials_store = "file"\n'
-        assert not (tmp_path / ".codex" / "auth.json").exists()

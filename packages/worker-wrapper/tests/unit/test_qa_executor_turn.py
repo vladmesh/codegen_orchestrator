@@ -308,9 +308,11 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
         for name in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"):
             assert name not in env
 
-    async def test_a_codex_qa_turn_uses_the_non_git_workspace_mode(self):
+    async def test_a_codex_qa_turn_uses_the_non_git_workspace_mode(self, tmp_path):
         wrapper = _wrapper(agent_type="codex")
         captured: dict = {}
+        profile = tmp_path / "codex-profile"
+        profile.mkdir(mode=0o700)
 
         async def fake_exec(*args, **kwargs):
             captured["cmd"] = args
@@ -321,7 +323,7 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
 
         with (
             patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
-            patch.dict(os.environ, _QA_CONTAINER_ENV, clear=True),
+            patch.dict(os.environ, _QA_CONTAINER_ENV | {"CODEX_HOME": str(profile)}, clear=True),
         ):
             await wrapper.execute_agent(
                 {"prompt": "Read AGENTS.md and TASK.md, then submit a verdict."}

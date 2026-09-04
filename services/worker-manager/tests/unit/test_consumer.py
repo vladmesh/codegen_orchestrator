@@ -91,7 +91,7 @@ def _create_command() -> CreateWorkerCommand:
     ("requested_mode", "agent_type", "live_contour", "expected"),
     [
         ("host_session", AgentType.CLAUDE, "stand", "stand_token"),
-        ("host_session", AgentType.CODEX, "stand", "stand_token"),
+        ("host_session", AgentType.CODEX, "stand", "host_session"),
         ("host_session", AgentType.CLAUDE, None, "host_session"),
         ("api_key", AgentType.CLAUDE, "stand", "api_key"),
     ],

@@ -210,11 +210,11 @@ async def test_stand_token_is_not_a_docker_label():
     redis.set = AsyncMock()
     redis.hset = AsyncMock()
     wrapper = _make_docker_mock()
-    token = "fake-stand-token"
+    token = "fake-stand-claude-token"
     config = WorkerContainerConfig(
         worker_id="stand-label-boundary",
         worker_type="developer",
-        agent_type=AgentType.CODEX,
+        agent_type=AgentType.CLAUDE,
         capabilities=[],
         auth_mode="stand_token",
     )
@@ -223,7 +223,7 @@ async def test_stand_token_is_not_a_docker_label():
         "stand-label-boundary",
         "worker:latest",
         ownership=_OWNERSHIP,
-        env_vars={"CODEX_ACCESS_TOKEN": token},
+        env_vars={"CLAUDE_CODE_OAUTH_TOKEN": token},
         volumes={},
         network_name="codegen_worker",
         create_dev_network=False,

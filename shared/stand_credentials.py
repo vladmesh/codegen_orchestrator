@@ -7,17 +7,13 @@ to log, persist, or forward a credential value.
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-import json
 from typing import Any
 
 CLAUDE_MINIMUM_TTL = timedelta(minutes=30)
-CODEX_MINIMUM_TTL = timedelta(minutes=30)
-JWT_PART_COUNT = 3
 
 
 @dataclass(frozen=True)
@@ -37,23 +33,20 @@ class CredentialShape(StrEnum):
 
 @dataclass(frozen=True)
 class StandTokenCredentials:
-    """Canonical, transient credentials consumed only by local validation."""
+    """Canonical Claude credentials consumed only by local validation."""
 
     claude_token: str | None
     claude_expires_at: str | None
-    codex_token: str | None
 
 
-_CREDENTIAL_NAMES: dict[CredentialShape, tuple[str, str, str]] = {
+_CREDENTIAL_NAMES: dict[CredentialShape, tuple[str, str]] = {
     CredentialShape.PRECREATE_RUNNER: (
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
-        "CODEX_ACCESS_TOKEN",
     ),
     CredentialShape.STAND_HOST: (
         "STAND_CLAUDE_CODE_OAUTH_TOKEN",
         "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
-        "STAND_CODEX_ACCESS_TOKEN",
     ),
 }
 
@@ -74,28 +67,11 @@ def bind_stand_token_credentials(
     The supported names are deliberately centralized here. Callers select a
     shape but must not translate individual credential names themselves.
     """
-    claude_token, claude_expires_at, codex_token = _CREDENTIAL_NAMES[shape]
+    claude_token, claude_expires_at = _CREDENTIAL_NAMES[shape]
     return StandTokenCredentials(
         claude_token=_credential_value(configuration, claude_token),
         claude_expires_at=_credential_value(configuration, claude_expires_at),
-        codex_token=_credential_value(configuration, codex_token),
     )
-
-
-def _jwt_expiry(token: str) -> datetime | None:
-    """Return a JWT expiry or None when it cannot be independently verified."""
-    parts = token.split(".")
-    if len(parts) != JWT_PART_COUNT or not parts[1]:
-        return None
-    try:
-        encoded = parts[1] + "=" * (-len(parts[1]) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(encoded.encode("ascii")))
-        expiry = payload["exp"]
-        if isinstance(expiry, bool) or not isinstance(expiry, (int, float)):
-            return None
-        return datetime.fromtimestamp(expiry, UTC)
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
 
 
 def _operator_expiry(value: str | None) -> datetime | None:
@@ -109,26 +85,6 @@ def _operator_expiry(value: str | None) -> datetime | None:
     if expiry.tzinfo is None or expiry.utcoffset() is None:
         return None
     return expiry.astimezone(UTC)
-
-
-def _token_failure(
-    *, name: str, token: str | None, minimum_ttl: timedelta, now: datetime
-) -> CredentialFailure | None:
-    if not token or not token.strip():
-        return CredentialFailure(name, "is missing")
-    expires_at = _jwt_expiry(token.strip())
-    if expires_at is None:
-        return CredentialFailure(name, "has an unreadable or unverifiable expiry")
-    remaining = expires_at - now
-    if remaining <= timedelta(0):
-        return CredentialFailure(name, "is expired")
-    if remaining <= minimum_ttl:
-        return CredentialFailure(
-            name,
-            "has less than the required "
-            f"{int(minimum_ttl.total_seconds() // 60)} minutes remaining",
-        )
-    return None
 
 
 def _claude_token_failure(
@@ -161,19 +117,11 @@ def validate_stand_token_credentials(
     shape: CredentialShape = CredentialShape.PRECREATE_RUNNER,
     now: datetime | None = None,
 ) -> list[CredentialFailure]:
-    """Bind one caller shape and return value-free stand token failures."""
+    """Bind one caller shape and return value-free Claude token failures."""
     now = now or datetime.now(UTC)
     credentials = bind_stand_token_credentials(configuration, shape=shape)
     return [
         failure
-        for failure in (
-            _claude_token_failure(credentials=credentials, now=now),
-            _token_failure(
-                name="Codex token",
-                token=credentials.codex_token,
-                minimum_ttl=CODEX_MINIMUM_TTL,
-                now=now,
-            ),
-        )
+        for failure in (_claude_token_failure(credentials=credentials, now=now),)
         if failure is not None
     ]
