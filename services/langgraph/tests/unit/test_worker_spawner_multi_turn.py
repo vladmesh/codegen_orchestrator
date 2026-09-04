@@ -122,6 +122,25 @@ class TestWaitForResponseLiveness:
 
 class TestSendTaskToWorker:
     @pytest.mark.asyncio
+    async def test_first_turn_carries_the_configured_story_branch(self):
+        """The wrapper must know the branch it is responsible for pushing."""
+        from src.clients.worker_spawner import _send_turn
+
+        redis_client = AsyncMock()
+        await _send_turn(
+            redis_client,
+            "dev-123",
+            "request-123",
+            _OWNERSHIP.attempt_id,
+            "complete the task",
+            None,
+            "story/story-123",
+        )
+
+        payload = json.loads(redis_client.xadd.await_args.args[1]["data"])
+        assert payload["branch"] == "story/story-123"
+
+    @pytest.mark.asyncio
     @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
     @patch("redis.asyncio.Redis.from_url")
     async def test_restart_adopts_the_active_turn_without_publishing_a_second_prompt(
