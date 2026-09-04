@@ -109,6 +109,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                msg=_make_deploy_msg(),
                 application_id=42,
             )
 
@@ -153,6 +154,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                msg=_make_deploy_msg(),
             )
 
             for call in mock_api.method_calls:
@@ -194,6 +196,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                msg=_make_deploy_msg(),
                 application_id=42,
                 temporary_access_grant=grant,
                 temporary_access_operation="revoke",
@@ -237,6 +240,7 @@ class TestHandleDeploySuccess:
                 telegram_chat_id="123",
                 story_id="story-1",
                 redis=mock_redis,
+                msg=_make_deploy_msg(),
                 application_id=42,
                 temporary_access_grant=_temporary_grant(),
                 temporary_access_operation="grant",

@@ -20,10 +20,11 @@ arrived into a deploy handed to QA.
 
 `SETTINGS_SEED_CONVERGENT_FAILURES` answers a narrower routing question. A
 failure in that set may answer differently after a same-commit redeploy, so a
-mixed result retries if it contains even one such failure. An all-deterministic
-result — an undeclared key, schema-refused value, or missing write capability —
-goes straight to the artifact-repair terminal path instead of consuming the
-deploy retry bound.
+mixed result retries if it contains even one such failure. An exact
+`KEY_NOT_DECLARED` result dispatches one bounded Engineering manifest repair
+instead of consuming the deploy retry bound; other all-deterministic results —
+a schema-refused value or missing write capability — go straight to the
+artifact-repair terminal path.
 """
 
 from __future__ import annotations

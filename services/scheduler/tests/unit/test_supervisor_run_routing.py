@@ -32,6 +32,7 @@ from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.settings_seed import (
+    CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL,
     SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingsSeedFailureKind,
 )
@@ -73,6 +74,10 @@ _WAITING_SECRET_RESULT = {
 CONVERGENT_SETTINGS_SEED_FAILURES = sorted(SETTINGS_SEED_CONVERGENT_FAILURES)
 DETERMINISTIC_SETTINGS_SEED_FAILURES = sorted(
     set(SettingsSeedFailureKind) - SETTINGS_SEED_CONVERGENT_FAILURES
+)
+MANIFEST_REPAIR_SETTINGS_SEED_FAILURES = (SettingsSeedFailureKind.KEY_NOT_DECLARED,)
+TERMINAL_SETTINGS_SEED_FAILURES = sorted(
+    set(DETERMINISTIC_SETTINGS_SEED_FAILURES) - set(MANIFEST_REPAIR_SETTINGS_SEED_FAILURES)
 )
 
 
@@ -638,10 +643,10 @@ class TestSuperviseDeployingStories:
         ]
 
     @pytest.mark.asyncio
-    async def test_code_fix_publish_failure_keeps_exact_admission_for_recovery(
+    async def test_code_fix_publish_failure_fails_visibly_without_an_in_progress_orphan(
         self, api_client, redis_client
     ):
-        """A failed publish response cannot prove the deploy-fix was not accepted."""
+        """A failed publish response is terminal, visible and never advances the story."""
         from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -656,16 +661,21 @@ class TestSuperviseDeployingStories:
         )
         redis_client.publish_message.side_effect = RuntimeError("redis unavailable")
 
-        result = await supervise_deploying_stories(api_client, redis_client)
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
+        assert result["failed"] == 1
         api_client.abort_paid_run_pre_handoff.assert_not_awaited()
+        api_client.transition_story.assert_not_awaited()
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_code_fix_run_creation_failure_releases_exact_admission_before_handoff(
-        self, api_client, redis_client
-    ):
-        """A deploy-fix Run failure is pre-handoff and cannot strand an active hold."""
+    async def test_code_fix_paid_start_failure_fails_story_visibly(self, api_client, redis_client):
+        """An unknown paid-start outcome cannot silently retry the same fixed identity."""
         from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -680,12 +690,18 @@ class TestSuperviseDeployingStories:
         )
         api_client.start_paid_run.side_effect = RuntimeError("api unavailable")
 
-        result = await supervise_deploying_stories(api_client, redis_client)
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
+        assert result["failed"] == 1
         api_client.release_engineering_budget_admission.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
         api_client.update_run.assert_not_awaited()
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_code_fix_re_admission_denial_has_no_engineering_handoff(
@@ -2480,10 +2496,10 @@ class TestSettingsSeedFailureRouting:
         redis_client._redis.incr.assert_awaited_once_with("deploy:retries:story-1")
 
     @pytest.mark.asyncio
-    async def test_reconciliation_routes_a_deterministic_seed_to_artifact_repair(
+    async def test_reconciliation_routes_an_undeclared_seed_to_manifest_repair(
         self, api_client, redis_client
     ):
-        """A future mixed producer cannot bypass the terminal seed policy."""
+        """Owner-grant reconciliation cannot bypass the automatic manifest repair."""
         from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -2509,17 +2525,18 @@ class TestSettingsSeedFailureRouting:
             disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
         )
 
-        with patch(
-            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
-        ) as notify:
-            result = await supervise_deploying_stories(api_client, redis_client)
+        result = await supervise_deploying_stories(api_client, redis_client)
 
-        assert result["failed"] == 1
+        assert result["redispatched"] == 1
         assert result["retried"] == 0
-        api_client.fail_story.assert_awaited_once_with("story-1")
-        notify.assert_awaited_once()
-        assert SettingsSeedFailureKind.KEY_NOT_DECLARED.value in notify.await_args.args[2]
+        api_client.fail_story.assert_not_awaited()
         redis_client._redis.incr.assert_not_awaited()
+        eng_calls = [
+            call
+            for call in redis_client.publish_message.call_args_list
+            if call.args[0] == ENGINEERING_QUEUE
+        ]
+        assert len(eng_calls) == 1
 
     @pytest.mark.asyncio
     async def test_reconciliation_generic_validation_refusal_keeps_the_deploy_bound(
@@ -2597,7 +2614,7 @@ class TestSettingsSeedFailureRouting:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "failure",
-        DETERMINISTIC_SETTINGS_SEED_FAILURES,
+        TERMINAL_SETTINGS_SEED_FAILURES,
     )
     async def test_a_deterministic_seed_failure_fails_for_artifact_repair_without_retry(
         self, api_client, redis_client, failure
@@ -2635,6 +2652,153 @@ class TestSettingsSeedFailureRouting:
             c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
         ]
         assert deploy_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_undeclared_confirmed_key_dispatches_a_bounded_manifest_repair(
+        self, api_client, redis_client
+    ):
+        """The precise Core refusal is repairable code work, not a retry or terminal story."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+                "settings_seed": [
+                    _seeded(None, key="reminders.default_hour"),
+                    _seeded(SettingsSeedFailureKind.KEY_NOT_DECLARED, key="reminders.locale"),
+                ],
+            },
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 1
+        assert result["failed"] == 0
+        assert result["retried"] == 0
+        api_client.fail_story.assert_not_awaited()
+        redis_client._redis.incr.assert_not_awaited()
+        eng_calls = [
+            call
+            for call in redis_client.publish_message.call_args_list
+            if call.args[0] == ENGINEERING_QUEUE
+        ]
+        assert len(eng_calls) == 1
+        message = eng_calls[0].args[1]
+        assert message.action == "fix"
+        assert "reminders.locale" in message.description
+        assert CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL in message.description
+        assert "settings_schema.properties" in message.description
+        assert "Draft 2020-12" in message.description
+        assert "make generate-from-spec" in message.description
+        assert "platform writes the confirmed value after deploy" in message.description
+
+    @pytest.mark.asyncio
+    async def test_a_second_undeclared_seed_exhausts_the_repair_bound(
+        self, api_client, redis_client
+    ):
+        """The repair worker's next deploy carries its attempt into the seed result."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
+                "deploy_fix_attempt": 2,
+                "settings_seed": [_seeded(SettingsSeedFailureKind.KEY_NOT_DECLARED)],
+            },
+        )
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        assert result["redispatched"] == 0
+        api_client.start_paid_run.assert_not_awaited()
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        assert "deploy fix retries exhausted" in notify.await_args.args[2]
+
+    @pytest.mark.asyncio
+    async def test_an_undeclared_key_publish_failure_is_visible_and_not_orphaned(
+        self, api_client, redis_client
+    ):
+        """Unknown repair publication cannot leave an in-progress story or repeat its id."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
+                "settings_seed": [_seeded(SettingsSeedFailureKind.KEY_NOT_DECLARED)],
+            },
+        )
+        redis_client.publish_message.side_effect = RuntimeError("redis unavailable")
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        assert result["redispatched"] == 0
+        api_client.transition_story.assert_not_awaited()
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        assert "handoff outcome is unknown" in notify.await_args.args[2]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failures",
+        [
+            (SettingsSeedFailureKind.KEY_NOT_DECLARED, SettingsSeedFailureKind.VALUE_REJECTED),
+            (
+                SettingsSeedFailureKind.KEY_NOT_DECLARED,
+                SettingsSeedFailureKind.CAPABILITY_UNAVAILABLE,
+            ),
+        ],
+    )
+    async def test_mixed_deterministic_seed_failures_remain_terminal(
+        self, api_client, redis_client, failures
+    ):
+        """Only the exact Core-v1 undeclared-key set earns an automatic repair."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
+                "settings_seed": [_seeded(failure) for failure in failures],
+            },
+        )
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        assert result["redispatched"] == 0
+        assert result["retried"] == 0
+        api_client.start_paid_run.assert_not_awaited()
+        redis_client._redis.incr.assert_not_awaited()
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        assert "key_not_declared,value_rejected" in notify.await_args.args[2] or (
+            "capability_unavailable,key_not_declared" in notify.await_args.args[2]
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

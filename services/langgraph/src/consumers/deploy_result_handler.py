@@ -119,6 +119,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
     telegram_chat_id: str,
     story_id: str,
     redis: RedisStreamClient,
+    msg: DeployMessage,
     application_id: int | None = None,
     grant_intent: GrantIntent | None = None,
     temporary_access_grant: TemporaryAccessGrantDTO | None = None,
@@ -148,6 +149,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 redis=redis,
                 reason=failure,
                 application_id=application_id,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
     if temporary_access_grant is not None and temporary_access_operation is not None:
@@ -169,6 +171,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 redis=redis,
                 reason=failure,
                 application_id=application_id,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
     settings_seed = await _seed_initial_settings(
@@ -189,6 +192,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
             failures=failures,
             application_id=application_id,
             settings_seed=settings_seed,
+            deploy_fix_attempt=msg.deploy_fix_attempt,
         )
 
     logger.info(
@@ -204,6 +208,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
         application_id=application_id,
         bot_username=result.get("bot_username"),
         settings_seed=settings_seed,
+        deploy_fix_attempt=msg.deploy_fix_attempt,
     )
     await api_client.patch(
         f"runs/{task_id}",
@@ -436,6 +441,7 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
     redis: RedisStreamClient,
     reason: str,
     application_id: int | None,
+    deploy_fix_attempt: int,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
     error_msg = f"Deployed service did not verify generated access: {reason}"
@@ -453,6 +459,7 @@ async def _handle_owner_access_failure(  # noqa: PLR0913
                 application_id=application_id,
                 bot_username=result.get("bot_username"),
                 error_details=reason,
+                deploy_fix_attempt=deploy_fix_attempt,
             ).model_dump(mode="json"),
         },
     )
@@ -481,6 +488,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
     failures: tuple[SettingsSeedFailureKind, ...],
     application_id: int | None,
     settings_seed: list[SettingSeedOutcome],
+    deploy_fix_attempt: int,
 ) -> dict:
     """The application is up and a confirmed setting did not arrive in it.
 
@@ -504,6 +512,7 @@ async def _handle_settings_seed_failure(  # noqa: PLR0913
         bot_username=result.get("bot_username"),
         error_details=f"settings_seed:{failure_detail}",
         settings_seed=settings_seed,
+        deploy_fix_attempt=deploy_fix_attempt,
     )
     error_msg = f"Deployed service did not accept confirmed settings: {failure_detail}"
     logger.warning(
