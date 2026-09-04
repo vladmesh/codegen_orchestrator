@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Codex stand-token login now inherits the QA egress proxy, so the isolated QA executor can authenticate
+  without exposing its token outside stdin.
 - Story completion waits for a live story-owned deploy-fix engineering Run, preserving its branch worker
   instead of opening a PR and deleting that worker mid-fix.
 - Story-worker results now push and read back their exact local commit before success is published, so an

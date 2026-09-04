@@ -243,7 +243,7 @@ class TestAgentSubprocessEnv:
     async def test_codex_stand_token_login_uses_stdin_and_does_not_reach_subprocess_env_or_argv(
         self, tmp_path
     ):
-        wrapper = _make_wrapper(agent_type="codex", auth_mode="stand_token")
+        wrapper = _make_wrapper(agent_type="codex", auth_mode="stand_token", worker_type="qa")
         calls: list[tuple[tuple, dict, AsyncMock]] = []
 
         async def fake_exec(*args, **kwargs):
@@ -263,6 +263,10 @@ class TestAgentSubprocessEnv:
                     "HOME": "/home/worker",
                     "CODEX_HOME": str(tmp_path / ".codex"),
                     "CODEX_ACCESS_TOKEN": "fake-codex-token",
+                    "HTTPS_PROXY": "http://qa-proxy:3128",
+                    "https_proxy": "http://qa-proxy:3128",
+                    "NO_PROXY": "localhost,127.0.0.1",
+                    "no_proxy": "localhost,127.0.0.1",
                 },
                 clear=True,
             ),
@@ -275,6 +279,15 @@ class TestAgentSubprocessEnv:
         assert "fake-codex-token" not in login_args
         assert "CODEX_ACCESS_TOKEN" not in login_kwargs["env"]
         login_proc.communicate.assert_awaited_once_with(b"fake-codex-token")
+        assert login_kwargs["env"] == {
+            "HOME": "/home/worker",
+            "PATH": "/usr/bin",
+            "CODEX_HOME": str(tmp_path / ".codex"),
+            "HTTPS_PROXY": "http://qa-proxy:3128",
+            "https_proxy": "http://qa-proxy:3128",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1",
+        }
         assert "fake-codex-token" not in agent_args
         assert "CODEX_ACCESS_TOKEN" not in agent_kwargs["env"]
         assert (
