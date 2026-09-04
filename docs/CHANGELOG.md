@@ -3,10 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
-## 2026-09-03
+## 2026-09-04
 
 - Product Brief settings now fail closed when the generated settings core or a confirmed key is absent; deterministic failures skip the same-commit retry bound.
 - Project cleanup now removes Requirement Coverage before its Product Brief, task and story parents, preventing teardown FK failures.
+
+## 2026-09-03
+
 - A deploy runs the images the merged commit built: `*_IMAGE` resolves to the built commit's `sha-` tag, so
   `:latest` can no longer win a race between the merge and the project's own image build.
 - A deploy carries both commits under distinct names — the story's `head_sha` and the built
