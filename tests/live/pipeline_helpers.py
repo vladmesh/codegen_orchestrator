@@ -23,6 +23,7 @@ from brief_telemetry import (
     STATE_MAX_CHARS,
     ProductiveDeadlineExceeded as _ProductiveDeadlineExceeded,
     begin,
+    engineering_observation,
     heartbeat,
     stage,
 )
@@ -244,6 +245,17 @@ def report_brief_stage(
 
 def report_brief_heartbeat(ctx: dict, *, observed_state: str) -> None:
     heartbeat(ctx, observed_state=observed_state)
+
+
+def report_brief_engineering_observation(
+    ctx: dict,
+    *,
+    tasks: list[dict],
+    runs: list[dict],
+    runs_error: str | None = None,
+) -> str:
+    """Record the current bounded, redacted engineering progress snapshot."""
+    return engineering_observation(ctx, tasks=tasks, runs=runs, runs_error=runs_error)
 
 
 def brief_poll(ctx: dict, *, observed_state: str) -> None:
@@ -873,13 +885,13 @@ async def wait_brief_engineering(
     api: httpx.AsyncClient,
     ctx: dict,
     *,
+    api_internal: httpx.AsyncClient | None = None,
     timeout: float = LLM_ENGINEERING_TIMEOUT,
     poll_interval: float = 5,
     on_poll: Callable[[], None] | None = None,
 ) -> list[dict] | None:
     """Wait until every task the admitted Architect plan created is terminal."""
     deadline = time.monotonic() + timeout
-    last_tasks: list[dict] = []
     while time.monotonic() < deadline:
         if on_poll is not None:
             on_poll()
@@ -887,19 +899,35 @@ async def wait_brief_engineering(
         for task_id in ctx["task_ids"]:
             response = await api.get(f"/api/tasks/{task_id}")
             response.raise_for_status()
-            tasks.append(response.json())
-        last_tasks = tasks
+            task = response.json()
+            _record_task_diagnostic(ctx, task, task_id=task_id)
+            tasks.append(task)
+        runs: list[dict] = []
+        runs_error = None
+        if api_internal is not None:
+            try:
+                for task_id in ctx["task_ids"]:
+                    runs.extend(await _engineering_runs_for_task(api_internal, task_id))
+            except (httpx.HTTPError, KeyError, RuntimeError, ValueError) as error:
+                runs_error = f"run observation unavailable: {type(error).__name__}: {error}"
+        observed_state = report_brief_engineering_observation(
+            ctx, tasks=tasks, runs=runs, runs_error=runs_error
+        )
+        ctx["brief_engineering_last_observed_state"] = observed_state
         statuses = {task.get("status") for task in tasks}
         if statuses <= {TaskStatus.DONE.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
             ctx["brief_engineering_tasks"] = tasks
             ctx["task_status"] = (
                 TaskStatus.DONE if statuses == {TaskStatus.DONE.value} else next(iter(statuses))
             )
+            if statuses != {TaskStatus.DONE.value}:
+                ctx["brief_engineering_error"] = f"Engineering terminal failure: {observed_state}"
             return tasks
         await asyncio.sleep(poll_interval)
 
     ctx["brief_engineering_error"] = (
-        f"Architect plan tasks did not reach terminal status within {timeout}s: {last_tasks}"
+        f"Architect plan tasks did not reach terminal status within {timeout}s: "
+        f"{ctx.get('brief_engineering_last_observed_state', 'no task observation')}"
     )
     return None
 

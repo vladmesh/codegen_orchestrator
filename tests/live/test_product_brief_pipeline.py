@@ -276,8 +276,9 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 await wait_brief_engineering(
                     api,
                     ctx,
+                    api_internal=api_internal,
                     timeout=LLM_ENGINEERING_TIMEOUT,
-                    on_poll=lambda: brief_poll(ctx, observed_state="engineering_pending"),
+                    on_poll=lambda: evidence_pass(ctx),
                 )
                 if ctx.get("task_status") != TaskStatus.DONE:
                     yield ctx

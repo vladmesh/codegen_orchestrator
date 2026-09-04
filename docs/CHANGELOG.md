@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Worker success reports now stop their agent process group before exact-commit verification, preventing a late local commit from invalidating durable provenance; mega-brief logs bounded engineering transitions and terminal diagnostics.
 - Mega-brief now streams redacted stage telemetry, reserves cleanup after 50 productive minutes, and requires confirmed settings to reach generated registries before seeding.
 - Scheduled-job plans require a deployable provider and durable observable output; live evidence now retains QA job results and worker-identity diagnostics.
 - Stand Codex now restores and persists a refresh-capable ChatGPT `auth.json`, so expired access tokens
