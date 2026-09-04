@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Story completion waits for a live story-owned deploy-fix engineering Run, preserving its branch worker
+  instead of opening a PR and deleting that worker mid-fix.
 - Story-worker results now push and read back their exact local commit before success is published, so an
   agent that only committed locally becomes a recoverable engineering failure instead of a later GitHub error.
 - Product Brief settings now fail closed when the generated settings core or a confirmed key is absent; deterministic failures skip the same-commit retry bound.

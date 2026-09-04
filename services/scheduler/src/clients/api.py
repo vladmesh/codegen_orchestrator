@@ -229,10 +229,19 @@ class SchedulerAPIClient(InternalAPIClient):
         return RunDTO.model_validate(resp.json())
 
     async def list_runs(
-        self, *, task_id: str, run_type: str, status: str | None = None
+        self,
+        *,
+        run_type: str,
+        task_id: str | None = None,
+        story_id: str | None = None,
+        status: str | None = None,
     ) -> list[RunDTO]:
-        """List runs of a task filtered by type, newest first; status is optional."""
-        params = {"task_id": task_id, "run_type": run_type}
+        """List runs filtered by task or story and type, newest first."""
+        params = {"run_type": run_type}
+        if task_id is not None:
+            params["task_id"] = task_id
+        if story_id is not None:
+            params["story_id"] = story_id
         if status is not None:
             params["status"] = status
         resp = await self.request("GET", "runs/", params=params)

@@ -456,6 +456,25 @@ def _run_data(**overrides) -> dict:
     return base
 
 
+class TestListRuns:
+    @pytest.mark.asyncio
+    async def test_filters_engineering_runs_by_story(self, api_client):
+        """Story-owned deploy fixes are selected without inventing a Task id."""
+        api_client._client = _mock_http(
+            [_run_data(type="engineering", status="queued", result=None)]
+        )
+
+        runs = await api_client.list_runs(story_id="story-1", run_type="engineering")
+
+        api_client._client.request.assert_called_once_with(
+            "GET",
+            "/api/runs/",
+            headers=_INTERNAL_HEADERS,
+            params={"story_id": "story-1", "run_type": "engineering"},
+        )
+        assert runs[0].story_id == "story-1"
+
+
 class TestGetLatestRunByStory:
     @pytest.mark.asyncio
     async def test_returns_latest_validated(self, api_client):
