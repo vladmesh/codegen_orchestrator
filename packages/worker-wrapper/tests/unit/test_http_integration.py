@@ -53,6 +53,9 @@ class TestHttpServerLifecycle:
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
+        wrapper._pushed_completed_result = MagicMock(
+            side_effect=lambda result, _branch: (result, None)
+        )
 
         async def fake_agent(data):
             port = wrapper._http_server.port
@@ -81,7 +84,7 @@ class TestHttpServerLifecycle:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-1"
-                            msg.data = {"prompt": "do stuff"}
+                            msg.data = {"prompt": "do stuff", "branch": "story/test-http"}
                             await wrapper.process_message(msg.message_id, msg.data)
 
         broker_mock.submit_output.assert_any_call(
@@ -121,6 +124,9 @@ class TestStdoutCapture:
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
+        wrapper._pushed_completed_result = MagicMock(
+            side_effect=lambda result, _branch: (result, None)
+        )
 
         async def agent_with_stdout(data):
             # Simulate stdout capture
@@ -150,7 +156,7 @@ class TestStdoutCapture:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-stdout"
-                            msg.data = {"prompt": "do stuff"}
+                            msg.data = {"prompt": "do stuff", "branch": "story/test-stdout"}
                             await wrapper.process_message(msg.message_id, msg.data)
 
         publish_calls = broker_mock.submit_output.call_args_list
@@ -177,7 +183,7 @@ class TestStdoutCapture:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-crash"
-                            msg.data = {"prompt": "do stuff"}
+                            msg.data = {"prompt": "do stuff", "branch": "story/test-watchdog"}
                             await wrapper.process_message(msg.message_id, msg.data)
 
         publish_calls = broker_mock.submit_output.call_args_list
@@ -302,6 +308,9 @@ class TestWatchdog:
         config = _make_config()
         broker_mock = _make_broker_mock()
         wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
+        wrapper._pushed_completed_result = MagicMock(
+            side_effect=lambda result, _branch: (result, None)
+        )
 
         async def agent_with_http(data):
             port = wrapper._http_server.port
@@ -330,7 +339,7 @@ class TestWatchdog:
                         with patch.object(wrapper, "_collect_and_archive"):
                             msg = MagicMock()
                             msg.message_id = "msg-5"
-                            msg.data = {"prompt": "do stuff"}
+                            msg.data = {"prompt": "do stuff", "branch": "story/test-watchdog"}
                             await wrapper.process_message(msg.message_id, msg.data)
 
         # HTTP result published by callback, no additional failed publish

@@ -532,6 +532,7 @@ async def _send_turn(
     attempt_id: str,
     task_content: str,
     story_md: str | None,
+    branch: str | None,
 ) -> None:
     """Put one turn on a worker's input stream."""
     task_message: dict[str, Any] = {
@@ -543,6 +544,8 @@ async def _send_turn(
     }
     if story_md:
         task_message["story_md"] = story_md
+    if branch:
+        task_message["branch"] = branch
     await redis_client.xadd(
         f"worker:{worker_id}:input",
         {"data": json.dumps(task_message)},
@@ -731,7 +734,13 @@ async def request_spawn(
         # 5. Send task message to worker input stream
         await record_turn_on_attempt(ownership.attempt_id, request_id)
         await _send_turn(
-            redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
+            redis_client,
+            worker_id,
+            request_id,
+            ownership.attempt_id,
+            task_content,
+            story_md,
+            story.branch,
         )
 
         # The fresh worker's output stream is private to this one turn.

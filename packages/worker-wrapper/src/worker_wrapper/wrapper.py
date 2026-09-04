@@ -9,7 +9,12 @@ from typing import Any
 
 import structlog
 
-from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult, WorkerStopReason
+from shared.contracts.queues.worker_result import (
+    WorkerCompletedResult,
+    WorkerFailedResult,
+    WorkerResult,
+    WorkerStopReason,
+)
 from shared.contracts.vocab import AgentType
 
 from .broker import WorkerBrokerClient
@@ -377,7 +382,7 @@ class WorkerWrapper:
             result = self._attach_metadata(
                 self._buffered_result, report, stdout_tail, observability
             )
-            await self.broker.submit_output(lease_id, result)
+            await self._submit_checked_result(lease_id, data, result)
             return status, error
 
         if error:
@@ -405,7 +410,7 @@ class WorkerWrapper:
                 result = self._attach_metadata(
                     self._buffered_result, report, stdout_tail, self._observability_metadata()
                 )
-                await self.broker.submit_output(lease_id, result)
+                await self._submit_checked_result(lease_id, data, result)
                 return status, error
 
         logger.warning("agent_exited_without_result", worker_id=self.config.worker_id)
@@ -417,6 +422,139 @@ class WorkerWrapper:
         )
         await self.broker.submit_output(lease_id, result)
         return status, error
+
+    async def _submit_checked_result(self, lease_id: str, data: dict, result: WorkerResult) -> None:
+        """Publish an agent result only after a developer commit reaches its story branch.
+
+        An HTTP result is a claim made by the agent inside its local checkout.  The
+        wrapper owns the Git credential and can turn that claim into a durable
+        fact before it reaches the orchestration boundary.  QA has no repository
+        and never takes this path.
+        """
+        branch = data.get("branch")
+        if not isinstance(result, WorkerCompletedResult) or self.is_qa_executor:
+            await self.broker.submit_output(lease_id, result)
+            return
+
+        if not isinstance(branch, str) or not branch:
+            await self.broker.submit_output(
+                lease_id,
+                WorkerFailedResult(error="Worker completed without the configured story branch."),
+            )
+            return
+
+        pushed_result, push_error = await asyncio.to_thread(
+            self._pushed_completed_result, result, branch
+        )
+        if pushed_result is not None:
+            await self.broker.submit_output(lease_id, pushed_result)
+            return
+
+        assert push_error is not None
+        logger.error(
+            "worker_commit_push_verification_failed",
+            worker_id=self.config.worker_id,
+            branch=branch,
+            commit_sha=result.commit_sha,
+        )
+        metadata = result.model_dump(
+            mode="python", exclude={"status", "commit_sha", "content"}, exclude_none=True
+        )
+        await self.broker.submit_output(
+            lease_id,
+            WorkerFailedResult(error=push_error, **metadata),
+        )
+
+    def _pushed_completed_result(
+        self, result: WorkerCompletedResult, branch: object
+    ) -> tuple[WorkerCompletedResult | None, str | None]:
+        """Push and read back a completed developer commit before publishing it.
+
+        The published SHA is normalized to the full local ``HEAD`` SHA.  A
+        reported abbreviation is accepted only when it resolves exactly to that
+        HEAD, so a stale or invented SHA cannot be made durable by a successful
+        push of unrelated work.  The refspec is non-forcing: a concurrent remote
+        update is a failed worker result, not an overwrite.
+        """
+        if not isinstance(branch, str) or not branch:
+            return None, "Worker completed without the configured story branch."
+
+        local_branch = self._get_git_branch()
+        if local_branch != branch:
+            return None, f"Worker checkout is on {local_branch or 'no branch'}, expected {branch}."
+
+        try:
+            reported = subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    f"{result.commit_sha}^{{commit}}",
+                ],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            head = subprocess.run(
+                ["/usr/bin/git", "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None, f"Worker commit {result.commit_sha} could not be verified in its checkout."
+
+        reported_sha = reported.stdout.strip()
+        head_sha = head.stdout.strip()
+        if reported.returncode != 0 or head.returncode != 0 or reported_sha != head_sha:
+            return None, (
+                f"Worker reported commit {result.commit_sha} does not match its local HEAD."
+            )
+
+        try:
+            pushed = subprocess.run(
+                ["/usr/bin/git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None, f"Worker commit {head_sha} could not be pushed to origin/{branch}."
+        if pushed.returncode != 0:
+            return None, f"Worker commit {head_sha} could not be pushed to origin/{branch}."
+
+        try:
+            remote = subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "ls-remote",
+                    "--exit-code",
+                    "--heads",
+                    "origin",
+                    f"refs/heads/{branch}",
+                ],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None, f"Worker commit {head_sha} could not be verified on origin/{branch}."
+        remote_sha = remote.stdout.split(maxsplit=1)[0] if remote.stdout.strip() else ""
+        if remote.returncode != 0 or remote_sha != head_sha:
+            return None, f"Worker commit {head_sha} could not be verified on origin/{branch}."
+
+        logger.info(
+            "worker_commit_pushed_and_verified",
+            worker_id=self.config.worker_id,
+            branch=branch,
+            commit_sha=head_sha,
+        )
+        return result.model_copy(update={"commit_sha": head_sha}), None
 
     @staticmethod
     def _attach_metadata(
