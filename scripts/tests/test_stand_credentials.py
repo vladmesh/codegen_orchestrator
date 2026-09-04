@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-import base64
 from datetime import UTC, datetime, timedelta
-import json
 
 from scripts.stand_credentials import (
     CLAUDE_MINIMUM_TTL,
-    CODEX_MINIMUM_TTL,
     validate_precreate_credentials,
 )
-
-
-def _token(expiry: datetime) -> str:
-    payload = (
-        base64.urlsafe_b64encode(json.dumps({"exp": int(expiry.timestamp())}).encode())
-        .decode()
-        .rstrip("=")
-    )
-    return f"header.{payload}.signature"
 
 
 def _environment(now: datetime) -> dict[str, str]:
@@ -26,7 +14,6 @@ def _environment(now: datetime) -> dict[str, str]:
         "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (
             now + CLAUDE_MINIMUM_TTL + timedelta(seconds=1)
         ).isoformat(),
-        "CODEX_ACCESS_TOKEN": _token(now + CODEX_MINIMUM_TTL + timedelta(seconds=1)),
         "TELETHON_API_ID": "12345",
         "TELETHON_API_HASH": "test-hash",
         "TELETHON_SESSION": "test-session",
@@ -36,7 +23,7 @@ def _environment(now: datetime) -> dict[str, str]:
     }
 
 
-def test_precreate_credentials_accepts_only_tokens_above_each_explicit_ttl():
+def test_precreate_credentials_accepts_the_required_claude_token():
     now = datetime(2026, 8, 28, tzinfo=UTC)
 
     assert validate_precreate_credentials(_environment(now), now=now) == []
@@ -49,7 +36,6 @@ def test_precreate_credentials_refuses_each_independent_missing_or_unusable_inpu
         {
             "CLAUDE_CODE_OAUTH_TOKEN": "",
             "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": "",
-            "CODEX_ACCESS_TOKEN": _token(now + CODEX_MINIMUM_TTL),
             "TELETHON_SESSION": "",
             "SSH_PRIVATE_KEY": "not-a-private-key",
         }
@@ -59,7 +45,6 @@ def test_precreate_credentials_refuses_each_independent_missing_or_unusable_inpu
 
     assert [failure.name for failure in failures] == [
         "Claude token",
-        "Codex token",
         "Telethon session",
         "SSH material",
     ]
@@ -72,18 +57,16 @@ def test_precreate_credentials_refuses_each_independent_missing_or_unusable_inpu
     )
 
 
-def test_precreate_credentials_refuses_malformed_and_expired_tokens_without_echoing_them():
+def test_precreate_credentials_refuses_bad_claude_metadata_without_echoing_it():
     now = datetime(2026, 8, 28, tzinfo=UTC)
     environment = _environment(now)
     environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = "not-an-expiry"  # noqa: S105
-    environment["CODEX_ACCESS_TOKEN"] = _token(now - timedelta(seconds=1))
 
     failures = validate_precreate_credentials(environment, now=now)
     rendered = "\n".join(failure.detail for failure in failures)
 
-    assert [failure.name for failure in failures] == ["Claude token", "Codex token"]
+    assert [failure.name for failure in failures] == ["Claude token"]
     assert "sk-ant-oat01" not in rendered
-    assert "header." not in rendered
 
 
 def test_opaque_claude_token_requires_strict_operator_expiry_metadata():

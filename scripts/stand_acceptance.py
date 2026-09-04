@@ -57,6 +57,7 @@ PRIVATE_KEY_MARKER = re.compile(
     re.IGNORECASE,
 )
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
+PROFILE_ATTESTATION_MARKER = "stand-codex-profile-redaction-v1"
 # Paid-failure attribution requires the v11 capture fields.  Later artifact
 # versions remain admissible: this is a floor, not a writer-version lockstep.
 MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 11
@@ -85,7 +86,6 @@ PROTECTED_STAND_SECRET_NAMES = frozenset(
         "GRAFANA_ADMIN_PASSWORD",
         "WORKER_BROKER_INTERNAL_TOKEN",
         "STAND_CLAUDE_CODE_OAUTH_TOKEN",
-        "STAND_CODEX_ACCESS_TOKEN",
         "PO_LLM_API_KEY",
         "ARCHITECT_LLM_API_KEY",
         "GH_APP_PRIVATE_KEY",
@@ -687,6 +687,37 @@ def protected_values_from_environment(
     return tuple(environ[name] for name in sorted(PROTECTED_STAND_SECRET_NAMES))
 
 
+def protected_values_from_profiles(profiles: tuple[Path, ...]) -> tuple[str, ...]:
+    """Read access and refresh values as in-memory redaction needles only."""
+    values: list[str] = []
+    for profile in profiles:
+        try:
+            auth = _load_json(profile)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("protected auth profile is unreadable") from exc
+        tokens = auth.get("tokens")
+        if not isinstance(tokens, dict) or not all(
+            isinstance(tokens.get(name), str) and tokens[name]
+            for name in ("access_token", "refresh_token")
+        ):
+            raise ValueError("protected auth profile is not refresh-capable")
+        values.extend((tokens["access_token"], tokens["refresh_token"]))
+    if not values:
+        raise ValueError("protected auth profile is missing")
+    return tuple(dict.fromkeys(values))
+
+
+def _profile_attestation_is_valid(path: Path) -> bool:
+    try:
+        return _load_json(path) == {"marker": PROFILE_ATTESTATION_MARKER}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _write_profile_attestation(path: Path) -> None:
+    path.write_text(json.dumps({"marker": PROFILE_ATTESTATION_MARKER}) + "\n", encoding="utf-8")
+
+
 class ProtectedEnvironmentError(ValueError):
     """The admission job did not receive every protected value it must scan."""
 
@@ -789,6 +820,23 @@ def main() -> int:
         action="store_true",
         help="derive needles only from the fixed protected environment allow-list",
     )
+    admit.add_argument(
+        "--protected-profile",
+        action="append",
+        default=[],
+        type=Path,
+        help="read access and refresh values from a local auth profile as redaction needles",
+    )
+    admit.add_argument(
+        "--profile-attestation",
+        type=Path,
+        help="write a value-free attestation after profile-backed admission succeeds",
+    )
+    admit.add_argument(
+        "--require-profile-attestation",
+        type=Path,
+        help="refuse final admission unless the e2e profile-backed handoff was attested",
+    )
     needs = sub.add_parser("needs-target-snapshot")
     needs.add_argument("--run-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -819,11 +867,43 @@ def main() -> int:
     if args.command == "admit":
         if not args.protected_env:
             parser.error("admit requires --protected-env")
-        admitted = admit_artifact_from_environment(
-            args.artifact,
-            status_path=args.status,
-            environ=os.environ,
-        )
+        try:
+            protected_values = protected_values_from_environment(os.environ)
+            if args.protected_profile:
+                protected_values += protected_values_from_profiles(tuple(args.protected_profile))
+        except (ProtectedEnvironmentError, ValueError) as exc:
+            if isinstance(exc, ProtectedEnvironmentError):
+                issues = tuple(
+                    AdmissionIssue("protected environment value is missing or empty", name=name)
+                    for name in exc.missing
+                )
+            else:
+                issues = (AdmissionIssue("protected auth profile is missing or unusable"),)
+            _write_admission_status(args.status, False, issues)
+            admitted = False
+        else:
+            admitted = admit_artifact(
+                args.artifact,
+                status_path=args.status,
+                protected_values=protected_values,
+            )
+        if (
+            admitted
+            and args.require_profile_attestation
+            and not _profile_attestation_is_valid(args.require_profile_attestation)
+        ):
+            _write_admission_status(
+                args.status,
+                False,
+                (
+                    AdmissionIssue(
+                        "profile-backed handoff redaction attestation is missing or unusable"
+                    ),
+                ),
+            )
+            admitted = False
+        if admitted and args.profile_attestation:
+            _write_profile_attestation(args.profile_attestation)
         _emit_admission_diagnostics(args.status, args.summary)
         return 0 if admitted else 2
     canaries = tuple(

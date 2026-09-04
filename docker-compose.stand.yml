@@ -5,18 +5,20 @@
 
 services:
   worker-manager:
-    # The stand gets short-lived tokens through its protected .env, not either
-    # durable host session directory. Retain only the socket, workspace and
-    # transcript mounts required to construct and observe worker containers.
+    # Claude keeps its short-lived token. Codex receives a dedicated, file-backed
+    # ChatGPT session restored for this serialized run; workers mount that same
+    # host profile read-write so a CLI refresh survives until the runner persists
+    # it back to the protected GitHub Environment secret.
     environment:
       HOST_CLAUDE_DIR: ""
       HOST_CLAUDE_VALIDATION_PATH: ""
-      HOST_CODEX_HOME: ""
-      HOST_CODEX_VALIDATION_PATH: ""
+      HOST_CODEX_HOME: ${HOST_CODEX_HOME}
+      HOST_CODEX_VALIDATION_PATH: /host-codex
     volumes: !override
       - /var/run/docker.sock:/var/run/docker.sock
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
+      - ${HOST_CODEX_HOME}:/host-codex:ro
 
   # The stand has no PO bot and must not borrow production's. Two long-polling
   # clients on one token steal each other's updates, which would make the

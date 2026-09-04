@@ -1,3 +1,4 @@
+import os
 from unittest.mock import AsyncMock, patch
 
 from conftest import MockProcess
@@ -83,7 +84,7 @@ class TestWorkerWrapperComponent:
 
     @pytest.mark.asyncio
     async def test_codex_exec_uses_workspace_sandbox_without_output_bridge(
-        self, wrapper_config, fake_redis
+        self, wrapper_config, fake_redis, tmp_path
     ):
         broker_client = AsyncMock()
         broker_client.redis = fake_redis
@@ -91,13 +92,18 @@ class TestWorkerWrapperComponent:
             **(wrapper_config.model_dump() | {"agent_type": AgentType.CODEX})
         )
         wrapper = WorkerWrapper(config=codex_config, broker_client=broker_client)
+        profile = tmp_path / "codex-profile"
+        profile.mkdir(mode=0o700)
         mock_process = MockProcess(
             stdout=b"transport output must not become a result",
             stderr=b"transport diagnostics must not become a result",
             returncode=0,
         )
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch.dict(os.environ, {"CODEX_HOME": str(profile)}, clear=False),
+        ):
             mock_exec.return_value = mock_process
 
             result = await wrapper.execute_agent({"content": "not part of the command"})

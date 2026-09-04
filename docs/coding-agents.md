@@ -82,7 +82,10 @@ worker images. Worker-manager requires directory mode `0700`, file modes
 `cli_auth_credentials_store = "file"`. A missing or unsuitable profile stops
 Codex worker creation before image resolution. The profile is mounted
 read-write only into Codex containers at `/home/worker/.codex` so refreshed
-tokens persist. Claude, Factory, and noop workers do not receive this mount.
+tokens persist. A profile-local advisory lock covers each complete Codex
+host-session command, intentionally serializing workers that share one profile
+so simultaneous refreshes cannot corrupt `auth.json`. Claude, Factory, and
+noop workers do not receive this mount.
 
 See the official [authentication](https://learn.chatgpt.com/docs/auth) and
 [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)

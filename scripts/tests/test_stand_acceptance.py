@@ -1,8 +1,9 @@
-import base64
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sys
+
+import pytest
 
 from scripts.stand_acceptance import (
     ADMISSION_MARKER,
@@ -12,6 +13,7 @@ from scripts.stand_acceptance import (
     admit_artifact_from_environment,
     build_acceptance_artifact,
     protected_values_from_environment,
+    protected_values_from_profiles,
     run_dir_needs_target_snapshot,
     scan_artifact,
     target_snapshot_required,
@@ -31,10 +33,71 @@ def _protected_environment() -> dict[str, str]:
     }
 
 
-def _jwt_with_expiry(expiry: datetime) -> str:
-    payload = json.dumps({"exp": int(expiry.timestamp())}).encode("utf-8")
-    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-    return f"header.{encoded}.signature"
+def test_profile_redaction_needles_include_initial_and_refreshed_tokens(tmp_path):
+    initial = tmp_path / "initial-auth.json"
+    worker_generation = tmp_path / "worker-generation-auth.json"
+    refreshed = tmp_path / "refreshed-auth.json"
+    initial.write_text(
+        json.dumps(
+            {"tokens": {"access_token": "initial-access", "refresh_token": "initial-refresh"}}
+        ),
+        encoding="utf-8",
+    )
+    worker_generation.write_text(
+        json.dumps(
+            {"tokens": {"access_token": "worker-access", "refresh_token": "worker-refresh"}}
+        ),
+        encoding="utf-8",
+    )
+    refreshed.write_text(
+        json.dumps(
+            {"tokens": {"access_token": "refreshed-access", "refresh_token": "refreshed-refresh"}}
+        ),
+        encoding="utf-8",
+    )
+
+    assert protected_values_from_profiles((initial, worker_generation, refreshed)) == (
+        "initial-access",
+        "initial-refresh",
+        "worker-access",
+        "worker-refresh",
+        "refreshed-access",
+        "refreshed-refresh",
+    )
+    candidate = tmp_path / "candidate"
+    _handoff_candidate(candidate, "worker-access\n")
+
+    assert not admit_artifact(
+        candidate,
+        status_path=tmp_path / "status.json",
+        protected_values=protected_values_from_profiles((initial, worker_generation, refreshed)),
+    )
+
+
+def test_profile_redaction_refuses_a_missing_or_non_refreshable_profile(tmp_path):
+    malformed = tmp_path / "bad-auth.json"
+    malformed.write_text('{"tokens":{"access_token":"only-one"}}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected auth profile"):
+        protected_values_from_profiles((malformed,))
+
+
+def test_invalid_remote_refresh_does_not_replace_the_worker_generation_profile(tmp_path):
+    worker_generation = tmp_path / "worker-generation-auth.json"
+    remote_refresh = tmp_path / "remote-refresh-auth.json"
+    worker_generation.write_text(
+        json.dumps(
+            {"tokens": {"access_token": "worker-access", "refresh_token": "worker-refresh"}}
+        ),
+        encoding="utf-8",
+    )
+    before = worker_generation.read_text(encoding="utf-8")
+    remote_refresh.write_text('{"tokens":{"access_token":"broken"}}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected auth profile"):
+        protected_values_from_profiles((remote_refresh,))
+
+    assert worker_generation.read_text(encoding="utf-8") == before
 
 
 def _stand_preflight_refusal() -> str:
@@ -850,13 +913,11 @@ def test_admission_allows_real_stand_preflight_token_refusals_in_handoff_and_fin
         "missing": {},
         "expired": {
             "STAND_CLAUDE_CODE_OAUTH_TOKEN": "opaque-claude-token",
-            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
-            "STAND_CODEX_ACCESS_TOKEN": _jwt_with_expiry(now - timedelta(minutes=1)),
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now - timedelta(minutes=1)).isoformat(),
         },
         "near_ttl": {
             "STAND_CLAUDE_CODE_OAUTH_TOKEN": "opaque-claude-token",
-            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
-            "STAND_CODEX_ACCESS_TOKEN": _jwt_with_expiry(now + timedelta(minutes=1)),
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(minutes=1)).isoformat(),
         },
     }
     protected_values = protected_values_from_environment(_protected_environment())
@@ -865,7 +926,6 @@ def test_admission_allows_real_stand_preflight_token_refusals_in_handoff_and_fin
         for name in (
             "STAND_CLAUDE_CODE_OAUTH_TOKEN",
             "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
-            "STAND_CODEX_ACCESS_TOKEN",
         ):
             monkeypatch.delenv(name, raising=False)
         for name, value in environment.items():

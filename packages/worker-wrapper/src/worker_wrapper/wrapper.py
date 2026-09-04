@@ -1,5 +1,7 @@
 import asyncio
 from collections.abc import Mapping
+from contextlib import contextmanager, nullcontext
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -23,6 +25,22 @@ from .http_server import ResultHttpServer
 from .observability import extract_effort_metrics, save_transcript
 
 logger = structlog.get_logger(__name__)
+
+
+@contextmanager
+def codex_profile_lock(profile: Path):
+    """Serialize a full Codex turn sharing one mounted ChatGPT profile."""
+    if not profile.is_dir():
+        raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
+    lock_path = profile / ".codegen-codex.lock"
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        lock_path.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
 
 WORKSPACE_DIR = "/workspace"
 TASK_MD_PATH = "/workspace/TASK.md"
@@ -190,7 +208,6 @@ class WorkerWrapper:
         self._transcript_truncated: bool | None = None
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
-        self._codex_token_login_complete = False
 
     @property
     def is_qa_executor(self) -> bool:
@@ -1026,8 +1043,6 @@ class WorkerWrapper:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 
         wrapper_env = dict(os.environ)
-        if self.config.agent_type == AgentType.CODEX and self.config.auth_mode == "stand_token":
-            await self._login_codex_with_access_token(wrapper_env)
 
         prompt = self._resolve_prompt(data)
         cmd = runner.build_command(prompt=prompt)
@@ -1039,16 +1054,25 @@ class WorkerWrapper:
 
         agent_env = build_agent_subprocess_env(wrapper_env, qa_executor=self.is_qa_executor)
 
-        # Execute Subprocess
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=agent_env,
-            start_new_session=True,
-        )
-
-        stdout_bytes, stderr_bytes, limit_exceeded = await self._collect_agent_output(proc)
+        # A refresh-capable profile can be shared by stand cells and production
+        # workers. Keep its advisory lock for the entire CLI process so refresh
+        # reads and writes cannot race. API-key Codex workers remain concurrent.
+        if self.config.agent_type == AgentType.CODEX and self.config.auth_mode == "host_session":
+            codex_home = wrapper_env.get("CODEX_HOME")
+            if not codex_home:
+                raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
+            codex_lock = codex_profile_lock(Path(codex_home))
+        else:
+            codex_lock = nullcontext()
+        with codex_lock:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=agent_env,
+                start_new_session=True,
+            )
+            stdout_bytes, stderr_bytes, limit_exceeded = await self._collect_agent_output(proc)
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
@@ -1092,38 +1116,6 @@ class WorkerWrapper:
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await self.broker.set_session(captured_session_id)
-
-    async def _login_codex_with_access_token(self, wrapper_env: dict[str, str]) -> None:
-        """Authenticate the container-local Codex profile without exposing the token in argv."""
-        if self._codex_token_login_complete:
-            return
-        token = wrapper_env.get("CODEX_ACCESS_TOKEN")
-        if not token:
-            raise RuntimeError("CODEX_ACCESS_TOKEN is not set for Codex stand_token authentication")
-        codex_home = wrapper_env.get("CODEX_HOME")
-        if not codex_home:
-            raise RuntimeError("CODEX_HOME is not set for Codex stand_token authentication")
-        profile = Path(codex_home)
-        profile.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (profile / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
-        login_env_names = {"HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME"}
-        if self.is_qa_executor:
-            login_env_names.update(QA_EGRESS_PROXY_ENV)
-        login_env = {name: wrapper_env[name] for name in login_env_names if name in wrapper_env}
-        proc = await asyncio.create_subprocess_exec(
-            "codex",
-            "login",
-            "--with-access-token",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=login_env,
-        )
-        _stdout, _stderr = await proc.communicate(token.encode())
-        if proc.returncode != 0:
-            raise RuntimeError("Codex access-token login failed")
-        self._codex_token_login_complete = True
-        wrapper_env.pop("CODEX_ACCESS_TOKEN", None)
 
     async def _attempt_auto_resume(self, data: dict) -> bool:
         """Attempt one resume of the Claude agent to get it to call /result.

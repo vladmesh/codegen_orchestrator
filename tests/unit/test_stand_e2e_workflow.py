@@ -390,7 +390,6 @@ def test_credential_preflight_refuses_before_the_provider_preflight_or_create():
     for secret in (
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
-        "CODEX_ACCESS_TOKEN",
     ):
         assert secret in credentials["env"]
         assert secret not in credentials["run"]
@@ -437,37 +436,60 @@ def test_exact_worker_release_is_validated_before_any_provider_or_dns_action():
 
 
 def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_creation():
-    """A rejected stand token must fail on the runner, not after billed provisioning."""
+    """A refreshable session must fail on the runner, not after billed provisioning."""
     steps = list(_steps())
     release = _steps()["Validate exact worker image release"]
+    restore = _steps()["Restore refreshable Codex auth profile"]
     auth = _steps()["Authenticate Codex against exact worker image"]
+    preflight_persist = _steps()["Persist preflight-refreshed Codex auth profile"]
+    persist = _steps()["Persist refreshed Codex auth profile"]
 
     assert "RELEASE_VALIDATION_ONLY=true" not in release["run"]
     assert "pull-worker-images.sh" in release["run"]
-    assert auth["env"]["CODEX_ACCESS_TOKEN"] == "${{ secrets.CODEX_ACCESS_TOKEN }}"  # noqa: S105
+    assert restore["env"]["CODEX_AUTH_JSON"] == "${{ secrets.CODEX_AUTH_JSON }}"
+    assert "CODEX_ACCESS_TOKEN" not in restore["env"]
+    assert "CODEX_ACCESS_TOKEN" not in auth.get("env", {})
+    assert "auth.json" in restore["run"]
+    assert "refresh_token" in restore["run"]
+    assert "CODEX_AUTH_JSON" not in auth.get("env", {})
     assert "worker-base-codex:latest" in auth["run"]
     assert '"--entrypoint", "codex"' in auth["run"]
-    assert '"--entrypoint",' in auth["run"]
-    assert '"sh",' in auth["run"]
-    assert 'cli_auth_credentials_store = "file"' in auth["run"]
-    assert "exec codex login --with-access-token" in auth["run"]
-    assert 'input=os.environ["CODEX_ACCESS_TOKEN"].encode()' in auth["run"]
-    assert 'if name != "CODEX_ACCESS_TOKEN"' in auth["run"]
-    assert "env=child_env" in auth["run"]
+    assert "--mount" in auth["run"]
+    assert "auth.json" in auth["run"]
+    assert "codex exec" in auth["run"]
+    assert '"--entrypoint", "id", image, "-u"' in auth["run"]
+    assert '"--entrypoint", "id", image, "-g"' in auth["run"]
+    assert 'output.write(f"worker_uid={worker_uid}' in auth["run"]
+    assert '"sudo", "chown", "-R"' in auth["run"]
+    assert "finally:" in auth["run"]
+    assert "os.getuid()" in auth["run"]
     assert "stdout=subprocess.DEVNULL" in auth["run"]
     assert "stderr=subprocess.DEVNULL" in auth["run"]
-    assert "except (OSError, subprocess.TimeoutExpired)" in auth["run"]
-    assert "if login.returncode in {125, 126, 127}" in auth["run"]
     assert "codex_auth_not_confirmed" in auth["run"]
     assert "codex_auth_rejected" not in auth["run"]
     assert "codex_auth_unavailable" in auth["run"]
     assert "codex_cli_mismatch" in auth["run"]
     assert "--rm" in auth["run"]
-    assert '"--tmpfs",' in auth["run"]
-    assert '"/home/worker/.codex:mode=1777"' in auth["run"]
-    assert "GITHUB_OUTPUT" not in auth["run"]
+    assert 'output.write(f"worker_uid={worker_uid}\\nworker_gid={worker_gid}\\n")' in auth["run"]
     assert "GITHUB_STEP_SUMMARY" not in auth["run"]
     assert "tee " not in auth["run"]
+    assert preflight_persist["if"] == "success()"
+    assert "gh secret set CODEX_AUTH_JSON --env stand" in preflight_persist["run"]
+    assert persist["if"] == "${{ always() && steps.codex-auth-preflight.outcome == 'success' }}"
+    assert persist["env"]["GH_TOKEN"] == "${{ secrets.STAND_GITHUB_SECRETS_WRITE_TOKEN }}"  # noqa: S105
+    assert "gh secret set CODEX_AUTH_JSON --env stand" in persist["run"]
+    assert 'remote_auth="${RUNNER_TEMP}/stand-codex-refreshed-auth.json"' in persist["run"]
+    assert '< "${remote_auth}"' in persist["run"]
+    assert 'mv "${remote_auth}" "${auth_path}"' not in persist["run"]
+    assert "stand-codex-refreshed-auth-valid" in persist["run"]
+    assert "stand-codex-remote-profile-installed" in persist["run"]
+    assert "codex_auth_persist_remote_unavailable" not in persist["run"]
+    assert "upload-artifact" not in persist["run"]
+    assert (
+        steps.index("Authenticate Codex against exact worker image")
+        < steps.index("Persist preflight-refreshed Codex auth profile")
+        < steps.index("Preflight ephemeral machines")
+    )
     assert steps.index("Authenticate Codex against exact worker image") < steps.index(
         "Preflight ephemeral machines"
     )
@@ -476,6 +498,37 @@ def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_cre
     )
     assert steps.index("Authenticate Codex against exact worker image") < steps.index(
         "Give the stand a resolvable name"
+    )
+
+
+def test_codex_profile_tokens_are_redaction_needles_in_the_handoff_and_attested_for_cleanup():
+    handoff = _steps()["Admit cleanup handoff"]
+    final = _cleanup_steps()["Admit final artifact"]
+
+    assert "--protected-profile" in handoff["run"]
+    assert "stand-codex-initial-auth.json" in handoff["run"]
+    assert "stand-codex-profile/auth.json" in handoff["run"]
+    assert "stand-codex-refreshed-auth.json" in handoff["run"]
+    assert "stand-codex-refreshed-auth-valid" in handoff["run"]
+    assert "--profile-attestation" in handoff["run"]
+    assert "--require-profile-attestation" in final["run"]
+    assert "CODEX_AUTH_JSON" not in final.get("env", {})
+
+
+def test_stand_profile_is_owned_by_the_exact_worker_image_identity():
+    bootstrap = _steps()["Bring up dynamic orchestrator and wait for API"]
+
+    assert (
+        bootstrap["env"]["CODEX_WORKER_UID"]
+        == "${{ steps.codex-auth-preflight.outputs.worker_uid }}"
+    )
+    assert (
+        bootstrap["env"]["CODEX_WORKER_GID"]
+        == "${{ steps.codex-auth-preflight.outputs.worker_gid }}"
+    )
+    assert "install -d -m 0700 -o ${CODEX_WORKER_UID} -g ${CODEX_WORKER_GID}" in bootstrap["run"]
+    assert (
+        "chown ${CODEX_WORKER_UID}:${CODEX_WORKER_GID} /opt/secrets/stand-codex" in bootstrap["run"]
     )
 
 
@@ -732,24 +785,23 @@ def test_dynamic_stand_configuration_receives_tokens_only_as_protected_manager_s
     step = _steps()["Render protected dynamic configuration"]
     render = step["run"]
 
-    for name in (
-        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
-        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
-        "STAND_CODEX_ACCESS_TOKEN",
-    ):
+    for name in ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"):
         assert name in step["env"]
         assert f'"{name}"' in render
+    assert "STAND_CODEX_ACCESS_TOKEN" not in step["env"]
+    assert step["env"]["HOST_CODEX_HOME"] == "/opt/secrets/stand-codex"
+    assert step["env"]["HOST_CODEX_VALIDATION_PATH"] == "/host-codex"
     assert "HOST_CLAUDE_DIR" not in step["env"]
-    assert "HOST_CODEX_HOME" not in step["env"]
 
 
-def test_stand_overlay_removes_worker_manager_host_session_mounts():
+def test_stand_overlay_keeps_only_the_refreshable_codex_host_session_mount():
     overlay = (WORKFLOW.parents[2] / "docker-compose.stand.yml").read_text()
 
     assert 'HOST_CLAUDE_DIR: ""' in overlay
-    assert 'HOST_CODEX_HOME: ""' in overlay
+    assert "HOST_CODEX_HOME: ${HOST_CODEX_HOME}" in overlay
+    assert "HOST_CODEX_VALIDATION_PATH: /host-codex" in overlay
     assert "/host-claude" not in overlay
-    assert "/host-codex" not in overlay
+    assert "${HOST_CODEX_HOME}:/host-codex:ro" in overlay
 
 
 def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environment():

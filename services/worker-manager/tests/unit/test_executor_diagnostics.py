@@ -76,12 +76,6 @@ def test_stand_token_diagnostic_accepts_manager_local_opaque_claude_metadata(mon
         (now + timedelta(hours=1)).isoformat(),
         raising=False,
     )
-    monkeypatch.setattr(
-        diagnostics_module.settings,
-        "STAND_CODEX_ACCESS_TOKEN",
-        "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature",
-        raising=False,
-    )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
 
     diagnostic = diagnostics._executor_diagnostic(
@@ -96,15 +90,19 @@ def test_stand_token_diagnostic_accepts_manager_local_opaque_claude_metadata(mon
     assert diagnostic.reason_code == "stand_token_ready"
 
 
-def test_stand_token_diagnostic_refuses_invalid_local_token_without_exposing_it(monkeypatch):
+def test_stand_codex_diagnostic_refuses_an_invalid_refreshable_profile(monkeypatch):
     from datetime import UTC, datetime, timedelta
 
     import src.executor_diagnostics as diagnostics_module
 
     now = datetime.now(UTC)
-    token = "fake-secret-codex-token"
     monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", "stand", raising=False)
-    monkeypatch.setattr(diagnostics_module.settings, "STAND_CODEX_ACCESS_TOKEN", token, raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/host/stand-codex", raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", "/host-codex", raising=False)
+    monkeypatch.setattr(
+        "src.codex_auth.validate_codex_host_session",
+        lambda _profile: (_ for _ in ()).throw(RuntimeError("invalid profile")),
+    )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
 
     diagnostic = diagnostics._executor_diagnostic(
@@ -114,10 +112,9 @@ def test_stand_token_diagnostic_refuses_invalid_local_token_without_exposing_it(
         {AgentType.CLAUDE: 0, AgentType.CODEX: 0},
     )
 
-    assert diagnostic.auth_mode is ExecutorAuthMode.STAND_TOKEN
+    assert diagnostic.auth_mode is ExecutorAuthMode.HOST_SESSION
     assert diagnostic.availability is ExecutorAvailability.UNAVAILABLE
-    assert diagnostic.reason_code == "stand_token_invalid"
-    assert token not in diagnostic.reason
+    assert diagnostic.reason_code == "local_auth_invalid"
 
 
 @pytest.mark.asyncio

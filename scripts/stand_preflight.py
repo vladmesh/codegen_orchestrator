@@ -79,7 +79,7 @@ def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
 
 
 def check_stand_token_credentials() -> tuple[str, bool, str]:
-    """Apply the pre-create token validator on the stand, never host profiles."""
+    """Validate only the stand's retained Claude token credentials."""
     from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
 
     failures = validate_stand_token_credentials(os.environ, shape=CredentialShape.STAND_HOST)
@@ -164,7 +164,14 @@ def main() -> int:
         ),
     ]
     if os.environ.get("LIVE_CONTOUR") == "stand":
-        results.append(check_stand_token_credentials())
+        results.extend(
+            [
+                check_stand_token_credentials(),
+                # This process runs on the Docker host; validation-path is the
+                # manager container's read-only bind target, not a host path.
+                check_codex_session(os.environ.get("HOST_CODEX_HOME")),
+            ]
+        )
     else:
         results.extend(
             [

@@ -16,7 +16,6 @@ import os
 
 from shared.stand_credentials import (
     CLAUDE_MINIMUM_TTL,  # noqa: F401 - retained script-level validator API
-    CODEX_MINIMUM_TTL,  # noqa: F401 - retained script-level validator API
     CredentialFailure,
     CredentialShape,
     validate_stand_token_credentials,

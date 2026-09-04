@@ -91,29 +91,37 @@ home profile. Those profiles are not part of ephemeral stand authentication.
 
 ### Ephemeral stand authentication
 
-The ephemeral BitLaunch stand does not use those host-session profiles. Before
-the lifecycle preflight can create a machine, it validates Telethon material,
-the bootstrap private key, the Codex JWT expiry, and the operator-supplied,
-timezone-aware `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` metadata for the opaque
-annual Claude OAuth token. Both have a 30-minute minimum TTL. Missing,
-malformed, expired, or near-expiry values refuse without rendering credentials.
-The same token-only validator is worker-manager's `stand_token` diagnostic,
-so a valid stand reaches paid-work admission and a local token failure blocks
-it without host-session settings. The GitHub pre-create runner binds its
-unprefixed secret names, while the stand host binds the rendered `.env`'s
-`STAND_*` names through that same validator. Run `make stand-preflight` or
-`make stand-run`: both load the rendered `.env`; invoking the script directly
-requires supplying the same stand-shaped configuration.
+Before the lifecycle preflight can create a machine, the ephemeral BitLaunch
+stand validates Telethon material, the bootstrap private key, and the
+operator-supplied, timezone-aware `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` metadata
+for the opaque annual Claude OAuth token. Missing, malformed, expired, or
+near-expiry Claude material refuses without rendering credentials. The GitHub
+pre-create runner binds its unprefixed names, while the stand host binds the
+rendered `STAND_*` Claude names. Run `make stand-preflight` or `make stand-run`:
+both load the rendered `.env`; invoking the script directly requires supplying
+the same stand-shaped configuration.
 
 Claude receives its annual OAuth token only through the worker process
-environment and never has a keepalive. Codex uses a manually refreshed ten-day
-access token: before login, the wrapper creates an explicit container-local
-`config.toml` using the file credential store, then passes the token on stdin
-to `codex login --with-access-token`. The login subprocess has neither the
-token in argv nor in its environment. The profile is deleted with the worker;
-`auth.json` is never mounted back to the host or included in a retained
-artifact. These values are only protected worker-manager configuration, never
-queue payload fields, Docker labels or producer-supplied `env_vars`.
+environment and never has a keepalive. Codex receives `CODEX_AUTH_JSON`, the
+complete file-backed profile created once by `codex login`, from the protected
+`stand` GitHub Environment. The runner writes it with mode `0600`, verifies the
+access and refresh tokens, then performs one minimal authenticated `codex exec`
+with the exact published worker image before BitLaunch can create a machine.
+
+The profile is copied to the stand's dedicated `/opt/secrets/stand-codex`
+directory and mounted read-write only into Codex workers. The runner persists
+the probe-refreshed profile before provisioning, then retrieves and persists
+the remote profile after worker use. Once a remote profile was installed, a
+failed retrieval fails the job rather than overwriting the secret with a known
+stale runner copy. `STAND_GITHUB_SECRETS_WRITE_TOKEN` updates `CODEX_AUTH_JSON`
+in the same Environment and must be a fine-grained GitHub token with this
+repository's **Environments: write** permission (or a classic token with
+equivalent repository administration scope). `auth.json` is never emitted to a
+log, queue payload, Docker label, or artifact. Its initial and refreshed access
+and refresh values are redaction needles for the handoff before any artifact is
+uploaded; cleanup requires that value-free handoff attestation instead of
+depending on cross-job secret-expression timing. Reseed `CODEX_AUTH_JSON` only
+after an explicit Codex refresh/authentication refusal.
 
 ### Stand session keepalive
 

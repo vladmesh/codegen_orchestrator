@@ -225,8 +225,10 @@ class TestStdoutCapture:
         assert wire["factory_evidence"]["total_tokens"] == 15
         assert "cost_usd" not in wire["factory_evidence"]
 
-    async def test_codex_diagnostics_are_not_persisted_or_returned(self):
+    async def test_codex_diagnostics_are_not_persisted_or_returned(self, tmp_path):
         raw_diagnostic = "refresh-token-must-not-leak"
+        profile = tmp_path / "codex-profile"
+        profile.mkdir(mode=0o700)
         config = _make_config(agent_type="codex")
         wrapper = WorkerWrapper(config=config, broker_client=_make_broker_mock())
         process = MagicMock(returncode=1)
@@ -238,7 +240,10 @@ class TestStdoutCapture:
         )
 
         wrapper.broker.get_session.return_value = "unused"
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn,
+            patch.dict("os.environ", {"CODEX_HOME": str(profile)}, clear=False),
+        ):
             spawn.return_value = process
             with pytest.raises(RuntimeError) as exc_info:
                 await wrapper.execute_agent({"prompt": "do stuff"})
