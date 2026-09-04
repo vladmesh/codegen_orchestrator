@@ -1106,11 +1106,10 @@ class WorkerWrapper:
         profile = Path(codex_home)
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
         (profile / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
-        login_env = {
-            name: wrapper_env[name]
-            for name in ("HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME")
-            if name in wrapper_env
-        }
+        login_env_names = {"HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME"}
+        if self.is_qa_executor:
+            login_env_names.update(QA_EGRESS_PROXY_ENV)
+        login_env = {name: wrapper_env[name] for name in login_env_names if name in wrapper_env}
         proc = await asyncio.create_subprocess_exec(
             "codex",
             "login",
