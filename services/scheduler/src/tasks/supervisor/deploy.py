@@ -30,6 +30,11 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
     DeployRunResult,
 )
+from shared.contracts.dto.settings_seed import (
+    CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL,
+    SettingSeedOutcome,
+    SettingsSeedFailureKind,
+)
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
@@ -101,6 +106,15 @@ ENGINEERING_BUDGET_DENIED_TEXT = (
     "currently exhausted. Tell the user that the work is waiting for their review."
 )
 
+_CORE_SETTINGS_V1_MANIFEST_REPAIR_GUIDANCE = (
+    f"The released Core settings v1 answered `{CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL}`. "
+    "Repair the generated product, then push the fix. For every named key, declare it in "
+    "`services/<service>/manifest.yaml` under `settings_schema.properties` with a Draft 2020-12 "
+    "JSON Schema that accepts the confirmed value, and read it where the product uses it. Run "
+    "`make generate-from-spec` after editing the manifest. Do not write the setting yourself: "
+    "the platform writes the confirmed value after deploy."
+)
+
 
 class RefusedDeployAction(StrEnum):
     """What the deploy path did with one refused placement, for the tick counts.
@@ -119,13 +133,15 @@ class RefusedDeployAction(StrEnum):
 class DeployRetryAction(StrEnum):
     """One retry tick's truthful outcome.
 
-    ``RETRIED`` means a fresh Run was dispatched. ``RECONCILED`` means the
-    service-side completion won but its response was lost, so the source Run
-    follows the normal successful-deploy handoff without consuming a retry.
+    ``RETRIED`` means a fresh Deploy Run was dispatched. ``RECONCILED`` means
+    the service-side completion won but its response was lost, so the source
+    Run follows the normal successful-deploy handoff without consuming a retry.
+    ``REPAIR_DISPATCHED`` means a bounded Engineering repair was handed off.
     """
 
     RETRIED = "retried"
     RECONCILED = "reconciled"
+    REPAIR_DISPATCHED = "repair_dispatched"
     IN_FLIGHT = "in_flight"
     FAILED = "failed"
 
@@ -140,6 +156,16 @@ def _max_deploy_fix_attempts() -> int:
 
 def _deploy_retry_ttl() -> int:
     return startup.get_config().get_int("deploy.deploy_retry_ttl")
+
+
+def _retry_action_deltas(action: DeployRetryAction) -> tuple[int, int, int, int]:
+    """Return tested, retried, redispatched and failed increments for a retry action."""
+    return {
+        DeployRetryAction.RETRIED: (0, 1, 0, 0),
+        DeployRetryAction.RECONCILED: (1, 0, 0, 0),
+        DeployRetryAction.REPAIR_DISPATCHED: (0, 0, 1, 0),
+        DeployRetryAction.FAILED: (0, 0, 0, 1),
+    }.get(action, (0, 0, 0, 0))
 
 
 #: The API exposes story transitions as action endpoints, not as status values:
@@ -230,7 +256,14 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
 
         elif outcome in (DeployOutcome.CODE_FIX, DeployOutcome.SMOKE_FAILURE):
             dispatched = await _handle_deploy_code_fix(
-                api_client, redis_client, story_id, project_id, run, run.result, log
+                api_client,
+                redis_client,
+                story_id,
+                project_id,
+                run,
+                run.result,
+                _code_fix_description(run.result.error_details or "unknown deploy error"),
+                log,
             )
             if dispatched:
                 redispatched += 1
@@ -266,12 +299,13 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
             retry_action = await _handle_deploy_retry(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )
-            if retry_action is DeployRetryAction.RETRIED:
-                retried += 1
-            elif retry_action is DeployRetryAction.RECONCILED:
-                tested += 1
-            elif retry_action is DeployRetryAction.FAILED:
-                failed += 1
+            tested_delta, retried_delta, redispatched_delta, failed_delta = _retry_action_deltas(
+                retry_action
+            )
+            tested += tested_delta
+            retried += retried_delta
+            redispatched += redispatched_delta
+            failed += failed_delta
 
         elif outcome is DeployOutcome.SETTINGS_SEED_FAILED:
             # The application is up; a confirmed setting of the story's brief is
@@ -282,10 +316,13 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
             retry_action = await _route_settings_seed_failure(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )
-            if retry_action is DeployRetryAction.RETRIED:
-                retried += 1
-            else:
-                failed += 1
+            tested_delta, retried_delta, redispatched_delta, failed_delta = _retry_action_deltas(
+                retry_action
+            )
+            tested += tested_delta
+            retried += retried_delta
+            redispatched += redispatched_delta
+            failed += failed_delta
 
         elif outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
             action = await _route_refused_deploy(
@@ -539,6 +576,7 @@ async def _handle_deploy_code_fix(
     project_id: str,
     run,
     result: DeployRunResult,
+    description: str,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Deploy failed with CODE_FIX — redispatch to engineering if retries remain.
@@ -580,7 +618,6 @@ async def _handle_deploy_code_fix(
         await _notify_admin_failure(run.id, project_id, "deploy fix retries exhausted")
         return False
 
-    error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
     try:
         started = await api_client.start_paid_run(
@@ -595,6 +632,9 @@ async def _handle_deploy_code_fix(
         )
     except Exception:
         log.exception("deploy_fix_paid_start_failed", run_id=fix_task_id)
+        await _fail_deploy_fix_handoff(
+            api_client, story_id, project_id, run, "deploy fix could not start"
+        )
         return False
     if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
         budget = started.engineering_budget
@@ -629,8 +669,6 @@ async def _handle_deploy_code_fix(
         return False
 
     try:
-        # Transition story back to IN_PROGRESS only for an admitted handoff.
-        await api_client.transition_story(story_id, "start")
         fix_recipient = await resolve_project_recipient(
             api_client, project_id, event="deploy_code_fix", story_id=story_id
         )
@@ -640,11 +678,7 @@ async def _handle_deploy_code_fix(
             initiating_run_id=initiating_run_id,
             telegram_chat_id=fix_recipient.telegram_chat_id,
             action="fix",
-            description=(
-                f"Deploy failed — fix the code so containers start cleanly.\n\n"
-                f"Error: {error_details}\n\n"
-                f"Run the service locally or check imports/dependencies before pushing."
-            ),
+            description=description,
             skip_deploy=False,
             story_id=story_id,
             deploy_fix_attempt=attempt + 1,
@@ -656,14 +690,57 @@ async def _handle_deploy_code_fix(
         await api_client.abort_paid_run_pre_handoff(
             fix_task_id, DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR
         )
+        await _fail_deploy_fix_handoff(
+            api_client, story_id, project_id, run, "deploy fix handoff preparation failed"
+        )
         return False
     try:
         await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
         log.exception("deploy_fix_publish_outcome_unknown", fix_task_id=fix_task_id)
+        await _fail_deploy_fix_handoff(
+            api_client, story_id, project_id, run, "deploy fix handoff outcome is unknown"
+        )
+        return False
+    try:
+        # A story becomes IN_PROGRESS only after the queue accepted its repair.
+        await api_client.transition_story(story_id, "start")
+    except Exception:
+        log.exception("deploy_fix_post_handoff_transition_failed", fix_task_id=fix_task_id)
+        await _fail_deploy_fix_handoff(
+            api_client, story_id, project_id, run, "deploy fix handoff could not start the story"
+        )
         return False
     log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
     return True
+
+
+async def _fail_deploy_fix_handoff(
+    api_client: SchedulerAPIClient, story_id: str, project_id: str, run, reason: str
+) -> None:
+    """Make a failed admitted repair visible instead of retrying its identity forever."""
+    await api_client.fail_story(story_id)
+    await _notify_admin_failure(run.id, project_id, reason)
+
+
+def _code_fix_description(error_details: str) -> str:
+    """Describe an ordinary code-fix failure without settings-seed policy."""
+    return (
+        "Deploy failed — fix the code so containers start cleanly.\n\n"
+        f"Error: {error_details}\n\n"
+        "Run the service locally or check imports/dependencies before pushing."
+    )
+
+
+def _undeclared_settings_manifest_repair_description(
+    outcomes: list[SettingSeedOutcome], error_details: str
+) -> str:
+    """Describe the already-classified exact undeclared-key manifest repair."""
+    listed_keys = "\n".join(f"- `{outcome.key}`" for outcome in outcomes if not outcome.written)
+    return (
+        f"{_CORE_SETTINGS_V1_MANIFEST_REPAIR_GUIDANCE}\n\nUndeclared keys:\n{listed_keys}"
+        f"\n\nDeploy evidence: {error_details}"
+    )
 
 
 async def _handle_deploy_retry(
@@ -745,10 +822,29 @@ async def _route_settings_seed_failure(  # noqa: PLR0913
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> DeployRetryAction:
-    """Retry a convergent seed or fail a deterministic one for artifact repair."""
+    """Retry a convergent seed or dispatch its precise manifest repair."""
     result: DeployRunResult = run.result
     failures = [failure.value for failure in result.settings_seed_failures]
     if not result.settings_seed_can_converge:
+        if result.settings_seed_failures == (SettingsSeedFailureKind.KEY_NOT_DECLARED,):
+            log.warning(
+                "deploy_supervisor_settings_seed_manifest_repair",
+                run_id=run.id,
+                failures=failures,
+            )
+            repaired = await _handle_deploy_code_fix(
+                api_client,
+                redis_client,
+                story_id,
+                project_id,
+                run,
+                result,
+                _undeclared_settings_manifest_repair_description(
+                    result.settings_seed, result.error_details or "unknown deploy error"
+                ),
+                log,
+            )
+            return DeployRetryAction.REPAIR_DISPATCHED if repaired else DeployRetryAction.FAILED
         detail = f"settings seed requires artifact repair ({result.settings_seed_failure_detail})"
         log.warning(
             "deploy_supervisor_settings_seed_artifact_repair",

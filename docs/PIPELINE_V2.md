@@ -342,9 +342,11 @@ diagnostic. Every setting's disposition is recorded in
 reconciled to SUCCESS once that grant is applied and would otherwise launder the
 failure away. That outcome must include a failed seed record. The supervisor
 retries the same commit only when at least one recorded failure is in
-`SETTINGS_SEED_CONVERGENT_FAILURES`; an undeclared key, schema-refused value,
-or pinned core is terminal artifact repair without spending that retry bound. A
-story with no brief, or a brief with no settings, seeds nothing. See
+`SETTINGS_SEED_CONVERGENT_FAILURES`; a failure set exactly equal to
+`KEY_NOT_DECLARED` dispatches bounded Engineering manifest repair without
+spending that retry bound, while a schema-refused value, pinned core or mixed
+deterministic failure is terminal artifact repair. A story with no brief, or a
+brief with no settings, seeds nothing. See
 `docs/CONTRACTS.md`, "A brief carries typed initial settings, and never a
 secret".
 
@@ -360,8 +362,9 @@ pass as an ordinary schema error.
 - RETRY / IMAGES_NOT_PUBLISHED / IMAGE_REGISTRY_UNREADABLE → redeploy with counter
   (max 3 consecutive failures)
 - SETTINGS_SEED_FAILED → any convergent failure redeploys the same commit under
-  that counter; all-deterministic failures fail visibly for artifact repair,
-  never reconciled to SUCCESS by an applied owner grant
+  that counter; only the exact `KEY_NOT_DECLARED` set dispatches bounded
+  Engineering manifest repair, while other deterministic failures fail visibly;
+  none are reconciled to SUCCESS by an applied owner grant
 - GIVE_UP → story `failed`, admin notified
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.

@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Product Brief settings now fail closed when the generated settings core or a confirmed key is absent; deterministic failures skip the same-commit retry bound.
 - Project cleanup now removes Requirement Coverage before its Product Brief, task and story parents, preventing teardown FK failures.
+- Exact Core-v1 undeclared setting keys now dispatch a bounded manifest-repair worker, so a confirmed
+  setting triggers repair instead of only failing its story.
 
 ## 2026-09-03
 

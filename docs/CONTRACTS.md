@@ -309,8 +309,10 @@ while any one remains; that outcome itself requires at least one failed seed
 record. `SETTINGS_SEED_CONVERGENT_FAILURES` is only a supervisor routing set:
 transport, an unclassified set refusal, and refused, malformed or disagreeing
 readback may converge on a repeat. If a failed run has any one of those kinds
-it redeploys the same commit under the existing bound; an all-deterministic
-failure skips that bound for artifact repair.
+it redeploys the same commit under the existing bound. If its complete failure
+set is exactly `KEY_NOT_DECLARED`, it instead dispatches one bounded Engineering
+repair with the Core v1 manifest guidance; other all-deterministic failures skip
+that bound for terminal artifact repair.
 
 That is its own outcome, not a flavour of `OWNER_ACCESS_PROOF_FAILED`, because
 the invariant is **a deploy run may not be reported SUCCESS while a confirmed
@@ -324,11 +326,12 @@ cannot validate as `SUCCESS`, so every producer and
 every reconciliation reaches it rather than each remembering to check.
 `SETTINGS_SEED_FAILED` has its own supervisor route, which does not consult the
 grant-intent lifecycle at all. The seed is idempotent, so a convergent retry
-that succeeds writes exactly the confirmed values. An undeclared key (the Core
-settings v1 404 discriminator), a value its declared schema refuses (422), and
-a product whose environment contract does not declare the capability at all —
-an existing pinned product — fail the story with an actionable artifact-repair
-notification. None is a successful handoff or a silent skip.
+that succeeds writes exactly the confirmed values. An exact Core settings v1
+undeclared-key 404 dispatches the bounded manifest repair; a value its declared
+schema refuses (422), a product whose environment contract lacks the capability
+(an existing pinned product), or any mixed deterministic failure fail the story
+with an actionable artifact-repair notification. None is a successful handoff
+or a silent skip.
 
 The deterministic 404 and 422 classifications are exact Core settings v1 response
 details, pinned against the vendored release fixture. A generic route 404 or

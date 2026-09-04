@@ -21,7 +21,7 @@ from shared.contracts.dto.product_brief import (
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.settings_seed import SettingsSeedFailureKind
-from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 
 _HANDLER_PATCH = "src.consumers.deploy_result_handler"
 _CAPABILITY = "settings-capability-value"
@@ -67,7 +67,9 @@ def _brief(settings: list[InitialSetting] | None = None, **overrides) -> Product
     return ProductBriefRead(**base)
 
 
-async def _deploy(mock_api, *, story_id="story-1", secret_values=None, redis=None):
+async def _deploy(
+    mock_api, *, story_id="story-1", secret_values=None, redis=None, deploy_fix_attempt=0
+):
     from src.consumers.deploy_result_handler import _handle_deploy_success
 
     return await _handle_deploy_success(
@@ -88,6 +90,13 @@ async def _deploy(mock_api, *, story_id="story-1", secret_values=None, redis=Non
         story_id=story_id,
         redis=redis or AsyncMock(),
         application_id=42,
+        msg=DeployMessage(
+            task_id="deploy-1",
+            project_id="proj-1",
+            story_id=story_id,
+            telegram_chat_id="123",
+            deploy_fix_attempt=deploy_fix_attempt,
+        ),
     )
 
 
@@ -328,6 +337,18 @@ class TestFailClosedAndVisibly:
             ("reminders.default_hour", True, None),
             ("reminders.locale", False, SettingsSeedFailureKind.KEY_NOT_DECLARED.value),
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_seed_failure_preserves_the_repair_attempt(
+        self, mock_api, fake_settings_client
+    ):
+        """A repaired deploy cannot reset the supervisor's bounded-fix counter."""
+        fake_settings_client["reminders.default_hour"] = SettingsSeedFailureKind.KEY_NOT_DECLARED
+
+        result = await _deploy(mock_api, deploy_fix_attempt=1)
+
+        assert result["status"] == "failed"
+        assert _stored_result(mock_api)["deploy_fix_attempt"] == 1
 
     @pytest.mark.asyncio
     async def test_mixed_seed_failures_persist_one_complete_stable_detail(

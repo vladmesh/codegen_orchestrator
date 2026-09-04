@@ -704,6 +704,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 telegram_chat_id=telegram_chat_id,
                 story_id=story_id,
                 redis=redis,
+                msg=msg,
                 application_id=result.get("application_id"),
                 grant_intent=grant_intent,
                 temporary_access_grant=temporary_access_grant,
