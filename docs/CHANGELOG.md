@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Stand E2E authenticates the current Codex token in the exact published worker image before BitLaunch
+  creation, so an unusable token fails without billed machines or credential-bearing diagnostics.
 - Codex stand-token login now inherits the QA egress proxy, so the isolated QA executor can authenticate
   without exposing its token outside stdin.
 - Story completion waits for a live story-owned deploy-fix engineering Run, preserving its branch worker

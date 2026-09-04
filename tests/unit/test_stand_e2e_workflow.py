@@ -419,7 +419,8 @@ def test_exact_worker_release_is_validated_before_any_provider_or_dns_action():
 
     assert gate["env"]["WORKER_IMAGE_TAG"] == "${{ github.sha }}"
     assert gate["env"]["GHCR_TOKEN"] == "${{ secrets.GHCR_TOKEN || github.token }}"  # noqa: S105
-    assert "RELEASE_VALIDATION_ONLY=true" in gate["run"]
+    assert "RELEASE_VALIDATION_ONLY=true" not in gate["run"]
+    assert gate["env"]["DIGEST_FILE"] == "${{ runner.temp }}/stand-precreate-worker-images.json"
     assert "pull-worker-images.sh" in gate["run"]
     assert "BITLAUNCH_API_KEY" not in gate.get("env", {})
     assert "stand_lifecycle" not in gate["run"]
@@ -431,6 +432,49 @@ def test_exact_worker_release_is_validated_before_any_provider_or_dns_action():
         "Create ephemeral machines"
     )
     assert steps.index("Validate exact worker image release") < steps.index(
+        "Give the stand a resolvable name"
+    )
+
+
+def test_codex_auth_preflight_uses_the_verified_pinned_worker_before_machine_creation():
+    """A rejected stand token must fail on the runner, not after billed provisioning."""
+    steps = list(_steps())
+    release = _steps()["Validate exact worker image release"]
+    auth = _steps()["Authenticate Codex against exact worker image"]
+
+    assert "RELEASE_VALIDATION_ONLY=true" not in release["run"]
+    assert "pull-worker-images.sh" in release["run"]
+    assert auth["env"]["CODEX_ACCESS_TOKEN"] == "${{ secrets.CODEX_ACCESS_TOKEN }}"  # noqa: S105
+    assert "worker-base-codex:latest" in auth["run"]
+    assert '"--entrypoint", "codex"' in auth["run"]
+    assert '"--entrypoint",' in auth["run"]
+    assert '"sh",' in auth["run"]
+    assert 'cli_auth_credentials_store = "file"' in auth["run"]
+    assert "exec codex login --with-access-token" in auth["run"]
+    assert 'input=os.environ["CODEX_ACCESS_TOKEN"].encode()' in auth["run"]
+    assert 'if name != "CODEX_ACCESS_TOKEN"' in auth["run"]
+    assert "env=child_env" in auth["run"]
+    assert "stdout=subprocess.DEVNULL" in auth["run"]
+    assert "stderr=subprocess.DEVNULL" in auth["run"]
+    assert "except (OSError, subprocess.TimeoutExpired)" in auth["run"]
+    assert "if login.returncode in {125, 126, 127}" in auth["run"]
+    assert "codex_auth_not_confirmed" in auth["run"]
+    assert "codex_auth_rejected" not in auth["run"]
+    assert "codex_auth_unavailable" in auth["run"]
+    assert "codex_cli_mismatch" in auth["run"]
+    assert "--rm" in auth["run"]
+    assert '"--tmpfs",' in auth["run"]
+    assert '"/home/worker/.codex:mode=1777"' in auth["run"]
+    assert "GITHUB_OUTPUT" not in auth["run"]
+    assert "GITHUB_STEP_SUMMARY" not in auth["run"]
+    assert "tee " not in auth["run"]
+    assert steps.index("Authenticate Codex against exact worker image") < steps.index(
+        "Preflight ephemeral machines"
+    )
+    assert steps.index("Authenticate Codex against exact worker image") < steps.index(
+        "Create ephemeral machines"
+    )
+    assert steps.index("Authenticate Codex against exact worker image") < steps.index(
         "Give the stand a resolvable name"
     )
 
