@@ -58,6 +58,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from typing import TypedDict
 
 from live_harness import resolve_repo_root
 
@@ -137,7 +138,12 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #     admission facts through the product settings and job evidence it exercised.
 # v10: the Architect-owned parsed scheduled criterion and the whole admitted
 #      planning roster are retained, so the job identity cannot drift from it.
-EVIDENCE_SCHEMA_VERSION = 10
+# v11: `deployment.run_record` is the current deploy only and is missed when
+#      unread; terminal history is `deployment.prior_attempts`; bounded repair
+#      lifecycle is `deployment.settings_seed_repair`; and a story-owned
+#      Engineering Run records its nullable Task foreign key explicitly. Current
+#      and prior deploy facts retain credential-safe `settings_seed` outcomes.
+EVIDENCE_SCHEMA_VERSION = 11
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -253,6 +259,14 @@ class Capture:
 
     def as_dict(self) -> dict:
         return {"status": self.status.value, "value": self.value, "reason": self.reason}
+
+
+class DeployRunRecord(TypedDict):
+    """Current deploy evidence plus terminal history retained for v11."""
+
+    current: dict | None
+    current_error: str | None
+    prior_attempts: list[dict]
 
 
 class WorkerRole(StrEnum):
@@ -376,32 +390,31 @@ class ReasonSource(StrEnum):
 # free `mega-noop` suite and the paid ones.
 FREE_AGENT_TYPE = "noop"
 
-# The two distinct ways `record_engineering_evidence` never ran. They are not
+# The two distinct ways engineering evidence can be absent. They are not
 # interchangeable: one says the control plane never created a Run to read, the
-# other says Runs may well exist and nothing read them. Telling a reader the
-# first when the second happened asserts something untrue about the run, which
-# is the exact failure this artifact exists to remove.
+# other says terminal collection has not run yet and Runs may exist unread.
+# Telling a reader the first in the latter case asserts something untrue about
+# the run, which is the exact failure this artifact exists to remove.
 ENGINEERING_PHASE_NEVER_ENTERED_REASON = (
     "no engineering Run evidence was collected for this combination: the run "
     "never entered the engineering phase, so the control plane created no Run "
     "record this artifact could have read a reason from"
 )
-ENGINEERING_EVIDENCE_ESCAPED_REASON = (
+ENGINEERING_EVIDENCE_NOT_YET_COLLECTED_REASON = (
     "no engineering Run evidence was collected for this combination: the run "
-    "entered the engineering phase ({subject}), but an error escaped it before "
-    "the collection ran, so whatever Run records the control plane holds for "
-    "this combination were never read"
+    "entered the engineering phase ({subject}), but terminal evidence collection "
+    "has not run yet, so any control-plane Run records remain unread"
 )
 
 
 def engineering_collection_missed_reason(ctx: dict) -> str:
-    """Which of the two ways the engineering collection never ran happened here.
+    """State whether engineering collection is inapplicable or not yet collected.
 
     The engineering phase is the only place this run creates a story and a
     task, so a context carrying neither never entered it and the control plane
     holds no Run to read. A context carrying either did enter it, and the
-    collection that follows the phase never ran — an error escaped first, and
-    Runs may well exist unread. Nothing new is observed to tell them apart:
+    terminal collection has not run yet, and Runs may well exist unread. Nothing
+    new is observed to tell them apart:
     both facts are already on the context when the artifact is built.
     """
     task_id = ctx.get("task_id")
@@ -414,7 +427,7 @@ def engineering_collection_missed_reason(ctx: dict) -> str:
         subject = f"story {ctx['story_id']}, before any engineering task was created"
     else:
         return ENGINEERING_PHASE_NEVER_ENTERED_REASON
-    return ENGINEERING_EVIDENCE_ESCAPED_REASON.format(subject=subject)
+    return ENGINEERING_EVIDENCE_NOT_YET_COLLECTED_REASON.format(subject=subject)
 
 
 @dataclass(frozen=True)
@@ -1357,6 +1370,10 @@ def deploy_run_facts(run: dict) -> dict:
     answered the deploy, and a run where the deploy smoke passed and QA then
     could not reach the same URL is a different finding from one where the
     deploy never proved the application answered anything.
+
+    `settings_seed` preserves failed-setting proof without its value, product
+    response body, or write capability, so later repair evidence can explain
+    why a failed deploy did not reach QA.
     """
     result = run.get("result") or {}
     return {
@@ -1370,6 +1387,7 @@ def deploy_run_facts(run: dict) -> dict:
         "application_id": result.get("application_id"),
         "deploy_fix_attempt": result.get("deploy_fix_attempt"),
         "error_details": result.get("error_details"),
+        "settings_seed": result.get("settings_seed"),
         "action": result.get("action"),
         "smoke_result": result.get("smoke_result"),
     }
@@ -1392,11 +1410,12 @@ def _qa_run_capture(ctx: dict) -> Capture:
 
 def _deploy_run_capture(ctx: dict) -> Capture:
     """The deploy Run record of this combination, or why there is none."""
-    if ctx.get("deploy_run_record_error"):
-        return Capture.missed(ctx["deploy_run_record_error"])
-    record = ctx.get("deploy_run_record")
+    record: DeployRunRecord | None = ctx.get("deploy_run_record")
     if record is not None:
-        return Capture.captured(record)
+        current = record["current"]
+        if current is None:
+            return Capture.missed(record["current_error"] or "the current deploy Run was unread")
+        return Capture.captured(current)
     if ctx.get("deploy_run_id"):
         return Capture.missed(
             f"deploy Run {ctx['deploy_run_id']} was found and no record of it was read into "
@@ -1584,9 +1603,23 @@ def deployment_evidence(ctx: dict) -> dict:
     """The deploy Run, and every read of the deployed URL this run holds."""
     deploy_run = _deploy_run_capture(ctx)
     qa_probe = _qa_probe_capture(_qa_run_capture(ctx))
+    record: DeployRunRecord | None = ctx.get("deploy_run_record")
     return {
+        # This remains available when collecting the Run payload itself failed:
+        # the artifact can then distinguish an absent deploy from an observed,
+        # but unread, current Run.
+        "run_id": ctx.get("deploy_run_id"),
         "deployed_url": ctx.get("deployed_url"),
         "run_record": deploy_run.as_dict(),
+        "prior_attempts": record["prior_attempts"] if record is not None else [],
+        "settings_seed_repair": {
+            "run_ids": ctx.get("settings_seed_repair_run_ids") or [],
+            "attempts": ctx.get("settings_seed_repair_attempts") or [],
+            "error": ctx.get("settings_seed_repair_error"),
+            "run_status": ctx.get("settings_seed_repair_run_status"),
+            "story_status": ctx.get("settings_seed_repair_story_status"),
+            "candidate_timestamp_errors": ctx.get("deploy_run_candidate_timestamp_errors") or [],
+        },
         "reachability": {
             "deploy_smoke": _deploy_smoke_capture(deploy_run).as_dict(),
             "harness_probe": _harness_probe_capture(ctx).as_dict(),
@@ -1675,7 +1708,7 @@ def engineering_run_facts(run: dict) -> dict:
 def engineering_run_record(
     *,
     run_id: str,
-    task_id: str,
+    task_id: str | None,
     run: Capture,
     admission: Capture,
     executor_diagnostics: Capture,

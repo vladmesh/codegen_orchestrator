@@ -122,6 +122,11 @@ class DeployRunResult(BaseModel):
         )
 
     @property
+    def settings_seed_needs_manifest_repair(self) -> bool:
+        """Whether this is the exact bounded Core-v1 manifest-repair case."""
+        return self.settings_seed_failures == (SettingsSeedFailureKind.KEY_NOT_DECLARED,)
+
+    @property
     def settings_seed_failure_detail(self) -> str:
         """A bounded diagnostic suitable for persisted errors and notifications."""
         return settings_seed_failure_detail(self.settings_seed_failures)
@@ -185,6 +190,13 @@ class DeployRunResult(BaseModel):
                 f"{DeployOutcome.SETTINGS_SEED_FAILED.value}"
             )
         return self
+
+
+def deploy_fix_run_id(source_run_id: str, attempt: int) -> str:
+    """The id of the story-owned Engineering Run repairing one deploy attempt."""
+    if attempt < 1:
+        raise ValueError("deploy fix attempt must be positive")
+    return f"eng-deploy-fix-{source_run_id}-{attempt}"
 
 
 class QAFailedCheck(BaseModel):

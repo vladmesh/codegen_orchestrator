@@ -57,6 +57,13 @@ PRIVATE_KEY_MARKER = re.compile(
     re.IGNORECASE,
 )
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
+# Paid-failure attribution requires the v11 capture fields.  Later artifact
+# versions remain admissible: this is a floor, not a writer-version lockstep.
+MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 11
+# These classifications are assigned only after the harness has selected a
+# deploy Run and observed the part of its lifecycle that stopped the pipeline.
+# They are therefore independent evidence that a current Run record is owed.
+_FAILURE_KINDS_WITH_KNOWN_DEPLOY_RUN = frozenset({"deploy_failed", "qa_never_ran", "qa_not_passed"})
 
 # These are the only settings whose values are credentials.  The rendered stand
 # configuration deliberately also includes public routing and application
@@ -182,17 +189,45 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
 def _capture_is_stated(capture: object) -> bool:
     """Whether one evidence field is a collected value or a stated absence.
 
-    The run-evidence artifact never carries a bare empty field: every fact is
-    either ``captured`` with a value or ``missed`` with the reason it could not
-    be read.  Both are admissible — a piece that genuinely could not be
-    collected is named with why.  Anything else is silence, and silence about a
-    paid failure is what this admission refuses.
+    Every capture-shaped fact is either ``captured`` with a value or ``missed``
+    with the reason it could not be read. Terminal deploy history is deliberately
+    a raw v11 ``prior_attempts`` list, not a capture: it is incomplete only when
+    the current ``run_record`` says so. A stated miss is admissible only while
+    no deploy Run identity is known; once one is known, the paid-failure gate
+    requires its current record to be captured. Anything else is silence, and
+    silence about a paid failure is what this admission refuses.
     """
     if not isinstance(capture, dict):
         return False
     if capture.get("status") == "captured":
         return capture.get("value") is not None
     return capture.get("status") == "missed" and bool(capture.get("reason"))
+
+
+def _capture_is_captured(capture: object) -> bool:
+    """Whether a capture has an actual non-null current fact."""
+    return (
+        isinstance(capture, dict)
+        and capture.get("status") == "captured"
+        and capture.get("value") is not None
+    )
+
+
+def _deployment_has_known_run(failure: dict[str, Any], deployment: dict[str, Any]) -> bool:
+    """Whether evidence establishes a deploy Run whose current record is owed.
+
+    ``stopped_at_deploy`` may mean no Run appeared at all. A stated
+    ``deploy_run_missing`` is consequently admissible; only a known Run
+    identity (or a lifecycle classification that can arise only after selecting
+    one) turns an unread current record into an admission error. This answers
+    only whether the Run is known, not whether its record was captured.
+    """
+    return bool(
+        deployment.get("run_id")
+        or deployment.get("prior_attempts")
+        or deployment.get("deployed_url")
+        or failure.get("failure_kind") in _FAILURE_KINDS_WITH_KNOWN_DEPLOY_RUN
+    )
 
 
 def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
@@ -204,6 +239,13 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     if not verdict.get("paid") or not failure.get("failed"):
         return []
     errors: list[str] = []
+    schema_version = artifact.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version < MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION
+    ):
+        errors.append(f"paid_failure_schema_version_unsupported:{name}:{schema_version!r}")
     if not failure.get("stage") or not failure.get("failure_kind"):
         errors.append(f"paid_failure_stage_missing:{name}")
     if not _capture_is_stated(failure.get("control_plane_reason")):
@@ -214,10 +256,16 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     qa = artifact.get("qa")
     if not isinstance(qa, dict) or not _capture_is_stated(qa.get("run_record")):
         errors.append(f"paid_failure_qa_run_record_missing:{name}")
-    deployment = artifact.get("deployment")
-    if not isinstance(deployment, dict) or not _capture_is_stated(deployment.get("run_record")):
+    deployment_value = artifact.get("deployment")
+    deployment = deployment_value if isinstance(deployment_value, dict) else {}
+    run_record = deployment.get("run_record")
+    if _deployment_has_known_run(failure, deployment):
+        deploy_record_admissible = _capture_is_captured(run_record)
+    else:
+        deploy_record_admissible = _capture_is_stated(run_record)
+    if not deploy_record_admissible:
         errors.append(f"paid_failure_deploy_run_record_missing:{name}")
-    errors += _reachability_errors(name, deployment)
+    errors += _reachability_errors(name, deployment_value)
     if not verdict.get("reasons"):
         errors.append(f"paid_failure_verdict_silent:{name}")
     return errors

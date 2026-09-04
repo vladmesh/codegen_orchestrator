@@ -309,10 +309,17 @@ while any one remains; that outcome itself requires at least one failed seed
 record. `SETTINGS_SEED_CONVERGENT_FAILURES` is only a supervisor routing set:
 transport, an unclassified set refusal, and refused, malformed or disagreeing
 readback may converge on a repeat. If a failed run has any one of those kinds
-it redeploys the same commit under the existing bound. If its complete failure
+it redeploys the same commit under the existing bound. That story-wide counter
+increments before its ceiling check, so a ceiling of N admits at most N-1
+same-commit redispatches. If its complete failure
 set is exactly `KEY_NOT_DECLARED`, it instead dispatches one bounded Engineering
 repair with the Core v1 manifest guidance; other all-deterministic failures skip
 that bound for terminal artifact repair.
+
+`DeployRunResult.settings_seed_needs_manifest_repair` and
+`deploy_fix_run_id(source_run_id, attempt)` own that exact repair predicate and
+its story-owned Engineering Run identity for both the scheduler producer and
+the live harness; they add no serialized result field.
 
 That is its own outcome, not a flavour of `OWNER_ACCESS_PROOF_FAILED`, because
 the invariant is **a deploy run may not be reported SUCCESS while a confirmed

@@ -5,7 +5,7 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
@@ -19,7 +19,14 @@ import uuid
 
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
-from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
+from live_harness import (
+    TERMINAL_RUN_STATUSES,
+    CleanupError,
+    OwnershipManifest,
+    cleanup_on_error,
+    resolve_repo_root,
+    run_created_at,
+)
 from pydantic import BaseModel, ValidationError
 import run_cleanup
 from run_evidence import (
@@ -27,6 +34,7 @@ from run_evidence import (
     LOG_TAIL_MAX_CHARS,
     TARGET_SNAPSHOT_FILENAME,
     Capture,
+    DeployRunRecord,
     QARunLookup,
     RunEvidenceCollector,
     WorkerRole,
@@ -37,6 +45,7 @@ from run_evidence import (
     qa_run_facts,
     target_snapshot_requirement,
 )
+from settings_seed_followup import follow_settings_seed
 
 from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.application import ApplicationStatus
@@ -98,9 +107,25 @@ SCAFFOLD_FENCE_TIMEOUT = 900
 DEPLOY_RUN_TIMEOUT = 1320
 DEPLOY_RUN_POLL_INTERVAL = 5
 # The deploy consumer writes the run result right after the app reports its
-# status, so this only covers that last write.
+# status, so this only covers that last write on the initial lifecycle. A
+# settings-seed follow-up goes directly from Run discovery to this wait, so its
+# derived budgets also include the full deploy lifecycle below.
 DEPLOY_OUTCOME_TIMEOUT = 120
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
+SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT = (
+    LLM_ENGINEERING_TIMEOUT + DEPLOY_RUN_TIMEOUT + DEPLOY_TIMEOUT + DEPLOY_OUTCOME_TIMEOUT
+)
+SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT = (
+    DEPLOY_RUN_TIMEOUT + DEPLOY_TIMEOUT + DEPLOY_OUTCOME_TIMEOUT
+)
+# The stand bootstraps scheduler caps of two manifest repairs and three deploy
+# failures. The harness reserves two full repairs plus one full convergent
+# redispatch, leaving the paid fixture time to emit evidence and clean up before
+# the outer job deadline; every individual attempt remains bounded as well.
+SETTINGS_SEED_FOLLOWUP_TIMEOUT = (
+    2 * SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT + SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT
+)
+SETTINGS_SEED_REPAIR_POLL_INTERVAL = 10
 # Deploy hands off to QA on the scheduler's next poll, then QA retries the health
 # check while the service finishes coming up.
 QA_RUN_TIMEOUT = 300
@@ -119,7 +144,6 @@ WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
 RUN_CANCELLATION_POLL_INTERVAL = 0.5
 _ACTIVE_RUN_STATUSES = {"queued", "running"}
-_TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 # Deploy resolves its environment from the committed contract fragments, so the
 # noop project must carry them. It selects only the backend module, and
@@ -1052,6 +1076,33 @@ def redacted_payload(payload: object) -> object:
     return json.loads(redact_diagnostic(serialized, secrets=secret_env_values(dict(os.environ))))
 
 
+def _set_deploy_run_record(
+    ctx: dict,
+    *,
+    current_id: str | None,
+    current: dict | None,
+    current_error: str | None,
+) -> None:
+    """Keep one explicit evidence shape even when the current read is unusable."""
+    previous_record = ctx.get("deploy_run_record")
+    history = {
+        record["id"]: record
+        for record in (previous_record["prior_attempts"] if previous_record is not None else [])
+    }
+    previous_current = previous_record["current"] if previous_record is not None else None
+    if previous_current is not None:
+        history[previous_current["id"]] = previous_current
+    if current is not None:
+        history[current["id"]] = current
+    ctx["deploy_run_record"] = DeployRunRecord(
+        current=current,
+        current_error=current_error,
+        prior_attempts=[
+            recorded for record_id, recorded in history.items() if record_id != current_id
+        ],
+    )
+
+
 # The suite's own snapshot of the target host is bounded twice: the remote
 # script bounds each container's tail, and this bounds the whole text before it
 # is written down.
@@ -1083,21 +1134,28 @@ def record_qa_run(ctx: dict, run: dict, *, source: QARunLookup = QARunLookup.QA_
 
 
 def record_deploy_run(ctx: dict, run: dict) -> None:
-    """Read the terminal deploy Run into evidence, beside the QA Run it fed.
+    """Read an observed deploy Run into evidence, before or after it settles.
 
     The smoke evidence that made this deploy a success is the counter-fact to a
     QA stage that could not reach the same URL, and it exists only in this Run's
-    result. Recorded whatever the outcome was: a deploy that failed is read here
-    too, so the deploy stage's own reason no longer depends on the typed outcome
-    alone.
+    result. A nonterminal payload is still a captured fact: it proves the Run
+    existed even when its outcome never arrives. A stated current error is kept
+    only when that payload itself cannot be decoded or redacted.
     """
     try:
-        ctx["deploy_run_record"] = redacted_payload(deploy_run_facts(run))
+        record = redacted_payload(deploy_run_facts(run))
     except (AttributeError, TypeError, ValueError) as error:
-        ctx["deploy_run_record_error"] = (
+        current = None
+        current_error = (
             f"deploy run {run.get('id')} could not be read into evidence: "
             f"{type(error).__name__}: {error}"
         )
+    else:
+        current = record
+        current_error = None
+    _set_deploy_run_record(
+        ctx, current_id=run.get("id"), current=current, current_error=current_error
+    )
 
 
 async def backfill_qa_run(api_internal: httpx.AsyncClient, ctx: dict) -> None:
@@ -1131,12 +1189,12 @@ async def backfill_qa_run(api_internal: httpx.AsyncClient, ctx: dict) -> None:
             "/api/runs/", params={"story_id": story_id, "run_type": RunType.QA.value}
         )
         response.raise_for_status()
-        # The API orders runs newest first, and a project can carry QA runs of
-        # other stories, so the story is checked here as it is in the wait.
+        # `/api/runs/` is descending by created_at; this teardown backfill keeps
+        # the newest terminal QA result after filtering out any foreign story.
         terminal = [
             run
             for run in response.json()
-            if run["story_id"] == story_id and run["status"] in _TERMINAL_RUN_STATUSES
+            if run["story_id"] == story_id and run["status"] in TERMINAL_RUN_STATUSES
         ]
     except (httpx.HTTPError, KeyError, TypeError, ValueError, RuntimeError) as error:
         ctx["qa_run_lookup_error"] = (
@@ -1224,11 +1282,18 @@ def record_target_host_snapshot(ctx: dict) -> None:
 async def record_terminal_stage_evidence(api_internal: httpx.AsyncClient, ctx: dict) -> None:
     """The last reads before teardown, whatever ended the phase.
 
-    Both of them exist because the phase can be left by a raise: the QA Run that
+    These three reads exist because the phase can be left by a raise: the
+    Engineering Runs (including story-owned manifest repairs), the QA Run that
     names why QA stopped, and the target host that holds the half of the
-    reachability answer the orchestrator cannot see. Both are gone minutes
-    later — the Run with the machine, the containers with `cleanup_all`.
+    reachability answer the orchestrator cannot see. They are gone minutes
+    later — Runs with the machine, containers with `cleanup_all`.
+
+    Executor diagnostics are deliberately a teardown-time snapshot, rather
+    than a point-in-time copy from the failed phase. The terminal guard runs
+    immediately after that phase and is the only location that also sees repair
+    Runs created after it, so one final best-effort read is the truthful tradeoff.
     """
+    await record_engineering_evidence(api_internal, ctx)
     await backfill_qa_run(api_internal, ctx)
     record_target_host_snapshot(ctx)
 
@@ -1280,44 +1345,59 @@ async def _paid_run_admission(api_internal: httpx.AsyncClient, run_id: str) -> C
 
 
 async def record_engineering_evidence(api_internal: httpx.AsyncClient, ctx: dict) -> list[dict]:
-    """Read every engineering Run of this combination while the stand still exists.
+    """Read task- and story-owned Engineering Runs before teardown removes them.
 
-    On failure exactly as on success, and inside the phase rather than after it:
-    the Run record, its admission outcome and the executor diagnostics in force
-    are database and Redis facts on a machine the workflow deletes minutes
-    later. A run that did not read them here has nothing to read afterwards, and
-    its artifact can then name no reason for the stage that stopped it — which is
-    exactly what run 33683482667 could not do.
+    Terminal-stage collection is deliberately in the cleanup guard: the Run
+    record, its admission outcome and the executor diagnostics are database and
+    Redis facts the workflow deletes minutes later. Story-owned repair Runs may
+    have a nullable Task foreign key, so they are swept in addition to task-owned
+    Runs and deduplicated by Run id.
 
     This is evidence collection, so it never fails the run: a read that could not
     be made is recorded as a stated missed capture, and a discovery that failed
     is recorded as the reason the whole section is missed. `RuntimeError` is
-    caught with the transport and shape errors because `_engineering_runs_for_task`
-    goes through `require_unscoped_run_observer`, which raises it: a collector
-    that can fail the very run it is diagnosing is the wrong shape to leave here,
-    even while no current client reaches that branch.
+    caught with the transport and shape errors because both scoped observers go
+    through `require_unscoped_run_observer`, which raises it: a collector that
+    can fail the run it is diagnosing is the wrong shape to leave here.
     """
+    task_ids = ctx.get("task_ids") or ([ctx["task_id"]] if ctx.get("task_id") else [])
+    story_id = ctx.get("story_id")
+    if not task_ids and not story_id:
+        # Keep `engineering_runs` absent: run_evidence then states the truthful
+        # never-entered-phase reason instead of inventing an empty API listing.
+        return ctx.get("engineering_runs") or []
+
     ctx["engineering_evidence_error"] = None
-    records: list[dict] = []
+    records_by_id = {record["run_id"]: record for record in ctx.get("engineering_runs") or []}
+
+    async def record(run: dict, task_id: str | None, diagnostics: Capture) -> None:
+        run_id = run["id"]
+        records_by_id[run_id] = engineering_run_record(
+            run_id=run_id,
+            task_id=task_id,
+            run=Capture.captured(redacted_payload(engineering_run_facts(run))),
+            admission=await _paid_run_admission(api_internal, run_id),
+            executor_diagnostics=diagnostics,
+        )
+        _capture_dispatch_decisions(ctx, [run])
+
     try:
         diagnostics = await _executor_diagnostics_snapshot(api_internal)
-        for task_id in ctx.get("task_ids") or [ctx["task_id"]]:
+        for task_id in task_ids:
             for run in await _engineering_runs_for_task(api_internal, task_id):
+                await record(run, task_id, diagnostics)
+        if story_id:
+            for run in await _story_runs(api_internal, story_id, RunType.ENGINEERING):
                 run_id = run["id"]
-                records.append(
-                    engineering_run_record(
-                        run_id=run_id,
-                        task_id=task_id,
-                        run=Capture.captured(redacted_payload(engineering_run_facts(run))),
-                        admission=await _paid_run_admission(api_internal, run_id),
-                        executor_diagnostics=diagnostics,
-                    )
-                )
+                if run_id in records_by_id:
+                    continue
+                await record(run, run.get("task_id"), diagnostics)
     except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as error:
         ctx["engineering_evidence_error"] = (
             f"the engineering Runs of this combination could not be listed: "
             f"{type(error).__name__}: {error}"
         )
+    records = list(records_by_id.values())
     ctx["engineering_runs"] = records
     return records
 
@@ -1664,11 +1744,55 @@ async def poll_field(
     return value
 
 
+def forget_deployment_identity(ctx: dict) -> None:
+    """Discard deployment facts that belong only to a superseded application."""
+    for key in (
+        "server_ip",
+        "port",
+        "allocation_id",
+        "application_id",
+        "deployed_url",
+        "server_handle",
+        "final_app_status",
+    ):
+        ctx.pop(key, None)
+
+
+def _own_resolved_deployment(ctx: dict, *, server_handle: str, server_ip: str) -> None:
+    """Keep cleanup conservative when one run's app has moved between servers.
+
+    A deployment is keyed by project name, while ``OwnershipManifest.own``
+    enriches that one record in place. Replacing a prior handle with a new one
+    would leave the first target out of cleanup. Once two targets have been
+    observed, retain the write-ahead record's all-server sweep instead; the
+    manifest still carries all unrelated ownership metadata.
+    """
+    deployment = next(
+        (
+            resource
+            for resource in ctx["manifest"].resources
+            if resource.kind == "server_deployment" and resource.identifier == ctx["project_name"]
+        ),
+        None,
+    )
+    existing_metadata = deployment.metadata if deployment is not None else {}
+    existing_handle = existing_metadata.get("server_handle")
+    if existing_handle is None and "server_handle" in existing_metadata:
+        # A previous move already selected the safe all-server teardown mode.
+        metadata = {"server_handle": None}
+    elif existing_handle is not None and existing_handle != server_handle:
+        metadata = {"server_handle": None}
+    else:
+        metadata = {"server_handle": server_handle, "server_ip": server_ip}
+    ctx["manifest"].own("server_deployment", ctx["project_name"], **metadata)
+
+
 async def wait_deploy(
     api: httpx.AsyncClient,
     api_observer: httpx.AsyncClient,
     ctx: dict,
     timeout: int = DEPLOY_TIMEOUT,
+    expected_application_id: int | None = None,
 ) -> None:
     """Wait for deploy to complete. Updates ctx with deployment info.
 
@@ -1679,6 +1803,7 @@ async def wait_deploy(
     without a story. Under uncertainty the harness owns: an over-owned record
     costs an SSH round trip, an unowned one costs a live stack nobody knows about.
     """
+    forget_deployment_identity(ctx)
     own_deploy_ahead(ctx)
 
     terminal = {
@@ -1688,6 +1813,7 @@ async def wait_deploy(
     }
     app_status = None
     application = None
+    found_allocation = False
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         repos_resp = await api.get("/api/repositories/", params={"project_id": ctx["project_id"]})
@@ -1696,6 +1822,8 @@ async def wait_deploy(
             apps_resp = await api.get("/api/applications/", params={"repo_id": repo["id"]})
             apps_resp.raise_for_status()
             for app in apps_resp.json():
+                if expected_application_id is not None and app.get("id") != expected_application_id:
+                    continue
                 if app["status"] in {s.value for s in terminal}:
                     app_status = app["status"]
                     application = app
@@ -1748,21 +1876,19 @@ async def wait_deploy(
                 ctx["allocation_id"] = alloc["id"]
                 ctx["application_id"] = application["id"]
                 ctx["server_handle"] = srv["handle"]
-                ctx["manifest"].own(
-                    "server_deployment",
-                    ctx["project_name"],
-                    server_handle=srv["handle"],
-                    server_ip=srv["public_ip"],
+                _own_resolved_deployment(
+                    ctx, server_handle=srv["handle"], server_ip=srv["public_ip"]
                 )
                 ctx["manifest"].own("port_allocation", str(alloc["id"]))
                 ctx["manifest"].write(
                     ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
                 )
+                found_allocation = True
                 break
-        if "port" in ctx:
+        if found_allocation:
             break
 
-    if "port" in ctx:
+    if found_allocation:
         ctx["deployed_url"] = f"http://{ctx['server_ip']}:{ctx['port']}"
 
 
@@ -1957,12 +2083,63 @@ def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
         )
 
 
+async def _story_runs(
+    api_internal: httpx.AsyncClient, story_id: str, run_type: RunType
+) -> list[dict]:
+    """Read one story's Run type in ascending creation order.
+
+    The API lists Runs newest first, but lifecycle selection needs the earliest
+    qualifying Run — especially the first one strictly after a follow-up source.
+    Ordering here makes that contract explicit for every caller of this helper.
+    """
+    require_unscoped_run_observer(api_internal)
+    response = await api_internal.get(
+        "/api/runs/", params={"story_id": story_id, "run_type": run_type.value}
+    )
+    response.raise_for_status()
+    runs = [
+        run
+        for run in response.json()
+        if run.get("story_id") == story_id and run.get("type") == run_type.value
+    ]
+    return sorted(runs, key=lambda run: (run.get("created_at") or "", run["id"]))
+
+
+def _reset_for_fresh_deploy_run(ctx: dict, run: dict) -> None:
+    """Make a selected follow-up Run the sole current deploy fact."""
+    _downgrade_deployment_cleanup_to_all_servers(ctx)
+    forget_deployment_identity(ctx)
+    record_deploy_run(ctx, run)
+    for key in (
+        "deploy_outcome",
+        "deploy_run_status",
+        "deploy_error_details",
+        "deployed_image_references",
+        "deployed_commit_sha",
+        "deploy_run_created_at",
+    ):
+        ctx.pop(key, None)
+
+
+def _downgrade_deployment_cleanup_to_all_servers(ctx: dict) -> None:
+    """Keep a previous target covered before a fresh deploy can resolve its own."""
+    manifest = ctx.get("manifest")
+    project_name = ctx.get("project_name")
+    if manifest is None or project_name is None:
+        return
+    manifest.own("server_deployment", project_name, server_handle=None)
+    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
+
+
 async def wait_deploy_run(
     api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
-    timeout: int = DEPLOY_RUN_TIMEOUT,
+    timeout: float = DEPLOY_RUN_TIMEOUT,
     poll_interval: float = DEPLOY_RUN_POLL_INTERVAL,
+    created_after: datetime | None = None,
+    on_poll: Callable[[], None] | None = None,
+    story_alive: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict | None:
     """Wait for this story's deploy run that carries the merged head SHA.
 
@@ -1977,39 +2154,157 @@ async def wait_deploy_run(
     story, so a foreign run cannot be mistaken for it.
 
     Reads /api/runs/ as an internal service with no user header — see
-    ``require_unscoped_run_observer``.
+    ``require_unscoped_run_observer``. A follow-up requires a Run created after
+    its source Run, so an old Run cannot satisfy its later-deploy wait merely
+    because the API returns it first.
     """
     require_unscoped_run_observer(api_internal)
     story_id = ctx["story_id"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = await api_internal.get(
-            "/api/runs/",
-            params={"story_id": story_id, "run_type": RunType.DEPLOY.value},
-        )
-        resp.raise_for_status()
-        # The API orders runs newest first.
-        for run in resp.json():
-            if run["story_id"] != story_id:
-                continue
+        if on_poll is not None:
+            on_poll()
+        if story_alive is not None and not await story_alive():
+            return None
+        # `_story_runs` is ascending so the first qualifying candidate is the
+        # earliest initial or fresh deploy, independent of API response order.
+        for run in await _story_runs(api_internal, story_id, RunType.DEPLOY):
+            if created_after is not None:
+                try:
+                    candidate_created_at = run_created_at(run)
+                except ValueError as error:
+                    message = (
+                        f"deploy candidate timestamp is invalid: {type(error).__name__}: {error}"
+                    )
+                    errors = ctx.setdefault("deploy_run_candidate_timestamp_errors", [])
+                    if message not in errors:
+                        errors.append(message)
+                    continue
+                if candidate_created_at <= created_after:
+                    continue
             head_sha = (run["run_metadata"] or {}).get("head_sha")
             if head_sha:
+                if created_after is not None:
+                    _reset_for_fresh_deploy_run(ctx, run)
+                else:
+                    # Capture the selected payload before the next application
+                    # read can fail; a known Run is evidence even while queued.
+                    record_deploy_run(ctx, run)
                 ctx["deploy_run_id"] = run["id"]
                 ctx["deploy_head_sha"] = head_sha
                 return run
         await asyncio.sleep(poll_interval)
+    qualifier = "fresh " if created_after is not None else ""
     ctx["deploy_run_error"] = (
-        f"no deploy run with a merged head_sha appeared for story {story_id} within {timeout}s"
+        f"no {qualifier}deploy run with a merged head_sha appeared for story {story_id} "
+        f"within {timeout}s"
     )
     return None
+
+
+async def _wait_for_followup_deploy_result(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    deadline: float,
+    created_after: datetime,
+    poll_interval: float,
+    on_poll: Callable[[], None] | None,
+    story_alive: Callable[[], Awaitable[bool]],
+) -> DeployRunResult | None:
+    """Await a Run created after its source, then its typed terminal result."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        ctx["settings_seed_repair_error"] = (
+            "settings-seed follow-up exhausted its attempt deadline before a fresh deploy appeared"
+        )
+        return None
+    run = await wait_deploy_run(
+        api_internal,
+        ctx,
+        timeout=remaining,
+        poll_interval=poll_interval,
+        created_after=created_after,
+        on_poll=on_poll,
+        story_alive=story_alive,
+    )
+    if run is None:
+        ctx.setdefault(
+            "settings_seed_repair_error",
+            "settings-seed follow-up did not observe a fresh deploy before its attempt deadline",
+        )
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        ctx["settings_seed_repair_error"] = (
+            "settings-seed follow-up exhausted its attempt deadline before the fresh deploy settled"
+        )
+        return None
+    result = await wait_deploy_outcome(
+        api_internal,
+        ctx,
+        timeout=remaining,
+        poll_interval=poll_interval,
+        on_poll=on_poll,
+        story_alive=story_alive,
+    )
+    if result is None:
+        ctx.setdefault(
+            "settings_seed_repair_error",
+            "settings-seed follow-up fresh deploy did not reach a typed terminal outcome",
+        )
+    return result
+
+
+async def wait_settings_seed_followup(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    result: DeployRunResult,
+    *,
+    repair_budget: float | None = None,
+    retry_budget: float | None = None,
+    overall_budget: float | None = None,
+    poll_interval: float = SETTINGS_SEED_REPAIR_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
+) -> DeployRunResult | None:
+    """Follow nonterminal seed routing while leaving terminal failures terminal.
+
+    Exact Core-v1 undeclared-key failures receive the scheduler-owned, capped
+    engineering manifest repair. Convergent failures consume the scheduler's
+    same-commit retry. Both are lifecycle progress; all other deterministic
+    failures return immediately. Every follow-up is bounded and must be fresh.
+    Tests may override repair, retry, and overall budgets independently; no one
+    override silently changes the other lifecycle ceilings.
+    """
+    return await follow_settings_seed(
+        api_internal,
+        ctx,
+        result,
+        repair_budget=(
+            repair_budget
+            if repair_budget is not None
+            else SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT
+        ),
+        retry_budget=(
+            retry_budget if retry_budget is not None else SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT
+        ),
+        overall_budget=(
+            overall_budget if overall_budget is not None else SETTINGS_SEED_FOLLOWUP_TIMEOUT
+        ),
+        poll_interval=poll_interval,
+        on_poll=on_poll,
+        wait_followup=_wait_for_followup_deploy_result,
+    )
 
 
 async def wait_deploy_outcome(
     api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
-    timeout: int = DEPLOY_OUTCOME_TIMEOUT,
+    timeout: float = DEPLOY_OUTCOME_TIMEOUT,
     poll_interval: float = DEPLOY_OUTCOME_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
+    story_alive: Callable[[], Awaitable[bool]] | None = None,
 ) -> DeployRunResult | None:
     """Type this story's own deploy run result and record its outcome.
 
@@ -2018,25 +2313,30 @@ async def wait_deploy_outcome(
     reads the typed outcome rather than trusting ApplicationStatus.
     """
     run_id = ctx["deploy_run_id"]
+    run: dict | None = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
+        if story_alive is not None and not await story_alive():
+            return None
         resp = await api_internal.get(f"/api/runs/{run_id}")
         resp.raise_for_status()
         run = resp.json()
-        if run["status"] in _TERMINAL_RUN_STATUSES:
+        if run["status"] in TERMINAL_RUN_STATUSES:
             break
         await asyncio.sleep(poll_interval)
     else:
-        ctx["deploy_outcome_error"] = (
-            f"deploy run {run_id} did not reach a terminal state in {timeout}s"
-        )
-        ctx["deploy_run_record_error"] = (
-            f"deploy run {run_id} was never read into evidence: it did not reach a terminal "
-            f"state in {timeout}s, so the record carries no result to read"
-        )
+        error = f"deploy run {run_id} did not reach a terminal state in {timeout}s"
+        ctx["deploy_outcome_error"] = error
+        if run is None:
+            _set_deploy_run_record(ctx, current_id=run_id, current=None, current_error=error)
+        else:
+            record_deploy_run(ctx, run)
         return None
 
     ctx["deploy_run_status"] = run["status"]
+    ctx["deploy_run_created_at"] = run.get("created_at")
     # Read before the result is typed, so a run whose result is absent or does
     # not validate still leaves its record in the artifact rather than only the
     # error that typing it raised.
@@ -2172,10 +2472,10 @@ async def run_non_llm_qa(
             params={"story_id": story_id, "run_type": RunType.QA.value},
         )
         resp.raise_for_status()
-        # The API orders runs newest first. A project can carry QA runs of other
-        # stories, so the run is checked against this mega's story too.
+        # `/api/runs/` is descending by created_at, so the first terminal QA
+        # result is the newest one for this story after the ownership filter.
         for candidate in resp.json():
-            if candidate["story_id"] == story_id and candidate["status"] in _TERMINAL_RUN_STATUSES:
+            if candidate["story_id"] == story_id and candidate["status"] in TERMINAL_RUN_STATUSES:
                 run = candidate
                 break
         if run is not None:
@@ -2477,7 +2777,7 @@ async def wait_undeploy_run(
                 f"{[run['id'] for run in matches]}"
             )
             return None
-        if len(matches) == 1 and matches[0].get("status") in _TERMINAL_RUN_STATUSES:
+        if len(matches) == 1 and matches[0].get("status") in TERMINAL_RUN_STATUSES:
             ctx["undeploy_run"] = matches[0]
             return matches[0]
         await asyncio.sleep(poll_interval)
@@ -2731,7 +3031,7 @@ async def wait_for_owned_runs(
         }
         # Everything cancelled in this pass was active in the same snapshot, so it
         # is already pending: one more clean scan has to confirm it went terminal.
-        pending = {run_id for run_id in owned if statuses.get(run_id) not in _TERMINAL_RUN_STATUSES}
+        pending = {run_id for run_id in owned if statuses.get(run_id) not in TERMINAL_RUN_STATUSES}
         if not pending:
             return
         if time.monotonic() >= deadline:

@@ -41,7 +41,6 @@ from pipeline_helpers import (
     read_product_setting,
     read_qa_job_evidence,
     record_deployed_image_tags,
-    record_engineering_evidence,
     record_qa_run,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
@@ -56,6 +55,7 @@ from pipeline_helpers import (
     wait_deploy_run,
     wait_product_brief_admission,
     wait_scaffold,
+    wait_settings_seed_followup,
     wait_story_completed,
     wait_undeploy_run,
 )
@@ -263,7 +263,6 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                     timeout=LLM_ENGINEERING_TIMEOUT,
                     on_poll=lambda: evidence_pass(ctx),
                 )
-                await record_engineering_evidence(api_internal, ctx)
                 if ctx.get("task_status") != TaskStatus.DONE:
                     yield ctx
                     return
@@ -281,6 +280,39 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 if deploy_result is None:
                     yield ctx
                     return
+                initial_deploy_run_id = ctx["deploy_run_id"]
+                deploy_result = await wait_settings_seed_followup(
+                    api_internal,
+                    ctx,
+                    deploy_result,
+                    on_poll=lambda: evidence_pass(ctx),
+                )
+                if deploy_result is None:
+                    yield ctx
+                    return
+                if ctx["deploy_run_id"] != initial_deploy_run_id:
+                    if deploy_result.deploy_outcome is not DeployOutcome.SUCCESS:
+                        ctx["settings_seed_repair_error"] = (
+                            f"fresh deploy Run {ctx['deploy_run_id']} reached typed outcome "
+                            f"{deploy_result.deploy_outcome.value}, so it has no replacement "
+                            "application"
+                        )
+                        yield ctx
+                        return
+                    if deploy_result.application_id is None:
+                        ctx["settings_seed_repair_error"] = (
+                            f"fresh successful deploy Run {ctx['deploy_run_id']} has no "
+                            "application id"
+                        )
+                        yield ctx
+                        return
+                    await wait_deploy(
+                        api,
+                        api_observer,
+                        ctx,
+                        timeout=DEPLOY_TIMEOUT,
+                        expected_application_id=deploy_result.application_id,
+                    )
                 ctx["brief_settings_seed"] = [
                     seed.model_dump(mode="json") for seed in deploy_result.settings_seed
                 ]

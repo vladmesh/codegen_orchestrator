@@ -13,6 +13,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   failing the Task foreign key.
 - Paid-work admission now rejects an unknown engineering Task reference before Run creation, instead of
   exposing a database foreign-key error to the caller.
+- The Product Brief mega follows a bounded undeclared-setting manifest repair to its later deploy, retaining
+  the failed seed and story-owned engineering evidence instead of tearing the repair down early.
+- Live evidence v11 keeps prior deploy attempts separate from a missing current deploy, so paid acceptance
+  refuses historical evidence in place of the run it must explain.
 
 ## 2026-09-03
 
