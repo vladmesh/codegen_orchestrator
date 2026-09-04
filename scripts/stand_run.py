@@ -42,15 +42,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
+from threading import Thread
 import time
 import urllib.request
 from xml.etree import ElementTree
 
 import yaml
+
+from shared.contracts.worker_evidence import secret_env_values
+from shared.diagnostics import redact_diagnostic
+from shared.stand_deadlines import MEGA_BRIEF_HARD_STOP_SECONDS, MEGA_BRIEF_PRODUCTIVE_SECONDS
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml")
@@ -95,51 +102,19 @@ CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
 
-# These terms mirror the named waits in TestProductBriefPipeline. The runner
-# stays standalone rather than importing test modules, while the offline test
-# pins this ledger to the corresponding harness constants.
-BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS = (
-    120  # scaffold
-    + 1800  # Product Brief Architect admission
-    + 1800  # Architect-owned Engineering
-    + 1320  # merged deploy Run discovery
-    + 420  # initial deploy lifecycle
-    + 120  # initial typed deploy outcome
-)
-BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS = 3660
-BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS = 1860
-# These deterministic harness ceilings are pinned against the bootstrap config
-# in scripts/tests/test_stand_run.py; importing the runner must not read YAML.
-BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS = 2
-# The scheduler can offer two redispatches, but the harness reserves enough
-# time for two full manifest repairs and one complete convergent retry. This
-# leaves the fixture time to emit its evidence and tear down before job expiry.
-BRIEF_MAX_CONVERGENT_RETRIES = 1
-BRIEF_FOLLOWUP_TIMEOUT_SECONDS = (
-    BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS * BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS
-    + BRIEF_MAX_CONVERGENT_RETRIES * BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS
-)
-BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS = (
-    420  # replacement application lifecycle, if a fresh deploy succeeded
-    + 300  # QA Run
-    + 180  # Story completion
-    + 300  # undeploy Run
-    + 300  # application/port release
-)
-# This is inside pytest's subprocess budget, so the fixture's finally block can
-# emit evidence and clean manifest-owned resources before stand_run may kill it.
-BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS = 600
-BRIEF_SUITE_TIMEOUT_SECONDS = (
-    BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS
-    + BRIEF_FOLLOWUP_TIMEOUT_SECONDS
-    + BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS
-    + BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS
-)
+# A productive mega-brief receives fifty minutes from its fixture-owned clock.
+# The runner is deliberately a later backstop: the remaining window belongs to
+# the fixture's evidence and cleanup finalizers before any process-group kill.
+BRIEF_SUITE_TIMEOUT_SECONDS = MEGA_BRIEF_PRODUCTIVE_SECONDS
+BRIEF_HARD_STOP_SECONDS = MEGA_BRIEF_HARD_STOP_SECONDS
+BRIEF_CLEANUP_GRACE_SECONDS = BRIEF_HARD_STOP_SECONDS - BRIEF_SUITE_TIMEOUT_SECONDS
+PROCESS_GROUP_TERMINATION_GRACE_SECONDS = 5
+RELAY_JOIN_TIMEOUT_SECONDS = 5
 BRIEF_RUNNER_TIMEOUT_SECONDS = (
     PREFLIGHT_TIMEOUT_SECONDS
     + READINESS_TIMEOUT_SECONDS
     + EXECUTOR_SWITCH_TIMEOUT_SECONDS
-    + BRIEF_SUITE_TIMEOUT_SECONDS
+    + BRIEF_HARD_STOP_SECONDS
     + SWEEP_TIMEOUT_SECONDS
 )
 
@@ -199,6 +174,11 @@ class Suite:
     #: the caller asked for — or the defaults, for suites that use no agents.
     combinations: tuple[tuple[str, str], ...] = ()
     timeout_seconds: int = CUSTOM_TARGET_TIMEOUT_SECONDS
+    #: Productive fixture cleanup is inside this additional window; the runner
+    #: only becomes a group-killing backstop after both values are spent.
+    cleanup_grace_seconds: int = 0
+    #: A short process-group grace after the backstop interrupts a wedged suite.
+    termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS
     description: str = ""
 
 
@@ -219,6 +199,7 @@ SUITES: dict[str, Suite] = {
         target="tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
         llm=True,
         timeout_seconds=BRIEF_SUITE_TIMEOUT_SECONDS,
+        cleanup_grace_seconds=BRIEF_CLEANUP_GRACE_SECONDS,
         description=(
             "the confirmed Product Brief path with a real architect, coding agent, and QA executor"
         ),
@@ -234,6 +215,13 @@ SUITES: dict[str, Suite] = {
 SUITE_ALIASES = {"mega": "mega-noop", "llm": "mega-llm"}
 LLM_ENV_NAMES = ("LIVE_LLM_QA", "LIVE_QA_AGENT_TYPE", "LIVE_WORKER_AGENT_TYPE")
 LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
+LIVE_RELAY_LINE_MAX_CHARS = 4096
+
+
+class PytestOutcome(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
 
 
 def resolve_suite(requested_name: str) -> tuple[str, Suite]:
@@ -549,7 +537,9 @@ def run_pytest(
     extra: dict[str, str],
     log_path: Path,
     timeout_seconds: int,
-) -> bool:
+    termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS,
+    log=print,
+) -> PytestOutcome:
     run_env = {
         **os.environ,
         **env,
@@ -562,17 +552,59 @@ def run_pytest(
     for name in LLM_ENV_NAMES:
         run_env.pop(name, None)
     run_env.update(extra)
+    secrets = secret_env_values(run_env)
     with log_path.open("w", encoding="utf-8") as handle:
-        result = subprocess.run(  # noqa: S603
-            ["uv", "run", "pytest", target, "-x", "-q", "--tb=short"],  # noqa: S607
+        process = subprocess.Popen(  # noqa: S603
+            ["uv", "run", "pytest", target, "-x", "-q", "-s", "--tb=short"],  # noqa: S607
             cwd=REPO,
             env=run_env,
-            stdout=handle,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=timeout_seconds,
-            check=False,
+            text=True,
+            start_new_session=True,
         )
-    return result.returncode == 0
+
+        def mirror() -> None:
+            assert process.stdout is not None
+            for line in process.stdout:
+                safe_line = redact_diagnostic(line.rstrip("\n"), secrets=secrets)
+                if len(safe_line) > LIVE_RELAY_LINE_MAX_CHARS:
+                    safe_line = f"{safe_line[: LIVE_RELAY_LINE_MAX_CHARS - 1]}…"
+                handle.write(f"{safe_line}\n")
+                handle.flush()
+                log(safe_line)
+
+        output = Thread(target=mirror, daemon=True)
+        output.start()
+        timed_out = False
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            log(
+                "pytest hard deadline exhausted after "
+                f"{timeout_seconds}s; interrupting process group"
+            )
+            os.killpg(process.pid, signal.SIGINT)
+            try:
+                process.wait(timeout=termination_grace_seconds)
+            except subprocess.TimeoutExpired:
+                log(
+                    "pytest process-group termination grace exhausted after "
+                    f"{termination_grace_seconds}s; killing process group"
+                )
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        finally:
+            output.join(timeout=RELAY_JOIN_TIMEOUT_SECONDS)
+            if output.is_alive():
+                log(f"pytest output relay remained open after {RELAY_JOIN_TIMEOUT_SECONDS}s")
+                if process.stdout is not None:
+                    process.stdout.close()
+                output.join(timeout=RELAY_JOIN_TIMEOUT_SECONDS)
+    if timed_out:
+        return PytestOutcome.TIMED_OUT
+    return PytestOutcome.PASSED if process.returncode == 0 else PytestOutcome.FAILED
 
 
 def preflight(env: dict[str, str], log) -> bool:
@@ -652,7 +684,8 @@ def main() -> int:
 
     log(
         f"suite={canonical_suite_name} requested_suite={args.suite} "
-        f"target={suite.target} timeout_seconds={suite.timeout_seconds} dir={run_dir}"
+        f"target={suite.target} productive_timeout_seconds={suite.timeout_seconds} "
+        f"hard_timeout_seconds={suite.timeout_seconds + suite.cleanup_grace_seconds} dir={run_dir}"
     )
 
     report = run_dir / "report.tsv"
@@ -689,27 +722,25 @@ def main() -> int:
 
         started = time.monotonic()
         log(f"running qa={qa} worker={worker}")
-        try:
-            passed = run_pytest(
-                suite.target,
-                env,
-                extra,
-                run_dir / f"{qa}-{worker}.log",
-                suite.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            log(f"qa={qa} worker={worker}: timed out")
-            passed = False
+        outcome = run_pytest(
+            suite.target,
+            env,
+            extra,
+            run_dir / f"{qa}-{worker}.log",
+            suite.timeout_seconds + suite.cleanup_grace_seconds,
+            suite.termination_grace_seconds,
+            log,
+        )
+        # Test seams from before typed runner outcomes returned booleans. Keep
+        # those narrow fakes readable while production always names a result.
+        if isinstance(outcome, bool):
+            outcome = PytestOutcome.PASSED if outcome else PytestOutcome.FAILED
         seconds = round(time.monotonic() - started)
         with report.open("a", encoding="utf-8") as handle:
-            handle.write(
-                matrix_row(
-                    canonical_suite_name, qa, worker, "passed" if passed else "failed", seconds
-                )
-            )
-        results.append((qa, worker, "passed" if passed else "failed", seconds))
-        log(f"qa={qa} worker={worker}: {'passed' if passed else 'failed'} in {seconds}s")
-        if not passed:
+            handle.write(matrix_row(canonical_suite_name, qa, worker, outcome.value, seconds))
+        results.append((qa, worker, outcome.value, seconds))
+        log(f"qa={qa} worker={worker}: {outcome.value} in {seconds}s")
+        if outcome is not PytestOutcome.PASSED:
             failed += 1
 
     # Cleanup is part of the result, not an epilogue. A sweep that failed leaves

@@ -584,7 +584,8 @@ def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_f
     steps = _steps()
     run = steps["Run selected stand suite"]
 
-    assert "scripts/stand_run.py" in run["run"]
+    assert "python -m scripts.stand_run" in run["run"]
+    assert "python scripts/stand_run.py" not in run["run"]
     assert "--suite %q" in run["run"]
     assert '"${SUITE}"' in run["run"]
     assert '"${WORKER}"' in run["run"]
@@ -602,6 +603,8 @@ def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
     assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
     assert run["if"] == "success()"
     assert "remote-invocation.log" in run["run"]
+    assert 'tee "${RUNNER_TEMP}/remote-invocation.log"' in run["run"]
+    assert "2>&1 | tee" in run["run"]
     assert ">/dev/null 2>&1" not in run["run"]
 
 

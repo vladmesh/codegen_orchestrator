@@ -1111,7 +1111,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 11
+    assert EVIDENCE_SCHEMA_VERSION == 12
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1838,6 +1838,29 @@ def test_brief_scenario_artifact_captures_the_durable_brief_to_job_chain(tmp_pat
     }
     assert brief["job_evidence"]["value"]["fired_by_run"] == "qa-1"
     assert brief["job_evidence"]["value"]["dispatch_status"] == "dispatched"
+
+
+def test_brief_artifact_retains_the_bounded_productive_deadline_ledger(tmp_path, monkeypatch):
+    clock = [10.0]
+    import brief_telemetry
+
+    monkeypatch.setattr(brief_telemetry.time, "monotonic", lambda: clock[0])
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    brief_telemetry.begin(ctx)
+    brief_telemetry.stage(ctx, "engineering", observed_state="pending")
+    clock[0] += brief_telemetry.PRODUCTIVE_DEADLINE_SECONDS
+    with pytest.raises(brief_telemetry.ProductiveDeadlineExceeded):
+        brief_telemetry.heartbeat(ctx, observed_state="late")
+    brief_telemetry.stage(ctx, "teardown", observed_state="finally", enforce_deadline=False)
+
+    telemetry = build_artifact(ctx, root=tmp_path)["brief_telemetry"]
+
+    assert telemetry["deadline_exhausted"] is True
+    assert telemetry["stopped_stage"] == "engineering"
+    assert telemetry["active_stage"] == "teardown"
+    assert len(telemetry["events"]) == 2
 
 
 @pytest.mark.parametrize(

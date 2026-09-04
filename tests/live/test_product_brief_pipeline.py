@@ -18,6 +18,7 @@ from pipeline_helpers import (
     API_URL,
     BRIEF_JOB_NAME,
     BRIEF_LANGUAGES,
+    BRIEF_MAX_MANIFEST_REPAIRS,
     BRIEF_SETTINGS_KEY,
     DEPLOY_OUTCOME_TIMEOUT,
     DEPLOY_RUN_TIMEOUT,
@@ -29,7 +30,9 @@ from pipeline_helpers import (
     api_client_as_internal_service,
     api_client_as_test_user,
     api_client_as_unscoped_observer,
+    begin_brief_productive_window,
     brief_detailed_spec,
+    brief_poll,
     cleanup_all,
     configured_qa_executor,
     ensure_test_user,
@@ -42,6 +45,7 @@ from pipeline_helpers import (
     record_deployed_image_tags,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
+    report_brief_stage,
     request_undeploy,
     run_brief_qa_and_retain_job_evidence,
     trigger_scaffold,
@@ -178,6 +182,7 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
             "qa_requires_executor": True,
             "brief_scenario": True,
         }
+        begin_brief_productive_window(ctx)
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
         async with cleanup_guard(
             lambda: cleanup_all(api_internal, api_observer, ctx), manifest=manifest
@@ -191,6 +196,7 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 ],
             )
             try:
+                report_brief_stage(ctx, "scaffold", observed_state="project_creation")
                 async with po_tool_boundary(api_url=API_URL) as po:
                     created = await po["create_project"].ainvoke(
                         {
@@ -217,15 +223,26 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 manifest.own("repository", ctx["repo_id"], project_id=project_id)
                 ctx["scaffold_task_description"] = brief_detailed_spec()
 
+                report_brief_stage(ctx, "scaffold", observed_state="scaffold_requested")
                 trigger_scaffold(ctx)
-                await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+                await wait_scaffold(
+                    api,
+                    ctx,
+                    timeout=SCAFFOLD_TIMEOUT,
+                    on_poll=lambda: brief_poll(ctx, observed_state="scaffold_pending"),
+                )
                 if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
                     yield ctx
                     return
 
+                report_brief_stage(ctx, "brief_admission", observed_state="scaffold_active")
                 ctx["po_input_cursor"] = po_input_cursor()
                 await _po_create_confirmed_story(api, ctx)
-                admitted = await wait_product_brief_admission(api, ctx)
+                admitted = await wait_product_brief_admission(
+                    api,
+                    ctx,
+                    on_poll=lambda: brief_poll(ctx, observed_state="brief_admission_pending"),
+                )
                 if admitted is None:
                     yield ctx
                     return
@@ -255,11 +272,12 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                     }
                 }
 
+                report_brief_stage(ctx, "engineering", observed_state="tasks_released")
                 await wait_brief_engineering(
                     api,
                     ctx,
                     timeout=LLM_ENGINEERING_TIMEOUT,
-                    on_poll=lambda: evidence_pass(ctx),
+                    on_poll=lambda: brief_poll(ctx, observed_state="engineering_pending"),
                 )
                 if ctx.get("task_status") != TaskStatus.DONE:
                     yield ctx
@@ -268,22 +286,42 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                     yield ctx
                     return
 
-                if await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT) is None:
+                report_brief_stage(ctx, "generated_ci_deploy", observed_state="engineering_done")
+                if (
+                    await wait_deploy_run(
+                        api_internal,
+                        ctx,
+                        timeout=DEPLOY_RUN_TIMEOUT,
+                        on_poll=lambda: brief_poll(ctx, observed_state="deploy_run_pending"),
+                    )
+                    is None
+                ):
                     yield ctx
                     return
-                await wait_deploy(api, api_observer, ctx, timeout=DEPLOY_TIMEOUT)
+                await wait_deploy(
+                    api,
+                    api_observer,
+                    ctx,
+                    timeout=DEPLOY_TIMEOUT,
+                    on_poll=lambda: brief_poll(ctx, observed_state="application_starting"),
+                )
                 deploy_result = await wait_deploy_outcome(
-                    api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT
+                    api_internal,
+                    ctx,
+                    timeout=DEPLOY_OUTCOME_TIMEOUT,
+                    on_poll=lambda: brief_poll(ctx, observed_state="deploy_outcome_pending"),
                 )
                 if deploy_result is None:
                     yield ctx
                     return
                 initial_deploy_run_id = ctx["deploy_run_id"]
+                report_brief_stage(ctx, "settings_seed_repair", observed_state="initial_seed_typed")
                 deploy_result = await wait_settings_seed_followup(
                     api_internal,
                     ctx,
                     deploy_result,
-                    on_poll=lambda: evidence_pass(ctx),
+                    max_manifest_repairs=BRIEF_MAX_MANIFEST_REPAIRS,
+                    on_poll=lambda: brief_poll(ctx, observed_state="settings_seed_followup"),
                 )
                 if deploy_result is None:
                     yield ctx
@@ -310,6 +348,7 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                         ctx,
                         timeout=DEPLOY_TIMEOUT,
                         expected_application_id=deploy_result.application_id,
+                        on_poll=lambda: brief_poll(ctx, observed_state="replacement_starting"),
                     )
                 ctx["brief_settings_seed"] = [
                     seed.model_dump(mode="json") for seed in deploy_result.settings_seed
@@ -326,13 +365,14 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 ctx["brief_settings_readback"] = await read_product_setting(
                     ctx, key=BRIEF_SETTINGS_KEY
                 )
+                report_brief_stage(ctx, "qa", observed_state="settings_seeded")
                 ctx["qa_agent_type"] = configured_qa_executor()
                 ctx["qa_result"] = await run_brief_qa_and_retain_job_evidence(
                     api_internal,
                     ctx,
                     job_name=BRIEF_JOB_NAME,
                     timeout=QA_RUN_TIMEOUT,
-                    on_poll=lambda: evidence_pass(ctx),
+                    on_poll=lambda: brief_poll(ctx, observed_state="qa_pending"),
                 )
                 # QA is scheduled by the normal QA consumer.  This helper only
                 # waits for its terminal verdict; the capture proves an actual
@@ -341,20 +381,48 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
                 ctx["brief_qa_executor_executed"] = (
                     ctx["run_evidence"].executed_qa_agent().as_dict()
                 )
-                if await wait_story_completed(api_internal, ctx) is None:
+                if (
+                    await wait_story_completed(
+                        api_internal,
+                        ctx,
+                        on_poll=lambda: brief_poll(ctx, observed_state="story_completion_pending"),
+                    )
+                    is None
+                ):
                     yield ctx
                     return
 
+                report_brief_stage(ctx, "undeploy", observed_state="qa_terminal")
                 await request_undeploy(api, api_internal, ctx)
-                if await wait_undeploy_run(api_internal, ctx) is None:
+                if (
+                    await wait_undeploy_run(
+                        api_internal,
+                        ctx,
+                        on_poll=lambda: brief_poll(ctx, observed_state="undeploy_pending"),
+                    )
+                    is None
+                ):
                     yield ctx
                     return
-                if await wait_application_not_deployed(api, ctx) is None:
+                if (
+                    await wait_application_not_deployed(
+                        api,
+                        ctx,
+                        on_poll=lambda: brief_poll(ctx, observed_state="application_stopping"),
+                    )
+                    is None
+                ):
                     yield ctx
                     return
                 await verify_undeploy_residue(api_internal, ctx)
                 yield ctx
             finally:
+                report_brief_stage(
+                    ctx,
+                    "teardown",
+                    observed_state="fixture_finally",
+                    enforce_deadline=False,
+                )
                 await record_terminal_stage_evidence(api_internal, ctx)
                 evidence_pass(ctx)
                 emit_run_evidence(ctx)

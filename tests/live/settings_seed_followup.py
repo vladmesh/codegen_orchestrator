@@ -173,7 +173,8 @@ async def _follow_manifest_repair(
     ctx: dict,
     result: DeployRunResult,
     *,
-    repair_cap: int | None,
+    repair_cap: int,
+    repair_cap_label: str,
     overall_deadline: float,
     repair_budget: float,
     poll_interval: float,
@@ -182,14 +183,10 @@ async def _follow_manifest_repair(
 ) -> tuple[DeployRunResult | None, int | None]:
     """Await one scheduler-owned manifest repair and its fresh deploy."""
     attempt = result.deploy_fix_attempt + 1
-    if repair_cap is None:
-        repair_cap = await _settings_seed_runtime_cap(
-            api_internal, ctx, DEPLOY_MAX_FIX_ATTEMPTS_CONFIG_KEY
-        )
-    if repair_cap is None:
-        return None, repair_cap
     if attempt > repair_cap:
-        ctx["settings_seed_repair_error"] = f"manifest repair exceeded scheduler cap {repair_cap}"
+        ctx["settings_seed_repair_error"] = (
+            f"manifest repair exceeded {repair_cap_label} {repair_cap}"
+        )
         return None, repair_cap
     source = _settings_seed_source_created_at(ctx)
     if source is None:
@@ -301,15 +298,24 @@ async def follow_settings_seed(
     repair_budget: float,
     retry_budget: float,
     overall_budget: float,
+    max_manifest_repairs: int | None = None,
     poll_interval: float,
     on_poll: Callable[[], None] | None,
     wait_followup: FollowupDeployWait,
 ) -> DeployRunResult | None:
     """Mirror scheduler seed routing within per-attempt and overall ceilings."""
+    if max_manifest_repairs is not None and max_manifest_repairs <= 0:
+        raise ValueError("max_manifest_repairs must be positive when set")
     retries = 0
-    repair_cap: int | None = None
-    retry_cap: int | None = None
     overall_deadline = time.monotonic() + overall_budget
+    if time.monotonic() >= overall_deadline:
+        ctx["settings_seed_repair_error"] = (
+            "settings-seed follow-up exhausted its overall lifecycle deadline"
+        )
+        return None
+    repair_cap: int | None = None
+    repair_cap_label: str | None = None
+    retry_cap: int | None = None
     while result.deploy_outcome is DeployOutcome.SETTINGS_SEED_FAILED:
         if time.monotonic() >= overall_deadline:
             ctx["settings_seed_repair_error"] = (
@@ -317,11 +323,24 @@ async def follow_settings_seed(
             )
             return None
         if result.settings_seed_needs_manifest_repair:
-            result, repair_cap = await _follow_manifest_repair(
+            if repair_cap is None:
+                scheduler_repair_cap = await _settings_seed_runtime_cap(
+                    api_internal, ctx, DEPLOY_MAX_FIX_ATTEMPTS_CONFIG_KEY
+                )
+                if scheduler_repair_cap is None:
+                    return None
+                repair_cap = min(scheduler_repair_cap, max_manifest_repairs or scheduler_repair_cap)
+                repair_cap_label = (
+                    "brief harness repair ceiling"
+                    if max_manifest_repairs is not None
+                    else "scheduler repair cap"
+                )
+            result, _ = await _follow_manifest_repair(
                 api_internal,
                 ctx,
                 result,
                 repair_cap=repair_cap,
+                repair_cap_label=repair_cap_label or "scheduler repair cap",
                 overall_deadline=overall_deadline,
                 repair_budget=repair_budget,
                 poll_interval=poll_interval,

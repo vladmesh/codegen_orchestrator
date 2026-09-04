@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Mega-brief now streams redacted stage telemetry, reserves cleanup after 50 productive minutes, and requires confirmed settings to reach generated registries before seeding.
 - Scheduled-job plans require a deployable provider and durable observable output; live evidence now retains QA job results and worker-identity diagnostics.
 - Stand Codex now restores and persists a refresh-capable ChatGPT `auth.json`, so expired access tokens
   refresh across serialized runs and the exact worker image fails before BitLaunch when the session is unusable.
@@ -12,7 +13,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   instead of opening a PR and deleting that worker mid-fix.
 - Story-worker results now push and read back their exact local commit before success is published, so an
   agent that only committed locally becomes a recoverable engineering failure instead of a later GitHub error.
-- Product Brief settings now fail closed when the generated settings core or a confirmed key is absent; deterministic failures skip the same-commit retry bound.
+- Product Brief settings now fail closed when the generated settings registry or a confirmed key is absent; deterministic failures skip the same-commit retry bound.
 - Project cleanup now removes Requirement Coverage before its Product Brief, task and story parents, preventing teardown FK failures.
 - Exact Core-v1 undeclared setting keys now dispatch a bounded manifest-repair worker, so a confirmed
   setting triggers repair instead of only failing its story.

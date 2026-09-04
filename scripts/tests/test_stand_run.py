@@ -1,23 +1,13 @@
 """What the stand runner must not forget — each of these cost a run to learn."""
 
-from pathlib import Path
 import subprocess
-import sys
 
 import pytest
-import yaml
 
 from scripts import stand_run
 from scripts.stand_run import (
     AGENTS,
-    BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS,
-    BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS,
-    BRIEF_FOLLOWUP_TIMEOUT_SECONDS,
-    BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS,
-    BRIEF_MAX_CONVERGENT_RETRIES,
-    BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS,
-    BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS,
-    BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS,
+    BRIEF_HARD_STOP_SECONDS,
     BRIEF_RUNNER_TIMEOUT_SECONDS,
     BRIEF_SUITE_TIMEOUT_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
@@ -37,11 +27,6 @@ from scripts.stand_run import (
     write_junit_report,
     write_qa_executor,
 )
-
-_LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
-if str(_LIVE_TESTS) not in sys.path:
-    sys.path.insert(0, str(_LIVE_TESTS))
-import pipeline_helpers  # noqa: E402
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -124,52 +109,20 @@ def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
     assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 800
 
 
-def test_brief_cap_covers_shipped_settings_seed_followups_before_pytest_is_killed():
+def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():
     """The paid fixture retains evidence and cleans up before runner timeout."""
-    configured = {
-        entry["key"]: entry["value"]
-        for entry in yaml.safe_load(
-            (stand_run.REPO / "scripts" / "system_configs.yaml").read_text()
-        )
-    }
-    assert BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS == configured["deploy.max_deploy_fix_attempts"]
-    assert BRIEF_MAX_CONVERGENT_RETRIES < configured["deploy.max_deploy_retries"]
-    assert BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS == (
-        pipeline_helpers.SCAFFOLD_TIMEOUT
-        + pipeline_helpers.LLM_ENGINEERING_TIMEOUT  # Product Brief admission
-        + pipeline_helpers.LLM_ENGINEERING_TIMEOUT  # Architect-owned Engineering
-        + pipeline_helpers.DEPLOY_RUN_TIMEOUT
-        + pipeline_helpers.DEPLOY_TIMEOUT
-        + pipeline_helpers.DEPLOY_OUTCOME_TIMEOUT
+    assert BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
+    assert BRIEF_HARD_STOP_SECONDS == 60 * 60
+    assert stand_run.BRIEF_CLEANUP_GRACE_SECONDS == (
+        BRIEF_HARD_STOP_SECONDS - BRIEF_SUITE_TIMEOUT_SECONDS
     )
-    assert BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS == (
-        pipeline_helpers.DEPLOY_TIMEOUT  # replacement application lifecycle
-        + pipeline_helpers.QA_RUN_TIMEOUT
-        + pipeline_helpers.STORY_COMPLETION_TIMEOUT
-        + pipeline_helpers.UNDEPLOY_TIMEOUT  # undeploy Run
-        + pipeline_helpers.UNDEPLOY_TIMEOUT  # application/port release
+    assert BRIEF_RUNNER_TIMEOUT_SECONDS == (
+        stand_run.PREFLIGHT_TIMEOUT_SECONDS
+        + stand_run.READINESS_TIMEOUT_SECONDS
+        + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
+        + BRIEF_HARD_STOP_SECONDS
+        + stand_run.SWEEP_TIMEOUT_SECONDS
     )
-    # This margin remains inside pytest so the fixture's finally can emit
-    # evidence and clean owned resources before the subprocess deadline.
-    assert BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS == 10 * 60
-    assert BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS == (
-        pipeline_helpers.SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT
-    )
-    assert BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS == (
-        pipeline_helpers.SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT
-    )
-    assert BRIEF_FOLLOWUP_TIMEOUT_SECONDS == (
-        BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS * BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS
-        + BRIEF_MAX_CONVERGENT_RETRIES * BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS
-    )
-    assert BRIEF_FOLLOWUP_TIMEOUT_SECONDS == pipeline_helpers.SETTINGS_SEED_FOLLOWUP_TIMEOUT
-    assert BRIEF_SUITE_TIMEOUT_SECONDS == (
-        BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS
-        + BRIEF_FOLLOWUP_TIMEOUT_SECONDS
-        + BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS
-        + BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS
-    )
-    assert BRIEF_RUNNER_TIMEOUT_SECONDS > BRIEF_SUITE_TIMEOUT_SECONDS
     end_to_end = (
         STAND_PROVISIONING_TIMEOUT_SECONDS
         + STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
@@ -177,6 +130,18 @@ def test_brief_cap_covers_shipped_settings_seed_followups_before_pytest_is_kille
     )
     assert end_to_end < STAND_JOB_TIMEOUT_MINUTES * 60
     assert STAND_JOB_TIMEOUT_MINUTES * 60 - end_to_end >= STAND_JOB_RESERVE_SECONDS
+
+
+def test_mega_brief_has_a_50_minute_productive_deadline_and_a_separate_cleanup_grace():
+    assert stand_run.BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
+    assert stand_run.BRIEF_HARD_STOP_SECONDS >= 60 * 60
+    assert stand_run.BRIEF_CLEANUP_GRACE_SECONDS > 0
+    assert stand_run.SUITES["mega-brief"].timeout_seconds == 50 * 60
+    assert (
+        stand_run.SUITES["mega-brief"].timeout_seconds
+        + stand_run.SUITES["mega-brief"].cleanup_grace_seconds
+        == stand_run.BRIEF_HARD_STOP_SECONDS
+    )
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():
@@ -288,8 +253,15 @@ def test_noop_runner_scrubs_llm_environment_and_passes_the_suite_timeout(tmp_pat
     monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
     monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
 
-    def fake_run(target, env, extra, log_path, timeout_seconds):
-        captured.update(target=target, env=env, extra=extra, timeout_seconds=timeout_seconds)
+    def fake_run(target, env, extra, log_path, timeout_seconds, termination_grace_seconds, log):
+        captured.update(
+            target=target,
+            env=env,
+            extra=extra,
+            timeout_seconds=timeout_seconds,
+            termination_grace_seconds=termination_grace_seconds,
+            log=log,
+        )
         return True
 
     monkeypatch.setattr(stand_run, "run_pytest", fake_run)
@@ -301,25 +273,59 @@ def test_noop_runner_scrubs_llm_environment_and_passes_the_suite_timeout(tmp_pat
     assert captured["timeout_seconds"] == SUITES["mega-noop"].timeout_seconds
 
 
-def test_run_pytest_strips_llm_environment_unless_the_suite_explicitly_sets_it(
-    tmp_path, monkeypatch
+def test_run_pytest_streams_redacted_console_output_and_preserves_the_log(
+    tmp_path, monkeypatch, capsys
 ):
     captured: dict[str, object] = {}
 
-    def fake_run(_command, **kwargs):
-        captured.update(kwargs)
-        return __import__("subprocess").CompletedProcess([], 0)
+    class Process:
+        stdout = iter(
+            [
+                "stage=engineering token=protected\n",
+                "heartbeat elapsed_seconds=30 " + "x" * 5000 + "\n",
+            ]
+        )
+        returncode = 0
+        pid = 123
 
-    monkeypatch.setattr(stand_run.subprocess, "run", fake_run)
+        def wait(self, *, timeout=None):
+            captured.setdefault("waits", []).append(timeout)
+            return 0
+
+        def send_signal(self, _signal):
+            raise AssertionError("successful pytest must not be interrupted")
+
+        def kill(self):
+            raise AssertionError("successful pytest must not be killed")
+
+    def fake_popen(_command, **kwargs):
+        captured.update(kwargs)
+        captured["command"] = _command
+        return Process()
+
+    monkeypatch.setattr(stand_run.subprocess, "Popen", fake_popen)
     monkeypatch.setenv("LIVE_LLM_QA", "stale")
     monkeypatch.setenv("LIVE_QA_AGENT_TYPE", "stale")
     monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", "stale")
 
-    assert stand_run.run_pytest("test_target", {}, {}, tmp_path / "pytest.log", 123) is True
-    assert captured["timeout"] == 123
+    assert (
+        stand_run.run_pytest(
+            "test_target", {"API_TOKEN": "protected"}, {}, tmp_path / "pytest.log", 123
+        )
+        is stand_run.PytestOutcome.PASSED
+    )
+    assert captured["waits"] == [123]
+    assert "-s" in captured["command"]
+    assert captured["start_new_session"] is True
     assert captured["env"][stand_run.LIVE_EVIDENCE_OUTPUT_DIR_ENV] == str(tmp_path)
     for name in stand_run.LLM_ENV_NAMES:
         assert name not in captured["env"]
+
+    log = (tmp_path / "pytest.log").read_text(encoding="utf-8")
+    assert "protected" not in log
+    assert "[redacted]" in log
+    assert len(log.splitlines()[1]) <= stand_run.LIVE_RELAY_LINE_MAX_CHARS
+    assert "stage=engineering" in capsys.readouterr().out
 
     assert (
         stand_run.run_pytest(
@@ -329,12 +335,96 @@ def test_run_pytest_strips_llm_environment_unless_the_suite_explicitly_sets_it(
             tmp_path / "pytest-llm.log",
             456,
         )
-        is True
+        is stand_run.PytestOutcome.PASSED
     )
-    assert captured["timeout"] == 456
     assert captured["env"]["LIVE_LLM_QA"] == "1"
     assert captured["env"]["LIVE_QA_AGENT_TYPE"] == "codex"
     assert captured["env"]["LIVE_WORKER_AGENT_TYPE"] == "claude"
+
+
+def test_run_pytest_interrupts_and_kills_the_process_group_after_its_grace(tmp_path, monkeypatch):
+    captured: list[object] = []
+    messages: list[str] = []
+
+    class Process:
+        stdout = iter(())
+        returncode = 1
+        pid = 456
+
+        def wait(self, *, timeout=None):
+            captured.append(("wait", timeout))
+            if timeout in {50 * 60, 300}:
+                raise subprocess.TimeoutExpired("pytest", timeout)
+            return 1
+
+    monkeypatch.setattr(stand_run.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(
+        stand_run.os, "killpg", lambda pid, signal: captured.append(("group_signal", pid, signal))
+    )
+
+    assert (
+        stand_run.run_pytest(
+            "target", {}, {}, tmp_path / "timeout.log", 50 * 60, 300, messages.append
+        )
+        is stand_run.PytestOutcome.TIMED_OUT
+    )
+    assert captured == [
+        ("wait", 50 * 60),
+        ("group_signal", 456, stand_run.signal.SIGINT),
+        ("wait", 300),
+        ("group_signal", 456, stand_run.signal.SIGKILL),
+        ("wait", None),
+    ]
+    assert "pytest hard deadline exhausted" in messages[0]
+    assert "process-group termination grace exhausted" in messages[1]
+
+
+def test_run_pytest_does_not_deadlock_on_a_wedged_grandchild_output_pipe(tmp_path, monkeypatch):
+    calls: list[object] = []
+
+    class Pipe:
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            calls.append("pipe_closed")
+
+    class Process:
+        stdout = Pipe()
+        returncode = 0
+        pid = 789
+
+        def wait(self, *, timeout=None):
+            return 0
+
+    class StuckThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, *, timeout=None):
+            calls.append(("join", timeout))
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(stand_run.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(stand_run, "Thread", StuckThread)
+
+    assert (
+        stand_run.run_pytest(
+            "target", {}, {}, tmp_path / "stuck.log", 1, log=lambda line: calls.append(line)
+        )
+        is stand_run.PytestOutcome.PASSED
+    )
+    assert calls == [
+        ("join", stand_run.RELAY_JOIN_TIMEOUT_SECONDS),
+        f"pytest output relay remained open after {stand_run.RELAY_JOIN_TIMEOUT_SECONDS}s",
+        "pipe_closed",
+        ("join", stand_run.RELAY_JOIN_TIMEOUT_SECONDS),
+    ]
 
 
 def test_preflight_failure_is_red_and_records_the_canonical_suite(tmp_path, monkeypatch):
@@ -348,19 +438,18 @@ def test_preflight_failure_is_red_and_records_the_canonical_suite(tmp_path, monk
     assert "mega-noop\t" in (run_dir / "report.tsv").read_text(encoding="utf-8")
 
 
-def test_pytest_timeout_and_cleanup_failure_are_red(tmp_path, monkeypatch):
+def test_pytest_timeout_is_distinct_in_the_report_and_cleanup_failure_is_red(tmp_path, monkeypatch):
     monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
     monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
     monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
     monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: False)
 
-    def timeout(*_args):
-        raise __import__("subprocess").TimeoutExpired(cmd="pytest", timeout=1)
-
-    monkeypatch.setattr(stand_run, "run_pytest", timeout)
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *_args: stand_run.PytestOutcome.TIMED_OUT)
     monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-noop"])
 
     assert stand_run.main() == 1
+    report = next((tmp_path / "runs").glob("*/report.tsv")).read_text(encoding="utf-8")
+    assert "timed_out" in report
 
 
 def test_the_recreate_set_is_derived_from_compose_and_names_the_deciding_service():

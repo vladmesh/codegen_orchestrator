@@ -61,9 +61,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    # 360m = 45m provisioning + 10m workflow reserve + 297m mega-brief runner
-    # (including its in-pytest evidence/cleanup margin and final sweep) + 8m
-    # job reserve. The matrix is smaller; lifecycle cleanup has its own 30m job.
+    # 360m covers 45m provisioning, a 60m mega-brief hard stop plus runner
+    # lifecycle, and the four-cell matrix. Lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
     permissions:
       contents: read
@@ -706,9 +705,9 @@ jobs:
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
-            >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
+            2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
 
       # The stand is serialized, so one profile has one writer at a time. Pull a
       # worker-refreshed file before cleanup tears down the only host that has
