@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-04
 
+- Scheduled-job plans require a deployable provider and durable observable output; live evidence now retains QA job results and worker-identity diagnostics.
 - Stand Codex now restores and persists a refresh-capable ChatGPT `auth.json`, so expired access tokens
   refresh across serialized runs and the exact worker image fails before BitLaunch when the session is unusable.
 - Story completion waits for a live story-owned deploy-fix engineering Run, preserving its branch worker

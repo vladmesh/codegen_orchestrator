@@ -122,6 +122,40 @@ curl -sf -X POST http://localhost:9090/infra/compose \
 make test-integration
 ```
 
+## Scheduled Behaviour Completion Gate
+
+If your task adds or changes a fireable scheduled behaviour, do not report it
+complete just because `POST /jobs/fire` returns `dispatch_status: dispatched`.
+That response proves only that the jobs core emitted `job_fired`; it does not
+prove any provider consumed the event or performed the work.
+
+Before reporting success, verify all of the following in the generated project:
+
+1. The behaviour is declared in `services/<service>/manifest.yaml` under
+   `jobs_schema`, and the provider declares `provides: ["jobs.fire"]`.
+2. A provider subscribes to `job_fired` and is wired into the deployed topology.
+   Prefer the existing deployable `notifications_worker` when it can own the
+   behaviour. If a new provider service is genuinely needed, it must include a
+   Dockerfile and production entrypoint; a `services.yml` entry; its own
+   `env.contract.yaml` image key; a CI build/push matrix entry; and broker-aware
+   wiring in both `infra/compose.base.yml` and `infra/compose.prod.yml`. Source
+   code, a unit-test-only subscriber, or an optional profile that production
+   does not start is not a provider.
+3. The provider produces the acceptance criterion's durable output — for
+   example a persisted record that the product exposes or a delivered bot
+   message — and the feature's tests prove that output. A log line, an
+   in-memory list, or the jobs dispatch record is not observable durable output.
+
+Use cheap checks before any deployment: run the provider's focused tests and
+verify the topology at file level: the provider name, Dockerfile, image key and
+broker dependency agree across `services.yml`, its `env.contract.yaml`, the CI
+build/push matrix, `infra/compose.base.yml`, and `infra/compose.prod.yml`. Do
+not run production Compose from the worker: its Compose proxy owns dev-only
+files and production also needs published-image variables. Do not report success
+until the focused tests and file-level verification pass. If the task cannot
+make the provider deployable and its output observable, report `success:false`
+rather than a partial implementation.
+
 ## Commit & Push
 
 After tests pass, commit and push your changes. You are working on a story feature branch —

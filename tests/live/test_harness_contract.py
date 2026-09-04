@@ -515,6 +515,23 @@ def test_read_qa_job_evidence_posts_exact_contract_and_retains_object(monkeypatc
     assert response.status_checked is True
 
 
+def test_read_qa_job_evidence_uses_recorded_terminal_qa_run_when_the_gate_raised(monkeypatch):
+    requests = []
+    response = _ProductResponse({"command_id": "qa-qa-failed-multilingual_digest"})
+    client = _ProductClient(response, requests)
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: client)
+    ctx = {
+        "deployed_url": "https://product.example",
+        "project_id": "project-1",
+        "qa_run": {"id": "qa-failed"},
+    }
+
+    body = asyncio.run(read_qa_job_evidence(ctx, job_name="multilingual_digest"))
+
+    assert body == {"command_id": "qa-qa-failed-multilingual_digest"}
+    assert requests[1][2]["command_id"] == "qa-qa-failed-multilingual_digest"
+
+
 def test_read_qa_job_evidence_rejects_failed_or_non_object_responses(monkeypatch):
     ctx = {
         "deployed_url": "https://product.example",
@@ -2567,6 +2584,62 @@ async def test_qa_evidence_pass_precedes_the_terminal_run_it_reports(monkeypatch
 
     assert result["qa_outcome"] == "passed"
     assert events == ["capture", "read", "record"]
+
+
+@pytest.mark.asyncio
+async def test_failed_brief_qa_retains_job_evidence_before_reraising(monkeypatch):
+    ctx = {"story_id": "story-1"}
+    terminal_run = _qa_run(
+        id="qa-failed",
+        status="failed",
+        result={"qa_outcome": "failed", "summary": "digest records were absent"},
+    )
+
+    async def failed_qa(*args, record, **kwargs):
+        record(terminal_run)
+        raise AssertionError("QA run qa-failed ended with status=failed outcome=failed")
+
+    retained = []
+
+    async def read_evidence(observed_ctx, *, job_name):
+        retained.append((observed_ctx["qa_run"]["id"], job_name))
+        observed_ctx["brief_job_evidence"] = {"fired_by_run": observed_ctx["qa_run"]["id"]}
+
+    monkeypatch.setattr(pipeline_helpers, "run_non_llm_qa", failed_qa)
+    monkeypatch.setattr(pipeline_helpers, "read_qa_job_evidence", read_evidence)
+
+    with pytest.raises(AssertionError, match="status=failed outcome=failed"):
+        await pipeline_helpers.run_brief_qa_and_retain_job_evidence(
+            object(), ctx, job_name="multilingual_digest", timeout=1
+        )
+
+    assert retained == [("qa-failed", "multilingual_digest")]
+    assert ctx["brief_job_evidence"] == {"fired_by_run": "qa-failed"}
+
+
+@pytest.mark.asyncio
+async def test_timed_out_brief_qa_does_not_read_unattributable_job_evidence(monkeypatch):
+    ctx = {"story_id": "story-1"}
+    reads = []
+
+    async def timed_out_qa(*args, **kwargs):
+        raise AssertionError("no QA run reached a terminal state for story story-1 in 1s")
+
+    async def read_evidence(*args, **kwargs):
+        reads.append("read")
+
+    monkeypatch.setattr(pipeline_helpers, "run_non_llm_qa", timed_out_qa)
+    monkeypatch.setattr(pipeline_helpers, "read_qa_job_evidence", read_evidence)
+
+    with pytest.raises(AssertionError, match="no QA run reached a terminal state"):
+        await pipeline_helpers.run_brief_qa_and_retain_job_evidence(
+            object(), ctx, job_name="multilingual_digest", timeout=1
+        )
+
+    assert reads == []
+    assert ctx["brief_job_evidence_error"] == (
+        "the product job evidence was not read because no terminal QA Run exists to attribute it"
+    )
 
 
 def test_evidence_pass_refreshes_ownership_before_it_captures(monkeypatch):

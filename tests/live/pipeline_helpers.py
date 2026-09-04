@@ -874,7 +874,8 @@ async def read_qa_job_evidence(ctx: dict, *, job_name: str) -> dict:
     no capability, so calling it here independently proves the stable command
     identity and provenance after the QA container has gone away.
     """
-    qa_run_id = ctx["qa_result"]["run_id"]
+    qa_result = ctx.get("qa_result")
+    qa_run_id = qa_result["run_id"] if qa_result is not None else ctx["qa_run"]["id"]
     command_id = f"qa-{qa_run_id}-{job_name}"
     payload = {
         "contract_version": 1,
@@ -2498,6 +2499,51 @@ async def run_non_llm_qa(
     return {"run_id": run["id"], "status": run["status"], "qa_outcome": outcome}
 
 
+async def run_brief_qa_and_retain_job_evidence(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    job_name: str,
+    timeout: float,
+    poll_interval: float = QA_RUN_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
+) -> dict[str, str]:
+    """Gate Product Brief QA while retaining its fired-job evidence on failure.
+
+    ``run_non_llm_qa`` records a terminal QA Run before it judges the outcome.
+    A failed outcome therefore still gives the evidence endpoint an immutable
+    Run id. Keep that diagnostic read without allowing an evidence-read failure
+    to mask the QA failure that triggered it.
+    """
+    try:
+        qa_result = await run_non_llm_qa(
+            api_internal,
+            ctx["story_id"],
+            timeout=timeout,
+            poll_interval=poll_interval,
+            record=lambda run: record_qa_run(ctx, run),
+            on_poll=on_poll,
+        )
+    except AssertionError:
+        if ctx.get("qa_run") is None:
+            ctx["brief_job_evidence_error"] = (
+                "the product job evidence was not read because no terminal QA Run exists "
+                "to attribute it"
+            )
+            raise
+        try:
+            await read_qa_job_evidence(ctx, job_name=job_name)
+        except Exception as error:
+            ctx["brief_job_evidence_error"] = (
+                "the product job evidence could not be read after failed QA: "
+                f"{type(error).__name__}: {error}"
+            )
+        raise
+    ctx["qa_result"] = qa_result
+    await read_qa_job_evidence(ctx, job_name=job_name)
+    return qa_result
+
+
 # ── Completed-story and undeploy lifecycle ───────────────────────────────
 
 
@@ -3244,6 +3290,8 @@ def find_worker_container(worker_id: str) -> str | None:
             "docker",
             "ps",
             "-a",
+            "--filter",
+            "label=com.codegen.type=worker",
             "--filter",
             f"label=com.codegen.worker.id={worker_id}",
             "--format",

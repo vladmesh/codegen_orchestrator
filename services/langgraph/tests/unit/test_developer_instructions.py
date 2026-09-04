@@ -41,3 +41,19 @@ class TestDeveloperInstructions:
         assert "make test-integration" in self.content
         assert "make tests unit" not in self.content
         assert "make tests integration" not in self.content
+
+    def test_requires_a_deployable_job_provider_before_reporting_success(self):
+        lower = self.content.lower()
+        assert "jobs_schema" in self.content
+        assert 'provides: ["jobs.fire"]' in self.content
+        assert "job_fired" in self.content
+        assert "services.yml" in self.content
+        assert "compose.base.yml" in self.content
+        assert "compose.prod.yml" in self.content
+        assert "durable output" in lower
+        assert "dispatch_status" in self.content
+        assert "notifications_worker" in self.content
+        assert "Dockerfile" in self.content
+        assert "env.contract.yaml" in self.content
+        assert "CI build/push matrix" in self.content
+        assert "docker compose -f infra/compose.prod.yml config" not in self.content
