@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -101,6 +102,17 @@ async def _trigger_next_story(
     )
 
 
+async def _has_live_deploy_fix(api_client: SchedulerAPIClient, story_id: str) -> bool:
+    """Whether a taskless deploy-fix engineering attempt still owns the story branch."""
+    story_runs = await api_client.list_runs(story_id=story_id, run_type=RunType.ENGINEERING.value)
+    return any(
+        run.type == RunType.ENGINEERING
+        and run.status in (RunStatus.QUEUED, RunStatus.RUNNING)
+        and "deploy_fix_attempt" in run.run_metadata
+        for run in story_runs
+    )
+
+
 async def complete_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -132,8 +144,7 @@ async def complete_stories(
         )
 
     for story in stories:
-        story_id = story.id
-        project_id = str(story.project_id)
+        story_id, project_id = story.id, str(story.project_id)
 
         tasks = await api_client.get_tasks_by_story(story_id)
 
@@ -166,6 +177,13 @@ async def complete_stories(
                 story_id=story_id,
                 task_statuses=task_statuses,
             )
+            continue
+
+        # A deploy code-fix has no Task row, but still writes to the story
+        # branch using the registered story worker. Do not publish a PR or
+        # tear that worker down while its engineering attempt is live.
+        if await _has_live_deploy_fix(api_client, story_id):
+            logger.debug("complete_stories_skip_live_deploy_fix", story_id=story_id)
             continue
 
         log = logger.bind(story_id=story_id, project_id=project_id)

@@ -18,6 +18,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRepair,
 )
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.work_admission import (
@@ -955,6 +956,104 @@ class TestParseOwnerRepo:
 
 class TestCompleteStories:
     """Complete stories when all tasks are done."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run_status", [RunStatus.QUEUED, RunStatus.RUNNING])
+    async def test_does_not_complete_while_deploy_fix_engineering_run_is_live(
+        self, api_client, redis_client, run_status
+    ):
+        """A taskless deploy-fix still owns the story branch and its worker."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.list_runs.return_value = [
+            RunDTO(
+                id=f"deploy-fix-{run_status.value}",
+                project_id=PROJ_ID,
+                type=RunType.ENGINEERING,
+                status=run_status,
+                story_id="story-1",
+                run_metadata={"deploy_fix_attempt": 1},
+                created_at=_NOW,
+            )
+        ]
+
+        with patch("src.tasks.story_completion.GitHubAppClient") as github:
+            completed = await complete_stories(api_client, redis_client)
+
+        assert completed == 0
+        api_client.list_runs.assert_awaited_once_with(
+            story_id="story-1", run_type=RunType.ENGINEERING.value
+        )
+        api_client.transition_story.assert_not_called()
+        redis_client.redis.hget.assert_not_called()
+        github.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "run",
+        [
+            RunDTO(
+                id="completed-deploy-fix",
+                project_id=PROJ_ID,
+                type=RunType.ENGINEERING,
+                status=RunStatus.CANCELLED,
+                story_id="story-1",
+                run_metadata={"deploy_fix_attempt": 1},
+                created_at=_NOW,
+            ),
+            RunDTO(
+                id="ordinary-engineering",
+                project_id=PROJ_ID,
+                type=RunType.ENGINEERING,
+                status=RunStatus.QUEUED,
+                story_id="story-1",
+                run_metadata={},
+                created_at=_NOW,
+            ),
+            RunDTO(
+                id="queued-deploy",
+                project_id=PROJ_ID,
+                type=RunType.DEPLOY,
+                status=RunStatus.QUEUED,
+                story_id="story-1",
+                run_metadata={"deploy_fix_attempt": 1},
+                created_at=_NOW,
+            ),
+        ],
+    )
+    async def test_completes_when_story_run_is_not_a_live_deploy_fix(
+        self, api_client, redis_client, run
+    ):
+        """Historical fixes and ordinary engineering runs do not delay completion."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.list_runs.return_value = [run]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+
+        github = AsyncMock()
+        github.create_pull_request.return_value = {"number": 42, "node_id": "PR_abc"}
+        github.enable_auto_merge.return_value = True
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+            completed = await complete_stories(api_client, redis_client)
+
+        assert completed == 1
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
