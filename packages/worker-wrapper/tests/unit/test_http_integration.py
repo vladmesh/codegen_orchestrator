@@ -238,6 +238,7 @@ class TestStdoutCapture:
                 f"stderr {raw_diagnostic}".encode(),
             )
         )
+        process.wait = AsyncMock(return_value=1)
 
         wrapper.broker.get_session.return_value = "unused"
         with (

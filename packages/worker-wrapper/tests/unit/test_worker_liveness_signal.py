@@ -42,12 +42,16 @@ class TestTheLimitKeepsTheWork:
             await killed.wait()
             return partial_stdout, b"partial stderr"
 
+        async def wait():
+            await killed.wait()
+            return -9
+
         proc = MagicMock()
         proc.communicate = communicate
         proc.returncode = -9
         proc.pid = pid
         proc.kill = MagicMock(side_effect=lambda: killed.set())
-        proc.wait = AsyncMock(return_value=-9)
+        proc.wait = wait
         return proc, killed
 
     @pytest.mark.asyncio
@@ -83,6 +87,177 @@ class TestTheLimitKeepsTheWork:
         assert partial.decode() in body
         assert wrapper._transcript_path is not None
         killpg.assert_called_once_with(proc.pid, __import__("signal").SIGKILL)
+
+    @pytest.mark.asyncio
+    async def test_result_submission_stops_the_agent_before_it_can_change_head(self):
+        """A success report is a completion barrier, not a race with final HEAD."""
+        wrapper, _ = _make_wrapper(subprocess_timeout_seconds=60)
+        wrapper._result_event = asyncio.Event()
+        proc, killed = self._hanging_process(b"reported result")
+
+        collecting = asyncio.create_task(wrapper._collect_agent_output(proc))
+        await asyncio.sleep(0)
+        wrapper._result_event.set()
+
+        with (
+            patch("worker_wrapper.wrapper.RESULT_STOP_GRACE_SECONDS", 0),
+            patch(
+                "worker_wrapper.wrapper.os.killpg", side_effect=lambda *_: killed.set()
+            ) as killpg,
+        ):
+            stdout, stderr, limit_exceeded, stopped_after_result = await asyncio.wait_for(
+                collecting, timeout=1
+            )
+
+        assert (stdout, stderr) == (b"reported result", b"partial stderr")
+        assert limit_exceeded is False
+        assert stopped_after_result is True
+        assert killpg.call_args_list == [
+            ((proc.pid, __import__("signal").SIGTERM),),
+            ((proc.pid, __import__("signal").SIGKILL),),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_result_submission_escalates_when_the_agent_ignores_term(self):
+        """The completion barrier cannot leave an agent mutating the checkout."""
+        wrapper, _ = _make_wrapper()
+        proc, _ = self._hanging_process(b"")
+        calls: list[int] = []
+
+        with (
+            patch("worker_wrapper.wrapper.RESULT_STOP_GRACE_SECONDS", 0),
+            patch(
+                "worker_wrapper.wrapper.os.killpg",
+                side_effect=lambda _pid, signal: calls.append(signal),
+            ),
+        ):
+            await wrapper._stop_agent_process_group(proc)
+
+        assert calls == [__import__("signal").SIGTERM, __import__("signal").SIGKILL]
+
+    @pytest.mark.asyncio
+    async def test_leader_exit_does_not_leave_a_term_ignoring_descendant_alive(self):
+        """A leader exit cannot let a descendant hold stdout or mutate the checkout."""
+        wrapper, _ = _make_wrapper()
+        wrapper._result_event = asyncio.Event()
+        descendant_killed = asyncio.Event()
+
+        async def communicate():
+            await descendant_killed.wait()
+            return b"leader exited", b""
+
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.returncode = 0
+        proc.communicate = communicate
+        proc.wait = AsyncMock(return_value=0)
+        signals: list[int] = []
+
+        def kill_group(_pid, sent_signal):
+            signals.append(sent_signal)
+            if sent_signal == __import__("signal").SIGKILL:
+                descendant_killed.set()
+
+        with (
+            patch("worker_wrapper.wrapper.RESULT_STOP_GRACE_SECONDS", 0),
+            patch("worker_wrapper.wrapper.os.killpg", side_effect=kill_group),
+        ):
+            stdout, stderr, limit_exceeded, stopped_after_result = await asyncio.wait_for(
+                wrapper._collect_agent_output(proc), timeout=1
+            )
+
+        assert (stdout, stderr, limit_exceeded, stopped_after_result) == (
+            b"leader exited",
+            b"",
+            False,
+            False,
+        )
+        assert signals == [__import__("signal").SIGTERM, __import__("signal").SIGKILL]
+
+    @pytest.mark.asyncio
+    async def test_auto_resume_uses_the_completion_barrier(self, tmp_path):
+        """A resumed result cannot leave a late-mutating descendant behind."""
+        wrapper, broker = _make_wrapper(agent_type="claude", transcript_dir=str(tmp_path))
+        broker.get_session.return_value = "resume-session"
+        wrapper._result_event = asyncio.Event()
+        initial_transcript = tmp_path / "dev-liveness-1" / "resume-1.log"
+        initial_transcript.parent.mkdir()
+        initial_transcript.write_text("initial transcript", encoding="utf-8")
+        wrapper._transcript_path = str(initial_transcript)
+        killed = asyncio.Event()
+
+        async def communicate():
+            await killed.wait()
+            return b"resume result", b""
+
+        async def wait():
+            await killed.wait()
+            return -9
+
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.returncode = -9
+        proc.communicate = communicate
+        proc.wait = wait
+        signals: list[int] = []
+
+        def kill_group(_pid, sent_signal):
+            signals.append(sent_signal)
+            if sent_signal == __import__("signal").SIGKILL:
+                killed.set()
+
+        async def fake_exec(*_args, **_kwargs):
+            return proc
+
+        with (
+            patch("worker_wrapper.wrapper.RESULT_STOP_GRACE_SECONDS", 0),
+            patch("worker_wrapper.wrapper.os.killpg", side_effect=kill_group),
+            patch(
+                "worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec
+            ) as create,
+        ):
+            resumed = asyncio.create_task(wrapper._attempt_auto_resume({"request_id": "resume-1"}))
+            await asyncio.sleep(0)
+            wrapper._result_event.set()
+            assert await asyncio.wait_for(resumed, timeout=1) is True
+
+        assert create.await_args.kwargs["start_new_session"] is True
+        assert signals == [__import__("signal").SIGTERM, __import__("signal").SIGKILL]
+        transcript = initial_transcript.read_text(encoding="utf-8")
+        assert "initial transcript" in transcript
+        assert "resume result" in transcript
+
+    @pytest.mark.asyncio
+    async def test_normal_exit_awaits_the_cancelled_result_waiter(self):
+        """The completion race leaves no pending result waiter behind."""
+
+        class TrackingEvent(asyncio.Event):
+            cancelled = False
+
+            async def wait(self):
+                try:
+                    return await super().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        wrapper, _ = _make_wrapper()
+        wrapper._result_event = TrackingEvent()
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"done", b""))
+        proc.wait = AsyncMock(return_value=0)
+
+        stdout, stderr, limit_exceeded, stopped_after_result = await wrapper._collect_agent_output(
+            proc
+        )
+
+        assert (stdout, stderr, limit_exceeded, stopped_after_result) == (
+            b"done",
+            b"",
+            False,
+            False,
+        )
+        assert wrapper._result_event.cancelled is True
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(os.name != "posix", reason="process groups are a POSIX contract")

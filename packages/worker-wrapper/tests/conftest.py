@@ -20,3 +20,7 @@ class MockProcess:
 
     async def communicate(self):
         return self.stdout, self.stderr
+
+    async def wait(self):
+        """Match asyncio.subprocess.Process.wait's awaitable contract."""
+        return self.returncode

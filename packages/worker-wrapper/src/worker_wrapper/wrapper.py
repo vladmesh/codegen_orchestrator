@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 import fcntl
 import json
 import os
@@ -58,6 +58,7 @@ QA_WORKER_TYPE = "qa"
 # up on its partial output. The process is already dead; this only bounds the
 # read of what it had written before it was.
 PARTIAL_OUTPUT_GRACE_SECONDS = 30
+RESULT_STOP_GRACE_SECONDS = 1
 
 
 class AgentTurnLimitExceeded(RuntimeError):
@@ -951,28 +952,105 @@ class WorkerWrapper:
             logger.warning("git_branch_failed", error=str(e))
             return None
 
-    async def _collect_agent_output(self, proc) -> tuple[bytes, bytes, bool]:
-        """Run the agent to completion, or to its limit, and keep what it wrote.
+    async def _collect_agent_output(
+        self, proc, *, timeout_seconds: int | None = None
+    ) -> tuple[bytes, bytes, bool, bool]:
+        """Run the agent to completion, its result boundary, or its limit.
 
-        Returns ``(stdout, stderr, limit_exceeded)``. On the limit path the
-        process is killed and the *same* ``communicate()`` is then awaited: its
-        pipes reach EOF the moment the process dies, so it hands back exactly
-        what the agent had produced up to that point. Abandoning it — the
-        previous behaviour — threw away the whole transcript of a turn that had
-        been working right up to the second it was stopped.
+        Returns ``(stdout, stderr, limit_exceeded, stopped_after_result)``. A
+        valid HTTP result is a completion barrier: the wrapper stops the agent
+        process group before the process can make a later commit and turn the
+        already-reported SHA into stale provenance. On either stop path the
+        same ``communicate()`` is awaited, preserving its transcript.
         """
         collecting = asyncio.ensure_future(proc.communicate())
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                asyncio.shield(collecting), timeout=self.config.subprocess_timeout_seconds
-            )
-            return stdout_bytes, stderr_bytes, False
-        except TimeoutError:
-            logger.error(
-                "agent_process_limit_reached",
-                worker_id=self.config.worker_id,
-                limit_seconds=self.config.subprocess_timeout_seconds,
-            )
+        leader_wait = asyncio.ensure_future(proc.wait())
+        result_event = getattr(self, "_result_event", None)
+        result_wait = (
+            asyncio.ensure_future(result_event.wait())
+            if isinstance(result_event, asyncio.Event)
+            else None
+        )
+        waiters = [collecting, leader_wait]
+        if result_wait is not None:
+            waiters.append(result_wait)
+        done, _ = await asyncio.wait(
+            waiters,
+            timeout=timeout_seconds or self.config.subprocess_timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        # A normally exited CLI takes priority when both completion and a
+        # result arrive together; there is no live process left to interrupt.
+        if collecting in done:
+            if result_wait is not None:
+                result_wait.cancel()
+                with suppress(asyncio.CancelledError):
+                    await result_wait
+            # `communicate()` only proves pipe EOF, not that a daemonized child
+            # has stopped mutating the checkout. Reap the session regardless.
+            await self._stop_agent_process_group(proc)
+            with suppress(asyncio.CancelledError):
+                await leader_wait
+            stdout_bytes, stderr_bytes = await collecting
+            return stdout_bytes, stderr_bytes, False, False
+
+        if result_wait in done:
+            logger.info("agent_result_completion_barrier", worker_id=self.config.worker_id)
+            await self._stop_agent_process_group(proc)
+            with suppress(asyncio.CancelledError):
+                await leader_wait
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    asyncio.shield(collecting), timeout=PARTIAL_OUTPUT_GRACE_SECONDS
+                )
+            except Exception as exc:
+                logger.warning(
+                    "agent_result_partial_output_unavailable",
+                    worker_id=self.config.worker_id,
+                    error=str(exc),
+                )
+                collecting.cancel()
+                return b"", b"", False, True
+            return stdout_bytes, stderr_bytes, False, True
+
+        if leader_wait in done:
+            # The leader can exit while a TERM-ignoring descendant still owns
+            # stdout or the workspace. Do not let normal-exit priority turn
+            # that descendant into a post-turn writer.
+            if result_wait is not None:
+                result_wait.cancel()
+                with suppress(asyncio.CancelledError):
+                    await result_wait
+            await self._stop_agent_process_group(proc)
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    asyncio.shield(collecting), timeout=PARTIAL_OUTPUT_GRACE_SECONDS
+                )
+            except Exception as exc:
+                logger.warning(
+                    "agent_normal_exit_partial_output_unavailable",
+                    worker_id=self.config.worker_id,
+                    error=str(exc),
+                )
+                collecting.cancel()
+                with suppress(asyncio.CancelledError):
+                    await collecting
+                return b"", b"", False, False
+            return stdout_bytes, stderr_bytes, False, False
+
+        logger.error(
+            "agent_process_limit_reached",
+            worker_id=self.config.worker_id,
+            limit_seconds=self.config.subprocess_timeout_seconds,
+        )
+        if result_wait is not None:
+            result_wait.cancel()
+            with suppress(asyncio.CancelledError):
+                await result_wait
+        leader_wait.cancel()
+        with suppress(asyncio.CancelledError):
+            await leader_wait
 
         await self._kill_agent_process_group(proc)
 
@@ -989,8 +1067,28 @@ class WorkerWrapper:
                 error=str(exc),
             )
             collecting.cancel()
-            return b"", b"", True
-        return stdout_bytes, stderr_bytes, True
+            with suppress(asyncio.CancelledError):
+                await collecting
+            return b"", b"", True, False
+        return stdout_bytes, stderr_bytes, True, False
+
+    @staticmethod
+    async def _stop_agent_process_group(proc) -> None:
+        """Terminate and then unconditionally kill an agent process group."""
+        pid = getattr(proc, "pid", None)
+        if not isinstance(pid, int):
+            return
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        # Waiting only for the leader is insufficient: descendants can ignore
+        # TERM and retain the workspace or output pipe after the leader exits.
+        await asyncio.sleep(RESULT_STOP_GRACE_SECONDS)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     @staticmethod
     async def _kill_agent_process_group(proc) -> None:
@@ -1072,7 +1170,12 @@ class WorkerWrapper:
                 env=agent_env,
                 start_new_session=True,
             )
-            stdout_bytes, stderr_bytes, limit_exceeded = await self._collect_agent_output(proc)
+            (
+                stdout_bytes,
+                stderr_bytes,
+                limit_exceeded,
+                stopped_after_result,
+            ) = await self._collect_agent_output(proc)
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
@@ -1103,7 +1206,7 @@ class WorkerWrapper:
             # hour of real work, and losing it costs the retry the same hour.
             raise AgentTurnLimitExceeded(self.config.subprocess_timeout_seconds)
 
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not stopped_after_result:
             logger.error("agent_process_failed", exit_code=proc.returncode)
             if self.config.agent_type == AgentType.CODEX:
                 raise RuntimeError(f"Codex agent process failed with code {proc.returncode}")
@@ -1152,14 +1255,37 @@ class WorkerWrapper:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=agent_env,
+                start_new_session=True,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=resume_timeout
-            )
+            (
+                stdout_bytes,
+                stderr_bytes,
+                limit_exceeded,
+                _stopped_after_result,
+            ) = await self._collect_agent_output(proc, timeout_seconds=resume_timeout)
+            if limit_exceeded:
+                logger.error("auto_resume_timed_out", worker_id=self.config.worker_id)
+                return False
 
             # Update stdout tail with resume output
             stdout = stdout_bytes.decode().strip()
             stderr = stderr_bytes.decode().strip()
+            if self._transcript_path:
+                try:
+                    prior_transcript = Path(self._transcript_path).read_text(encoding="utf-8")
+                except OSError:
+                    prior_transcript = ""
+                transcript, truncated = save_transcript(
+                    self.config.transcript_dir,
+                    self.config.worker_id,
+                    str(data.get("request_id", "unknown")),
+                    f"{prior_transcript}\n--- resume stdout ---\n{stdout}\n"
+                    f"--- resume stderr ---\n{stderr}\n",
+                    self.config.transcript_max_bytes,
+                    dict(os.environ),
+                )
+                self._transcript_path = transcript
+                self._transcript_truncated = self._transcript_truncated or truncated
             max_tail = 10_000
             combined = stdout
             if stderr:
@@ -1169,14 +1295,6 @@ class WorkerWrapper:
                 self._agent_stdout_tail = (prev + "\n--- resume ---\n" + combined)[-max_tail:]
 
             return True
-        except TimeoutError:
-            logger.error("auto_resume_timed_out", worker_id=self.config.worker_id)
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            return False
         except Exception:
             logger.exception("auto_resume_failed", worker_id=self.config.worker_id)
             return False

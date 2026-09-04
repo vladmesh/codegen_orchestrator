@@ -124,6 +124,80 @@ def test_brief_telemetry_is_redacted_bounded_and_stops_at_the_productive_deadlin
     assert ctx["brief_deadline_exhausted"] is True
 
 
+def test_brief_engineering_telemetry_emits_changed_task_run_facts_once(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-run-detail")
+    ctx: dict = {}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "current_iteration": 1}],
+        runs=[
+            {
+                "id": "eng-1",
+                "task_id": "task-1",
+                "status": "running",
+                "error_message": "protected-run-detail",
+                "created_at": "created-1",
+                "updated_at": "updated-1",
+                "run_metadata": {"worker_id": "worker-1"},
+            }
+        ],
+    )
+    transition = ctx["brief_telemetry"][-1]
+    assert transition["event"] == "brief_engineering_transition"
+    assert "task-1" in transition["observed_state"]
+    assert "eng-1" in transition["observed_state"]
+    assert "worker-1" in transition["observed_state"]
+    assert "created-1" in transition["observed_state"]
+    assert "updated-1" in transition["observed_state"]
+    assert "protected-run-detail" not in transition["observed_state"]
+
+    clock[0] += pipeline_helpers.BRIEF_HEARTBEAT_SECONDS
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "current_iteration": 1}],
+        runs=[
+            {
+                "id": "eng-1",
+                "task_id": "task-1",
+                "status": "running",
+                "error_message": "protected-run-detail",
+                "created_at": "created-1",
+                "updated_at": "updated-1",
+                "run_metadata": {"worker_id": "worker-1"},
+            }
+        ],
+    )
+
+    assert ctx["brief_telemetry"][-1]["event"] == "brief_heartbeat"
+    assert "unchanged" in ctx["brief_telemetry"][-1]["observed_state"]
+    assert [event["event"] for event in ctx["brief_telemetry"]].count(
+        "brief_engineering_transition"
+    ) == 1
+
+
+def test_brief_engineering_changed_snapshot_stops_at_productive_deadline(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    ctx: dict = {}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+    clock[0] += pipeline_helpers.BRIEF_PRODUCTIVE_DEADLINE_SECONDS
+
+    with pytest.raises(pipeline_helpers.ProductiveDeadlineExceeded):
+        pipeline_helpers.report_brief_engineering_observation(
+            ctx,
+            tasks=[{"id": "task-1", "status": "in_progress", "updated_at": "changed"}],
+            runs=[],
+        )
+
+    assert ctx["brief_deadline_exhausted"] is True
+
+
 @pytest.mark.asyncio
 async def test_poll_status_calls_the_brief_heartbeat_before_waiting(monkeypatch):
     observed: list[str] = []
@@ -148,6 +222,191 @@ async def test_poll_status_calls_the_brief_heartbeat_before_waiting(monkeypatch)
 
     assert status == "active"
     assert observed == ["heartbeat"]
+
+
+@pytest.mark.asyncio
+async def test_brief_engineering_terminal_failure_reports_redacted_task_facts(monkeypatch):
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-engineering-detail")
+    api = SimpleNamespace(
+        get=AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "task-1",
+                    "status": "failed",
+                    "current_iteration": 2,
+                    "max_iterations": 3,
+                    "last_event": "worker_failed",
+                    "failure_metadata": {"reason": "protected-engineering-detail"},
+                },
+                request=httpx.Request("GET", "http://test/api/tasks/task-1"),
+            )
+        )
+    )
+    ctx = {"task_ids": ["task-1"]}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    await pipeline_helpers.wait_brief_engineering(api, ctx, timeout=1)
+
+    assert ctx["task_status"] == "failed"
+    assert "Engineering terminal failure:" in ctx["brief_engineering_error"]
+    assert "task-1" in ctx["brief_engineering_error"]
+    assert "protected-engineering-detail" not in ctx["brief_engineering_error"]
+
+
+@pytest.mark.asyncio
+async def test_brief_engineering_terminal_failure_includes_available_run_progress(monkeypatch):
+    api = SimpleNamespace(
+        get=AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"id": "task-1", "status": "failed"},
+                request=httpx.Request("GET", "http://test/api/tasks/task-1"),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_engineering_runs_for_task",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": "eng-1",
+                    "task_id": "task-1",
+                    "status": "failed",
+                    "error_message": "exact worker diagnostic",
+                }
+            ]
+        ),
+    )
+    ctx = {"task_ids": ["task-1"]}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    await pipeline_helpers.wait_brief_engineering(api, ctx, api_internal=object(), timeout=1)
+
+    assert "eng-1" in ctx["brief_engineering_error"]
+    assert "exact worker diagnostic" in ctx["brief_engineering_error"]
+
+
+def test_brief_engineering_snapshot_keeps_the_second_failed_task_and_run(monkeypatch):
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-second-detail")
+    ctx: dict = {}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    observed = pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[
+            {"id": "task-first", "status": "done"},
+            {
+                "id": "task-second",
+                "status": "failed",
+                "failure_metadata": {"reason": "second-task-failure"},
+            },
+        ],
+        runs=[
+            {"id": "eng-first", "task_id": "task-first", "status": "completed"},
+            {
+                "id": "eng-second",
+                "task_id": "task-second",
+                "status": "failed",
+                "error_message": "second-run-failure",
+            },
+        ],
+    )
+
+    assert len(observed) <= pipeline_helpers.BRIEF_TELEMETRY_STATE_MAX_CHARS
+    assert "task-second" in observed
+    assert "second-task-failure" in observed
+    assert "eng-second" in observed
+    assert "second-run-failure" in observed
+
+
+@pytest.mark.asyncio
+async def test_brief_engineering_terminal_diagnostic_keeps_second_failed_task_and_run(monkeypatch):
+    api = SimpleNamespace(
+        get=AsyncMock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={"id": "task-first", "status": "failed"},
+                    request=httpx.Request("GET", "http://test/api/tasks/task-first"),
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "id": "task-second",
+                        "status": "failed",
+                        "failure_metadata": {"reason": "second-task-failure"},
+                    },
+                    request=httpx.Request("GET", "http://test/api/tasks/task-second"),
+                ),
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_engineering_runs_for_task",
+        AsyncMock(
+            side_effect=[
+                [{"id": "eng-first", "task_id": "task-first", "status": "failed"}],
+                [
+                    {
+                        "id": "eng-second",
+                        "task_id": "task-second",
+                        "status": "failed",
+                        "error_message": "second-run-failure",
+                    }
+                ],
+            ]
+        ),
+    )
+    ctx = {"task_ids": ["task-first", "task-second"]}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    await pipeline_helpers.wait_brief_engineering(api, ctx, api_internal=object(), timeout=1)
+
+    diagnostic = ctx["brief_engineering_error"]
+    assert "task-second" in diagnostic
+    assert "second-task-failure" in diagnostic
+    assert "eng-second" in diagnostic
+    assert "second-run-failure" in diagnostic
+
+
+@pytest.mark.asyncio
+async def test_brief_engineering_timeout_does_not_dump_raw_task_payload(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-timeout-detail")
+    monkeypatch.setattr(
+        pipeline_helpers.asyncio,
+        "sleep",
+        AsyncMock(side_effect=lambda _: clock.__setitem__(0, 2.0)),
+    )
+    api = SimpleNamespace(
+        get=AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "task-1",
+                    "status": "in_progress",
+                    "failure_metadata": {"reason": "protected-timeout-detail"},
+                },
+                request=httpx.Request("GET", "http://test/api/tasks/task-1"),
+            )
+        )
+    )
+    ctx = {"task_ids": ["task-1"]}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    await pipeline_helpers.wait_brief_engineering(api, ctx, timeout=1)
+
+    assert "protected-timeout-detail" not in ctx["brief_engineering_error"]
+    assert "task-1" in ctx["brief_engineering_error"]
 
 
 @pytest.fixture(autouse=True)
