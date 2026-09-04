@@ -625,7 +625,10 @@ async def _handle_deploy_code_fix(
                 id=fix_task_id,
                 type=RunType.ENGINEERING,
                 project_id=project.id,
-                task_id=fix_task_id,
+                # This repair belongs to the Story, rather than to a planning
+                # Task.  The synthetic attempt id is valid for Run.id, but
+                # runs.task_id is a nullable foreign key onto tasks.id.
+                task_id=None,
                 story_id=story_id,
                 run_metadata={"deploy_fix_attempt": attempt + 1},
             )

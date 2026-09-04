@@ -9,6 +9,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - Project cleanup now removes Requirement Coverage before its Product Brief, task and story parents, preventing teardown FK failures.
 - Exact Core-v1 undeclared setting keys now dispatch a bounded manifest-repair worker, so a confirmed
   setting triggers repair instead of only failing its story.
+- Deploy code-fix attempts are story-owned and name no planning Task, so their paid Run starts instead of
+  failing the Task foreign key.
+- Paid-work admission now rejects an unknown engineering Task reference before Run creation, instead of
+  exposing a database foreign-key error to the caller.
 
 ## 2026-09-03
 
