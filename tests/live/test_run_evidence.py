@@ -1111,6 +1111,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
+    assert EVIDENCE_SCHEMA_VERSION == 11
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1163,7 +1164,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "collection": {
             "status": CaptureStatus.MISSED.value,
             "value": None,
-            "reason": run_evidence.ENGINEERING_EVIDENCE_ESCAPED_REASON.format(
+            "reason": run_evidence.ENGINEERING_EVIDENCE_NOT_YET_COLLECTED_REASON.format(
                 subject=f"engineering task {ctx['task_id']}, last observed status "
                 f"{TaskStatus.FAILED}"
             ),
@@ -1342,6 +1343,32 @@ def test_a_story_branch_ahead_of_main_leaves_the_deploy_classification_alone(
 
     assert artifact["failure"]["stage"] == TerminalState.STOPPED_AT_DEPLOY.value
     assert artifact["failure"]["failure_kind"] == FailureKind.DEPLOY_RUN_MISSING.value
+
+
+def test_a_merged_contract_failure_keeps_its_selected_deploy_run_in_evidence(
+    codex_docker, tmp_path
+):
+    """A failed merged-contract gate follows an observed, not absent, deploy Run."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        engineering_runs=engineering_records(),
+        deploy_run_id="deploy-contract-unread",
+        env_contract_errors={"merged": "the merged contract is incomplete"},
+        deploy_run_record={
+            "current": {"id": "deploy-contract-unread", "status": "queued"},
+            "current_error": None,
+            "prior_attempts": [],
+        },
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["failure"]["failure_kind"] == FailureKind.ENV_CONTRACT_MISSING.value
+    assert artifact["deployment"]["run_id"] == "deploy-contract-unread"
+    assert artifact["deployment"]["run_record"]["value"]["id"] == "deploy-contract-unread"
 
 
 def test_a_failed_paid_run_names_the_stage_and_the_control_plane_reason(codex_docker, tmp_path):
@@ -1979,7 +2006,11 @@ def qa_stage_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
         deploy_outcome=DeployOutcome.SUCCESS.value,
         final_app_status=ApplicationStatus.RUNNING.value,
         deployed_url=DEPLOYED_URL,
-        deploy_run_record=run_evidence.deploy_run_facts(DEPLOY_SUCCESS_RUN),
+        deploy_run_record={
+            "current": run_evidence.deploy_run_facts(DEPLOY_SUCCESS_RUN),
+            "current_error": None,
+            "prior_attempts": [],
+        },
         qa_run=QA_BLOCKED_RUN,
         qa_run_record=run_evidence.qa_run_facts(QA_BLOCKED_RUN),
         engineering_runs=[],
@@ -2024,6 +2055,98 @@ def test_the_deploy_run_arrives_with_the_smoke_that_made_it_a_success(codex_dock
         "url": f"{DEPLOYED_URL}/health",
         "status_code": 200,
     }
+
+
+def test_deployment_evidence_keeps_repair_history_and_its_terminal_state(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    prior = {
+        **run_evidence.deploy_run_facts(DEPLOY_SUCCESS_RUN),
+        "id": "deploy-poll-seed-failed",
+        "deploy_outcome": DeployOutcome.SETTINGS_SEED_FAILED.value,
+    }
+    current = run_evidence.deploy_run_facts(DEPLOY_SUCCESS_RUN)
+
+    deployment = build_artifact(
+        qa_stage_ctx(
+            collector,
+            deploy_run_record={
+                "current": current,
+                "current_error": None,
+                "prior_attempts": [prior],
+            },
+            settings_seed_repair_run_ids=["eng-deploy-fix-deploy-poll-seed-failed-1"],
+            settings_seed_repair_attempts=[
+                {
+                    "attempt": 1,
+                    "run_id": "eng-deploy-fix-deploy-poll-seed-failed-1",
+                    "status": "completed",
+                    "error": None,
+                }
+            ],
+            settings_seed_repair_error=None,
+            settings_seed_repair_run_status="completed",
+            settings_seed_repair_story_status="in_progress",
+            deploy_run_candidate_timestamp_errors=[
+                "deploy candidate timestamp is invalid: ValueError: Run deploy-poll-stale has no "
+                "created_at timestamp"
+            ],
+        ),
+        root=tmp_path,
+    )["deployment"]
+
+    assert deployment["run_record"]["value"] == current
+    assert deployment["prior_attempts"] == [prior]
+    assert deployment["reachability"]["deploy_smoke"]["value"] == {
+        "passed": True,
+        "url": f"{DEPLOYED_URL}/health",
+        "status_code": 200,
+    }
+    assert deployment["settings_seed_repair"] == {
+        "run_ids": ["eng-deploy-fix-deploy-poll-seed-failed-1"],
+        "attempts": [
+            {
+                "attempt": 1,
+                "run_id": "eng-deploy-fix-deploy-poll-seed-failed-1",
+                "status": "completed",
+                "error": None,
+            }
+        ],
+        "error": None,
+        "run_status": "completed",
+        "story_status": "in_progress",
+        "candidate_timestamp_errors": [
+            "deploy candidate timestamp is invalid: ValueError: Run deploy-poll-stale has no "
+            "created_at timestamp"
+        ],
+    }
+
+
+def test_deployment_evidence_marks_an_unread_current_run_missed_but_keeps_history(
+    codex_docker, tmp_path
+):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    prior = {"id": "deploy-poll-old", "deploy_outcome": "settings_seed_failed"}
+
+    deployment = build_artifact(
+        qa_stage_ctx(
+            collector,
+            deploy_run_record={
+                "current": None,
+                "current_error": "deploy run deploy-poll-current timed out",
+                "prior_attempts": [prior],
+            },
+        ),
+        root=tmp_path,
+    )["deployment"]
+
+    assert deployment["run_record"] == {
+        "status": "missed",
+        "value": None,
+        "reason": "deploy run deploy-poll-current timed out",
+    }
+    assert deployment["prior_attempts"] == [prior]
 
 
 def test_the_reader_can_tell_unreachable_from_rejected_and_is_told_what_is_not_here(
@@ -2118,6 +2241,7 @@ def test_an_unread_qa_or_deploy_record_says_which_read_never_happened(codex_dock
     deploy_record = artifact["deployment"]["run_record"]
     assert deploy_record["status"] == CaptureStatus.MISSED.value
     assert DEPLOY_SUCCESS_RUN["id"] in deploy_record["reason"]
+    assert artifact["deployment"]["run_id"] == DEPLOY_SUCCESS_RUN["id"]
     reachability = artifact["deployment"]["reachability"]
     assert reachability["deploy_smoke"]["status"] == CaptureStatus.MISSED.value
     assert reachability["qa_probe"]["status"] == CaptureStatus.MISSED.value

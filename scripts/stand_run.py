@@ -91,13 +91,57 @@ _INSIDE_RECREATE_GATE = False
 # acceptance yet. See tests/live/README.md for the ledger.
 NOOP_SUITE_TIMEOUT_SECONDS = 4500
 LLM_SUITE_TIMEOUT_SECONDS = 3600
-# The Product Brief proof includes an Architect planning turn and can release
-# more than one engineering Task before it reaches the same deploy and QA
-# stages as mega-llm. Its named cap accounts for that bounded extra work.
-BRIEF_SUITE_TIMEOUT_SECONDS = 5400
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
+
+# These terms mirror the named waits in TestProductBriefPipeline. The runner
+# stays standalone rather than importing test modules, while the offline test
+# pins this ledger to the corresponding harness constants.
+BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS = (
+    120  # scaffold
+    + 1800  # Product Brief Architect admission
+    + 1800  # Architect-owned Engineering
+    + 1320  # merged deploy Run discovery
+    + 420  # initial deploy lifecycle
+    + 120  # initial typed deploy outcome
+)
+BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS = 3660
+BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS = 1860
+# These deterministic harness ceilings are pinned against the bootstrap config
+# in scripts/tests/test_stand_run.py; importing the runner must not read YAML.
+BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS = 2
+# The scheduler can offer two redispatches, but the harness reserves enough
+# time for two full manifest repairs and one complete convergent retry. This
+# leaves the fixture time to emit its evidence and tear down before job expiry.
+BRIEF_MAX_CONVERGENT_RETRIES = 1
+BRIEF_FOLLOWUP_TIMEOUT_SECONDS = (
+    BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS * BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS
+    + BRIEF_MAX_CONVERGENT_RETRIES * BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS
+)
+BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS = (
+    420  # replacement application lifecycle, if a fresh deploy succeeded
+    + 300  # QA Run
+    + 180  # Story completion
+    + 300  # undeploy Run
+    + 300  # application/port release
+)
+# This is inside pytest's subprocess budget, so the fixture's finally block can
+# emit evidence and clean manifest-owned resources before stand_run may kill it.
+BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS = 600
+BRIEF_SUITE_TIMEOUT_SECONDS = (
+    BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS
+    + BRIEF_FOLLOWUP_TIMEOUT_SECONDS
+    + BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS
+    + BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS
+)
+BRIEF_RUNNER_TIMEOUT_SECONDS = (
+    PREFLIGHT_TIMEOUT_SECONDS
+    + READINESS_TIMEOUT_SECONDS
+    + EXECUTOR_SWITCH_TIMEOUT_SECONDS
+    + BRIEF_SUITE_TIMEOUT_SECONDS
+    + SWEEP_TIMEOUT_SECONDS
+)
 
 # The workflow provisions a disposable pair before invoking this runner. Its
 # bounded operations total 2,280s (two machine waits, DNS, API readiness, and
@@ -113,9 +157,15 @@ MATRIX_RUNNER_TIMEOUT_SECONDS = (
     * (LLM_SUITE_TIMEOUT_SECONDS + READINESS_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
     + SWEEP_TIMEOUT_SECONDS
 )
-# 360 minutes leaves a strict 41-minute reserve after the largest possible
-# provision + matrix-runner path (319 minutes). Lifecycle cleanup has its own
-# bounded workflow job because GitHub jobs cannot share one timeout.
+# The workflow has work before its bounded provisioning phase (checkout, uv,
+# credential and image validation). Keep that reserve and a separate final job
+# reserve outside the mega-brief runner so GitHub never kills pytest's finally.
+STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
+STAND_JOB_RESERVE_SECONDS = 480
+# 360 minutes covers 45m provisioning + 10m workflow reserve + 297m maximum
+# Product Brief runner + an 8m job reserve. The matrix path is smaller.
+# Lifecycle cleanup has its own bounded workflow job because jobs cannot share
+# one timeout.
 STAND_JOB_TIMEOUT_MINUTES = 360
 STAND_CLEANUP_JOB_TIMEOUT_MINUTES = 30
 # The service that owns the decision, and is therefore the only one whose answer

@@ -29,11 +29,11 @@ from shared.contracts.dto.qa_handoff import (
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
     DeployRunResult,
+    deploy_fix_run_id,
 )
 from shared.contracts.dto.settings_seed import (
     CORE_SETTINGS_V1_UNDECLARED_KEY_DETAIL,
     SettingSeedOutcome,
-    SettingsSeedFailureKind,
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.users_grant import (
@@ -618,11 +618,11 @@ async def _handle_deploy_code_fix(
         await _notify_admin_failure(run.id, project_id, "deploy fix retries exhausted")
         return False
 
-    fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
+    fix_run_id = deploy_fix_run_id(run.id, attempt + 1)
     try:
         started = await api_client.start_paid_run(
             PaidRunStartCommand(
-                id=fix_task_id,
+                id=fix_run_id,
                 type=RunType.ENGINEERING,
                 project_id=project.id,
                 # This repair belongs to the Story, rather than to a planning
@@ -634,7 +634,7 @@ async def _handle_deploy_code_fix(
             )
         )
     except Exception:
-        log.exception("deploy_fix_paid_start_failed", run_id=fix_task_id)
+        log.exception("deploy_fix_paid_start_failed", run_id=fix_run_id)
         await _fail_deploy_fix_handoff(
             api_client, story_id, project_id, run, "deploy fix could not start"
         )
@@ -647,7 +647,7 @@ async def _handle_deploy_code_fix(
                 if budget is not None
                 else (started.admission.reason.value if started.admission.reason else "denied")
             ),
-            "attempt_id": fix_task_id,
+            "attempt_id": fix_run_id,
         }
         if budget is not None:
             reason.update(
@@ -676,7 +676,7 @@ async def _handle_deploy_code_fix(
             api_client, project_id, event="deploy_code_fix", story_id=story_id
         )
         fix_msg = EngineeringMessage(
-            task_id=fix_task_id,
+            task_id=fix_run_id,
             project_id=project_id,
             initiating_run_id=initiating_run_id,
             telegram_chat_id=fix_recipient.telegram_chat_id,
@@ -689,9 +689,9 @@ async def _handle_deploy_code_fix(
     except Exception:
         # Preparation is demonstrably before any queue call, so this is safe to
         # abort. Keep publication outside this block: its outcome is unknowable.
-        log.exception("deploy_fix_pre_handoff_preparation_failed", fix_task_id=fix_task_id)
+        log.exception("deploy_fix_pre_handoff_preparation_failed", fix_task_id=fix_run_id)
         await api_client.abort_paid_run_pre_handoff(
-            fix_task_id, DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR
+            fix_run_id, DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR
         )
         await _fail_deploy_fix_handoff(
             api_client, story_id, project_id, run, "deploy fix handoff preparation failed"
@@ -700,7 +700,7 @@ async def _handle_deploy_code_fix(
     try:
         await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
-        log.exception("deploy_fix_publish_outcome_unknown", fix_task_id=fix_task_id)
+        log.exception("deploy_fix_publish_outcome_unknown", fix_task_id=fix_run_id)
         await _fail_deploy_fix_handoff(
             api_client, story_id, project_id, run, "deploy fix handoff outcome is unknown"
         )
@@ -709,12 +709,12 @@ async def _handle_deploy_code_fix(
         # A story becomes IN_PROGRESS only after the queue accepted its repair.
         await api_client.transition_story(story_id, "start")
     except Exception:
-        log.exception("deploy_fix_post_handoff_transition_failed", fix_task_id=fix_task_id)
+        log.exception("deploy_fix_post_handoff_transition_failed", fix_task_id=fix_run_id)
         await _fail_deploy_fix_handoff(
             api_client, story_id, project_id, run, "deploy fix handoff could not start the story"
         )
         return False
-    log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
+    log.info("deploy_supervisor_code_fix", fix_task_id=fix_run_id, attempt=attempt + 1)
     return True
 
 
@@ -829,7 +829,7 @@ async def _route_settings_seed_failure(  # noqa: PLR0913
     result: DeployRunResult = run.result
     failures = [failure.value for failure in result.settings_seed_failures]
     if not result.settings_seed_can_converge:
-        if result.settings_seed_failures == (SettingsSeedFailureKind.KEY_NOT_DECLARED,):
+        if result.settings_seed_needs_manifest_repair:
             log.warning(
                 "deploy_supervisor_settings_seed_manifest_repair",
                 run_id=run.id,

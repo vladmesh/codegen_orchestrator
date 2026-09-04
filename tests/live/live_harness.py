@@ -3,6 +3,7 @@
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,18 @@ logger = structlog.get_logger()
 # failed/timed-out pipeline can be inspected live. The manifest under
 # .live-manifests/ still records them for later `make test-live-clean`.
 LIVE_NO_CLEANUP_ENV = "LIVE_NO_CLEANUP"
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def run_created_at(run: dict) -> datetime:
+    """Parse the timestamp used to distinguish a newly created Run."""
+    value = run.get("created_at")
+    if not isinstance(value, str):
+        raise ValueError(f"Run {run.get('id')} has no created_at timestamp")
+    created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        raise ValueError(f"Run {run.get('id')} has a naive created_at timestamp")
+    return created_at
 
 
 def no_cleanup_enabled() -> bool:

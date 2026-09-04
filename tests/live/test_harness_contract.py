@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,7 @@ from pipeline_helpers import (
     run_non_llm_qa,
 )
 import pytest
+import run_evidence
 import structlog
 
 from shared import live_harness_cleanup
@@ -1025,6 +1027,54 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_wait_deploy_requires_the_fresh_run_application_when_one_is_named(
+    monkeypatch, tmp_path
+):
+    manifest = OwnershipManifest("project-1")
+    ctx = {
+        "project_id": "project-1",
+        "project_name": "run",
+        "manifest": manifest,
+        "server_ip": "192.0.2.1",
+        "port": 8010,
+        "allocation_id": 8,
+        "application_id": 21,
+        "deployed_url": "http://192.0.2.1:8010",
+    }
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [
+            {"id": 21, "status": "running"},
+            {"id": 22, "status": "running"},
+        ],
+        "/api/servers/": [
+            {"handle": "server-1", "public_ip": "192.0.2.1"},
+            {"handle": "server-2", "public_ip": "192.0.2.2"},
+        ],
+        "/api/servers/server-1/ports": [
+            {"id": 8, "port": 8010, "application_id": 21, "service_name": "backend"},
+        ],
+        "/api/servers/server-2/ports": [
+            {"id": 9, "port": 8020, "application_id": 22, "service_name": "backend"},
+        ],
+    }
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1, expected_application_id=22)
+
+    assert ctx["application_id"] == 22
+    assert ctx["allocation_id"] == 9
+    assert ctx["server_ip"] == "192.0.2.2"
+    assert ctx["port"] == 8020
+    assert ctx["deployed_url"] == "http://192.0.2.2:8020"
+
+
+@pytest.mark.asyncio
 async def test_wait_deploy_skips_infra_ports_and_picks_web_module(monkeypatch, tmp_path):
     manifest = OwnershipManifest("project-1")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
@@ -1194,6 +1244,85 @@ async def test_wait_deploy_enriches_the_write_ahead_deploy_record(monkeypatch, t
             "server_handle": "server-1",
             "server_ip": "192.0.2.1",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_falls_back_to_all_servers_when_an_app_moves_targets(
+    monkeypatch, tmp_path
+):
+    """A moved app leaves both possible stacks covered by manifest cleanup."""
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    phase = "first"
+
+    async def get(url, **kwargs):
+        applications = {
+            "first": [{"id": 21, "status": "running"}],
+            "second": [{"id": 22, "status": "running"}],
+        }
+        responses = {
+            "/api/repositories/": [{"id": "repo-1"}],
+            "/api/applications/": applications[phase],
+            "/api/servers/": [
+                {"handle": "server-1", "public_ip": "192.0.2.1"},
+                {"handle": "server-2", "public_ip": "192.0.2.2"},
+            ],
+            "/api/servers/server-1/ports": [
+                {
+                    "id": 8,
+                    "port": 8010,
+                    "application_id": 21,
+                    "service_name": "backend",
+                }
+            ],
+            "/api/servers/server-2/ports": [
+                {
+                    "id": 9,
+                    "port": 8020,
+                    "application_id": 22,
+                    "service_name": "backend",
+                }
+            ],
+        }
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+    phase = "second"
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    deploy = next(item for item in manifest.resources if item.kind == "server_deployment")
+    assert deploy.metadata["server_handle"] is None
+    cleanup_calls = []
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *_args, **_kwargs: (
+            cleanup_calls.append(_args[2]),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )[1],
+    )
+    pipeline_helpers.cleanup_server_container({"manifest": manifest})
+    assert cleanup_calls == [
+        ["server-cleanup", "--project-name", "run", "--api-url", "http://api:8000"]
+    ]
+
+    cleanup_calls = []
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *_args, **_kwargs: (
+            cleanup_calls.append(_args[2]),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )[1],
+    )
+    pipeline_helpers.cleanup_server_container({"manifest": manifest})
+
+    assert cleanup_calls == [
+        ["server-cleanup", "--project-name", "run", "--api-url", "http://api:8000"]
     ]
 
 
@@ -2607,6 +2736,7 @@ def _deploy_run(
     story_id: str = "story-1",
     head_sha: str | None = "abc123",
     user_id: int | None = None,
+    created_at: str = "2026-09-04T00:00:00Z",
 ) -> dict:
     metadata = {"triggered_by": "pr_poll", "head_sha": head_sha} if head_sha else {}
     return {
@@ -2616,6 +2746,7 @@ def _deploy_run(
         "story_id": story_id,
         "user_id": user_id,
         "status": "completed",
+        "created_at": created_at,
         "run_metadata": metadata,
     }
 
@@ -2774,7 +2905,81 @@ async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypat
 
     assert run["id"] == "deploy-poll-1"
     assert ctx["deploy_run_id"] == "deploy-poll-1"
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_selects_the_earliest_qualifying_merged_run(monkeypatch):
+    """Initial deploy observation is chronological, independent of API ordering."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    earlier = _deploy_run("deploy-poll-earlier", created_at="2026-09-04T00:01:00Z")
+    later = _deploy_run("deploy-poll-later", created_at="2026-09-04T00:02:00Z")
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([later, earlier]))
+    ) as api_internal:
+        selected = await pipeline_helpers.wait_deploy_run(api_internal, ctx, timeout=1)
+
+    assert selected == earlier
+    assert ctx["deploy_run_id"] == earlier["id"]
     assert ctx["deploy_head_sha"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_initial_deploy_selection_keeps_its_run_record_when_application_wait_fails(
+    monkeypatch, tmp_path
+):
+    """A transient application read cannot erase the already selected deploy Run."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    selected_run = _deploy_run("deploy-initial", created_at="2026-09-04T00:01:00Z")
+    manifest = OwnershipManifest("run-1")
+    ctx = {
+        "project_id": "project-1",
+        "project_name": "run",
+        "story_id": "story-1",
+        "agent_type": "noop",
+        "manifest": manifest,
+    }
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([selected_run]))
+    ) as api_internal:
+        await pipeline_helpers.wait_deploy_run(api_internal, ctx, timeout=1)
+
+    async def failing_get(url, **_kwargs):
+        return httpx.Response(503, request=httpx.Request("GET", url))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await pipeline_helpers.wait_deploy(
+            SimpleNamespace(get=failing_get), SimpleNamespace(get=failing_get), ctx, timeout=1
+        )
+
+    deployment = run_evidence.deployment_evidence(ctx)
+    assert deployment["run_record"]["status"] == "captured"
+    assert deployment["run_record"]["value"]["id"] == selected_run["id"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_selects_the_earliest_fresh_merged_run(monkeypatch):
+    """Follow-up selection keeps the earliest Run strictly after its source."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    source = _deploy_run("deploy-source", created_at="2026-09-04T00:00:00Z")
+    earlier = _deploy_run("deploy-fresh-earlier", created_at="2026-09-04T00:01:00Z")
+    later = _deploy_run("deploy-fresh-later", created_at="2026-09-04T00:02:00Z")
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([later, earlier, source]))
+    ) as api_internal:
+        selected = await pipeline_helpers.wait_deploy_run(
+            api_internal,
+            ctx,
+            timeout=1,
+            created_after=datetime(2026, 9, 4, tzinfo=UTC),
+        )
+
+    assert selected == earlier
+    assert ctx["deploy_run_id"] == earlier["id"]
 
 
 @pytest.mark.asyncio
@@ -2890,6 +3095,173 @@ async def test_wait_deploy_outcome_types_the_run_result(monkeypatch):
     assert ctx["deploy_outcome"] == "success"
     assert seen["url"] == "/api/runs/deploy-poll-1"
     assert seen["headers"]["X-Internal-Key"] == "test-internal-key"
+
+
+def test_record_deploy_run_keeps_prior_attempts_when_the_current_read_is_unusable(monkeypatch):
+    """A bad current record must not erase the failed seed that led to repair."""
+    prior = {"id": "deploy-poll-old", "deploy_outcome": "settings_seed_failed"}
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "deploy_run_facts",
+        lambda run: (_ for _ in ()).throw(ValueError("bad current payload")),
+    )
+    ctx = {"deploy_run_record": {"current": prior, "current_error": None, "prior_attempts": []}}
+
+    pipeline_helpers.record_deploy_run(ctx, {"id": "deploy-poll-current"})
+
+    assert ctx["deploy_run_record"] == {
+        "current": None,
+        "current_error": "deploy run deploy-poll-current could not be read into evidence: "
+        "ValueError: bad current payload",
+        "prior_attempts": [prior],
+    }
+
+
+def test_unread_current_deploy_is_not_reintroduced_as_its_own_prior_attempt(monkeypatch):
+    """A second read failure retains older history but excludes the current Run id."""
+    older = {"id": "deploy-older", "status": "failed", "result": {}}
+    current = {"id": "deploy-current", "status": "running", "result": None}
+    ctx = {"deploy_run_id": current["id"]}
+    pipeline_helpers.record_deploy_run(ctx, older)
+    pipeline_helpers.record_deploy_run(ctx, current)
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "deploy_run_facts",
+        lambda _run: (_ for _ in ()).throw(ValueError("unread current payload")),
+    )
+
+    pipeline_helpers.record_deploy_run(ctx, current)
+
+    record = ctx["deploy_run_record"]
+    assert ctx["deploy_run_id"] == current["id"]
+    assert record["current"] is None
+    assert record["current_error"].endswith("ValueError: unread current payload")
+    assert [attempt["id"] for attempt in record["prior_attempts"]] == [older["id"]]
+
+
+def test_deploy_run_record_replaces_a_selected_snapshot_with_its_terminal_facts():
+    """A later fresh Run keeps the preceding seed outcome, not its first poll."""
+    r1 = {
+        "id": "deploy-r1",
+        "status": "failed",
+        "result": {"deploy_outcome": "settings_seed_failed", "settings_seed": []},
+    }
+    r2_selected = {"id": "deploy-r2", "status": "running", "result": None}
+    r2_terminal = {
+        "id": "deploy-r2",
+        "status": "failed",
+        "result": {
+            "deploy_outcome": "settings_seed_failed",
+            "settings_seed": [
+                {
+                    "key": "languages",
+                    "scope": "product",
+                    "written": False,
+                    "failure": "key_not_declared",
+                }
+            ],
+        },
+    }
+    r3_selected = {"id": "deploy-r3", "status": "queued", "result": None}
+    ctx = {}
+
+    pipeline_helpers.record_deploy_run(ctx, r1)
+    pipeline_helpers._reset_for_fresh_deploy_run(ctx, r2_selected)
+    pipeline_helpers.record_deploy_run(ctx, r2_terminal)
+    pipeline_helpers._reset_for_fresh_deploy_run(ctx, r3_selected)
+
+    prior = {record["id"]: record for record in ctx["deploy_run_record"]["prior_attempts"]}
+    assert prior["deploy-r1"]["deploy_outcome"] == "settings_seed_failed"
+    assert prior["deploy-r2"]["status"] == "failed"
+    assert prior["deploy-r2"]["settings_seed"] == r2_terminal["result"]["settings_seed"]
+
+
+@pytest.mark.asyncio
+async def test_record_engineering_evidence_includes_story_owned_manifest_repair(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    planned = {
+        "id": "eng-planned-1",
+        "type": "engineering",
+        "task_id": "task-1",
+        "story_id": "story-1",
+        "status": "completed",
+        "run_metadata": {},
+    }
+    repair = {
+        "id": "eng-deploy-fix-deploy-old-1",
+        "type": "engineering",
+        "task_id": None,
+        "story_id": "story-1",
+        "status": "completed",
+        "run_metadata": {"deploy_fix_attempt": 1},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={})
+        if request.url.path == "/api/runs/":
+            if request.url.params.get("task_id") == "task-1":
+                return httpx.Response(200, json=[planned])
+            if request.url.params.get("story_id") == "story-1":
+                return httpx.Response(200, json=[repair, planned])
+        if request.url.path.startswith("/api/work-admission/paid-runs/"):
+            return httpx.Response(200, json={"outcome": "admitted"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {"task_id": "task-1", "story_id": "story-1"}
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        records = await pipeline_helpers.record_engineering_evidence(api_internal, ctx)
+
+    assert [record["run_id"] for record in records] == [planned["id"], repair["id"]]
+    assert records[1]["task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_engineering_evidence_without_a_task_or_story_leaves_never_entered_truthful():
+    ctx = {}
+    client = SimpleNamespace(get=AsyncMock())
+
+    records = await pipeline_helpers.record_engineering_evidence(client, ctx)
+
+    assert records == []
+    assert "engineering_runs" not in ctx
+    assert "engineering_evidence_error" not in ctx
+    client.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_record_engineering_evidence_sweeps_story_owned_runs_without_a_task(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    repair = {
+        "id": "eng-deploy-fix-deploy-old-1",
+        "type": "engineering",
+        "task_id": None,
+        "story_id": "story-1",
+        "status": "completed",
+        "run_metadata": {"deploy_fix_attempt": 1},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={})
+        if request.url.path == "/api/runs/":
+            assert dict(request.url.params) == {"story_id": "story-1", "run_type": "engineering"}
+            return httpx.Response(200, json=[repair])
+        if request.url.path.startswith("/api/work-admission/paid-runs/"):
+            return httpx.Response(200, json={"outcome": "admitted"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        records = await pipeline_helpers.record_engineering_evidence(
+            api_internal, {"story_id": "story-1"}
+        )
+
+    assert [record["run_id"] for record in records] == [repair["id"]]
+    assert records[0]["task_id"] is None
 
 
 @pytest.mark.asyncio
@@ -3335,6 +3707,171 @@ async def test_run_observer_client_carries_no_user_header(monkeypatch):
     assert run["id"] == "deploy-poll-unowned"
 
 
+@pytest.mark.asyncio
+async def test_wait_deploy_run_skips_malformed_prior_candidate_with_retained_evidence(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    malformed = _deploy_run("deploy-poll-malformed", head_sha="old", created_at=None)
+    fresh = _deploy_run("deploy-poll-fresh", head_sha="fresh", created_at="2026-09-04T00:01:00Z")
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([malformed, fresh]))
+    ) as observer:
+        ctx = {
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "server_ip": "192.0.2.9",
+            "port": 8099,
+            "allocation_id": 99,
+            "application_id": 99,
+            "deployed_url": "http://192.0.2.9:8099",
+            "server_handle": "stale-server",
+            "final_app_status": "running",
+        }
+        run = await pipeline_helpers.wait_deploy_run(
+            observer,
+            ctx,
+            timeout=1,
+            poll_interval=0,
+            created_after=datetime(2026, 9, 4, tzinfo=UTC),
+        )
+
+    assert run == fresh
+    assert ctx["deploy_run_candidate_timestamp_errors"] == [
+        "deploy candidate timestamp is invalid: ValueError: "
+        "Run deploy-poll-malformed has no created_at timestamp"
+    ]
+    for key in (
+        "server_ip",
+        "port",
+        "allocation_id",
+        "application_id",
+        "deployed_url",
+        "server_handle",
+        "final_app_status",
+    ):
+        assert key not in ctx
+
+
+@pytest.mark.asyncio
+async def test_fresh_deploy_observation_5xx_keeps_the_selected_current_run_captured(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    old = _deploy_run("deploy-poll-old", created_at="2026-09-04T00:00:00Z")
+    fresh = _deploy_run("deploy-poll-fresh", created_at="2026-09-04T00:01:00Z")
+    ctx = {
+        "project_id": "project-1",
+        "story_id": "story-1",
+        "agent_type": "noop",
+        "deploy_run_id": old["id"],
+        "deploy_run_created_at": old["created_at"],
+        "deploy_run_record": {
+            "current": pipeline_helpers.deploy_run_facts(old),
+            "current_error": None,
+            "prior_attempts": [],
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/runs/":
+            return _runs_api([fresh, old])(request)
+        if request.url.path == f"/api/runs/{fresh['id']}":
+            return httpx.Response(503, request=request)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        await pipeline_helpers.wait_deploy_run(
+            api, ctx, timeout=1, created_after=datetime(2026, 9, 4, tzinfo=UTC)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await pipeline_helpers.wait_deploy_outcome(api, ctx, timeout=1)
+
+    deployment = run_evidence.deployment_evidence(ctx)
+    assert deployment["run_record"]["status"] == "captured"
+    assert deployment["run_record"]["value"]["id"] == fresh["id"]
+    assert [run["id"] for run in deployment["prior_attempts"]] == [old["id"]]
+
+
+@pytest.mark.asyncio
+async def test_fresh_deploy_selection_captures_current_evidence_and_retains_the_prior_attempt(
+    monkeypatch,
+):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    old = _deploy_run("deploy-poll-old", created_at="2026-09-04T00:00:00Z")
+    fresh = _deploy_run("deploy-poll-fresh", created_at="2026-09-04T00:01:00Z")
+    ctx = {
+        "project_id": "project-1",
+        "story_id": "story-1",
+        "deploy_run_id": old["id"],
+        "deploy_run_created_at": old["created_at"],
+        "deploy_outcome": "settings_seed_failed",
+        "deploy_run_status": "failed",
+        "deploy_error_details": "settings_seed:key_not_declared",
+        "deployed_image_references": ["registry.example/old"],
+        "deployed_commit_sha": "old",
+        "deploy_run_record": {
+            "current": pipeline_helpers.deploy_run_facts(old),
+            "current_error": None,
+            "prior_attempts": [],
+        },
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([fresh, old]))
+    ) as api:
+        selected = await pipeline_helpers.wait_deploy_run(
+            api,
+            ctx,
+            timeout=1,
+            created_after=datetime(2026, 9, 4, tzinfo=UTC),
+        )
+
+    assert selected == fresh
+    assert ctx["deploy_run_record"] == {
+        "current": pipeline_helpers.deploy_run_facts(fresh),
+        "current_error": None,
+        "prior_attempts": [pipeline_helpers.deploy_run_facts(old)],
+    }
+    for key in (
+        "deploy_outcome",
+        "deploy_run_status",
+        "deploy_error_details",
+        "deployed_image_references",
+        "deployed_commit_sha",
+        "deploy_run_created_at",
+    ):
+        assert key not in ctx
+
+
+@pytest.mark.asyncio
+async def test_fresh_deploy_selection_downgrades_old_target_cleanup_before_allocation(
+    monkeypatch, tmp_path
+):
+    """An unresolved replacement cannot narrow teardown to its predecessor's host."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    old = _deploy_run("deploy-poll-old", created_at="2026-09-04T00:00:00Z")
+    fresh = _deploy_run("deploy-poll-fresh", created_at="2026-09-04T00:01:00Z")
+    manifest = OwnershipManifest("run-1")
+    manifest.own("server_deployment", "run", server_handle="server-1")
+    ctx = {
+        "project_id": "project-1",
+        "project_name": "run",
+        "story_id": "story-1",
+        "manifest": manifest,
+        "deploy_run_id": old["id"],
+        "deploy_run_created_at": old["created_at"],
+    }
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api([fresh, old]))
+    ) as api:
+        await pipeline_helpers.wait_deploy_run(
+            api, ctx, timeout=1, created_after=datetime(2026, 9, 4, tzinfo=UTC)
+        )
+
+    deploy = next(item for item in manifest.resources if item.kind == "server_deployment")
+    assert deploy.metadata["server_handle"] is None
+
+
 def _collected(*, offline: bool):
     marker = getattr(pytest.mark, live_conftest.NO_API_CREDENTIAL_MARKER).mark
     return SimpleNamespace(get_closest_marker=lambda name: marker if offline else None)
@@ -3536,6 +4073,32 @@ async def test_an_unreachable_control_plane_names_the_collection_failure():
     assert records == []
     assert "could not be listed" in ctx["engineering_evidence_error"]
     assert "ReadTimeout" in ctx["engineering_evidence_error"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_engineering_evidence_keeps_prior_records_when_the_final_pass_fails():
+    prior = {
+        "run_id": "eng-deploy-fix-deploy-poll-old-1",
+        "task_id": None,
+        "run": {"status": "captured", "value": {"status": "completed"}, "reason": None},
+        "admission": {"status": "captured", "value": {"outcome": "admitted"}, "reason": None},
+        "executor_diagnostics": {"status": "captured", "value": {}, "reason": None},
+    }
+    ctx = {"task_id": "task-1", "task_ids": ["task-1"], "engineering_runs": [prior]}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/executor-diagnostics":
+            return httpx.Response(200, json={})
+        raise httpx.ReadTimeout("terminal run listing timed out", request=request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    ) as api:
+        records = await pipeline_helpers.record_engineering_evidence(api, ctx)
+
+    assert records == [prior]
+    assert ctx["engineering_runs"] == [prior]
+    assert "terminal run listing timed out" in ctx["engineering_evidence_error"]
 
 
 @pytest.mark.asyncio
@@ -3758,14 +4321,14 @@ async def test_wait_deploy_outcome_reads_the_smoke_that_made_the_deploy_a_succes
         SimpleNamespace(get=get), ctx, timeout=1, poll_interval=0
     )
 
-    record = ctx["deploy_run_record"]
+    record = ctx["deploy_run_record"]["current"]
     assert record["deploy_outcome"] == "success"
     assert record["head_sha"] == "4de2a99b"
     assert record["smoke_result"] == {"passed": True, "status_code": 200}
 
 
 @pytest.mark.asyncio
-async def test_a_deploy_run_that_never_settled_says_why_its_record_is_absent(monkeypatch):
+async def test_a_deploy_run_that_never_settled_keeps_its_last_payload_captured(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
 
     async def get(url, headers=None):
@@ -3780,8 +4343,44 @@ async def test_a_deploy_run_that_never_settled_says_why_its_record_is_absent(mon
         SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
     )
 
-    assert "deploy_run_record" not in ctx
-    assert "did not reach a terminal state" in ctx["deploy_run_record_error"]
+    assert ctx["deploy_run_record"] == {
+        "current": pipeline_helpers.deploy_run_facts(
+            {"id": "deploy-poll-1", "status": "running", "result": None}
+        ),
+        "current_error": None,
+        "prior_attempts": [],
+    }
+    assert "did not reach a terminal state" in ctx["deploy_outcome_error"]
+
+
+@pytest.mark.asyncio
+async def test_deploy_outcome_timeout_keeps_prior_structured_evidence(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={"id": "deploy-poll-current", "status": "running", "result": None},
+            request=httpx.Request("GET", url),
+        )
+
+    prior = {"id": "deploy-poll-old", "deploy_outcome": "settings_seed_failed"}
+    ctx = {
+        "deploy_run_id": "deploy-poll-current",
+        "deploy_run_record": {"current": prior, "current_error": None, "prior_attempts": []},
+    }
+    result = await pipeline_helpers.wait_deploy_outcome(
+        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
+    )
+
+    assert result is None
+    assert ctx["deploy_run_record"] == {
+        "current": pipeline_helpers.deploy_run_facts(
+            {"id": "deploy-poll-current", "status": "running", "result": None}
+        ),
+        "current_error": None,
+        "prior_attempts": [prior],
+    }
 
 
 @pytest.mark.asyncio
@@ -3807,7 +4406,7 @@ async def test_an_untyped_deploy_result_still_leaves_its_record_behind(monkeypat
 
     assert result is None
     assert "not a DeployRunResult" in ctx["deploy_outcome_error"]
-    assert ctx["deploy_run_record"]["status"] == "completed"
+    assert ctx["deploy_run_record"]["current"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

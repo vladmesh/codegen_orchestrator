@@ -1,6 +1,8 @@
 import base64
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
+import sys
 
 from scripts.stand_acceptance import (
     ADMISSION_MARKER,
@@ -15,6 +17,11 @@ from scripts.stand_acceptance import (
     target_snapshot_required,
 )
 from scripts.stand_preflight import check_stand_token_credentials
+
+_LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
+if str(_LIVE_TESTS) not in sys.path:
+    sys.path.insert(0, str(_LIVE_TESTS))
+from run_evidence import EVIDENCE_SCHEMA_VERSION  # noqa: E402
 
 
 def _protected_environment() -> dict[str, str]:
@@ -135,6 +142,12 @@ NOOP_EVIDENCE_NAME = "run-evidence-worker-noop-qa-health-20260831T225500.json"
 PAID_EVIDENCE_NAME = "run-evidence-worker-claude-qa-codex-20260902T081500.json"
 
 
+def test_paid_failure_schema_floor_is_supported_by_the_evidence_writer():
+    from scripts.stand_acceptance import MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION
+
+    assert EVIDENCE_SCHEMA_VERSION >= MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION
+
+
 def _missed(reason: str) -> dict:
     return {"status": "missed", "value": None, "reason": reason}
 
@@ -146,7 +159,7 @@ def _captured(value: object) -> dict:
 def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
     """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 7,
+        "schema_version": 11,
         "kind": "worker_failure_attribution",
         "failure": {
             "failed": failed,
@@ -419,6 +432,67 @@ def test_a_failed_paid_run_without_a_qa_or_deploy_run_record_is_refused(tmp_path
     incompleteness = _incompleteness(output)
     assert f"paid_failure_qa_run_record_missing:{PAID_EVIDENCE_NAME}" in incompleteness
     assert f"paid_failure_deploy_run_record_missing:{PAID_EVIDENCE_NAME}" in incompleteness
+
+
+def test_a_failed_paid_run_with_an_unread_known_deploy_payload_is_refused(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"].update(stage="stopped_at_deploy", failure_kind="env_contract_missing")
+    evidence["deployment"].update(
+        run_id="deploy-current-unread",
+        run_record=_missed(
+            "deploy run deploy-current-unread could not be read into evidence: "
+            "ValueError: bad payload"
+        ),
+    )
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"paid_failure_deploy_run_record_missing:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_failed_paid_run_with_no_deploy_run_is_admitted_when_its_miss_is_stated(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"].update(stage="stopped_at_deploy", failure_kind="deploy_run_missing")
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_stalled_known_deploy_run_is_admitted_with_its_last_payload(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"].update(stage="stopped_at_deploy", failure_kind="deploy_failed")
+    evidence["deployment"].update(
+        run_id="deploy-stalled",
+        run_record=_captured({"id": "deploy-stalled", "status": "running", "result": None}),
+    )
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_paid_failure_on_a_pre_v11_schema_is_refused_before_prior_attempts_are_trusted(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["schema_version"] = 10
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"paid_failure_schema_version_unsupported:{PAID_EVIDENCE_NAME}:10" in _incompleteness(
+        output
+    )
+
+
+def test_a_paid_failure_on_a_future_schema_is_admitted(tmp_path):
+    """The minimum schema is a compatibility floor, not an exact version."""
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["schema_version"] = EVIDENCE_SCHEMA_VERSION + 1
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
 
 
 def test_a_failed_paid_run_that_cannot_say_what_the_url_answered_is_refused(tmp_path):

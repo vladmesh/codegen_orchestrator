@@ -40,7 +40,6 @@ from pipeline_helpers import (
     evidence_pass,
     po_input_cursor,
     record_deployed_image_tags,
-    record_engineering_evidence,
     record_env_contract,
     record_health_probe,
     record_noop_settlement_evidence,
@@ -234,10 +233,6 @@ async def _pipeline_phases(
         await wait_engineering(
             api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
         )
-    # The control plane's own account of the engineering stage, read here rather
-    # than after the phase: on failure exactly as on success, and always while
-    # the stand that holds the Run records still exists.
-    await record_engineering_evidence(api_internal, ctx)
     if ctx.get("task_status") != TaskStatus.DONE:
         yield ctx
         dump_debug(ctx, f"{debug_prefix}-engineering")

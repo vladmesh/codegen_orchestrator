@@ -23,6 +23,7 @@ from shared.contracts.dto.run_result import (
     QARunResult,
     QAStateChange,
     QAStateChangeCleanup,
+    deploy_fix_run_id,
 )
 from shared.contracts.dto.settings_seed import (
     SettingSeedOutcome,
@@ -373,6 +374,18 @@ class TestSuccessMeansEveryConfirmedSettingArrived:
 
         assert result.settings_seed_failure_detail == "key_not_declared,transport"
         assert result.settings_seed_can_converge is True
+        assert result.settings_seed_needs_manifest_repair is False
+
+    def test_exact_undeclared_seed_uses_the_shared_manifest_repair_identity(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+            settings_seed=[_seed(SettingsSeedFailureKind.KEY_NOT_DECLARED)],
+        )
+
+        assert result.settings_seed_needs_manifest_repair is True
+        assert deploy_fix_run_id("deploy-poll-1", 2) == "eng-deploy-fix-deploy-poll-1-2"
+        with pytest.raises(ValueError, match="positive"):
+            deploy_fix_run_id("deploy-poll-1", 0)
 
     def test_the_seed_failure_outcome_requires_a_recorded_failure(self):
         with pytest.raises(ValidationError, match="settings_seed failure"):

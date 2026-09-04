@@ -1,14 +1,31 @@
 """What the stand runner must not forget — each of these cost a run to learn."""
 
+from pathlib import Path
 import subprocess
+import sys
 
 import pytest
+import yaml
 
 from scripts import stand_run
 from scripts.stand_run import (
     AGENTS,
+    BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS,
+    BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS,
+    BRIEF_FOLLOWUP_TIMEOUT_SECONDS,
+    BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS,
+    BRIEF_MAX_CONVERGENT_RETRIES,
+    BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS,
+    BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS,
+    BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS,
+    BRIEF_RUNNER_TIMEOUT_SECONDS,
+    BRIEF_SUITE_TIMEOUT_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
     QA_EXECUTOR_ENV,
+    STAND_JOB_RESERVE_SECONDS,
+    STAND_JOB_TIMEOUT_MINUTES,
+    STAND_PROVISIONING_TIMEOUT_SECONDS,
+    STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS,
     SUITE_ALIASES,
     SUITES,
     Suite,
@@ -20,6 +37,11 @@ from scripts.stand_run import (
     write_junit_report,
     write_qa_executor,
 )
+
+_LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
+if str(_LIVE_TESTS) not in sys.path:
+    sys.path.insert(0, str(_LIVE_TESTS))
+import pipeline_helpers  # noqa: E402
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -100,6 +122,61 @@ def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
     assert explicit_waits == 3680
     assert NOOP_SUITE_TIMEOUT_SECONDS == 4500
     assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 800
+
+
+def test_brief_cap_covers_shipped_settings_seed_followups_before_pytest_is_killed():
+    """The paid fixture retains evidence and cleans up before runner timeout."""
+    configured = {
+        entry["key"]: entry["value"]
+        for entry in yaml.safe_load(
+            (stand_run.REPO / "scripts" / "system_configs.yaml").read_text()
+        )
+    }
+    assert BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS == configured["deploy.max_deploy_fix_attempts"]
+    assert BRIEF_MAX_CONVERGENT_RETRIES < configured["deploy.max_deploy_retries"]
+    assert BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS == (
+        pipeline_helpers.SCAFFOLD_TIMEOUT
+        + pipeline_helpers.LLM_ENGINEERING_TIMEOUT  # Product Brief admission
+        + pipeline_helpers.LLM_ENGINEERING_TIMEOUT  # Architect-owned Engineering
+        + pipeline_helpers.DEPLOY_RUN_TIMEOUT
+        + pipeline_helpers.DEPLOY_TIMEOUT
+        + pipeline_helpers.DEPLOY_OUTCOME_TIMEOUT
+    )
+    assert BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS == (
+        pipeline_helpers.DEPLOY_TIMEOUT  # replacement application lifecycle
+        + pipeline_helpers.QA_RUN_TIMEOUT
+        + pipeline_helpers.STORY_COMPLETION_TIMEOUT
+        + pipeline_helpers.UNDEPLOY_TIMEOUT  # undeploy Run
+        + pipeline_helpers.UNDEPLOY_TIMEOUT  # application/port release
+    )
+    # This margin remains inside pytest so the fixture's finally can emit
+    # evidence and clean owned resources before the subprocess deadline.
+    assert BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS == 10 * 60
+    assert BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS == (
+        pipeline_helpers.SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT
+    )
+    assert BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS == (
+        pipeline_helpers.SETTINGS_SEED_CONVERGENT_RETRY_TIMEOUT
+    )
+    assert BRIEF_FOLLOWUP_TIMEOUT_SECONDS == (
+        BRIEF_MAX_MANIFEST_REPAIR_ATTEMPTS * BRIEF_MANIFEST_REPAIR_ATTEMPT_TIMEOUT_SECONDS
+        + BRIEF_MAX_CONVERGENT_RETRIES * BRIEF_CONVERGENT_RETRY_TIMEOUT_SECONDS
+    )
+    assert BRIEF_FOLLOWUP_TIMEOUT_SECONDS == pipeline_helpers.SETTINGS_SEED_FOLLOWUP_TIMEOUT
+    assert BRIEF_SUITE_TIMEOUT_SECONDS == (
+        BRIEF_PRE_FOLLOWUP_TIMEOUT_SECONDS
+        + BRIEF_FOLLOWUP_TIMEOUT_SECONDS
+        + BRIEF_POST_FOLLOWUP_TIMEOUT_SECONDS
+        + BRIEF_EVIDENCE_AND_CLEANUP_MARGIN_SECONDS
+    )
+    assert BRIEF_RUNNER_TIMEOUT_SECONDS > BRIEF_SUITE_TIMEOUT_SECONDS
+    end_to_end = (
+        STAND_PROVISIONING_TIMEOUT_SECONDS
+        + STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + BRIEF_RUNNER_TIMEOUT_SECONDS
+    )
+    assert end_to_end < STAND_JOB_TIMEOUT_MINUTES * 60
+    assert STAND_JOB_TIMEOUT_MINUTES * 60 - end_to_end >= STAND_JOB_RESERVE_SECONDS
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():

@@ -61,8 +61,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    # 360m > 45m provisioning + 262m runner matrix budget. The runner's 5m
-    # fail-closed sweep is included; lifecycle cleanup has its own 30m job.
+    # 360m = 45m provisioning + 10m workflow reserve + 297m mega-brief runner
+    # (including its in-pytest evidence/cleanup margin and final sweep) + 8m
+    # job reserve. The matrix is smaller; lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
     permissions:
       contents: read
