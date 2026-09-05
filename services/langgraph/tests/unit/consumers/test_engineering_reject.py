@@ -19,6 +19,7 @@ def mock_api():
     with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
+        api.transition_story = AsyncMock()
         api.get = AsyncMock(return_value={"created_by": "system"})
         yield api
 
@@ -86,7 +87,5 @@ class TestRejectGaveUpHandling:
             redis=mock_redis,
         )
 
-        story_patch_calls = [c for c in mock_api.patch.call_args_list if "stories" in str(c)]
-        assert len(story_patch_calls) >= 1
-        call_json = story_patch_calls[0][1].get("json", {})
-        assert call_json.get("status") == "waiting_human_review"
+        mock_api.transition_story.assert_awaited_once_with("story-1", "human-review")
+        assert not any("stories/" in str(call) for call in mock_api.patch.call_args_list)

@@ -51,10 +51,10 @@ from pipeline_helpers import (
     trigger_scaffold,
     verify_undeploy_residue,
     wait_application_not_deployed,
+    wait_brief_deploy_run,
     wait_brief_engineering,
     wait_deploy,
     wait_deploy_outcome,
-    wait_deploy_run,
     wait_product_brief_admission,
     wait_scaffold,
     wait_settings_seed_followup,
@@ -289,7 +289,7 @@ async def product_brief_pipeline():  # noqa: PLR0911, PLR0915 - terminal phase e
 
                 report_brief_stage(ctx, "generated_ci_deploy", observed_state="engineering_done")
                 if (
-                    await wait_deploy_run(
+                    await wait_brief_deploy_run(
                         api_internal,
                         ctx,
                         timeout=DEPLOY_RUN_TIMEOUT,
@@ -455,7 +455,7 @@ class TestProductBriefPipeline:
         assert ctx.get("story_branch_error") is None, ctx.get("story_branch_error")
         assert ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value, ctx.get(
             "deploy_error_details"
-        )
+        ) or ctx.get("deploy_run_error")
         assert ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
         assert ctx.get("deployed_image_error") is None, ctx.get("deployed_image_error")
         assert ctx["brief_settings_seed"] == [

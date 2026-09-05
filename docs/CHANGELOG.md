@@ -3,6 +3,12 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-05
+
+- Worker refusals now use the typed human-review story transition, and mega-brief telemetry ignores polling-only timestamps while retaining them in bounded evidence.
+- Product Brief deploy observation now stops at a story no-deploy state with retained cause evidence, instead of spending the full deploy-Run wait.
+- Production scaffolds now pin service-template `40b54d8`, whose generated CI verifies its exact uv release without consulting a mutable version manifest.
+
 ## 2026-09-04
 
 - Worker success reports now stop their agent process group before exact-commit verification, preventing a late local commit from invalidating durable provenance; mega-brief logs bounded engineering transitions and terminal diagnostics.

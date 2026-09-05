@@ -180,6 +180,66 @@ def test_brief_engineering_telemetry_emits_changed_task_run_facts_once(monkeypat
     ) == 1
 
 
+def test_brief_engineering_telemetry_ignores_updated_at_only_changes(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    ctx: dict = {}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "updated_at": "first"}],
+        runs=[{"id": "eng-1", "status": "running", "updated_at": "first"}],
+    )
+    first_transition = ctx["brief_telemetry"][-1]
+    assert "first" in first_transition["observed_state"]
+
+    clock[0] += pipeline_helpers.BRIEF_HEARTBEAT_SECONDS
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "updated_at": "second"}],
+        runs=[{"id": "eng-1", "status": "running", "updated_at": "second"}],
+    )
+
+    assert ctx["brief_telemetry"][-1]["event"] == "brief_heartbeat"
+    assert [event["event"] for event in ctx["brief_telemetry"]].count(
+        "brief_engineering_transition"
+    ) == 1
+
+
+def test_brief_engineering_telemetry_records_status_change_after_timestamp_only_poll(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
+    ctx: dict = {}
+    pipeline_helpers.begin_brief_productive_window(ctx)
+    pipeline_helpers.report_brief_stage(ctx, "engineering", observed_state="tasks_released")
+
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "updated_at": "first"}],
+        runs=[],
+    )
+    clock[0] += pipeline_helpers.BRIEF_HEARTBEAT_SECONDS
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "in_progress", "updated_at": "second"}],
+        runs=[],
+    )
+    clock[0] += 1
+    pipeline_helpers.report_brief_engineering_observation(
+        ctx,
+        tasks=[{"id": "task-1", "status": "done", "updated_at": "third"}],
+        runs=[],
+    )
+
+    assert ctx["brief_telemetry"][-1]["event"] == "brief_engineering_transition"
+    assert "done" in ctx["brief_telemetry"][-1]["observed_state"]
+    assert [event["event"] for event in ctx["brief_telemetry"]].count(
+        "brief_engineering_transition"
+    ) == 2
+
+
 def test_brief_engineering_changed_snapshot_stops_at_productive_deadline(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(pipeline_helpers.time, "monotonic", lambda: clock[0])
@@ -3290,6 +3350,65 @@ async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypat
 
     assert run["id"] == "deploy-poll-1"
     assert ctx["deploy_run_id"] == "deploy-poll-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param("waiting_human_review", id="human-review"),
+        pytest.param("waiting_user_secret", id="user-secret"),
+        pytest.param("failed", id="failed"),
+    ],
+)
+async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatch, status):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/api/stories/story-1":
+            return httpx.Response(200, json={"id": "story-1", "status": status}, request=request)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        run = await pipeline_helpers.wait_brief_deploy_run(api_internal, ctx, timeout=1)
+
+    assert run is None
+    assert calls == ["/api/stories/story-1"]
+    assert ctx["brief_deploy_story_status"] == status
+    assert ctx["deploy_run_error"] == (
+        f"story story-1 reached no-deploy state {status} before a deploy Run appeared"
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_brief_deploy_run_keeps_waiting_while_story_can_deploy(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    expected = _deploy_run("deploy-poll-1", head_sha="abc123")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/stories/story-1":
+            return httpx.Response(
+                200, json={"id": "story-1", "status": "pr_review"}, request=request
+            )
+        if request.url.path == "/api/runs/":
+            return httpx.Response(200, json=[expected], request=request)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        run = await pipeline_helpers.wait_brief_deploy_run(api_internal, ctx, timeout=1)
+
+    assert run == expected
+    assert ctx["deploy_run_id"] == "deploy-poll-1"
+    assert ctx["brief_deploy_story_status"] == "pr_review"
+    assert "deploy_run_error" not in ctx
 
 
 @pytest.mark.asyncio

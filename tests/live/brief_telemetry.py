@@ -135,6 +135,23 @@ def _engineering_run_line(run: dict, budget: int) -> str:
     return f"{line}{details}"[:budget]
 
 
+def _semantic_engineering_snapshot(
+    tasks: list[dict], runs: list[dict], runs_error: str | None
+) -> dict[str, object]:
+    """Return progress facts that should cause a transition event.
+
+    ``updated_at`` changes on every control-plane poll.  It remains in the
+    rendered snapshot for timing evidence, but cannot itself be progress.
+    """
+    return {
+        "tasks": [
+            {key: value for key, value in task.items() if key != "updated_at"} for task in tasks
+        ],
+        "runs": [{key: value for key, value in run.items() if key != "updated_at"} for run in runs],
+        "runs_error": runs_error,
+    }
+
+
 def engineering_observation(
     ctx: dict,
     *,
@@ -150,7 +167,7 @@ def engineering_observation(
     """
     _check_deadline(ctx, time.monotonic())
     raw = json.dumps(
-        {"tasks": tasks, "runs": runs, "runs_error": runs_error},
+        _semantic_engineering_snapshot(tasks, runs, runs_error),
         sort_keys=True,
         default=str,
         separators=(",", ":"),
