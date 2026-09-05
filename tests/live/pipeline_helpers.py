@@ -96,7 +96,7 @@ INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
-TEMPLATE_REF = "91e582180b4295bce45155759bdad0dfa43b75f3"
+TEMPLATE_REF = "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
@@ -2285,6 +2285,55 @@ async def wait_deploy_run(
         f"within {timeout}s"
     )
     return None
+
+
+_BRIEF_NO_DEPLOY_STORY_STATUSES = frozenset(
+    {
+        StoryStatus.WAITING_HUMAN_REVIEW.value,
+        StoryStatus.WAITING_USER_SECRET.value,
+        StoryStatus.COMPLETED.value,
+        StoryStatus.FAILED.value,
+        StoryStatus.ARCHIVED.value,
+    }
+)
+
+
+async def wait_brief_deploy_run(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = DEPLOY_RUN_TIMEOUT,
+    poll_interval: float = DEPLOY_RUN_POLL_INTERVAL,
+    on_poll: Callable[[], None] | None = None,
+) -> dict | None:
+    """Wait for a Product Brief deploy, stopping when its story cannot create one.
+
+    A deploy Run appears only after the generated repository CI succeeds.  If
+    CI or a worker refusal instead parks the story, waiting through the full
+    deploy budget obscures the terminal cause and spends paid time needlessly.
+    """
+
+    async def story_alive() -> bool:
+        story_id = ctx["story_id"]
+        response = await api_internal.get(f"/api/stories/{story_id}")
+        response.raise_for_status()
+        status = response.json().get("status")
+        ctx["brief_deploy_story_status"] = status
+        if status not in _BRIEF_NO_DEPLOY_STORY_STATUSES:
+            return True
+        ctx["deploy_run_error"] = (
+            f"story {story_id} reached no-deploy state {status} before a deploy Run appeared"
+        )
+        return False
+
+    return await wait_deploy_run(
+        api_internal,
+        ctx,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        on_poll=on_poll,
+        story_alive=story_alive,
+    )
 
 
 async def _wait_for_followup_deploy_result(

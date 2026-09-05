@@ -89,6 +89,7 @@ class TestBlockedFlowEndToEnd:
 
         mock_api.patch = AsyncMock()
         mock_api.post = AsyncMock()
+        mock_api.transition_story = AsyncMock()
         mock_api.get = AsyncMock(return_value={"created_by": "user"})
         mock_notify.return_value = 1
 
@@ -128,10 +129,9 @@ class TestBlockedFlowEndToEnd:
         metadata = task_patches[0][1]["json"]["failure_metadata"]
         assert "56/78" in metadata["reason"]
 
-        # Story transitioned to WHR
-        story_patches = [c for c in mock_api.patch.call_args_list if "stories" in str(c)]
-        assert len(story_patches) >= 1
-        assert story_patches[0][1]["json"]["status"] == "waiting_human_review"
+        # Story transitioned to WHR through the lifecycle action, never PATCH.
+        mock_api.transition_story.assert_awaited_once_with("story-1", "human-review")
+        assert not any("stories/" in str(call) for call in mock_api.patch.call_args_list)
 
         # Admin notified at warning level
         mock_notify.assert_awaited_once()

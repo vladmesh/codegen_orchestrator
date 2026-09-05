@@ -349,13 +349,30 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     assert answers["_commit"].endswith(f"g{pinned_template_ref()[:7]}")
 
 
+def test_template_fixture_pins_verified_uv_bootstrap():
+    """The production render must not retain setup-uv's mutable manifest lookup."""
+    action = "astral-sh/setup-uv@6ee6290f1cbc4156c0bdd66691b2c144ef8df19a"
+    version = "0.11.29"
+    checksum = "04f8b82f5d47f0512dcd32c67a4a6f16a0ea27c81537c338fd0ad6b23cebe829"
+    fixture = template_fixture()
+    workflow = (fixture / ".github" / "workflows" / "ci.yml").read_text()
+    embedded_toolchain = (fixture / ".framework" / "framework" / "toolchain.py").read_text()
+
+    assert f"uses: {action}" in workflow
+    assert f'version: "{version}"' in workflow
+    assert f'checksum: "{checksum}"' in workflow
+    assert f'SETUP_UV_ACTION = "{action}"' in embedded_toolchain
+    assert f'UV_VERSION = "{version}"' in embedded_toolchain
+    assert f'UV_LINUX_X86_64_CHECKSUM = "{checksum}"' in embedded_toolchain
+
+
 def test_template_fixture_content_matches_its_pinned_render():
     """A renamed fixture must not be able to pass provenance with stale rendered files."""
     fixture = template_fixture()
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
     assert answers == {
-        "_commit": "0.4.0-19-g91e5821",
+        "_commit": "0.4.0-20-g40b54d8",
         "_src_path": "gh:vladmesh/service-template",
         "author_email": "dev@example.com",
         "author_name": "Developer",
@@ -368,7 +385,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     }
     assert (
         fixture_tree_digest(fixture)
-        == "38856e1a130cc792f201baa878bfc523bfbc1b256a15d714dd6b663407c42bea"
+        == "9dfa3bbd628c91c1deb54352bc4306e9df52b444be143de4406dc59bfdaa4f24"
     )
 
 

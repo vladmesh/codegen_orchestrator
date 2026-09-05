@@ -122,7 +122,7 @@ COMPOSE_MERGE_KEY = "<<"
 # Trees whose image references are not this repository's to pin. Reason per line, same
 # rule as the exclusions above: an unpinned image is a decision on the record.
 UNPINNED_IMAGE_DIRS = {
-    "shared/tests/fixtures/service-template-91e582180b4295bce45155759bdad0dfa43b75f3": (
+    "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c": (
         "a vendored copy of a service-template release, read by the template "
         "compatibility tests; its compose files belong to that repository, and "
         "editing them here would make the fixture stop matching the release it "

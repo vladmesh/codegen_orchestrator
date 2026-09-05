@@ -11,7 +11,6 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
-from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
@@ -314,10 +313,7 @@ async def handle_worker_gave_up(
 
     if story_id:
         try:
-            await api_client.patch(
-                f"stories/{story_id}",
-                json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
-            )
+            await api_client.transition_story(story_id, "human-review")
         except Exception:
             logger.warning("story_whr_on_gave_up_failed", story_id=story_id, exc_info=True)
 

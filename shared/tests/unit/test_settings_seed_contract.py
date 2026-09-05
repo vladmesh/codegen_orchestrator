@@ -12,7 +12,7 @@ def test_core_v1_refusal_discriminators_match_the_pinned_template():
     controller = (
         Path(__file__).parents[1]
         / "fixtures"
-        / "service-template-91e582180b4295bce45155759bdad0dfa43b75f3"
+        / "service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c"
         / "services/backend/src/controllers/settings.py"
     )
 

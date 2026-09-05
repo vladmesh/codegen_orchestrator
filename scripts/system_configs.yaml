@@ -76,7 +76,7 @@
   description: "Production Copier template source"
 
 - key: scheduler.service_template_ref
-  value: "91e582180b4295bce45155759bdad0dfa43b75f3"
+  value: "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
   category: scheduler
   description: "Pinned service-template commit with the core settings and core jobs contracts"
 
