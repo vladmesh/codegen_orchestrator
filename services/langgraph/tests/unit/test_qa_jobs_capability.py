@@ -14,10 +14,13 @@ import httpx
 import pytest
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
+from shared.contracts.dto.product_brief import InitialSetting
 from shared.qa_probe_cli import QA_PROBE_SCRIPT, QA_PROBE_USAGE
+from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import QAJobsCapability, build_qa_callables
 from src.clients.product_jobs import GeneratedServiceJobsClient
+from src.consumers._qa_runner import confirmed_settings_facts
 from src.consumers._qa_target import QACapabilities
 from src.consumers._qa_workspace import QAWorkspace
 from src.prompts.qa import build_qa_instructions, build_qa_prompt
@@ -287,6 +290,97 @@ class TestDispatchIsNotProof:
 
         assert "dispatch_status: dispatched" in prompt
         assert "Never pass a check on it" in prompt
+
+    def test_the_prompt_forbids_grading_the_jobs_core_transport(self):
+        prompt = build_qa_prompt(CRITERIA, "https://weather.example.com", established_facts=[])
+
+        assert "`POST /jobs/fire` transport status" in prompt
+        assert "`POST /api/jobs/fire`" in prompt
+        assert "normalizes the dispatch record" in prompt
+
+    def test_central_qa_removes_unavailable_privileged_and_transport_checks(self):
+        criteria = "\n".join(
+            (
+                "- GET /health returns 200",
+                "- POST /settings/set returns 200",
+                "- POST /settings/get returns 200",
+                "- POST /jobs/fire returns 200",
+                "- POST /api/jobs/fire returns 201",
+                "- FIRE JOB daily_digest THEN GET /digests exposes one record per language",
+            )
+        )
+
+        executable = prepare_central_qa_criteria(criteria).criteria
+
+        assert "GET /health returns 200" in executable
+        assert "FIRE JOB daily_digest" in executable
+        assert "POST /settings/set" not in executable
+        assert "POST /settings/get" not in executable
+        assert "POST /jobs/fire" not in executable
+        assert "POST /api/jobs/fire" not in executable
+
+    def test_criteria_filter_handles_presentation_variants_without_dropping_observables(self):
+        criteria = "\n".join(
+            (
+                "1. POST `/api/v1/settings/set` returns 200",
+                "* QA expects POST /v1/settings/get returns 200",
+                "- Please expect POST `/api/jobs/fire` -> 201",
+                "- POST /api/v2/jobs/fire returns 200 THEN GET /digests exposes records",
+                "- FIRE JOB daily_digest THEN GET /digests exposes one record per language",
+                "- POST /orders returns 201",
+            )
+        )
+
+        prepared = prepare_central_qa_criteria(criteria)
+
+        assert "settings/set" not in prepared.criteria
+        assert "settings/get" not in prepared.criteria
+        assert "POST `/api/jobs/fire`" not in prepared.criteria
+        assert (
+            "After firing the named job, verify: GET /digests exposes records" in prepared.criteria
+        )
+        assert (
+            "FIRE JOB daily_digest THEN GET /digests exposes one record per language"
+            in prepared.criteria
+        )
+        assert "POST /orders returns 201" in prepared.criteria
+        assert [adjustment.action for adjustment in prepared.adjustments] == [
+            "dropped",
+            "dropped",
+            "dropped",
+            "rewritten",
+        ]
+
+    def test_settings_policy_appears_only_when_settings_are_established(self):
+        without_settings = build_qa_prompt(
+            "- GET /health returns 200",
+            "https://weather.example.com",
+            established_facts=[],
+            settings_established=False,
+        )
+        facts = confirmed_settings_facts(
+            [InitialSetting(key="settings.languages", value=["ru", "en"])]
+        )
+        with_settings = build_qa_prompt(
+            "- GET /health returns 200",
+            "https://weather.example.com",
+            established_facts=facts,
+            settings_established=bool(facts),
+        )
+
+        policy = "Do not re-grade or attempt `/settings/set` or `/settings/get`"
+        assert policy not in " ".join(without_settings.split())
+        assert policy in " ".join(with_settings.split())
+
+    def test_settings_then_observable_is_rewritten(self):
+        criteria = "* Confirm POST `/api/settings/get` returns 200 THEN GET /preferences shows it"
+
+        prepared = prepare_central_qa_criteria(criteria)
+
+        assert (
+            "* With the deployment-established setting, verify: GET /preferences shows it"
+            == prepared.criteria
+        )
 
 
 class TestTheWriteGuardStillSeesNoApplicationWrite:

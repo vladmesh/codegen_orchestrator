@@ -145,6 +145,17 @@ Before reporting success, verify all of the following in the generated project:
    example a persisted record that the product exposes or a delivered bot
    message — and the feature's tests prove that output. A log line, an
    in-memory list, or the jobs dispatch record is not observable durable output.
+   The criterion must name a concrete read-only black-box observable QA can
+   call after `FIRE JOB`, such as a GET response exposing persisted records;
+   never make the jobs-core path or transport status the criterion.
+
+When confirmed settings configure a fireable behaviour, add a focused cheap
+provider-path test before reporting success: seed the confirmed values, fire
+the real named job contract, then read the product's observable and assert
+exactly one durable record for each configured output partition (for example,
+each language in `settings.languages = ["ru", "en"]`). Do not substitute a
+direct handler call, a mocked dispatch record, or logs for that provider-path
+test.
 
 Use cheap checks before any deployment: run the provider's focused tests and
 verify the topology at file level: the provider name, Dockerfile, image key and

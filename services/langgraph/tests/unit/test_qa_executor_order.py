@@ -137,22 +137,28 @@ def _failing_executor(*failures: QAExecutorUnavailable):
     return run
 
 
-async def _run(*, executor, runtime=CLAUDE_RUNTIME, tmp_path):
+async def _run(
+    *,
+    executor,
+    runtime=CLAUDE_RUNTIME,
+    tmp_path,
+    acceptance_criteria="- GET /health returns 200",
+):
     with (
         patch("src.consumers._qa_target._connect", AsyncMock(return_value=FakeConn())),
         patch("src.consumers._qa_target._import", lambda key: key),
         patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
         patch("src.consumers._qa_runner.run_qa_executor", executor),
     ):
-        return await _invoke(runtime)
+        return await _invoke(runtime, acceptance_criteria=acceptance_criteria)
 
 
-async def _invoke(runtime):
+async def _invoke(runtime, *, acceptance_criteria):
     return await run_qa_centrally(
         target=TARGET,
         ownership=OWNERSHIP,
         fleet_ssh_key="fleet-key",
-        acceptance_criteria="- GET /health returns 200",
+        acceptance_criteria=acceptance_criteria,
         runtime=runtime,
         grant_journal=Journal(),
         provisioning_journal=ProvisioningJournal(),
@@ -161,6 +167,24 @@ async def _invoke(runtime):
 
 
 class TestTheAssignedExecutorGoesFirst:
+    async def test_runner_logs_criterion_adjustments_with_its_qa_run_id(self, tmp_path):
+        executor = _submitting_executor()
+        criteria = "* Confirm POST `/api/settings/get` returns 200 THEN GET /preferences shows it"
+
+        with patch("src.consumers._qa_runner.logger") as logger:
+            await _run(executor=executor, tmp_path=tmp_path, acceptance_criteria=criteria)
+
+        adjustment_call = next(
+            call
+            for call in logger.info.call_args_list
+            if call.args == ("qa_platform_owned_criteria_adjusted",)
+        )
+        assert adjustment_call.kwargs["qa_run_id"] == OWNERSHIP.attempt_id
+        assert adjustment_call.kwargs["adjustments"][0]["rewritten"] == (
+            "* With the deployment-established setting, verify: GET /preferences shows it"
+        )
+        assert "POST `/api/settings/get`" not in executor.calls[0]["prompt"]
+
     async def test_codex_is_the_default_executor(self, tmp_path):
         executor = _submitting_executor()
 

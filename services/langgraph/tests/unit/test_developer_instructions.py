@@ -64,3 +64,10 @@ class TestDeveloperInstructions:
         assert "SETTINGS_WRITE_CAPABILITY" in self.content
         assert "settings_schema" in self.content
         assert "settings_schemas.py" in self.content
+
+    def test_requires_a_black_box_observable_and_a_real_provider_path_test(self):
+        instructions = " ".join(self.content.lower().split())
+        assert "read-only black-box observable" in instructions
+        assert "seed the confirmed values" in instructions
+        assert "fire the real named job contract" in instructions
+        assert "exactly one durable record for each configured output partition" in instructions

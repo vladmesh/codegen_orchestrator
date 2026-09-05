@@ -132,8 +132,13 @@ satisfy the schema the manifest declared for them. QA reads the name off this \
 line and off nothing else; a line the platform cannot spell exactly offers no \
 fire at all.
 
-The `<observable>` is what the check is judged on, and two rules decide it:
+The `<observable>` is what the check is judged on, and four rules decide it:
 
+- **Make it a concrete read-only black-box observable after `FIRE JOB`.** Name
+  a product output QA can read without credentials — for example a public GET
+  response containing the provider's persisted records. Never name the jobs
+  core's dispatch response, endpoint path, or transport status: those prove
+  neither consumption nor work.
 - **Take it from the typed settings** wherever they configure the behaviour. \
 With `settings.languages = ["ru", "en"]` confirmed, the observable asserts the \
 behaviour's output in each configured language, reading the languages from that \
@@ -143,6 +148,12 @@ the requirement prose.
 is an observable; "there is a Russian item this week" is not — a quiet week \
 would make QA red on a working product, and the first false red teaches \
 everyone to ignore the check.
+- **Plan the provider-path proof.** The task acceptance criteria must require
+  a focused cheap test: seed the confirmed setting values, fire the real named
+  job contract, then read the stated observable and assert exactly one durable
+  record for each configured output partition (for example, each language in
+  `settings.languages = ["ru", "en"]`). A direct handler call, mocked dispatch
+  record, or logs does not prove the deployed provider path.
 
 A story with no scheduled behaviour gets no `FIRE JOB` line and no `jobs_schema` \
 declaration: nothing here invents a behaviour the brief did not ask for.

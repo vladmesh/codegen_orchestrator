@@ -37,7 +37,19 @@ _DISPATCH_RULE = """\
   evidence that anything consumed it, and not evidence that the behaviour ran.
   Never pass a check on it. The check passes on the product's own output: what
   it sent, wrote or now exposes, observed with the calls above.
+- Do not grade `POST /jobs/fire` transport status or any raw status code.
+  `fire_job` normalizes the dispatch record; `POST /api/jobs/fire` is not this
+  product contract. The only job check is the stated observable after the fire.
 """
+
+
+_SETTINGS_POLICY = """\
+- A confirmed initial setting listed under "Already established" was seeded and
+  read back during deployment with a privileged capability. Do not re-grade or
+  attempt `/settings/set` or `/settings/get`; central QA has no authority for
+  them. Use the established setting fact when judging the product behaviour.
+"""
+
 
 _PROBE_SECTION = f"""\
 ## Your tools
@@ -190,6 +202,7 @@ def build_qa_prompt(
     bot_username: str | None = None,
     *,
     established_facts: Sequence[str] = (),
+    settings_established: bool = False,
 ) -> str:
     """Build the QA prompt for the executor that will carry out this run.
 
@@ -201,8 +214,10 @@ def build_qa_prompt(
             deployment without an LLM. They are stated as given and taken off
             the checklist; nothing else about the run changes, and the result
             JSON the executor must return is the same either way.
+        settings_established: whether deployment established confirmed settings.
     """
     bot_section = _bot_section(bot_username) if bot_username else ""
+    settings_policy = _SETTINGS_POLICY if settings_established else ""
     write_rule = (
         f"`{QA_PROBE_NAME} http_get` and `{QA_PROBE_NAME} localhost_http_get` send GET only, "
         f"and `{QA_PROBE_NAME} remote_exec` refuses anything that is not a read-only command"
@@ -229,6 +244,7 @@ CRITICAL RULES:
   outside what QA does; the runner records any write it detects and blocks the
   run. Invoking a named scheduled behaviour is the one exception, it exists only
   as the call listed below, and it is never a way to reach anything else.
+{settings_policy}
   The deterministic QA identity is `telegram_id={QA_TEST_TELEGRAM_ID}`; do
   not try to create it to obtain access to a private bot. Access is provided by
   the platform's temporary test mechanism.

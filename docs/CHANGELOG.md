@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-05
 
+- Central QA now treats deployment-seeded settings and jobs dispatch transport as established facts; Architect and Developer guidance requires observable, tested provider output.
 - Stand control-plane provisioning now bounds its initial and per-operation apt lock waits, so a late unattended-upgrades lock delays only apt rather than aborting Docker setup.
 - Worker refusals now use the typed human-review story transition, and mega-brief telemetry ignores polling-only timestamps while retaining them in bounded evidence.
 - Product Brief deploy observation now stops at a story no-deploy state with retained cause evidence, instead of spending the full deploy-Run wait.

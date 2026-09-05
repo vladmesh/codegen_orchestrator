@@ -423,6 +423,17 @@ passing a check on it, and the observable named by the criterion — what the
 product sent, wrote or now exposes, seen through the ordinary read-only calls —
 is what the verdict rests on.
 
+*Central-QA criterion preparation.* Before the executor sees the accumulated
+checklist, `services/langgraph/src/agents/qa/acceptance.py` removes only direct
+assertions of deployment-owned `POST /settings/{set,get}` seed/readback and the
+jobs-core `POST /jobs/fire` transport response. It recognises ordinary Markdown
+presentation variants, prose around the call, backticks, and API/version
+prefixes. A matching line with `THEN <observable>` is rewritten to retain that
+read-only product observable; a valid `FIRE JOB ... THEN ...` declaration is
+never removed. All other criteria, including unrelated writes, stay in the
+executor checklist. Each drop or rewrite is structured-logged for the QA run's
+postmortem evidence.
+
 **The producer of the confirmed brief is the PO consumer.**
 `present_product_brief` opens the revision and returns the exact text the user is
 shown; `confirm_product_brief` freezes it by echoing that content back.
