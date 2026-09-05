@@ -491,9 +491,10 @@ async def _run_exploratory_qa(
         behaviours=behaviours,
         ownership=ownership,
     )
+    confirmed_settings = await _confirmed_initial_settings(msg.story_id)
     established_facts: list[str] = [
         *scheduled_behaviour_facts(behaviours, fireable=jobs is not None),
-        *confirmed_settings_facts(await _confirmed_initial_settings(msg.story_id)),
+        *confirmed_settings_facts(confirmed_settings),
     ]
     if msg.bot_username:
         # Liveness first: a bot that is not live cannot admit anyone, and the
@@ -538,6 +539,7 @@ async def _run_exploratory_qa(
         # the same handle, rather than ending as a blocked run nobody looks at.
         provisioning_journal=ServerProvisioningJournal(server_info),
         established_facts=established_facts,
+        settings_established=bool(confirmed_settings),
         jobs=jobs,
     )
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:

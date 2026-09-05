@@ -29,6 +29,7 @@ from shared.telegram_access_probe import (
     run_probe_script,
 )
 
+from ..agents.qa.acceptance import prepare_central_qa_criteria
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.tools import QAJobsCapability, build_qa_callables
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
@@ -593,8 +594,9 @@ def confirmed_settings_facts(settings: Sequence[InitialSetting]) -> list[str]:
     return [
         "- Configured product settings, from the user's confirmed Product Brief and written "
         f"into this deployment by the platform: {stated}. These are the typed confirmed "
-        "values. Where a check depends on a configured value, assert against the value "
-        "here — do not re-derive one from the story text or from the criteria's wording."
+        "values, already proved by deployment through privileged seed/readback. Where a check "
+        "depends on a configured value, assert against the value here — do not re-derive one "
+        "from the story text or from the criteria's wording."
     ]
 
 
@@ -679,6 +681,7 @@ async def _invoke_qa_agent(
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     established_facts: list[str],
+    settings_established: bool,
     timeout: int,
     jobs: QAJobsCapability | None,
 ) -> QAResult:
@@ -703,6 +706,7 @@ async def _invoke_qa_agent(
             acceptance_criteria=acceptance_criteria,
             runtime=runtime,
             established_facts=established_facts,
+            settings_established=settings_established,
             endpoint=endpoint,
             service=service,
             timeout=timeout,
@@ -740,16 +744,25 @@ async def _run_central_executor(
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     established_facts: list[str],
+    settings_established: bool,
     endpoint,
     service: QACapabilityService,
     timeout: int,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None]:
     """Retry only transient subscription-executor failures."""
+    prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
+    if prepared_criteria.adjustments:
+        logger.info(
+            "qa_platform_owned_criteria_adjusted",
+            qa_run_id=ownership.attempt_id,
+            adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
+        )
     prompt = build_qa_prompt(
-        acceptance_criteria,
+        prepared_criteria.criteria,
         target.deployed_url,
         target.bot_username,
         established_facts=established_facts,
+        settings_established=settings_established,
     )
     last: QAExecutorUnavailable | None = None
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
@@ -829,6 +842,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     grant_journal: QAGrantJournal,
     provisioning_journal: QAProvisioningJournal,
     established_facts: list[str],
+    settings_established: bool = False,
     jobs: QAJobsCapability | None = None,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
@@ -870,6 +884,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             *established_facts,
                             container_state_fact(container_state),
                         ],
+                        settings_established=settings_established,
                         timeout=timeout,
                         jobs=jobs,
                     )

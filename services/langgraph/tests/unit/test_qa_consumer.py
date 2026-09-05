@@ -1109,6 +1109,9 @@ class TestTheConfirmedBriefsSettingsTravelIntoTheRunAsData:
         assert '["ru", "en"]' in facts
         assert "scope product" in facts
         assert "do not re-derive one from the story text" in facts
+        assert "already proved by deployment" in facts
+        assert "must not grade or call" not in facts
+        assert mock_run.call_args.kwargs["settings_established"] is True
 
     @pytest.mark.asyncio
     async def test_a_story_with_no_brief_is_unchanged(
@@ -1121,6 +1124,7 @@ class TestTheConfirmedBriefsSettingsTravelIntoTheRunAsData:
             await process_qa_job(qa_message_data, mock_redis)
 
         assert mock_run.call_args.kwargs["established_facts"] == []
+        assert mock_run.call_args.kwargs["settings_established"] is False
 
     @pytest.mark.asyncio
     async def test_an_unconfirmed_brief_seeds_no_facts(

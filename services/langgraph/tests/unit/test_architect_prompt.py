@@ -117,6 +117,13 @@ class TestScheduledBehaviourDirectives:
         assert "there is a russian item this week" in lower
         assert "false" in lower and "red" in lower
 
+    def test_requires_a_black_box_observable_and_a_real_provider_path_test(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "read-only black-box observable" in prompt
+        assert "seed the confirmed setting values" in prompt
+        assert "fire the real named job contract" in prompt
+        assert "exactly one durable record for each configured output partition" in prompt
+
     def test_invents_no_behaviour_where_the_brief_asked_for_none(self):
         lower = SYSTEM_PROMPT.lower()
         assert "a story with no scheduled behaviour gets no `fire job` line" in lower
