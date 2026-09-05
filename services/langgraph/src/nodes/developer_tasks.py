@@ -78,6 +78,13 @@ def format_env_hints(project_spec: dict) -> str:
     return "\n".join(lines)
 
 
+def format_generator_hint(modules: list[str]) -> str:
+    """Name the documented generator for modules with repository-owned output."""
+    if "backend" not in modules:
+        return ""
+    return "For backend manifest or spec changes, run `make generate-from-spec`."
+
+
 def build_create_task(
     project_name: str,
     description: str,
@@ -97,11 +104,8 @@ def build_create_task(
             "\n- `shared/spec/events.yaml` - events definition"
         )
 
-    generate_hint = ""
-    if has_backend:
-        generate_hint = (
-            "\nRun `make generate-from-spec` after modifying spec files to regenerate code.\n"
-        )
+    generator_hint = format_generator_hint(modules)
+    generate_hint = f"\n{generator_hint}\n" if generator_hint else ""
 
     env_hints_section = format_env_hints(project_spec)
     detailed_spec = project_spec.get("detailed_spec") or feature_description or "N/A"
@@ -148,6 +152,12 @@ def build_feature_task(
     task_description = feature_description or description or "No description provided"
     modules_str = ", ".join(modules)
     env_hints_section = format_env_hints(project_spec)
+    generator_hint = format_generator_hint(modules)
+    generator_requirement = f" {generator_hint}" if generator_hint else ""
+    generator_rule = (
+        "- When a manifest or spec change owns derived artifacts, "
+        f"run its documented generator.{generator_requirement}"
+    )
     return f"""# Task: {action_label} in {project_name}
 
 ## What To Do
@@ -162,7 +172,8 @@ def build_feature_task(
 {env_hints_section}
 ## Important
 
-- This is an **existing, working project** — do NOT regenerate or restructure it
+- This is an **existing project** — do NOT re-scaffold it or perform a wholesale restructuring
+{generator_rule}
 - Read existing code to understand the architecture before making changes
 - Make **targeted changes** — don't rewrite existing working code
 - Keep changes minimal and focused on the task description
