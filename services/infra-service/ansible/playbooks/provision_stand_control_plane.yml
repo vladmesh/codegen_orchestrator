@@ -16,6 +16,10 @@
     stand_runtime_user: deploy
     stand_uv_version: "0.6.14"
     stand_checkout_root: /opt/codegen_orchestrator
+    # A cloud image may start unattended-upgrades after the initial probe. Each
+    # apt operation waits this long for that lock, but package/repository errors
+    # still fail in the task that observed them.
+    stand_apt_lock_timeout_seconds: 300
 
   pre_tasks:
     - name: Wait for control plane to be reachable
@@ -29,16 +33,18 @@
 
     - name: Wait for any possibly running apt/dpkg processes
       ansible.builtin.shell: >-
-        while fuser /var/lib/dpkg/lock >/dev/null 2>&1 ||
+        timeout {{ stand_apt_lock_timeout_seconds }}s bash -c 'while
+        fuser /var/lib/dpkg/lock >/dev/null 2>&1 ||
         fuser /var/lib/apt/lists/lock >/dev/null 2>&1 ||
         fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1;
-        do sleep 5; done
+        do sleep 5; done'
       changed_when: false
 
     - name: Update apt cache without changing the base image
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
+        lock_timeout: "{{ stand_apt_lock_timeout_seconds }}"
 
   tasks:
     - name: Install control-plane host tools
@@ -51,6 +57,7 @@
           - make
           - rsync
         state: present
+        lock_timeout: "{{ stand_apt_lock_timeout_seconds }}"
 
     - name: Create runtime user
       ansible.builtin.user:
@@ -88,6 +95,9 @@
           {{ ansible_facts['distribution_release'] }} stable
         filename: docker
         state: present
+        # The following apt task refreshes this cache under its bounded lock
+        # timeout; do not create an unprotected apt operation here.
+        update_cache: false
 
     - name: Install Docker Engine and compose tooling
       ansible.builtin.apt:
@@ -99,6 +109,7 @@
           - docker-compose-plugin
         state: present
         update_cache: true
+        lock_timeout: "{{ stand_apt_lock_timeout_seconds }}"
 
     - name: Ensure Docker service is started and enabled
       ansible.builtin.systemd:

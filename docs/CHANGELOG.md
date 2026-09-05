@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-05
 
+- Stand control-plane provisioning now bounds its initial and per-operation apt lock waits, so a late unattended-upgrades lock delays only apt rather than aborting Docker setup.
 - Worker refusals now use the typed human-review story transition, and mega-brief telemetry ignores polling-only timestamps while retaining them in bounded evidence.
 - Product Brief deploy observation now stops at a story no-deploy state with retained cause evidence, instead of spending the full deploy-Run wait.
 - Production scaffolds now pin service-template `40b54d8`, whose generated CI verifies its exact uv release without consulting a mutable version manifest.
