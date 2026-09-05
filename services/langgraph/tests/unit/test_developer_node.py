@@ -391,8 +391,20 @@ class TestFeatureFlowIntegration:
 
         # Verify task_content uses feature template (not create template)
         call_kwargs = mock_spawn.call_args[1]
-        assert "existing, working project" in call_kwargs["task_content"]
-        assert "Add GET /todos/stats endpoint" in call_kwargs["task_content"]
+        task_content = call_kwargs["task_content"]
+        assert "existing project" in task_content
+        assert "do NOT re-scaffold" in task_content
+        assert "wholesale restructuring" in task_content
+        assert "manifest or spec" in task_content
+        assert "documented generator" in task_content
+        assert "make generate-from-spec" in task_content
+        assert "do NOT regenerate" not in task_content
+        assert "regenerate" not in task_content.lower()
+        assert "Add GET /todos/stats endpoint" in task_content
+
+        from src.prompts import load_developer_instructions
+
+        assert "Run the generator" in load_developer_instructions()
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
