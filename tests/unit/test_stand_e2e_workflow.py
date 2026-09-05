@@ -665,6 +665,44 @@ def test_control_plane_bootstrap_is_minimal_and_keeps_target_provisioning_separa
     assert "chmod 0400 /opt/secrets/github_app.pem" in bring_up
 
 
+def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait():
+    """A lock acquired after the initial probe must not fail Docker installation.
+
+    The apt module owns retries for its lock only; a task-level retry would
+    repeat unrelated repository or package failures and make them ambiguous.
+    """
+    [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
+    timeout = play["vars"]["stand_apt_lock_timeout_seconds"]
+    initial_wait = next(
+        task
+        for task in play["pre_tasks"]
+        if task["name"] == "Wait for any possibly running apt/dpkg processes"
+    )
+    apt_tasks = {
+        task["name"]: task["ansible.builtin.apt"]
+        for task in [*play["pre_tasks"], *play["tasks"]]
+        if "ansible.builtin.apt" in task
+    }
+    docker_repository = next(
+        task for task in play["tasks"] if task["name"] == "Add Docker apt repository"
+    )
+
+    assert timeout == 300
+    assert "timeout {{ stand_apt_lock_timeout_seconds }}s" in initial_wait["ansible.builtin.shell"]
+    assert set(apt_tasks) == {
+        "Update apt cache without changing the base image",
+        "Install control-plane host tools",
+        "Install Docker Engine and compose tooling",
+    }
+    assert all(
+        task["lock_timeout"] == "{{ stand_apt_lock_timeout_seconds }}"
+        for task in apt_tasks.values()
+    )
+    assert not any("retries" in task or "until" in task for task in apt_tasks.values())
+    assert docker_repository["ansible.builtin.apt_repository"]["update_cache"] is False
+    assert apt_tasks["Install Docker Engine and compose tooling"]["update_cache"] is True
+
+
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
     workflow = _workflow()
     cleanup = workflow["jobs"]["cleanup"]
