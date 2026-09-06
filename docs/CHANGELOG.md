@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- An engineering result whose commit is already on the default branch fails as `no_new_commit` and sends
+  its story to human review, so no deploy and no 422 "No commits between" PR retry follows it.
 - `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the
   scaffolder passes `copier copy --trust`: the literal bounds the source to owner-controlled
   repositories, and the kit's post-copy `uv lock` is what its `make setup` depends on.

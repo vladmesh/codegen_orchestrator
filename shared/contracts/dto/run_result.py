@@ -43,12 +43,28 @@ class AllocationFailureReason(StrEnum):
     SERVER_NOT_PROVISIONED = "server_not_provisioned"
 
 
+class EngineeringFailureReason(StrEnum):
+    """Stable classifications for an engineering run that produced nothing usable."""
+
+    # The worker reported a commit that is not new work on the story branch: it
+    # is already on the repository default branch, which is where the branch's
+    # base and every already-deployed commit live. Nothing can be merged or
+    # deployed from such a run, and the story PR GitHub would refuse with 422
+    # "No commits between" can never be opened, so the run is failed here with
+    # its own name instead of being accepted as a success that stalls later.
+    NO_NEW_COMMIT = "no_new_commit"
+
+
 class EngineeringRunResult(BaseModel):
     """Result of an engineering run (written by the engineering result handler)."""
 
     model_config = ConfigDict(extra="forbid")
 
     engineering_status: EngineeringStatus
+    #: Why a failed engineering run produced nothing usable, when the failure
+    #: has a classification the pipeline routes or a person reads. ``None`` is
+    #: the ordinary case: a technical failure whose message is the whole story.
+    failure_reason: EngineeringFailureReason | None = None
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None

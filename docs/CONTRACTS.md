@@ -784,6 +784,24 @@ terminal transition. Supervisors route only a matching typed result for that
 Run type; a missing, malformed, or foreign shape is an infrastructure/lifecycle
 problem, never a successful or engineering-fix verdict.
 
+### An engineering result carries a new commit or it failed
+
+A DONE engineering result is only a result when its commit is new work on the
+story branch. `services/langgraph/src/nodes/developer.py::_no_new_commit_error`
+verifies the worker-reported SHA against GitHub next to the unpushed-commit
+check, and refuses one that is already reachable from the repository default
+branch — the branch's base, and every commit already deployed for the story,
+live there. Such an attempt becomes a failed Run carrying
+`EngineeringRunResult.failure_reason = no_new_commit`
+(`shared/contracts/dto/run_result.py::EngineeringFailureReason`), distinct from
+the missing-SHA failure "Developer completed but no commit was made". No deploy
+is published for it, and the story leaves `in_progress` for human review with
+the reason on its `quarantine_reason`, because no pull request can ever be
+opened for a branch that carries no commit of its own — GitHub answers that
+request 422 "No commits between". `complete_stories` classifies that same
+refusal through `shared.clients.github.NoCommitsBetweenError` and parks the
+story instead of retrying it every tick; other PR-creation errors stay transient.
+
 ### Deploy dispatch, withdrawal, and deadlines
 
 `shared/contracts/dto/deploy_dispatch.py` and `services/api/src/routers/runs.py`

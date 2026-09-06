@@ -946,3 +946,53 @@ class TestCreateRepoAndSetSecrets:
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(RuntimeError, match="GITHUB_ORG"):
                 await _create_repo_and_set_secrets(make_project(name="x"))
+
+
+class TestNoNewCommitFailure:
+    """A result that carried no new commit fails with its own name, and parks the story."""
+
+    @pytest.mark.asyncio
+    async def test_named_reason_reaches_the_run_and_the_story(self, mock_redis, mock_api):
+        """The run records the classification; the story leaves in_progress with it."""
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+        from src.consumers.engineering import _fail_job
+
+        mock_api.transition_story = AsyncMock()
+
+        await _fail_job(
+            "eng-deploy-fix-deploy-poll-1",
+            "Worker reported commit d159f7d but it is no new commit on story/story-1",
+            redis=mock_redis,
+            story_id="story-1",
+            failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+        )
+
+        run_patch = mock_api.patch.await_args_list[0].kwargs["json"]
+        assert run_patch["status"] == "failed"
+        assert run_patch["result"]["failure_reason"] == "no_new_commit"
+        story_patch = mock_api.patch.await_args_list[1]
+        assert story_patch.args[0] == "stories/story-1"
+        reason = story_patch.kwargs["json"]["quarantine_reason"]
+        assert reason["reason"] == "no_new_commit"
+        assert reason["attempt_id"] == "eng-deploy-fix-deploy-poll-1"
+        mock_api.transition_story.assert_awaited_once_with("story-1", "human-review")
+        # Nothing was deployed for a run that produced nothing.
+        mock_redis.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_technical_failure_leaves_the_story_alone(self, mock_redis, mock_api):
+        """Only the no-new-commit classification takes a story out of in_progress."""
+        from src.consumers.engineering import _fail_job
+
+        mock_api.transition_story = AsyncMock()
+
+        await _fail_job(
+            "eng-timeout",
+            "worker timed out",
+            redis=mock_redis,
+            story_id="story-1",
+        )
+
+        assert mock_api.patch.await_args_list[0].kwargs["json"]["result"]["failure_reason"] is None
+        assert len(mock_api.patch.await_args_list) == 1
+        mock_api.transition_story.assert_not_awaited()

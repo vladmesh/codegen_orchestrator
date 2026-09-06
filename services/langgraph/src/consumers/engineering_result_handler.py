@@ -10,7 +10,7 @@ import structlog
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
@@ -200,6 +200,36 @@ def _stop_patch(stop_reason: WorkerStopReason | None, agent_limit_seconds: int |
     return {"run_metadata": metadata}
 
 
+async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg: str) -> None:
+    """Take a story whose engineering produced no new commit out of the retry set.
+
+    The story is not defective and nothing about it is transient: no PR can be
+    opened for a branch that carries no commit of its own, so leaving it
+    ``in_progress`` only feeds `complete_stories` a pull request GitHub refuses
+    with 422 for ever. A person has to decide what happens next, and the reason
+    they need travels with the story rather than only in this process's log.
+    """
+    reason = {
+        "reason": EngineeringFailureReason.NO_NEW_COMMIT.value,
+        "attempt_id": task_id,
+        "detail": error_msg,
+    }
+    try:
+        await api_client.patch(f"stories/{story_id}", json={"quarantine_reason": reason})
+    except Exception:
+        logger.warning("story_no_new_commit_reason_write_failed", story_id=story_id, exc_info=True)
+    try:
+        await api_client.transition_story(story_id, "human-review")
+    except Exception:
+        logger.warning("story_no_new_commit_transition_failed", story_id=story_id, exc_info=True)
+        return
+    logger.warning(
+        "engineering_no_new_commit_story_parked",
+        story_id=story_id,
+        task_id=task_id,
+    )
+
+
 async def fail_job(
     task_id: str,
     error_msg: str,
@@ -210,6 +240,8 @@ async def fail_job(
     *,
     redis: RedisStreamClient,
     turn_result_consumed: bool = False,
+    story_id: str | None = None,
+    failure_reason: EngineeringFailureReason | None = None,
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await prepare_terminal_settlement(
@@ -222,15 +254,18 @@ async def fail_job(
         json={
             "status": RunStatus.FAILED.value,
             "error_message": error_msg,
-            "result": EngineeringRunResult(engineering_status=EngineeringStatus.FAILED).model_dump(
-                mode="json"
-            ),
+            "result": EngineeringRunResult(
+                engineering_status=EngineeringStatus.FAILED,
+                failure_reason=failure_reason,
+            ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
             **_stop_patch(stop_reason, agent_limit_seconds),
         },
     )
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
+    if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT and story_id:
+        await _park_story_without_new_commit(story_id, task_id, error_msg)
     return live_work_unsettled({"status": "failed", "error": error_msg})
 
 

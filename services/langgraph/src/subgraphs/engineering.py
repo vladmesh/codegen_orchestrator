@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.executor_decision import ExecutorDecision
+from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.worker_turn import AttemptTurnMetadata
@@ -86,6 +87,11 @@ class EngineeringState(TypedDict):
     worker_observability: dict | None
     gave_up_reason: str | None
     turn_result_consumed: bool
+
+    # The classification of a failure the pipeline routes on rather than only
+    # logs — currently a DONE-looking result that carried no new commit. It
+    # travels to the consumer, which records it on the Run and parks the story.
+    failure_reason: EngineeringFailureReason | None
 
     # Why the worker's turn ended without a result, and the limit it was
     # measured against. Both are recorded on the attempt so a failed run says

@@ -7,6 +7,7 @@ and correctly passes repo_id to request_spawn for workspace mounting.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
 
@@ -17,6 +18,7 @@ from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDec
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunType
+from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
@@ -885,3 +887,115 @@ def test_reported_model_reads_claude_json_before_stderr() -> None:
     output = '{"modelUsage": {"claude-sonnet-4-20250514": {}}}\n--- stderr ---\nwarning'
 
     assert DeveloperNode._reported_model(output) == "claude-sonnet-4-20250514"
+
+
+class TestNoNewCommitOnStoryBranch:
+    """A DONE result must carry a commit that is new on the story branch.
+
+    The repository these tests model: `main` holds `deployed-head` and then
+    `main-head`; `story/story-1` branches off `main-head` and may carry its own
+    `new-1`. A worker can report any of the three, and only the last is work.
+    """
+
+    @staticmethod
+    def _github(mock_github_cls):
+        client = mock_github_cls.return_value
+        client.get_token = AsyncMock(return_value="ghs_fake")
+        client.get_repo = AsyncMock(return_value=SimpleNamespace(default_branch="main"))
+
+        on_main = {"deployed-head", "main-head"}
+        on_story = on_main | {"new-1"}
+
+        async def branch_contains_commit(owner, repo, branch, sha):
+            return sha in (on_main if branch == "main" else on_story)
+
+        client.branch_contains_commit = AsyncMock(side_effect=branch_contains_commit)
+        return client
+
+    @staticmethod
+    def _story_state():
+        state = _make_state(action="feature", status=ProjectStatus.ACTIVE.value)
+        state["branch"] = "story/story-1"
+        state["story_id"] = "story-1"
+        state["description"] = "Repair the deploy"
+        return state
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_commit_equal_to_the_branch_base_fails_the_run(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """The commit the branch started from is not a result of this run."""
+        self._github(mock_github_cls)
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Nothing needed changing",
+            commit_sha="main-head",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert result["engineering_status"] == EngineeringStatus.FAILED
+        assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
+        assert any("no new commit" in error for error in result["errors"])
+        assert "commit_sha" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_commit_equal_to_the_deployed_head_fails_the_run(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """The stand case: a repair run reports the SHA already deployed."""
+        self._github(mock_github_cls)
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Deploy looks fine to me",
+            commit_sha="deployed-head",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert result["engineering_status"] == EngineeringStatus.FAILED
+        assert result["failure_reason"] is EngineeringFailureReason.NO_NEW_COMMIT
+        assert any("no new commit" in error for error in result["errors"])
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_a_commit_of_its_own_still_succeeds(self, mock_github_cls, mock_api, mock_spawn):
+        """A commit that exists only on the story branch is the ordinary success."""
+        self._github(mock_github_cls)
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Fixed the failing service",
+            commit_sha="new-1",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(self._story_state())
+
+        assert result["engineering_status"] == EngineeringStatus.DONE
+        assert result["commit_sha"] == "new-1"
+        assert "failure_reason" not in result
