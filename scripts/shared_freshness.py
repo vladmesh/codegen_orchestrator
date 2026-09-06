@@ -68,12 +68,6 @@ import subprocess
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# The Makefile runs this module by path, so `scripts/` is on sys.path and the repository
-# root is not; the pin module can only be found from the tree.
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
 # Set on an image by --build-arg SOURCE_HASH; already read back at runtime by
 # worker-manager (services/worker-manager/src/image_builder.py).
@@ -112,9 +106,6 @@ WALK_SKIP_DIRS = {
     ".mypy_cache",
 }
 VENDORED_TEMPLATE_FIXTURE_ROOT = ("shared", "tests", "fixtures")
-# The fixture directory is named after the pinned template, so this reads the pin
-# instead of repeating the template's name here.
-VENDORED_TEMPLATE_FIXTURE_PREFIX = TEMPLATE_PIN.fixture_prefix
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
 GLOB_CHARS = set("*?[")
@@ -257,6 +248,11 @@ def is_vendored_template_fixture(path: Path, root: Path) -> bool:
 
     Template compatibility validates that complete product separately. Its Docker
     build rules are not orchestrator images and must not enter this inventory.
+
+    Everything under the fixtures tree is that render — the directory is named after
+    whichever template the pin names, so this asks where a path is rather than what
+    the fixture is called. This module is baked into images that carry no other part
+    of `scripts/`, so it reads no pin to find out.
     """
     try:
         parts = path.relative_to(root).parts
@@ -265,7 +261,6 @@ def is_vendored_template_fixture(path: Path, root: Path) -> bool:
     return (
         len(parts) > len(VENDORED_TEMPLATE_FIXTURE_ROOT)
         and parts[: len(VENDORED_TEMPLATE_FIXTURE_ROOT)] == VENDORED_TEMPLATE_FIXTURE_ROOT
-        and parts[len(VENDORED_TEMPLATE_FIXTURE_ROOT)].startswith(VENDORED_TEMPLATE_FIXTURE_PREFIX)
     )
 
 
