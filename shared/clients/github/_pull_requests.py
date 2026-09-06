@@ -17,6 +17,16 @@ def _validation_detail(response: httpx.Response) -> str:
     return "; ".join(m for m in messages if m) or str(body.get("message", ""))
 
 
+class NoCommitsBetweenError(RuntimeError):
+    """GitHub refused a pull request because its head carries no own commit.
+
+    This is a 422 that no retry resolves: nothing about asking again makes a
+    commit appear on the branch. Callers that loop over stories need to tell it
+    from a transient PR-creation error, so it is raised with its own type rather
+    than as a bare ``RuntimeError`` they would have to match on a message.
+    """
+
+
 class PullRequestsMixin:
     """Pull request operations."""
 
@@ -65,7 +75,7 @@ class PullRequestsMixin:
                     base=base,
                     detail=detail,
                 )
-                raise RuntimeError(
+                raise NoCommitsBetweenError(
                     f"Cannot open PR {head}->{base}: {detail}. The branch has no commits "
                     f"of its own, so nothing was pushed to it."
                 ) from e

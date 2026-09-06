@@ -16,6 +16,7 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_attempt import FactoryResultEvidence
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import AgentType, WorkerOwnership
 
 from ..clients.api import api_client
@@ -258,6 +259,28 @@ class DeveloperNode(FunctionalNode):
                 "errors": state.get("errors", []) + [unpushed],
             }
 
+        no_new_commit = await self._no_new_commit_error(
+            github_client=github_client,
+            owner=owner,
+            repo_name=repo_name,
+            branch=branch,
+            worker_result=worker_result,
+        )
+        if no_new_commit:
+            logger.error(
+                "developer_node_no_new_commit",
+                project_name=project_name,
+                branch=branch,
+                commit_sha=worker_result.commit_sha,
+            )
+            return {
+                "messages": [AIMessage(content=no_new_commit)],
+                "engineering_status": EngineeringStatus.FAILED,
+                "failure_reason": EngineeringFailureReason.NO_NEW_COMMIT,
+                "errors": state.get("errors", []) + [no_new_commit],
+                "turn_result_consumed": worker_result.turn_result_consumed,
+            }
+
         return self._build_result_state(worker_result, project_name, repo_full_name, state)
 
     @staticmethod
@@ -286,6 +309,44 @@ class DeveloperNode(FunctionalNode):
         return (
             f"Worker reported commit {worker_result.commit_sha} but it is not on "
             f"origin/{branch} — the push did not land."
+        )
+
+    @staticmethod
+    async def _no_new_commit_error(
+        *,
+        github_client: GitHubAppClient,
+        owner: str,
+        repo_name: str,
+        branch: str | None,
+        worker_result,
+    ) -> str | None:
+        """Message describing a commit that is no new work, or None when it is new.
+
+        A worker can finish reporting a SHA it never created: the branch base it
+        started from, or the commit already deployed for this story when a repair
+        run changed nothing. Both are commits that already live on the default
+        branch, and neither is a result. Accepting one publishes a deploy of an
+        already-deployed SHA and leaves the story waiting for a pull request
+        GitHub refuses with 422 "No commits between", so the run fails here.
+
+        Only a story branch is judged: work on the default branch itself is
+        expected to land there, and a run without a branch has no base to be
+        compared against.
+        """
+        if not (worker_result.success and worker_result.commit_sha and branch):
+            return None
+        default_branch = (await github_client.get_repo(owner, repo_name)).default_branch
+        if branch == default_branch:
+            return None
+        already_on_default = await github_client.branch_contains_commit(
+            owner, repo_name, default_branch, worker_result.commit_sha
+        )
+        if not already_on_default:
+            return None
+        return (
+            f"Worker reported commit {worker_result.commit_sha} but it is no new commit on "
+            f"{branch}: it is already on {default_branch}, so it is the branch base or a "
+            "commit that has already been deployed. Nothing was produced to merge or deploy."
         )
 
     async def _get_worker_result(

@@ -12,7 +12,7 @@ from ._base import (
     WorkflowNotFoundError,
 )
 from ._provisioning import ProvisioningMixin
-from ._pull_requests import PullRequestsMixin
+from ._pull_requests import NoCommitsBetweenError, PullRequestsMixin
 from ._refs import DEPLOY_PIN_TAG_PREFIX, RefsMixin, deploy_pin_tag
 from ._repos import ReposMixin
 from ._secrets import SecretsMixin
@@ -49,4 +49,5 @@ __all__ = [
     "WorkflowCancelledError",
     "WorkflowCancellationUnprovenError",
     "WorkflowNotFoundError",
+    "NoCommitsBetweenError",
 ]

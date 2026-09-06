@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -16,11 +16,16 @@ from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
+from .supervisor.common import STORY_HUMAN_REVIEW_ACTION
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
 logger = structlog.get_logger(__name__)
+
+#: The classification a story carries when GitHub refused its pull request
+#: because the story branch holds no commit of its own.
+STORY_NO_COMMITS_REASON = "story_branch_has_no_commits"
 
 
 def _parse_owner_repo(git_url: str) -> tuple[str, str]:
@@ -111,6 +116,61 @@ async def _has_live_deploy_fix(api_client: SchedulerAPIClient, story_id: str) ->
         and "deploy_fix_attempt" in run.run_metadata
         for run in story_runs
     )
+
+
+async def _enable_auto_merge(
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    pr_node_id: object,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Enable auto-merge on a story PR, resolving its GraphQL node id first.
+
+    ``enable_auto_merge`` needs a GraphQL ID (e.g. "PR_kwDO..."); a numeric or
+    missing one from the creation response is re-read over REST before giving up.
+    """
+    if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
+        return await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+    log.warning("story_pr_node_id_invalid", pr_number=pr_number, node_id_raw=repr(pr_node_id))
+    pr_details = await github.get_pull_request(owner, repo_name, pr_number)
+    pr_node_id = pr_details.get("node_id", "")
+    if pr_node_id and not pr_node_id.isdigit():
+        return await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+    log.error("story_pr_node_id_fetch_failed", pr_number=pr_number)
+    return False
+
+
+async def _park_story_without_commits(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    branch: str,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Move a story whose branch has no commit out of ``in_progress``.
+
+    `complete_stories` only looks at ``in_progress`` stories, so the transition
+    is what ends the retry loop; the quarantine reason is what tells a person
+    why, next to the story rather than only in a log line that scrolls away.
+    """
+    reason = {
+        "reason": STORY_NO_COMMITS_REASON,
+        "branch": branch,
+        "detail": detail,
+    }
+    try:
+        await api_client.update_story(story_id, {"quarantine_reason": reason})
+    except Exception:
+        log.exception("story_no_commits_reason_write_failed", branch=branch)
+    try:
+        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+    except Exception:
+        log.exception("story_no_commits_transition_failed", branch=branch)
+        return
+    log.warning("story_parked_without_commits", branch=branch)
 
 
 async def complete_stories(
@@ -239,30 +299,23 @@ async def complete_stories(
                 node_id=pr_node_id[:20] if pr_node_id else "",
             )
 
-            # Enable auto-merge (merge commit to preserve individual commits)
-            # node_id must be a GraphQL ID (e.g. "PR_kwDO..."), not a number
-            if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
-                auto_merged = await github.enable_auto_merge(
-                    owner, repo_name, pr_node_id=pr_node_id
-                )
-            else:
-                log.warning(
-                    "story_pr_node_id_invalid",
-                    pr_number=pr_number,
-                    node_id_raw=repr(pr_node_id),
-                )
-                # Fetch node_id via REST as fallback
-                pr_details = await github.get_pull_request(owner, repo_name, pr_number)
-                pr_node_id = pr_details.get("node_id", "")
-                if pr_node_id and not pr_node_id.isdigit():
-                    auto_merged = await github.enable_auto_merge(
-                        owner, repo_name, pr_node_id=pr_node_id
-                    )
-                else:
-                    log.error("story_pr_node_id_fetch_failed", pr_number=pr_number)
-                    auto_merged = False
-            if not auto_merged:
+            if not await _enable_auto_merge(
+                github,
+                owner=owner,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                pr_node_id=pr_node_id,
+                log=log,
+            ):
                 log.warning("story_auto_merge_failed", pr_number=pr_number)
+        except NoCommitsBetweenError as no_commits:
+            # Not a transient error: the branch carries no commit of its own, so
+            # every later tick asks GitHub the same impossible question and gets
+            # the same 422. Take the story out of the retry set with the reason
+            # attached, and leave the decision to a person.
+            log.warning("story_pr_no_commits_between", branch=branch, detail=str(no_commits))
+            await _park_story_without_commits(api_client, story_id, branch, str(no_commits), log)
+            continue
         except Exception:
             log.exception("story_pr_creation_failed", branch=branch)
             continue
