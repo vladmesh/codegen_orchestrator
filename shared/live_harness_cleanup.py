@@ -27,6 +27,7 @@ GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
 ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
+STORY_BRANCH_DIFF_MARKER = "STORY_BRANCH_DIFF:"
 MAIN_HEAD_PROBE_MARKER = "MAIN_HEAD_PROBE:"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
@@ -223,6 +224,50 @@ async def probe_story_branch(
         "status": comparison["status"],
         "ahead_by": comparison["ahead_by"],
         "behind_by": comparison["behind_by"],
+    }
+    print(marker + json.dumps(payload))
+    return payload
+
+
+async def probe_story_branch_diff(
+    *,
+    owner: str,
+    repo: str,
+    branch: str,
+    marker: str = STORY_BRANCH_DIFF_MARKER,
+) -> dict[str, Any]:
+    """Print the change one story branch carries, with the head it carries it at.
+
+    The branch is the only place a worker's work survives its container, and it
+    outlives the stand: the run's own repository is on GitHub, so a failed run
+    can still be shown what its worker actually wrote. The diff is read whole
+    here and bounded where it is retained (`tests/live/run_evidence.py`), so one
+    named constant states the bound instead of two that can disagree.
+
+    Nothing here decides whether the diff is retained: a branch that does not
+    exist raises, and the caller records that as the stated reason it has no
+    diff for this run.
+    """
+    gh = GitHubAppClient()
+    token = await gh.get_token(owner, repo)
+    headers = {"Authorization": f"token {token}"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        head = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}",
+            headers={**headers, "Accept": "application/vnd.github+json"},
+        )
+        head.raise_for_status()
+        diff = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/compare/main...{branch}",
+            headers={**headers, "Accept": "application/vnd.github.v3.diff"},
+        )
+        diff.raise_for_status()
+
+    payload = {
+        "repository": f"{owner}/{repo}",
+        "branch": branch,
+        "head_sha": head.json()["commit"]["sha"],
+        "diff": diff.text,
     }
     print(marker + json.dumps(payload))
     return payload
@@ -539,6 +584,13 @@ async def _run(args: argparse.Namespace) -> None:
             branch=args.branch,
             marker=args.marker,
         )
+    elif args.command == "story-branch-diff":
+        await probe_story_branch_diff(
+            owner=args.owner,
+            repo=args.repo,
+            branch=args.branch,
+            marker=args.marker,
+        )
     elif args.command == "main-head-probe":
         await probe_main_head(owner=args.owner, repo=args.repo, marker=args.marker)
     elif args.command == "github-cleanup":
@@ -581,6 +633,12 @@ def _parser() -> argparse.ArgumentParser:
     story_branch.add_argument("--repo", required=True)
     story_branch.add_argument("--branch", required=True)
     story_branch.add_argument("--marker", default=STORY_BRANCH_PROBE_MARKER)
+
+    story_branch_diff = sub.add_parser("story-branch-diff")
+    story_branch_diff.add_argument("--owner", required=True)
+    story_branch_diff.add_argument("--repo", required=True)
+    story_branch_diff.add_argument("--branch", required=True)
+    story_branch_diff.add_argument("--marker", default=STORY_BRANCH_DIFF_MARKER)
 
     main_head = sub.add_parser("main-head-probe")
     main_head.add_argument("--owner", required=True)

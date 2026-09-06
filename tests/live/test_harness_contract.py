@@ -36,9 +36,12 @@ import structlog
 
 from shared import live_harness_cleanup
 from shared.contracts.acceptance import parse_health_only_criteria
-from shared.contracts.dto.project import ServiceModule
+from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import (
     DEPLOY_INFRA_PORT_SERVICES,
     SERVICE_MODULE_PORT_ROLES,
@@ -5143,3 +5146,180 @@ def test_a_template_override_is_validated_against_the_scaffold_contract(monkeypa
 
     with pytest.raises(RuntimeError, match="LIVE_TEMPLATE_REF"):
         pipeline_helpers.resolve_template()
+
+
+# ── The two control-plane sources a failed run's artifact retains ─────────
+
+
+@pytest.mark.asyncio
+async def test_worker_reports_of_a_failed_run_are_read_before_teardown(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("event_type") == "worker_report"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "task_id": "task-1",
+                    "event_type": "worker_report",
+                    "created_at": "2026-09-06T10:00:00+00:00",
+                    "details": {"report": "I could not find the settings."},
+                }
+            ],
+        )
+
+    ctx = {"task_ids": ["task-1"]}
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        await pipeline_helpers.record_worker_reports(api_internal, ctx)
+
+    assert ctx["worker_reports"] == [
+        {
+            "task_id": "task-1",
+            "created_at": "2026-09-06T10:00:00+00:00",
+            "report": "I could not find the settings.",
+        }
+    ]
+    assert ctx["worker_reports_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_worker_reports_that_could_not_be_read_are_a_stated_reason(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "unavailable"})
+
+    ctx = {"task_id": "task-1"}
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        await pipeline_helpers.record_worker_reports(api_internal, ctx)
+
+    assert "worker_reports" not in ctx
+    assert "task-1" in ctx["worker_reports_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_completed_combination_reads_neither_report_nor_diff():
+    ctx = {
+        "scaffold_status": ProjectStatus.ACTIVE,
+        "task_status": TaskStatus.DONE,
+        "deploy_run_id": "run-1",
+        "deploy_outcome": DeployOutcome.SUCCESS.value,
+        "final_app_status": ApplicationStatus.RUNNING.value,
+        "qa_run": {"id": "q", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        "task_id": "task-1",
+        "story_id": "story-1",
+        "repo_name": "run-repo",
+    }
+    client = SimpleNamespace(get=AsyncMock())
+
+    await pipeline_helpers.record_failure_retention_sources(client, ctx)
+
+    client.get.assert_not_awaited()
+    assert "worker_reports" not in ctx
+    assert "story_branch_diff" not in ctx
+
+
+def test_the_story_branch_diff_is_read_through_the_existing_probe_seam(monkeypatch):
+    payload = {
+        "repository": "project-factory-organization/run-repo",
+        "branch": "story/story-1",
+        "head_sha": "c0ffee",
+        "diff": "--- a/app.py\n+++ b/app.py\n",
+    }
+    calls = []
+
+    def fake_exec(service, module, args, timeout=30):
+        calls.append((service, module, args))
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=pipeline_helpers.STORY_BRANCH_DIFF_MARKER + json.dumps(payload) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", fake_exec)
+    ctx = {"story_id": "story-1", "repo_name": "run-repo"}
+
+    pipeline_helpers.record_story_branch_diff(ctx)
+
+    assert ctx["story_branch_diff"] == payload
+    assert ctx["story_branch_diff_error"] is None
+    assert calls[0][:2] == ("langgraph", "shared.live_harness_cleanup")
+    assert calls[0][2][0] == "story-branch-diff"
+
+
+def test_a_diff_probe_that_failed_is_a_stated_reason_not_a_raise(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="HTTP 404 for story/story-1"
+        ),
+    )
+    ctx = {"story_id": "story-1", "repo_name": "run-repo"}
+
+    pipeline_helpers.record_story_branch_diff(ctx)
+
+    assert "story_branch_diff" not in ctx
+    assert "exited 1" in ctx["story_branch_diff_error"]
+
+
+def test_a_run_with_no_story_says_why_it_has_no_branch_diff():
+    ctx = {"repo_name": "run-repo"}
+
+    pipeline_helpers.record_story_branch_diff(ctx)
+
+    assert "created no story" in ctx["story_branch_diff_error"]
+
+
+def test_story_branch_diff_probe_reads_the_head_and_the_change(monkeypatch, capsys):
+    requested = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested.append((url, kwargs["headers"]["Accept"]))
+            if "/branches/" in url:
+                return httpx.Response(
+                    200,
+                    json={"commit": {"sha": "c0ffee"}},
+                    request=httpx.Request("GET", url),
+                )
+            return httpx.Response(200, text="--- a/app.py\n", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(live_harness_cleanup, "GitHubAppClient", _FakeGitHub)
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
+    asyncio.run(
+        live_harness_cleanup.probe_story_branch_diff(
+            owner="project-factory-organization",
+            repo="run-repo",
+            branch="story/story-1",
+        )
+    )
+
+    probe = pipeline_helpers.parse_probe_payload(
+        capsys.readouterr().out,
+        pipeline_helpers.STORY_BRANCH_DIFF_MARKER,
+        subject="story branch diff probe",
+    )
+    assert probe == {
+        "repository": "project-factory-organization/run-repo",
+        "branch": "story/story-1",
+        "head_sha": "c0ffee",
+        "diff": "--- a/app.py\n",
+    }
+    assert [accept for _, accept in requested] == [
+        "application/vnd.github+json",
+        "application/vnd.github.v3.diff",
+    ]

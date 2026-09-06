@@ -238,10 +238,24 @@ the qa-worker's configured selector; that selector appears only in the missed ca
 no QA container was seen. Run 33743251165 is why: it asked for `claude`, was admitted under `codex`
 and ran on Codex, and the artifact reported `claude` twice.
 
-Agent stdout stays out of it. The log tail is the container's own log (worker-wrapper's structlog),
-bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret
-environment values; Codex CLI diagnostics stay in the retained transcript, which the artifact
-references by path only. `tests/live/test_run_evidence.py` covers the whole schema offline;
+The log tail is the container's own log (worker-wrapper's structlog), bounded and redacted through
+`shared.diagnostics.redact_diagnostic` against the container's secret environment values. Agent
+output never re-enters a result payload or a service log, and a combination that **completed** keeps
+its transcript a pointer: path and file list, no content.
+
+A combination that did **not** complete retains three bodies per worker, because an artifact that
+cannot say why a paid run went red is worth less than the residual disclosure risk of a bounded,
+redacted body leaving a machine that is about to be destroyed — probe 2 of sprint 1429 ended with
+"root cause not knowable from the artifact: worker transcripts live on the destroyed stand". They are
+`transcript.content` (what worker-wrapper wrote under the transcript bind mount), `agent_report` (the
+`REPORT.md` the control plane stored as a `worker_report` task event) and `branch_diff` (the change
+the worker's branch carries, named by repository, branch and head SHA). Each is a capture: present,
+or the stated reason it could not be collected — a QA executor writes no report and produces no
+branch, and says so. Every byte is redacted **on the stand host** before the artifact crosses to the
+runner, against every value of the harness process environment whose name says it is a secret; a
+redaction that does not complete publishes the stated reason instead of its input, exactly as the
+service-tail branch of `stand-e2e.yml` does. `FAILURE_RETENTION_MAX_CHARS` is the bound, and a
+truncated body says so and names the limit. `tests/live/test_run_evidence.py` covers the whole schema offline;
 `tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.
@@ -280,8 +294,8 @@ control-plane reason for the stage that stopped the run. The free `mega-noop` ro
 container by design, so its verdict is exactly what the terminal state always said.
 
 The workflow fails closed on it. For a failed paid run, `scripts/stand_acceptance.py` refuses an
-acceptance artifact whose run evidence lacks the failing stage, its reason, the engineering section
-or the redacted service log tails — the same admission the handoff already fails closed on, and the
+acceptance artifact whose run evidence lacks the failing stage, its reason, the engineering section,
+any worker's three retained bodies, or the redacted service log tails — the same admission the handoff already fails closed on, and the
 same redaction canary still guards it. A piece that genuinely could not be collected is admissible
 *as a stated missed capture*; a piece that is simply absent is not.
 

@@ -907,6 +907,30 @@ last metadata name is retained rather than silently losing the worker from run
 evidence. Cleanup selects only the owning run's labels, verifies removal, is
 idempotent, and refuses an unscoped or neighbour-owned resource.
 
+### Failed-run acceptance evidence
+
+`tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
+the acceptance artifact a `stand-e2e` run publishes.
+
+A combination that reached `completed` retains no agent output: its transcript is
+named by path and file list only. A combination that did **not** complete
+retains, per worker the run created, three more captures — the transcript body
+(`transcript.content`), the agent's final report (`agent_report`, the
+`worker_report` task events of this run's engineering tasks) and the diff of the
+branch that worker produced (`branch_diff`, named by repository, branch and head
+SHA). Each is present or carries the stated reason it could not be collected;
+none is ever a bare empty value, and a QA executor — which writes no report and
+produces no branch — says so.
+
+Every retained byte is redacted on the stand host by
+`shared.diagnostics.redact_diagnostic` before the artifact leaves it, against
+every value of the harness process environment whose name says it is a secret; a
+redaction that does not complete publishes the stated reason instead of its
+input. `FAILURE_RETENTION_MAX_CHARS` bounds each body, and a truncated body says
+in the artifact that it was truncated and at what limit. The admission fails
+closed on the three captures for a paid failure exactly as it does for the stage,
+the reason and the reachability reads.
+
 ### Provisioning and environment observation
 
 Infra-service owns provider observation/client code; policy decisions stay in

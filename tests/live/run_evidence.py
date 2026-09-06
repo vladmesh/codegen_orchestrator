@@ -6,7 +6,9 @@ and nothing retained said why. By the time anybody looked, the container was
 gone, its Redis metadata was gone, and the result payload carried no Codex
 output at all — worker-wrapper suppresses Codex stdout on the business path on
 purpose, because CLI diagnostics can include data from the mounted session or
-repository. That suppression is a privacy decision and stays.
+repository. That suppression is a privacy decision and stays: no agent output
+ever re-enters a result payload or a service log. What a **failed** run's
+artifact retains is stated under "What a failed run retains" below.
 
 **How a run finds its workers.** By its own label, not by having watched them.
 Every dynamic worker container is stamped at creation with
@@ -43,9 +45,39 @@ An omitted worker would read as "nothing ran". That is the failure this module
 exists to end: every worker the run created appears, either with its evidence or
 with the stated reason the evidence could not be read.
 
-Nothing here re-plumbs agent stdout into a result payload or into a service log.
-The tail is the container's own log, bounded and redacted; the transcript is
-referenced by path and never copied.
+**What a failed run retains.** For a combination that reached
+``TerminalState.COMPLETED`` this artifact is exactly what it always was: the log
+tail is the container's own log, bounded and redacted, and the transcript is
+referenced by path and file list only.
+
+For a combination that did **not** complete, three more things are retained per
+worker, because an artifact that cannot say why a paid run went red is worth
+less than the residual disclosure risk of a bounded, redacted body leaving a
+machine that is about to be destroyed. Probe 2 of sprint 1429 is why: its root
+cause was "not knowable from the artifact — worker transcripts live on the
+destroyed stand". The three are
+
+* ``transcript.content`` — the bodies worker-wrapper retained for this worker
+  under the transcript bind mount, which it already redacted against the *worker
+  container's* secret environment before writing them;
+* ``agent_report`` — the ``REPORT.md`` the agent wrote, as the control plane
+  stored it on this run's engineering tasks (``worker_report`` task events);
+* ``branch_diff`` — the change the branch this worker produced carries, named by
+  repository, branch and head SHA.
+
+Each of them is a ``Capture``: present, or a stated reason it could not be
+collected. None of them is ever a bare empty value, and a QA executor — which
+writes no report and produces no branch — says that rather than looking unread.
+
+Every retained byte is redacted **on this host**, which is the stand host the
+suite runs on, before the artifact is written into the runner directory the
+workflow collects from: ``redact_diagnostic`` against every value of this
+process's environment whose name says it is a secret, the same allow-list by
+name that the service log tails leave the stand under. A redaction that does not
+complete publishes the stated reason instead of its input, exactly as the
+service-tail branch of ``stand-e2e.yml`` does. The bound is
+``FAILURE_RETENTION_MAX_CHARS``, and a body that hits it says in the artifact
+that it was truncated and at what limit.
 """
 
 from __future__ import annotations
@@ -146,13 +178,37 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      and prior deploy facts retain credential-safe `settings_seed` outcomes.
 # v12: Product Brief telemetry retains its bounded stage/deadline ledger, including
 #      the stage that stopped productive work before teardown began.
-EVIDENCE_SCHEMA_VERSION = 12
+# v13: a combination that did not complete retains, per worker, the transcript
+#      body (`transcript.content`), the agent's final report (`agent_report`) and
+#      the diff of the branch it produced (`branch_diff`) — each a capture, each
+#      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
+#      combination that completed carries none of the three.
+EVIDENCE_SCHEMA_VERSION = 13
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
 # here and a tail read there are the same size of thing.
 LOG_TAIL_LINES = REMOVAL_LOG_TAIL_LINES
 LOG_TAIL_MAX_CHARS = REMOVAL_LOG_TAIL_MAX_CHARS
+
+# What "bounded" means for everything a failed combination retains — the worker
+# transcript, the agent's final report and the branch diff alike. One constant
+# rather than three, so the artifact states one limit and a reader has one
+# number to know. It is deliberately far above LOG_TAIL_MAX_CHARS: a log tail is
+# the last thing a container said, while these are the bodies somebody has to
+# read to answer why a paid run went red.
+FAILURE_RETENTION_MAX_CHARS = 60_000
+# Truncation is the head, not the tail, for the same reason worker-wrapper's own
+# save_transcript keeps the prefix: what an agent was asked and what it did first
+# is what a "the agent never did X" question is answered from.
+FAILURE_RETENTION_TRUNCATION_NOTE = "\n\n[retained evidence truncated at {limit} characters]\n"
+# How much beyond the bound the redaction actually looks at. Redaction runs
+# before truncation — a body cut first could leave half a secret standing, which
+# `redact_diagnostic` replaces whole values and would then not match — so the cut
+# has to be beyond what is retained. This slack puts it there while keeping the
+# work bounded: a 5 MiB transcript is not redacted in full to publish 60 000
+# characters of it.
+FAILURE_RETENTION_SLACK_CHARS = 4_096
 
 # worker-manager names every worker container `worker-{worker_id}`
 # (services/worker-manager/src/container_config.py) and labels it
@@ -207,14 +263,24 @@ REMOVED_BEFORE_CAPTURE_REASON = (
 )
 
 PRIVACY_STATEMENT = (
-    "Agent stdout/stderr never enters this artifact. The log tail is the worker "
-    "container's own log — worker-wrapper's structlog output — bounded to "
-    f"{LOG_TAIL_LINES} lines and {LOG_TAIL_MAX_CHARS} characters and redacted "
-    "with shared.diagnostics.redact_diagnostic against every value of the "
-    "container's environment whose name matches "
+    "The log tail is the worker container's own log — worker-wrapper's structlog "
+    f"output — bounded to {LOG_TAIL_LINES} lines and {LOG_TAIL_MAX_CHARS} "
+    "characters and redacted with shared.diagnostics.redact_diagnostic against "
+    "every value of the container's environment whose name matches "
     "key|secret|token|password|credential|authorization, plus URL userinfo and "
-    "Authorization headers. Codex CLI diagnostics stay where wrapper.py puts "
-    "them: in the retained transcript on the host, referenced here by path only."
+    "Authorization headers. Agent output never re-enters a result payload or a "
+    "service log. A combination that completed retains no agent output here "
+    "either: its transcript is referenced by path and file list only. A "
+    "combination that did NOT complete additionally retains, per worker, the "
+    "transcript worker-wrapper wrote (already redacted by the wrapper against "
+    "the worker container's secret environment), the agent's REPORT.md as the "
+    "control plane stored it, and the diff of the branch the worker produced. "
+    "Every one of those bodies is redacted again on the stand host, before it "
+    "crosses to the runner, with the same helper against every value of the "
+    "harness process environment whose name says it is a secret; a redaction "
+    "that does not complete publishes the stated reason instead of its input. "
+    f"Each body is bounded to {FAILURE_RETENTION_MAX_CHARS} characters and says "
+    "in the artifact when it was truncated and at what limit."
 )
 
 
@@ -1192,6 +1258,182 @@ def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
     if (qa_run.get("result") or {}).get("qa_outcome") != QAOutcome.PASSED.value:
         return TerminalState.STOPPED_AT_QA, FailureKind.QA_NOT_PASSED
     return TerminalState.COMPLETED, FailureKind.NONE
+
+
+def retains_failure_evidence(ctx: dict) -> bool:
+    """Whether this combination's artifact retains the failed-run bodies.
+
+    One predicate, read by the artifact and by the harness collection that feeds
+    it, so the two cannot disagree about which runs retain. A combination that
+    reached ``COMPLETED`` is a suite that succeeded and its artifact is exactly
+    what it always was; anything else stopped somewhere, and stopping is what
+    the transcript, the report and the diff exist to explain.
+    """
+    terminal_state, _ = classify_outcome(ctx)
+    return terminal_state is not TerminalState.COMPLETED
+
+
+def _retained_body(text: str, facts: dict) -> Capture:
+    """One retained body: redacted on this host, bounded, and truthful about it.
+
+    The redaction is the same call the log tails and the debug dump already make
+    — `redact_diagnostic` against every value of this process's environment
+    whose name says it is a secret — and it happens here, on the stand host,
+    before anything is written into the runner directory. A redaction that does
+    not complete publishes the stated reason instead of its input, which is what
+    the service-tail branch of `stand-e2e.yml` does with its pipe.
+    """
+    window = text[: FAILURE_RETENTION_MAX_CHARS + FAILURE_RETENTION_SLACK_CHARS]
+    try:
+        redacted = redact_diagnostic(window, secrets=secret_env_values(dict(os.environ)))
+    except Exception as error:  # noqa: BLE001 — publish the reason, never the input
+        return Capture.missed(
+            "the redaction of this body did not complete, so no unredacted content is "
+            f"published: {type(error).__name__}"
+        )
+    truncated = len(redacted) > FAILURE_RETENTION_MAX_CHARS or len(text) > len(window)
+    if truncated:
+        note = FAILURE_RETENTION_TRUNCATION_NOTE.format(limit=FAILURE_RETENTION_MAX_CHARS)
+        redacted = redacted[: max(0, FAILURE_RETENTION_MAX_CHARS - len(note))] + note
+    return Capture.captured(
+        {
+            **facts,
+            "text": redacted,
+            "characters": len(redacted),
+            "truncated": truncated,
+            "limit": FAILURE_RETENTION_MAX_CHARS,
+        }
+    )
+
+
+def _transcript_content(transcript: dict) -> Capture:
+    """The bodies worker-wrapper retained for one worker, read off the host.
+
+    The directory and its file list are already this record's evidence; what is
+    added is what is in the files. Every way of not having them is named: no
+    bind mount, an unreadable directory, a directory the wrapper wrote nothing
+    into, and a file that could not be read.
+    """
+    host_dir = transcript["host_dir"]
+    if host_dir["status"] != CaptureStatus.CAPTURED.value:
+        return Capture.missed(host_dir["reason"])
+    files = transcript["files"]
+    if files["status"] != CaptureStatus.CAPTURED.value:
+        return Capture.missed(files["reason"])
+    if not files["value"]:
+        return Capture.missed(
+            f"{host_dir['value']} holds no transcript file: worker-wrapper retained none "
+            "for this worker"
+        )
+    parts: list[str] = []
+    for entry in files["value"]:
+        try:
+            body = Path(entry["path"]).read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            return Capture.missed(
+                f"{entry['path']} is listed in the transcript directory and could not be "
+                f"read from the harness host: {type(error).__name__}"
+            )
+        parts.append(f"== {entry['path']} ({entry['bytes']} bytes) ==\n{body}")
+    return _retained_body(
+        "\n".join(parts),
+        {
+            "host_dir": host_dir["value"],
+            "files": [entry["path"] for entry in files["value"]],
+        },
+    )
+
+
+QA_WRITES_NO_REPORT_REASON = (
+    "a QA executor writes no REPORT.md: its answer is the QA verdict, which this "
+    "artifact carries in `qa`"
+)
+QA_PRODUCES_NO_BRANCH_REASON = (
+    "a QA executor commits nothing: it produces no branch of its own, and the branch "
+    "it read is the developer worker's, retained on that worker's record"
+)
+REPORTS_NOT_COLLECTED_REASON = (
+    "the agent reports of this run's engineering tasks were never read: terminal "
+    "evidence collection did not reach the control plane before teardown"
+)
+BRANCH_DIFF_NOT_COLLECTED_REASON = (
+    "the diff of this run's story branch was never read: terminal evidence collection "
+    "did not reach GitHub before teardown"
+)
+
+
+def _agent_report(ctx: dict, record: dict) -> Capture:
+    """The REPORT.md this run's developer agent wrote, as the control plane kept it.
+
+    The report leaves the worker over the result payload and is stored by the
+    engineering consumer as a `worker_report` task event, so it survives the
+    container and dies with the stand's database. All of this run's engineering
+    tasks are carried on every developer record: retries are attempts of one
+    piece of work, and which container typed which report is not a fact the
+    control plane records.
+    """
+    if record["role"] == WorkerRole.QA_EXECUTOR.value:
+        return Capture.missed(QA_WRITES_NO_REPORT_REASON)
+    if ctx.get("worker_reports_error"):
+        return Capture.missed(ctx["worker_reports_error"])
+    if "worker_reports" not in ctx:
+        return Capture.missed(REPORTS_NOT_COLLECTED_REASON)
+    reports = ctx["worker_reports"]
+    if not reports:
+        return Capture.missed(
+            "the control plane holds no worker_report event for this run's engineering "
+            "tasks: no agent wrote a REPORT.md, or none reached the point of writing one"
+        )
+    return _retained_body(
+        "\n".join(
+            f"== task {report['task_id']} at {report['created_at']} ==\n{report['report']}"
+            for report in reports
+        ),
+        {"task_ids": [report["task_id"] for report in reports]},
+    )
+
+
+def _branch_diff(ctx: dict, record: dict) -> Capture:
+    """The change the branch this worker produced carries, named by where it is."""
+    if record["role"] == WorkerRole.QA_EXECUTOR.value:
+        return Capture.missed(QA_PRODUCES_NO_BRANCH_REASON)
+    if ctx.get("story_branch_diff_error"):
+        return Capture.missed(ctx["story_branch_diff_error"])
+    if "story_branch_diff" not in ctx:
+        return Capture.missed(BRANCH_DIFF_NOT_COLLECTED_REASON)
+    diff = ctx["story_branch_diff"]
+    identity = {
+        "repository": diff["repository"],
+        "branch": diff["branch"],
+        "head_sha": diff["head_sha"],
+    }
+    if not diff["diff"]:
+        return Capture.missed(
+            f"{identity['repository']}@{identity['branch']} ({identity['head_sha']}) "
+            "differs from main by nothing: the branch carries no change of its own"
+        )
+    return _retained_body(diff["diff"], identity)
+
+
+def retain_failure_evidence(ctx: dict, records: list[dict]) -> list[dict]:
+    """Add the failed-run bodies to every worker record, or change nothing.
+
+    A successful combination's records are returned untouched: the retention is
+    the whole of what a failure buys with the residual disclosure risk, and a
+    run that has nothing to explain buys nothing with it.
+    """
+    if not retains_failure_evidence(ctx):
+        return records
+    retained = []
+    for record in records:
+        with_bodies = dict(record)
+        transcript = dict(record["transcript"])
+        transcript["content"] = _transcript_content(record["transcript"]).as_dict()
+        with_bodies["transcript"] = transcript
+        with_bodies["agent_report"] = _agent_report(ctx, record).as_dict()
+        with_bodies["branch_diff"] = _branch_diff(ctx, record).as_dict()
+        retained.append(with_bodies)
+    return retained
 
 
 def qa_cell(ctx: dict) -> dict:
@@ -2420,7 +2662,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": collector.records(),
+        "workers": retain_failure_evidence(ctx, collector.records()),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
     }

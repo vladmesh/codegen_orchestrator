@@ -58,9 +58,11 @@ PRIVATE_KEY_MARKER = re.compile(
 )
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
 PROFILE_ATTESTATION_MARKER = "stand-codex-profile-redaction-v1"
-# Paid-failure attribution requires the v11 capture fields.  Later artifact
+# Paid-failure attribution requires the v13 capture fields: the per-worker
+# transcript body, agent report and branch diff a failed run retains, without
+# which the artifact still cannot say why a paid run went red.  Later artifact
 # versions remain admissible: this is a floor, not a writer-version lockstep.
-MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 11
+MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 13
 # These classifications are assigned only after the harness has selected a
 # deploy Run and observed the part of its lifecycle that stopped the pipeline.
 # They are therefore independent evidence that a current Run record is owed.
@@ -266,8 +268,44 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     if not deploy_record_admissible:
         errors.append(f"paid_failure_deploy_run_record_missing:{name}")
     errors += _reachability_errors(name, deployment_value)
+    errors += _worker_retention_errors(name, artifact)
     if not verdict.get("reasons"):
         errors.append(f"paid_failure_verdict_silent:{name}")
+    return errors
+
+
+def _worker_retention_errors(name: str, artifact: dict[str, Any]) -> list[str]:
+    """Refuse a paid failure whose workers cannot be diagnosed after the stand.
+
+    A failed run retains, per worker, the transcript body, the agent's final
+    report and the diff of the branch that worker produced.  Each is admissible
+    as a stated missed capture — a QA executor writes no report, a worker whose
+    transcript directory was unreadable says so — and none of them may simply be
+    absent, for the same reason the reads above may not be: silence about a paid
+    failure is what this admission exists to refuse.
+    """
+    workers = artifact.get("workers")
+    if not isinstance(workers, list):
+        return [f"paid_failure_worker_records_missing:{name}"]
+    errors: list[str] = []
+    for index, worker in enumerate(workers):
+        if not isinstance(worker, dict):
+            errors.append(f"paid_failure_worker_record_unreadable:{name}:{index}")
+            continue
+        transcript = worker.get("transcript")
+        retained = {
+            "transcript_content": (
+                transcript.get("content") if isinstance(transcript, dict) else None
+            ),
+            "agent_report": worker.get("agent_report"),
+            "branch_diff": worker.get("branch_diff"),
+        }
+        worker_id = worker.get("worker_id") or index
+        errors += [
+            f"paid_failure_worker_retention_missing:{name}:{worker_id}:{field}"
+            for field, capture in retained.items()
+            if not _capture_is_stated(capture)
+        ]
     return errors
 
 

@@ -1048,11 +1048,11 @@ def test_log_tail_is_bounded():
     assert len(redact_log_tail("x" * (LOG_TAIL_MAX_CHARS * 2), {})) == LOG_TAIL_MAX_CHARS
 
 
-def test_artifact_carries_no_agent_stdout_only_a_transcript_pointer(codex_docker, tmp_path):
+def test_a_completed_combination_keeps_the_transcript_a_pointer_only(codex_docker, tmp_path):
     collector = collector_for(codex_docker)
     collector.capture()
 
-    worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
+    worker = build_artifact(completed_ctx(collector), root=tmp_path)["workers"][0]
     transcript = worker["transcript"]
     assert transcript["host_dir"]["value"].endswith(f"/{DEV_WORKER_ID}")
     assert [Path(item["path"]).name for item in transcript["files"]["value"]] == ["req-1.log"]
@@ -1111,7 +1111,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 12
+    assert EVIDENCE_SCHEMA_VERSION == 13
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1193,6 +1193,10 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "exit_code",
         "log_tail",
         "transcript",
+        # This combination stopped at engineering, so it retains the three
+        # bodies a failed run's artifact is diagnosed from.
+        "agent_report",
+        "branch_diff",
         "captured_at",
     }
     assert worker["worker_id"] == DEV_WORKER_ID
@@ -2554,3 +2558,236 @@ def test_the_collector_and_the_artifact_read_one_snapshot_predicate(codex_docker
         ),
     )
     assert run_evidence.target_snapshot_requirement(reachable)["required"] is False
+
+
+# ── What a failed run retains ────────────────────────────────────────────
+#
+# The transcript body, the agent's final report and the branch diff, for a
+# combination that did not complete and for that one only. The old contract —
+# no agent output in the artifact at all — is `PRIVACY_STATEMENT`'s account of
+# a *completed* combination and is tested by
+# `test_a_completed_combination_keeps_the_transcript_a_pointer_only` above.
+
+COMPLETED_OVERRIDES = {
+    "task_status": TaskStatus.DONE,
+    "deploy_run_id": "run-1",
+    "deploy_outcome": DeployOutcome.SUCCESS.value,
+    "final_app_status": ApplicationStatus.RUNNING.value,
+    "qa_run": {"id": "q", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+}
+
+RETENTION_SOURCES = {
+    "worker_reports": [
+        {"task_id": "task-1", "created_at": "2026-08-13T12:00:30+00:00", "report": "I stopped."}
+    ],
+    "story_branch_diff": {
+        "repository": f"project-factory-organization/{REPO}",
+        "branch": "story/story-1",
+        "head_sha": "c0ffee1",
+        "diff": "--- a/app.py\n+++ b/app.py\n+print('hi')\n",
+    },
+}
+
+
+def completed_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    return base_ctx(collector, **COMPLETED_OVERRIDES, **overrides)
+
+
+def failed_worker(ctx: dict, tmp_path: Path, worker_id: str = DEV_WORKER_ID) -> dict:
+    workers = build_artifact(ctx, root=tmp_path)["workers"]
+    return next(worker for worker in workers if worker["worker_id"] == worker_id)
+
+
+def test_a_failed_run_retains_the_transcript_the_report_and_the_diff(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    worker = failed_worker(base_ctx(collector, **RETENTION_SOURCES), tmp_path)
+
+    content = worker["transcript"]["content"]
+    assert content["status"] == CaptureStatus.CAPTURED.value
+    assert "--- stdout ---" in content["value"]["text"]
+    assert content["value"]["files"] == [
+        entry["path"] for entry in worker["transcript"]["files"]["value"]
+    ]
+    assert content["value"]["truncated"] is False
+    assert content["value"]["limit"] == run_evidence.FAILURE_RETENTION_MAX_CHARS
+
+    report = worker["agent_report"]
+    assert report["status"] == CaptureStatus.CAPTURED.value
+    assert "I stopped." in report["value"]["text"]
+    assert report["value"]["task_ids"] == ["task-1"]
+
+    diff = worker["branch_diff"]
+    assert diff["status"] == CaptureStatus.CAPTURED.value
+    assert diff["value"]["branch"] == "story/story-1"
+    assert diff["value"]["head_sha"] == "c0ffee1"
+    assert diff["value"]["repository"].endswith(REPO)
+    assert "print('hi')" in diff["value"]["text"]
+
+
+def test_a_completed_run_retains_none_of_it(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    worker = failed_worker(completed_ctx(collector, **RETENTION_SOURCES), tmp_path)
+
+    assert "content" not in worker["transcript"]
+    assert "agent_report" not in worker
+    assert "branch_diff" not in worker
+
+
+def test_every_source_that_could_not_be_read_is_a_named_absence(tmp_path):
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=1,
+                transcript_source="/no/such/transcript/root",
+            )
+        },
+        logs={DEV_CONTAINER: "line"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        story_branch_diff_error="the diff of story/story-1 could not be read: TimeoutExpired",
+    )
+
+    worker = failed_worker(ctx, tmp_path)
+
+    content = worker["transcript"]["content"]
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert "worker-wrapper retained none" in content["reason"]
+    assert worker["agent_report"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": run_evidence.REPORTS_NOT_COLLECTED_REASON,
+    }
+    assert worker["branch_diff"]["status"] == CaptureStatus.MISSED.value
+    assert "TimeoutExpired" in worker["branch_diff"]["reason"]
+
+
+def test_a_qa_executor_says_it_writes_no_report_and_produces_no_branch(transcripts, tmp_path):
+    docker = FakeDocker(
+        containers={
+            QA_CONTAINER: container_payload(
+                worker_id=QA_WORKER_ID,
+                agent_type="claude",
+                exit_code=0,
+                worker_type="qa",
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={QA_CONTAINER: "qa line"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+
+    worker = failed_worker(base_ctx(collector, **RETENTION_SOURCES), tmp_path, QA_WORKER_ID)
+
+    assert worker["agent_report"]["reason"] == run_evidence.QA_WRITES_NO_REPORT_REASON
+    assert worker["branch_diff"]["reason"] == run_evidence.QA_PRODUCES_NO_BRANCH_REASON
+
+
+def test_an_empty_branch_diff_is_the_finding_not_an_empty_value(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        story_branch_diff={**RETENTION_SOURCES["story_branch_diff"], "diff": ""},
+    )
+
+    diff = failed_worker(ctx, tmp_path)["branch_diff"]
+
+    assert diff["status"] == CaptureStatus.MISSED.value
+    assert "carries no change of its own" in diff["reason"]
+
+
+def test_a_retained_body_is_truncated_at_the_bound_and_says_so(transcripts, tmp_path):
+    # Ordinary transcript lines rather than one unbroken token: this test is
+    # about the bound, and a single 120 000-character base64-shaped run makes
+    # `redact_diagnostic` do quadratic work that says nothing about truncation.
+    (transcripts / DEV_WORKER_ID / "req-1.log").write_text(
+        "agent said something\n" * (run_evidence.FAILURE_RETENTION_MAX_CHARS // 10),
+        encoding="utf-8",
+    )
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=1,
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={DEV_CONTAINER: "line"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+
+    content = failed_worker(base_ctx(collector), tmp_path)["transcript"]["content"]
+
+    assert content["value"]["truncated"] is True
+    assert content["value"]["limit"] == run_evidence.FAILURE_RETENTION_MAX_CHARS
+    assert content["value"]["characters"] == run_evidence.FAILURE_RETENTION_MAX_CHARS
+    assert content["value"]["text"].endswith(
+        run_evidence.FAILURE_RETENTION_TRUNCATION_NOTE.format(
+            limit=run_evidence.FAILURE_RETENTION_MAX_CHARS
+        )
+    )
+
+
+def test_a_secret_planted_in_a_retained_body_never_reaches_the_artifact(
+    transcripts, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("STAND_HARNESS_TOKEN", "planted-secret-value")
+    (transcripts / DEV_WORKER_ID / "req-1.log").write_text(
+        "git push https://x-access-token:planted-secret-value@github.com/org/repo\n",
+        encoding="utf-8",
+    )
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=1,
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={DEV_CONTAINER: "line"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        worker_reports=[
+            {"task_id": "task-1", "created_at": "t", "report": "I used planted-secret-value"}
+        ],
+        story_branch_diff={
+            **RETENTION_SOURCES["story_branch_diff"],
+            "diff": "+TOKEN = 'planted-secret-value'\n",
+        },
+    )
+
+    worker = failed_worker(ctx, tmp_path)
+
+    assert "planted-secret-value" not in json.dumps(worker)
+    assert "[redacted]" in worker["transcript"]["content"]["value"]["text"]
+    assert "[redacted]" in worker["agent_report"]["value"]["text"]
+    assert "[redacted]" in worker["branch_diff"]["value"]["text"]
+
+
+def test_a_redaction_that_cannot_complete_publishes_the_reason_not_the_input(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    monkeypatch.setattr(run_evidence, "redact_diagnostic", refuse)
+
+    capture = run_evidence._retained_body("s3cret body", {})
+
+    assert capture.status is CaptureStatus.MISSED
+    assert "did not complete" in capture.reason
+    assert "s3cret body" not in capture.reason

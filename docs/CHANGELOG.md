@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- A `stand-e2e` run that did not complete retains per worker, in the acceptance artifact (evidence
+  schema v13), the transcript body, the agent's report and its branch diff — redacted on the stand.
 - An engineering result whose commit is already on the default branch fails as `no_new_commit` and sends
   its story to human review, so no deploy and no 422 "No commits between" PR retry follows it.
 - `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the
