@@ -502,7 +502,7 @@ def test_a_child_image_that_stamps_the_hash_is_compared_even_without_baking(tree
 
 def test_vendored_template_fixture_images_are_not_orchestrator_build_routes(tree: Path):
     """A rendered product fixture is validated by template compatibility, not this inventory."""
-    fixture = "shared/tests/fixtures/service-template-pinned"
+    fixture = "shared/tests/fixtures/some-product-kit-pinned"
     _write(tree, f"{fixture}/services/backend/Dockerfile", UNLABELLED)
     _write(
         tree,

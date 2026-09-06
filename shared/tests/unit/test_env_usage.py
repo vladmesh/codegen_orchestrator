@@ -13,7 +13,7 @@ import sys
 import pytest
 import yaml
 
-from scripts.template_pin import FIXTURE_PREFIX, TEMPLATE_PIN
+from scripts.template_pin import TEMPLATE_PIN
 from shared.contracts.env_usage import (
     EnvUsageParseError,
     build_env_contract_artifact,
@@ -28,12 +28,12 @@ GENERATED_FIXTURE_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".ruff
 
 
 def pinned_template_ref() -> str:
-    """Return the service-template ref the orchestrator actually deploys with."""
+    """Return the template ref the orchestrator actually deploys with."""
     return TEMPLATE_PIN.ref
 
 
 def template_fixture() -> Path:
-    """Return the rendered fixture for the pinned service-template ref."""
+    """Return the rendered fixture for the pinned template ref."""
     return TEMPLATE_PIN.fixture_path(REPO_ROOT)
 
 
@@ -333,35 +333,48 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     """The fixture's Copier record must identify the production template revision."""
     fixture = template_fixture()
 
+    # Every directory, not only the ones named after the pinned template: a move to
+    # another template renames the fixture, and the render it replaces has to go.
     stale = sorted(
-        path.name
-        for path in FIXTURES_DIR.glob(f"{FIXTURE_PREFIX}*")
-        if path.is_dir() and path != fixture
+        path.name for path in FIXTURES_DIR.iterdir() if path.is_dir() and path != fixture
     )
     assert fixture.is_dir(), (
-        f"no fixture for pinned service-template ref {pinned_template_ref()}; found {stale}"
+        f"no fixture for pinned template ref {pinned_template_ref()}; found {stale}"
     )
-    assert not stale, f"fixtures left behind for unpinned service-template refs: {stale}"
+    assert not stale, f"fixtures left behind for unpinned template revisions: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    assert answers["_commit"].endswith(f"g{pinned_template_ref()[:7]}")
+    # `gh:vladmesh/codegen-product-kit` publishes no tags, so Copier's clone has none
+    # to describe and records the bare short SHA of the pinned commit.
+    assert answers["_commit"] == pinned_template_ref()[:7]
 
 
 def test_template_fixture_pins_verified_uv_bootstrap():
-    """The production render must not retain setup-uv's mutable manifest lookup."""
+    """The production render must not retain setup-uv's mutable manifest lookup.
+
+    The kit ships no embedded framework mirror, so its CI workflow is the only place
+    the bootstrap is pinned: every `setup-uv` step names an action commit, a uv version
+    and the checksum that makes the download verified instead of looked up.
+    """
     action = "astral-sh/setup-uv@6ee6290f1cbc4156c0bdd66691b2c144ef8df19a"
     version = "0.11.29"
     checksum = "04f8b82f5d47f0512dcd32c67a4a6f16a0ea27c81537c338fd0ad6b23cebe829"
     fixture = template_fixture()
-    workflow = (fixture / ".github" / "workflows" / "ci.yml").read_text()
-    embedded_toolchain = (fixture / ".framework" / "framework" / "toolchain.py").read_text()
+    workflows = sorted((fixture / ".github" / "workflows").glob("*.yml"))
+    steps = [
+        step
+        for workflow in workflows
+        for job in yaml.safe_load(workflow.read_text())["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+    ]
 
-    assert f"uses: {action}" in workflow
-    assert f'version: "{version}"' in workflow
-    assert f'checksum: "{checksum}"' in workflow
-    assert f'SETUP_UV_ACTION = "{action}"' in embedded_toolchain
-    assert f'UV_VERSION = "{version}"' in embedded_toolchain
-    assert f'UV_LINUX_X86_64_CHECKSUM = "{checksum}"' in embedded_toolchain
+    assert not (fixture / ".framework").exists()
+    assert steps, f"the render bootstraps uv nowhere in {[w.name for w in workflows]}"
+    for step in steps:
+        assert step["uses"] == action
+        assert step["with"]["version"] == version
+        assert step["with"]["checksum"] == checksum
 
 
 def test_template_fixture_content_matches_its_pinned_render():
@@ -370,20 +383,19 @@ def test_template_fixture_content_matches_its_pinned_render():
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
     assert answers == {
-        "_commit": f"0.4.0-20-g{TEMPLATE_PIN.ref[:7]}",
+        "_commit": TEMPLATE_PIN.ref[:7],
         "_src_path": TEMPLATE_PIN.source,
         "author_email": "dev@example.com",
         "author_name": "Developer",
-        "modules": "backend,tg_bot,notifications,frontend",
-        "node_version": "20",
-        "project_description": "A microservice project built with service-template framework",
+        "modules": "backend,tg_bot",
+        "project_description": "A product generated with codegen-product-kit",
         "project_name": "env_fixture",
         "python_version": "3.12",
         "task_description": "",
     }
     assert (
         fixture_tree_digest(fixture)
-        == "9dfa3bbd628c91c1deb54352bc4306e9df52b444be143de4406dc59bfdaa4f24"
+        == "32246a8a4190dce29d4aefe42e2d6f5a701a5507500f305c725c164111d91b6d"
     )
 
 
@@ -408,15 +420,16 @@ def test_template_fixture_extracts_without_crashing(tmp_path: Path):
 
 
 def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
+    """What the pinned render is allowed to leave undeclared — with the kit, nothing."""
     shutil.copytree(template_fixture(), tmp_path, dirs_exist_ok=True)
 
     result = check_env_contract_usage(tmp_path)
 
-    # The full pinned render includes framework tooling that is outside the
-    # generated deployment contract. BACKEND_API_URL is injected at deployment
-    # time, while SERVICE_TEMPLATE_ROOT only drives that bundled tooling.
+    # The kit render carries no bundled framework tooling, so nothing in it reads a
+    # key outside the generated deployment contract and there is no gap left to
+    # accept. BACKEND_API_URL stays a warning: it is injected at deployment time.
     undeclared = {message.split()[3] for message in result.errors}
-    assert undeclared == {"SERVICE_TEMPLATE_ROOT"}
+    assert undeclared == set()
     assert result.warnings == (
         "required environment contract key BACKEND_API_URL was not observed",
     )

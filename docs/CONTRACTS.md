@@ -776,15 +776,22 @@ the admitted sources production uses is separate and lives in
 
 That seed is the single definition of the pin: it is what a deployed orchestrator
 reads, so nothing else in the repository writes the source or the ref down again.
+Production scaffolds from `gh:vladmesh/codegen-product-kit`.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by
 `LIVE_TEMPLATE_REPO`/`LIVE_TEMPLATE_REF`, both or neither), the stage-5 template
 smoke, the vendored render's directory name
-(`shared/tests/fixtures/service-template-<ref>/`) and the CI gate's exclusion for
-it. Moving the pin is therefore one edit in the seed, and
+(`shared/tests/fixtures/<template repository>-<ref>/`, named after the pinned
+source so a move renames it) and the CI gate's exclusion for it. Moving the pin is
+therefore one edit in the seed, and
 `tests/unit/test_template_pin_single_source.py` holds that shape: the ref is a
 literal in that file alone, and a moved definition reaches every derived site.
+
+The kit publishes no tags, so Copier's clone has nothing to describe and records the
+bare short SHA of the pinned commit in `_commit`. The vendored fixture and the stage-5
+smoke both accept that record; a git-describe value stays accepted for a source that
+does publish tags.
 
 ## Lifecycle and security invariants
 

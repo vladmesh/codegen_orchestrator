@@ -131,10 +131,10 @@ COMPOSE_MERGE_KEY = "<<"
 # rule as the exclusions above: an unpinned image is a decision on the record.
 UNPINNED_IMAGE_DIRS = {
     TEMPLATE_PIN.fixture_relpath: (
-        "a vendored copy of a service-template release, read by the template "
+        "a vendored render of the pinned product kit, read by the template "
         "compatibility tests; its compose files belong to that repository, and "
-        "editing them here would make the fixture stop matching the release it "
-        "fixes. The pins are service-template's to add"
+        "editing them here would make the fixture stop matching the revision it "
+        "fixes. The pins are the kit's to add"
     ),
 }
 

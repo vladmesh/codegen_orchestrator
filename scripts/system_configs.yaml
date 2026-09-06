@@ -71,14 +71,14 @@
   description: "TTL for in-flight scaffold job markers in seconds (10 min)"
 
 - key: scheduler.service_template_source
-  value: "gh:vladmesh/service-template"
+  value: "gh:vladmesh/codegen-product-kit"
   category: scheduler
   description: "Production Copier template source"
 
 - key: scheduler.service_template_ref
-  value: "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
+  value: "fc947a3d38ccf877d04f545b49f06c195b4202c5"
   category: scheduler
-  description: "Pinned service-template commit with the core settings and core jobs contracts"
+  description: "Pinned codegen-product-kit commit the orchestrator scaffolds from"
 
 - key: scheduler.ssl_check_timeout
   value: 5

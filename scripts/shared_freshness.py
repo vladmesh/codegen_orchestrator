@@ -17,7 +17,7 @@ counter and not several that can drift apart.
 Coverage is derived from the tree and never listed by hand, and everything this module
 cannot read reliably fails the check instead of passing quietly:
 
-* Every Dockerfile in the repository is parsed, except the complete vendored service-template
+* Every Dockerfile in the repository is parsed, except the complete vendored template
   fixture. One that copies `shared` has to declare
   `ARG SOURCE_HASH` and the label. A `COPY` whose sources cannot be read — JSON form that
   does not parse, a source built out of a variable, a glob in place of the top directory —
@@ -106,7 +106,6 @@ WALK_SKIP_DIRS = {
     ".mypy_cache",
 }
 VENDORED_TEMPLATE_FIXTURE_ROOT = ("shared", "tests", "fixtures")
-VENDORED_TEMPLATE_FIXTURE_PREFIX = "service-template-"
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
 GLOB_CHARS = set("*?[")
@@ -249,6 +248,11 @@ def is_vendored_template_fixture(path: Path, root: Path) -> bool:
 
     Template compatibility validates that complete product separately. Its Docker
     build rules are not orchestrator images and must not enter this inventory.
+
+    Everything under the fixtures tree is that render — the directory is named after
+    whichever template the pin names, so this asks where a path is rather than what
+    the fixture is called. This module is baked into images that carry no other part
+    of `scripts/`, so it reads no pin to find out.
     """
     try:
         parts = path.relative_to(root).parts
@@ -257,7 +261,6 @@ def is_vendored_template_fixture(path: Path, root: Path) -> bool:
     return (
         len(parts) > len(VENDORED_TEMPLATE_FIXTURE_ROOT)
         and parts[: len(VENDORED_TEMPLATE_FIXTURE_ROOT)] == VENDORED_TEMPLATE_FIXTURE_ROOT
-        and parts[len(VENDORED_TEMPLATE_FIXTURE_ROOT)].startswith(VENDORED_TEMPLATE_FIXTURE_PREFIX)
     )
 
 

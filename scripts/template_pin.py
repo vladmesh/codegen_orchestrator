@@ -21,7 +21,6 @@ REF_KEY = "scheduler.service_template_ref"
 # Where the rendered template fixture is vendored. The directory name encodes the ref, so
 # it is derived here instead of being typed out beside each reader.
 FIXTURES_RELPATH = "shared/tests/fixtures"
-FIXTURE_PREFIX = "service-template-"
 
 
 @dataclass(frozen=True)
@@ -32,8 +31,17 @@ class TemplatePin:
     ref: str
 
     @property
+    def fixture_prefix(self) -> str:
+        """The fixture directory's prefix, named after the pinned template repository.
+
+        Derived rather than typed out, so moving the pin to another template renames
+        the vendored render instead of leaving a directory named after the old source.
+        """
+        return f"{self.source.rsplit('/', 1)[-1]}-"
+
+    @property
     def fixture_dirname(self) -> str:
-        return f"{FIXTURE_PREFIX}{self.ref}"
+        return f"{self.fixture_prefix}{self.ref}"
 
     @property
     def fixture_relpath(self) -> str:
