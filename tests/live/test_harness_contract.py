@@ -5232,6 +5232,10 @@ async def test_a_completed_combination_reads_neither_report_nor_diff(monkeypatch
 @pytest.mark.asyncio
 async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypatch):
     """A red suite over a completed pipeline is the run that must stay diagnosable."""
+    # Every harness client carries the internal key, and the offline run has none
+    # in its environment: the fixture value below is what the sibling collection
+    # regressions above set, and it reaches only a MockTransport.
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(run_evidence, "suite_failed", lambda: True)
     monkeypatch.setattr(
         pipeline_helpers,
