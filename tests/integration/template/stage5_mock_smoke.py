@@ -170,8 +170,9 @@ class Stage5Smoke:
             return recorded.lower() == resolved
         if recorded == self.template.ref:
             return True
-        # A template with no release tags makes Copier record the bare short SHA
-        # instead of a git-describe value.
+        # A template repository that publishes no tags gives Copier's clone nothing to
+        # describe, so it records the bare short SHA. `gh:vladmesh/codegen-product-kit`,
+        # the pinned source, is such a repository: its tags are local only.
         if re.fullmatch(r"[0-9a-f]{7,39}", recorded, re.IGNORECASE) and resolved.startswith(
             recorded.lower()
         ):

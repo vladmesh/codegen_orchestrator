@@ -5129,14 +5129,14 @@ def test_the_suite_scaffolds_from_the_production_pin_when_nothing_overrides_it(m
 
 
 def test_a_template_override_is_taken_from_the_environment(monkeypatch):
-    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:vladmesh/codegen-product-kit")
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:vladmesh/service-template")
     monkeypatch.setenv(
-        pipeline_helpers.TEMPLATE_REF_ENV, "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+        pipeline_helpers.TEMPLATE_REF_ENV, "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
     )
 
     assert pipeline_helpers.resolve_template() == (
-        "gh:vladmesh/codegen-product-kit",
-        "fc947a3d38ccf877d04f545b49f06c195b4202c5",
+        "gh:vladmesh/service-template",
+        "40b54d87dbfe64a9fa6ec379820e43137aaba04c",
     )
 
 
@@ -5150,7 +5150,7 @@ def test_a_half_set_template_override_is_refused(monkeypatch):
 
 def test_a_template_override_is_validated_against_the_scaffold_contract(monkeypatch):
     monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:someone-else/service-template")
-    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REF_ENV, "fc947a3d")
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REF_ENV, "40b54d87")
 
     with pytest.raises(RuntimeError, match="LIVE_TEMPLATE_REPO"):
         pipeline_helpers.resolve_template()

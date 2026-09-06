@@ -106,8 +106,8 @@ than the production pin. Both or neither; they also reseed the stand's own
 
 ```bash
 gh workflow run stand-e2e.yml -f suite=mega-brief -f worker=codex -f qa=claude \
-  -f template_source=gh:vladmesh/codegen-product-kit \
-  -f template_ref=fc947a3d38ccf877d04f545b49f06c195b4202c5
+  -f template_source=gh:vladmesh/service-template \
+  -f template_ref=40b54d87dbfe64a9fa6ec379820e43137aaba04c
 ```
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.

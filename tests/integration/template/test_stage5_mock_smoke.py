@@ -139,11 +139,11 @@ def test_copier_git_describe_value_matches_requested_commit(tmp_path: Path) -> N
 
 def test_copier_bare_short_sha_matches_requested_commit(tmp_path: Path) -> None:
     """An untagged template makes Copier record the bare short SHA, not a describe."""
-    resolved = "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+    resolved = "9f3c1ab5e0d24c7a8b61f0d3e2c4a5b6d7e8f901"
     smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref=resolved)
 
-    assert smoke._recorded_ref_matches("fc947a3", resolved)
-    assert smoke._recorded_ref_matches("fc947a3d38ccf877d04f545b49f06c195b420", resolved)
+    assert smoke._recorded_ref_matches("9f3c1ab", resolved)
+    assert smoke._recorded_ref_matches("9f3c1ab5e0d24c7a8b61f0d3e2c4a5b6d7e8f9", resolved)
     assert not smoke._recorded_ref_matches("deadbee", resolved)
 
 

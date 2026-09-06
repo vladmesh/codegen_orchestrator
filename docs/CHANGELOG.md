@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- Production scaffolds from `gh:vladmesh/codegen-product-kit`: the seed pin moves to it, the
+  vendored fixture is a render of that commit, and the tests assert what the kit render contains.
 - The Copier template pin lives only in `scripts/system_configs.yaml`, read through
   `scripts/template_pin.py`: the live defaults, the stage-5 smoke, the fixture path and the CI gate derive it.
 - A deploy that placed nothing records `DeployRunResult.skipped_reason=already_deployed_same_sha`

@@ -1,0 +1,10 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: fc947a3
+_src_path: gh:vladmesh/codegen-product-kit
+author_email: dev@example.com
+author_name: Developer
+modules: backend,tg_bot
+project_description: A product generated with codegen-product-kit
+project_name: env_fixture
+python_version: '3.12'
+task_description: ''

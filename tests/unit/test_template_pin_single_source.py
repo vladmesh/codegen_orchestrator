@@ -32,8 +32,10 @@ LITERAL_ALLOWED = {
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
 
-CANDIDATE_SOURCE = "gh:vladmesh/codegen-product-kit"
-CANDIDATE_REF = "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+# A revision the pin does not hold, so moving it in the seed alone is observable at
+# every derived site. Never the live pin: that literal belongs to the definition.
+CANDIDATE_SOURCE = "gh:vladmesh/some-other-kit"
+CANDIDATE_REF = "1" * 40
 
 
 def _tracked_files() -> list[str]:
@@ -113,7 +115,7 @@ def test_a_moved_pin_reaches_the_fixture_path_and_the_ci_gate(
 ) -> None:
     gate = _load("check_ci_gate_probe", CI_GATE)
 
-    assert candidate_pin.fixture_path().name == f"service-template-{CANDIDATE_REF}"
+    assert candidate_pin.fixture_path().name == f"some-other-kit-{CANDIDATE_REF}"
     assert candidate_pin.fixture_relpath in gate.UNPINNED_IMAGE_DIRS
 
 

@@ -17,7 +17,7 @@ counter and not several that can drift apart.
 Coverage is derived from the tree and never listed by hand, and everything this module
 cannot read reliably fails the check instead of passing quietly:
 
-* Every Dockerfile in the repository is parsed, except the complete vendored service-template
+* Every Dockerfile in the repository is parsed, except the complete vendored template
   fixture. One that copies `shared` has to declare
   `ARG SOURCE_HASH` and the label. A `COPY` whose sources cannot be read — JSON form that
   does not parse, a source built out of a variable, a glob in place of the top directory —
@@ -68,6 +68,12 @@ import subprocess
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# The Makefile runs this module by path, so `scripts/` is on sys.path and the repository
+# root is not; the pin module can only be found from the tree.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
 # Set on an image by --build-arg SOURCE_HASH; already read back at runtime by
 # worker-manager (services/worker-manager/src/image_builder.py).
@@ -106,7 +112,9 @@ WALK_SKIP_DIRS = {
     ".mypy_cache",
 }
 VENDORED_TEMPLATE_FIXTURE_ROOT = ("shared", "tests", "fixtures")
-VENDORED_TEMPLATE_FIXTURE_PREFIX = "service-template-"
+# The fixture directory is named after the pinned template, so this reads the pin
+# instead of repeating the template's name here.
+VENDORED_TEMPLATE_FIXTURE_PREFIX = TEMPLATE_PIN.fixture_prefix
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
 GLOB_CHARS = set("*?[")

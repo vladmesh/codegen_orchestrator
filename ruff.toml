@@ -2,7 +2,9 @@ line-length = 100
 indent-width = 4
 target-version = "py312"
 exclude = [
-    "shared/tests/fixtures/service-template-*",
+    # The vendored template render: its style belongs to the template it came from,
+    # and its directory is named after whichever template the pin names.
+    "shared/tests/fixtures/*",
 ]
 
 [lint]
