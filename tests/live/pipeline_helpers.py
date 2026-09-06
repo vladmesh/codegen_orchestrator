@@ -1345,12 +1345,11 @@ async def record_retention_sources(api_internal: httpx.AsyncClient, ctx: dict) -
     the stand's GitHub App token; both are unreadable minutes later, and the
     transcript — the third body — is read off this host by the artifact itself.
 
-    Unconditional, because whether this run succeeded is not settled yet: cleanup
-    has not run, and a `CleanupError` after this point is a red suite that would
-    then have nothing to be diagnosed with. Reading is not publishing — what is
-    read here is redacted and held on the host, and only a run that did not
-    succeed publishes it into the artifact
-    (`run_evidence.hold_retained_bodies` and `retain_failure_evidence`).
+    Unconditional, and so is what the artifact does with it: a paid run publishes
+    all three whatever its outcome, because the `stand-e2e` result is decided
+    outside this process and after it (`run_evidence.retain_worker_bodies`). A
+    free deterministic run publishes none of them, and reading them for it costs
+    two local calls that nothing depends on.
 
     Evidence collection, so neither read can fail the run it is diagnosing: what
     could not be read is recorded as the stated reason it could not be.

@@ -8,6 +8,7 @@ import run_evidence
 from run_evidence import (
     EVIDENCE_KIND,
     EVIDENCE_SCHEMA_VERSION,
+    FREE_AGENT_TYPE,
     LOG_TAIL_MAX_CHARS,
     Capture,
     CaptureStatus,
@@ -1071,14 +1072,16 @@ def test_log_tail_is_bounded():
     assert len(redact_log_tail("x" * (LOG_TAIL_MAX_CHARS * 2), {})) == LOG_TAIL_MAX_CHARS
 
 
-def test_a_completed_combination_keeps_the_transcript_a_pointer_only(codex_docker, tmp_path):
+def test_a_free_run_keeps_the_transcript_a_pointer_only(codex_docker, tmp_path):
+    """The deterministic route spends no subscription and retains nothing new."""
     collector = collector_for(codex_docker)
     collector.capture()
 
-    worker = build_artifact(completed_ctx(collector), root=tmp_path)["workers"][0]
+    worker = build_artifact(free_ctx(collector), root=tmp_path)["workers"][0]
     transcript = worker["transcript"]
     assert transcript["host_dir"]["value"].endswith(f"/{DEV_WORKER_ID}")
     assert [Path(item["path"]).name for item in transcript["files"]["value"]] == ["req-1.log"]
+    assert "content" not in transcript
     assert "agent_stdout_tail" not in json.dumps(worker)
 
 
@@ -1134,7 +1137,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 14
+    assert EVIDENCE_SCHEMA_VERSION == 15
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1222,8 +1225,8 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "exit_code",
         "log_tail",
         "transcript",
-        # This combination stopped at engineering, so it retains the three
-        # bodies a failed run's artifact is diagnosed from.
+        # A paid run, so it carries the three bodies its artifact is diagnosed
+        # from — whatever its outcome.
         "agent_report",
         "branch_diff",
         "captured_at",
@@ -2589,13 +2592,12 @@ def test_the_collector_and_the_artifact_read_one_snapshot_predicate(codex_docker
     assert run_evidence.target_snapshot_requirement(reachable)["required"] is False
 
 
-# ── What a failed run retains ────────────────────────────────────────────
+# ── What a paid run retains ──────────────────────────────────────────────
 #
-# The transcript body, the agent's final report and the branch diff, for a
-# combination that did not complete and for that one only. The old contract —
-# no agent output in the artifact at all — is `PRIVACY_STATEMENT`'s account of
-# a *completed* combination and is tested by
-# `test_a_completed_combination_keeps_the_transcript_a_pointer_only` above.
+# The transcript body, the agent's final report and the branch diff, for every
+# paid run and for no free one. The old contract — no agent output in the
+# artifact at all — is `PRIVACY_STATEMENT`'s account of a free run and is tested
+# by `test_a_free_run_keeps_the_transcript_a_pointer_only` above.
 
 COMPLETED_OVERRIDES = {
     "task_status": TaskStatus.DONE,
@@ -2616,6 +2618,11 @@ RETENTION_SOURCES = {
         "diff": "--- a/app.py\n+++ b/app.py\n+print('hi')\n",
     },
 }
+
+
+def free_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """The deterministic route: a `noop` developer worker and no subscription."""
+    return base_ctx(collector, agent_type=FREE_AGENT_TYPE, **overrides)
 
 
 def completed_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
@@ -2655,11 +2662,23 @@ def test_a_failed_run_retains_the_transcript_the_report_and_the_diff(codex_docke
     assert "print('hi')" in diff["value"]["text"]
 
 
-def test_a_completed_run_retains_none_of_it(codex_docker, tmp_path):
+def test_a_paid_run_that_succeeded_carries_the_three_captures(codex_docker, tmp_path):
+    """Unconditional for a paid run: the outcome is decided outside this process."""
     collector = collector_for(codex_docker)
     collector.capture()
 
     worker = failed_worker(completed_ctx(collector, **RETENTION_SOURCES), tmp_path)
+
+    assert worker["transcript"]["content"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["branch_diff"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def test_a_free_run_carries_none_of_the_three(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    worker = failed_worker(free_ctx(collector, **RETENTION_SOURCES), tmp_path)
 
     assert "content" not in worker["transcript"]
     assert "agent_report" not in worker
@@ -2844,15 +2863,17 @@ def test_a_completed_pipeline_whose_assertion_failed_still_retains(codex_docker,
     assert worker["branch_diff"]["status"] == CaptureStatus.CAPTURED.value
 
 
-def test_a_passing_report_leaves_a_completed_run_alone(codex_docker, tmp_path):
+def test_a_green_suite_changes_nothing_about_what_is_carried(codex_docker, tmp_path):
+    """Retention does not consult the outcome at all any more, in either direction."""
     collector = collector_for(codex_docker)
     collector.capture()
     suite_outcome.record_test_report("tests/live/test_full_pipeline.py::t", "call", failed=False)
 
-    worker = failed_worker(completed_ctx(collector, **RETENTION_SOURCES), tmp_path)
+    paid = failed_worker(completed_ctx(collector, **RETENTION_SOURCES), tmp_path)
+    free = failed_worker(free_ctx(collector, **RETENTION_SOURCES), tmp_path)
 
-    assert "content" not in worker["transcript"]
-    assert "agent_report" not in worker
+    assert paid["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+    assert "agent_report" not in free
 
 
 def test_a_secret_straddling_the_bound_is_redacted_not_truncated_into_view(monkeypatch):
@@ -3056,7 +3077,8 @@ def test_a_cleanup_that_raised_after_the_write_still_gets_its_bodies(codex_docke
     early = emit_run_evidence(ctx, root=tmp_path)
     early_artifact = json.loads(early.read_text(encoding="utf-8"))
     assert early_artifact["failure"]["failed"] is False
-    assert "content" not in early_artifact["workers"][0]["transcript"]
+    # Already complete: the retention no longer waits for a verdict to arrive.
+    assert early_artifact["workers"][0]["agent_report"]["status"] == CaptureStatus.CAPTURED.value
 
     # What pytest logs when `cleanup_guard` re-raises: a teardown-phase failure
     # for the last item of the module, after that module's fixture finalised.
@@ -3142,8 +3164,10 @@ def test_finalisation_never_drops_a_body_the_early_write_published(codex_docker,
     assert final["branch_diff"] == published["branch_diff"]
 
 
-def test_a_successful_suite_publishes_nothing_it_collected(codex_docker, tmp_path):
-    """Collection is not publication: held bodies die with the host."""
+def test_a_paid_run_that_succeeded_end_to_end_is_admitted_with_its_captures(codex_docker, tmp_path):
+    """The regression this round owes: green paid run, captures present, admitted."""
+    from scripts.stand_acceptance import _paid_failure_errors  # noqa: PLC0415
+
     collector = collector_for(codex_docker)
     collector.capture()
     ctx = completed_suite_failed_ctx(collector)
@@ -3152,13 +3176,21 @@ def test_a_successful_suite_publishes_nothing_it_collected(codex_docker, tmp_pat
     suite_outcome.record_session_exit(0)
     run_evidence.finalize_pending_run_evidence()
 
-    # Collected and held, on this host, before teardown could remove the sources.
-    held = ctx[run_evidence.RETAINED_BODIES_CTX_KEY][DEV_WORKER_ID]
-    assert held["transcript_content"]["status"] == CaptureStatus.CAPTURED.value
-    # And published nowhere: the artifact a reader gets carries none of it.
-    text = path.read_text(encoding="utf-8")
-    assert "--- stdout ---" not in text
-    worker = json.loads(text)["workers"][0]
-    assert "content" not in worker["transcript"]
-    assert "agent_report" not in worker
-    assert "branch_diff" not in worker
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    assert artifact["failure"]["failed"] is False
+    worker = artifact["workers"][0]
+    assert worker["transcript"]["content"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["branch_diff"]["status"] == CaptureStatus.CAPTURED.value
+    assert _paid_failure_errors("green.json", artifact) == []
+
+    for field in ("transcript_content", "agent_report", "branch_diff"):
+        stripped = json.loads(json.dumps(artifact))
+        target = stripped["workers"][0]
+        if field == "transcript_content":
+            del target["transcript"]["content"]
+        else:
+            del target[field]
+        assert _paid_failure_errors("green.json", stripped) == [
+            f"paid_failure_worker_retention_missing:green.json:{DEV_WORKER_ID}:{field}"
+        ]

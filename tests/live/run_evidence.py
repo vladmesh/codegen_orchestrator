@@ -8,7 +8,7 @@ output at all — worker-wrapper suppresses Codex stdout on the business path on
 purpose, because CLI diagnostics can include data from the mounted session or
 repository. That suppression is a privacy decision and stays: no agent output
 ever re-enters a result payload or a service log. What a **failed** run's
-artifact retains is stated under "What a failed run retains" below.
+artifact retains is stated under "What a paid run retains" below.
 
 **How a run finds its workers.** By its own label, not by having watched them.
 Every dynamic worker container is stamped at creation with
@@ -45,17 +45,21 @@ An omitted worker would read as "nothing ran". That is the failure this module
 exists to end: every worker the run created appears, either with its evidence or
 with the stated reason the evidence could not be read.
 
-**What a failed run retains.** For a run that *succeeded* this artifact is
-exactly what it always was: the log tail is the container's own log, bounded and
-redacted, and the transcript is referenced by path and file list only.
+**What a paid run retains.** A free deterministic run is what this artifact
+always was: the log tail is the container's own log, bounded and redacted, and
+the transcript is referenced by path and file list only.
 
-For a run that did **not** succeed — ``run_failure`` below, which is a statement
-about the suite and not only about the pipeline — three more things are retained
-per worker, because an artifact that cannot say why a paid run went red is worth
-less than the residual disclosure risk of a bounded, redacted body leaving a
-machine that is about to be destroyed. Probe 2 of sprint 1429 is why: its root
-cause was "not knowable from the artifact — worker transcripts live on the
-destroyed stand". The three are
+A **paid** run retains three more things per worker, whatever its outcome,
+because an artifact that cannot say why a paid run went red is worth less than
+the residual disclosure risk of a bounded, redacted body leaving a machine that
+is about to be destroyed. Probe 2 of sprint 1429 is why: its root cause was "not
+knowable from the artifact — worker transcripts live on the destroyed stand".
+
+It is unconditional because the condition could not be evaluated where the
+artifact has to be written: the `stand-e2e` result is decided outside this
+process and after it — ``scripts/stand_run.py`` fails a run on a sweep error
+after every cell passed, and SIGKILLs pytest on its hard timeout — so no
+in-process signal can be the gate. The three are
 
 * ``transcript.content`` — the bodies worker-wrapper retained for this worker
   under the transcript bind mount, which it already redacted against the *worker
@@ -84,25 +88,28 @@ its stated reason instead of its input, exactly as the service-tail branch of
 the redacted text, and a body that hits it says in the artifact that it was
 truncated and at what limit.
 
-**When it retains, and what else reads that.** Not when the *pipeline* failed —
-when the *suite* did. ``run_failure`` is the one place that question is answered:
-pytest's per-test reports, pytest's own exit status, and the pipeline's terminal
-state for a phase that raised before any report existed. Every reader of "did
-this run succeed" reads that one value — the retention here, ``failure.failed``,
-the ``verdict``, and through the written ``failure.failed`` also
-``scripts/stand_acceptance.py``'s two readers. ``stage`` and ``failure_kind``
-answer a different question, *where the pipeline stopped*, and a run whose
-pipeline completed keeps ``stage: completed`` while being a failed run.
+**What ``failure`` and ``verdict`` claim, and what they do not.**
+``run_failure`` answers one question — did this *combination* succeed — from
+three sources: pytest's per-test reports, pytest's own exit status, and the
+pipeline's terminal state for a phase that raised before any report existed.
+``stage`` and ``failure_kind`` answer a different one, *where the pipeline
+stopped*, so a run whose pipeline completed keeps ``stage: completed`` while
+being a failed run.
 
-**Collection and publication are two moments, because their constraints are
-opposite.** The three bodies are readable only while the stand and its containers
-exist, so they are collected, redacted and held before teardown, for every run.
-Whether the run succeeded is not settled until the session ends — a ``cleanup_all``
-that raises after the fixture wrote its artifact is a red suite — so the artifact
-is *finalised* from ``pytest_sessionfinish`` (``finalize_pending_run_evidence``),
-rewriting the early crash-safety copy at its own path. Collecting is not
-promising to publish: a body held for a run that succeeded is never written down,
-and dies with the host.
+Neither of them claims to be the ``stand-e2e`` result. A run can be red for
+things this process never sees and cannot see: a sweep failure after the last
+cell passed, a hard timeout that kills it. Those are the workflow's verdict, and
+they are the reason the retention above has no condition — not something this
+artifact reports. A reader wanting the run's result reads the workflow; a reader
+wanting this combination's evidence reads here.
+
+**Collection is early, the write happens twice.** The bodies are readable only
+while the stand and its containers exist, so they are collected, redacted and
+held in the fixture's ``finally``, before teardown. The artifact is written there
+too — a crash-safety copy — and rewritten at ``pytest_sessionfinish``
+(``finalize_pending_run_evidence``) at the same path, once the in-process suite
+verdict exists. A process that dies before that still leaves a complete artifact,
+retention included.
 """
 
 from __future__ import annotations
@@ -207,6 +214,12 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      and prior deploy facts retain credential-safe `settings_seed` outcomes.
 # v12: Product Brief telemetry retains its bounded stage/deadline ledger, including
 #      the stage that stopped productive work before teardown began.
+# v15: a paid run's workers carry the transcript body, the agent report and the
+#      branch diff unconditionally — the publication gate is gone, because the
+#      `stand-e2e` result is decided outside this process and after it. A free
+#      run carries none of them. `failure`/`verdict` classify the pipeline and
+#      the in-process suite outcome only; a runner-level ending is the workflow's
+#      verdict and is not represented here.
 # v14: `failure.failed` is the run's own answer to "did this run succeed", not a
 #      restatement of `stage`: a run whose pipeline completed and whose suite then
 #      failed is failed, carries `failure.source=suite` and the failing tests in
@@ -218,7 +231,7 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 14
+EVIDENCE_SCHEMA_VERSION = 15
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -306,11 +319,9 @@ PRIVACY_STATEMENT = (
     "every value of the container's environment whose name matches "
     "key|secret|token|password|credential|authorization, plus URL userinfo and "
     "Authorization headers. Agent output never re-enters a result payload or a "
-    "service log. A combination that completed retains no agent output here "
-    "either: its transcript is referenced by path and file list only. A "
-    "combination whose suite did NOT succeed — a failed test of the module that "
-    "owns it, or a pipeline that never completed — additionally retains, per "
-    "worker, the "
+    "service log. A free deterministic run retains no agent output here either: "
+    "its transcript is referenced by path and file list only. A PAID run "
+    "additionally retains, per worker and whatever its outcome, the "
     "transcript worker-wrapper wrote (already redacted by the wrapper against "
     "the worker container's secret environment), the agent's REPORT.md as the "
     "control plane stored it, and the diff of the branch the worker produced. "
@@ -1545,19 +1556,14 @@ RETAINED_BODIES_CTX_KEY = "retained_bodies"
 def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
     """Collect and redact the three bodies for every worker, and hold them.
 
-    **Collection is not publication.** These are readable only while the stand
-    and its containers exist, and whether the run succeeded is not settled until
-    the session ends — a cleanup that raises after this point is still a red
-    suite. Two moments with opposite constraints, so they are two moments: this
-    one collects early and holds, `retain_failure_evidence` decides later whether
-    what is held is published.
+    They are readable only while the stand and its containers exist, so they are
+    read here, in the fixture's `finally`, before teardown. Holding them is what
+    lets the artifact be rewritten later — at `pytest_sessionfinish`, over an
+    in-process suite verdict the early write could not have — without re-reading
+    sources that may be gone by then.
 
-    Held means held in this process, on the host that produced it. A body that
-    is collected and not published dies with the host and never crosses to the
-    runner, so a successful suite's artifact is exactly what it always was.
-
-    Redaction is not deferred with the decision: every body here has already been
-    through `_retained_body`, on this host, before it is held.
+    Redaction happens here and not later: every body is through `_retained_body`,
+    on this host, before it is held.
     """
     held = {
         record["worker_id"]: {
@@ -1571,23 +1577,32 @@ def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
     return held
 
 
-def retain_failure_evidence(ctx: dict, records: list[dict], failure: RunFailure) -> list[dict]:
-    """Publish the held bodies on every worker record, or change nothing.
+def retain_worker_bodies(ctx: dict, records: list[dict]) -> list[dict]:
+    """Publish the held bodies on every worker record of a paid run. No condition.
 
-    The failure is handed in rather than asked for again: `build_artifact` asks
-    `run_failure` once and gives every reader of that question the same answer,
-    so the artifact cannot publish the bodies and then call itself green.
+    There used to be one — publish only for a run that did not succeed — and it
+    is gone, because it could not be evaluated at the only moment the artifact can
+    be written. The `stand-e2e` result is decided outside this process and after
+    it: `scripts/stand_run.py` makes a run red on a failed sweep after every cell
+    passed, and its hard-timeout path SIGKILLs pytest, which no in-process
+    mechanism survives. A conditional whose input arrives after the last moment
+    anything can be written is not a conditional; four rounds of this card moved
+    that defect around before it was deleted instead.
 
-    A successful run's records are returned untouched: the retention is the whole
-    of what a failure buys with the residual disclosure risk, and a run that has
-    nothing to explain buys nothing with it. What was collected for it stays
-    where it was collected and dies with the host.
+    So a paid run's artifact carries the three captures — or the stated reason
+    each could not be collected — whatever the outcome. What the disclosure buys
+    is that no runner-level ending can produce an artifact that hides an absence,
+    and `scripts/stand_acceptance.py` can demand them of any paid artifact without
+    having to trust its self-classification.
+
+    The free deterministic route spends no subscription and starts no paid agent,
+    so it retains nothing new: its records are returned untouched.
 
     A build that runs without a collection having happened — a caller that never
     went through `emit_run_evidence` — collects now rather than publishing a hole:
     the same functions, so there is one way a body is ever made.
     """
-    if not failure.failed:
+    if not is_paid_run(ctx):
         return records
     held = ctx.get(RETAINED_BODIES_CTX_KEY) or hold_retained_bodies(ctx, records)
     published = []
@@ -2875,7 +2890,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": retain_failure_evidence(ctx, collector.records(), failure),
+        "workers": retain_worker_bodies(ctx, collector.records()),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
     }

@@ -907,38 +907,45 @@ last metadata name is retained rather than silently losing the worker from run
 evidence. Cleanup selects only the owning run's labels, verifies removal, is
 idempotent, and refuses an unscoped or neighbour-owned resource.
 
-### Failed-run acceptance evidence
+### Paid-run acceptance evidence
 
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
 the acceptance artifact a `stand-e2e` run publishes.
 
-**A run that did not succeed is one question with one answer, asked once the
-answer exists.** `run_evidence.run_failure` computes it — pytest's per-test
-verdicts and its session exit status, both recorded by the live conftest, or a
-pipeline that did not complete — and every reader of that question reads that
-value: the retention, the artifact's `failure.failed`, and its `verdict`. The
-three bodies are collected, redacted and held before teardown for every run,
-because that is the only moment they are readable; the artifact is finalised at
-`pytest_sessionfinish`, because that is the first moment the outcome is complete.
-The write the fixture makes before teardown is a crash-safety copy that the
-finalisation replaces in place. A body held for a run that succeeded is never
-written down. `failure.stage`
-and `failure.failure_kind` answer a different question, *where the pipeline
-stopped*, and a run whose pipeline completed and whose suite then failed keeps
-`stage: completed` while `failed` is true, `failure.source` is `suite` and the
-verdict is red with a `suite_failed` reason. A paid failure at the admission
-boundary is therefore a run that did not succeed by suite or by pipeline, never a
-second reading of the stage.
+**A paid run's artifact always carries the three captures.** Per worker the run
+created: the transcript body (`transcript.content`), the agent's final report
+(`agent_report`, the `worker_report` task events of this run's engineering
+tasks) and the diff of the branch that worker produced (`branch_diff`, named by
+repository, branch and head SHA). Each is present or carries the stated reason
+it could not be collected; none is ever a bare empty value, and a QA executor —
+which writes no report and produces no branch — says so. There is no condition
+on the outcome, and `scripts/stand_acceptance.py` demands them of any paid
+artifact rather than of one that classifies itself as failed. A free
+deterministic run spends no subscription and retains none of them: its
+transcript is named by path and file list only.
 
-A run whose suite succeeded retains no agent output: its transcript is named by
-path and file list only. A run that did not succeed retains, per worker the run
-created, three more captures — the transcript body
-(`transcript.content`), the agent's final report (`agent_report`, the
-`worker_report` task events of this run's engineering tasks) and the diff of the
-branch that worker produced (`branch_diff`, named by repository, branch and head
-SHA). Each is present or carries the stated reason it could not be collected;
-none is ever a bare empty value, and a QA executor — which writes no report and
-produces no branch — says so.
+Unconditional because the condition could not be evaluated where the artifact
+must be written. A `stand-e2e` run's result is decided outside the pytest
+process and after it — `scripts/stand_run.py` fails a run on a sweep error after
+every cell passed, and SIGKILLs pytest on its hard timeout — so no in-process
+signal can gate what the artifact carries.
+
+**What the artifact classifies, and what it does not.**
+`run_evidence.run_failure` answers one question — did this *combination* succeed
+— from pytest's per-test verdicts and session exit status, both recorded by the
+live conftest, and from a pipeline that did not complete. `failure.failed` and
+`verdict` report that and nothing wider. `failure.stage` and
+`failure.failure_kind` answer a different question, *where the pipeline
+stopped*, so a run whose pipeline completed and whose suite then failed keeps
+`stage: completed` while `failed` is true, `failure.source` is `suite` and the
+verdict is red with a `suite_failed` reason. A **runner-level** outcome — a
+failed sweep, a hard timeout — is the workflow's verdict, is not observable from
+inside the run, and is not represented in this classification at all.
+
+The bodies are collected, redacted and held before teardown, because that is the
+only moment they are readable. The artifact is written there too — a
+crash-safety copy — and rewritten in place at `pytest_sessionfinish` once the
+in-process suite verdict exists.
 
 Every retained byte is redacted on the stand host by
 `shared.diagnostics.redact_diagnostic` before the artifact leaves it and before
@@ -949,9 +956,9 @@ body carrying a protected value that spans a line break is withheld with a
 stated reason, and a redaction that does not complete publishes its stated
 reason instead of its input. `FAILURE_RETENTION_MAX_CHARS` bounds the redacted
 text, and a truncated body says in the artifact that it was truncated and at
-what limit. The admission fails
-closed on the three captures for a paid failure exactly as it does for the stage,
-the reason and the reachability reads.
+what limit. The admission fails closed on the three captures for every paid
+artifact, and on the stage, the reason and the reachability reads for one that
+reports a failure.
 
 ### Provisioning and environment observation
 

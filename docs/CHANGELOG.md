@@ -5,12 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
-- A `stand-e2e` run whose suite did not succeed retains per worker, in the acceptance artifact
-  (evidence schema v14), the transcript body, the agent's report and its branch diff, redacted on the stand.
+- A paid `stand-e2e` run retains per worker, in the acceptance artifact (evidence schema v15), the
+  transcript body, the agent's report and its branch diff, redacted on the stand, whatever the outcome.
+- Admission demands those three of every paid artifact rather than of one that calls itself failed,
+  because a sweep failure or a hard timeout makes a run red outside the process that writes it.
 - `failure.failed` in that artifact answers whether the run failed instead of restating where the
-  pipeline stopped, so a red suite over a completed pipeline is red and is held to that retention.
-- That artifact is finalised at `pytest_sessionfinish` over bodies collected before teardown, so a
-  suite whose cleanup raised after the run is no longer published as a green, pointer-only artifact.
+  pipeline stopped, and classifies the pipeline and in-process suite outcome only.
 - An engineering result whose commit is already on the default branch fails as `no_new_commit` and sends
   its story to human review, so no deploy and no 422 "No commits between" PR retry follows it.
 - `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the

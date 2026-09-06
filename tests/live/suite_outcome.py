@@ -1,12 +1,12 @@
 """Whether this run of the suite has already seen one of its tests fail.
 
-The acceptance artifact retains a failed run's worker bodies, and "failed" is a
-statement about the **suite**, not about the pipeline: a combination whose
-scaffold, engineering, deploy and QA phases all completed and whose assertion
-then failed is a red `stand-e2e` run, and it is exactly the run somebody has to
-diagnose after the stand is gone. `run_evidence.classify_outcome` cannot see
-that — it reads the control plane's terminal state, which says the pipeline
-finished.
+The acceptance artifact classifies its combination, and "failed" is a statement
+about the **suite**, not only about the pipeline: one whose scaffold,
+engineering, deploy and QA phases all completed and whose assertion then failed
+is red, and `run_evidence.classify_outcome` cannot see that — it reads the
+control plane's terminal state, which says the pipeline finished. What the
+artifact *retains* no longer depends on any of this: a paid run carries its three
+worker bodies whatever the outcome.
 
 So the real signal is recorded here, by the one component that has it: pytest's
 own per-test report, fed in from `conftest.pytest_runtest_logreport`. A

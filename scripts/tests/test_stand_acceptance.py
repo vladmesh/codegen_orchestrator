@@ -222,7 +222,7 @@ def _captured(value: object) -> dict:
 def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
     """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 14,
+        "schema_version": 15,
         "kind": "worker_failure_attribution",
         "failure": {
             # `failed` is the run's own answer; `stage` is where the pipeline
@@ -694,6 +694,40 @@ def test_a_completed_pipeline_whose_suite_failed_is_held_to_the_retention(tmp_pa
         f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:agent_report"
         in _incompleteness(output)
     )
+
+
+def test_a_paid_run_that_succeeded_still_owes_its_three_captures(tmp_path):
+    """The `stand-e2e` result is decided after this artifact, so it is owed anyway."""
+    evidence = _run_evidence(paid=True, failed=False)
+    del evidence["workers"][0]["branch_diff"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence, service_log=False)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    worker_id = evidence["workers"][0]["worker_id"]
+    assert (
+        f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:branch_diff"
+        in _incompleteness(output)
+    )
+
+
+def test_a_paid_run_that_succeeded_and_kept_them_is_admitted(tmp_path):
+    evidence = _run_evidence(paid=True, failed=False)
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence, service_log=False)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_free_run_owes_none_of_the_three(tmp_path):
+    """The deterministic route spends no subscription and retains nothing new."""
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    evidence = _run_evidence(paid=False, failed=False)
+    evidence["workers"] = [{"worker_id": "dev-noop-1", "exit_code": {"value": 0}}]
+    (run_dir / NOOP_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
 
 
 def test_a_paid_failure_whose_workers_retained_nothing_is_refused(tmp_path):

@@ -5149,7 +5149,7 @@ def test_a_template_override_is_validated_against_the_scaffold_contract(monkeypa
         pipeline_helpers.resolve_template()
 
 
-# ── The two control-plane sources a failed run's artifact retains ─────────
+# ── The two control-plane sources a paid run's artifact retains ──────────
 
 
 @pytest.mark.asyncio

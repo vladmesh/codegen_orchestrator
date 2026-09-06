@@ -81,12 +81,12 @@ def pytest_collection_modifyitems(session, config, items):
 def pytest_runtest_logreport(report):
     """Carry pytest's own verdict to the evidence the fixtures write.
 
-    The acceptance artifact retains a failed run's worker bodies, and whether the
-    run failed is a fact about the suite: a combination whose pipeline completed
-    and whose assertion then failed is red, and the control plane's terminal
-    state cannot say so. This is the only place that has the real answer, and it
-    has it in time — a test's `call` report is logged before its teardown, and
-    the module-scoped fixtures collect and write in their finaliser.
+    Whether a combination failed is a fact about the suite as well as about the
+    pipeline: one whose pipeline completed and whose assertion then failed is
+    red, and the control plane's terminal state cannot say so. This is the only
+    place that has the real answer, and it has it in time — a test's `call`
+    report is logged before its teardown. It classifies the artifact; what the
+    artifact *retains* does not depend on it.
     """
     suite_outcome.record_test_report(report.nodeid, report.when, report.failed)
 

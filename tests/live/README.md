@@ -240,10 +240,10 @@ and ran on Codex, and the artifact reported `claude` twice.
 
 The log tail is the container's own log (worker-wrapper's structlog), bounded and redacted through
 `shared.diagnostics.redact_diagnostic` against the container's secret environment values. Agent
-output never re-enters a result payload or a service log, and a combination that **completed** keeps
-its transcript a pointer: path and file list, no content.
+output never re-enters a result payload or a service log, and a **free** deterministic run keeps its
+transcript a pointer: path and file list, no content.
 
-A run whose **suite** did not succeed retains three bodies per worker, because an artifact that
+A **paid** run retains three bodies per worker, whatever its outcome, because an artifact that
 cannot say why a paid run went red is worth less than the residual disclosure risk of a bounded,
 redacted body leaving a machine that is about to be destroyed — probe 2 of sprint 1429 ended with
 "root cause not knowable from the artifact: worker transcripts live on the destroyed stand". They are
@@ -251,30 +251,26 @@ redacted body leaving a machine that is about to be destroyed — probe 2 of spr
 `REPORT.md` the control plane stored as a `worker_report` task event) and `branch_diff` (the change
 the worker's branch carries, named by repository, branch and head SHA). Each is a capture: present,
 or the stated reason it could not be collected — a QA executor writes no report and produces no
-branch, and says so.
+branch, and says so. `scripts/stand_acceptance.py` demands all three of any paid artifact.
 
-"Did not succeed" is pytest's verdict, not the pipeline's: a combination whose scaffold, engineering,
-deploy and QA phases all completed and whose assertion then failed is a red run and retains. The
-conftest's `pytest_runtest_logreport` hook records each test report in `suite_outcome`, and a
-module-scoped fixture's finaliser — where the collection and the artifact both happen — runs after
-the last test of its module, so the verdict is settled by then. The control plane's terminal state is
-the second source, for a phase that raised before any test could report.
+There is no condition on the outcome, because the outcome is not knowable where the artifact has to
+be written. A `stand-e2e` run is red for things this process never sees: `scripts/stand_run.py`
+returns 1 when its mandatory sweep fails after every cell passed, and its hard-timeout path SIGKILLs
+pytest. Four rounds of this card moved that gate around before it was deleted instead.
 
-That question has exactly one answer, `run_evidence.run_failure`, and every reader of it reads that
-one value: the retention, `failure.failed` and the `verdict`. Such a run is red with a `suite_failed`
-reason of its own — distinct from `run_failed`, which names a stage — and `failure.stage` stays
-`completed`, because *where the pipeline stopped* is a different question with a different true
-answer. `scripts/stand_acceptance.py` reads `failure.failed` and so holds it to the three retained
-bodies like any other paid failure; nothing recomputes the question from the stage.
+**What the artifact classifies.** `run_evidence.run_failure` answers whether this *combination*
+succeeded — pytest's per-test reports (`suite_outcome`, fed by the conftest's
+`pytest_runtest_logreport` hook), pytest's session exit status, and the pipeline's terminal state for
+a phase that raised before any report existed. A completed pipeline whose assertion failed is red
+with a `suite_failed` reason of its own, distinct from `run_failed` which names a stage, and
+`failure.stage` stays `completed` because *where the pipeline stopped* is a different question. A
+runner-level ending — a failed sweep, a hard timeout — is the workflow's verdict and is deliberately
+**not** represented here; read the workflow for the run's result, and this file for the
+combination's evidence.
 
-**Collection and publication are two moments.** The bodies are readable only while the stand exists,
-so they are collected, redacted and held before teardown for *every* run. Whether the run succeeded
-is not settled until the session ends: `cleanup_guard` re-raises a `CleanupError` after the fixture
-has already written its artifact, and pytest reports that as a teardown failure afterwards. So the
-fixture's write is a crash-safety copy and `pytest_sessionfinish` rewrites it in place, with pytest's
-exit status — the last and most complete signal — folded into `run_failure`. Holding is not
-publishing: what a successful run collected is never written down and dies with the host, so its
-artifact carries none of the three.
+The bodies are readable only while the stand exists, so they are collected, redacted and held before
+teardown. The fixture's write is a crash-safety copy and `pytest_sessionfinish` rewrites it in place
+once the in-process suite verdict exists.
 
 Every byte is redacted **on the stand host** before the artifact crosses to the runner and **before**
 any bound is applied to it: `_retained_body` is the single funnel for all three, and it redacts the
