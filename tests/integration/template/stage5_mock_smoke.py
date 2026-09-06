@@ -11,13 +11,21 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from uuid import uuid4
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-SYSTEM_CONFIG = ROOT / "scripts" / "system_configs.yaml"
+# `make template-compat` runs this file by path, which puts this directory on sys.path and
+# not the repository root, so the pin module could not be found on its own.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.template_pin import SYSTEM_CONFIGS_PATH, load_template_pin  # noqa: E402
+
+SYSTEM_CONFIG = SYSTEM_CONFIGS_PATH
 COMPOSE_LABEL = "com.docker.compose.project"
 COMMAND_TIMEOUT_SECONDS = 20 * 60
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
@@ -38,12 +46,9 @@ class CommandTimeout(RuntimeError):
 
 
 def load_production_template(path: Path = SYSTEM_CONFIG) -> TemplateRevision:
-    """Read the production source and pin from the scheduler seed config."""
-    values = {item["key"]: item["value"] for item in yaml.safe_load(path.read_text())}
-    return TemplateRevision(
-        source=str(values["scheduler.service_template_source"]),
-        ref=str(values["scheduler.service_template_ref"]),
-    )
+    """Read the production source and pin from the one place they are defined."""
+    pin = load_template_pin(path)
+    return TemplateRevision(source=pin.source, ref=pin.ref)
 
 
 @dataclass(frozen=True)

@@ -1,12 +1,12 @@
 import json
 import shutil
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
+from scripts.template_pin import TEMPLATE_PIN
 from src.compose_runner import ComposeInvocation, ComposeRunner, _write_snapshot
 from src.compose_validator import RESOURCE_IDENTITY_POLICY, validate_effective_compose
 
@@ -325,9 +325,7 @@ class TestComposeRunner:
 
     @pytest.mark.asyncio
     async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
-        fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c"
-        )
+        fixture = TEMPLATE_PIN.fixture_path()
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
         (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
@@ -341,17 +339,13 @@ class TestComposeRunner:
         assert "name" not in resolved["volumes"]["db_data"]
 
     def test_service_template_has_no_label_file_compatibility_consumer(self):
-        fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c"
-        )
+        fixture = TEMPLATE_PIN.fixture_path()
 
         assert all("label_file" not in source.read_text() for source in (fixture / "infra").glob("compose*.yml"))
 
     @pytest.mark.asyncio
     async def test_real_documented_integration_resolution_passes_the_production_validator(self, tmp_path):
-        fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c"
-        )
+        fixture = TEMPLATE_PIN.fixture_path()
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
         (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
@@ -369,9 +363,7 @@ class TestComposeRunner:
 
     @pytest.mark.asyncio
     async def test_documented_integration_source_flow_is_compiled(self, tmp_path):
-        fixture = Path(__file__).parents[4] / (
-            "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c"
-        )
+        fixture = TEMPLATE_PIN.fixture_path()
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
         (workspace / ".env").write_text("POSTGRES_USER=postgres\n")

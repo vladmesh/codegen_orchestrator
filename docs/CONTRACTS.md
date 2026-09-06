@@ -774,6 +774,18 @@ the ref names an immutable tag or commit and the render is reproducible. Which o
 the admitted sources production uses is separate and lives in
 `scripts/system_configs.yaml` (`scheduler.service_template_source/ref`).
 
+That seed is the single definition of the pin: it is what a deployed orchestrator
+reads, so nothing else in the repository writes the source or the ref down again.
+`scripts/template_pin.py` parses it and every other site derives from
+`TEMPLATE_PIN` — the live suite's scaffold defaults
+(`tests/live/pipeline_helpers.py`, still overridable per run by
+`LIVE_TEMPLATE_REPO`/`LIVE_TEMPLATE_REF`, both or neither), the stage-5 template
+smoke, the vendored render's directory name
+(`shared/tests/fixtures/service-template-<ref>/`) and the CI gate's exclusion for
+it. Moving the pin is therefore one edit in the seed, and
+`tests/unit/test_template_pin_single_source.py` holds that shape: the ref is a
+literal in that file alone, and a moved definition reaches every derived site.
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership
