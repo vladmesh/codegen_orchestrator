@@ -31,7 +31,7 @@ _DEFAULT_CPU_LIMIT = "1.0"
 _DEFAULT_MEMORY_LIMIT = "512MiB"
 _DOCKER_EXECUTABLE = Path(shutil.which("docker") or "/usr/bin/docker")
 
-# Default compose files for service-template projects (under infra/)
+# Default compose files for scaffolded projects (codegen-product-kit layout, under infra/)
 _DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
 
 # These Compose v2.27.1 loader fields must have been consumed while compiling the
@@ -79,7 +79,7 @@ class ComposeInvocation:
 def _generate_network_override(worker_id: str) -> str:
     """Generate a Compose override that routes the default network to the worker dev network.
 
-    Convention: compose files from service-template do NOT define custom networks,
+    Convention: compose files rendered by codegen-product-kit do NOT define custom networks,
     so all services use the implicit 'default' network. This override redirects it
     to the pre-created external dev network for the worker.
 

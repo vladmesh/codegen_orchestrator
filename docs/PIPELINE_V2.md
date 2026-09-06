@@ -80,6 +80,14 @@ unchanged — they repair what a confirmed brief already described.
 5. Save the tree to repository configuration
 6. Set the Project lifecycle to `active`
 
+**Template**: Copier renders from `gh:vladmesh/codegen-product-kit`, pinned to one of the
+kit's release tags — currently the tag seeded as `scheduler.service_template_ref` in
+`scripts/system_configs.yaml`, which is the single definition of the pin. The ref is never
+floating, so a scaffold is reproducible. Which repositories may be rendered at all is the
+`ServiceTemplateSource` literal in `shared/contracts/template.py`, which still admits the
+older `service-template`; see
+[CONTRACTS.md](CONTRACTS.md#the-template-a-project-is-scaffolded-from).
+
 **Outputs**: GitHub repo with full scaffolded project, workspace on disk, tree in DB
 
 **Key property**: workspace persists on disk at `/data/workspaces/{repo_id}/`.

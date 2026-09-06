@@ -123,7 +123,7 @@ def build_create_task(
 {env_hints_section}
 ## Project Structure (already scaffolded)
 
-The project was scaffolded with `copier` from `service-template`.
+The project was scaffolded with `copier` from `codegen-product-kit`.
 You'll find:
 - `services/{modules_str.split(",")[0]}/` - main service directory{spec_lines}
 - `AGENTS.md` - code structure patterns

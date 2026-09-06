@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- Documentation and the architect and engineering worker instructions name `codegen-product-kit` as
+  the template production scaffolds from, and its release-tag pin; seeded keys and types are unchanged.
 - A worker's retained `branch_diff` is taken against what the branch added — its merge base, or
   what its merge was made onto once the story merged — so a red run whose story merged keeps its diff.
 - The QA executor's transcript rides the Run it settles (`QARunResult.executor_transcript`) and is

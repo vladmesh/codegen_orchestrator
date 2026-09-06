@@ -14,7 +14,7 @@ Codegen Orchestrator is a multi-agent system for automatic project generation an
 | **LLM** | Anthropic Claude (via CLI or API) |
 | **Interface** | Telegram Bot |
 | **Admin UI** | React SPA (admin-frontend, nginx proxy) |
-| **Code generation** | service-template (Copier) |
+| **Code generation** | codegen-product-kit (Copier) |
 | **Infrastructure** | `services/infra-service` (Ansible) |
 | **Storage** | PostgreSQL + Redis |
 | **Observability** | Loki + Promtail + Grafana (logs), node_exporter + cadvisor (hardware), Postgres (runs) |
@@ -213,7 +213,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 | Repository | Usage |
 |-------------|---------------|
-| [service-template](https://github.com/vladmesh/service-template) | A Copier template for generating projects |
+| [codegen-product-kit](https://github.com/vladmesh/codegen-product-kit) | The Copier template production scaffolds from, pinned by release tag |
 
 ## Documentation
 

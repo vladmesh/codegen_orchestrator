@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       service_template_candidate_ref:
-        description: Optional service-template tag or commit to test before updating the production pin
+        description: Optional codegen-product-kit tag or commit to test before updating the production pin
         required: false
         type: string
       simulate_first_attempt_registry_failure:

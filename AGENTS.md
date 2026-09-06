@@ -20,7 +20,8 @@ between the two files.
 
 ## Related projects
 
-- **service-template** (`/home/dev/projects/service-template`) — a framework for generating projects
+- **codegen-product-kit** (`/home/dev/projects/codegen-product-kit`) — the Copier template
+  production scaffolds from, and the framework the generated projects carry
 
 ## Where the work comes from
 

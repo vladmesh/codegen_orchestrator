@@ -611,7 +611,7 @@ def scheduled_behaviour_facts(
     a prompt inviting anyone to guess one.
 
     The second sentence is the one that keeps the verdict honest. The product's
-    core answers a fire with a dispatch record, and `service-template`'s own
+    core answers a fire with a dispatch record, and `codegen-product-kit`'s own
     contract says a dispatched command is not evidence that a provider consumed
     the event or ran the behaviour. So the fact says, where an executor would
     otherwise read the record as the answer, that the answer is the observable

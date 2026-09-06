@@ -264,7 +264,7 @@ and no migration is needed because `content` is a JSON column.
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
 a manifest-declared `key`, an explicit `scope` (`product`, or `user` with a
 positive `subject_id`), and a JSON `value` — the same vocabulary the generated
-product's core settings contract uses (`service-template`, `docs/CONTRACTS.md`,
+product's core settings contract uses (`codegen-product-kit`, `docs/CONTRACTS.md`,
 "Core settings v1"), so writing them into a product later is a transcription and
 not an interpretation. `(key, scope, subject_id)` is unique within one brief. A
 credential is not a setting: a credential-shaped key or value is refused by the
@@ -356,7 +356,7 @@ brief adds nothing and the run is exactly what it was.
 
 **A QA run can invoke a *named* scheduled behaviour, and judges it on the
 product's own output.** The generated product's released core jobs contract
-(`service-template`, `docs/CONTRACTS.md`, "Core jobs v1") is the whole of the
+(`codegen-product-kit`, `docs/CONTRACTS.md`, "Core jobs v1") is the whole of the
 mechanism: `POST /jobs/fire` takes a `JobFire` and `POST /jobs/evidence` takes a
 `JobCommandRef`, both `contract_version: 1`. Central QA calls them through
 `services/langgraph/src/clients/product_jobs.py`, the same narrow shape as the
@@ -415,7 +415,7 @@ and emits nothing a second time, so a retry can never become a second execution
 of the behaviour.
 
 *What a dispatch record is not.* `dispatch_status: dispatched` means the
-product's core published `job_fired` — `service-template`'s own contract says in
+product's core published `job_fired` — `codegen-product-kit`'s own contract says in
 those words that it is not evidence a provider consumed the event or ran the
 behaviour. So it is never the answer here either. Every outcome carries that
 sentence, the run's established facts state it, the executor prompt forbids
@@ -776,7 +776,8 @@ the admitted sources production uses is separate and lives in
 
 That seed is the single definition of the pin: it is what a deployed orchestrator
 reads, so nothing else in the repository writes the source or the ref down again.
-Production scaffolds from `gh:vladmesh/codegen-product-kit`.
+Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
+repository's release tag and no longer from `service-template`.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by

@@ -101,13 +101,14 @@ one selected pair. Its productive work stops at 50 minutes, then its fixture get
 
 **Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,
 `template_source` and `template_ref`, which point the live suite's scaffold at a template other
-than the production pin. Both or neither; they also reseed the stand's own
+than the production pin — typically a `codegen-product-kit` release candidate being tried before
+the pin moves to it. Both or neither; they also reseed the stand's own
 `scheduler.service_template_source/ref`, and `scripts/system_configs.yaml` is untouched.
 
 ```bash
 gh workflow run stand-e2e.yml -f suite=mega-brief -f worker=codex -f qa=claude \
-  -f template_source=gh:vladmesh/service-template \
-  -f template_ref=40b54d87dbfe64a9fa6ec379820e43137aaba04c
+  -f template_source=gh:vladmesh/codegen-product-kit \
+  -f template_ref=0.5.1
 ```
 
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
