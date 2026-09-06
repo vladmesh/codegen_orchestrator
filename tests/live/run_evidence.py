@@ -45,13 +45,13 @@ An omitted worker would read as "nothing ran". That is the failure this module
 exists to end: every worker the run created appears, either with its evidence or
 with the stated reason the evidence could not be read.
 
-**What a failed run retains.** For a combination that reached
-``TerminalState.COMPLETED`` this artifact is exactly what it always was: the log
-tail is the container's own log, bounded and redacted, and the transcript is
-referenced by path and file list only.
+**What a failed run retains.** For a run that *succeeded* this artifact is
+exactly what it always was: the log tail is the container's own log, bounded and
+redacted, and the transcript is referenced by path and file list only.
 
-For a combination that did **not** complete, three more things are retained per
-worker, because an artifact that cannot say why a paid run went red is worth
+For a run that did **not** succeed — ``run_failure`` below, which is a statement
+about the suite and not only about the pipeline — three more things are retained
+per worker, because an artifact that cannot say why a paid run went red is worth
 less than the residual disclosure risk of a bounded, redacted body leaving a
 machine that is about to be destroyed. Probe 2 of sprint 1429 is why: its root
 cause was "not knowable from the artifact — worker transcripts live on the
