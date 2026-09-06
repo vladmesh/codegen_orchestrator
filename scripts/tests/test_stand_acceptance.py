@@ -231,6 +231,7 @@ def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
             "source": "pipeline" if failed else "none",
             "failed_tests": [],
             "failed_test_count": 0,
+            "session_exit_status": 1 if failed else 0,
             "stage": "stopped_at_engineering" if failed else "completed",
             "failure_kind": "worker_did_not_finish" if failed else "none",
             "control_plane_reason": {

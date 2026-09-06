@@ -53,7 +53,6 @@ from run_evidence import (
     engineering_run_record,
     evidence_output_directory,
     qa_run_facts,
-    run_failure,
     target_snapshot_requirement,
 )
 from settings_seed_followup import follow_settings_seed
@@ -1339,22 +1338,23 @@ def _target_snapshot_args(project_name: str, server_handle: str | None) -> list[
 STORY_BRANCH_DIFF_TIMEOUT = 120
 
 
-async def record_failure_retention_sources(api_internal: httpx.AsyncClient, ctx: dict) -> None:
-    """Read the two control-plane-owned bodies a failed run's artifact retains.
+async def record_retention_sources(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Read the two control-plane-owned bodies before the stand can stop answering.
 
-    The agent's report lives in the stand's database and the branch diff lives
-    behind the stand's GitHub App token; both are unreadable minutes later, and
-    the transcript — the third body — is read off this host by the artifact
-    itself. Only a run that did not succeed retains any of them, and that question
-    is answered by `run_evidence.run_failure` — the same one call the artifact's
-    own `failed`, verdict and retention read, so the collection and the artifact
-    cannot disagree about which runs owe these bodies.
+    The agent's report lives in the stand's database and the branch diff behind
+    the stand's GitHub App token; both are unreadable minutes later, and the
+    transcript — the third body — is read off this host by the artifact itself.
+
+    Unconditional, because whether this run succeeded is not settled yet: cleanup
+    has not run, and a `CleanupError` after this point is a red suite that would
+    then have nothing to be diagnosed with. Reading is not publishing — what is
+    read here is redacted and held on the host, and only a run that did not
+    succeed publishes it into the artifact
+    (`run_evidence.hold_retained_bodies` and `retain_failure_evidence`).
 
     Evidence collection, so neither read can fail the run it is diagnosing: what
     could not be read is recorded as the stated reason it could not be.
     """
-    if not run_failure(ctx).failed:
-        return
     await record_worker_reports(api_internal, ctx)
     record_story_branch_diff(ctx)
 
@@ -1532,7 +1532,7 @@ async def record_terminal_stage_evidence(api_internal: httpx.AsyncClient, ctx: d
     """
     await record_engineering_evidence(api_internal, ctx)
     await backfill_qa_run(api_internal, ctx)
-    await record_failure_retention_sources(api_internal, ctx)
+    await record_retention_sources(api_internal, ctx)
     record_target_host_snapshot(ctx)
 
 

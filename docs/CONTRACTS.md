@@ -912,11 +912,17 @@ idempotent, and refuses an unscoped or neighbour-owned resource.
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
 the acceptance artifact a `stand-e2e` run publishes.
 
-**A run that did not succeed is one question with one answer.**
-`run_evidence.run_failure` computes it once — pytest's own per-test verdict,
-recorded by the live conftest, or a pipeline that did not complete — and every
-reader of that question reads that value: the pre-teardown collection, the
-retention, the artifact's `failure.failed`, and its `verdict`. `failure.stage`
+**A run that did not succeed is one question with one answer, asked once the
+answer exists.** `run_evidence.run_failure` computes it — pytest's per-test
+verdicts and its session exit status, both recorded by the live conftest, or a
+pipeline that did not complete — and every reader of that question reads that
+value: the retention, the artifact's `failure.failed`, and its `verdict`. The
+three bodies are collected, redacted and held before teardown for every run,
+because that is the only moment they are readable; the artifact is finalised at
+`pytest_sessionfinish`, because that is the first moment the outcome is complete.
+The write the fixture makes before teardown is a crash-safety copy that the
+finalisation replaces in place. A body held for a run that succeeded is never
+written down. `failure.stage`
 and `failure.failure_kind` answer a different question, *where the pipeline
 stopped*, and a run whose pipeline completed and whose suite then failed keeps
 `stage: completed` while `failed` is true, `failure.source` is `suite` and the

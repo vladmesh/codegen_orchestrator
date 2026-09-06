@@ -86,13 +86,23 @@ truncated and at what limit.
 
 **When it retains, and what else reads that.** Not when the *pipeline* failed —
 when the *suite* did. ``run_failure`` is the one place that question is answered:
-it reads pytest's own per-test verdict (``suite_outcome``), with the terminal
-state as the second source for a phase that raised before any test could report.
-Every reader of "did this run succeed" reads that one value — the retention here,
-``failure.failed``, the ``verdict``, and through the written ``failure.failed``
-also ``scripts/stand_acceptance.py``'s two readers. ``stage`` and ``failure_kind``
+pytest's per-test reports, pytest's own exit status, and the pipeline's terminal
+state for a phase that raised before any report existed. Every reader of "did
+this run succeed" reads that one value — the retention here, ``failure.failed``,
+the ``verdict``, and through the written ``failure.failed`` also
+``scripts/stand_acceptance.py``'s two readers. ``stage`` and ``failure_kind``
 answer a different question, *where the pipeline stopped*, and a run whose
 pipeline completed keeps ``stage: completed`` while being a failed run.
+
+**Collection and publication are two moments, because their constraints are
+opposite.** The three bodies are readable only while the stand and its containers
+exist, so they are collected, redacted and held before teardown, for every run.
+Whether the run succeeded is not settled until the session ends — a ``cleanup_all``
+that raises after the fixture wrote its artifact is a red suite — so the artifact
+is *finalised* from ``pytest_sessionfinish`` (``finalize_pending_run_evidence``),
+rewriting the early crash-safety copy at its own path. Collecting is not
+promising to publish: a body held for a run that succeeded is never written down,
+and dies with the host.
 """
 
 from __future__ import annotations
@@ -109,7 +119,8 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
-from suite_outcome import failed_tests
+import structlog
+from suite_outcome import failed_tests, session_exit_status, suite_failed
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
@@ -127,6 +138,8 @@ from shared.contracts.worker_evidence import (
     secret_env_values,
 )
 from shared.diagnostics import redact_diagnostic
+
+logger = structlog.get_logger(__name__)
 
 
 def orchestrator_root() -> Path:
@@ -1338,13 +1351,19 @@ def run_failure(ctx: dict) -> RunFailure:
     runs will produce — layer 3 of this sprint needs a `passed` QA verdict — so
     it is precisely the one that has to stay diagnosable.
 
-    `failed_tests()` is pytest's own verdict, recorded per test report by
-    `tests/live/conftest.py` and settled by the time a module-scoped fixture's
-    finaliser builds the artifact. The terminal state is the second source, not a
-    proxy for the first: a phase that raised leaves the fixture through its own
-    `finally` during the first test's *setup*, before any report exists, so that
-    run has no pytest verdict yet and is caught by the pipeline that did not
-    finish. A run that succeeded satisfies neither.
+    Three sources, and between them nothing that can end this suite is missed.
+    `suite_failed()` is pytest's own verdict: the per-test reports the live
+    conftest records, and — because some endings are no test's report — the
+    session's exit status, handed over at `pytest_sessionfinish`. The pipeline's
+    terminal state is the third, for a phase that raised and left the fixture
+    through its own `finally` during the first test's *setup*, before any report
+    exists. A run that succeeded satisfies none of them.
+
+    **When this is asked matters as much as who asks it.** Two of the three are
+    complete only once the session ends, so the artifact is *finalised* from a
+    session-end hook (`finalize_pending_run_evidence`) and the write the fixture
+    makes before teardown is a crash-safety copy. Asking earlier is not wrong —
+    it is early, and the final write is what the reader gets.
 
     `terminal_state` and `failure_kind` keep their own job — *where* the pipeline
     stopped — and are not consulted for anything else here.
@@ -1353,7 +1372,7 @@ def run_failure(ctx: dict) -> RunFailure:
     tests = tuple(failed_tests())
     if terminal_state is not TerminalState.COMPLETED:
         return RunFailure(failed=True, source=FailureSource.PIPELINE, failed_tests=tests)
-    if tests:
+    if suite_failed():
         return RunFailure(failed=True, source=FailureSource.SUITE, failed_tests=tests)
     return RunFailure(failed=False, source=FailureSource.NONE)
 
@@ -1520,25 +1539,70 @@ def _branch_diff(ctx: dict, record: dict) -> Capture:
     return _retained_body(diff["diff"], identity)
 
 
-def retain_failure_evidence(ctx: dict, records: list[dict]) -> list[dict]:
-    """Add the failed-run bodies to every worker record, or change nothing.
+RETAINED_BODIES_CTX_KEY = "retained_bodies"
 
-    A successful combination's records are returned untouched: the retention is
-    the whole of what a failure buys with the residual disclosure risk, and a
-    run that has nothing to explain buys nothing with it.
+
+def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
+    """Collect and redact the three bodies for every worker, and hold them.
+
+    **Collection is not publication.** These are readable only while the stand
+    and its containers exist, and whether the run succeeded is not settled until
+    the session ends — a cleanup that raises after this point is still a red
+    suite. Two moments with opposite constraints, so they are two moments: this
+    one collects early and holds, `retain_failure_evidence` decides later whether
+    what is held is published.
+
+    Held means held in this process, on the host that produced it. A body that
+    is collected and not published dies with the host and never crosses to the
+    runner, so a successful suite's artifact is exactly what it always was.
+
+    Redaction is not deferred with the decision: every body here has already been
+    through `_retained_body`, on this host, before it is held.
     """
-    if not run_failure(ctx).failed:
+    held = {
+        record["worker_id"]: {
+            "transcript_content": _transcript_content(record["transcript"]).as_dict(),
+            "agent_report": _agent_report(ctx, record).as_dict(),
+            "branch_diff": _branch_diff(ctx, record).as_dict(),
+        }
+        for record in records
+    }
+    ctx[RETAINED_BODIES_CTX_KEY] = held
+    return held
+
+
+def retain_failure_evidence(ctx: dict, records: list[dict], failure: RunFailure) -> list[dict]:
+    """Publish the held bodies on every worker record, or change nothing.
+
+    The failure is handed in rather than asked for again: `build_artifact` asks
+    `run_failure` once and gives every reader of that question the same answer,
+    so the artifact cannot publish the bodies and then call itself green.
+
+    A successful run's records are returned untouched: the retention is the whole
+    of what a failure buys with the residual disclosure risk, and a run that has
+    nothing to explain buys nothing with it. What was collected for it stays
+    where it was collected and dies with the host.
+
+    A build that runs without a collection having happened — a caller that never
+    went through `emit_run_evidence` — collects now rather than publishing a hole:
+    the same functions, so there is one way a body is ever made.
+    """
+    if not failure.failed:
         return records
-    retained = []
+    held = ctx.get(RETAINED_BODIES_CTX_KEY) or hold_retained_bodies(ctx, records)
+    published = []
     for record in records:
+        bodies = held.get(record["worker_id"])
+        if bodies is None:
+            bodies = hold_retained_bodies(ctx, records)[record["worker_id"]]
         with_bodies = dict(record)
         transcript = dict(record["transcript"])
-        transcript["content"] = _transcript_content(record["transcript"]).as_dict()
+        transcript["content"] = bodies["transcript_content"]
         with_bodies["transcript"] = transcript
-        with_bodies["agent_report"] = _agent_report(ctx, record).as_dict()
-        with_bodies["branch_diff"] = _branch_diff(ctx, record).as_dict()
-        retained.append(with_bodies)
-    return retained
+        with_bodies["agent_report"] = bodies["agent_report"]
+        with_bodies["branch_diff"] = bodies["branch_diff"]
+        published.append(with_bodies)
+    return published
 
 
 def qa_cell(ctx: dict) -> dict:
@@ -2254,6 +2318,11 @@ def failure_summary(
         "source": failure.source.value,
         "failed_tests": list(failure.failed_tests[:FAILED_TEST_NAMES_LISTED]),
         "failed_test_count": len(failure.failed_tests),
+        # Non-zero with no failed test named means the suite ended badly in a way
+        # no test report describes — a fixture finaliser, a cleanup that raised,
+        # a collection error. `null` means this artifact was written before the
+        # session ended, which for a finalised artifact never happens.
+        "session_exit_status": session_exit_status(),
         "stage": terminal_state.value,
         "failure_kind": failure_kind.value,
         "control_plane_reason": reason.as_dict(),
@@ -2806,7 +2875,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": retain_failure_evidence(ctx, collector.records()),
+        "workers": retain_failure_evidence(ctx, collector.records(), failure),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
     }
@@ -2817,17 +2886,51 @@ def write_artifact(artifact: dict, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     stamp = artifact["generated_at"].replace(":", "").replace("-", "")
     path = directory / f"run-evidence-{artifact['combination']['label']}-{stamp}.json"
+    return write_artifact_at(artifact, path)
+
+
+def write_artifact_at(artifact: dict, path: Path) -> Path:
+    """Write one artifact to a named path, replacing what is there."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
-def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
-    """Take a last capture pass and write this combination's artifact.
+@dataclass(frozen=True)
+class PendingArtifact:
+    """One combination's artifact, written early and not yet final."""
 
-    The last pass is what the run's dead workers are read in: they are still
-    labelled, so they are still listed. Workers the run's ownership manifest
-    names that no pass ever listed are reconciled in as missed captures — never
-    omitted, because an omitted worker reads as "nothing ran".
+    ctx: dict
+    path: Path
+    root: Path
+
+
+_pending_artifacts: list[PendingArtifact] = []
+
+
+def pending_artifacts() -> list[PendingArtifact]:
+    """The artifacts written but not yet finalised. For tests of this mechanism."""
+    return list(_pending_artifacts)
+
+
+def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
+    """Collect everything the host still has, write it, and register the finalisation.
+
+    Called from the fixture's `finally`, which is the last moment the containers,
+    the transcript files and the control plane still exist. Three things happen
+    here and each is here for its own reason:
+
+    * the last capture pass, because the run's dead workers are still labelled
+      and still listed, and a worker the ownership manifest names that no pass
+      listed is reconciled in as a missed capture rather than omitted;
+    * the three bodies are collected, redacted and **held**, because after
+      teardown they are unreadable — held, not necessarily published;
+    * the artifact is written, and registered for finalisation.
+
+    This write is a crash-safety copy, not the answer. Whether the run succeeded
+    is not settled yet: cleanup has not run, and a `CleanupError` after this line
+    is a red suite. `finalize_pending_run_evidence` rewrites this same path once
+    the session's outcome exists, and that write is the authoritative one.
     """
     # Resolved here as well as in build_artifact: the live harness calls this with
     # no root, and `None / "docs"` raised inside the fixture's `finally`, failing
@@ -2845,5 +2948,43 @@ def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
                 role_from_worker_id(resource.identifier),
                 NEVER_LISTED_REASON,
             )
+    hold_retained_bodies(ctx, collector.records())
     artifact = build_artifact(ctx, root=artifact_root)
-    return write_artifact(artifact, evidence_output_directory(root))
+    path = write_artifact(artifact, evidence_output_directory(root))
+    _pending_artifacts.append(PendingArtifact(ctx=ctx, path=path, root=artifact_root))
+    return path
+
+
+def finalize_pending_run_evidence() -> list[Path]:
+    """Rewrite every artifact of this session once its outcome is known.
+
+    The last hook of the session is the first moment "did this run succeed" has a
+    complete answer: every test report is in, cleanup has run and re-raised what
+    it had to, and pytest's own exit status is settled. So the artifact is built
+    once more, from the same context and the same already-captured worker
+    records, and replaces the early copy at its own path — one artifact per
+    combination, and the last write is the one a reader gets.
+
+    Nothing is captured again: the containers are gone by now, and a second
+    capture would replace true observations with the reasons they can no longer
+    be made. Nothing published earlier is dropped either — the failure signals
+    only ever accumulate, so a run that was failed at the early write is failed
+    here, and this is asserted rather than argued
+    (`test_finalisation_never_drops_a_body_the_early_write_published`).
+
+    Evidence never fails the session it describes: an artifact that cannot be
+    rewritten leaves its early copy in place and says so in the log.
+    """
+    written: list[Path] = []
+    while _pending_artifacts:
+        pending = _pending_artifacts.pop(0)
+        try:
+            artifact = build_artifact(pending.ctx, root=pending.root)
+            written.append(write_artifact_at(artifact, pending.path))
+        except Exception as error:  # noqa: BLE001 — the early copy stands
+            logger.warning(
+                "run_evidence_finalisation_failed",
+                path=str(pending.path),
+                error_type=type(error).__name__,
+            )
+    return written

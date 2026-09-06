@@ -16,22 +16,32 @@ the artifact both happen — runs after the last test of its module, and a test'
 that owns this combination has already been reported by the time the collection
 asks.
 
-This is read by exactly one function, `run_evidence.run_failure`, which is where
+There is a second signal here, and it is the last one that exists: the session's
+own exit status, handed in by `conftest.pytest_sessionfinish`. Some ways a suite
+fails are not any test's `call` report — a fixture finaliser that raised after
+the module's own evidence ran, `cleanup_guard` re-raising a `CleanupError`, a
+collection error in another module. Every one of them has been accounted for by
+the time pytest computes that status, which is why the artifact is *finalised*
+from a session-end hook rather than from the fixture that wrote it: the question
+is asked where the answer already exists.
+
+Both are read by exactly one function, `run_evidence.run_failure`, which is where
 "did this run succeed" is answered for every reader of that question — the
 retention, the artifact's `failure.failed`, its verdict, and through the written
 `failed` also the acceptance admission.
 
-Two things this deliberately does not try to be. It is not a *session* verdict:
-a later module's failure cannot be known to an earlier module's teardown, and
-nothing can make it so. And it is not the only source — a phase that raised
-leaves the fixture through its own `finally` during the first test's setup,
-before any report exists, and that run is caught by the pipeline's terminal state
-instead. The two together are the whole of "this run did not succeed".
+What this is not: a *pre-final* verdict anybody may act on. A reader that asks
+before the session ends gets what is known so far, which is why the early
+artifact write is a crash-safety copy and never the last word.
 """
 
 from __future__ import annotations
 
 _failed_tests: list[str] = []
+# None until `pytest_sessionfinish` hands it over: "not asked yet" and "the
+# session ended cleanly" are different facts, and only one of them means the run
+# succeeded.
+_session_exit_status: int | None = None
 
 
 def record_test_report(node_id: str, when: str, failed: bool) -> None:
@@ -43,9 +53,26 @@ def record_test_report(node_id: str, when: str, failed: bool) -> None:
         _failed_tests.append(entry)
 
 
+def record_session_exit(status: object) -> None:
+    """Record pytest's own exit status. The last and most complete signal."""
+    global _session_exit_status
+    _session_exit_status = int(status)
+
+
+def session_exit_status() -> int | None:
+    """Pytest's exit status, or None while the session is still running."""
+    return _session_exit_status
+
+
 def suite_failed() -> bool:
-    """Whether any test of this run has failed or errored so far."""
-    return bool(_failed_tests)
+    """Whether this run of the suite has failed, as far as is known right now.
+
+    A test that failed, or a session that ended with a non-zero status — which
+    covers every ending no test report names: a fixture finaliser that raised
+    after its module's evidence ran, `cleanup_guard` re-raising a `CleanupError`,
+    a collection error, an internal error.
+    """
+    return bool(_failed_tests) or bool(_session_exit_status)
 
 
 def failed_tests() -> list[str]:
@@ -55,4 +82,6 @@ def failed_tests() -> list[str]:
 
 def reset() -> None:
     """Forget what has been recorded. For tests of this mechanism only."""
+    global _session_exit_status
     _failed_tests.clear()
+    _session_exit_status = None

@@ -261,12 +261,20 @@ the last test of its module, so the verdict is settled by then. The control plan
 the second source, for a phase that raised before any test could report.
 
 That question has exactly one answer, `run_evidence.run_failure`, and every reader of it reads that
-one value: the pre-teardown collection, the retention, `failure.failed` and the `verdict`. Such a run
-is red with a `suite_failed` reason of its own — distinct from `run_failed`, which names a stage —
-and `failure.stage` stays `completed`, because *where the pipeline stopped* is a different question
-with a different true answer. `scripts/stand_acceptance.py` reads `failure.failed` and so holds it to
-the three retained bodies like any other paid failure; nothing recomputes the question from the
-stage.
+one value: the retention, `failure.failed` and the `verdict`. Such a run is red with a `suite_failed`
+reason of its own — distinct from `run_failed`, which names a stage — and `failure.stage` stays
+`completed`, because *where the pipeline stopped* is a different question with a different true
+answer. `scripts/stand_acceptance.py` reads `failure.failed` and so holds it to the three retained
+bodies like any other paid failure; nothing recomputes the question from the stage.
+
+**Collection and publication are two moments.** The bodies are readable only while the stand exists,
+so they are collected, redacted and held before teardown for *every* run. Whether the run succeeded
+is not settled until the session ends: `cleanup_guard` re-raises a `CleanupError` after the fixture
+has already written its artifact, and pytest reports that as a teardown failure afterwards. So the
+fixture's write is a crash-safety copy and `pytest_sessionfinish` rewrites it in place, with pytest's
+exit status — the last and most complete signal — folded into `run_failure`. Holding is not
+publishing: what a successful run collected is never written down and dies with the host, so its
+artifact carries none of the three.
 
 Every byte is redacted **on the stand host** before the artifact crosses to the runner and **before**
 any bound is applied to it: `_retained_body` is the single funnel for all three, and it redacts the

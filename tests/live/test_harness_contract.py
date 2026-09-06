@@ -5205,38 +5205,14 @@ async def test_worker_reports_that_could_not_be_read_are_a_stated_reason(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_completed_combination_reads_neither_report_nor_diff(monkeypatch):
-    # The signal this run's own verdicts would otherwise carry in: stated here,
-    # so the assertion is about a green suite and not about this session.
-    monkeypatch.setattr(run_evidence, "failed_tests", list)
-    ctx = {
-        "scaffold_status": ProjectStatus.ACTIVE,
-        "task_status": TaskStatus.DONE,
-        "deploy_run_id": "run-1",
-        "deploy_outcome": DeployOutcome.SUCCESS.value,
-        "final_app_status": ApplicationStatus.RUNNING.value,
-        "qa_run": {"id": "q", "result": {"qa_outcome": QAOutcome.PASSED.value}},
-        "task_id": "task-1",
-        "story_id": "story-1",
-        "repo_name": "run-repo",
-    }
-    client = SimpleNamespace(get=AsyncMock())
+async def test_a_completed_combination_reads_both_before_teardown_anyway(monkeypatch):
+    """Collection is not publication: a green pipeline is read too, and held.
 
-    await pipeline_helpers.record_failure_retention_sources(client, ctx)
-
-    client.get.assert_not_awaited()
-    assert "worker_reports" not in ctx
-    assert "story_branch_diff" not in ctx
-
-
-@pytest.mark.asyncio
-async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypatch):
-    """A red suite over a completed pipeline is the run that must stay diagnosable."""
-    # Every harness client carries the internal key, and the offline run has none
-    # in its environment: the fixture value below is what the sibling collection
-    # regressions above set, and it reaches only a MockTransport.
+    Whether this run succeeded is not settled here — cleanup has not run — and
+    after teardown neither source can be read at all. The green artifact still
+    publishes none of it; that is asserted in `test_run_evidence.py`.
+    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setattr(run_evidence, "failed_tests", lambda: ["tests/live/t.py::a::call"])
     monkeypatch.setattr(
         pipeline_helpers,
         "docker_exec_python_module",
@@ -5274,10 +5250,86 @@ async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypat
     async with pipeline_helpers.api_client_as_internal_service(
         base_url="http://test", transport=httpx.MockTransport(handler)
     ) as api_internal:
-        await pipeline_helpers.record_failure_retention_sources(api_internal, ctx)
+        await pipeline_helpers.record_retention_sources(api_internal, ctx)
 
     assert ctx["worker_reports"] == []
     assert ctx["story_branch_diff"]["head_sha"] == "c0ffee"
+
+
+@pytest.mark.asyncio
+async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypatch):
+    """The same reads, with the run already known to be red. Nothing gates them."""
+    # Every harness client carries the internal key, and the offline run has none
+    # in its environment: the fixture value below is what the sibling collection
+    # regressions above set, and it reaches only a MockTransport.
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=pipeline_helpers.STORY_BRANCH_DIFF_MARKER
+            + json.dumps(
+                {
+                    "repository": "org/run-repo",
+                    "branch": "story/story-1",
+                    "head_sha": "c0ffee",
+                    "diff": "--- a/app.py\n",
+                }
+            )
+            + "\n",
+            stderr="",
+        ),
+    )
+    ctx = {
+        "scaffold_status": ProjectStatus.ACTIVE,
+        "task_status": TaskStatus.DONE,
+        "deploy_run_id": "run-1",
+        "deploy_outcome": DeployOutcome.SUCCESS.value,
+        "final_app_status": ApplicationStatus.RUNNING.value,
+        "qa_run": {"id": "q", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        "task_id": "task-1",
+        "story_id": "story-1",
+        "repo_name": "run-repo",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        await pipeline_helpers.record_retention_sources(api_internal, ctx)
+
+    assert ctx["worker_reports"] == []
+    assert ctx["story_branch_diff"]["head_sha"] == "c0ffee"
+
+
+def test_session_finish_records_the_exit_status_and_finalises(request, monkeypatch):
+    """The hook is the wiring: the last signal in, and the last write out."""
+    conftest = next(
+        plugin
+        for _, plugin in request.config.pluginmanager.list_name_plugin()
+        if getattr(plugin, "__file__", "").endswith("tests/live/conftest.py")
+    )
+    finalised = []
+    monkeypatch.setattr(
+        run_evidence, "finalize_pending_run_evidence", lambda: finalised.append(True) or []
+    )
+    recorded = suite_outcome.failed_tests()
+    suite_outcome.reset()
+    try:
+        conftest.pytest_sessionfinish(session=None, exitstatus=2)
+
+        assert suite_outcome.session_exit_status() == 2
+        assert suite_outcome.suite_failed() is True
+        assert finalised == [True]
+    finally:
+        suite_outcome.reset()
+        for entry in recorded:
+            node_id, _, when = entry.rpartition("::")
+            suite_outcome.record_test_report(node_id, when, failed=True)
 
 
 def test_the_suite_verdict_comes_from_pytest_own_report(request):

@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   (evidence schema v14), the transcript body, the agent's report and its branch diff, redacted on the stand.
 - `failure.failed` in that artifact answers whether the run failed instead of restating where the
   pipeline stopped, so a red suite over a completed pipeline is red and is held to that retention.
+- That artifact is finalised at `pytest_sessionfinish` over bodies collected before teardown, so a
+  suite whose cleanup raised after the run is no longer published as a green, pointer-only artifact.
 - An engineering result whose commit is already on the default branch fails as `no_new_commit` and sends
   its story to human review, so no deploy and no 422 "No commits between" PR retry follows it.
 - `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the

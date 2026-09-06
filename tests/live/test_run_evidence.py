@@ -61,6 +61,9 @@ def _isolated_suite_outcome():
     for entry in recorded:
         node_id, _, when = entry.rpartition("::")
         suite_outcome.record_test_report(node_id, when, failed=True)
+    # A test that emitted an artifact registered a finalisation this session's
+    # own `pytest_sessionfinish` would otherwise run over a torn-down tmp_path.
+    run_evidence.finalize_pending_run_evidence()
 
 
 REPO = "live-test-llm-1a2b3c4d"
@@ -1179,6 +1182,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "source": run_evidence.FailureSource.PIPELINE.value,
         "failed_tests": [],
         "failed_test_count": 0,
+        "session_exit_status": None,
         "stage": TerminalState.STOPPED_AT_ENGINEERING.value,
         "failure_kind": FailureKind.WORKER_DID_NOT_FINISH.value,
         "control_plane_reason": artifact["failure"]["control_plane_reason"],
@@ -3032,3 +3036,129 @@ def test_admission_holds_a_suite_failed_run_to_the_retention_it_owes(codex_docke
         f"paid_failure_worker_retention_missing:run-evidence.json:{DEV_WORKER_ID}:{field}"
         for field in ("transcript_content", "agent_report", "branch_diff")
     ]
+
+
+# ── Collection early, publication late ───────────────────────────────────
+
+
+def test_a_cleanup_that_raised_after_the_write_still_gets_its_bodies(codex_docker, tmp_path):
+    """The reviewer's scenario: green pipeline, green assertions, red teardown.
+
+    `cleanup_guard` re-raises the `CleanupError` after the fixture has already
+    written its artifact, and pytest reports that as the last item's teardown
+    failure. Nothing about the run was knowable as failed when the artifact was
+    written — which is why the write is not the last one.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = completed_suite_failed_ctx(collector)
+
+    early = emit_run_evidence(ctx, root=tmp_path)
+    early_artifact = json.loads(early.read_text(encoding="utf-8"))
+    assert early_artifact["failure"]["failed"] is False
+    assert "content" not in early_artifact["workers"][0]["transcript"]
+
+    # What pytest logs when `cleanup_guard` re-raises: a teardown-phase failure
+    # for the last item of the module, after that module's fixture finalised.
+    suite_outcome.record_test_report(
+        "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed", "teardown", True
+    )
+    suite_outcome.record_session_exit(1)
+
+    written = run_evidence.finalize_pending_run_evidence()
+
+    assert written == [early]
+    final = json.loads(early.read_text(encoding="utf-8"))
+    assert final["failure"]["failed"] is True
+    assert final["failure"]["source"] == run_evidence.FailureSource.SUITE.value
+    assert final["failure"]["session_exit_status"] == 1
+    worker = final["workers"][0]
+    assert worker["transcript"]["content"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["branch_diff"]["status"] == CaptureStatus.CAPTURED.value
+
+    from scripts.stand_acceptance import _paid_failure_errors  # noqa: PLC0415
+
+    assert _paid_failure_errors("final.json", final) == []
+    stripped = json.loads(json.dumps(final))
+    del stripped["workers"][0]["transcript"]["content"]
+    assert _paid_failure_errors("final.json", stripped) == [
+        f"paid_failure_worker_retention_missing:final.json:{DEV_WORKER_ID}:transcript_content"
+    ]
+
+
+def test_a_session_that_ended_badly_with_no_failed_test_is_still_a_failed_run(
+    codex_docker, tmp_path
+):
+    """Not every ending is a test report: the exit status is the last word."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = completed_suite_failed_ctx(collector)
+    emit_run_evidence(ctx, root=tmp_path)
+    suite_outcome.record_session_exit(3)
+
+    (path,) = run_evidence.finalize_pending_run_evidence()
+
+    final = json.loads(path.read_text(encoding="utf-8"))
+    assert final["failure"]["failed"] is True
+    assert final["failure"]["failed_tests"] == []
+    assert final["failure"]["session_exit_status"] == 3
+    assert final["workers"][0]["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def test_an_artifact_exists_even_if_finalisation_never_runs(codex_docker, tmp_path):
+    """Crash safety: the early write is why a process that dies leaves evidence."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES)
+
+    path = emit_run_evidence(ctx, root=tmp_path)
+
+    assert path.is_file()
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    assert artifact["kind"] == EVIDENCE_KIND
+    # This run had already failed when it was written, so it is already complete.
+    assert artifact["failure"]["failed"] is True
+    assert artifact["workers"][0]["transcript"]["content"]["status"] == (
+        CaptureStatus.CAPTURED.value
+    )
+    assert run_evidence.pending_artifacts()[0].path == path
+
+
+def test_finalisation_never_drops_a_body_the_early_write_published(codex_docker, tmp_path):
+    """The failure signals only accumulate, so publication cannot be withdrawn."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES)
+    path = emit_run_evidence(ctx, root=tmp_path)
+    published = json.loads(path.read_text(encoding="utf-8"))["workers"][0]
+    suite_outcome.record_session_exit(0)
+
+    run_evidence.finalize_pending_run_evidence()
+
+    final = json.loads(path.read_text(encoding="utf-8"))["workers"][0]
+    assert final["transcript"]["content"] == published["transcript"]["content"]
+    assert final["agent_report"] == published["agent_report"]
+    assert final["branch_diff"] == published["branch_diff"]
+
+
+def test_a_successful_suite_publishes_nothing_it_collected(codex_docker, tmp_path):
+    """Collection is not publication: held bodies die with the host."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = completed_suite_failed_ctx(collector)
+
+    path = emit_run_evidence(ctx, root=tmp_path)
+    suite_outcome.record_session_exit(0)
+    run_evidence.finalize_pending_run_evidence()
+
+    # Collected and held, on this host, before teardown could remove the sources.
+    held = ctx[run_evidence.RETAINED_BODIES_CTX_KEY][DEV_WORKER_ID]
+    assert held["transcript_content"]["status"] == CaptureStatus.CAPTURED.value
+    # And published nowhere: the artifact a reader gets carries none of it.
+    text = path.read_text(encoding="utf-8")
+    assert "--- stdout ---" not in text
+    worker = json.loads(text)["workers"][0]
+    assert "content" not in worker["transcript"]
+    assert "agent_report" not in worker
+    assert "branch_diff" not in worker

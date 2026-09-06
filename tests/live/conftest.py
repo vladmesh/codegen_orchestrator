@@ -23,6 +23,7 @@ from pipeline_helpers import (
     require_internal_api_key,
 )
 import pytest
+import run_evidence
 import suite_outcome
 
 from shared.contracts.dto.project import ProjectStatus
@@ -88,6 +89,21 @@ def pytest_runtest_logreport(report):
     the module-scoped fixtures collect and write in their finaliser.
     """
     suite_outcome.record_test_report(report.nodeid, report.when, report.failed)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Finalise every run artifact once the session's outcome exists.
+
+    This is the last moment of the run and the first one at which "did this suite
+    succeed" is completely answered: every test report is in, every fixture
+    finaliser has run, `cleanup_guard` has re-raised whatever it had to, and
+    pytest has computed its exit status. The fixtures wrote their artifacts
+    before teardown — they had to, that is where the containers still exist — and
+    those writes are crash-safety copies. This rewrites each of them in place
+    with the outcome it could not have known.
+    """
+    suite_outcome.record_session_exit(exitstatus)
+    run_evidence.finalize_pending_run_evidence()
 
 
 @pytest.fixture
