@@ -2960,10 +2960,14 @@ def test_an_absent_qa_transcript_names_the_writer_and_claims_nothing_about_the_e
         assert claim not in content["reason"]
 
 
-def test_an_empty_qa_transcript_is_what_the_record_holds_not_a_verdict_on_the_executor(
-    transcripts, tmp_path
-):
-    """An empty value is still the record's answer, and it is reported as one."""
+def test_an_empty_qa_transcript_is_the_runners_own_observation_of_silence(transcripts, tmp_path):
+    """An executor that ran and said nothing is knowledge, not ignorance.
+
+    Only the QA runner writes an empty transcript, and it writes it because it
+    watched that happen. So this absence names the executor's silence, unlike
+    the absences that name the writer of a record instead — the two are
+    different findings and the artifact keeps them apart.
+    """
     collector = collector_for(qa_docker(transcripts))
     collector.capture()
     ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(""))
@@ -2971,10 +2975,26 @@ def test_an_empty_qa_transcript_is_what_the_record_holds_not_a_verdict_on_the_ex
     content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
 
     assert content["status"] == CaptureStatus.MISSED.value
-    assert "settled with an empty executor transcript" in content["reason"]
-    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING in content["reason"]
-    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
-        assert claim not in content["reason"]
+    assert content["reason"].endswith(run_evidence.QA_EXECUTOR_WAS_SILENT_REASON)
+    # And it is not the reason a record with no transcript gets.
+    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING not in content["reason"]
+
+
+def test_no_assembled_header_is_ever_published_as_retained_output(transcripts, tmp_path):
+    """Presentation goes around output; it never becomes output.
+
+    The runner delimits multiple retained attempts with a header. A run whose
+    executors all stayed silent produces no content at all, and the artifact
+    must say so rather than retain this code's own header text as though an
+    agent had written it.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(""))
+
+    worker = qa_worker_of(ctx, tmp_path)
+
+    assert "QA executor attempt" not in json.dumps(worker)
 
 
 def test_a_qa_result_with_no_transcript_field_says_the_producer_records_none(transcripts, tmp_path):

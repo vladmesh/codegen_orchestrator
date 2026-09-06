@@ -1525,6 +1525,14 @@ QA_TRANSCRIPT_CLAIMS_NOTHING = (
     "this says what the Run record holds and nothing about whether an executor "
     "produced output: only the writer that ran one could know that"
 )
+# The one absence that *is* knowledge. An empty transcript is written by the QA
+# runner and by nothing else — it is what the runner watched happen: an executor
+# that ran and said nothing. That is a different finding from a record whose
+# writer had no transcript to record, and the two are never merged.
+QA_EXECUTOR_WAS_SILENT_REASON = (
+    "the QA runner recorded an empty executor transcript for this run: an executor "
+    "ran and produced no output, which the runner observed rather than inferred"
+)
 
 QA_WRITES_NO_REPORT_REASON = (
     "a QA executor writes no REPORT.md: its answer is the QA verdict, which this "
@@ -1645,11 +1653,13 @@ def _qa_executor_transcript(ctx: dict) -> Capture:
     (`QARunResult.executor_transcript`), which outlives the container and is read
     here with the rest of that Run.
 
-    When it is not there, what is stated is about the record: no QA Run was read,
-    or the Run was settled by a writer that recorded no transcript. None of those
-    reasons says an executor produced nothing — several writers can settle a Run
-    while the output exists only in the process still running it, so that is not
-    a thing this artifact can know.
+    Three states, and they never merge. Output the executor produced is retained.
+    An empty transcript is the runner's own observation that an executor ran and
+    said nothing, and is a stated absence that says exactly that. Everything else
+    — no QA Run read, a Run settled by a writer that recorded no transcript — is
+    a stated absence about the *record*, naming the path that settled the Run and
+    claiming nothing about any executor, because several writers can settle a Run
+    while the output exists only in the process still running it.
     """
     qa_run = ctx.get("qa_run")
     if qa_run is None:
@@ -1664,10 +1674,11 @@ def _qa_executor_transcript(ctx: dict) -> Capture:
             f"({_qa_settling_writer(qa_run)}); {QA_TRANSCRIPT_CLAIMS_NOTHING}"
         )
     transcript = result[QA_EXECUTOR_TRANSCRIPT_FIELD]
+    if transcript == "":
+        return Capture.missed(f"QA Run {qa_run.get('id')}: {QA_EXECUTOR_WAS_SILENT_REASON}")
     if not transcript:
-        held = "an empty executor transcript" if transcript == "" else "no executor transcript"
         return Capture.missed(
-            f"QA Run {qa_run.get('id')} was settled with {held} — "
+            f"QA Run {qa_run.get('id')} was settled with no executor transcript — "
             f"{_qa_settling_writer(qa_run)}; {QA_TRANSCRIPT_CLAIMS_NOTHING}"
         )
     return _retained_body(

@@ -860,22 +860,33 @@ through the one retention funnel.
 **Every attempt that ran is kept.** QA retries a transient failure to start its
 executor, and an attempt that ran and said something must not be erased by a
 later one that never started a container. The runner collects the attempts
-(`QAExecutorAttempts`) and writes them under one header each —
-`== QA executor attempt N of M ==` — so a reader can tell them apart. That
-applies to the answered run as much as to the failed one: an attempt that spoke
-before a successful retry is evidence too.
+(`QAExecutorAttempts`) and writes those that produced output under one header
+each — `== QA executor attempt N of M ==` — so a reader can tell them apart.
+That applies to the answered run as much as to the failed one: an attempt that
+spoke before a successful retry is evidence too. The header is presentation and
+only ever goes around output an executor produced; assembled text is never
+published as content.
 
-**A null or missing value is a fact about the record, never a claim about the
-executor.** It says this writer recorded no transcript, and nothing more. It may
-not be read as "no executor produced output", because more than one writer can
-settle a QA Run and only one of them ever holds that output: the QA consumer
-that ran the executor. Its own fallback terminal write settles the Run when the
-first PATCH fails for anything but a 409, and the QA grant sweep and the
-temporary-access sweep can settle a Run — through the 409 refusal and
-`record_run_outcome_unless_settled` — while an executor is still in flight and
-its output exists only in the runner's call stack. None of those writers can
-know what the executor did. The artifact says which writer settled the Run
-without a transcript, as the Run itself records it, and asserts nothing further.
+**The field has three states and they never merge:**
+
+* **a non-empty string — retained.** An executor produced output and the
+  artifact carries it, redacted and bounded through the one retention funnel.
+* **`""` — known silent.** At least one executor attempt ran and none of them
+  said anything. Only the QA runner writes this, and it writes it from its own
+  observation, so the artifact states an absence that names the executor's
+  silence. The sweep race below does not touch it: an empty transcript is a fact
+  somebody watched, not the default of a writer that had nothing.
+* **`null` or the field absent — not recorded.** The writer that settled the Run
+  had no transcript to record. It says this writer recorded none and nothing
+  more; it may not be read as "no executor produced output", because more than
+  one writer can settle a QA Run and only one of them ever holds that output:
+  the QA consumer that ran the executor. Its own fallback terminal write settles
+  the Run when the first PATCH fails for anything but a 409, and the QA grant
+  sweep and the temporary-access sweep can settle a Run — through the 409
+  refusal and `record_run_outcome_unless_settled` — while an executor is still
+  in flight and its output exists only in the runner's call stack. The artifact
+  says which writer settled the Run without a transcript, as the Run itself
+  records it, and asserts nothing further.
 
 That the sweeps can settle an in-flight Run is a known residual and stays one
 for this sprint: closing it would change terminal ownership and the run

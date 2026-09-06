@@ -375,6 +375,50 @@ class TestAnExecutorThatRanButSaidNothing:
 
         assert result.passed is False
         assert result.blocker.category is QABlockerCategory.UNKNOWN
+        # It ran and said nothing, and that is what the run records: the empty
+        # string, never a header this code assembled around nothing.
+        assert result.executor_evidence == ""
+
+    async def test_silence_across_every_attempt_stays_silence(self, tmp_path):
+        """Two containers ran, both said nothing, and neither reached the endpoint.
+
+        The retry must not turn that into content. What the run records is the
+        runner's own observation — an executor ran and produced no output — and
+        the artifact states that absence rather than publishing an attempt
+        header as though an agent had written it.
+        """
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    "the QA executor container ran but never reached the endpoint: no output",
+                    transient=True,
+                    transcript="",
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+        assert result.executor_evidence == ""
+
+    async def test_a_silent_attempt_beside_a_speaking_one_adds_no_empty_section(self, tmp_path):
+        """Only the attempt that produced output is retained, under its own header."""
+        spoke = '{"output": "second executor reached no endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable("ran, said nothing", transient=True, transcript=""),
+                QAExecutorUnavailable(
+                    f"ran but never reached the endpoint: {spoke}",
+                    transient=True,
+                    transcript=spoke,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence == (
+            f"== QA executor attempt 2 of {QA_EXECUTOR_ATTEMPTS} ==\n{spoke}"
+        )
 
 
 class TestOnlyAnAssignedSubscriptionAgentCanBeConfigured:

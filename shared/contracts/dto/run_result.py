@@ -446,12 +446,16 @@ class QARunResult(BaseModel):
     #: container leaves no transcript under the worker-transcript mount, so a red
     #: paid run's acceptance artifact could otherwise only report the absence.
     #:
-    #: ``None`` is a fact about this record — the writer that settled the Run
-    #: recorded no transcript — and never a claim that no executor produced
-    #: output. Several writers can settle a QA Run (the consumer's fallback
-    #: terminal write, the QA grant sweep, the temporary-access sweep) and only
-    #: the consumer that ran the executor ever holds what it said. Readers state
-    #: which writer settled the Run without one; they do not conclude silence.
+    #: Three states, never merged. A non-empty string is retained output. ``""``
+    #: is an executor that ran and said nothing — written only by the QA runner,
+    #: from its own observation, so it is knowledge and readers may state it as
+    #: silence. ``None`` is a fact about this record — the writer that settled
+    #: the Run recorded no transcript — and never a claim that no executor
+    #: produced output: several writers can settle a QA Run (the consumer's
+    #: fallback terminal write, the QA grant sweep, the temporary-access sweep)
+    #: and only the consumer that ran the executor ever holds what it said.
+    #: Readers state which writer settled the Run without one; they do not
+    #: conclude silence from it.
     executor_transcript: str | None = None
 
     @model_validator(mode="after")

@@ -72,11 +72,11 @@ class QARuntimeConfig:
     telethon_env: dict[str, str] | None = None
 
 
-# One header per executor attempt, so a body carrying two of them is readable as
-# two attempts rather than as one confusing transcript. Every attempt that ran
-# is retained under its own header: a second attempt that produced nothing must
-# not erase what the first one said, which is the whole reason the attempts are
-# collected rather than overwritten.
+# One header per retained attempt, so a body carrying two of them is readable as
+# two attempts rather than as one confusing transcript. It is presentation, and
+# presentation only ever goes *around* output an executor produced: a header with
+# nothing under it would be this code's own text published as though an agent had
+# written it.
 EXECUTOR_ATTEMPT_HEADER = "== QA executor attempt {attempt} of {attempts} =="
 
 
@@ -86,8 +86,19 @@ class QAExecutorAttempts:
 
     An attempt that never started a container contributes nothing — there is no
     transcript to keep — and an attempt that ran contributes what it said, the
-    empty string included. `evidence` is `None` only when no attempt ran at all,
-    and that is a fact about this record, not a claim about any executor.
+    empty string included, because "it ran and was silent" is something this
+    process observed.
+
+    `evidence` keeps those three answers apart, and they never merge:
+
+    * a non-empty string — the attempts that produced output, each under its own
+      header. An attempt that ran and said nothing is not given a header: there
+      is nothing for the header to introduce, and assembled text is never
+      content;
+    * ``""`` — at least one attempt ran and no attempt said anything. The runner
+      watched that happen, so the silence is knowledge and is carried as such;
+    * ``None`` — no attempt ever started a container, so this record holds
+      nothing and claims nothing about any executor.
     """
 
     attempts: int
@@ -102,9 +113,12 @@ class QAExecutorAttempts:
     def evidence(self) -> str | None:
         if not self.said:
             return None
+        spoke = [(attempt, text) for attempt, text in self.said if text]
+        if not spoke:
+            return ""
         return "\n".join(
             f"{EXECUTOR_ATTEMPT_HEADER.format(attempt=attempt, attempts=self.attempts)}\n{text}"
-            for attempt, text in self.said
+            for attempt, text in spoke
         )
 
 

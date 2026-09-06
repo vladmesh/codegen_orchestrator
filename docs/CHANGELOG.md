@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   never started a container no longer erases what the previous attempt said.
 - An absent `executor_transcript` says which writer settled the run without one and claims nothing
   about the executor: several writers can settle a QA run and only the one that ran it knows.
+- An executor that ran and said nothing keeps its own answer — an empty transcript the runner
+  observed — instead of being merged into either retained output or an unrecorded absence.
 - The kit pin is the release tag `0.5.0` rather than its commit SHA, so Copier records a meaningful
   `_commit`; the fixture is a render at the tag and the stage-5 smoke's short-SHA acceptance is gone.
 - Production scaffolds from `gh:vladmesh/codegen-product-kit`: the seed pin moves to it, the
