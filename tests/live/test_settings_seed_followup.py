@@ -923,3 +923,345 @@ async def test_already_failed_manifest_repair_is_retained_before_its_terminal_re
             "error": f"manifest repair Run {repair['id']} ended failed",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_repair_without_a_new_commit_stops_and_names_that_cause(monkeypatch):
+    """`no_new_commit` is the reason, not the terminal status every failure shares."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    failed = pipeline_helpers.DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        settings_seed=[
+            {
+                "key": "languages",
+                "scope": "product",
+                "written": False,
+                "failure": "key_not_declared",
+            }
+        ],
+    )
+    repair = {
+        "id": "eng-deploy-fix-deploy-poll-old-1",
+        "story_id": "story-1",
+        "status": "failed",
+        "run_metadata": {"deploy_fix_attempt": 1},
+        "result": {"engineering_status": "failed", "failure_reason": "no_new_commit"},
+    }
+    story_reads = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal story_reads
+        if request.url.path == "/api/system-configs/deploy.max_deploy_fix_attempts":
+            return httpx.Response(200, json={"value": 2})
+        if request.url.path == "/api/stories/story-1":
+            story_reads += 1
+            return httpx.Response(200, json={"status": "in_progress"})
+        if request.url.path == f"/api/runs/{repair['id']}":
+            return httpx.Response(200, json=repair)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": "deploy-poll-old",
+        "deploy_run_created_at": "2026-09-04T00:00:00Z",
+    }
+    polls: list[None] = []
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            api,
+            ctx,
+            failed,
+            repair_budget=1,
+            retry_budget=1,
+            overall_budget=1,
+            poll_interval=0,
+            on_poll=lambda: polls.append(None),
+        )
+
+    expected = f"manifest repair Run {repair['id']} ended failed: no_new_commit"
+    assert result is None
+    assert ctx["settings_seed_repair_error"] == expected
+    assert ctx["settings_seed_repair_attempts"] == [
+        {"attempt": 1, "run_id": repair["id"], "status": "failed", "error": expected}
+    ]
+    # One poll interval: the repair Run was read once and its typed reason ended it.
+    assert len(polls) == 1
+    assert story_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_a_followup_deploy_skipped_as_already_deployed_stops_the_wait(monkeypatch):
+    """A skipped deploy seeded nothing, so no later poll can make it a success."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    initial = {
+        **_deploy_run("deploy-poll-old"),
+        "status": "failed",
+        "result": {
+            "deploy_outcome": "settings_seed_failed",
+            "settings_seed": [
+                {
+                    "key": "languages",
+                    "scope": "product",
+                    "written": False,
+                    "failure": "key_not_declared",
+                }
+            ],
+        },
+    }
+    repair = {
+        "id": "eng-deploy-fix-deploy-poll-old-1",
+        "story_id": "story-1",
+        "status": "completed",
+        "run_metadata": {"deploy_fix_attempt": 1},
+        "result": {"engineering_status": "completed"},
+    }
+    skipped = {
+        **_deploy_run("deploy-poll-skipped", created_at="2026-09-04T00:01:00Z"),
+        "status": "completed",
+        "result": {
+            "deploy_outcome": "success",
+            "deploy_fix_attempt": 1,
+            "application_id": 17,
+            "skipped_reason": "already_deployed_same_sha",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/system-configs/deploy.max_deploy_fix_attempts":
+            return httpx.Response(200, json={"value": 2})
+        if path == "/api/stories/story-1":
+            return httpx.Response(200, json={"status": "in_progress"})
+        if path == "/api/runs/":
+            return httpx.Response(200, json=[skipped, initial])
+        if path == f"/api/runs/{repair['id']}":
+            return httpx.Response(200, json=repair)
+        if path == "/api/runs/deploy-poll-skipped":
+            return httpx.Response(200, json=skipped)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": initial["id"],
+        "deploy_run_created_at": initial["created_at"],
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            api,
+            ctx,
+            pipeline_helpers.DeployRunResult(**initial["result"]),
+            repair_budget=1,
+            retry_budget=1,
+            overall_budget=1,
+            poll_interval=0,
+        )
+
+    expected = (
+        "settings-seed follow-up deploy run deploy-poll-skipped performed no "
+        "deployment: already_deployed_same_sha"
+    )
+    assert result is None
+    assert ctx["settings_seed_repair_error"] == expected
+    # The reason reaches the repair-attempt record too, so a red artifact says
+    # which repair the skip ended.
+    assert ctx["settings_seed_repair_attempts"] == [
+        {"attempt": 1, "run_id": repair["id"], "status": "completed", "error": expected}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_story_parked_for_human_review_during_the_wait_stops_it(monkeypatch):
+    """The story a no-new-commit repair parks is a terminal refusal, not a wait."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    failed = pipeline_helpers.DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        settings_seed=[
+            {
+                "key": "languages",
+                "scope": "product",
+                "written": False,
+                "failure": "key_not_declared",
+            }
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system-configs/deploy.max_deploy_fix_attempts":
+            return httpx.Response(200, json={"value": 2})
+        if request.url.path == "/api/stories/story-1":
+            return httpx.Response(200, json={"status": "waiting_human_review"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": "deploy-poll-old",
+        "deploy_run_created_at": "2026-09-04T00:00:00Z",
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            api,
+            ctx,
+            failed,
+            repair_budget=1,
+            retry_budget=1,
+            overall_budget=1,
+            poll_interval=0,
+        )
+
+    assert result is None
+    assert ctx["settings_seed_repair_story_status"] == "waiting_human_review"
+    assert ctx["settings_seed_repair_error"] == (
+        "story story-1 reached waiting_human_review before manifest repair attempt 1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_repair_with_a_real_followup_deploy_is_still_awaited(monkeypatch):
+    """None of the new exits may cut short a deploy that actually deployed."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    initial = {
+        **_deploy_run("deploy-poll-old"),
+        "status": "failed",
+        "result": {
+            "deploy_outcome": "settings_seed_failed",
+            "settings_seed": [
+                {
+                    "key": "languages",
+                    "scope": "product",
+                    "written": False,
+                    "failure": "key_not_declared",
+                }
+            ],
+        },
+    }
+    repair_running = {
+        "id": "eng-deploy-fix-deploy-poll-old-1",
+        "story_id": "story-1",
+        "status": "running",
+        "run_metadata": {"deploy_fix_attempt": 1},
+        "result": None,
+    }
+    repair_done = {
+        **repair_running,
+        "status": "completed",
+        "result": {"engineering_status": "completed"},
+    }
+    fresh_queued = {
+        **_deploy_run("deploy-poll-fresh", created_at="2026-09-04T00:01:00Z"),
+        "status": "running",
+        "result": None,
+    }
+    fresh_done = {
+        **fresh_queued,
+        "status": "completed",
+        "result": {"deploy_outcome": "success", "deploy_fix_attempt": 1},
+    }
+    repair_reads = 0
+    fresh_reads = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal repair_reads, fresh_reads
+        path = request.url.path
+        if path == "/api/system-configs/deploy.max_deploy_fix_attempts":
+            return httpx.Response(200, json={"value": 2})
+        if path == "/api/stories/story-1":
+            return httpx.Response(200, json={"status": "in_progress"})
+        if path == "/api/runs/":
+            return httpx.Response(200, json=[fresh_queued, initial])
+        if path == f"/api/runs/{repair_running['id']}":
+            repair_reads += 1
+            return httpx.Response(200, json=repair_running if repair_reads == 1 else repair_done)
+        if path == "/api/runs/deploy-poll-fresh":
+            fresh_reads += 1
+            return httpx.Response(200, json=fresh_queued if fresh_reads == 1 else fresh_done)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": initial["id"],
+        "deploy_run_created_at": initial["created_at"],
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            api,
+            ctx,
+            pipeline_helpers.DeployRunResult(**initial["result"]),
+            repair_budget=1,
+            retry_budget=1,
+            overall_budget=1,
+            poll_interval=0,
+        )
+
+    assert result is not None and result.deploy_outcome is DeployOutcome.SUCCESS
+    assert result.skipped_reason is None
+    assert ctx["deploy_run_id"] == "deploy-poll-fresh"
+    assert "settings_seed_repair_error" not in ctx
+    assert ctx["settings_seed_repair_attempts"] == [
+        {"attempt": 1, "run_id": repair_done["id"], "status": "completed", "error": None}
+    ]
+    # Both the running repair and the running deploy were awaited to terminal.
+    assert repair_reads == 2
+    assert fresh_reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_followup_wait_that_names_no_reason_still_ends_named():
+    """Every exit out of a manifest repair carries a reason, whatever the wait does."""
+    repair = {
+        "id": "eng-deploy-fix-deploy-poll-old-1",
+        "story_id": "story-1",
+        "status": "completed",
+        "run_metadata": {"deploy_fix_attempt": 1},
+    }
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": "deploy-poll-old",
+        "deploy_run_created_at": "2026-09-04T00:00:00Z",
+    }
+    api = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                status_code=200, raise_for_status=lambda: None, json=lambda: repair
+            )
+        )
+    )
+    failed = pipeline_helpers.DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        settings_seed=[
+            {
+                "key": "languages",
+                "scope": "product",
+                "written": False,
+                "failure": "key_not_declared",
+            }
+        ],
+    )
+
+    result, _ = await settings_seed_followup._follow_manifest_repair(
+        api,
+        ctx,
+        failed,
+        repair_cap=2,
+        repair_cap_label="scheduler repair cap",
+        overall_deadline=settings_seed_followup.time.monotonic() + 5,
+        repair_budget=5,
+        poll_interval=0,
+        on_poll=None,
+        wait_followup=AsyncMock(return_value=None),
+    )
+
+    assert result is None
+    assert ctx["settings_seed_repair_error"] == (
+        "manifest repair attempt 1 follow-up deploy ended without a reason"
+    )
+    assert ctx["settings_seed_repair_attempts"][0]["error"] == (
+        "manifest repair attempt 1 follow-up deploy ended without a reason"
+    )

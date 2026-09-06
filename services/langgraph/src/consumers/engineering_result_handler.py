@@ -528,6 +528,11 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                     "id": deploy_task_id,
                     "type": RunType.DEPLOY.value,
                     "project_id": project_id,
+                    # The Run says which story it belongs to. Without it this
+                    # deploy is invisible to every story-scoped reader, and a
+                    # follow-up wait watching the story sees no deploy at all
+                    # however quickly this one settles.
+                    "story_id": story_id,
                     "status": RunStatus.QUEUED.value,
                     "run_metadata": {"head_sha": result["commit_sha"]},
                 },

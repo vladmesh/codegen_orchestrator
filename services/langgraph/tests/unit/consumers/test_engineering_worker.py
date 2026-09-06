@@ -767,6 +767,86 @@ class TestFeatureActionFlow:
     @patch(
         "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
     )
+    async def test_auto_deploy_run_names_the_story_it_belongs_to(
+        self,
+        mock_rh_publish,
+        mock_rh_delete,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """A story-scoped reader can only find this deploy if the Run names the story.
+
+        The manifest-repair follow-up deploy is created here, and every observer
+        of it — the live follow-up wait above all — selects deploy Runs by story.
+        """
+        from src.consumers.engineering import process_engineering_job
+
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(
+                name="test-project",
+                status="active",
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
+        )
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "srv1:8001": {
+                        "server_handle": "srv1",
+                        "port": 8001,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
+        )
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "fea7890000000000000000000000000000000000",
+                "worker_id": "w4",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+
+        result = await process_engineering_job(
+            {
+                "task_id": "eng-deploy-fix-deploy-poll-1-1",
+                "project_id": "proj-1",
+                "initiating_run_id": "live-1",
+                "action": "feature",
+                "skip_deploy": False,
+                "story_id": "story-1",
+                "deploy_fix_attempt": 1,
+                "description": "Repair the settings manifest",
+                "telegram_chat_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        assert result["status"] == "success"
+        created = [
+            call.kwargs["json"]
+            for call in mock_api.post.await_args_list
+            if call.args and call.args[0] == "runs/"
+        ]
+        assert [run["story_id"] for run in created if run["type"] == "deploy"] == ["story-1"]
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.consumers.engineering.resource_allocator_node")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_description_fallback_to_config(
         self,
         mock_rh_publish,

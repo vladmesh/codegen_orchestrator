@@ -55,6 +55,21 @@ class EngineeringFailureReason(StrEnum):
     NO_NEW_COMMIT = "no_new_commit"
 
 
+class DeploySkipReason(StrEnum):
+    """Why a completed deploy run performed no deployment at all.
+
+    A skip is a successful no-op: nothing was placed on a host, so nothing the
+    deploy would have applied — a settings seed above all — happened either. The
+    Run still ends `completed` with `DeployOutcome.SUCCESS`, which is what makes
+    a skip indistinguishable from a real deployment across the Run boundary
+    unless the reason is written down here rather than only logged.
+    """
+
+    # The allocation already runs this exact head SHA under the same environment
+    # contract, so the deploy consumer placed nothing.
+    ALREADY_DEPLOYED_SAME_SHA = "already_deployed_same_sha"
+
+
 class EngineeringRunResult(BaseModel):
     """Result of an engineering run (written by the engineering result handler)."""
 
@@ -111,6 +126,12 @@ class DeployRunResult(BaseModel):
     application_id: int | None = None
     bot_username: str | None = None
     deploy_fix_attempt: int = 0
+    #: Why this deploy performed no deployment, when it performed none. ``None``
+    #: is the ordinary case: the deploy ran. A reader that needs "the
+    #: application was actually placed at this commit" — a follow-up wait above
+    #: all — asks this rather than re-deriving the consumer's decision from a
+    #: SHA comparison of its own.
+    skipped_reason: DeploySkipReason | None = None
     error_details: str | None = None
     missing_user_secrets: list[MissingUserSecret] = Field(default_factory=list)
     action: DeployAction | None = None
@@ -171,6 +192,22 @@ class DeployRunResult(BaseModel):
         if missing:
             raise ValueError(
                 f"{DeployOutcome.WAITING_INFRASTRUCTURE.value} requires {', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_skip_is_a_successful_no_op(self) -> DeployRunResult:
+        """Only a successful deploy can have been skipped.
+
+        Every other outcome names something the deploy tried and could not do.
+        Attaching a skip reason to one would claim both that nothing was
+        attempted and that the attempt failed, so the contract refuses it here
+        instead of letting a reader choose which half to believe.
+        """
+        if self.skipped_reason is not None and self.deploy_outcome is not DeployOutcome.SUCCESS:
+            raise ValueError(
+                f"skipped_reason requires {DeployOutcome.SUCCESS.value}, "
+                f"got {self.deploy_outcome.value}"
             )
         return self
 

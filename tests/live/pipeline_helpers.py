@@ -2542,6 +2542,17 @@ async def _wait_for_followup_deploy_result(
             "settings_seed_repair_error",
             "settings-seed follow-up fresh deploy did not reach a typed terminal outcome",
         )
+        return None
+    if result.skipped_reason is not None:
+        # A skipped deploy placed nothing, so it seeded nothing either: the
+        # settings this follow-up exists to write can never arrive from it, and
+        # no later poll changes that. The Run's own typed reason is the fact —
+        # the harness does not re-derive the skip from a SHA of its own.
+        ctx["settings_seed_repair_error"] = (
+            f"settings-seed follow-up deploy run {ctx['deploy_run_id']} performed no "
+            f"deployment: {result.skipped_reason.value}"
+        )
+        return None
     return result
 
 

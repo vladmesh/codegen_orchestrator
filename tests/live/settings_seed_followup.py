@@ -14,8 +14,13 @@ from typing import Protocol
 
 import httpx
 from live_harness import TERMINAL_RUN_STATUSES, run_created_at
+from pydantic import ValidationError
 
-from shared.contracts.dto.run_result import DeployRunResult, deploy_fix_run_id
+from shared.contracts.dto.run_result import (
+    DeployRunResult,
+    EngineeringRunResult,
+    deploy_fix_run_id,
+)
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.deploy import DeployOutcome
 
@@ -144,6 +149,22 @@ async def _wait_for_manifest_repair_run(
     return None
 
 
+def _repair_failure_classification(run: dict) -> str | None:
+    """The typed reason a repair Run recorded for producing nothing usable.
+
+    ``EngineeringRunResult.failure_reason`` is the name the pipeline itself gave
+    the refusal — `no_new_commit` above all — and it is what a red artifact needs
+    to read instead of the terminal status every failure shares. A result the
+    harness cannot type is not evidence, so it names nothing rather than
+    guessing; the status alone still ends the wait.
+    """
+    try:
+        result = EngineeringRunResult(**(run.get("result") or {}))
+    except (TypeError, ValidationError):
+        return None
+    return result.failure_reason.value if result.failure_reason is not None else None
+
+
 async def _wait_for_terminal_run(
     api_internal: httpx.AsyncClient,
     run: dict,
@@ -230,22 +251,34 @@ async def _follow_manifest_repair(
     ctx["settings_seed_repair_run_status"] = repair["status"]
     repair_attempt["status"] = repair["status"]
     if repair["status"] != "completed":
+        classification = _repair_failure_classification(repair)
         error = f"manifest repair Run {repair['id']} ended {repair['status']}"
+        if classification is not None:
+            error = f"{error}: {classification}"
         repair_attempt["error"] = error
         ctx["settings_seed_repair_error"] = error
         return None, repair_cap
-    return (
-        await wait_followup(
-            api_internal,
-            ctx,
-            deadline=deadline,
-            created_after=source,
-            poll_interval=poll_interval,
-            on_poll=on_poll,
-            story_alive=alive,
-        ),
-        repair_cap,
+    before = ctx.get("settings_seed_repair_error")
+    result = await wait_followup(
+        api_internal,
+        ctx,
+        deadline=deadline,
+        created_after=source,
+        poll_interval=poll_interval,
+        on_poll=on_poll,
+        story_alive=alive,
     )
+    if result is None:
+        # The follow-up deploy wait names every one of its own exits. Carry that
+        # reason onto the attempt record so the artifact says why this repair
+        # ended beside the repair it ended, and refuse to leave an exit unnamed
+        # if some wait implementation ever does.
+        error = ctx.get("settings_seed_repair_error")
+        if error is None or error == before:
+            error = f"manifest repair attempt {attempt} follow-up deploy ended without a reason"
+            ctx["settings_seed_repair_error"] = error
+        repair_attempt["error"] = error
+    return result, repair_cap
 
 
 async def _follow_convergent_retry(

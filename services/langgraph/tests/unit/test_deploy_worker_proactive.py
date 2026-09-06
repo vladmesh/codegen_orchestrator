@@ -233,9 +233,12 @@ async def test_deploy_worker_skips_same_sha_for_running_application(
     assert result["status"] == "success"
     assert result["reason"] == "already_deployed_same_sha"
     mock_devops_subgraph.ainvoke.assert_not_called()
+    # The skip is written down, not only logged: across the Run boundary this is
+    # the only thing that tells a redundant skip from a real deployment.
     assert any(
         call.kwargs["json"]["status"] == "completed"
         and call.kwargs["json"]["result"]["deploy_outcome"] == "success"
+        and call.kwargs["json"]["result"]["skipped_reason"] == "already_deployed_same_sha"
         for call in mock_api.patch.call_args_list
         if call.args[0] == "runs/deploy-wh-abc"
     )
