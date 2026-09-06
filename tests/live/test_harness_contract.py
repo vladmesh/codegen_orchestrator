@@ -5099,3 +5099,47 @@ def test_a_run_that_asks_for_no_snapshot_touches_no_target(monkeypatch, tmp_path
 
     assert calls == []
     assert not (tmp_path / "target-app.log").exists()
+
+
+def test_the_suite_scaffolds_from_the_production_pin_when_nothing_overrides_it(monkeypatch):
+    monkeypatch.delenv(pipeline_helpers.TEMPLATE_REPO_ENV, raising=False)
+    monkeypatch.delenv(pipeline_helpers.TEMPLATE_REF_ENV, raising=False)
+
+    assert pipeline_helpers.resolve_template() == (
+        pipeline_helpers.DEFAULT_TEMPLATE_REPO,
+        pipeline_helpers.DEFAULT_TEMPLATE_REF,
+    )
+
+
+def test_a_template_override_is_taken_from_the_environment(monkeypatch):
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:vladmesh/codegen-product-kit")
+    monkeypatch.setenv(
+        pipeline_helpers.TEMPLATE_REF_ENV, "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+    )
+
+    assert pipeline_helpers.resolve_template() == (
+        "gh:vladmesh/codegen-product-kit",
+        "fc947a3d38ccf877d04f545b49f06c195b4202c5",
+    )
+
+
+def test_a_half_set_template_override_is_refused(monkeypatch):
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:vladmesh/codegen-product-kit")
+    monkeypatch.delenv(pipeline_helpers.TEMPLATE_REF_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match="both or neither"):
+        pipeline_helpers.resolve_template()
+
+
+def test_a_template_override_is_validated_against_the_scaffold_contract(monkeypatch):
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:someone-else/service-template")
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REF_ENV, "fc947a3d")
+
+    with pytest.raises(RuntimeError, match="LIVE_TEMPLATE_REPO"):
+        pipeline_helpers.resolve_template()
+
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REPO_ENV, "gh:vladmesh/codegen-product-kit")
+    monkeypatch.setenv(pipeline_helpers.TEMPLATE_REF_ENV, "HEAD")
+
+    with pytest.raises(RuntimeError, match="LIVE_TEMPLATE_REF"):
+        pipeline_helpers.resolve_template()

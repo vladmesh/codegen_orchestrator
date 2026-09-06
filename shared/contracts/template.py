@@ -2,7 +2,13 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, StringConstraints
 
-ServiceTemplateSource = Literal["gh:vladmesh/service-template"]
+# The admitted template sources: owner-controlled repositories only. The literal is
+# what bounds the scaffolder's Copier invocation, so widening it is the decision to
+# run that repository's Copier tasks.
+ServiceTemplateSource = Literal[
+    "gh:vladmesh/service-template",
+    "gh:vladmesh/codegen-product-kit",
+]
 
 
 def _reject_floating_ref(value: str) -> str:

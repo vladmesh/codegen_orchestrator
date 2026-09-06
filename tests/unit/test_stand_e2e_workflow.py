@@ -90,6 +90,47 @@ def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
         assert "mega-noop" in description
 
 
+def test_template_override_inputs_are_optional_and_documented():
+    """The stand can scaffold from a candidate template; the production pin is untouched."""
+    inputs = _workflow()["on"]["workflow_dispatch"]["inputs"]
+
+    for name in ("template_source", "template_ref"):
+        assert inputs[name]["type"] == "string"
+        assert inputs[name]["required"] is False
+        assert inputs[name]["default"] == ""
+        assert "both or neither" in inputs[name]["description"]
+        assert "production pin is untouched" in inputs[name]["description"]
+
+
+def test_a_half_set_template_override_is_refused_before_anything_runs():
+    steps = list(_steps())
+    resolve = _steps()["Resolve the suite"]
+
+    assert resolve["env"]["TEMPLATE_SOURCE"] == "${{ inputs.template_source }}"
+    assert resolve["env"]["TEMPLATE_REF"] == "${{ inputs.template_ref }}"
+    assert "both or neither" in resolve["run"]
+    assert steps.index("Resolve the suite") < steps.index("Preflight ephemeral machines")
+
+
+def test_a_template_override_reaches_the_suite_and_the_seeded_stand_configuration():
+    steps = list(_steps())
+    run = _steps()["Run selected stand suite"]
+    override = _steps()["Override the stand template configuration"]
+
+    assert run["env"]["TEMPLATE_SOURCE"] == "${{ inputs.template_source }}"
+    assert run["env"]["TEMPLATE_REF"] == "${{ inputs.template_ref }}"
+    assert "LIVE_TEMPLATE_REPO" in run["run"]
+    assert "LIVE_TEMPLATE_REF" in run["run"]
+    assert "scheduler.service_template_source" in override["run"]
+    assert "scheduler.service_template_ref" in override["run"]
+    assert steps.index("Bring up dynamic orchestrator and wait for API") < steps.index(
+        "Override the stand template configuration"
+    )
+    assert steps.index("Override the stand template configuration") < steps.index(
+        "Run selected stand suite"
+    )
+
+
 def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     steps = list(_steps())
     resolve = _steps()["Resolve the suite"]

@@ -91,7 +91,9 @@ class TestRunScaffold:
         # Verify key commands were executed
         cmd_str = " ".join(" ".join(command) for command in commands_run)
         assert "copier copy" in cmd_str
-        assert "--trust" not in cmd_str
+        # Copier tasks are admitted because the source is bounded by the
+        # ServiceTemplateSource literal to owner-controlled repositories.
+        assert "--trust" in cmd_str
         assert "--vcs-ref=0.3.0" in cmd_str
         assert "--vcs-ref=HEAD" not in cmd_str
         assert "make setup" in cmd_str

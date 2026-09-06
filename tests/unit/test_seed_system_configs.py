@@ -81,6 +81,39 @@ def test_missing_key_is_created(tmp_path, db, fake_api):
     assert db["scheduler.dispatch_interval_seconds"]["value"] == 30
 
 
+def test_an_override_replaces_the_file_value_for_that_key(tmp_path, db, fake_api):
+    """The stand seeds a candidate template without editing the production pin."""
+    path = _write_configs(
+        tmp_path,
+        [
+            _config("scheduler.service_template_source", "gh:vladmesh/service-template"),
+            _config("scheduler.dispatch_interval_seconds", 30),
+        ],
+    )
+
+    assert (
+        seeder.seed_system_configs(
+            API_BASE_URL,
+            path,
+            overrides={"scheduler.service_template_source": "gh:vladmesh/codegen-product-kit"},
+        )
+        is True
+    )
+
+    assert db["scheduler.service_template_source"]["value"] == "gh:vladmesh/codegen-product-kit"
+    assert db["scheduler.dispatch_interval_seconds"]["value"] == 30
+
+
+def test_an_override_for_an_undeclared_key_is_refused(tmp_path, db, fake_api, capsys):
+    path = _write_configs(tmp_path, [_config("scheduler.dispatch_interval_seconds", 30)])
+
+    assert (
+        seeder.seed_system_configs(API_BASE_URL, path, overrides={"scheduler.typo": "value"})
+        is False
+    )
+    assert "scheduler.typo" in capsys.readouterr().out
+
+
 def test_key_absent_from_the_file_is_left_alone(tmp_path, db, fake_api):
     db["ops.manual_only"] = _config("ops.manual_only", "hand-tuned")
     path = _write_configs(tmp_path, [_config("scheduler.dispatch_interval_seconds", 30)])

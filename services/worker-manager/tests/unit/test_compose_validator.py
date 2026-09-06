@@ -138,6 +138,32 @@ class TestValidateComposeFile:
         assert not result.valid, result.errors
         assert result.errors == [f"Service 'app': build {build_key} is not supported"]
 
+    def test_build_target_selects_a_dockerfile_stage_and_is_admitted(self, tmp_path):
+        """A stage selector resolves nothing on the manager host and reaches no daemon capability."""
+        source = tmp_path / "infra" / "compose.yml"
+        source.parent.mkdir()
+        source.write_text(
+            "services:\n  app:\n    build:\n      context: ..\n      dockerfile: Dockerfile\n      target: dev\n"
+        )
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert result.valid, result.errors
+        assert COMPOSE_HOST_CAPABILITY_POLICIES["build.target"].allowed is True
+
+    @pytest.mark.parametrize("build_key", ["ssh", "tags", "privileged", "network"])
+    def test_other_build_execution_properties_stay_refused(self, tmp_path, build_key):
+        source = tmp_path / "infra" / "compose.yml"
+        source.parent.mkdir()
+        source.write_text(
+            f"services:\n  app:\n    build:\n      context: ..\n      target: dev\n      {build_key}: value\n"
+        )
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid, result.errors
+        assert result.errors == [f"Service 'app': build {build_key} is not supported"]
+
     def test_relative_volume_allowed(self):
         content = """
 services:

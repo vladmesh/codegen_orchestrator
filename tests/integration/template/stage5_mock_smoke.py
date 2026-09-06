@@ -134,6 +134,9 @@ class Stage5Smoke:
                 "copier",
                 "copy",
                 "--defaults",
+                # Same admission as the scaffolder: the source is bounded by
+                # ServiceTemplateSource to owner-controlled repositories.
+                "--trust",
                 f"--vcs-ref={resolved_commit}",
                 "--data",
                 "project_name=stage5-smoke",
@@ -161,6 +164,12 @@ class Stage5Smoke:
         if SHA_PATTERN.fullmatch(recorded):
             return recorded.lower() == resolved
         if recorded == self.template.ref:
+            return True
+        # A template with no release tags makes Copier record the bare short SHA
+        # instead of a git-describe value.
+        if re.fullmatch(r"[0-9a-f]{7,39}", recorded, re.IGNORECASE) and resolved.startswith(
+            recorded.lower()
+        ):
             return True
         describe_match = re.search(r"-g([0-9a-f]{7,40})$", recorded, re.IGNORECASE)
         return bool(

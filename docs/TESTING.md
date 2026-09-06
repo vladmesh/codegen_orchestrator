@@ -99,6 +99,17 @@ exercises the full pipeline without a model call, `mega-llm` selects one coding/
 one selected pair. Its productive work stops at 50 minutes, then its fixture gets a separate
 10-minute evidence-and-cleanup grace; `matrix` runs all supported pairs.
 
+**Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,
+`template_source` and `template_ref`, which point the live suite's scaffold at a template other
+than the production pin. Both or neither; they also reseed the stand's own
+`scheduler.service_template_source/ref`, and `scripts/system_configs.yaml` is untouched.
+
+```bash
+gh workflow run stand-e2e.yml -f suite=mega-brief -f worker=codex -f qa=claude \
+  -f template_source=gh:vladmesh/codegen-product-kit \
+  -f template_ref=fc947a3d38ccf877d04f545b49f06c195b4202c5
+```
+
 **Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 
 **Retired contour**: the legacy `tests/e2e` harness (mock Anthropic, dev environment smoke, live

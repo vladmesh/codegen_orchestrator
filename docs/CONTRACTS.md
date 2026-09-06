@@ -761,6 +761,19 @@ above names a shared contract import.
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
+### The template a project is scaffolded from
+
+`shared/contracts/template.py` owns the pair `ScaffoldMessage` carries.
+`ServiceTemplateSource` is a `Literal` over owner-controlled repositories only —
+`gh:vladmesh/service-template` and `gh:vladmesh/codegen-product-kit` — and that
+literal is the whole admission: the scaffolder runs `copier copy --trust`, so a
+source it accepts is a source whose Copier tasks run. Adding a repository here is
+therefore a decision about executing that repository's code, not a configuration
+change. `ServiceTemplateRef` refuses a floating ref (`HEAD`, `main`, `master`), so
+the ref names an immutable tag or commit and the render is reproducible. Which of
+the admitted sources production uses is separate and lives in
+`scripts/system_configs.yaml` (`scheduler.service_template_source/ref`).
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership

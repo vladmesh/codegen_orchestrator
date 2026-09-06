@@ -37,7 +37,7 @@ from live_harness import (
     resolve_repo_root,
     run_created_at,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
     LOG_TAIL_LINES,
@@ -77,6 +77,7 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
+from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
@@ -95,8 +96,14 @@ AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
-TEMPLATE_REPO = "gh:vladmesh/service-template"
-TEMPLATE_REF = "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
+# The template the live suite scaffolds from. These are test-suite constants and not
+# production configuration, so falling back to the production pin when nothing overrides
+# it is what keeps the suite reproducible; the production pin itself lives in
+# scripts/system_configs.yaml and is not read from here.
+DEFAULT_TEMPLATE_REPO = "gh:vladmesh/service-template"
+DEFAULT_TEMPLATE_REF = "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
+TEMPLATE_REPO_ENV = "LIVE_TEMPLATE_REPO"
+TEMPLATE_REF_ENV = "LIVE_TEMPLATE_REF"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
@@ -741,8 +748,38 @@ def configured_qa_executor() -> str:
     return agent_type
 
 
+def resolve_template() -> tuple[str, str]:
+    """The template pair the suite scaffolds from, overridable on the stand.
+
+    A candidate template is admitted through `LIVE_TEMPLATE_REPO`/`LIVE_TEMPLATE_REF`.
+    Both or neither: a half-set pair is a typo, not a decision. Both values are checked
+    against the scaffold contract here so a bad one fails before any machine is created.
+    """
+    repo = os.getenv(TEMPLATE_REPO_ENV)
+    ref = os.getenv(TEMPLATE_REF_ENV)
+    if not repo and not ref:
+        return DEFAULT_TEMPLATE_REPO, DEFAULT_TEMPLATE_REF
+    if not repo or not ref:
+        raise RuntimeError(
+            f"{TEMPLATE_REPO_ENV} and {TEMPLATE_REF_ENV} are set both or neither, "
+            f"got {TEMPLATE_REPO_ENV}={repo!r} {TEMPLATE_REF_ENV}={ref!r}"
+        )
+    try:
+        repo = TypeAdapter(ServiceTemplateSource).validate_python(repo)
+    except ValidationError as exc:
+        raise RuntimeError(
+            f"{TEMPLATE_REPO_ENV}={repo!r} is not an admitted source: {exc}"
+        ) from exc
+    try:
+        ref = TypeAdapter(ServiceTemplateRef).validate_python(ref)
+    except ValidationError as exc:
+        raise RuntimeError(f"{TEMPLATE_REF_ENV}={ref!r} is not a usable ref: {exc}") from exc
+    return repo, ref
+
+
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
+    template_repo, template_ref = resolve_template()
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
     ctx["manifest"].own("registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend")
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
@@ -750,8 +787,8 @@ def trigger_scaffold(ctx: dict) -> None:
         "project_id": ctx["project_id"],
         "repository_id": ctx["repo_id"],
         "telegram_chat_id": "live-test",
-        "template_repo": TEMPLATE_REPO,
-        "template_ref": TEMPLATE_REF,
+        "template_repo": template_repo,
+        "template_ref": template_ref,
         "project_name": ctx["project_name"],
         "modules": "backend",
         "task_description": ctx.get("scaffold_task_description", "Pipeline E2E test project"),
