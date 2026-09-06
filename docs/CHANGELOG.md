@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- The kit pin is the release tag `0.5.0` rather than its commit SHA, so Copier records a meaningful
+  `_commit`; the fixture is a render at the tag and the stage-5 smoke's short-SHA acceptance is gone.
 - Production scaffolds from `gh:vladmesh/codegen-product-kit`: the seed pin moves to it, the
   vendored fixture is a render of that commit, and the tests assert what the kit render contains.
 - The Copier template pin lives only in `scripts/system_configs.yaml`, read through

@@ -137,14 +137,14 @@ def test_copier_git_describe_value_matches_requested_commit(tmp_path: Path) -> N
     assert not smoke._recorded_ref_matches("0.2.0-78-gdeadbee", resolved)
 
 
-def test_copier_bare_short_sha_matches_requested_commit(tmp_path: Path) -> None:
-    """An untagged template makes Copier record the bare short SHA, not a describe."""
+def test_a_tag_pin_accepts_its_own_record_and_not_a_bare_short_sha(tmp_path: Path) -> None:
+    """A tagged template makes Copier record the tag, which is the pinned ref itself."""
     resolved = "9f3c1ab5e0d24c7a8b61f0d3e2c4a5b6d7e8f901"
-    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref=resolved)
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="9.9.9")
 
-    assert smoke._recorded_ref_matches("9f3c1ab", resolved)
-    assert smoke._recorded_ref_matches("9f3c1ab5e0d24c7a8b61f0d3e2c4a5b6d7e8f9", resolved)
-    assert not smoke._recorded_ref_matches("deadbee", resolved)
+    assert smoke._recorded_ref_matches("9.9.9", resolved)
+    assert not smoke._recorded_ref_matches("9f3c1ab", resolved)
+    assert not smoke._recorded_ref_matches("9f3c1ab5e0d24c7a8b61f0d3e2c4a5b6d7e8f9", resolved)
 
 
 def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

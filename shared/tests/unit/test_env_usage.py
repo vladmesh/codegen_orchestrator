@@ -344,9 +344,9 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     assert not stale, f"fixtures left behind for unpinned template revisions: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     assert answers["_src_path"] == TEMPLATE_PIN.source
-    # `gh:vladmesh/codegen-product-kit` publishes no tags, so Copier's clone has none
-    # to describe and records the bare short SHA of the pinned commit.
-    assert answers["_commit"] == pinned_template_ref()[:7]
+    # The pin is the kit's release tag, and the tag is reachable in Copier's clone, so
+    # what Copier records is the pinned ref itself.
+    assert answers["_commit"] == pinned_template_ref()
 
 
 def test_template_fixture_pins_verified_uv_bootstrap():
@@ -383,7 +383,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
     assert answers == {
-        "_commit": TEMPLATE_PIN.ref[:7],
+        "_commit": TEMPLATE_PIN.ref,
         "_src_path": TEMPLATE_PIN.source,
         "author_email": "dev@example.com",
         "author_name": "Developer",
@@ -395,7 +395,7 @@ def test_template_fixture_content_matches_its_pinned_render():
     }
     assert (
         fixture_tree_digest(fixture)
-        == "32246a8a4190dce29d4aefe42e2d6f5a701a5507500f305c725c164111d91b6d"
+        == "83edccc916445bb6fb68970cd536a238b116685cf66e4a09568a6adc2509415d"
     )
 
 

@@ -170,13 +170,6 @@ class Stage5Smoke:
             return recorded.lower() == resolved
         if recorded == self.template.ref:
             return True
-        # A template repository that publishes no tags gives Copier's clone nothing to
-        # describe, so it records the bare short SHA. `gh:vladmesh/codegen-product-kit`,
-        # the pinned source, is such a repository: its tags are local only.
-        if re.fullmatch(r"[0-9a-f]{7,39}", recorded, re.IGNORECASE) and resolved.startswith(
-            recorded.lower()
-        ):
-            return True
         describe_match = re.search(r"-g([0-9a-f]{7,40})$", recorded, re.IGNORECASE)
         return bool(
             SHA_PATTERN.fullmatch(self.template.ref)
