@@ -2401,7 +2401,10 @@ async def wait_deploy_run(
     require_unscoped_run_observer(api_internal)
     story_id = ctx["story_id"]
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    # Read first, and test the deadline only after a read has shown there was
+    # nothing to select. A Run the control plane created while this wait slept is
+    # a fact; reporting the clock instead would throw it away.
+    while True:
         if on_poll is not None:
             on_poll()
         if story_alive is not None and not await story_alive():
@@ -2433,6 +2436,8 @@ async def wait_deploy_run(
                 ctx["deploy_run_id"] = run["id"]
                 ctx["deploy_head_sha"] = head_sha
                 return run
+        if time.monotonic() >= deadline:
+            break
         await asyncio.sleep(poll_interval)
     qualifier = "fresh " if created_after is not None else ""
     ctx["deploy_run_error"] = (
@@ -2501,17 +2506,17 @@ async def _wait_for_followup_deploy_result(
     on_poll: Callable[[], None] | None,
     story_alive: Callable[[], Awaitable[bool]],
 ) -> DeployRunResult | None:
-    """Await a Run created after its source, then its typed terminal result."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        ctx["settings_seed_repair_error"] = (
-            "settings-seed follow-up exhausted its attempt deadline before a fresh deploy appeared"
-        )
-        return None
+    """Await a Run created after its source, then its typed terminal result.
+
+    Neither half exits on the clock before it has read. An expired budget is only
+    a timeout once a read has shown there was no fresh Run to select, or that the
+    selected Run is still not terminal; a deploy that settled — skipped or real —
+    while this wait slept is a fact both halves must report as itself.
+    """
     run = await wait_deploy_run(
         api_internal,
         ctx,
-        timeout=remaining,
+        timeout=max(0.0, deadline - time.monotonic()),
         poll_interval=poll_interval,
         created_after=created_after,
         on_poll=on_poll,
@@ -2523,16 +2528,10 @@ async def _wait_for_followup_deploy_result(
             "settings-seed follow-up did not observe a fresh deploy before its attempt deadline",
         )
         return None
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        ctx["settings_seed_repair_error"] = (
-            "settings-seed follow-up exhausted its attempt deadline before the fresh deploy settled"
-        )
-        return None
     result = await wait_deploy_outcome(
         api_internal,
         ctx,
-        timeout=remaining,
+        timeout=max(0.0, deadline - time.monotonic()),
         poll_interval=poll_interval,
         on_poll=on_poll,
         story_alive=story_alive,
@@ -2615,9 +2614,11 @@ async def wait_deploy_outcome(
     reads the typed outcome rather than trusting ApplicationStatus.
     """
     run_id = ctx["deploy_run_id"]
-    run: dict | None = None
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    # Read first, and declare the deadline only after a read has shown the Run is
+    # still not terminal. A Run that settled while this wait slept carries the
+    # typed result the caller came for, and a timeout would discard it.
+    while True:
         if on_poll is not None:
             on_poll()
         if story_alive is not None and not await story_alive():
@@ -2627,15 +2628,12 @@ async def wait_deploy_outcome(
         run = resp.json()
         if run["status"] in TERMINAL_RUN_STATUSES:
             break
-        await asyncio.sleep(poll_interval)
-    else:
-        error = f"deploy run {run_id} did not reach a terminal state in {timeout}s"
-        ctx["deploy_outcome_error"] = error
-        if run is None:
-            _set_deploy_run_record(ctx, current_id=run_id, current=None, current_error=error)
-        else:
+        if time.monotonic() >= deadline:
+            error = f"deploy run {run_id} did not reach a terminal state in {timeout}s"
+            ctx["deploy_outcome_error"] = error
             record_deploy_run(ctx, run)
-        return None
+            return None
+        await asyncio.sleep(poll_interval)
 
     ctx["deploy_run_status"] = run["status"]
     ctx["deploy_run_created_at"] = run.get("created_at")

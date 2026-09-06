@@ -26,6 +26,10 @@ from shared.contracts.queues.deploy import DeployOutcome
 
 DEPLOY_MAX_FIX_ATTEMPTS_CONFIG_KEY = "deploy.max_deploy_fix_attempts"
 DEPLOY_MAX_RETRIES_CONFIG_KEY = "deploy.max_deploy_retries"
+#: Ceiling on how long the story gate may reuse an affirmative answer. The gate
+#: caches to spare the API a read per wait, never to make a terminal refusal
+#: arrive late, so the effective cadence is the smaller of this and the poll
+#: interval of the wait the gate serves — see `_story_alive_gate`.
 SETTINGS_SEED_STORY_POLL_INTERVAL = 30
 
 
@@ -83,9 +87,22 @@ def _settings_seed_source_created_at(ctx: dict) -> datetime | None:
 
 
 def _story_alive_gate(
-    api_internal: httpx.AsyncClient, ctx: dict, attempt: int | None
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    attempt: int | None,
+    *,
+    poll_interval: float,
 ) -> Callable[[], Awaitable[bool]]:
-    """Return one cached-cadence check shared by every wait in one follow-up."""
+    """Return one cached-cadence check shared by every wait in one follow-up.
+
+    The gate is what turns a story refusal into a named exit, so it may never be
+    slower than the wait it gates: a cache longer than the poll interval would
+    answer two or three polls from a story state the control plane had already
+    left, and the card promises the refusal within one poll. The cache therefore
+    holds for at most the wait's own interval. The gate exists only while a
+    repair is outstanding, so the extra reads are a handful.
+    """
+    cadence = min(SETTINGS_SEED_STORY_POLL_INTERVAL, poll_interval)
     next_poll = 0.0
 
     async def story_alive() -> bool:
@@ -97,7 +114,7 @@ def _story_alive_gate(
         response.raise_for_status()
         status = response.json().get("status")
         ctx["settings_seed_repair_story_status"] = status
-        next_poll = time.monotonic() + SETTINGS_SEED_STORY_POLL_INTERVAL
+        next_poll = time.monotonic() + cadence
         if status not in {StoryStatus.FAILED.value, StoryStatus.WAITING_HUMAN_REVIEW.value}:
             return True
         suffix = f" before manifest repair attempt {attempt}" if attempt is not None else ""
@@ -118,16 +135,28 @@ async def _wait_for_manifest_repair_run(
     on_poll: Callable[[], None] | None,
     story_alive: Callable[[], Awaitable[bool]],
 ) -> dict | None:
-    """Wait for the scheduler-owned repair Run or its terminal story refusal."""
+    """Wait for the scheduler-owned repair Run or its terminal story refusal.
+
+    The read comes before the deadline test, always: an expired budget may only
+    declare a timeout once a read has shown there was nothing to read. A repair
+    Run the scheduler created while this wait was asleep is a fact, and a wait
+    that reports it as a deadline exit has thrown that fact away.
+    """
     story_id = ctx["story_id"]
     repair_run_id = deploy_fix_run_id(source_run_id, attempt)
-    while time.monotonic() < deadline:
+    while True:
         if on_poll is not None:
             on_poll()
         if not await story_alive():
             return None
         response = await api_internal.get(f"/api/runs/{repair_run_id}")
         if response.status_code == 404:
+            if time.monotonic() >= deadline:
+                ctx["settings_seed_repair_error"] = (
+                    f"no manifest repair attempt {attempt} appeared for story {story_id} "
+                    "before the repair deadline"
+                )
+                return None
             await asyncio.sleep(poll_interval)
             continue
         response.raise_for_status()
@@ -142,11 +171,13 @@ async def _wait_for_manifest_repair_run(
             )
             return None
         return run
-    ctx["settings_seed_repair_error"] = (
-        f"no manifest repair attempt {attempt} appeared for story {story_id} "
-        "before the repair deadline"
-    )
-    return None
+
+
+async def _read_run(api_internal: httpx.AsyncClient, run_id: str) -> dict:
+    """One Run as the control plane currently reports it."""
+    response = await api_internal.get(f"/api/runs/{run_id}")
+    response.raise_for_status()
+    return response.json()
 
 
 def _repair_failure_classification(run: dict) -> str | None:
@@ -174,19 +205,42 @@ async def _wait_for_terminal_run(
     on_poll: Callable[[], None] | None,
     story_alive: Callable[[], Awaitable[bool]],
 ) -> dict | None:
-    """Read one Run until terminal without sleeping after its terminal result."""
+    """Read one Run until terminal without sleeping after its terminal result.
+
+    An expired deadline takes one final read before it may report a timeout. The
+    Run may have gone terminal while this wait slept, and its typed result — a
+    `failure_reason=no_new_commit` above all — is then already there to be read;
+    reporting the clock instead would discard the very fact the wait exists for.
+    """
     while run["status"] not in TERMINAL_RUN_STATUSES:
         if time.monotonic() >= deadline:
-            return None
+            run = await _read_run(api_internal, run["id"])
+            return run if run["status"] in TERMINAL_RUN_STATUSES else None
         if on_poll is not None:
             on_poll()
         if not await story_alive():
             return None
         await asyncio.sleep(poll_interval)
-        response = await api_internal.get(f"/api/runs/{run['id']}")
-        response.raise_for_status()
-        run = response.json()
+        run = await _read_run(api_internal, run["id"])
     return run
+
+
+def _record_attempt_exit(
+    ctx: dict, repair_attempt: dict, *, recorded_before: str | None, deadline_reason: str
+) -> None:
+    """Copy the reason the inner wait recorded; synthesise one only if it left none.
+
+    A `None` from an inner wait means that wait already said why it stopped, and
+    the attempt record has to say the same thing the run-level evidence does — a
+    story refusal recorded beside the repair as a timeout makes the artifact
+    contradict itself about one event. Only a wait that genuinely ran out of
+    clock with nothing to read leaves no reason, and only that one is a deadline.
+    """
+    error = ctx.get("settings_seed_repair_error")
+    if error is None or error == recorded_before:
+        error = deadline_reason
+        ctx["settings_seed_repair_error"] = error
+    repair_attempt["error"] = error
 
 
 async def _follow_manifest_repair(
@@ -213,7 +267,7 @@ async def _follow_manifest_repair(
     if source is None:
         return None, repair_cap
     deadline = min(overall_deadline, time.monotonic() + repair_budget)
-    alive = _story_alive_gate(api_internal, ctx, attempt)
+    alive = _story_alive_gate(api_internal, ctx, attempt, poll_interval=poll_interval)
     repair = await _wait_for_manifest_repair_run(
         api_internal,
         ctx,
@@ -235,6 +289,7 @@ async def _follow_manifest_repair(
         "error": None,
     }
     ctx.setdefault("settings_seed_repair_attempts", []).append(repair_attempt)
+    before = ctx.get("settings_seed_repair_error")
     repair = await _wait_for_terminal_run(
         api_internal,
         repair,
@@ -244,9 +299,12 @@ async def _follow_manifest_repair(
         story_alive=alive,
     )
     if repair is None:
-        error = f"manifest repair attempt {attempt} timed out"
-        repair_attempt["error"] = error
-        ctx.setdefault("settings_seed_repair_error", error)
+        _record_attempt_exit(
+            ctx,
+            repair_attempt,
+            recorded_before=before,
+            deadline_reason=f"manifest repair attempt {attempt} timed out",
+        )
         return None, repair_cap
     ctx["settings_seed_repair_run_status"] = repair["status"]
     repair_attempt["status"] = repair["status"]
@@ -259,7 +317,7 @@ async def _follow_manifest_repair(
         ctx["settings_seed_repair_error"] = error
         return None, repair_cap
     before = ctx.get("settings_seed_repair_error")
-    result = await wait_followup(
+    result: DeployRunResult | None = await wait_followup(
         api_internal,
         ctx,
         deadline=deadline,
@@ -269,15 +327,14 @@ async def _follow_manifest_repair(
         story_alive=alive,
     )
     if result is None:
-        # The follow-up deploy wait names every one of its own exits. Carry that
-        # reason onto the attempt record so the artifact says why this repair
-        # ended beside the repair it ended, and refuse to leave an exit unnamed
-        # if some wait implementation ever does.
-        error = ctx.get("settings_seed_repair_error")
-        if error is None or error == before:
-            error = f"manifest repair attempt {attempt} follow-up deploy ended without a reason"
-            ctx["settings_seed_repair_error"] = error
-        repair_attempt["error"] = error
+        _record_attempt_exit(
+            ctx,
+            repair_attempt,
+            recorded_before=before,
+            deadline_reason=(
+                f"manifest repair attempt {attempt} follow-up deploy ended without a reason"
+            ),
+        )
     return result, repair_cap
 
 
@@ -310,7 +367,7 @@ async def _follow_convergent_retry(
     if source is None:
         return None, retries, retry_cap
     retries += 1
-    alive = _story_alive_gate(api_internal, ctx, None)
+    alive = _story_alive_gate(api_internal, ctx, None, poll_interval=poll_interval)
     result = await wait_followup(
         api_internal,
         ctx,
