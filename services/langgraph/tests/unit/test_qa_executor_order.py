@@ -278,6 +278,42 @@ class TestAnExecutorThatCannotStart:
         # And this is not a product judgement: no failed checks to fix.
         assert result.checks == []
 
+    async def test_an_executor_that_ran_and_said_nothing_useful_keeps_what_it_said(self, tmp_path):
+        """It started, it emitted output, it never called the endpoint.
+
+        Its container is deleted by the time this returns and worker-wrapper
+        retains no transcript for a QA executor, so this result is the last
+        place that account exists. The Run built from it carries the transcript,
+        because `executor_transcript: null` means no executor produced output —
+        and one did.
+        """
+        transcript = '{"output": "I could not reach the capability endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    "the QA executor container ran but never reached the capability endpoint: "
+                    f"{transcript}",
+                    transient=True,
+                    transcript=transcript,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+        assert result.executor_evidence == transcript
+
+    async def test_an_executor_that_never_started_records_no_transcript(self, tmp_path):
+        """Nothing ran, so there is nothing to carry and `None` is the truth."""
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable("CLAUDE_CONFIG_DIR is not mounted", transient=False)
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence is None
+
     async def test_no_llm_configuration_is_offered_as_the_remedy(self, tmp_path):
         """QA has one executor; the outcome must not point at a removed fallback."""
         result = await _run(

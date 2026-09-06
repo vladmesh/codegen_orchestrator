@@ -73,12 +73,26 @@ class QARuntimeConfig:
 
 
 class QAInfrastructureFailure(Exception):
-    """Typed infrastructure failure that must not become a product verdict."""
+    """Typed infrastructure failure that must not become a product verdict.
 
-    def __init__(self, *, summary: str, blocker: QABlocker) -> None:
+    `executor_transcript` carries what an executor said when one ran and the run
+    still ended as infrastructure — the container that started, produced output
+    and never reached the capability endpoint. It is ``None`` when no executor
+    produced output at all, which is the only thing `null` may mean on the Run
+    this failure settles (`QARunResult.executor_transcript`).
+    """
+
+    def __init__(
+        self,
+        *,
+        summary: str,
+        blocker: QABlocker,
+        executor_transcript: str | None = None,
+    ) -> None:
         super().__init__(blocker.received)
         self.summary = summary
         self.blocker = blocker
+        self.executor_transcript = executor_transcript
 
 
 @dataclass
@@ -729,6 +743,10 @@ async def _invoke_qa_agent(
     executor = runtime.executor_agent_type.value
     raise QAInfrastructureFailure(
         summary="QA could not be performed: the assigned executor did not run",
+        # An executor that started, said something and never called the endpoint
+        # leaves that account here and nowhere else: its container is already
+        # deleted, and worker-wrapper retains no transcript for a QA executor.
+        executor_transcript=executor_failure.transcript,
         blocker=QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted=f"run exploratory QA on the assigned executor ({executor})",
@@ -920,7 +938,12 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
             detail=failure.blocker.received,
         )
         return _apply_cleanup_residue(
-            QAResult(passed=False, summary=failure.summary, blocker=failure.blocker),
+            QAResult(
+                passed=False,
+                summary=failure.summary,
+                blocker=failure.blocker,
+                executor_evidence=failure.executor_transcript,
+            ),
             _residues(grant, workspace),
         )
     except (QAGrantError, QACapabilityError) as exc:

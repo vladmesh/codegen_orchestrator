@@ -592,6 +592,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         qa_attempt=msg.qa_attempt,
     )
 
+    # The last result QA produced, held for the terminal writers that do not
+    # receive it. The executor's transcript lives in this object and nowhere
+    # else once its container is deleted, so a settling path that has forgotten
+    # the result would write `executor_transcript: null` over a transcript that
+    # existed — the one thing that field may never say.
+    qa_result: QAResult | None = None
+
     # Inflight dedup — prevent concurrent QA on same story/application
     dedup_id = story_id if story_id else str(msg.application_id)
     inflight_key = f"qa:inflight:{dedup_id}"
@@ -756,6 +763,10 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 sent=f"QAMessage run_id={run_id}",
                 received=f"unexpected error: {exc}",
             ),
+            # This is where a first terminal PATCH that failed for anything but
+            # a 409 arrives, and QA may already have run: the fallback settles
+            # the Run, so it settles it with the evidence the run produced.
+            executor_transcript=qa_result.executor_evidence if qa_result else None,
         )
     finally:
         # Always release inflight marker

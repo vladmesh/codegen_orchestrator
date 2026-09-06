@@ -853,8 +853,7 @@ runner saw it over the worker's output stream (`QAExecutorRun.transcript`,
 bounded there). It is on the Run because nowhere else survives: a QA executor
 container writes no transcript under the worker-transcript mount, so once the
 stand is destroyed the paid run's acceptance artifact could only report the
-absence — which is what run 34055029359 did. The QA consumer writes it on every
-path that settles a Run it ran an executor for (pass, fail, exhausted, blocked).
+absence — which is what run 34055029359 did.
 
 `None` and `""` are different findings and readers must keep them apart: `None`
 means no executor produced output on this run — deterministic health-only QA, or
@@ -863,6 +862,26 @@ nothing. A result with no such field at all was written by a producer that does
 not record it, which is the only remaining way the transcript was never
 persisted. `tests/live/run_evidence.py` retains the value as the QA worker's
 `transcript.content`, redacted and bounded through the one retention funnel.
+
+That makes `null` a claim, so every settling path in the QA consumer carries the
+transcript when an executor produced one: the verdict paths (passed, failed,
+exhausted), the blocker built from the result — an executor that submitted
+nothing, and the infrastructure blocker of an executor that ran and never
+reached the capability endpoint, whose output rides `QAExecutorUnavailable` and
+`QAInfrastructureFailure` because its container is already deleted — and the
+consumer's fallback terminal write, which settles the Run when the first PATCH
+fails for anything but a 409 and therefore carries the last result QA produced.
+The paths that write `null` are the ones reached before any container existed:
+an unreachable deployed URL, an unresolvable server, a missing bot identity, a
+refused executor decision, and deterministic health-only QA.
+
+Two writers outside that consumer can also settle a QA Run — the QA grant sweep
+and the temporary-access sweep — and both write only onto a Run that has no
+terminal result yet (`record_run_outcome_unless_settled`, and the sweep's 409
+refusal). Neither holds the executor's output: it lives in the QA runner's call
+stack, inside the process running that Run. A Run one of them settles while an
+executor is still in flight therefore records `null` although output existed.
+That is the one residual case, and it is named here rather than promised away.
 
 ### Deploy dispatch, withdrawal, and deadlines
 

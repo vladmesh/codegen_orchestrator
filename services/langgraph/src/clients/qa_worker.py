@@ -57,12 +57,22 @@ class QAExecutorUnavailable(Exception):
     container that lost a race with a busy host is transient; a subscription
     session that is absent or expired is not, and retrying it only spends time
     before the same infrastructure outcome.
+
+    `transcript` is what the attempted executor said before this became a
+    failure, and it is the difference between "no executor ran" and "one ran and
+    got nowhere". ``None`` is the first: nothing ever started, so there is
+    nothing to carry. A string — empty included — is the second, and it must
+    reach the Run this failure settles: the container is deleted in this
+    function's own `finally`, and `QARunResult.executor_transcript` promises
+    that `null` there means no executor produced output. A failure that dropped
+    the payload it is quoting in its own detail would make that promise a lie.
     """
 
-    def __init__(self, detail: str, *, transient: bool) -> None:
+    def __init__(self, detail: str, *, transient: bool, transcript: str | None = None) -> None:
         super().__init__(detail)
         self.detail = detail
         self.transient = transient
+        self.transcript = transcript
 
 
 @dataclass(frozen=True)
@@ -217,10 +227,14 @@ async def run_qa_executor(
         )
         served = calls_served()
         if not verdict_received.is_set() and served == 0:
+            # The container ran. Whatever it said is the only evidence of what
+            # it did instead of calling the endpoint, so it travels with the
+            # failure rather than only as the first 1000 characters of a message.
             raise QAExecutorUnavailable(
                 f"the QA executor container ran but never reached the capability endpoint: "
                 f"{transcript[:1000] or 'no output'}",
                 transient=True,
+                transcript=transcript,
             )
         return QAExecutorRun(
             verdict_submitted=verdict_received.is_set(),

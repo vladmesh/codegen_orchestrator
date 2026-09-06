@@ -413,6 +413,64 @@ class TestProcessQAJobPass:
             await process_qa_job(qa_message_data, mock_redis)
 
     @pytest.mark.asyncio
+    async def test_the_fallback_terminal_write_keeps_the_transcript_qa_produced(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A transient non-409 on the first write must not settle the run as silent.
+
+        The fallback is the writer that ends up owning this Run, and QA had
+        already run: the executor's transcript exists only in the result the
+        first write was carrying, so the fallback carries it too. `null` on that
+        field means no executor produced output, and here one did.
+        """
+        from src.consumers._qa_runner import QAResult
+
+        mock_api_client.patch.side_effect = [
+            httpx.HTTPStatusError(
+                "server error",
+                request=httpx.Request("PATCH", "http://api/api/runs/qa-run-1"),
+                response=httpx.Response(httpx.codes.INTERNAL_SERVER_ERROR),
+            ),
+            {},
+        ]
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=True,
+                checks=[],
+                summary="All good",
+                raw="",
+                executor_evidence="executor: GET /health -> 200\n",
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        assert mock_api_client.patch.call_count == 2
+        fallback = mock_api_client.patch.call_args[1]["json"]["result"]
+        assert fallback["qa_outcome"] == QAOutcome.BLOCKED.value
+        assert fallback["executor_transcript"] == "executor: GET /health -> 200\n"
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_records_no_transcript_when_qa_never_produced_one(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """The same path with nothing to carry still says `null`, and means it."""
+        mock_api_client.patch.side_effect = [
+            httpx.HTTPStatusError(
+                "server error",
+                request=httpx.Request("PATCH", "http://api/api/runs/qa-run-1"),
+                response=httpx.Response(httpx.codes.INTERNAL_SERVER_ERROR),
+            ),
+            {},
+        ]
+        mock_api_client.get_story.side_effect = RuntimeError("the control plane fell over")
+
+        result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        assert mock_api_client.patch.call_args[1]["json"]["result"]["executor_transcript"] is None
+
+    @pytest.mark.asyncio
     async def test_forbidden_write_trace_is_stored_on_a_blocked_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):
