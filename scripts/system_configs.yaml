@@ -76,9 +76,9 @@
   description: "Production Copier template source"
 
 - key: scheduler.service_template_ref
-  value: "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+  value: "0.5.0"
   category: scheduler
-  description: "Pinned codegen-product-kit commit the orchestrator scaffolds from"
+  description: "Pinned codegen-product-kit release tag the orchestrator scaffolds from"
 
 - key: scheduler.ssl_check_timeout
   value: 5

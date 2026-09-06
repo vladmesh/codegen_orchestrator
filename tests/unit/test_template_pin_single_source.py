@@ -31,11 +31,20 @@ LITERAL_ALLOWED = {
     "docs/CHANGELOG.md",
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
+# Dependency manifests are written by a package resolver and hold third-party versions.
+# A release tag collides with one of those versions by coincidence, and no line in them
+# can be a copy of the template pin, so they are not searched for it. Everything a human
+# writes still is.
+DEPENDENCY_MANIFEST_SUFFIXES = (".lock", "lock.json", "requirements.txt")
 
 # A revision the pin does not hold, so moving it in the seed alone is observable at
 # every derived site. Never the live pin: that literal belongs to the definition.
 CANDIDATE_SOURCE = "gh:vladmesh/some-other-kit"
 CANDIDATE_REF = "1" * 40
+
+
+def _is_dependency_manifest(name: str) -> bool:
+    return name.endswith(DEPENDENCY_MANIFEST_SUFFIXES)
 
 
 def _tracked_files() -> list[str]:
@@ -67,6 +76,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
         name
         for name in _tracked_files()
         if not name.startswith(FIXTURE_TREE)
+        and not _is_dependency_manifest(name)
         and name not in LITERAL_ALLOWED
         and ref in (REPO_ROOT / name).read_text(errors="ignore")
     )

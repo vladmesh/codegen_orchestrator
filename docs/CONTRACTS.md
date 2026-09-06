@@ -788,10 +788,10 @@ therefore one edit in the seed, and
 `tests/unit/test_template_pin_single_source.py` holds that shape: the ref is a
 literal in that file alone, and a moved definition reaches every derived site.
 
-The kit publishes no tags, so Copier's clone has nothing to describe and records the
-bare short SHA of the pinned commit in `_commit`. The vendored fixture and the stage-5
-smoke both accept that record; a git-describe value stays accepted for a source that
-does publish tags.
+The pin is the kit's release tag, so Copier's clone reaches it and records that tag in
+`_commit` — the pinned ref itself, which is what the vendored fixture carries and what
+the stage-5 smoke compares against. The bare short SHA a tagless clone used to record is
+no longer accepted; a git-describe value stays accepted for a source pinned by commit.
 
 ## Lifecycle and security invariants
 
