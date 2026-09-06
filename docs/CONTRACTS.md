@@ -846,6 +846,24 @@ follow-up is that reader — a skipped follow-up deploy seeded nothing, so it en
 the wait within one poll with the skip as its reason instead of spending the
 repair budget on a result that cannot change.
 
+### A QA run keeps the executor's own transcript
+
+`QARunResult.executor_transcript` carries what the QA executor said, as the QA
+runner saw it over the worker's output stream (`QAExecutorRun.transcript`,
+bounded there). It is on the Run because nowhere else survives: a QA executor
+container writes no transcript under the worker-transcript mount, so once the
+stand is destroyed the paid run's acceptance artifact could only report the
+absence — which is what run 34055029359 did. The QA consumer writes it on every
+path that settles a Run it ran an executor for (pass, fail, exhausted, blocked).
+
+`None` and `""` are different findings and readers must keep them apart: `None`
+means no executor produced output on this run — deterministic health-only QA, or
+QA stopping before the executor ran — and `""` means the executor ran and said
+nothing. A result with no such field at all was written by a producer that does
+not record it, which is the only remaining way the transcript was never
+persisted. `tests/live/run_evidence.py` retains the value as the QA worker's
+`transcript.content`, redacted and bounded through the one retention funnel.
+
 ### Deploy dispatch, withdrawal, and deadlines
 
 `shared/contracts/dto/deploy_dispatch.py` and `services/api/src/routers/runs.py`

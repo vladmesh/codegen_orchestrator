@@ -29,6 +29,13 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
 STORY_BRANCH_DIFF_MARKER = "STORY_BRANCH_DIFF:"
 MAIN_HEAD_PROBE_MARKER = "MAIN_HEAD_PROBE:"
+# How the `story-branch-diff` probe chose what to compare the branch against.
+# The choice is a fact of the payload rather than an assumption of its reader:
+# a branch whose story has already merged is compared against something else
+# than an unmerged one, and the artifact says which.
+MERGE_BASE_REFERENCE = "merge_base"
+PRE_MERGE_DEFAULT_HEAD_REFERENCE = "pre_merge_default_head"
+MERGE_BASE_IS_HEAD_REFERENCE = "merge_base_is_head"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
@@ -244,21 +251,60 @@ async def probe_story_branch_diff(
     here and bounded where it is retained (`tests/live/run_evidence.py`), so one
     named constant states the bound instead of two that can disagree.
 
+    **What the diff is taken against.** Not the default branch as it is now:
+    what the branch *added*, which is the change between the commit it started
+    from and its head. The two are the same thing right up to the moment the
+    story merges, and then they stop being: run 34055029359 retained no diff at
+    all because its story had merged by capture time, so `main...branch` was
+    empty. A red run whose story merged — the QA failure this sprint has to
+    produce — is exactly when the diff is worth having.
+
+    So the reference is chosen, and named in the payload:
+
+    * ``merge_base`` — the branch is not contained in the default branch, and
+      the compare's own ``merge_base_commit`` is where it forked. This is every
+      unmerged branch, and a squash- or rebase-merged one too.
+    * ``pre_merge_default_head`` — the branch is contained in the default branch,
+      so its merge base *is* its head and says nothing. The merge commit that
+      brought it in names the default-branch commit it was merged onto, and a
+      three-dot compare from there is the branch's own change again.
+    * ``merge_base_is_head`` — contained, and no merge commit of it was found.
+      Nothing recoverable is left to compare against; the reference is the head
+      itself and the caller states that as the reason there is no diff.
+
     Nothing here decides whether the diff is retained: a branch that does not
     exist raises, and the caller records that as the stated reason it has no
     diff for this run.
     """
     gh = GitHubAppClient()
+    repository = await gh.get_repo(owner, repo)
+    base_ref = repository.default_branch
     token = await gh.get_token(owner, repo)
     headers = {"Authorization": f"token {token}"}
+    json_headers = {**headers, "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{owner}/{repo}"
     async with httpx.AsyncClient(timeout=60) as client:
-        head = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}",
-            headers={**headers, "Accept": "application/vnd.github+json"},
-        )
+        head = await client.get(f"{api}/branches/{branch}", headers=json_headers)
         head.raise_for_status()
+        head_sha = head.json()["commit"]["sha"]
+
+        forward = await client.get(f"{api}/compare/{base_ref}...{branch}", headers=json_headers)
+        forward.raise_for_status()
+        merge_base = forward.json()["merge_base_commit"]["sha"]
+        if merge_base != head_sha:
+            reference, reference_kind = merge_base, MERGE_BASE_REFERENCE
+        else:
+            reference, reference_kind = await _reference_of_a_merged_branch(
+                client,
+                api=api,
+                headers=json_headers,
+                base_ref=base_ref,
+                branch=branch,
+                head_sha=head_sha,
+            )
+
         diff = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/compare/main...{branch}",
+            f"{api}/compare/{reference}...{branch}",
             headers={**headers, "Accept": "application/vnd.github.v3.diff"},
         )
         diff.raise_for_status()
@@ -266,11 +312,46 @@ async def probe_story_branch_diff(
     payload = {
         "repository": f"{owner}/{repo}",
         "branch": branch,
-        "head_sha": head.json()["commit"]["sha"],
+        "head_sha": head_sha,
+        "base_ref": base_ref,
+        "reference": reference,
+        "reference_kind": reference_kind,
         "diff": diff.text,
     }
     print(marker + json.dumps(payload))
     return payload
+
+
+async def _reference_of_a_merged_branch(
+    client: httpx.AsyncClient,
+    *,
+    api: str,
+    headers: dict[str, str],
+    base_ref: str,
+    branch: str,
+    head_sha: str,
+) -> tuple[str, str]:
+    """Where a branch already contained in the default branch started from.
+
+    Read backwards: the commits the default branch has and the branch does not
+    include the merge commit that brought the branch in, and that commit's other
+    parent is the default-branch commit the merge was made onto. A three-dot
+    compare from there has the branch's fork point as its merge base again, so
+    it yields the change the branch added and nothing the default branch did
+    meanwhile.
+
+    A branch merged some other way — a fast-forward above all — leaves no such
+    commit. Then there is nothing to recover and the head is returned as its own
+    reference, which the caller reports as the stated reason it has no diff.
+    """
+    reverse = await client.get(f"{api}/compare/{branch}...{base_ref}", headers=headers)
+    reverse.raise_for_status()
+    for commit in reverse.json()["commits"]:
+        parents = [parent["sha"] for parent in commit["parents"]]
+        if head_sha in parents and len(parents) > 1:
+            other = next(parent for parent in parents if parent != head_sha)
+            return other, PRE_MERGE_DEFAULT_HEAD_REFERENCE
+    return head_sha, MERGE_BASE_IS_HEAD_REFERENCE
 
 
 async def probe_main_head(

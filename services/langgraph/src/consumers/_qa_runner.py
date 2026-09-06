@@ -93,8 +93,14 @@ class QAResult:
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
-    # Executor transcript is scanned with runner-owned evidence for forbidden writes.
-    executor_evidence: str = ""
+    # The executor's own account of the run, scanned with runner-owned evidence
+    # for forbidden writes and carried across the Run boundary
+    # (`QARunResult.executor_transcript`) because it exists nowhere else once the
+    # stand is gone. ``None`` is "no executor ran at all" — deterministic health
+    # checks, or a container-state failure that never started one — and an empty
+    # string is an executor that ran and said nothing. A red run's artifact
+    # reports those as different findings, so they are kept apart here.
+    executor_evidence: str | None = None
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -891,7 +897,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
             # The network is the boundary; scan visible evidence for unexpected writes.
             write = _forbidden_application_write(
                 f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
-                f"{qa_result.executor_evidence}",
+                f"{qa_result.executor_evidence or ''}",
                 target.deployed_url,
             )
             if write:

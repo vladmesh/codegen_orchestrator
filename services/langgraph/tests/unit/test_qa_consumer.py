@@ -551,6 +551,45 @@ class TestProcessQAJobFail:
         assert len(run_data["result"]["failed_checks"]) == 1
 
     @pytest.mark.asyncio
+    async def test_a_failed_run_keeps_the_executors_own_transcript_on_the_run(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """The executor's account of the run exists nowhere else once the stand is gone.
+
+        worker-wrapper retains no transcript for a QA executor, so the Run the
+        consumer settles is the only durable copy — and a red paid run's
+        acceptance artifact reads it from there.
+        """
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                checks=[],
+                summary="Weather endpoint broken",
+                raw="",
+                executor_evidence="executor: GET /weather -> 404\n",
+            )
+            await process_qa_job(qa_message_data, mock_redis)
+
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["executor_transcript"] == "executor: GET /weather -> 404\n"
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_executor_records_no_transcript_rather_than_an_empty_one(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """ "No executor ran" and "the executor said nothing" are different findings."""
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["executor_transcript"] is None
+
+    @pytest.mark.asyncio
     async def test_qa_fail_does_not_transition_story(
         self, mock_api_client, mock_redis, qa_message_data
     ):
