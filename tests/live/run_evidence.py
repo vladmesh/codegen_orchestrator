@@ -73,11 +73,22 @@ Every retained byte is redacted **on this host**, which is the stand host the
 suite runs on, before the artifact is written into the runner directory the
 workflow collects from: ``redact_diagnostic`` against every value of this
 process's environment whose name says it is a secret, the same allow-list by
-name that the service log tails leave the stand under. A redaction that does not
-complete publishes the stated reason instead of its input, exactly as the
-service-tail branch of ``stand-e2e.yml`` does. The bound is
-``FAILURE_RETENTION_MAX_CHARS``, and a body that hits it says in the artifact
-that it was truncated and at what limit.
+name that the service log tails leave the stand under, applied line by line as
+that collection applies it. ``_retained_body`` is the single funnel all three go
+through, and it redacts the whole body *before* it bounds anything: a cut taken
+first would leave the redactor unable to see a value that straddles it. A body
+carrying a protected value that spans a line break is withheld with the stated
+reason rather than published, and a redaction that does not complete publishes
+its stated reason instead of its input, exactly as the service-tail branch of
+``stand-e2e.yml`` does. The bound is ``FAILURE_RETENTION_MAX_CHARS``, applied to
+the redacted text, and a body that hits it says in the artifact that it was
+truncated and at what limit.
+
+**When it retains.** Not when the *pipeline* failed — when the *suite* did. A
+combination whose phases all completed and whose assertion then failed is a red
+run and retains; ``retains_failure_evidence`` reads pytest's own per-test
+verdict for that (``suite_outcome``), with the terminal state as the second
+trigger for a phase that raised before any test could report.
 """
 
 from __future__ import annotations
@@ -94,6 +105,7 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
+from suite_outcome import suite_failed
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
@@ -202,13 +214,15 @@ FAILURE_RETENTION_MAX_CHARS = 60_000
 # save_transcript keeps the prefix: what an agent was asked and what it did first
 # is what a "the agent never did X" question is answered from.
 FAILURE_RETENTION_TRUNCATION_NOTE = "\n\n[retained evidence truncated at {limit} characters]\n"
-# How much beyond the bound the redaction actually looks at. Redaction runs
-# before truncation — a body cut first could leave half a secret standing, which
-# `redact_diagnostic` replaces whole values and would then not match — so the cut
-# has to be beyond what is retained. This slack puts it there while keeping the
-# work bounded: a 5 MiB transcript is not redacted in full to publish 60 000
-# characters of it.
-FAILURE_RETENTION_SLACK_CHARS = 4_096
+# A body carrying a protected value that spans a line break is withheld rather
+# than published: `_retained_body` redacts line by line, so such a value is never
+# seen whole, and publishing what the pass could not replace is the one thing
+# this retention may not do.
+SPANNING_VALUE_WITHHELD_REASON = (
+    "this body carries a protected value that spans a line break, which the "
+    "line-by-line redaction cannot replace whole, so the body is withheld and "
+    "nothing of it is published"
+)
 
 # worker-manager names every worker container `worker-{worker_id}`
 # (services/worker-manager/src/container_config.py) and labels it
@@ -271,14 +285,19 @@ PRIVACY_STATEMENT = (
     "Authorization headers. Agent output never re-enters a result payload or a "
     "service log. A combination that completed retains no agent output here "
     "either: its transcript is referenced by path and file list only. A "
-    "combination that did NOT complete additionally retains, per worker, the "
+    "combination whose suite did NOT succeed — a failed test of the module that "
+    "owns it, or a pipeline that never completed — additionally retains, per "
+    "worker, the "
     "transcript worker-wrapper wrote (already redacted by the wrapper against "
     "the worker container's secret environment), the agent's REPORT.md as the "
     "control plane stored it, and the diff of the branch the worker produced. "
     "Every one of those bodies is redacted again on the stand host, before it "
-    "crosses to the runner, with the same helper against every value of the "
-    "harness process environment whose name says it is a secret; a redaction "
-    "that does not complete publishes the stated reason instead of its input. "
+    "crosses to the runner and before any bound is applied to it, with the same "
+    "helper applied line by line against every value of the harness process "
+    "environment whose name says it is a secret; a body carrying a protected "
+    "value that spans a line break is withheld with a stated reason instead, and "
+    "a redaction that does not complete publishes its stated reason instead of "
+    "its input. "
     f"Each body is bounded to {FAILURE_RETENTION_MAX_CHARS} characters and says "
     "in the artifact when it was truncated and at what limit."
 )
@@ -1264,34 +1283,69 @@ def retains_failure_evidence(ctx: dict) -> bool:
     """Whether this combination's artifact retains the failed-run bodies.
 
     One predicate, read by the artifact and by the harness collection that feeds
-    it, so the two cannot disagree about which runs retain. A combination that
-    reached ``COMPLETED`` is a suite that succeeded and its artifact is exactly
-    what it always was; anything else stopped somewhere, and stopping is what
-    the transcript, the report and the diff exist to explain.
+    it, so the two cannot disagree about which runs retain.
+
+    The line is the **suite** outcome, not the pipeline's. A run whose scaffold,
+    engineering, deploy and QA phases all completed and whose assertion then
+    failed is a red `stand-e2e` run, and it is the one the next paid runs will
+    produce — layer 3 of this sprint needs a `passed` QA verdict, so a red run
+    with a completed pipeline is precisely the shape that has to stay
+    diagnosable. `suite_failed()` is pytest's own verdict, recorded per test
+    report by `tests/live/conftest.py` and settled by the time a module-scoped
+    fixture's finaliser runs this.
+
+    The terminal state is the second trigger, not a proxy for the first: a phase
+    that raised leaves the fixture through its own `finally` during the first
+    test's *setup*, before any report exists, so that run has no pytest verdict
+    yet and is caught here by the pipeline that did not finish. Together they are
+    the whole of "this run did not succeed". A suite that succeeded satisfies
+    neither, and its artifact is byte-for-byte what it always was.
     """
+    if suite_failed():
+        return True
     terminal_state, _ = classify_outcome(ctx)
     return terminal_state is not TerminalState.COMPLETED
 
 
 def _retained_body(text: str, facts: dict) -> Capture:
-    """One retained body: redacted on this host, bounded, and truthful about it.
+    """One retained body: redacted on this host, then bounded, and truthful about it.
+
+    The one funnel every retained field goes through — the transcript, the agent
+    report and the branch diff alike — and the place the trust boundary is held.
+
+    **Redact first, bound second.** The whole body is redacted; only the result
+    is cut to the bound. The reverse order cannot be made safe by widening the
+    window: `redact_diagnostic` replaces a *whole* known value, so a protected
+    value straddling any cut taken before it is never seen whole and its prefix
+    survives into the artifact. Bounding text that is already redacted cannot
+    expose anything, whatever the limit is.
 
     The redaction is the same call the log tails and the debug dump already make
-    — `redact_diagnostic` against every value of this process's environment
-    whose name says it is a secret — and it happens here, on the stand host,
-    before anything is written into the runner directory. A redaction that does
-    not complete publishes the stated reason instead of its input, which is what
-    the service-tail branch of `stand-e2e.yml` does with its pipe.
+    — `redact_diagnostic` against every value of this process's environment whose
+    name says it is a secret — applied **line by line**, which is exactly what
+    the service-tail collection in `.github/workflows/stand-e2e.yml` does with
+    its pipe. That is what keeps the helper's base64 rule off one unbroken
+    multi-megabyte token; a transcript is line-shaped, and line-shaped text of
+    this size costs milliseconds. `split("\n")`/`join("\n")` round-trips the
+    body exactly, so every byte is offered to the redaction and no byte is
+    reordered or lost.
+
+    A value that itself spans a line break is invisible to that pass, so it is
+    detected first and the whole body is withheld with the stated reason. A
+    redaction that does not complete publishes its stated reason too, never its
+    input, as the service-tail branch does.
     """
-    window = text[: FAILURE_RETENTION_MAX_CHARS + FAILURE_RETENTION_SLACK_CHARS]
     try:
-        redacted = redact_diagnostic(window, secrets=secret_env_values(dict(os.environ)))
+        secrets = secret_env_values(dict(os.environ))
+        if any("\n" in secret and secret in text for secret in secrets):
+            return Capture.missed(SPANNING_VALUE_WITHHELD_REASON)
+        redacted = "\n".join(redact_diagnostic(line, secrets=secrets) for line in text.split("\n"))
     except Exception as error:  # noqa: BLE001 — publish the reason, never the input
         return Capture.missed(
             "the redaction of this body did not complete, so no unredacted content is "
             f"published: {type(error).__name__}"
         )
-    truncated = len(redacted) > FAILURE_RETENTION_MAX_CHARS or len(text) > len(window)
+    truncated = len(redacted) > FAILURE_RETENTION_MAX_CHARS
     if truncated:
         note = FAILURE_RETENTION_TRUNCATION_NOTE.format(limit=FAILURE_RETENTION_MAX_CHARS)
         redacted = redacted[: max(0, FAILURE_RETENTION_MAX_CHARS - len(note))] + note

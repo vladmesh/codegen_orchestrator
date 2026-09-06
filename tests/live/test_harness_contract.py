@@ -33,6 +33,7 @@ from pipeline_helpers import (
 import pytest
 import run_evidence
 import structlog
+import suite_outcome
 
 from shared import live_harness_cleanup
 from shared.contracts.acceptance import parse_health_only_criteria
@@ -5204,7 +5205,10 @@ async def test_worker_reports_that_could_not_be_read_are_a_stated_reason(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_completed_combination_reads_neither_report_nor_diff():
+async def test_a_completed_combination_reads_neither_report_nor_diff(monkeypatch):
+    # The signal this run's own verdicts would otherwise carry in: stated here,
+    # so the assertion is about a green suite and not about this session.
+    monkeypatch.setattr(run_evidence, "suite_failed", lambda: False)
     ctx = {
         "scaffold_status": ProjectStatus.ACTIVE,
         "task_status": TaskStatus.DONE,
@@ -5223,6 +5227,84 @@ async def test_a_completed_combination_reads_neither_report_nor_diff():
     client.get.assert_not_awaited()
     assert "worker_reports" not in ctx
     assert "story_branch_diff" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypatch):
+    """A red suite over a completed pipeline is the run that must stay diagnosable."""
+    monkeypatch.setattr(run_evidence, "suite_failed", lambda: True)
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec_python_module",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=pipeline_helpers.STORY_BRANCH_DIFF_MARKER
+            + json.dumps(
+                {
+                    "repository": "org/run-repo",
+                    "branch": "story/story-1",
+                    "head_sha": "c0ffee",
+                    "diff": "--- a/app.py\n",
+                }
+            )
+            + "\n",
+            stderr="",
+        ),
+    )
+    ctx = {
+        "scaffold_status": ProjectStatus.ACTIVE,
+        "task_status": TaskStatus.DONE,
+        "deploy_run_id": "run-1",
+        "deploy_outcome": DeployOutcome.SUCCESS.value,
+        "final_app_status": ApplicationStatus.RUNNING.value,
+        "qa_run": {"id": "q", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        "task_id": "task-1",
+        "story_id": "story-1",
+        "repo_name": "run-repo",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        await pipeline_helpers.record_failure_retention_sources(api_internal, ctx)
+
+    assert ctx["worker_reports"] == []
+    assert ctx["story_branch_diff"]["head_sha"] == "c0ffee"
+
+
+def test_the_suite_verdict_comes_from_pytest_own_report(request):
+    """The signal is pytest's per-test report, carried in by the live conftest.
+
+    Recorded state is restored afterwards: this session's real verdicts are what
+    a live run's artifact is built from, and a unit test may not forge them.
+    """
+    conftest = next(
+        plugin
+        for _, plugin in request.config.pluginmanager.list_name_plugin()
+        if getattr(plugin, "__file__", "").endswith("tests/live/conftest.py")
+    )
+    recorded = suite_outcome.failed_tests()
+    suite_outcome.reset()
+    try:
+        conftest.pytest_runtest_logreport(
+            SimpleNamespace(nodeid="tests/live/test_x.py::t", when="call", failed=False)
+        )
+        assert suite_outcome.suite_failed() is False
+
+        conftest.pytest_runtest_logreport(
+            SimpleNamespace(nodeid="tests/live/test_x.py::t", when="call", failed=True)
+        )
+        assert suite_outcome.suite_failed() is True
+        assert suite_outcome.failed_tests() == ["tests/live/test_x.py::t::call"]
+    finally:
+        suite_outcome.reset()
+        for entry in recorded:
+            node_id, _, when = entry.rpartition("::")
+            suite_outcome.record_test_report(node_id, when, failed=True)
 
 
 def test_the_story_branch_diff_is_read_through_the_existing_probe_seam(monkeypatch):

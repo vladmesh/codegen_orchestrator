@@ -32,6 +32,7 @@ from run_evidence import (
     role_from_worker_id,
     write_artifact,
 )
+import suite_outcome
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -42,6 +43,25 @@ from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.contracts.worker_evidence import RemovalFact, RemovedWorkerEvidence
 
 pytestmark = pytest.mark.needs_no_api_credential
+
+
+@pytest.fixture(autouse=True)
+def _isolated_suite_outcome():
+    """Judge these artifacts on their own context, not on this session's verdicts.
+
+    `retains_failure_evidence` reads pytest's per-test verdicts on purpose — that
+    is the whole point of the suite-outcome signal — so a test here that builds a
+    *completed* artifact would start retaining as soon as any earlier test in the
+    session failed. Each test states the signal it means.
+    """
+    recorded = suite_outcome.failed_tests()
+    suite_outcome.reset()
+    yield
+    suite_outcome.reset()
+    for entry in recorded:
+        node_id, _, when = entry.rpartition("::")
+        suite_outcome.record_test_report(node_id, when, failed=True)
+
 
 REPO = "live-test-llm-1a2b3c4d"
 RUN_ID = "live-1a2b3c4d5e6f"
@@ -2707,9 +2727,9 @@ def test_an_empty_branch_diff_is_the_finding_not_an_empty_value(codex_docker, tm
 
 
 def test_a_retained_body_is_truncated_at_the_bound_and_says_so(transcripts, tmp_path):
-    # Ordinary transcript lines rather than one unbroken token: this test is
-    # about the bound, and a single 120 000-character base64-shaped run makes
-    # `redact_diagnostic` do quadratic work that says nothing about truncation.
+    # Ordinary transcript lines rather than one unbroken run: this test is about
+    # the bound, and a single 120 000-character whitespace-free stretch makes
+    # `redact_diagnostic` do superlinear work that says nothing about truncation.
     (transcripts / DEV_WORKER_ID / "req-1.log").write_text(
         "agent said something\n" * (run_evidence.FAILURE_RETENTION_MAX_CHARS // 10),
         encoding="utf-8",
@@ -2791,3 +2811,89 @@ def test_a_redaction_that_cannot_complete_publishes_the_reason_not_the_input(mon
     assert capture.status is CaptureStatus.MISSED
     assert "did not complete" in capture.reason
     assert "s3cret body" not in capture.reason
+
+
+def test_a_completed_pipeline_whose_assertion_failed_still_retains(codex_docker, tmp_path):
+    """The suite's verdict, not the pipeline's, is what "a failed run" means."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = completed_ctx(collector, **RETENTION_SOURCES)
+    assert run_evidence.retains_failure_evidence(ctx) is False
+
+    suite_outcome.record_test_report(
+        "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed",
+        "call",
+        failed=True,
+    )
+
+    assert run_evidence.retains_failure_evidence(ctx) is True
+    worker = failed_worker(ctx, tmp_path)
+    assert worker["transcript"]["content"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["agent_report"]["status"] == CaptureStatus.CAPTURED.value
+    assert worker["branch_diff"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def test_a_passing_report_leaves_a_completed_run_alone(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    suite_outcome.record_test_report("tests/live/test_full_pipeline.py::t", "call", failed=False)
+
+    worker = failed_worker(completed_ctx(collector, **RETENTION_SOURCES), tmp_path)
+
+    assert "content" not in worker["transcript"]
+    assert "agent_report" not in worker
+
+
+def test_a_secret_straddling_the_bound_is_redacted_not_truncated_into_view(monkeypatch):
+    """The reviewer's reproduction: redaction must precede the bound, not follow it."""
+    secret = "S" * 9_000
+    monkeypatch.setenv("REVIEW_DEMO_TOKEN", secret)
+    body = ("filler line\n" * 5_000)[: run_evidence.FAILURE_RETENTION_MAX_CHARS - 1_000]
+    body += secret + "\ntail\n"
+
+    capture = run_evidence._retained_body(body, {})
+
+    assert capture.status is CaptureStatus.CAPTURED
+    text = capture.value["text"]
+    assert "[redacted]" in text
+    assert "SSSS" not in text
+    assert secret[:500] not in text
+
+
+def test_a_secret_spanning_a_line_break_withholds_the_whole_body(monkeypatch):
+    monkeypatch.setenv("REVIEW_DEMO_KEY", "-----BEGIN KEY-----\nabcdefghij\n-----END KEY-----")
+    body = "worker said:\n-----BEGIN KEY-----\nabcdefghij\n-----END KEY-----\ndone\n"
+
+    capture = run_evidence._retained_body(body, {})
+
+    assert capture.status is CaptureStatus.MISSED
+    assert capture.reason == run_evidence.SPANNING_VALUE_WITHHELD_REASON
+    assert "abcdefghij" not in capture.reason
+
+
+def test_every_retained_field_goes_through_the_one_funnel(codex_docker, tmp_path, monkeypatch):
+    """No retained body may be written by a path that skipped `_retained_body`."""
+    calls = []
+    original = run_evidence._retained_body
+
+    def recording(text, facts):
+        calls.append(text)
+        return original(text, facts)
+
+    monkeypatch.setattr(run_evidence, "_retained_body", recording)
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    worker = failed_worker(base_ctx(collector, **RETENTION_SOURCES), tmp_path)
+
+    captured = [
+        worker["transcript"]["content"],
+        worker["agent_report"],
+        worker["branch_diff"],
+    ]
+    assert all(field["status"] == CaptureStatus.CAPTURED.value for field in captured)
+    sources = list(calls)
+    assert len(sources) == len(captured)
+    for field, source in zip(captured, sources, strict=True):
+        # Every published body is the return of that one call, never the source.
+        assert field["value"]["text"] == original(source, {}).value["text"]

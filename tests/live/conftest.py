@@ -23,6 +23,7 @@ from pipeline_helpers import (
     require_internal_api_key,
 )
 import pytest
+import suite_outcome
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.live_contour import CONTOUR_ENV, require_live_contour
@@ -74,6 +75,19 @@ def pytest_collection_modifyitems(session, config, items):
     """
     if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
         require_internal_api_key()
+
+
+def pytest_runtest_logreport(report):
+    """Carry pytest's own verdict to the evidence the fixtures write.
+
+    The acceptance artifact retains a failed run's worker bodies, and whether the
+    run failed is a fact about the suite: a combination whose pipeline completed
+    and whose assertion then failed is red, and the control plane's terminal
+    state cannot say so. This is the only place that has the real answer, and it
+    has it in time — a test's `call` report is logged before its teardown, and
+    the module-scoped fixtures collect and write in their finaliser.
+    """
+    suite_outcome.record_test_report(report.nodeid, report.when, report.failed)
 
 
 @pytest.fixture

@@ -243,7 +243,7 @@ The log tail is the container's own log (worker-wrapper's structlog), bounded an
 output never re-enters a result payload or a service log, and a combination that **completed** keeps
 its transcript a pointer: path and file list, no content.
 
-A combination that did **not** complete retains three bodies per worker, because an artifact that
+A run whose **suite** did not succeed retains three bodies per worker, because an artifact that
 cannot say why a paid run went red is worth less than the residual disclosure risk of a bounded,
 redacted body leaving a machine that is about to be destroyed — probe 2 of sprint 1429 ended with
 "root cause not knowable from the artifact: worker transcripts live on the destroyed stand". They are
@@ -251,11 +251,25 @@ redacted body leaving a machine that is about to be destroyed — probe 2 of spr
 `REPORT.md` the control plane stored as a `worker_report` task event) and `branch_diff` (the change
 the worker's branch carries, named by repository, branch and head SHA). Each is a capture: present,
 or the stated reason it could not be collected — a QA executor writes no report and produces no
-branch, and says so. Every byte is redacted **on the stand host** before the artifact crosses to the
-runner, against every value of the harness process environment whose name says it is a secret; a
-redaction that does not complete publishes the stated reason instead of its input, exactly as the
-service-tail branch of `stand-e2e.yml` does. `FAILURE_RETENTION_MAX_CHARS` is the bound, and a
-truncated body says so and names the limit. `tests/live/test_run_evidence.py` covers the whole schema offline;
+branch, and says so.
+
+"Did not succeed" is pytest's verdict, not the pipeline's: a combination whose scaffold, engineering,
+deploy and QA phases all completed and whose assertion then failed is a red run and retains. The
+conftest's `pytest_runtest_logreport` hook records each test report in `suite_outcome`, and a
+module-scoped fixture's finaliser — where the collection and the artifact both happen — runs after
+the last test of its module, so the verdict is settled by then. The control plane's terminal state is
+the second trigger, for a phase that raised before any test could report.
+
+Every byte is redacted **on the stand host** before the artifact crosses to the runner and **before**
+any bound is applied to it: `_retained_body` is the single funnel for all three, and it redacts the
+whole body line by line — the same helper and the same shape as the service-tail pipe — against every
+value of the harness process environment whose name says it is a secret. Bounding first cannot be
+made safe by widening a window, because `redact_diagnostic` replaces a whole known value and a value
+straddling the cut would survive as a prefix. A body carrying a protected value that spans a line
+break is withheld with a stated reason, since the line-by-line pass cannot see it whole; a redaction
+that does not complete publishes its stated reason instead of its input.
+`FAILURE_RETENTION_MAX_CHARS` bounds the redacted text, and a truncated body says so and names the
+limit. `tests/live/test_run_evidence.py` covers the whole schema offline;
 `tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.

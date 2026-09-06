@@ -912,9 +912,11 @@ idempotent, and refuses an unscoped or neighbour-owned resource.
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
 the acceptance artifact a `stand-e2e` run publishes.
 
-A combination that reached `completed` retains no agent output: its transcript is
-named by path and file list only. A combination that did **not** complete
-retains, per worker the run created, three more captures — the transcript body
+A run whose suite succeeded retains no agent output: its transcript is named by
+path and file list only. A run whose **suite** did not succeed — pytest's own
+per-test verdict, recorded by the live conftest, with the control plane's
+terminal state as the second trigger for a phase that raised before any test
+could report — retains, per worker the run created, three more captures — the transcript body
 (`transcript.content`), the agent's final report (`agent_report`, the
 `worker_report` task events of this run's engineering tasks) and the diff of the
 branch that worker produced (`branch_diff`, named by repository, branch and head
@@ -923,11 +925,15 @@ none is ever a bare empty value, and a QA executor — which writes no report an
 produces no branch — says so.
 
 Every retained byte is redacted on the stand host by
-`shared.diagnostics.redact_diagnostic` before the artifact leaves it, against
-every value of the harness process environment whose name says it is a secret; a
-redaction that does not complete publishes the stated reason instead of its
-input. `FAILURE_RETENTION_MAX_CHARS` bounds each body, and a truncated body says
-in the artifact that it was truncated and at what limit. The admission fails
+`shared.diagnostics.redact_diagnostic` before the artifact leaves it and before
+any bound is applied, line by line, against every value of the harness process
+environment whose name says it is a secret. Redaction precedes bounding: a cut
+taken first leaves a straddling value unmatchable and publishes its prefix. A
+body carrying a protected value that spans a line break is withheld with a
+stated reason, and a redaction that does not complete publishes its stated
+reason instead of its input. `FAILURE_RETENTION_MAX_CHARS` bounds the redacted
+text, and a truncated body says in the artifact that it was truncated and at
+what limit. The admission fails
 closed on the three captures for a paid failure exactly as it does for the stage,
 the reason and the reachability reads.
 
