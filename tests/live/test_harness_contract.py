@@ -3371,6 +3371,8 @@ async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatc
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
+        if request.url.path == "/api/runs/":
+            return httpx.Response(200, json=[], request=request)
         if request.url.path == "/api/stories/story-1":
             return httpx.Response(200, json={"id": "story-1", "status": status}, request=request)
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -3382,7 +3384,9 @@ async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatc
         run = await pipeline_helpers.wait_brief_deploy_run(api_internal, ctx, timeout=1)
 
     assert run is None
-    assert calls == ["/api/stories/story-1"]
+    # One pass: the deploy-Run source is read before the story on every pass, so
+    # the story refusal that ends this wait follows a read that found no Run.
+    assert calls == ["/api/runs/", "/api/stories/story-1"]
     assert ctx["brief_deploy_story_status"] == status
     assert ctx["deploy_run_error"] == (
         f"story story-1 reached no-deploy state {status} before a deploy Run appeared"
@@ -3393,21 +3397,30 @@ async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatc
 async def test_wait_brief_deploy_run_keeps_waiting_while_story_can_deploy(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     expected = _deploy_run("deploy-poll-1", head_sha="abc123")
+    run_list_reads = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal run_list_reads
         if request.url.path == "/api/stories/story-1":
             return httpx.Response(
                 200, json={"id": "story-1", "status": "pr_review"}, request=request
             )
         if request.url.path == "/api/runs/":
-            return httpx.Response(200, json=[expected], request=request)
+            # No Run on the first pass, so the story source is the one consulted
+            # there — which is what this test is about.
+            run_list_reads += 1
+            return httpx.Response(
+                200, json=[] if run_list_reads == 1 else [expected], request=request
+            )
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     ctx = {"project_id": "project-1", "story_id": "story-1"}
     async with pipeline_helpers.api_client_as_internal_service(
         base_url="http://test", transport=httpx.MockTransport(handler)
     ) as api_internal:
-        run = await pipeline_helpers.wait_brief_deploy_run(api_internal, ctx, timeout=1)
+        run = await pipeline_helpers.wait_brief_deploy_run(
+            api_internal, ctx, timeout=1, poll_interval=0
+        )
 
     assert run == expected
     assert ctx["deploy_run_id"] == "deploy-poll-1"

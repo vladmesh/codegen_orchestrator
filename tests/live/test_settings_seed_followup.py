@@ -580,6 +580,10 @@ async def test_wait_settings_seed_followup_stops_a_convergent_retry_when_story_f
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/system-configs/deploy.max_deploy_retries":
             return httpx.Response(200, json={"value": 2})
+        # The Run source is consulted before the story on every pass, so a story
+        # refusal is now preceded by the deploy-Run read that found nothing.
+        if request.url.path == "/api/runs/":
+            return httpx.Response(200, json=[])
         if request.url.path == "/api/stories/story-1":
             return httpx.Response(200, json={"status": "failed"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -808,6 +812,7 @@ async def test_a_repair_run_that_settled_at_the_deadline_is_read_not_timed_out()
 
     repair = await settings_seed_followup._wait_for_terminal_run(
         client,
+        {},
         {"id": terminal["id"], "status": "running"},
         deadline=0,
         poll_interval=0,
@@ -827,6 +832,7 @@ async def test_terminal_manifest_repair_wait_obeys_its_attempt_deadline():
 
     repair = await settings_seed_followup._wait_for_terminal_run(
         client,
+        {},
         running,
         deadline=0,
         poll_interval=0,
@@ -886,6 +892,9 @@ async def test_wait_settings_seed_followup_stops_when_the_story_is_failed(monkey
             return httpx.Response(200, json={"value": 2})
         if request.url.path == "/api/runs/":
             return httpx.Response(200, json=[])
+        # No repair Run yet; the story source answers on the same pass.
+        if request.url.path == "/api/runs/eng-deploy-fix-deploy-exhausted-1":
+            return httpx.Response(404)
         if request.url.path == "/api/stories/story-1":
             return httpx.Response(200, json={"status": "failed"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -1028,9 +1037,11 @@ async def test_a_repair_without_a_new_commit_stops_and_names_that_cause(monkeypa
     assert ctx["settings_seed_repair_attempts"] == [
         {"attempt": 1, "run_id": repair["id"], "status": "failed", "error": expected}
     ]
-    # One poll interval: the repair Run was read once and its typed reason ended it.
-    assert len(polls) == 1
-    assert story_reads == 1
+    # No sleep between the two passes, and no story read at all: the Run source
+    # answered on both, and the resolver's precedence means the cause is named
+    # without consulting the story parking that is its consequence.
+    assert len(polls) == 2
+    assert story_reads == 0
 
 
 @pytest.mark.asyncio
@@ -1134,6 +1145,9 @@ async def test_a_story_already_parked_refuses_before_a_repair_is_awaited(monkeyp
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/system-configs/deploy.max_deploy_fix_attempts":
             return httpx.Response(200, json={"value": 2})
+        # No repair Run exists; the Run source is still read first on the pass.
+        if request.url.path == "/api/runs/eng-deploy-fix-deploy-poll-old-1":
+            return httpx.Response(404)
         if request.url.path == "/api/stories/story-1":
             return httpx.Response(200, json={"status": "waiting_human_review"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -1379,9 +1393,11 @@ async def test_a_story_parked_while_a_repair_runs_stops_the_wait_within_one_poll
     assert ctx["settings_seed_repair_attempts"] == [
         {"attempt": 1, "run_id": repair["id"], "status": "running", "error": expected}
     ]
-    # One discovery poll, then one terminal-wait poll that saw the refusal.
+    # Discovery answered from the Run source alone, so the story was not read
+    # there. The terminal wait then read the Run and the story on each of its two
+    # passes: `in_progress` on the first, the refusal on the second.
     assert story_reads == 2
-    assert repair_reads == 1
+    assert repair_reads == 3
 
 
 @pytest.mark.asyncio
@@ -1533,3 +1549,74 @@ async def test_a_followup_deploy_that_settles_at_the_deadline_names_the_skip(mon
     assert ctx["settings_seed_repair_attempts"] == [
         {"attempt": 1, "run_id": repair["id"], "status": "completed", "error": expected}
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_story_parked_as_the_deadline_expires_names_the_refusal_not_a_timeout(monkeypatch):
+    """The clock may answer only after every fact source was read and said nothing.
+
+    The repair Run stays `running`, the story durably reaches
+    `waiting_human_review`, and the repair budget is already spent — all in one
+    interval. The wait used to test the deadline before it consulted the story,
+    so it recorded "manifest repair attempt 1 timed out" beside a refusal that
+    was sitting there to be read.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    failed = pipeline_helpers.DeployRunResult(
+        deploy_outcome=DeployOutcome.SETTINGS_SEED_FAILED,
+        settings_seed=[
+            {
+                "key": "languages",
+                "scope": "product",
+                "written": False,
+                "failure": "key_not_declared",
+            }
+        ],
+    )
+    repair = {
+        "id": "eng-deploy-fix-deploy-poll-old-1",
+        "story_id": "story-1",
+        "status": "running",
+        "run_metadata": {"deploy_fix_attempt": 1},
+    }
+    story_reads = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal story_reads
+        if request.url.path == "/api/system-configs/deploy.max_deploy_fix_attempts":
+            return httpx.Response(200, json={"value": 2})
+        if request.url.path == f"/api/runs/{repair['id']}":
+            return httpx.Response(200, json=repair)
+        if request.url.path == "/api/stories/story-1":
+            story_reads += 1
+            return httpx.Response(200, json={"status": "waiting_human_review"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    ctx = {
+        "story_id": "story-1",
+        "deploy_run_id": "deploy-poll-old",
+        "deploy_run_created_at": "2026-09-04T00:00:00Z",
+    }
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api:
+        result = await pipeline_helpers.wait_settings_seed_followup(
+            api,
+            ctx,
+            failed,
+            # Already spent: the terminal wait is past its deadline on its first
+            # pass and must still read the Run and then the story.
+            repair_budget=0,
+            retry_budget=60,
+            overall_budget=60,
+            poll_interval=0,
+        )
+
+    expected = "story story-1 reached waiting_human_review before manifest repair attempt 1"
+    assert result is None
+    assert ctx["settings_seed_repair_error"] == expected
+    assert ctx["settings_seed_repair_story_status"] == "waiting_human_review"
+    assert ctx["settings_seed_repair_attempts"] == [
+        {"attempt": 1, "run_id": repair["id"], "status": "running", "error": expected}
+    ]
+    assert story_reads == 1

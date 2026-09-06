@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 import time
-from typing import Protocol
+from typing import Any, NamedTuple, Protocol
 
 import httpx
 from live_harness import TERMINAL_RUN_STATUSES, run_created_at
@@ -31,6 +31,82 @@ DEPLOY_MAX_RETRIES_CONFIG_KEY = "deploy.max_deploy_retries"
 #: arrive late, so the effective cadence is the smaller of this and the poll
 #: interval of the wait the gate serves — see `_story_alive_gate`.
 SETTINGS_SEED_STORY_POLL_INTERVAL = 30
+
+
+class WaitOutcome(NamedTuple):
+    """What one pass over a wait's fact sources found.
+
+    `settled` false means "nothing terminal, keep waiting", and only then may the
+    wait consult its clock. On a settled outcome exactly one of the other two is
+    meaningful: `value` is the fact the wait was watching for, `reason` is a
+    named refusal the source produced instead, and both being empty means the
+    source recorded its own reason in the run's evidence as it read — which is
+    what the story gate does. On an unsettled outcome `value` may carry whatever
+    the source last read, for a caller that records it.
+    """
+
+    settled: bool
+    value: Any = None
+    reason: str | None = None
+
+
+#: Nothing terminal on this pass. A wait may look at its deadline only after a
+#: pass has returned this, which is what makes a timeout reason true by
+#: construction: every source was read and none of them answered.
+KEEP_WAITING = WaitOutcome(settled=False)
+
+#: The story gate refused and recorded its own reason while reading the story.
+STORY_REFUSED = WaitOutcome(settled=True)
+
+
+def observed(value: Any) -> WaitOutcome:
+    """A source produced the fact this wait was watching for."""
+    return WaitOutcome(settled=True, value=value)
+
+
+def refused(reason: str) -> WaitOutcome:
+    """A source produced a named terminal refusal instead of that fact."""
+    return WaitOutcome(settled=True, reason=reason)
+
+
+async def resolve_wait_pass(
+    *,
+    run_fact: Callable[[], Awaitable[WaitOutcome]],
+    story_alive: Callable[[], Awaitable[bool]] | None,
+    on_poll: Callable[[], None] | None,
+) -> WaitOutcome:
+    """Consult every fact source of one wait, before its clock is allowed to answer.
+
+    Each wait on this path hand-rolled its own sequence of deadline test, Run
+    read and story read, so the rule "an expired deadline still reads first" had
+    to be re-implemented at every site — and a site that implemented it for one
+    of its two sources looked finished. It lives here instead: a wait describes
+    its sources, this performs the pass, and the wait's only remaining decision
+    is what to do with `KEEP_WAITING`.
+
+    The Run wins over the story, and wins by not consulting it: `4a05172` parks a
+    story *because* its engineering result carried no new commit, so the Run's
+    typed result is the proximate cause and the story's status is the
+    consequence. An artifact naming the consequence would send its reader to the
+    wrong place. The clock is last, and only when neither source answered.
+    """
+    if on_poll is not None:
+        on_poll()
+    fact = await run_fact()
+    if fact.settled:
+        return fact
+    if story_alive is not None and not await story_alive():
+        return STORY_REFUSED
+    # The unsettled fact itself, not the bare constant: a source that read
+    # something without settling keeps that payload for a caller that records it.
+    return fact
+
+
+def settle(ctx: dict, outcome: WaitOutcome) -> Any:
+    """Record the refusal a settled pass carried, and hand back the fact it found."""
+    if outcome.reason is not None:
+        ctx["settings_seed_repair_error"] = outcome.reason
+    return outcome.value
 
 
 class FollowupDeployWait(Protocol):
@@ -137,40 +213,42 @@ async def _wait_for_manifest_repair_run(
 ) -> dict | None:
     """Wait for the scheduler-owned repair Run or its terminal story refusal.
 
-    The read comes before the deadline test, always: an expired budget may only
-    declare a timeout once a read has shown there was nothing to read. A repair
-    Run the scheduler created while this wait was asleep is a fact, and a wait
-    that reports it as a deadline exit has thrown that fact away.
+    Two fact sources: the repair Run this attempt owns, and the story that owns
+    the repair. Both go through `resolve_wait_pass`, so the deadline below is
+    reached only after a pass read both and neither answered.
     """
     story_id = ctx["story_id"]
     repair_run_id = deploy_fix_run_id(source_run_id, attempt)
-    while True:
-        if on_poll is not None:
-            on_poll()
-        if not await story_alive():
-            return None
+
+    async def repair_run_fact() -> WaitOutcome:
         response = await api_internal.get(f"/api/runs/{repair_run_id}")
         if response.status_code == 404:
-            if time.monotonic() >= deadline:
-                ctx["settings_seed_repair_error"] = (
-                    f"no manifest repair attempt {attempt} appeared for story {story_id} "
-                    "before the repair deadline"
-                )
-                return None
-            await asyncio.sleep(poll_interval)
-            continue
+            return KEEP_WAITING
         response.raise_for_status()
         run = response.json()
         if (
             run.get("story_id") != story_id
             or (run.get("run_metadata") or {}).get("deploy_fix_attempt") != attempt
         ):
-            ctx["settings_seed_repair_error"] = (
+            return refused(
                 f"manifest repair Run {repair_run_id} does not name story {story_id} "
                 f"attempt {attempt}"
             )
+        return observed(run)
+
+    while True:
+        outcome = await resolve_wait_pass(
+            run_fact=repair_run_fact, story_alive=story_alive, on_poll=on_poll
+        )
+        if outcome.settled:
+            return settle(ctx, outcome)
+        if time.monotonic() >= deadline:
+            ctx["settings_seed_repair_error"] = (
+                f"no manifest repair attempt {attempt} appeared for story {story_id} "
+                "before the repair deadline"
+            )
             return None
-        return run
+        await asyncio.sleep(poll_interval)
 
 
 async def _read_run(api_internal: httpx.AsyncClient, run_id: str) -> dict:
@@ -198,6 +276,7 @@ def _repair_failure_classification(run: dict) -> str | None:
 
 async def _wait_for_terminal_run(
     api_internal: httpx.AsyncClient,
+    ctx: dict,
     run: dict,
     *,
     deadline: float,
@@ -207,22 +286,28 @@ async def _wait_for_terminal_run(
 ) -> dict | None:
     """Read one Run until terminal without sleeping after its terminal result.
 
-    An expired deadline takes one final read before it may report a timeout. The
-    Run may have gone terminal while this wait slept, and its typed result — a
-    `failure_reason=no_new_commit` above all — is then already there to be read;
-    reporting the clock instead would discard the very fact the wait exists for.
+    Two fact sources: the Run itself, and the story that owns it. Both go through
+    `resolve_wait_pass`, so the pass an expired deadline takes reads the story as
+    well as the Run — a story parked while the repair Run is still `running` is
+    a readable fact, and the previous shape reported it as a timeout. Returning
+    `None` here means neither source answered; the caller names that deadline.
     """
-    while run["status"] not in TERMINAL_RUN_STATUSES:
-        if time.monotonic() >= deadline:
+
+    async def terminal_run_fact() -> WaitOutcome:
+        nonlocal run
+        if run["status"] not in TERMINAL_RUN_STATUSES:
             run = await _read_run(api_internal, run["id"])
-            return run if run["status"] in TERMINAL_RUN_STATUSES else None
-        if on_poll is not None:
-            on_poll()
-        if not await story_alive():
+        return observed(run) if run["status"] in TERMINAL_RUN_STATUSES else KEEP_WAITING
+
+    while True:
+        outcome = await resolve_wait_pass(
+            run_fact=terminal_run_fact, story_alive=story_alive, on_poll=on_poll
+        )
+        if outcome.settled:
+            return settle(ctx, outcome)
+        if time.monotonic() >= deadline:
             return None
         await asyncio.sleep(poll_interval)
-        run = await _read_run(api_internal, run["id"])
-    return run
 
 
 def _record_attempt_exit(
@@ -292,6 +377,7 @@ async def _follow_manifest_repair(
     before = ctx.get("settings_seed_repair_error")
     repair = await _wait_for_terminal_run(
         api_internal,
+        ctx,
         repair,
         deadline=deadline,
         poll_interval=poll_interval,

@@ -55,7 +55,13 @@ from run_evidence import (
     qa_run_facts,
     target_snapshot_requirement,
 )
-from settings_seed_followup import follow_settings_seed
+from settings_seed_followup import (
+    KEEP_WAITING,
+    WaitOutcome,
+    follow_settings_seed,
+    observed,
+    resolve_wait_pass,
+)
 
 from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.application import ApplicationStatus
@@ -2401,14 +2407,8 @@ async def wait_deploy_run(
     require_unscoped_run_observer(api_internal)
     story_id = ctx["story_id"]
     deadline = time.monotonic() + timeout
-    # Read first, and test the deadline only after a read has shown there was
-    # nothing to select. A Run the control plane created while this wait slept is
-    # a fact; reporting the clock instead would throw it away.
-    while True:
-        if on_poll is not None:
-            on_poll()
-        if story_alive is not None and not await story_alive():
-            return None
+
+    async def deploy_run_fact() -> WaitOutcome:
         # `_story_runs` is ascending so the first qualifying candidate is the
         # earliest initial or fresh deploy, independent of API response order.
         for run in await _story_runs(api_internal, story_id, RunType.DEPLOY):
@@ -2435,7 +2435,21 @@ async def wait_deploy_run(
                     record_deploy_run(ctx, run)
                 ctx["deploy_run_id"] = run["id"]
                 ctx["deploy_head_sha"] = head_sha
-                return run
+                return observed(run)
+        return KEEP_WAITING
+
+    # Both fact sources go through the resolver, so the deadline below is only
+    # reached after a pass read the story's deploy Runs and the story itself and
+    # neither answered. A caller with no story gate has one source; it is read on
+    # exactly the same pass.
+    while True:
+        outcome = await resolve_wait_pass(
+            run_fact=deploy_run_fact, story_alive=story_alive, on_poll=on_poll
+        )
+        if outcome.settled:
+            # A settled pass with no run is the story gate's refusal; it recorded
+            # its own reason as it read.
+            return outcome.value
         if time.monotonic() >= deadline:
             break
         await asyncio.sleep(poll_interval)
@@ -2615,23 +2629,33 @@ async def wait_deploy_outcome(
     """
     run_id = ctx["deploy_run_id"]
     deadline = time.monotonic() + timeout
-    # Read first, and declare the deadline only after a read has shown the Run is
-    # still not terminal. A Run that settled while this wait slept carries the
-    # typed result the caller came for, and a timeout would discard it.
-    while True:
-        if on_poll is not None:
-            on_poll()
-        if story_alive is not None and not await story_alive():
-            return None
+
+    async def deploy_result_fact() -> WaitOutcome:
         resp = await api_internal.get(f"/api/runs/{run_id}")
         resp.raise_for_status()
-        run = resp.json()
-        if run["status"] in TERMINAL_RUN_STATUSES:
+        candidate = resp.json()
+        if candidate["status"] in TERMINAL_RUN_STATUSES:
+            return observed(candidate)
+        # Unsettled, but the read is worth keeping: a deadline exit records the
+        # Run it last saw rather than only the error.
+        return KEEP_WAITING._replace(value=candidate)
+
+    # Both fact sources go through the resolver, so the deadline below is only
+    # reached after a pass read this Run and the story and neither answered.
+    while True:
+        outcome = await resolve_wait_pass(
+            run_fact=deploy_result_fact, story_alive=story_alive, on_poll=on_poll
+        )
+        if outcome.settled:
+            if outcome.value is None:
+                # The story gate refused and recorded its own reason.
+                return None
+            run = outcome.value
             break
         if time.monotonic() >= deadline:
             error = f"deploy run {run_id} did not reach a terminal state in {timeout}s"
             ctx["deploy_outcome_error"] = error
-            record_deploy_run(ctx, run)
+            record_deploy_run(ctx, outcome.value)
             return None
         await asyncio.sleep(poll_interval)
 
