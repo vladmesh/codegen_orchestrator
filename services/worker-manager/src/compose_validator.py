@@ -199,9 +199,10 @@ COMPOSE_HOST_CAPABILITY_POLICIES = {
     ),
     "build.ssh": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
     "build.tags": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before build execution", "not reached"),
-    "build.target": ComposeHostCapabilityPolicy(
-        False, "not resolved", "rejected before build execution", "not reached"
-    ),
+    # A Dockerfile stage selector resolves nothing on the manager host and reaches no
+    # daemon capability, so it is admitted: the kit's dev and integration Compose files
+    # select a `dev` stage while its production Compose declares none.
+    "build.target": ComposeHostCapabilityPolicy(True, "build execution", "Compose value", "not a host path"),
     "build.ulimits": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before build execution", "not reached"
     ),

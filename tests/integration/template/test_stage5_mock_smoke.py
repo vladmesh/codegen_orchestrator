@@ -134,6 +134,16 @@ def test_copier_git_describe_value_matches_requested_commit(tmp_path: Path) -> N
     assert not smoke._recorded_ref_matches("0.2.0-78-gdeadbee", resolved)
 
 
+def test_copier_bare_short_sha_matches_requested_commit(tmp_path: Path) -> None:
+    """An untagged template makes Copier record the bare short SHA, not a describe."""
+    resolved = "fc947a3d38ccf877d04f545b49f06c195b4202c5"
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref=resolved)
+
+    assert smoke._recorded_ref_matches("fc947a3", resolved)
+    assert smoke._recorded_ref_matches("fc947a3d38ccf877d04f545b49f06c195b420", resolved)
+    assert not smoke._recorded_ref_matches("deadbee", resolved)
+
+
 def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pinned_sha = "a" * 40
     events: list[tuple[str, str]] = []

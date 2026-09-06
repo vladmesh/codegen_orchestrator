@@ -3,6 +3,14 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-06
+
+- `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the
+  scaffolder passes `copier copy --trust`: the literal bounds the source to owner-controlled
+  repositories, and the kit's post-copy `uv lock` is what its `make setup` depends on.
+- `stand-e2e` takes optional `template_source`/`template_ref` inputs that point the live suite and the
+  stand's seeded scheduler config at a candidate template; the production pin is unchanged.
+
 ## 2026-09-05
 
 - Feature tasks now preserve existing projects without blocking documented generation of manifest- or spec-owned artifacts.

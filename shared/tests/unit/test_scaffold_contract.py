@@ -44,6 +44,32 @@ class TestScaffoldMessage:
                 modules="backend",
             )
 
+    def test_admitted_template_sources_validate(self):
+        """Both owner-controlled template repositories are admitted sources."""
+        for source in ("gh:vladmesh/service-template", "gh:vladmesh/codegen-product-kit"):
+            msg = ScaffoldMessage(
+                project_id="p",
+                repository_id="r",
+                telegram_chat_id="u",
+                template_repo=source,
+                template_ref="0.3.0",
+                project_name="project",
+                modules="backend",
+            )
+            assert msg.template_repo == source
+
+    def test_unlisted_template_source_is_refused(self):
+        with pytest.raises(ValidationError):
+            ScaffoldMessage(
+                project_id="p",
+                repository_id="r",
+                telegram_chat_id="u",
+                template_repo="gh:someone-else/service-template",
+                template_ref="0.3.0",
+                project_name="project",
+                modules="backend",
+            )
+
     def test_roundtrip(self):
         msg = ScaffoldMessage(
             project_id="proj-123",

@@ -61,6 +61,19 @@ def load_configs(path: Path) -> list[dict]:
     return configs
 
 
+def _apply_overrides(configs: list[dict], overrides: dict[str, str]) -> bool:
+    """Replace declared file values for this run; an undeclared key is a typo."""
+    undeclared = overrides.keys() - {config["key"] for config in configs}
+    if undeclared:
+        print(f"  Overrides name keys the file does not declare: {', '.join(sorted(undeclared))}")
+        return False
+    for config in configs:
+        if config["key"] in overrides:
+            config["value"] = overrides[config["key"]]
+            print(f"  Overriding '{config['key']}' for this run: {config['value']!r}")
+    return True
+
+
 def _current_value(client: InternalAPISyncClient, key: str) -> tuple[bool, object]:
     """Return (exists, value) for a key already in the database."""
     resp = client.get_raw(f"system-configs/{key}")
@@ -72,18 +85,30 @@ def _current_value(client: InternalAPISyncClient, key: str) -> tuple[bool, objec
 
 
 def seed_system_configs(
-    api_base_url: str, configs_path: Path, *, skip_keys: frozenset[str] = frozenset()
+    api_base_url: str,
+    configs_path: Path,
+    *,
+    skip_keys: frozenset[str] = frozenset(),
+    overrides: dict[str, str] | None = None,
 ) -> bool:
     """Write every config declared in the YAML file to the database.
 
     Existing values are overwritten. Keys that diverged from the file are
     printed with both values, so a drift is never corrected silently.
 
+    `overrides` replaces the file value of a declared key for this one run, so a
+    disposable installation can be seeded with a candidate value without editing
+    the file that pins production. An override for a key the file does not
+    declare is a typo and fails the seed.
+
     Returns:
         True if all configs were processed successfully
     """
     configs = load_configs(configs_path)
     if not configs:
+        return False
+
+    if not _apply_overrides(configs, overrides or {}):
         return False
 
     success = True
@@ -198,12 +223,29 @@ def main():
         default=[],
         help="Key to leave untouched; repeat for each test-only overlay key",
     )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Replace a declared key's file value for this run; repeat per key",
+    )
     args = parser.parse_args()
+
+    overrides: dict[str, str] = {}
+    for pair in args.override:
+        key, separator, value = pair.partition("=")
+        if not separator or not key:
+            parser.error(f"--override expects KEY=VALUE, got {pair!r}")
+        overrides[key] = value
 
     print(f"  Seeding system configurations to {args.api_base_url}...")
 
     success = seed_system_configs(
-        args.api_base_url, Path(args.configs_path), skip_keys=frozenset(args.skip_key)
+        args.api_base_url,
+        Path(args.configs_path),
+        skip_keys=frozenset(args.skip_key),
+        overrides=overrides,
     )
 
     if success:

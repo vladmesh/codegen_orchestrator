@@ -37,6 +37,16 @@ on:
         options:
           - claude
           - codex
+      template_source:
+        description: 'Override the template the live suite scaffolds from; both or neither with template_ref; the production pin is untouched'
+        required: false
+        default: ''
+        type: string
+      template_ref:
+        description: 'Override the template ref the live suite scaffolds from; both or neither with template_source; the production pin is untouched'
+        required: false
+        default: ''
+        type: string
       keep_machines:
         description: 'Debug only: leave the pair and its DNS record in place so a failure can be inspected. Both still expire on the 6h sweep, and every retained hour is billed.'
         required: false
@@ -95,6 +105,9 @@ jobs:
       - name: Resolve the suite
         id: suite
         shell: bash
+        env:
+          TEMPLATE_SOURCE: ${{ inputs.template_source }}
+          TEMPLATE_REF: ${{ inputs.template_ref }}
         run: |
           set -euo pipefail
           if [ "${{ inputs.suite }}" = "custom" ]; then
@@ -105,6 +118,16 @@ jobs:
             echo "value=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
           else
             echo "value=${{ inputs.suite }}" >> "$GITHUB_OUTPUT"
+          fi
+          # The template override is both or neither: a half-set pair is a typo,
+          # and it is refused here, before any machine is created.
+          if [ -n "${TEMPLATE_SOURCE}" ] && [ -z "${TEMPLATE_REF}" ]; then
+            echo "FATAL: template_source needs template_ref: both or neither" >&2
+            exit 1
+          fi
+          if [ -z "${TEMPLATE_SOURCE}" ] && [ -n "${TEMPLATE_REF}" ]; then
+            echo "FATAL: template_ref needs template_source: both or neither" >&2
+            exit 1
           fi
 
       - name: Validate pre-create credentials
@@ -574,6 +597,22 @@ jobs:
               --configs-path /app/scripts/agent_configs.yaml
           '
 
+      # The stand's seeded scheduler configuration has to name the same template the
+      # suite scaffolds from, or the two disagree about what is being exercised. The
+      # override lives on this disposable installation only: scripts/system_configs.yaml
+      # still pins production.
+      - name: Override the stand template configuration
+        if: ${{ inputs.template_source != '' }}
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          TEMPLATE_SOURCE: ${{ inputs.template_source }}
+          TEMPLATE_REF: ${{ inputs.template_ref }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api python /app/scripts/seed_system_configs.py --api-base-url http://localhost:8000 --configs-path /app/scripts/system_configs.yaml --override scheduler.service_template_source=%q --override scheduler.service_template_ref=%q' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}"
+
       - name: Register and provision dynamic target
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
@@ -702,10 +741,19 @@ jobs:
           SUITE: ${{ steps.suite.outputs.value }}
           WORKER: ${{ inputs.worker }}
           QA: ${{ inputs.qa }}
+          TEMPLATE_SOURCE: ${{ inputs.template_source }}
+          TEMPLATE_REF: ${{ inputs.template_ref }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
+          # `run_pytest` builds the suite's environment from the runner process, so an
+          # exported name here is what reaches tests/live/pipeline_helpers.py. Empty by
+          # default, and the helper then keeps the production pin.
+          template_env=""
+          if [ -n "${TEMPLATE_SOURCE}" ]; then
+            template_env=$(printf 'LIVE_TEMPLATE_REPO=%q LIVE_TEMPLATE_REF=%q ' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
+          fi
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
 

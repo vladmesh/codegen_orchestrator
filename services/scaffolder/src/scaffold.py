@@ -207,6 +207,11 @@ async def run_scaffold(  # noqa: PLR0915
             "--data-file",
             str(data_file),
             "--defaults",
+            # Copier tasks are admitted: ServiceTemplateSource bounds the source to
+            # owner-controlled repositories. codegen-product-kit declares a post-copy
+            # `uv lock` its `make setup` (`uv sync --frozen`) depends on; service-template
+            # declares no tasks, so its behaviour is unchanged.
+            "--trust",
             "--overwrite",
             f"--vcs-ref={template_ref}",
         ],
