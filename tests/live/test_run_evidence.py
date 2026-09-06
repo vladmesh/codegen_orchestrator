@@ -42,6 +42,11 @@ from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.contracts.worker_evidence import RemovalFact, RemovedWorkerEvidence
+from shared.live_harness_cleanup import (
+    MERGE_BASE_IS_HEAD_REFERENCE,
+    MERGE_BASE_REFERENCE,
+    PRE_MERGE_DEFAULT_HEAD_REFERENCE,
+)
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -1137,7 +1142,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 15
+    assert EVIDENCE_SCHEMA_VERSION == 16
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -2615,6 +2620,9 @@ RETENTION_SOURCES = {
         "repository": f"project-factory-organization/{REPO}",
         "branch": "story/story-1",
         "head_sha": "c0ffee1",
+        "base_ref": "main",
+        "reference": "ba5ec0mmit",
+        "reference_kind": MERGE_BASE_REFERENCE,
         "diff": "--- a/app.py\n+++ b/app.py\n+print('hi')\n",
     },
 }
@@ -2740,6 +2748,106 @@ def test_a_qa_executor_says_it_writes_no_report_and_produces_no_branch(transcrip
     assert worker["branch_diff"]["reason"] == run_evidence.QA_PRODUCES_NO_BRANCH_REASON
 
 
+def qa_docker(transcripts: Path) -> FakeDocker:
+    """A run whose only worker is the QA executor, whose transcript mount is empty."""
+    return FakeDocker(
+        containers={
+            QA_CONTAINER: container_payload(
+                worker_id=QA_WORKER_ID,
+                agent_type="claude",
+                exit_code=0,
+                worker_type="qa",
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={QA_CONTAINER: "qa line"},
+    )
+
+
+def qa_run_with(transcript: object, **result) -> dict:
+    """A terminal QA Run carrying whatever its consumer recorded of the executor."""
+    return {
+        "id": "qa-run-1",
+        "status": "completed",
+        "created_at": "2026-08-13T12:04:00+00:00",
+        "updated_at": "2026-08-13T12:05:00+00:00",
+        "run_metadata": {},
+        "result": {
+            "qa_outcome": QAOutcome.FAILED.value,
+            "blocker": None,
+            **({} if transcript is _UNRECORDED else {"executor_transcript": transcript}),
+            **result,
+        },
+    }
+
+
+_UNRECORDED = object()
+
+
+def merged_story_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """The shape this sprint has to produce: the story merged, and the run went red.
+
+    The branch is on GitHub and carries its change; what changed is only what the
+    diff can be measured against, because the default branch now contains it.
+    """
+    return base_ctx(
+        collector,
+        **{
+            **RETENTION_SOURCES,
+            "story_branch_diff": {
+                **RETENTION_SOURCES["story_branch_diff"],
+                "reference": "ma1nbef0re",
+                "reference_kind": PRE_MERGE_DEFAULT_HEAD_REFERENCE,
+            },
+        },
+        **overrides,
+    )
+
+
+def test_a_run_whose_story_merged_still_retains_the_diff_of_its_branch(codex_docker, tmp_path):
+    """Run 34055029359's gap: the diff was taken against post-merge `main`.
+
+    The live run was green, so losing it cost nothing. A run that goes red after
+    its story merged — a QA failure, which is what layer 3 has to show — is when
+    the diff is the evidence, and it is retained here because the comparison is
+    against what the branch added, not against the default branch as it stands.
+    """
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    diff = failed_worker(merged_story_ctx(collector), tmp_path)["branch_diff"]
+
+    assert diff["status"] == CaptureStatus.CAPTURED.value
+    assert "print('hi')" in diff["value"]["text"]
+    assert diff["value"]["reference"] == "ma1nbef0re"
+    assert diff["value"]["reference_kind"] == PRE_MERGE_DEFAULT_HEAD_REFERENCE
+    assert diff["value"]["base_ref"] == "main"
+    assert diff["value"]["head_sha"] == "c0ffee1"
+
+
+def test_a_merged_branch_whose_start_is_unrecoverable_says_that_and_not_that_it_is_empty(
+    codex_docker, tmp_path
+):
+    """Two different findings: nothing to compare against, and nothing to show."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        story_branch_diff={
+            **RETENTION_SOURCES["story_branch_diff"],
+            "reference": "c0ffee1",
+            "reference_kind": MERGE_BASE_IS_HEAD_REFERENCE,
+            "diff": "",
+        },
+    )
+
+    diff = failed_worker(ctx, tmp_path)["branch_diff"]
+
+    assert diff["status"] == CaptureStatus.MISSED.value
+    assert "not recoverable" in diff["reason"]
+    assert "carries no change of its own" not in diff["reason"]
+
+
 def test_an_empty_branch_diff_is_the_finding_not_an_empty_value(codex_docker, tmp_path):
     collector = collector_for(codex_docker)
     collector.capture()
@@ -2752,6 +2860,196 @@ def test_an_empty_branch_diff_is_the_finding_not_an_empty_value(codex_docker, tm
 
     assert diff["status"] == CaptureStatus.MISSED.value
     assert "carries no change of its own" in diff["reason"]
+
+
+def qa_worker_of(ctx: dict, tmp_path: Path) -> dict:
+    return failed_worker(ctx, tmp_path, QA_WORKER_ID)
+
+
+def test_the_qa_executor_transcript_is_retained_from_the_qa_run_it_lives_on(transcripts, tmp_path):
+    """The second gap of run 34055029359: the mount is empty, the transcript is not.
+
+    worker-wrapper retains nothing for a QA executor, so the artifact could only
+    report the absence. The QA runner holds the executor's output and the
+    consumer writes it to the Run it settles, which outlives the stand.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        **RETENTION_SOURCES,
+        qa_run=qa_run_with("executor said: GET /health -> 200\nverdict submitted\n"),
+    )
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert content["status"] == CaptureStatus.CAPTURED.value
+    assert "verdict submitted" in content["value"]["text"]
+    assert content["value"]["qa_run_id"] == "qa-run-1"
+    assert content["value"]["source"] == "qa_run.result.executor_transcript"
+    assert content["value"]["limit"] == run_evidence.FAILURE_RETENTION_MAX_CHARS
+    assert "worker-wrapper retained none" not in json.dumps(content)
+
+
+def test_a_secret_in_the_qa_executor_transcript_never_reaches_the_artifact(
+    transcripts, tmp_path, monkeypatch
+):
+    """The QA body is bounded and redacted by the same funnel as every other."""
+    monkeypatch.setenv("STAND_HARNESS_TOKEN", "planted-secret-value")
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        **RETENTION_SOURCES,
+        qa_run=qa_run_with("executor read planted-secret-value from its env\n"),
+    )
+
+    worker = qa_worker_of(ctx, tmp_path)
+
+    assert "planted-secret-value" not in json.dumps(worker)
+    assert "[redacted]" in worker["transcript"]["content"]["value"]["text"]
+
+
+# The claims an absent transcript may never make. A QA Run can be settled by the
+# consumer that ran the executor, by that consumer's fallback write, by the QA
+# grant sweep or by the temporary-access sweep, and only the first of those ever
+# holds the executor's output — so "no executor produced output" is not a thing
+# this artifact can know from a missing value.
+FORBIDDEN_TRANSCRIPT_CLAIMS = (
+    "produced no output",
+    "starts no QA executor",
+    "before an executor produced",
+    "never persisted",
+)
+
+
+def swept_qa_run(transcript: object) -> dict:
+    """A Run settled by the grant sweep: the writer that never holds a transcript."""
+    return qa_run_with(
+        transcript,
+        qa_outcome=QAOutcome.BLOCKED.value,
+        blocker={
+            "category": "qa_cleanup_failed",
+            "attempted": "remove the QA run's one-shot key from the target",
+            "sent": "authorized_keys entry qa-1 on 1.2.3.4",
+            "received": "the target could not be read back",
+        },
+    )
+
+
+def test_an_absent_qa_transcript_names_the_writer_and_claims_nothing_about_the_executor(
+    transcripts, tmp_path
+):
+    """A sweep can settle a Run whose executor is still running elsewhere.
+
+    Its output lives in the QA runner's call stack until that process returns,
+    so a `null` here says what this record holds and nothing more. The reason
+    names the path that settled the Run instead of concluding that the executor
+    was silent — the thing the artifact cannot know and must not assert.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=swept_qa_run(None))
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert "remove the QA run's one-shot key from the target" in content["reason"]
+    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING in content["reason"]
+    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
+        assert claim not in content["reason"]
+
+
+def test_an_empty_qa_transcript_is_the_runners_own_observation_of_silence(transcripts, tmp_path):
+    """An executor that ran and said nothing is knowledge, not ignorance.
+
+    Only the QA runner writes an empty transcript, and it writes it because it
+    watched that happen. So this absence names the executor's silence, unlike
+    the absences that name the writer of a record instead — the two are
+    different findings and the artifact keeps them apart.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(""))
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert content["reason"].endswith(run_evidence.QA_EXECUTOR_WAS_SILENT_REASON)
+    # And it is not the reason a record with no transcript gets.
+    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING not in content["reason"]
+
+
+def test_no_assembled_header_is_ever_published_as_retained_output(transcripts, tmp_path):
+    """Presentation goes around output; it never becomes output.
+
+    The runner delimits multiple retained attempts with a header. A run whose
+    executors all stayed silent produces no content at all, and the artifact
+    must say so rather than retain this code's own header text as though an
+    agent had written it.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(""))
+
+    worker = qa_worker_of(ctx, tmp_path)
+
+    assert "QA executor attempt" not in json.dumps(worker)
+
+
+def test_a_qa_result_with_no_transcript_field_says_the_producer_records_none(transcripts, tmp_path):
+    """A result written by a producer that does not record the field says that."""
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=swept_qa_run(_UNRECORDED))
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert run_evidence.QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON in content["reason"]
+    assert "remove the QA run's one-shot key from the target" in content["reason"]
+    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
+        assert claim not in content["reason"]
+
+
+def test_a_qa_executor_with_no_qa_run_read_says_why_there_is_none(transcripts, tmp_path):
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+
+    content = qa_worker_of(base_ctx(collector, **RETENTION_SOURCES), tmp_path)["transcript"][
+        "content"
+    ]
+
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert "no QA Run of this combination was read" in content["reason"]
+
+
+def test_the_qa_executor_transcript_goes_through_the_one_funnel(transcripts, tmp_path, monkeypatch):
+    """The QA body is not a fourth path around `_retained_body`, it is that funnel."""
+    calls = []
+    original = run_evidence._retained_body
+
+    def recording(text, facts):
+        calls.append(text)
+        return original(text, facts)
+
+    monkeypatch.setattr(run_evidence, "_retained_body", recording)
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with("what the executor did\n"))
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert calls == ["what the executor did\n"]
+    assert content["value"]["text"] == original("what the executor did\n", {}).value["text"]
+
+
+def test_a_free_run_retains_no_qa_executor_transcript_either(transcripts, tmp_path):
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = free_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with("what the executor did\n"))
+
+    assert "content" not in qa_worker_of(ctx, tmp_path)["transcript"]
 
 
 def test_a_retained_body_is_truncated_at_the_bound_and_says_so(transcripts, tmp_path):

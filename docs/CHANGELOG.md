@@ -5,6 +5,16 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- A worker's retained `branch_diff` is taken against what the branch added — its merge base, or
+  what its merge was made onto once the story merged — so a red run whose story merged keeps its diff.
+- The QA executor's transcript rides the Run it settles (`QARunResult.executor_transcript`) and is
+  retained as that worker's `transcript.content` (evidence schema v16), instead of reported absent.
+- Every QA executor attempt that produced output is retained under its own header, so a retry that
+  never started a container no longer erases what the previous attempt said.
+- An absent `executor_transcript` says which writer settled the run without one and claims nothing
+  about the executor: several writers can settle a QA run and only the one that ran it knows.
+- An executor that ran and said nothing keeps its own answer — an empty transcript the runner
+  observed — instead of being merged into either retained output or an unrecorded absence.
 - The kit pin is the release tag `0.5.0` rather than its commit SHA, so Copier records a meaningful
   `_commit`; the fixture is a render at the tag and the stage-5 smoke's short-SHA acceptance is gone.
 - Production scaffolds from `gh:vladmesh/codegen-product-kit`: the seed pin moves to it, the

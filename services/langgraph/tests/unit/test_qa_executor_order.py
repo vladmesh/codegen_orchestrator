@@ -278,6 +278,72 @@ class TestAnExecutorThatCannotStart:
         # And this is not a product judgement: no failed checks to fix.
         assert result.checks == []
 
+    async def test_an_executor_that_ran_and_said_nothing_useful_keeps_what_it_said(self, tmp_path):
+        """It started, it emitted output, it never called the endpoint.
+
+        Its container is deleted by the time this returns and worker-wrapper
+        retains no transcript for a QA executor, so this result is the last
+        place that account exists. Both attempts ran here, and both are kept
+        under their own header.
+        """
+        transcript = '{"output": "I could not reach the capability endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    "the QA executor container ran but never reached the capability endpoint: "
+                    f"{transcript}",
+                    transient=True,
+                    transcript=transcript,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+        assert result.executor_evidence == (
+            f"== QA executor attempt 1 of {QA_EXECUTOR_ATTEMPTS} ==\n{transcript}\n"
+            f"== QA executor attempt 2 of {QA_EXECUTOR_ATTEMPTS} ==\n{transcript}"
+        )
+
+    async def test_a_later_attempt_with_nothing_to_say_does_not_erase_the_first(self, tmp_path):
+        """The reviewer's sequence: attempt one ran and spoke, attempt two never started.
+
+        The retry used to keep only the last failure, so the run retained
+        nothing at all — the one transcript that existed was overwritten by an
+        attempt that had none. Every attempt that ran is retained, delimited, in
+        the order they ran.
+        """
+        spoke = '{"output": "first executor reached no endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    f"the QA executor container ran but never reached the endpoint: {spoke}",
+                    transient=True,
+                    transcript=spoke,
+                ),
+                QAExecutorUnavailable(
+                    "worker-manager did not acknowledge the QA executor within 120s",
+                    transient=True,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence == (
+            f"== QA executor attempt 1 of {QA_EXECUTOR_ATTEMPTS} ==\n{spoke}"
+        )
+
+    async def test_an_executor_that_never_started_records_no_transcript(self, tmp_path):
+        """No attempt ran, so this record holds none — which claims nothing further."""
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable("CLAUDE_CONFIG_DIR is not mounted", transient=False)
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence is None
+
     async def test_no_llm_configuration_is_offered_as_the_remedy(self, tmp_path):
         """QA has one executor; the outcome must not point at a removed fallback."""
         result = await _run(
@@ -309,6 +375,50 @@ class TestAnExecutorThatRanButSaidNothing:
 
         assert result.passed is False
         assert result.blocker.category is QABlockerCategory.UNKNOWN
+        # It ran and said nothing, and that is what the run records: the empty
+        # string, never a header this code assembled around nothing.
+        assert result.executor_evidence == ""
+
+    async def test_silence_across_every_attempt_stays_silence(self, tmp_path):
+        """Two containers ran, both said nothing, and neither reached the endpoint.
+
+        The retry must not turn that into content. What the run records is the
+        runner's own observation — an executor ran and produced no output — and
+        the artifact states that absence rather than publishing an attempt
+        header as though an agent had written it.
+        """
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    "the QA executor container ran but never reached the endpoint: no output",
+                    transient=True,
+                    transcript="",
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+        assert result.executor_evidence == ""
+
+    async def test_a_silent_attempt_beside_a_speaking_one_adds_no_empty_section(self, tmp_path):
+        """Only the attempt that produced output is retained, under its own header."""
+        spoke = '{"output": "second executor reached no endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable("ran, said nothing", transient=True, transcript=""),
+                QAExecutorUnavailable(
+                    f"ran but never reached the endpoint: {spoke}",
+                    transient=True,
+                    transcript=spoke,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence == (
+            f"== QA executor attempt 2 of {QA_EXECUTOR_ATTEMPTS} ==\n{spoke}"
+        )
 
 
 class TestOnlyAnAssignedSubscriptionAgentCanBeConfigured:

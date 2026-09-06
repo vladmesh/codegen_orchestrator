@@ -439,6 +439,24 @@ class QARunResult(BaseModel):
     blocker: QABlocker | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = Field(default_factory=list)
     state_changes: list[QAStateChange] = Field(default_factory=list)
+    #: The QA executor's own account of the run, as the QA runner saw it over the
+    #: worker's output stream (`QAExecutorRun.transcript`, bounded there), with
+    #: every attempt that ran under its own header. It is kept because it exists
+    #: nowhere else once the run's stand is destroyed: the QA executor's
+    #: container leaves no transcript under the worker-transcript mount, so a red
+    #: paid run's acceptance artifact could otherwise only report the absence.
+    #:
+    #: Three states, never merged. A non-empty string is retained output. ``""``
+    #: is an executor that ran and said nothing — written only by the QA runner,
+    #: from its own observation, so it is knowledge and readers may state it as
+    #: silence. ``None`` is a fact about this record — the writer that settled
+    #: the Run recorded no transcript — and never a claim that no executor
+    #: produced output: several writers can settle a QA Run (the consumer's
+    #: fallback terminal write, the QA grant sweep, the temporary-access sweep)
+    #: and only the consumer that ran the executor ever holds what it said.
+    #: Readers state which writer settled the Run without one; they do not
+    #: conclude silence from it.
+    executor_transcript: str | None = None
 
     @model_validator(mode="after")
     def _outcome_matches_state_traces(self) -> QARunResult:

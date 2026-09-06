@@ -846,6 +846,53 @@ follow-up is that reader — a skipped follow-up deploy seeded nothing, so it en
 the wait within one poll with the skip as its reason instead of spending the
 repair budget on a result that cannot change.
 
+### A QA run keeps the executor's own transcript
+
+`QARunResult.executor_transcript` carries what the QA executor said, as the QA
+runner saw it over the worker's output stream (`QAExecutorRun.transcript`,
+bounded there). It is on the Run because nowhere else survives: a QA executor
+container writes no transcript under the worker-transcript mount, so once the
+stand is destroyed the paid run's acceptance artifact could only report the
+absence — which is what run 34055029359 did. `tests/live/run_evidence.py`
+retains the value as the QA worker's `transcript.content`, redacted and bounded
+through the one retention funnel.
+
+**Every attempt that ran is kept.** QA retries a transient failure to start its
+executor, and an attempt that ran and said something must not be erased by a
+later one that never started a container. The runner collects the attempts
+(`QAExecutorAttempts`) and writes those that produced output under one header
+each — `== QA executor attempt N of M ==` — so a reader can tell them apart.
+That applies to the answered run as much as to the failed one: an attempt that
+spoke before a successful retry is evidence too. The header is presentation and
+only ever goes around output an executor produced; assembled text is never
+published as content.
+
+**The field has three states and they never merge:**
+
+* **a non-empty string — retained.** An executor produced output and the
+  artifact carries it, redacted and bounded through the one retention funnel.
+* **`""` — known silent.** At least one executor attempt ran and none of them
+  said anything. Only the QA runner writes this, and it writes it from its own
+  observation, so the artifact states an absence that names the executor's
+  silence. The sweep race below does not touch it: an empty transcript is a fact
+  somebody watched, not the default of a writer that had nothing.
+* **`null` or the field absent — not recorded.** The writer that settled the Run
+  had no transcript to record. It says this writer recorded none and nothing
+  more; it may not be read as "no executor produced output", because more than
+  one writer can settle a QA Run and only one of them ever holds that output:
+  the QA consumer that ran the executor. Its own fallback terminal write settles
+  the Run when the first PATCH fails for anything but a 409, and the QA grant
+  sweep and the temporary-access sweep can settle a Run — through the 409
+  refusal and `record_run_outcome_unless_settled` — while an executor is still
+  in flight and its output exists only in the runner's call stack. The artifact
+  says which writer settled the Run without a transcript, as the Run itself
+  records it, and asserts nothing further.
+
+That the sweeps can settle an in-flight Run is a known residual and stays one
+for this sprint: closing it would change terminal ownership and the run
+lifecycle. Under the rule above it costs no false statement — the artifact
+reports which path settled the Run and claims nothing about the executor.
+
 ### Deploy dispatch, withdrawal, and deadlines
 
 `shared/contracts/dto/deploy_dispatch.py` and `services/api/src/routers/runs.py`

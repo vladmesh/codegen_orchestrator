@@ -3922,6 +3922,11 @@ class _FakeGitHub:
     async def get_token(self, owner, repo):
         return "gh-token"
 
+    async def get_repo(self, owner, repo):
+        # Only the default branch is read from the repository record: the diff
+        # probe compares against that branch, not against a name it assumed.
+        return SimpleNamespace(default_branch="main")
+
 
 def _run_probe(monkeypatch, capsys, *, ref, verify_merged_into_main=False):
     _FakeGitHub.requested_refs = []
@@ -5429,28 +5434,44 @@ def test_a_run_with_no_story_says_why_it_has_no_branch_diff():
     assert "created no story" in ctx["story_branch_diff_error"]
 
 
-def test_story_branch_diff_probe_reads_the_head_and_the_change(monkeypatch, capsys):
-    requested = []
+class _DiffProbeGitHubAPI:
+    """The three GitHub reads the diff probe makes, answered from one history."""
 
-    class Client:
-        async def __aenter__(self):
-            return self
+    def __init__(self, *, head_sha, merge_base, reverse_commits=()):
+        self.head_sha = head_sha
+        self.merge_base = merge_base
+        self.reverse_commits = reverse_commits
+        self.requested: list[tuple[str, str]] = []
 
-        async def __aexit__(self, *args):
-            return False
+    async def __aenter__(self):
+        return self
 
-        async def get(self, url, **kwargs):
-            requested.append((url, kwargs["headers"]["Accept"]))
-            if "/branches/" in url:
-                return httpx.Response(
-                    200,
-                    json={"commit": {"sha": "c0ffee"}},
-                    request=httpx.Request("GET", url),
-                )
-            return httpx.Response(200, text="--- a/app.py\n", request=httpx.Request("GET", url))
+    async def __aexit__(self, *args):
+        return False
 
+    async def get(self, url, **kwargs):
+        accept = kwargs["headers"]["Accept"]
+        self.requested.append((url, accept))
+        request = httpx.Request("GET", url)
+        if "/branches/" in url:
+            return httpx.Response(200, json={"commit": {"sha": self.head_sha}}, request=request)
+        if accept == "application/vnd.github.v3.diff":
+            compared = url.split("/compare/", 1)[1]
+            return httpx.Response(200, text=f"--- a/app.py ({compared})\n", request=request)
+        if url.endswith("story/story-1...main"):
+            return httpx.Response(
+                200, json={"commits": list(self.reverse_commits)}, request=request
+            )
+        return httpx.Response(
+            200,
+            json={"merge_base_commit": {"sha": self.merge_base}},
+            request=request,
+        )
+
+
+def _run_diff_probe(monkeypatch, capsys, api) -> dict:
     monkeypatch.setattr(live_harness_cleanup, "GitHubAppClient", _FakeGitHub)
-    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: api)
     asyncio.run(
         live_harness_cleanup.probe_story_branch_diff(
             owner="project-factory-organization",
@@ -5458,19 +5479,65 @@ def test_story_branch_diff_probe_reads_the_head_and_the_change(monkeypatch, caps
             branch="story/story-1",
         )
     )
-
-    probe = pipeline_helpers.parse_probe_payload(
+    return pipeline_helpers.parse_probe_payload(
         capsys.readouterr().out,
         pipeline_helpers.STORY_BRANCH_DIFF_MARKER,
         subject="story branch diff probe",
     )
+
+
+def test_story_branch_diff_probe_compares_against_the_merge_base(monkeypatch, capsys):
+    """An unmerged branch: the compare's own merge base is where it forked."""
+    api = _DiffProbeGitHubAPI(head_sha="c0ffee", merge_base="ba5e")
+
+    probe = _run_diff_probe(monkeypatch, capsys, api)
+
     assert probe == {
         "repository": "project-factory-organization/run-repo",
         "branch": "story/story-1",
         "head_sha": "c0ffee",
-        "diff": "--- a/app.py\n",
+        "base_ref": "main",
+        "reference": "ba5e",
+        "reference_kind": live_harness_cleanup.MERGE_BASE_REFERENCE,
+        "diff": "--- a/app.py (ba5e...story/story-1)\n",
     }
-    assert [accept for _, accept in requested] == [
+    assert [accept for _, accept in api.requested] == [
+        "application/vnd.github+json",
         "application/vnd.github+json",
         "application/vnd.github.v3.diff",
     ]
+
+
+def test_a_branch_whose_story_merged_is_compared_with_what_it_was_merged_onto(monkeypatch, capsys):
+    """The merge base of a merged branch is its own head, which shows nothing.
+
+    Run 34055029359 lost its diff exactly here. The merge commit that brought
+    the branch into `main` names the commit `main` sat at, and a compare from
+    there has the branch's fork point as its merge base again.
+    """
+    api = _DiffProbeGitHubAPI(
+        head_sha="c0ffee",
+        merge_base="c0ffee",
+        reverse_commits=[
+            {"sha": "later", "parents": [{"sha": "merge"}]},
+            {"sha": "merge", "parents": [{"sha": "ma1nbef0re"}, {"sha": "c0ffee"}]},
+        ],
+    )
+
+    probe = _run_diff_probe(monkeypatch, capsys, api)
+
+    assert probe["reference"] == "ma1nbef0re"
+    assert probe["reference_kind"] == live_harness_cleanup.PRE_MERGE_DEFAULT_HEAD_REFERENCE
+    assert probe["diff"] == "--- a/app.py (ma1nbef0re...story/story-1)\n"
+
+
+def test_a_contained_branch_with_no_merge_commit_names_what_it_could_not_recover(
+    monkeypatch, capsys
+):
+    """Fast-forwarded in: nothing left to compare against, and the payload says so."""
+    api = _DiffProbeGitHubAPI(head_sha="c0ffee", merge_base="c0ffee", reverse_commits=[])
+
+    probe = _run_diff_probe(monkeypatch, capsys, api)
+
+    assert probe["reference"] == "c0ffee"
+    assert probe["reference_kind"] == live_harness_cleanup.MERGE_BASE_IS_HEAD_REFERENCE

@@ -61,13 +61,23 @@ process and after it — ``scripts/stand_run.py`` fails a run on a sweep error
 after every cell passed, and SIGKILLs pytest on its hard timeout — so no
 in-process signal can be the gate. The three are
 
-* ``transcript.content`` — the bodies worker-wrapper retained for this worker
-  under the transcript bind mount, which it already redacted against the *worker
-  container's* secret environment before writing them;
+* ``transcript.content`` — what this agent said. For a developer worker that is
+  the bodies worker-wrapper retained under the transcript bind mount, already
+  redacted against the *worker container's* secret environment before writing.
+  A QA executor's container writes nothing there, and its transcript is read
+  instead from the QA Run the consumer settled
+  (``QARunResult.executor_transcript``, which the QA runner fills from the
+  executor's output stream): the same field, the source each worker's transcript
+  actually has;
 * ``agent_report`` — the ``REPORT.md`` the agent wrote, as the control plane
   stored it on this run's engineering tasks (``worker_report`` task events);
 * ``branch_diff`` — the change the branch this worker produced carries, named by
-  repository, branch and head SHA.
+  repository, branch, head SHA and the reference it was measured against. That
+  reference is what the branch *added* from — the merge base with the default
+  branch, or, for a branch whose story has already merged and whose merge base
+  is therefore its own head, the default-branch commit its merge commit was made
+  onto. Comparing against the default branch as it stands now loses the diff of
+  exactly the run that needs it: one that goes red after its story merged.
 
 Each of them is a ``Capture``: present, or a stated reason it could not be
 collected. None of them is ever a bare empty value, and a QA executor — which
@@ -145,6 +155,7 @@ from shared.contracts.worker_evidence import (
     secret_env_values,
 )
 from shared.diagnostics import redact_diagnostic
+from shared.live_harness_cleanup import MERGE_BASE_IS_HEAD_REFERENCE
 
 logger = structlog.get_logger(__name__)
 
@@ -226,12 +237,19 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      `failure.failed_tests`, and is red with a `suite_failed` verdict reason.
 #      `stage` and `failure_kind` keep their own question — where the pipeline
 #      stopped — and stay `completed`/`none` for such a run.
+# v16: a worker's `branch_diff` is taken against what the branch added — the
+#      merge base with the default branch, or, once the story merged, the
+#      default-branch commit its merge was made onto — and names that reference
+#      in `reference`/`reference_kind`, so a branch whose story merged still
+#      yields its diff. A QA executor's `transcript.content` is the executor's
+#      own output as the QA runner recorded it on the QA Run
+#      (`QARunResult.executor_transcript`), not the empty worker-transcript mount.
 # v13: a combination that did not complete retains, per worker, the transcript
 #      body (`transcript.content`), the agent's final report (`agent_report`) and
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 15
+EVIDENCE_SCHEMA_VERSION = 16
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -323,8 +341,11 @@ PRIVACY_STATEMENT = (
     "its transcript is referenced by path and file list only. A PAID run "
     "additionally retains, per worker and whatever its outcome, the "
     "transcript worker-wrapper wrote (already redacted by the wrapper against "
-    "the worker container's secret environment), the agent's REPORT.md as the "
-    "control plane stored it, and the diff of the branch the worker produced. "
+    "the worker container's secret environment) — or, for a QA executor, which "
+    "worker-wrapper retains no transcript for, the executor's own output as the "
+    "QA runner recorded it on the QA Run it settled — the agent's REPORT.md as "
+    "the control plane stored it, and the diff of the branch the worker "
+    "produced, taken against the commit that branch started from. "
     "Every one of those bodies is redacted again on the stand host, before it "
     "crosses to the runner and before any bound is applied to it, with the same "
     "helper applied line by line against every value of the harness process "
@@ -1483,6 +1504,36 @@ def _transcript_content(transcript: dict) -> Capture:
     )
 
 
+# The field the QA consumer records the executor's own output on
+# (`QARunResult.executor_transcript`). A QA executor's container writes nothing
+# under the worker-transcript mount, so this — not the mount — is where its
+# transcript is.
+QA_EXECUTOR_TRANSCRIPT_FIELD = "executor_transcript"
+# An absent transcript is a fact about the record — this writer recorded none —
+# and never a claim about the executor. Several writers can settle a QA Run and
+# only one of them ever holds the executor's output: the QA consumer that ran it.
+# A grant sweep, the temporary-access sweep or the consumer's own fallback can
+# settle a Run while that output exists only in another process's call stack, so
+# an artifact that read `null` as "no executor produced output" would state a
+# confident falsehood exactly where honesty is the point. What is said instead is
+# which writer settled the Run without a transcript, as the Run itself records it.
+QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON = (
+    "the result of this QA Run carries no `executor_transcript` field: it was written "
+    "by a producer that does not record one"
+)
+QA_TRANSCRIPT_CLAIMS_NOTHING = (
+    "this says what the Run record holds and nothing about whether an executor "
+    "produced output: only the writer that ran one could know that"
+)
+# The one absence that *is* knowledge. An empty transcript is written by the QA
+# runner and by nothing else — it is what the runner watched happen: an executor
+# that ran and said nothing. That is a different finding from a record whose
+# writer had no transcript to record, and the two are never merged.
+QA_EXECUTOR_WAS_SILENT_REASON = (
+    "the QA runner recorded an empty executor transcript for this run: an executor "
+    "ran and produced no output, which the runner observed rather than inferred"
+)
+
 QA_WRITES_NO_REPORT_REASON = (
     "a QA executor writes no REPORT.md: its answer is the QA verdict, which this "
     "artifact carries in `qa`"
@@ -1533,7 +1584,15 @@ def _agent_report(ctx: dict, record: dict) -> Capture:
 
 
 def _branch_diff(ctx: dict, record: dict) -> Capture:
-    """The change the branch this worker produced carries, named by where it is."""
+    """The change the branch this worker produced carries, named by where it is.
+
+    The diff is what the branch *added* — it is taken against the commit the
+    branch started from, not against the default branch as it stands now, and
+    the probe says in `reference_kind` which reference it could recover. A
+    branch whose story has already merged therefore still yields its diff, which
+    is the case that matters: a run that goes red after its merge is when
+    somebody has to read what the worker wrote.
+    """
     if record["role"] == WorkerRole.QA_EXECUTOR.value:
         return Capture.missed(QA_PRODUCES_NO_BRANCH_REASON)
     if ctx.get("story_branch_diff_error"):
@@ -1545,16 +1604,104 @@ def _branch_diff(ctx: dict, record: dict) -> Capture:
         "repository": diff["repository"],
         "branch": diff["branch"],
         "head_sha": diff["head_sha"],
+        # What the change was measured against, and how that reference was
+        # found. A reader comparing two runs' diffs needs both.
+        "base_ref": diff["base_ref"],
+        "reference": diff["reference"],
+        "reference_kind": diff["reference_kind"],
     }
+    branch_at = f"{identity['repository']}@{identity['branch']} ({identity['head_sha']})"
+    if identity["reference_kind"] == MERGE_BASE_IS_HEAD_REFERENCE:
+        return Capture.missed(
+            f"{branch_at} is already contained in {identity['base_ref']} and no merge "
+            "commit of it was found, so the commit it started from is not recoverable "
+            "and there is nothing left to compare it against"
+        )
     if not diff["diff"]:
         return Capture.missed(
-            f"{identity['repository']}@{identity['branch']} ({identity['head_sha']}) "
-            "differs from main by nothing: the branch carries no change of its own"
+            f"{branch_at} adds nothing over {identity['reference_kind']} "
+            f"{identity['reference']}: the branch carries no change of its own"
         )
     return _retained_body(diff["diff"], identity)
 
 
+def _qa_settling_writer(qa_run: dict) -> str:
+    """Which writer settled this QA Run, as far as the Run itself says so.
+
+    More than one can: the QA consumer that ran the executor, its own fallback
+    terminal write, the QA grant sweep, and the temporary-access sweep. The Run
+    does not carry the writer's name, but a blocker carries what that writer was
+    attempting, which is the closest thing to it that is a fact rather than an
+    inference.
+    """
+    result = qa_run.get("result") or {}
+    blocker = result.get("blocker") or {}
+    outcome = result.get("qa_outcome")
+    attempted = blocker.get("attempted")
+    if attempted:
+        return f"outcome {outcome}, written by the path that attempted to {attempted}"
+    return f"outcome {outcome}, with no blocker naming the path that wrote it"
+
+
+def _qa_executor_transcript(ctx: dict) -> Capture:
+    """The QA executor's account of its run, from where it lives, or which writer had none.
+
+    Not from the transcript mount: a QA executor container leaves nothing there,
+    and the artifact of run 34055029359 could only report that absence. The
+    runner holds the executor's output in process (`QAResult.executor_evidence`,
+    every attempt of it) and the QA consumer writes it to the Run it settles
+    (`QARunResult.executor_transcript`), which outlives the container and is read
+    here with the rest of that Run.
+
+    Three states, and they never merge. Output the executor produced is retained.
+    An empty transcript is the runner's own observation that an executor ran and
+    said nothing, and is a stated absence that says exactly that. Everything else
+    — no QA Run read, a Run settled by a writer that recorded no transcript — is
+    a stated absence about the *record*, naming the path that settled the Run and
+    claiming nothing about any executor, because several writers can settle a Run
+    while the output exists only in the process still running it.
+    """
+    qa_run = ctx.get("qa_run")
+    if qa_run is None:
+        return Capture.missed(
+            "no QA Run of this combination was read, so the executor transcript the QA "
+            f"runner records on it could not be collected: {_qa_not_exercised_reason(ctx)}"
+        )
+    result = qa_run.get("result") or {}
+    if QA_EXECUTOR_TRANSCRIPT_FIELD not in result:
+        return Capture.missed(
+            f"QA Run {qa_run.get('id')}: {QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON} "
+            f"({_qa_settling_writer(qa_run)}); {QA_TRANSCRIPT_CLAIMS_NOTHING}"
+        )
+    transcript = result[QA_EXECUTOR_TRANSCRIPT_FIELD]
+    if transcript == "":
+        return Capture.missed(f"QA Run {qa_run.get('id')}: {QA_EXECUTOR_WAS_SILENT_REASON}")
+    if not transcript:
+        return Capture.missed(
+            f"QA Run {qa_run.get('id')} was settled with no executor transcript — "
+            f"{_qa_settling_writer(qa_run)}; {QA_TRANSCRIPT_CLAIMS_NOTHING}"
+        )
+    return _retained_body(
+        transcript,
+        {"qa_run_id": qa_run.get("id"), "source": f"qa_run.result.{QA_EXECUTOR_TRANSCRIPT_FIELD}"},
+    )
+
+
 RETAINED_BODIES_CTX_KEY = "retained_bodies"
+
+
+def _worker_transcript_content(ctx: dict, record: dict) -> Capture:
+    """One worker's transcript body, read from wherever that worker's transcript is.
+
+    A developer worker's is on the host, under the bind mount worker-wrapper
+    wrote it into. A QA executor's is not there at all — worker-wrapper retains
+    none for it — and reporting that absence was all the artifact could do until
+    the QA runner's own copy was carried across the Run boundary. One field, two
+    sources, because there is one question: what did this agent say.
+    """
+    if record["role"] == WorkerRole.QA_EXECUTOR.value:
+        return _qa_executor_transcript(ctx)
+    return _transcript_content(record["transcript"])
 
 
 def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
@@ -1571,7 +1718,7 @@ def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
     """
     held = {
         record["worker_id"]: {
-            "transcript_content": _transcript_content(record["transcript"]).as_dict(),
+            "transcript_content": _worker_transcript_content(ctx, record).as_dict(),
             "agent_report": _agent_report(ctx, record).as_dict(),
             "branch_diff": _branch_diff(ctx, record).as_dict(),
         }
