@@ -72,14 +72,50 @@ class QARuntimeConfig:
     telethon_env: dict[str, str] | None = None
 
 
+# One header per executor attempt, so a body carrying two of them is readable as
+# two attempts rather than as one confusing transcript. Every attempt that ran
+# is retained under its own header: a second attempt that produced nothing must
+# not erase what the first one said, which is the whole reason the attempts are
+# collected rather than overwritten.
+EXECUTOR_ATTEMPT_HEADER = "== QA executor attempt {attempt} of {attempts} =="
+
+
+@dataclass(frozen=True)
+class QAExecutorAttempts:
+    """What every executor attempt of one QA run said, in the order they ran.
+
+    An attempt that never started a container contributes nothing — there is no
+    transcript to keep — and an attempt that ran contributes what it said, the
+    empty string included. `evidence` is `None` only when no attempt ran at all,
+    and that is a fact about this record, not a claim about any executor.
+    """
+
+    attempts: int
+    said: tuple[tuple[int, str], ...] = ()
+
+    def with_attempt(self, attempt: int, transcript: str | None) -> QAExecutorAttempts:
+        if transcript is None:
+            return self
+        return QAExecutorAttempts(self.attempts, (*self.said, (attempt, transcript)))
+
+    @property
+    def evidence(self) -> str | None:
+        if not self.said:
+            return None
+        return "\n".join(
+            f"{EXECUTOR_ATTEMPT_HEADER.format(attempt=attempt, attempts=self.attempts)}\n{text}"
+            for attempt, text in self.said
+        )
+
+
 class QAInfrastructureFailure(Exception):
     """Typed infrastructure failure that must not become a product verdict.
 
-    `executor_transcript` carries what an executor said when one ran and the run
-    still ended as infrastructure — the container that started, produced output
-    and never reached the capability endpoint. It is ``None`` when no executor
-    produced output at all, which is the only thing `null` may mean on the Run
-    this failure settles (`QARunResult.executor_transcript`).
+    `executor_transcript` carries what the executor attempts of this run said
+    when one or more ran and the run still ended as infrastructure — a container
+    that started, produced output and never reached the capability endpoint. It
+    is ``None`` when no attempt of this run started a container, so there was
+    never anything to carry.
     """
 
     def __init__(
@@ -720,7 +756,7 @@ async def _invoke_qa_agent(
     )
     endpoint = await service.start()
     try:
-        executor_run, executor_failure = await _run_central_executor(
+        executor_run, executor_failure, said = await _run_central_executor(
             target=target,
             ownership=ownership,
             acceptance_criteria=acceptance_criteria,
@@ -733,7 +769,7 @@ async def _invoke_qa_agent(
         )
         if executor_run is not None:
             return _apply_telegram_probe_evidence(
-                _verdict_of(workspace, service, executor_run, timeout), workspace
+                _verdict_of(workspace, service, timeout, said), workspace
             )
     finally:
         await service.stop()
@@ -746,7 +782,9 @@ async def _invoke_qa_agent(
         # An executor that started, said something and never called the endpoint
         # leaves that account here and nowhere else: its container is already
         # deleted, and worker-wrapper retains no transcript for a QA executor.
-        executor_transcript=executor_failure.transcript,
+        # Every attempt that ran, not only the last: the last one may be an
+        # attempt that never started a container and has nothing to say.
+        executor_transcript=said.evidence,
         blocker=QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted=f"run exploratory QA on the assigned executor ({executor})",
@@ -772,8 +810,14 @@ async def _run_central_executor(
     endpoint,
     service: QACapabilityService,
     timeout: int,
-) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None]:
-    """Retry only transient subscription-executor failures."""
+) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
+    """Retry only transient subscription-executor failures.
+
+    Every attempt's transcript is kept, not just the last one's: a first attempt
+    that ran and said something, followed by one that never started a container,
+    used to return nothing at all. The attempts travel back with the outcome so
+    the run they settle retains all of them.
+    """
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
         logger.info(
@@ -789,6 +833,7 @@ async def _run_central_executor(
         settings_established=settings_established,
     )
     last: QAExecutorUnavailable | None = None
+    said = QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
@@ -804,6 +849,7 @@ async def _run_central_executor(
             )
         except QAExecutorUnavailable as exc:
             last = exc
+            said = said.with_attempt(attempt, exc.transcript)
             logger.warning(
                 "qa_executor_unavailable",
                 executor=runtime.executor_agent_type.value,
@@ -821,23 +867,28 @@ async def _run_central_executor(
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None
-    return None, last
+        return run, None, said.with_attempt(attempt, run.transcript)
+    return None, last, said
 
 
 def _verdict_of(
     workspace: QAWorkspace,
     service: QACapabilityService,
-    executor_run: QAExecutorRun,
     timeout: int,
+    said: QAExecutorAttempts,
 ) -> QAResult:
-    """Require a submitted executor verdict before producing QA evidence."""
+    """Require a submitted executor verdict before producing QA evidence.
+
+    The evidence is every attempt of this run, not only the one that answered:
+    a first attempt that ran and failed transiently said something about why,
+    and a second attempt succeeding is not a reason to drop it.
+    """
     if workspace.verdict is None:
         return QAResult(
             passed=False,
             summary=f"the QA executor did not submit a result within {timeout}s",
             report=workspace.read_report(),
-            executor_evidence=executor_run.transcript,
+            executor_evidence=said.evidence,
             blocker=_unknown_result_blocker(
                 attempted="run the central QA executor",
                 sent=f"{service.calls_served} capability call(s)",
@@ -846,7 +897,7 @@ def _verdict_of(
         )
     qa_result = parse_qa_result(workspace.verdict)
     qa_result.report = workspace.read_report()
-    qa_result.executor_evidence = executor_run.transcript
+    qa_result.executor_evidence = said.evidence
     return qa_result
 
 

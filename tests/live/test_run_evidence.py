@@ -2910,10 +2910,60 @@ def test_a_secret_in_the_qa_executor_transcript_never_reaches_the_artifact(
     assert "[redacted]" in worker["transcript"]["content"]["value"]["text"]
 
 
-def test_a_qa_executor_that_produced_no_output_says_so_instead_of_looking_unpersisted(
+# The claims an absent transcript may never make. A QA Run can be settled by the
+# consumer that ran the executor, by that consumer's fallback write, by the QA
+# grant sweep or by the temporary-access sweep, and only the first of those ever
+# holds the executor's output — so "no executor produced output" is not a thing
+# this artifact can know from a missing value.
+FORBIDDEN_TRANSCRIPT_CLAIMS = (
+    "produced no output",
+    "starts no QA executor",
+    "before an executor produced",
+    "never persisted",
+)
+
+
+def swept_qa_run(transcript: object) -> dict:
+    """A Run settled by the grant sweep: the writer that never holds a transcript."""
+    return qa_run_with(
+        transcript,
+        qa_outcome=QAOutcome.BLOCKED.value,
+        blocker={
+            "category": "qa_cleanup_failed",
+            "attempted": "remove the QA run's one-shot key from the target",
+            "sent": "authorized_keys entry qa-1 on 1.2.3.4",
+            "received": "the target could not be read back",
+        },
+    )
+
+
+def test_an_absent_qa_transcript_names_the_writer_and_claims_nothing_about_the_executor(
     transcripts, tmp_path
 ):
-    """ "The executor said nothing" and "nobody kept what it said" are not the same."""
+    """A sweep can settle a Run whose executor is still running elsewhere.
+
+    Its output lives in the QA runner's call stack until that process returns,
+    so a `null` here says what this record holds and nothing more. The reason
+    names the path that settled the Run instead of concluding that the executor
+    was silent — the thing the artifact cannot know and must not assert.
+    """
+    collector = collector_for(qa_docker(transcripts))
+    collector.capture()
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=swept_qa_run(None))
+
+    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
+
+    assert content["status"] == CaptureStatus.MISSED.value
+    assert "remove the QA run's one-shot key from the target" in content["reason"]
+    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING in content["reason"]
+    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
+        assert claim not in content["reason"]
+
+
+def test_an_empty_qa_transcript_is_what_the_record_holds_not_a_verdict_on_the_executor(
+    transcripts, tmp_path
+):
+    """An empty value is still the record's answer, and it is reported as one."""
     collector = collector_for(qa_docker(transcripts))
     collector.capture()
     ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(""))
@@ -2921,40 +2971,25 @@ def test_a_qa_executor_that_produced_no_output_says_so_instead_of_looking_unpers
     content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
 
     assert content["status"] == CaptureStatus.MISSED.value
-    assert "produced no output" in content["reason"]
-    assert "never persisted" not in content["reason"]
+    assert "settled with an empty executor transcript" in content["reason"]
+    assert run_evidence.QA_TRANSCRIPT_CLAIMS_NOTHING in content["reason"]
+    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
+        assert claim not in content["reason"]
 
 
-def test_a_qa_run_that_started_no_executor_says_that_rather_than_promising_one(
-    transcripts, tmp_path
-):
+def test_a_qa_result_with_no_transcript_field_says_the_producer_records_none(transcripts, tmp_path):
+    """A result written by a producer that does not record the field says that."""
     collector = collector_for(qa_docker(transcripts))
     collector.capture()
-    ctx = base_ctx(
-        collector,
-        **RETENTION_SOURCES,
-        qa_requires_executor=False,
-        qa_run=qa_run_with(None),
-    )
+    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=swept_qa_run(_UNRECORDED))
 
     content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
 
     assert content["status"] == CaptureStatus.MISSED.value
-    assert "starts no QA executor" in content["reason"]
-
-
-def test_a_qa_result_that_records_no_transcript_field_says_it_was_never_persisted(
-    transcripts, tmp_path
-):
-    """The one remaining way to have nothing, and it names itself as that."""
-    collector = collector_for(qa_docker(transcripts))
-    collector.capture()
-    ctx = base_ctx(collector, **RETENTION_SOURCES, qa_run=qa_run_with(_UNRECORDED))
-
-    content = qa_worker_of(ctx, tmp_path)["transcript"]["content"]
-
-    assert content["status"] == CaptureStatus.MISSED.value
-    assert content["reason"].endswith(run_evidence.QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON)
+    assert run_evidence.QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON in content["reason"]
+    assert "remove the QA run's one-shot key from the target" in content["reason"]
+    for claim in FORBIDDEN_TRANSCRIPT_CLAIMS:
+        assert claim not in content["reason"]
 
 
 def test_a_qa_executor_with_no_qa_run_read_says_why_there_is_none(transcripts, tmp_path):

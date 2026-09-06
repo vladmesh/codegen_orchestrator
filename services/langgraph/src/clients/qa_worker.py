@@ -63,9 +63,9 @@ class QAExecutorUnavailable(Exception):
     got nowhere". ``None`` is the first: nothing ever started, so there is
     nothing to carry. A string — empty included — is the second, and it must
     reach the Run this failure settles: the container is deleted in this
-    function's own `finally`, and `QARunResult.executor_transcript` promises
-    that `null` there means no executor produced output. A failure that dropped
-    the payload it is quoting in its own detail would make that promise a lie.
+    function's own `finally` and worker-wrapper retains no transcript for a QA
+    executor, so a failure that dropped the payload it is quoting in its own
+    detail would be the last chance anybody had to read it.
     """
 
     def __init__(self, detail: str, *, transient: bool, transcript: str | None = None) -> None:

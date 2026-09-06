@@ -1509,10 +1509,21 @@ def _transcript_content(transcript: dict) -> Capture:
 # under the worker-transcript mount, so this — not the mount — is where its
 # transcript is.
 QA_EXECUTOR_TRANSCRIPT_FIELD = "executor_transcript"
+# An absent transcript is a fact about the record — this writer recorded none —
+# and never a claim about the executor. Several writers can settle a QA Run and
+# only one of them ever holds the executor's output: the QA consumer that ran it.
+# A grant sweep, the temporary-access sweep or the consumer's own fallback can
+# settle a Run while that output exists only in another process's call stack, so
+# an artifact that read `null` as "no executor produced output" would state a
+# confident falsehood exactly where honesty is the point. What is said instead is
+# which writer settled the Run without a transcript, as the Run itself records it.
 QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON = (
     "the result of this QA Run carries no `executor_transcript` field: it was written "
-    "by a producer that does not record the executor's own output, so the transcript "
-    "was never persisted anywhere this artifact can read"
+    "by a producer that does not record one"
+)
+QA_TRANSCRIPT_CLAIMS_NOTHING = (
+    "this says what the Run record holds and nothing about whether an executor "
+    "produced output: only the writer that ran one could know that"
 )
 
 QA_WRITES_NO_REPORT_REASON = (
@@ -1606,19 +1617,39 @@ def _branch_diff(ctx: dict, record: dict) -> Capture:
     return _retained_body(diff["diff"], identity)
 
 
+def _qa_settling_writer(qa_run: dict) -> str:
+    """Which writer settled this QA Run, as far as the Run itself says so.
+
+    More than one can: the QA consumer that ran the executor, its own fallback
+    terminal write, the QA grant sweep, and the temporary-access sweep. The Run
+    does not carry the writer's name, but a blocker carries what that writer was
+    attempting, which is the closest thing to it that is a fact rather than an
+    inference.
+    """
+    result = qa_run.get("result") or {}
+    blocker = result.get("blocker") or {}
+    outcome = result.get("qa_outcome")
+    attempted = blocker.get("attempted")
+    if attempted:
+        return f"outcome {outcome}, written by the path that attempted to {attempted}"
+    return f"outcome {outcome}, with no blocker naming the path that wrote it"
+
+
 def _qa_executor_transcript(ctx: dict) -> Capture:
-    """The QA executor's own account of its run, from where it actually lives.
+    """The QA executor's account of its run, from where it lives, or which writer had none.
 
     Not from the transcript mount: a QA executor container leaves nothing there,
     and the artifact of run 34055029359 could only report that absence. The
     runner holds the executor's output in process (`QAResult.executor_evidence`,
-    read off the worker's output stream) and the QA consumer writes it to the
-    Run it settles (`QARunResult.executor_transcript`), which outlives the
-    container and is read here with the rest of that Run.
+    every attempt of it) and the QA consumer writes it to the Run it settles
+    (`QARunResult.executor_transcript`), which outlives the container and is read
+    here with the rest of that Run.
 
-    Every way of not having it is a different finding and says so: no QA Run was
-    read, a Run whose result predates the field, a run that started no executor,
-    and an executor that ran and produced nothing.
+    When it is not there, what is stated is about the record: no QA Run was read,
+    or the Run was settled by a writer that recorded no transcript. None of those
+    reasons says an executor produced nothing — several writers can settle a Run
+    while the output exists only in the process still running it, so that is not
+    a thing this artifact can know.
     """
     qa_run = ctx.get("qa_run")
     if qa_run is None:
@@ -1629,22 +1660,15 @@ def _qa_executor_transcript(ctx: dict) -> Capture:
     result = qa_run.get("result") or {}
     if QA_EXECUTOR_TRANSCRIPT_FIELD not in result:
         return Capture.missed(
-            f"QA Run {qa_run.get('id')}: {QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON}"
+            f"QA Run {qa_run.get('id')}: {QA_EXECUTOR_TRANSCRIPT_UNRECORDED_REASON} "
+            f"({_qa_settling_writer(qa_run)}); {QA_TRANSCRIPT_CLAIMS_NOTHING}"
         )
     transcript = result[QA_EXECUTOR_TRANSCRIPT_FIELD]
-    if transcript is None:
-        started_none = (
-            "this run uses deterministic health-only QA, which starts no QA executor"
-            if not ctx.get("qa_requires_executor")
-            else "QA ended before an executor produced anything"
-        )
-        return Capture.missed(
-            f"QA Run {qa_run.get('id')} records no executor transcript: {started_none}"
-        )
     if not transcript:
+        held = "an empty executor transcript" if transcript == "" else "no executor transcript"
         return Capture.missed(
-            f"the QA executor of Run {qa_run.get('id')} produced no output: the runner "
-            "recorded an empty transcript for it, so there is nothing to retain"
+            f"QA Run {qa_run.get('id')} was settled with {held} — "
+            f"{_qa_settling_writer(qa_run)}; {QA_TRANSCRIPT_CLAIMS_NOTHING}"
         )
     return _retained_body(
         transcript,

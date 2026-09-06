@@ -420,8 +420,8 @@ class TestProcessQAJobPass:
 
         The fallback is the writer that ends up owning this Run, and QA had
         already run: the executor's transcript exists only in the result the
-        first write was carrying, so the fallback carries it too. `null` on that
-        field means no executor produced output, and here one did.
+        first write was carrying, so the fallback carries it too. Whoever settles
+        the Run settles it with the evidence this consumer is holding.
         """
         from src.consumers._qa_runner import QAResult
 
@@ -451,10 +451,10 @@ class TestProcessQAJobPass:
         assert fallback["executor_transcript"] == "executor: GET /health -> 200\n"
 
     @pytest.mark.asyncio
-    async def test_the_fallback_records_no_transcript_when_qa_never_produced_one(
+    async def test_the_fallback_records_no_transcript_when_it_holds_none(
         self, mock_api_client, mock_redis, qa_message_data
     ):
-        """The same path with nothing to carry still says `null`, and means it."""
+        """The same path with nothing in hand records nothing, and claims nothing."""
         mock_api_client.patch.side_effect = [
             httpx.HTTPStatusError(
                 "server error",

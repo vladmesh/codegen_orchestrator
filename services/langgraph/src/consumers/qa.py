@@ -595,8 +595,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     # The last result QA produced, held for the terminal writers that do not
     # receive it. The executor's transcript lives in this object and nowhere
     # else once its container is deleted, so a settling path that has forgotten
-    # the result would write `executor_transcript: null` over a transcript that
-    # existed — the one thing that field may never say.
+    # the result would settle the Run without evidence this consumer was holding.
     qa_result: QAResult | None = None
 
     # Inflight dedup — prevent concurrent QA on same story/application

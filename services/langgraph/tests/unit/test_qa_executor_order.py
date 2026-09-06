@@ -283,9 +283,8 @@ class TestAnExecutorThatCannotStart:
 
         Its container is deleted by the time this returns and worker-wrapper
         retains no transcript for a QA executor, so this result is the last
-        place that account exists. The Run built from it carries the transcript,
-        because `executor_transcript: null` means no executor produced output —
-        and one did.
+        place that account exists. Both attempts ran here, and both are kept
+        under their own header.
         """
         transcript = '{"output": "I could not reach the capability endpoint"}'
         result = await _run(
@@ -301,10 +300,41 @@ class TestAnExecutorThatCannotStart:
         )
 
         assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
-        assert result.executor_evidence == transcript
+        assert result.executor_evidence == (
+            f"== QA executor attempt 1 of {QA_EXECUTOR_ATTEMPTS} ==\n{transcript}\n"
+            f"== QA executor attempt 2 of {QA_EXECUTOR_ATTEMPTS} ==\n{transcript}"
+        )
+
+    async def test_a_later_attempt_with_nothing_to_say_does_not_erase_the_first(self, tmp_path):
+        """The reviewer's sequence: attempt one ran and spoke, attempt two never started.
+
+        The retry used to keep only the last failure, so the run retained
+        nothing at all — the one transcript that existed was overwritten by an
+        attempt that had none. Every attempt that ran is retained, delimited, in
+        the order they ran.
+        """
+        spoke = '{"output": "first executor reached no endpoint"}'
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    f"the QA executor container ran but never reached the endpoint: {spoke}",
+                    transient=True,
+                    transcript=spoke,
+                ),
+                QAExecutorUnavailable(
+                    "worker-manager did not acknowledge the QA executor within 120s",
+                    transient=True,
+                ),
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.executor_evidence == (
+            f"== QA executor attempt 1 of {QA_EXECUTOR_ATTEMPTS} ==\n{spoke}"
+        )
 
     async def test_an_executor_that_never_started_records_no_transcript(self, tmp_path):
-        """Nothing ran, so there is nothing to carry and `None` is the truth."""
+        """No attempt ran, so this record holds none — which claims nothing further."""
         result = await _run(
             executor=_failing_executor(
                 QAExecutorUnavailable("CLAUDE_CONFIG_DIR is not mounted", transient=False)

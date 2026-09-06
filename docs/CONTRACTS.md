@@ -853,35 +853,34 @@ runner saw it over the worker's output stream (`QAExecutorRun.transcript`,
 bounded there). It is on the Run because nowhere else survives: a QA executor
 container writes no transcript under the worker-transcript mount, so once the
 stand is destroyed the paid run's acceptance artifact could only report the
-absence — which is what run 34055029359 did.
+absence — which is what run 34055029359 did. `tests/live/run_evidence.py`
+retains the value as the QA worker's `transcript.content`, redacted and bounded
+through the one retention funnel.
 
-`None` and `""` are different findings and readers must keep them apart: `None`
-means no executor produced output on this run — deterministic health-only QA, or
-QA stopping before the executor ran — and `""` means the executor ran and said
-nothing. A result with no such field at all was written by a producer that does
-not record it, which is the only remaining way the transcript was never
-persisted. `tests/live/run_evidence.py` retains the value as the QA worker's
-`transcript.content`, redacted and bounded through the one retention funnel.
+**Every attempt that ran is kept.** QA retries a transient failure to start its
+executor, and an attempt that ran and said something must not be erased by a
+later one that never started a container. The runner collects the attempts
+(`QAExecutorAttempts`) and writes them under one header each —
+`== QA executor attempt N of M ==` — so a reader can tell them apart. That
+applies to the answered run as much as to the failed one: an attempt that spoke
+before a successful retry is evidence too.
 
-That makes `null` a claim, so every settling path in the QA consumer carries the
-transcript when an executor produced one: the verdict paths (passed, failed,
-exhausted), the blocker built from the result — an executor that submitted
-nothing, and the infrastructure blocker of an executor that ran and never
-reached the capability endpoint, whose output rides `QAExecutorUnavailable` and
-`QAInfrastructureFailure` because its container is already deleted — and the
-consumer's fallback terminal write, which settles the Run when the first PATCH
-fails for anything but a 409 and therefore carries the last result QA produced.
-The paths that write `null` are the ones reached before any container existed:
-an unreachable deployed URL, an unresolvable server, a missing bot identity, a
-refused executor decision, and deterministic health-only QA.
+**A null or missing value is a fact about the record, never a claim about the
+executor.** It says this writer recorded no transcript, and nothing more. It may
+not be read as "no executor produced output", because more than one writer can
+settle a QA Run and only one of them ever holds that output: the QA consumer
+that ran the executor. Its own fallback terminal write settles the Run when the
+first PATCH fails for anything but a 409, and the QA grant sweep and the
+temporary-access sweep can settle a Run — through the 409 refusal and
+`record_run_outcome_unless_settled` — while an executor is still in flight and
+its output exists only in the runner's call stack. None of those writers can
+know what the executor did. The artifact says which writer settled the Run
+without a transcript, as the Run itself records it, and asserts nothing further.
 
-Two writers outside that consumer can also settle a QA Run — the QA grant sweep
-and the temporary-access sweep — and both write only onto a Run that has no
-terminal result yet (`record_run_outcome_unless_settled`, and the sweep's 409
-refusal). Neither holds the executor's output: it lives in the QA runner's call
-stack, inside the process running that Run. A Run one of them settles while an
-executor is still in flight therefore records `null` although output existed.
-That is the one residual case, and it is named here rather than promised away.
+That the sweeps can settle an in-flight Run is a known residual and stays one
+for this sprint: closing it would change terminal ownership and the run
+lifecycle. Under the rule above it costs no false statement — the artifact
+reports which path settled the Run and claims nothing about the executor.
 
 ### Deploy dispatch, withdrawal, and deadlines
 
