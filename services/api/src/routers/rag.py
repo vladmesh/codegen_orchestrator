@@ -155,7 +155,12 @@ async def ingest_documents(
     request: Request,
     db: AsyncSession = Depends(get_async_session),
 ) -> RAGDocsIngestResult:
-    """Ingest project docs from service-template webhook."""
+    """Ingest project documents from a signed `RAGDocsIngest` webhook payload.
+
+    Source-agnostic: the payload carries the documents, their scope and optional
+    project, user and repository identity, and the request is admitted by its
+    signature rather than by which repository or template produced it.
+    """
     body = await request.body()
     verify_ingest_signature(request, body)
 
