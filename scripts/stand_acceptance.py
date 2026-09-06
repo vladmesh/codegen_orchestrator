@@ -58,11 +58,13 @@ PRIVATE_KEY_MARKER = re.compile(
 )
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
 PROFILE_ATTESTATION_MARKER = "stand-codex-profile-redaction-v1"
-# Paid-failure attribution requires the v13 capture fields: the per-worker
-# transcript body, agent report and branch diff a failed run retains, without
-# which the artifact still cannot say why a paid run went red.  Later artifact
-# versions remain admissible: this is a floor, not a writer-version lockstep.
-MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 13
+# Paid-failure attribution requires the v14 fields: the per-worker transcript
+# body, agent report and branch diff a failed run retains, and a `failure.failed`
+# that answers whether the run failed rather than restating where the pipeline
+# stopped — without which a run whose pipeline completed and whose suite failed
+# reaches this gate calling itself green.  Later artifact versions remain
+# admissible: this is a floor, not a writer-version lockstep.
+MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 14
 # These classifications are assigned only after the harness has selected a
 # deploy Run and observed the part of its lifecycle that stopped the pipeline.
 # They are therefore independent evidence that a current Run record is owed.

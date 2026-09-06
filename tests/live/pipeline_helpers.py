@@ -53,7 +53,7 @@ from run_evidence import (
     engineering_run_record,
     evidence_output_directory,
     qa_run_facts,
-    retains_failure_evidence,
+    run_failure,
     target_snapshot_requirement,
 )
 from settings_seed_followup import follow_settings_seed
@@ -1345,13 +1345,15 @@ async def record_failure_retention_sources(api_internal: httpx.AsyncClient, ctx:
     The agent's report lives in the stand's database and the branch diff lives
     behind the stand's GitHub App token; both are unreadable minutes later, and
     the transcript — the third body — is read off this host by the artifact
-    itself. Only a combination that stopped retains any of them, which is the
-    same predicate `run_evidence` writes the artifact by.
+    itself. Only a run that did not succeed retains any of them, and that question
+    is answered by `run_evidence.run_failure` — the same one call the artifact's
+    own `failed`, verdict and retention read, so the collection and the artifact
+    cannot disagree about which runs owe these bodies.
 
     Evidence collection, so neither read can fail the run it is diagnosing: what
     could not be read is recorded as the stated reason it could not be.
     """
-    if not retains_failure_evidence(ctx):
+    if not run_failure(ctx).failed:
         return
     await record_worker_reports(api_internal, ctx)
     record_story_branch_diff(ctx)

@@ -258,7 +258,15 @@ deploy and QA phases all completed and whose assertion then failed is a red run 
 conftest's `pytest_runtest_logreport` hook records each test report in `suite_outcome`, and a
 module-scoped fixture's finaliser — where the collection and the artifact both happen — runs after
 the last test of its module, so the verdict is settled by then. The control plane's terminal state is
-the second trigger, for a phase that raised before any test could report.
+the second source, for a phase that raised before any test could report.
+
+That question has exactly one answer, `run_evidence.run_failure`, and every reader of it reads that
+one value: the pre-teardown collection, the retention, `failure.failed` and the `verdict`. Such a run
+is red with a `suite_failed` reason of its own — distinct from `run_failed`, which names a stage —
+and `failure.stage` stays `completed`, because *where the pipeline stopped* is a different question
+with a different true answer. `scripts/stand_acceptance.py` reads `failure.failed` and so holds it to
+the three retained bodies like any other paid failure; nothing recomputes the question from the
+stage.
 
 Every byte is redacted **on the stand host** before the artifact crosses to the runner and **before**
 any bound is applied to it: `_retained_body` is the single funnel for all three, and it redacts the

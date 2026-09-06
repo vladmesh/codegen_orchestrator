@@ -16,13 +16,17 @@ the artifact both happen — runs after the last test of its module, and a test'
 that owns this combination has already been reported by the time the collection
 asks.
 
+This is read by exactly one function, `run_evidence.run_failure`, which is where
+"did this run succeed" is answered for every reader of that question — the
+retention, the artifact's `failure.failed`, its verdict, and through the written
+`failed` also the acceptance admission.
+
 Two things this deliberately does not try to be. It is not a *session* verdict:
 a later module's failure cannot be known to an earlier module's teardown, and
-nothing can make it so. And it is not the only trigger for retention — a phase
-that raised leaves the fixture through its own `finally` during the first test's
-setup, before any report exists, and that run is caught by the pipeline's
-terminal state instead. The two together are the whole of "this run did not
-succeed"; see `run_evidence.retains_failure_evidence`.
+nothing can make it so. And it is not the only source — a phase that raised
+leaves the fixture through its own `finally` during the first test's setup,
+before any report exists, and that run is caught by the pipeline's terminal state
+instead. The two together are the whole of "this run did not succeed".
 """
 
 from __future__ import annotations

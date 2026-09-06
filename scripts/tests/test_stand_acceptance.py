@@ -222,10 +222,15 @@ def _captured(value: object) -> dict:
 def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
     """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 13,
+        "schema_version": 14,
         "kind": "worker_failure_attribution",
         "failure": {
+            # `failed` is the run's own answer; `stage` is where the pipeline
+            # stopped. A suite-failed run sets the first without the second.
             "failed": failed,
+            "source": "pipeline" if failed else "none",
+            "failed_tests": [],
+            "failed_test_count": 0,
             "stage": "stopped_at_engineering" if failed else "completed",
             "failure_kind": "worker_did_not_finish" if failed else "none",
             "control_plane_reason": {
@@ -664,6 +669,30 @@ def test_an_unreadable_run_evidence_file_is_named_not_skipped(tmp_path):
 
     assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
     assert f"run_evidence_unreadable:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_completed_pipeline_whose_suite_failed_is_held_to_the_retention(tmp_path):
+    """`failed` gates this, not `stage`: a red suite over a green pipeline owes it."""
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"].update(
+        source="suite",
+        stage="completed",
+        failure_kind="none",
+        failed_tests=["tests/live/test_full_pipeline.py::t::call"],
+        failed_test_count=1,
+    )
+    evidence["verdict"]["reasons"] = [{"code": "suite_failed", "detail": "one test failed"}]
+    worker = evidence["workers"][0]
+    del worker["agent_report"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    worker_id = worker["worker_id"]
+    assert (
+        f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:agent_report"
+        in _incompleteness(output)
+    )
 
 
 def test_a_paid_failure_whose_workers_retained_nothing_is_refused(tmp_path):

@@ -912,11 +912,21 @@ idempotent, and refuses an unscoped or neighbour-owned resource.
 `tests/live/run_evidence.py` and `scripts/stand_acceptance.py` are canonical for
 the acceptance artifact a `stand-e2e` run publishes.
 
+**A run that did not succeed is one question with one answer.**
+`run_evidence.run_failure` computes it once — pytest's own per-test verdict,
+recorded by the live conftest, or a pipeline that did not complete — and every
+reader of that question reads that value: the pre-teardown collection, the
+retention, the artifact's `failure.failed`, and its `verdict`. `failure.stage`
+and `failure.failure_kind` answer a different question, *where the pipeline
+stopped*, and a run whose pipeline completed and whose suite then failed keeps
+`stage: completed` while `failed` is true, `failure.source` is `suite` and the
+verdict is red with a `suite_failed` reason. A paid failure at the admission
+boundary is therefore a run that did not succeed by suite or by pipeline, never a
+second reading of the stage.
+
 A run whose suite succeeded retains no agent output: its transcript is named by
-path and file list only. A run whose **suite** did not succeed — pytest's own
-per-test verdict, recorded by the live conftest, with the control plane's
-terminal state as the second trigger for a phase that raised before any test
-could report — retains, per worker the run created, three more captures — the transcript body
+path and file list only. A run that did not succeed retains, per worker the run
+created, three more captures — the transcript body
 (`transcript.content`), the agent's final report (`agent_report`, the
 `worker_report` task events of this run's engineering tasks) and the diff of the
 branch that worker produced (`branch_diff`, named by repository, branch and head

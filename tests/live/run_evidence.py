@@ -84,11 +84,15 @@ its stated reason instead of its input, exactly as the service-tail branch of
 the redacted text, and a body that hits it says in the artifact that it was
 truncated and at what limit.
 
-**When it retains.** Not when the *pipeline* failed — when the *suite* did. A
-combination whose phases all completed and whose assertion then failed is a red
-run and retains; ``retains_failure_evidence`` reads pytest's own per-test
-verdict for that (``suite_outcome``), with the terminal state as the second
-trigger for a phase that raised before any test could report.
+**When it retains, and what else reads that.** Not when the *pipeline* failed —
+when the *suite* did. ``run_failure`` is the one place that question is answered:
+it reads pytest's own per-test verdict (``suite_outcome``), with the terminal
+state as the second source for a phase that raised before any test could report.
+Every reader of "did this run succeed" reads that one value — the retention here,
+``failure.failed``, the ``verdict``, and through the written ``failure.failed``
+also ``scripts/stand_acceptance.py``'s two readers. ``stage`` and ``failure_kind``
+answer a different question, *where the pipeline stopped*, and a run whose
+pipeline completed keeps ``stage: completed`` while being a failed run.
 """
 
 from __future__ import annotations
@@ -105,7 +109,7 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
-from suite_outcome import suite_failed
+from suite_outcome import failed_tests
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
@@ -190,12 +194,18 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      and prior deploy facts retain credential-safe `settings_seed` outcomes.
 # v12: Product Brief telemetry retains its bounded stage/deadline ledger, including
 #      the stage that stopped productive work before teardown began.
+# v14: `failure.failed` is the run's own answer to "did this run succeed", not a
+#      restatement of `stage`: a run whose pipeline completed and whose suite then
+#      failed is failed, carries `failure.source=suite` and the failing tests in
+#      `failure.failed_tests`, and is red with a `suite_failed` verdict reason.
+#      `stage` and `failure_kind` keep their own question — where the pipeline
+#      stopped — and stay `completed`/`none` for such a run.
 # v13: a combination that did not complete retains, per worker, the transcript
 #      body (`transcript.content`), the agent's final report (`agent_report`) and
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 13
+EVIDENCE_SCHEMA_VERSION = 14
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -420,6 +430,10 @@ class VerdictReason(StrEnum):
     """Closed vocabulary of the things that make a combination red."""
 
     RUN_FAILED = "run_failed"
+    # The pipeline reached the end and a test of the suite that owns this
+    # combination failed. Distinct from RUN_FAILED on purpose: nothing stopped at
+    # a stage, so there is no stage to name.
+    SUITE_FAILED = "suite_failed"
     WORKER_EXECUTED_MISSED = "worker_executed_missed"
     QA_EXECUTED_MISSED = "qa_executed_missed"
     BRIEF_EVIDENCE_MISSED = "brief_evidence_missed"
@@ -1279,32 +1293,69 @@ def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
     return TerminalState.COMPLETED, FailureKind.NONE
 
 
-def retains_failure_evidence(ctx: dict) -> bool:
-    """Whether this combination's artifact retains the failed-run bodies.
+class FailureSource(StrEnum):
+    """What says this run did not succeed. Closed, and asked in one place."""
 
-    One predicate, read by the artifact and by the harness collection that feeds
-    it, so the two cannot disagree about which runs retain.
+    NONE = "none"
+    # The pipeline stopped before it completed; `stage` says where.
+    PIPELINE = "pipeline"
+    # The pipeline completed and a test of the suite that owns this combination
+    # failed afterwards. There is no stage to name, which is the whole reason
+    # this is not the same fact as `stage`.
+    SUITE = "suite"
+
+
+@dataclass(frozen=True)
+class RunFailure:
+    """Whether this run succeeded, and what says it did not.
+
+    One value, computed once by `run_failure`, read by every part of the artifact
+    that asks the question: the retention, `failure.failed`, the verdict, and —
+    through `failure.failed` in the written artifact — `scripts/stand_acceptance.py`.
+    Nothing recomputes it from `terminal_state`, which answers a different
+    question and used to be made to answer both.
+    """
+
+    failed: bool
+    source: FailureSource
+    failed_tests: tuple[str, ...] = ()
+
+
+# How many failing test ids the artifact names before it stops listing. A red
+# suite usually has one; `-x` makes that the norm. The count is stated so a
+# reader knows the list is not the whole of it.
+FAILED_TEST_NAMES_LISTED = 5
+
+
+def run_failure(ctx: dict) -> RunFailure:
+    """Did this run succeed? The single answer, for every reader of that question.
 
     The line is the **suite** outcome, not the pipeline's. A run whose scaffold,
     engineering, deploy and QA phases all completed and whose assertion then
-    failed is a red `stand-e2e` run, and it is the one the next paid runs will
-    produce — layer 3 of this sprint needs a `passed` QA verdict, so a red run
-    with a completed pipeline is precisely the shape that has to stay
-    diagnosable. `suite_failed()` is pytest's own verdict, recorded per test
-    report by `tests/live/conftest.py` and settled by the time a module-scoped
-    fixture's finaliser runs this.
+    failed is a failed `stand-e2e` run: it retains the three bodies, it says
+    `failed`, its verdict is red with a reason of its own, and admission holds it
+    to the retention like any other paid failure. That is the run the next paid
+    runs will produce — layer 3 of this sprint needs a `passed` QA verdict — so
+    it is precisely the one that has to stay diagnosable.
 
-    The terminal state is the second trigger, not a proxy for the first: a phase
-    that raised leaves the fixture through its own `finally` during the first
-    test's *setup*, before any report exists, so that run has no pytest verdict
-    yet and is caught here by the pipeline that did not finish. Together they are
-    the whole of "this run did not succeed". A suite that succeeded satisfies
-    neither, and its artifact is byte-for-byte what it always was.
+    `failed_tests()` is pytest's own verdict, recorded per test report by
+    `tests/live/conftest.py` and settled by the time a module-scoped fixture's
+    finaliser builds the artifact. The terminal state is the second source, not a
+    proxy for the first: a phase that raised leaves the fixture through its own
+    `finally` during the first test's *setup*, before any report exists, so that
+    run has no pytest verdict yet and is caught by the pipeline that did not
+    finish. A run that succeeded satisfies neither.
+
+    `terminal_state` and `failure_kind` keep their own job — *where* the pipeline
+    stopped — and are not consulted for anything else here.
     """
-    if suite_failed():
-        return True
     terminal_state, _ = classify_outcome(ctx)
-    return terminal_state is not TerminalState.COMPLETED
+    tests = tuple(failed_tests())
+    if terminal_state is not TerminalState.COMPLETED:
+        return RunFailure(failed=True, source=FailureSource.PIPELINE, failed_tests=tests)
+    if tests:
+        return RunFailure(failed=True, source=FailureSource.SUITE, failed_tests=tests)
+    return RunFailure(failed=False, source=FailureSource.NONE)
 
 
 def _retained_body(text: str, facts: dict) -> Capture:
@@ -1476,7 +1527,7 @@ def retain_failure_evidence(ctx: dict, records: list[dict]) -> list[dict]:
     the whole of what a failure buys with the residual disclosure risk, and a
     run that has nothing to explain buys nothing with it.
     """
-    if not retains_failure_evidence(ctx):
+    if not run_failure(ctx).failed:
         return records
     retained = []
     for record in records:
@@ -2179,16 +2230,30 @@ def control_plane_reason(
 
 
 def failure_summary(
-    ctx: dict, terminal_state: TerminalState, failure_kind: FailureKind, reason: Capture
+    ctx: dict,
+    terminal_state: TerminalState,
+    failure_kind: FailureKind,
+    reason: Capture,
+    failure: RunFailure,
 ) -> dict:
-    """The failing stage and the control-plane reason for it, in one place.
+    """Whether the run failed, where the pipeline stopped, and why.
 
-    A reader with only this artifact answers both questions here: where the run
-    stopped, and why the control plane says it stopped. No ssh to a host that no
-    longer exists, and no inference from an absent field.
+    Three different questions, and this used to answer the first by restating the
+    second. `failed` is now `run_failure`'s answer and nothing else, so a run
+    whose pipeline completed and whose suite then failed says so here — which is
+    what `scripts/stand_acceptance.py` reads to decide that a paid failure owes
+    its retained bodies. `stage` and `failure_kind` still answer only *where the
+    pipeline stopped*, and stay `completed`/`none` for such a run, because that
+    is the true answer to that question.
+
+    A reader with only this artifact answers all three here. No ssh to a host
+    that no longer exists, and no inference from an absent field.
     """
     return {
-        "failed": terminal_state is not TerminalState.COMPLETED,
+        "failed": failure.failed,
+        "source": failure.source.value,
+        "failed_tests": list(failure.failed_tests[:FAILED_TEST_NAMES_LISTED]),
+        "failed_test_count": len(failure.failed_tests),
         "stage": terminal_state.value,
         "failure_kind": failure_kind.value,
         "control_plane_reason": reason.as_dict(),
@@ -2556,6 +2621,7 @@ def verdict(
     terminal_state: TerminalState,
     failure_kind: FailureKind,
     reason: Capture,
+    failure: RunFailure,
     *,
     worker_executed: dict,
     qa_executed: dict,
@@ -2563,21 +2629,40 @@ def verdict(
 ) -> dict:
     """Red or green, and every reason for red carrying its control-plane reason.
 
+    The two ways a run is red are separate reasons, because they are separate
+    findings. `run_failed` is a pipeline that stopped, and names the stage.
+    `suite_failed` is a pipeline that reached the end and a test of the suite that
+    then failed — there is no stage to name, so it names the failing tests
+    instead. Both come from the one `run_failure` value rather than from a second
+    reading of the terminal state.
+
     On a paid run, executor evidence that came back `missed` is a finding, not a
     silence: a combination that spent a subscription and cannot show which agent
     ran is red, and the reason it is red is stated together with the control
     plane's account of the stage that stopped it. The free deterministic route
     starts no such container by design, so its verdict is what it always was —
-    the terminal state and nothing else.
+    the run's own failure and nothing else.
     """
     paid = is_paid_run(ctx)
     reasons: list[dict] = []
-    if terminal_state is not TerminalState.COMPLETED:
+    if failure.source is FailureSource.PIPELINE:
         reasons.append(
             {
                 "code": VerdictReason.RUN_FAILED.value,
                 "detail": (
                     f"the combination stopped at {terminal_state.value} ({failure_kind.value})"
+                ),
+                "control_plane_reason": reason.as_dict(),
+            }
+        )
+    if failure.failed_tests:
+        listed = ", ".join(failure.failed_tests[:FAILED_TEST_NAMES_LISTED])
+        reasons.append(
+            {
+                "code": VerdictReason.SUITE_FAILED.value,
+                "detail": (
+                    f"the pipeline reached {terminal_state.value} and "
+                    f"{len(failure.failed_tests)} test(s) of this suite failed: {listed}"
                 ),
                 "control_plane_reason": reason.as_dict(),
             }
@@ -2649,6 +2734,10 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     collector: RunEvidenceCollector = ctx["run_evidence"]
     generated_at = now if now is not None else datetime.now(tz=UTC)
     terminal_state, failure_kind = classify_outcome(ctx)
+    # Asked once, here, and handed to every reader of it below. `classify_outcome`
+    # above answers a different question — where the pipeline stopped — and is
+    # never read as an answer to this one.
+    failure = run_failure(ctx)
     started_at = collector.started_at
     reason = control_plane_reason(ctx, terminal_state, failure_kind)
     worker_executed = collector.executed_worker_agent().as_dict()
@@ -2665,12 +2754,13 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "qa_requested": ctx.get("qa_agent_type_requested"),
             "qa_executed": qa["executor_executed"],
         },
-        "failure": failure_summary(ctx, terminal_state, failure_kind, reason),
+        "failure": failure_summary(ctx, terminal_state, failure_kind, reason, failure),
         "verdict": verdict(
             ctx,
             terminal_state,
             failure_kind,
             reason,
+            failure,
             worker_executed=worker_executed,
             qa_executed=qa["executor_executed"],
             brief=brief,

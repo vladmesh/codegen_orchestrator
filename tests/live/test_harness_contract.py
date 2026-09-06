@@ -5208,7 +5208,7 @@ async def test_worker_reports_that_could_not_be_read_are_a_stated_reason(monkeyp
 async def test_a_completed_combination_reads_neither_report_nor_diff(monkeypatch):
     # The signal this run's own verdicts would otherwise carry in: stated here,
     # so the assertion is about a green suite and not about this session.
-    monkeypatch.setattr(run_evidence, "suite_failed", lambda: False)
+    monkeypatch.setattr(run_evidence, "failed_tests", list)
     ctx = {
         "scaffold_status": ProjectStatus.ACTIVE,
         "task_status": TaskStatus.DONE,
@@ -5236,7 +5236,7 @@ async def test_a_completed_pipeline_whose_test_failed_still_reads_both(monkeypat
     # in its environment: the fixture value below is what the sibling collection
     # regressions above set, and it reaches only a MockTransport.
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setattr(run_evidence, "suite_failed", lambda: True)
+    monkeypatch.setattr(run_evidence, "failed_tests", lambda: ["tests/live/t.py::a::call"])
     monkeypatch.setattr(
         pipeline_helpers,
         "docker_exec_python_module",

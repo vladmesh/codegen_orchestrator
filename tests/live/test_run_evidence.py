@@ -49,7 +49,7 @@ pytestmark = pytest.mark.needs_no_api_credential
 def _isolated_suite_outcome():
     """Judge these artifacts on their own context, not on this session's verdicts.
 
-    `retains_failure_evidence` reads pytest's per-test verdicts on purpose — that
+    `run_failure` reads pytest's per-test verdicts on purpose — that
     is the whole point of the suite-outcome signal — so a test here that builds a
     *completed* artifact would start retaining as soon as any earlier test in the
     session failed. Each test states the signal it means.
@@ -1131,7 +1131,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 13
+    assert EVIDENCE_SCHEMA_VERSION == 14
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1174,6 +1174,11 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     assert artifact["failure"] == {
         "failed": True,
+        # The run's own answer, and the two facts behind it: what says it failed,
+        # and where the pipeline stopped. Separate questions, separate fields.
+        "source": run_evidence.FailureSource.PIPELINE.value,
+        "failed_tests": [],
+        "failed_test_count": 0,
         "stage": TerminalState.STOPPED_AT_ENGINEERING.value,
         "failure_kind": FailureKind.WORKER_DID_NOT_FINISH.value,
         "control_plane_reason": artifact["failure"]["control_plane_reason"],
@@ -2818,7 +2823,7 @@ def test_a_completed_pipeline_whose_assertion_failed_still_retains(codex_docker,
     collector = collector_for(codex_docker)
     collector.capture()
     ctx = completed_ctx(collector, **RETENTION_SOURCES)
-    assert run_evidence.retains_failure_evidence(ctx) is False
+    assert run_evidence.run_failure(ctx).failed is False
 
     suite_outcome.record_test_report(
         "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed",
@@ -2826,7 +2831,9 @@ def test_a_completed_pipeline_whose_assertion_failed_still_retains(codex_docker,
         failed=True,
     )
 
-    assert run_evidence.retains_failure_evidence(ctx) is True
+    failure = run_evidence.run_failure(ctx)
+    assert failure.failed is True
+    assert failure.source is run_evidence.FailureSource.SUITE
     worker = failed_worker(ctx, tmp_path)
     assert worker["transcript"]["content"]["status"] == CaptureStatus.CAPTURED.value
     assert worker["agent_report"]["status"] == CaptureStatus.CAPTURED.value
@@ -2897,3 +2904,131 @@ def test_every_retained_field_goes_through_the_one_funnel(codex_docker, tmp_path
     for field, source in zip(captured, sources, strict=True):
         # Every published body is the return of that one call, never the source.
         assert field["value"]["text"] == original(source, {}).value["text"]
+
+
+# ── One question, one answer, every reader ───────────────────────────────
+
+
+QA_PASSED_RUN = {
+    "id": "qa-poll-ea0bed35",
+    "status": "completed",
+    "created_at": "2026-09-03T03:45:10+00:00",
+    "updated_at": "2026-09-03T03:47:20+00:00",
+    "run_metadata": {},
+    "result": {
+        "qa_outcome": QAOutcome.PASSED.value,
+        "failed_checks": [],
+        "blocker": None,
+    },
+}
+
+
+def completed_suite_failed_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A paid run that got all the way through, and whose own test then failed.
+
+    Everything the admission asks a paid failure for is present, because the
+    pipeline really did complete: the deploy Run with its smoke, the terminal QA
+    Run, the engineering listing. The only thing that makes it a failure is
+    pytest's verdict, which is the whole point of the fixture.
+    """
+    ctx = qa_stage_ctx(
+        collector,
+        qa_run=QA_PASSED_RUN,
+        qa_run_record=run_evidence.qa_run_facts(QA_PASSED_RUN),
+        **RETENTION_SOURCES,
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_a_completed_pipeline_whose_suite_failed_is_a_failed_run(codex_docker, tmp_path):
+    """`failed` is the run's own answer, not a restatement of where it stopped."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    suite_outcome.record_test_report(
+        "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed", "call", failed=True
+    )
+
+    artifact = build_artifact(completed_ctx(collector, **RETENTION_SOURCES), root=tmp_path)
+
+    failure = artifact["failure"]
+    assert failure["failed"] is True
+    assert failure["source"] == run_evidence.FailureSource.SUITE.value
+    assert failure["failed_test_count"] == 1
+    assert failure["failed_tests"] == [
+        "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed::call"
+    ]
+    # The other question keeps its own true answer: the pipeline did complete.
+    assert failure["stage"] == TerminalState.COMPLETED.value
+    assert failure["failure_kind"] == FailureKind.NONE.value
+
+    verdict = artifact["verdict"]
+    assert verdict["status"] == "red"
+    codes = [reason["code"] for reason in verdict["reasons"]]
+    assert run_evidence.VerdictReason.SUITE_FAILED.value in codes
+    assert run_evidence.VerdictReason.RUN_FAILED.value not in codes
+
+
+def test_a_stopped_pipeline_still_reads_run_failed_and_names_its_stage(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+
+    assert artifact["failure"]["source"] == run_evidence.FailureSource.PIPELINE.value
+    assert artifact["failure"]["stage"] == TerminalState.STOPPED_AT_ENGINEERING.value
+    codes = [reason["code"] for reason in artifact["verdict"]["reasons"]]
+    assert run_evidence.VerdictReason.RUN_FAILED.value in codes
+    assert run_evidence.VerdictReason.SUITE_FAILED.value not in codes
+
+
+def test_a_run_that_succeeded_says_nothing_failed(codex_docker, tmp_path):
+    """No pytest verdict and a completed pipeline: neither source fires."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(completed_ctx(collector, **RETENTION_SOURCES), root=tmp_path)
+
+    assert artifact["failure"]["failed"] is False
+    assert artifact["failure"]["source"] == run_evidence.FailureSource.NONE.value
+    assert artifact["failure"]["failed_tests"] == []
+    codes = [reason["code"] for reason in artifact["verdict"]["reasons"]]
+    # Whatever else this paid combination is red for — its QA executor was never
+    # observed here — nothing claims the run itself failed.
+    assert run_evidence.VerdictReason.RUN_FAILED.value not in codes
+    assert run_evidence.VerdictReason.SUITE_FAILED.value not in codes
+
+
+def test_admission_holds_a_suite_failed_run_to_the_retention_it_owes(codex_docker, tmp_path):
+    """The reviewer's bypass, pinned across both modules that answer the question.
+
+    The artifact the writer produces for a completed pipeline whose test failed is
+    admitted with its three bodies and refused without them — the same fixture,
+    the same admission, and no second definition of "failed" between them.
+    """
+    from scripts.stand_acceptance import _paid_failure_errors  # noqa: PLC0415
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+    suite_outcome.record_test_report(
+        "tests/live/test_full_pipeline.py::TestFullPipeline::test_qa_passed", "call", failed=True
+    )
+    artifact = build_artifact(completed_suite_failed_ctx(collector), root=tmp_path)
+    assert artifact["verdict"]["paid"] is True
+    assert artifact["failure"]["failed"] is True
+    assert artifact["failure"]["stage"] == TerminalState.COMPLETED.value
+
+    assert _paid_failure_errors("run-evidence.json", artifact) == []
+
+    stripped = json.loads(json.dumps(artifact))
+    worker = stripped["workers"][0]
+    del worker["transcript"]["content"]
+    del worker["agent_report"]
+    del worker["branch_diff"]
+
+    errors = _paid_failure_errors("run-evidence.json", stripped)
+
+    assert errors == [
+        f"paid_failure_worker_retention_missing:run-evidence.json:{DEV_WORKER_ID}:{field}"
+        for field in ("transcript_content", "agent_report", "branch_diff")
+    ]

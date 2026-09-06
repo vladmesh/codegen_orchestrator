@@ -6,7 +6,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-06
 
 - A `stand-e2e` run whose suite did not succeed retains per worker, in the acceptance artifact
-  (evidence schema v13), the transcript body, the agent's report and its branch diff, redacted on the stand.
+  (evidence schema v14), the transcript body, the agent's report and its branch diff, redacted on the stand.
+- `failure.failed` in that artifact answers whether the run failed instead of restating where the
+  pipeline stopped, so a red suite over a completed pipeline is red and is held to that retention.
 - An engineering result whose commit is already on the default branch fails as `no_new_commit` and sends
   its story to human review, so no deploy and no 422 "No commits between" PR retry follows it.
 - `ServiceTemplateSource` admits `gh:vladmesh/codegen-product-kit` beside `service-template`, and the
