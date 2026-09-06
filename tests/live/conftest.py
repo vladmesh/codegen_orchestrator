@@ -23,6 +23,8 @@ from pipeline_helpers import (
     require_internal_api_key,
 )
 import pytest
+import run_evidence
+import suite_outcome
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.live_contour import CONTOUR_ENV, require_live_contour
@@ -74,6 +76,34 @@ def pytest_collection_modifyitems(session, config, items):
     """
     if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
         require_internal_api_key()
+
+
+def pytest_runtest_logreport(report):
+    """Carry pytest's own verdict to the evidence the fixtures write.
+
+    Whether a combination failed is a fact about the suite as well as about the
+    pipeline: one whose pipeline completed and whose assertion then failed is
+    red, and the control plane's terminal state cannot say so. This is the only
+    place that has the real answer, and it has it in time — a test's `call`
+    report is logged before its teardown. It classifies the artifact; what the
+    artifact *retains* does not depend on it.
+    """
+    suite_outcome.record_test_report(report.nodeid, report.when, report.failed)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Finalise every run artifact once the session's outcome exists.
+
+    This is the last moment of the run and the first one at which "did this suite
+    succeed" is completely answered: every test report is in, every fixture
+    finaliser has run, `cleanup_guard` has re-raised whatever it had to, and
+    pytest has computed its exit status. The fixtures wrote their artifacts
+    before teardown — they had to, that is where the containers still exist — and
+    those writes are crash-safety copies. This rewrites each of them in place
+    with the outcome it could not have known.
+    """
+    suite_outcome.record_session_exit(exitstatus)
+    run_evidence.finalize_pending_run_evidence()
 
 
 @pytest.fixture

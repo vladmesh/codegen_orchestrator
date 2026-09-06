@@ -71,7 +71,7 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.po import POSystemEvent
@@ -83,6 +83,7 @@ from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
 from shared.live_harness_cleanup import (
     MAIN_HEAD_PROBE_MARKER,
+    STORY_BRANCH_DIFF_MARKER,
     STORY_BRANCH_PROBE_MARKER,
     build_remote_cleanup_command,
 )
@@ -1334,6 +1335,122 @@ def _target_snapshot_args(project_name: str, server_handle: str | None) -> list[
     return args
 
 
+STORY_BRANCH_DIFF_TIMEOUT = 120
+
+
+async def record_retention_sources(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Read the two control-plane-owned bodies before the stand can stop answering.
+
+    The agent's report lives in the stand's database and the branch diff behind
+    the stand's GitHub App token; both are unreadable minutes later, and the
+    transcript — the third body — is read off this host by the artifact itself.
+
+    Unconditional, and so is what the artifact does with it: a paid run publishes
+    all three whatever its outcome, because the `stand-e2e` result is decided
+    outside this process and after it (`run_evidence.retain_worker_bodies`). A
+    free deterministic run publishes none of them, and reading them for it costs
+    two local calls that nothing depends on.
+
+    Evidence collection, so neither read can fail the run it is diagnosing: what
+    could not be read is recorded as the stated reason it could not be.
+    """
+    await record_worker_reports(api_internal, ctx)
+    record_story_branch_diff(ctx)
+
+
+async def record_worker_reports(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Collect the `worker_report` task events of this run's engineering tasks."""
+    task_ids = ctx.get("task_ids") or ([ctx["task_id"]] if ctx.get("task_id") else [])
+    if not task_ids:
+        ctx["worker_reports_error"] = (
+            "no agent report could be read: this combination created no engineering task, "
+            "so the control plane holds no task the report would have been stored on"
+        )
+        return
+    reports: list[dict] = []
+    for task_id in task_ids:
+        try:
+            response = await api_internal.get(
+                f"/api/tasks/{task_id}/events",
+                params={"event_type": TaskEventType.WORKER_REPORT.value},
+            )
+            response.raise_for_status()
+            events = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            ctx["worker_reports_error"] = (
+                f"the agent reports of task {task_id} could not be read: "
+                f"{type(error).__name__}: {error}"
+            )
+            return
+        reports += [
+            {
+                "task_id": task_id,
+                "created_at": event.get("created_at"),
+                "report": (event.get("details") or {}).get("report") or "",
+            }
+            for event in events
+        ]
+    ctx["worker_reports_error"] = None
+    ctx["worker_reports"] = reports
+
+
+def record_story_branch_diff(ctx: dict) -> None:
+    """Read the change this run's story branch carries, before the stand is gone.
+
+    The branch itself outlives the stand — it is on GitHub — but the App token
+    that reads it does not, and neither does the harness. The diff is fetched
+    whole and bounded where it is retained, so the artifact states one limit.
+    """
+    story_id = ctx.get("story_id")
+    if not story_id:
+        ctx["story_branch_diff_error"] = (
+            "no branch diff could be read: this combination created no story, so no "
+            "story branch was ever produced"
+        )
+        return
+    branch = story_branch_name(story_id)
+    try:
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            [
+                "story-branch-diff",
+                "--owner",
+                GITHUB_ORG,
+                "--repo",
+                ctx["repo_name"],
+                "--branch",
+                branch,
+                "--marker",
+                STORY_BRANCH_DIFF_MARKER,
+            ],
+            timeout=STORY_BRANCH_DIFF_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        ctx["story_branch_diff_error"] = (
+            f"the diff of {branch} could not be read: {type(error).__name__}: "
+            f"{redacted_dump_text(str(error))[:300]}"
+        )
+        return
+    if result.returncode != 0:
+        ctx["story_branch_diff_error"] = (
+            f"the diff probe of {branch} exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr).strip()[:500]}"
+        )
+        return
+    try:
+        payload = parse_probe_payload(
+            result.stdout, STORY_BRANCH_DIFF_MARKER, subject="story branch diff probe"
+        )
+    except (RuntimeError, ValueError) as error:
+        ctx["story_branch_diff_error"] = (
+            f"the diff probe of {branch} printed no readable payload: {type(error).__name__}"
+        )
+        return
+    ctx["story_branch_diff_error"] = None
+    ctx["story_branch_diff"] = payload
+
+
 def record_target_host_snapshot(ctx: dict) -> None:
     """Photograph the deployment before this run's own teardown removes it.
 
@@ -1414,6 +1531,7 @@ async def record_terminal_stage_evidence(api_internal: httpx.AsyncClient, ctx: d
     """
     await record_engineering_evidence(api_internal, ctx)
     await backfill_qa_run(api_internal, ctx)
+    await record_retention_sources(api_internal, ctx)
     record_target_host_snapshot(ctx)
 
 

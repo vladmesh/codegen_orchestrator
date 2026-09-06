@@ -222,10 +222,16 @@ def _captured(value: object) -> dict:
 def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
     """One run-evidence artifact of the shape the live harness writes today."""
     evidence = {
-        "schema_version": 11,
+        "schema_version": 15,
         "kind": "worker_failure_attribution",
         "failure": {
+            # `failed` is the run's own answer; `stage` is where the pipeline
+            # stopped. A suite-failed run sets the first without the second.
             "failed": failed,
+            "source": "pipeline" if failed else "none",
+            "failed_tests": [],
+            "failed_test_count": 0,
+            "session_exit_status": 1 if failed else 0,
             "stage": "stopped_at_engineering" if failed else "completed",
             "failure_kind": "worker_did_not_finish" if failed else "none",
             "control_plane_reason": {
@@ -251,7 +257,28 @@ def _run_evidence(*, paid: bool, failed: bool, **overrides) -> dict:
                 "failure_metadata": {"reason": "worker exited 7"},
             }
         },
-        "workers": [{"exit_code": {"value": 7}, "log_tail": {"text": "safe tail"}}],
+        "workers": [
+            {
+                "worker_id": "dev-live-test-llm-1a2b-9f8e7d6c",
+                "exit_code": {"value": 7},
+                "log_tail": {"text": "safe tail"},
+                # The v13 bodies a failed run retains per worker: present, or a
+                # stated reason. Admission refuses a paid failure carrying
+                # neither.
+                "transcript": {
+                    "host_dir": _captured("/data/worker-transcripts/dev-1"),
+                    "files": _captured([{"path": "/data/worker-transcripts/dev-1/r.log"}]),
+                    "content": _captured(
+                        {"text": "safe transcript", "truncated": False, "limit": 60000}
+                    ),
+                },
+                "agent_report": _captured({"text": "safe report", "truncated": False}),
+                "branch_diff": _missed(
+                    "story/story-1 differs from main by nothing: the branch carries no "
+                    "change of its own"
+                ),
+            }
+        ],
         "qa": {
             "run_record": _missed(
                 "no QA Run record was read: the worker died before QA: the engineering task "
@@ -643,6 +670,112 @@ def test_an_unreadable_run_evidence_file_is_named_not_skipped(tmp_path):
 
     assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
     assert f"run_evidence_unreadable:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_a_completed_pipeline_whose_suite_failed_is_held_to_the_retention(tmp_path):
+    """`failed` gates this, not `stage`: a red suite over a green pipeline owes it."""
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["failure"].update(
+        source="suite",
+        stage="completed",
+        failure_kind="none",
+        failed_tests=["tests/live/test_full_pipeline.py::t::call"],
+        failed_test_count=1,
+    )
+    evidence["verdict"]["reasons"] = [{"code": "suite_failed", "detail": "one test failed"}]
+    worker = evidence["workers"][0]
+    del worker["agent_report"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    worker_id = worker["worker_id"]
+    assert (
+        f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:agent_report"
+        in _incompleteness(output)
+    )
+
+
+def test_a_paid_run_that_succeeded_still_owes_its_three_captures(tmp_path):
+    """The `stand-e2e` result is decided after this artifact, so it is owed anyway."""
+    evidence = _run_evidence(paid=True, failed=False)
+    del evidence["workers"][0]["branch_diff"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence, service_log=False)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    worker_id = evidence["workers"][0]["worker_id"]
+    assert (
+        f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:branch_diff"
+        in _incompleteness(output)
+    )
+
+
+def test_a_paid_run_that_succeeded_and_kept_them_is_admitted(tmp_path):
+    evidence = _run_evidence(paid=True, failed=False)
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence, service_log=False)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_free_run_owes_none_of_the_three(tmp_path):
+    """The deterministic route spends no subscription and retains nothing new."""
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    evidence = _run_evidence(paid=False, failed=False)
+    evidence["workers"] = [{"worker_id": "dev-noop-1", "exit_code": {"value": 0}}]
+    (run_dir / NOOP_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_a_paid_failure_whose_workers_retained_nothing_is_refused(tmp_path):
+    """The transcript, the report and the diff are owed by a failed paid run."""
+    evidence = _run_evidence(paid=True, failed=True)
+    worker = evidence["workers"][0]
+    del worker["transcript"]["content"]
+    del worker["agent_report"]
+    del worker["branch_diff"]
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    incompleteness = _incompleteness(output)
+    worker_id = worker["worker_id"]
+    for field in ("transcript_content", "agent_report", "branch_diff"):
+        assert (
+            f"paid_failure_worker_retention_missing:{PAID_EVIDENCE_NAME}:{worker_id}:{field}"
+            in incompleteness
+        )
+
+
+def test_a_paid_failure_whose_workers_state_why_they_retained_nothing_is_admitted(tmp_path):
+    """A stated absence is evidence; only silence is refused."""
+    evidence = _run_evidence(paid=True, failed=True)
+    worker = evidence["workers"][0]
+    worker["transcript"]["content"] = _missed("the container declares no transcript bind mount")
+    worker["agent_report"] = _missed("a QA executor writes no REPORT.md")
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_the_canary_is_still_refused_inside_a_retained_transcript(tmp_path):
+    """The new bodies travel inside the run evidence the scan already reads."""
+    artifact = tmp_path / "acceptance"
+    run = artifact / "run"
+    run.mkdir(parents=True)
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["workers"][0]["transcript"]["content"] = _captured(
+        {"text": "agent ran: export TOKEN=fake-secret-value", "truncated": False}
+    )
+    (run / PAID_EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+
+    errors = scan_artifact(artifact, canaries=("fake-secret-value",))
+
+    assert errors == ["candidate contains a supplied redaction canary"]
 
 
 def test_a_free_noop_failure_is_not_held_to_the_paid_failure_evidence(tmp_path):

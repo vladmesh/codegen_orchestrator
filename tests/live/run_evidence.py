@@ -6,7 +6,9 @@ and nothing retained said why. By the time anybody looked, the container was
 gone, its Redis metadata was gone, and the result payload carried no Codex
 output at all — worker-wrapper suppresses Codex stdout on the business path on
 purpose, because CLI diagnostics can include data from the mounted session or
-repository. That suppression is a privacy decision and stays.
+repository. That suppression is a privacy decision and stays: no agent output
+ever re-enters a result payload or a service log. What a **failed** run's
+artifact retains is stated under "What a paid run retains" below.
 
 **How a run finds its workers.** By its own label, not by having watched them.
 Every dynamic worker container is stamped at creation with
@@ -43,9 +45,71 @@ An omitted worker would read as "nothing ran". That is the failure this module
 exists to end: every worker the run created appears, either with its evidence or
 with the stated reason the evidence could not be read.
 
-Nothing here re-plumbs agent stdout into a result payload or into a service log.
-The tail is the container's own log, bounded and redacted; the transcript is
-referenced by path and never copied.
+**What a paid run retains.** A free deterministic run is what this artifact
+always was: the log tail is the container's own log, bounded and redacted, and
+the transcript is referenced by path and file list only.
+
+A **paid** run retains three more things per worker, whatever its outcome,
+because an artifact that cannot say why a paid run went red is worth less than
+the residual disclosure risk of a bounded, redacted body leaving a machine that
+is about to be destroyed. Probe 2 of sprint 1429 is why: its root cause was "not
+knowable from the artifact — worker transcripts live on the destroyed stand".
+
+It is unconditional because the condition could not be evaluated where the
+artifact has to be written: the `stand-e2e` result is decided outside this
+process and after it — ``scripts/stand_run.py`` fails a run on a sweep error
+after every cell passed, and SIGKILLs pytest on its hard timeout — so no
+in-process signal can be the gate. The three are
+
+* ``transcript.content`` — the bodies worker-wrapper retained for this worker
+  under the transcript bind mount, which it already redacted against the *worker
+  container's* secret environment before writing them;
+* ``agent_report`` — the ``REPORT.md`` the agent wrote, as the control plane
+  stored it on this run's engineering tasks (``worker_report`` task events);
+* ``branch_diff`` — the change the branch this worker produced carries, named by
+  repository, branch and head SHA.
+
+Each of them is a ``Capture``: present, or a stated reason it could not be
+collected. None of them is ever a bare empty value, and a QA executor — which
+writes no report and produces no branch — says that rather than looking unread.
+
+Every retained byte is redacted **on this host**, which is the stand host the
+suite runs on, before the artifact is written into the runner directory the
+workflow collects from: ``redact_diagnostic`` against every value of this
+process's environment whose name says it is a secret, the same allow-list by
+name that the service log tails leave the stand under, applied line by line as
+that collection applies it. ``_retained_body`` is the single funnel all three go
+through, and it redacts the whole body *before* it bounds anything: a cut taken
+first would leave the redactor unable to see a value that straddles it. A body
+carrying a protected value that spans a line break is withheld with the stated
+reason rather than published, and a redaction that does not complete publishes
+its stated reason instead of its input, exactly as the service-tail branch of
+``stand-e2e.yml`` does. The bound is ``FAILURE_RETENTION_MAX_CHARS``, applied to
+the redacted text, and a body that hits it says in the artifact that it was
+truncated and at what limit.
+
+**What ``failure`` and ``verdict`` claim, and what they do not.**
+``run_failure`` answers one question — did this *combination* succeed — from
+three sources: pytest's per-test reports, pytest's own exit status, and the
+pipeline's terminal state for a phase that raised before any report existed.
+``stage`` and ``failure_kind`` answer a different one, *where the pipeline
+stopped*, so a run whose pipeline completed keeps ``stage: completed`` while
+being a failed run.
+
+Neither of them claims to be the ``stand-e2e`` result. A run can be red for
+things this process never sees and cannot see: a sweep failure after the last
+cell passed, a hard timeout that kills it. Those are the workflow's verdict, and
+they are the reason the retention above has no condition — not something this
+artifact reports. A reader wanting the run's result reads the workflow; a reader
+wanting this combination's evidence reads here.
+
+**Collection is early, the write happens twice.** The bodies are readable only
+while the stand and its containers exist, so they are collected, redacted and
+held in the fixture's ``finally``, before teardown. The artifact is written there
+too — a crash-safety copy — and rewritten at ``pytest_sessionfinish``
+(``finalize_pending_run_evidence``) at the same path, once the in-process suite
+verdict exists. A process that dies before that still leaves a complete artifact,
+retention included.
 """
 
 from __future__ import annotations
@@ -62,6 +126,8 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
+import structlog
+from suite_outcome import failed_tests, session_exit_status, suite_failed
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
@@ -79,6 +145,8 @@ from shared.contracts.worker_evidence import (
     secret_env_values,
 )
 from shared.diagnostics import redact_diagnostic
+
+logger = structlog.get_logger(__name__)
 
 
 def orchestrator_root() -> Path:
@@ -146,13 +214,51 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      and prior deploy facts retain credential-safe `settings_seed` outcomes.
 # v12: Product Brief telemetry retains its bounded stage/deadline ledger, including
 #      the stage that stopped productive work before teardown began.
-EVIDENCE_SCHEMA_VERSION = 12
+# v15: a paid run's workers carry the transcript body, the agent report and the
+#      branch diff unconditionally — the publication gate is gone, because the
+#      `stand-e2e` result is decided outside this process and after it. A free
+#      run carries none of them. `failure`/`verdict` classify the pipeline and
+#      the in-process suite outcome only; a runner-level ending is the workflow's
+#      verdict and is not represented here.
+# v14: `failure.failed` is the run's own answer to "did this run succeed", not a
+#      restatement of `stage`: a run whose pipeline completed and whose suite then
+#      failed is failed, carries `failure.source=suite` and the failing tests in
+#      `failure.failed_tests`, and is red with a `suite_failed` verdict reason.
+#      `stage` and `failure_kind` keep their own question — where the pipeline
+#      stopped — and stay `completed`/`none` for such a run.
+# v13: a combination that did not complete retains, per worker, the transcript
+#      body (`transcript.content`), the agent's final report (`agent_report`) and
+#      the diff of the branch it produced (`branch_diff`) — each a capture, each
+#      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
+#      combination that completed carries none of the three.
+EVIDENCE_SCHEMA_VERSION = 15
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
 # here and a tail read there are the same size of thing.
 LOG_TAIL_LINES = REMOVAL_LOG_TAIL_LINES
 LOG_TAIL_MAX_CHARS = REMOVAL_LOG_TAIL_MAX_CHARS
+
+# What "bounded" means for everything a failed combination retains — the worker
+# transcript, the agent's final report and the branch diff alike. One constant
+# rather than three, so the artifact states one limit and a reader has one
+# number to know. It is deliberately far above LOG_TAIL_MAX_CHARS: a log tail is
+# the last thing a container said, while these are the bodies somebody has to
+# read to answer why a paid run went red.
+FAILURE_RETENTION_MAX_CHARS = 60_000
+# Truncation is the head, not the tail, for the same reason worker-wrapper's own
+# save_transcript keeps the prefix: what an agent was asked and what it did first
+# is what a "the agent never did X" question is answered from.
+FAILURE_RETENTION_TRUNCATION_NOTE = "\n\n[retained evidence truncated at {limit} characters]\n"
+# A body carrying a protected value that spans a line break is withheld rather
+# than published: `_retained_body` redacts line by line, so such a value is never
+# seen whole, and publishing what the pass could not replace is the one thing
+# this retention may not do.
+SPANNING_VALUE_WITHHELD_REASON = (
+    "this body carries a protected value that spans a line break, which the "
+    "line-by-line redaction cannot replace whole, so the body is withheld and "
+    "nothing of it is published"
+)
 
 # worker-manager names every worker container `worker-{worker_id}`
 # (services/worker-manager/src/container_config.py) and labels it
@@ -207,14 +313,31 @@ REMOVED_BEFORE_CAPTURE_REASON = (
 )
 
 PRIVACY_STATEMENT = (
-    "Agent stdout/stderr never enters this artifact. The log tail is the worker "
-    "container's own log — worker-wrapper's structlog output — bounded to "
-    f"{LOG_TAIL_LINES} lines and {LOG_TAIL_MAX_CHARS} characters and redacted "
-    "with shared.diagnostics.redact_diagnostic against every value of the "
-    "container's environment whose name matches "
+    "The log tail is the worker container's own log — worker-wrapper's structlog "
+    f"output — bounded to {LOG_TAIL_LINES} lines and {LOG_TAIL_MAX_CHARS} "
+    "characters and redacted with shared.diagnostics.redact_diagnostic against "
+    "every value of the container's environment whose name matches "
     "key|secret|token|password|credential|authorization, plus URL userinfo and "
-    "Authorization headers. Codex CLI diagnostics stay where wrapper.py puts "
-    "them: in the retained transcript on the host, referenced here by path only."
+    "Authorization headers. Agent output never re-enters a result payload or a "
+    "service log. A free deterministic run retains no agent output here either: "
+    "its transcript is referenced by path and file list only. A PAID run "
+    "additionally retains, per worker and whatever its outcome, the "
+    "transcript worker-wrapper wrote (already redacted by the wrapper against "
+    "the worker container's secret environment), the agent's REPORT.md as the "
+    "control plane stored it, and the diff of the branch the worker produced. "
+    "Every one of those bodies is redacted again on the stand host, before it "
+    "crosses to the runner and before any bound is applied to it, with the same "
+    "helper applied line by line against every value of the harness process "
+    "environment whose name says it is a secret; a body carrying a protected "
+    "value that spans a line break is withheld with a stated reason instead, and "
+    "a redaction that does not complete publishes its stated reason instead of "
+    "its input. "
+    f"Each body is bounded to {FAILURE_RETENTION_MAX_CHARS} characters and says "
+    "in the artifact when it was truncated and at what limit. Retention has no "
+    "condition on the outcome, and this artifact's `failure` and `verdict` "
+    "classify only this combination's pipeline and its in-process suite result: "
+    "a runner-level outcome — a failed sweep, a hard timeout — is the workflow's "
+    "verdict, is not observable from inside the run, and is not represented here."
 )
 
 
@@ -335,6 +458,10 @@ class VerdictReason(StrEnum):
     """Closed vocabulary of the things that make a combination red."""
 
     RUN_FAILED = "run_failed"
+    # The pipeline reached the end and a test of the suite that owns this
+    # combination failed. Distinct from RUN_FAILED on purpose: nothing stopped at
+    # a stage, so there is no stage to name.
+    SUITE_FAILED = "suite_failed"
     WORKER_EXECUTED_MISSED = "worker_executed_missed"
     QA_EXECUTED_MISSED = "qa_executed_missed"
     BRIEF_EVIDENCE_MISSED = "brief_evidence_missed"
@@ -1194,6 +1321,309 @@ def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
     return TerminalState.COMPLETED, FailureKind.NONE
 
 
+class FailureSource(StrEnum):
+    """What says this run did not succeed. Closed, and asked in one place."""
+
+    NONE = "none"
+    # The pipeline stopped before it completed; `stage` says where.
+    PIPELINE = "pipeline"
+    # The pipeline completed and a test of the suite that owns this combination
+    # failed afterwards. There is no stage to name, which is the whole reason
+    # this is not the same fact as `stage`.
+    SUITE = "suite"
+
+
+@dataclass(frozen=True)
+class RunFailure:
+    """Whether this run succeeded, and what says it did not.
+
+    One value, computed once by `run_failure`, read by every part of the artifact
+    that asks the question: the retention, `failure.failed`, the verdict, and —
+    through `failure.failed` in the written artifact — `scripts/stand_acceptance.py`.
+    Nothing recomputes it from `terminal_state`, which answers a different
+    question and used to be made to answer both.
+    """
+
+    failed: bool
+    source: FailureSource
+    failed_tests: tuple[str, ...] = ()
+
+
+# How many failing test ids the artifact names before it stops listing. A red
+# suite usually has one; `-x` makes that the norm. The count is stated so a
+# reader knows the list is not the whole of it.
+FAILED_TEST_NAMES_LISTED = 5
+
+
+def run_failure(ctx: dict) -> RunFailure:
+    """Did this run succeed? The single answer, for every reader of that question.
+
+    The line is the **suite** outcome, not the pipeline's. A run whose scaffold,
+    engineering, deploy and QA phases all completed and whose assertion then
+    failed is a failed `stand-e2e` run: it retains the three bodies, it says
+    `failed`, its verdict is red with a reason of its own, and admission holds it
+    to the retention like any other paid failure. That is the run the next paid
+    runs will produce — layer 3 of this sprint needs a `passed` QA verdict — so
+    it is precisely the one that has to stay diagnosable.
+
+    Three sources, and between them nothing that can end this suite is missed.
+    `suite_failed()` is pytest's own verdict: the per-test reports the live
+    conftest records, and — because some endings are no test's report — the
+    session's exit status, handed over at `pytest_sessionfinish`. The pipeline's
+    terminal state is the third, for a phase that raised and left the fixture
+    through its own `finally` during the first test's *setup*, before any report
+    exists. A run that succeeded satisfies none of them.
+
+    **When this is asked matters as much as who asks it.** Two of the three are
+    complete only once the session ends, so the artifact is *finalised* from a
+    session-end hook (`finalize_pending_run_evidence`) and the write the fixture
+    makes before teardown is a crash-safety copy. Asking earlier is not wrong —
+    it is early, and the final write is what the reader gets.
+
+    `terminal_state` and `failure_kind` keep their own job — *where* the pipeline
+    stopped — and are not consulted for anything else here.
+    """
+    terminal_state, _ = classify_outcome(ctx)
+    tests = tuple(failed_tests())
+    if terminal_state is not TerminalState.COMPLETED:
+        return RunFailure(failed=True, source=FailureSource.PIPELINE, failed_tests=tests)
+    if suite_failed():
+        return RunFailure(failed=True, source=FailureSource.SUITE, failed_tests=tests)
+    return RunFailure(failed=False, source=FailureSource.NONE)
+
+
+def _retained_body(text: str, facts: dict) -> Capture:
+    """One retained body: redacted on this host, then bounded, and truthful about it.
+
+    The one funnel every retained field goes through — the transcript, the agent
+    report and the branch diff alike — and the place the trust boundary is held.
+
+    **Redact first, bound second.** The whole body is redacted; only the result
+    is cut to the bound. The reverse order cannot be made safe by widening the
+    window: `redact_diagnostic` replaces a *whole* known value, so a protected
+    value straddling any cut taken before it is never seen whole and its prefix
+    survives into the artifact. Bounding text that is already redacted cannot
+    expose anything, whatever the limit is.
+
+    The redaction is the same call the log tails and the debug dump already make
+    — `redact_diagnostic` against every value of this process's environment whose
+    name says it is a secret — applied **line by line**, which is exactly what
+    the service-tail collection in `.github/workflows/stand-e2e.yml` does with
+    its pipe. That is what keeps the helper's base64 rule off one unbroken
+    multi-megabyte token; a transcript is line-shaped, and line-shaped text of
+    this size costs milliseconds. `split("\n")`/`join("\n")` round-trips the
+    body exactly, so every byte is offered to the redaction and no byte is
+    reordered or lost.
+
+    A value that itself spans a line break is invisible to that pass, so it is
+    detected first and the whole body is withheld with the stated reason. A
+    redaction that does not complete publishes its stated reason too, never its
+    input, as the service-tail branch does.
+    """
+    try:
+        secrets = secret_env_values(dict(os.environ))
+        if any("\n" in secret and secret in text for secret in secrets):
+            return Capture.missed(SPANNING_VALUE_WITHHELD_REASON)
+        redacted = "\n".join(redact_diagnostic(line, secrets=secrets) for line in text.split("\n"))
+    except Exception as error:  # noqa: BLE001 — publish the reason, never the input
+        return Capture.missed(
+            "the redaction of this body did not complete, so no unredacted content is "
+            f"published: {type(error).__name__}"
+        )
+    truncated = len(redacted) > FAILURE_RETENTION_MAX_CHARS
+    if truncated:
+        note = FAILURE_RETENTION_TRUNCATION_NOTE.format(limit=FAILURE_RETENTION_MAX_CHARS)
+        redacted = redacted[: max(0, FAILURE_RETENTION_MAX_CHARS - len(note))] + note
+    return Capture.captured(
+        {
+            **facts,
+            "text": redacted,
+            "characters": len(redacted),
+            "truncated": truncated,
+            "limit": FAILURE_RETENTION_MAX_CHARS,
+        }
+    )
+
+
+def _transcript_content(transcript: dict) -> Capture:
+    """The bodies worker-wrapper retained for one worker, read off the host.
+
+    The directory and its file list are already this record's evidence; what is
+    added is what is in the files. Every way of not having them is named: no
+    bind mount, an unreadable directory, a directory the wrapper wrote nothing
+    into, and a file that could not be read.
+    """
+    host_dir = transcript["host_dir"]
+    if host_dir["status"] != CaptureStatus.CAPTURED.value:
+        return Capture.missed(host_dir["reason"])
+    files = transcript["files"]
+    if files["status"] != CaptureStatus.CAPTURED.value:
+        return Capture.missed(files["reason"])
+    if not files["value"]:
+        return Capture.missed(
+            f"{host_dir['value']} holds no transcript file: worker-wrapper retained none "
+            "for this worker"
+        )
+    parts: list[str] = []
+    for entry in files["value"]:
+        try:
+            body = Path(entry["path"]).read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            return Capture.missed(
+                f"{entry['path']} is listed in the transcript directory and could not be "
+                f"read from the harness host: {type(error).__name__}"
+            )
+        parts.append(f"== {entry['path']} ({entry['bytes']} bytes) ==\n{body}")
+    return _retained_body(
+        "\n".join(parts),
+        {
+            "host_dir": host_dir["value"],
+            "files": [entry["path"] for entry in files["value"]],
+        },
+    )
+
+
+QA_WRITES_NO_REPORT_REASON = (
+    "a QA executor writes no REPORT.md: its answer is the QA verdict, which this "
+    "artifact carries in `qa`"
+)
+QA_PRODUCES_NO_BRANCH_REASON = (
+    "a QA executor commits nothing: it produces no branch of its own, and the branch "
+    "it read is the developer worker's, retained on that worker's record"
+)
+REPORTS_NOT_COLLECTED_REASON = (
+    "the agent reports of this run's engineering tasks were never read: terminal "
+    "evidence collection did not reach the control plane before teardown"
+)
+BRANCH_DIFF_NOT_COLLECTED_REASON = (
+    "the diff of this run's story branch was never read: terminal evidence collection "
+    "did not reach GitHub before teardown"
+)
+
+
+def _agent_report(ctx: dict, record: dict) -> Capture:
+    """The REPORT.md this run's developer agent wrote, as the control plane kept it.
+
+    The report leaves the worker over the result payload and is stored by the
+    engineering consumer as a `worker_report` task event, so it survives the
+    container and dies with the stand's database. All of this run's engineering
+    tasks are carried on every developer record: retries are attempts of one
+    piece of work, and which container typed which report is not a fact the
+    control plane records.
+    """
+    if record["role"] == WorkerRole.QA_EXECUTOR.value:
+        return Capture.missed(QA_WRITES_NO_REPORT_REASON)
+    if ctx.get("worker_reports_error"):
+        return Capture.missed(ctx["worker_reports_error"])
+    if "worker_reports" not in ctx:
+        return Capture.missed(REPORTS_NOT_COLLECTED_REASON)
+    reports = ctx["worker_reports"]
+    if not reports:
+        return Capture.missed(
+            "the control plane holds no worker_report event for this run's engineering "
+            "tasks: no agent wrote a REPORT.md, or none reached the point of writing one"
+        )
+    return _retained_body(
+        "\n".join(
+            f"== task {report['task_id']} at {report['created_at']} ==\n{report['report']}"
+            for report in reports
+        ),
+        {"task_ids": [report["task_id"] for report in reports]},
+    )
+
+
+def _branch_diff(ctx: dict, record: dict) -> Capture:
+    """The change the branch this worker produced carries, named by where it is."""
+    if record["role"] == WorkerRole.QA_EXECUTOR.value:
+        return Capture.missed(QA_PRODUCES_NO_BRANCH_REASON)
+    if ctx.get("story_branch_diff_error"):
+        return Capture.missed(ctx["story_branch_diff_error"])
+    if "story_branch_diff" not in ctx:
+        return Capture.missed(BRANCH_DIFF_NOT_COLLECTED_REASON)
+    diff = ctx["story_branch_diff"]
+    identity = {
+        "repository": diff["repository"],
+        "branch": diff["branch"],
+        "head_sha": diff["head_sha"],
+    }
+    if not diff["diff"]:
+        return Capture.missed(
+            f"{identity['repository']}@{identity['branch']} ({identity['head_sha']}) "
+            "differs from main by nothing: the branch carries no change of its own"
+        )
+    return _retained_body(diff["diff"], identity)
+
+
+RETAINED_BODIES_CTX_KEY = "retained_bodies"
+
+
+def hold_retained_bodies(ctx: dict, records: list[dict]) -> dict[str, dict]:
+    """Collect and redact the three bodies for every worker, and hold them.
+
+    They are readable only while the stand and its containers exist, so they are
+    read here, in the fixture's `finally`, before teardown. Holding them is what
+    lets the artifact be rewritten later — at `pytest_sessionfinish`, over an
+    in-process suite verdict the early write could not have — without re-reading
+    sources that may be gone by then.
+
+    Redaction happens here and not later: every body is through `_retained_body`,
+    on this host, before it is held.
+    """
+    held = {
+        record["worker_id"]: {
+            "transcript_content": _transcript_content(record["transcript"]).as_dict(),
+            "agent_report": _agent_report(ctx, record).as_dict(),
+            "branch_diff": _branch_diff(ctx, record).as_dict(),
+        }
+        for record in records
+    }
+    ctx[RETAINED_BODIES_CTX_KEY] = held
+    return held
+
+
+def retain_worker_bodies(ctx: dict, records: list[dict]) -> list[dict]:
+    """Publish the held bodies on every worker record of a paid run. No condition.
+
+    There used to be one — publish only for a run that did not succeed — and it
+    is gone, because it could not be evaluated at the only moment the artifact can
+    be written. The `stand-e2e` result is decided outside this process and after
+    it: `scripts/stand_run.py` makes a run red on a failed sweep after every cell
+    passed, and its hard-timeout path SIGKILLs pytest, which no in-process
+    mechanism survives. A conditional whose input arrives after the last moment
+    anything can be written is not a conditional; four rounds of this card moved
+    that defect around before it was deleted instead.
+
+    So a paid run's artifact carries the three captures — or the stated reason
+    each could not be collected — whatever the outcome. What the disclosure buys
+    is that no runner-level ending can produce an artifact that hides an absence,
+    and `scripts/stand_acceptance.py` can demand them of any paid artifact without
+    having to trust its self-classification.
+
+    The free deterministic route spends no subscription and starts no paid agent,
+    so it retains nothing new: its records are returned untouched.
+
+    A build that runs without a collection having happened — a caller that never
+    went through `emit_run_evidence` — collects now rather than publishing a hole:
+    the same functions, so there is one way a body is ever made.
+    """
+    if not is_paid_run(ctx):
+        return records
+    held = ctx.get(RETAINED_BODIES_CTX_KEY) or hold_retained_bodies(ctx, records)
+    published = []
+    for record in records:
+        bodies = held.get(record["worker_id"])
+        if bodies is None:
+            bodies = hold_retained_bodies(ctx, records)[record["worker_id"]]
+        with_bodies = dict(record)
+        transcript = dict(record["transcript"])
+        transcript["content"] = bodies["transcript_content"]
+        with_bodies["transcript"] = transcript
+        with_bodies["agent_report"] = bodies["agent_report"]
+        with_bodies["branch_diff"] = bodies["branch_diff"]
+        published.append(with_bodies)
+    return published
+
+
 def qa_cell(ctx: dict) -> dict:
     """Report the QA half, exercised only once its worker handed QA a result.
 
@@ -1883,16 +2313,35 @@ def control_plane_reason(
 
 
 def failure_summary(
-    ctx: dict, terminal_state: TerminalState, failure_kind: FailureKind, reason: Capture
+    ctx: dict,
+    terminal_state: TerminalState,
+    failure_kind: FailureKind,
+    reason: Capture,
+    failure: RunFailure,
 ) -> dict:
-    """The failing stage and the control-plane reason for it, in one place.
+    """Whether the run failed, where the pipeline stopped, and why.
 
-    A reader with only this artifact answers both questions here: where the run
-    stopped, and why the control plane says it stopped. No ssh to a host that no
-    longer exists, and no inference from an absent field.
+    Three different questions, and this used to answer the first by restating the
+    second. `failed` is now `run_failure`'s answer and nothing else, so a run
+    whose pipeline completed and whose suite then failed says so here — which is
+    what `scripts/stand_acceptance.py` reads to decide that a paid failure owes
+    its retained bodies. `stage` and `failure_kind` still answer only *where the
+    pipeline stopped*, and stay `completed`/`none` for such a run, because that
+    is the true answer to that question.
+
+    A reader with only this artifact answers all three here. No ssh to a host
+    that no longer exists, and no inference from an absent field.
     """
     return {
-        "failed": terminal_state is not TerminalState.COMPLETED,
+        "failed": failure.failed,
+        "source": failure.source.value,
+        "failed_tests": list(failure.failed_tests[:FAILED_TEST_NAMES_LISTED]),
+        "failed_test_count": len(failure.failed_tests),
+        # Non-zero with no failed test named means the suite ended badly in a way
+        # no test report describes — a fixture finaliser, a cleanup that raised,
+        # a collection error. `null` means this artifact was written before the
+        # session ended, which for a finalised artifact never happens.
+        "session_exit_status": session_exit_status(),
         "stage": terminal_state.value,
         "failure_kind": failure_kind.value,
         "control_plane_reason": reason.as_dict(),
@@ -2260,6 +2709,7 @@ def verdict(
     terminal_state: TerminalState,
     failure_kind: FailureKind,
     reason: Capture,
+    failure: RunFailure,
     *,
     worker_executed: dict,
     qa_executed: dict,
@@ -2267,21 +2717,40 @@ def verdict(
 ) -> dict:
     """Red or green, and every reason for red carrying its control-plane reason.
 
+    The two ways a run is red are separate reasons, because they are separate
+    findings. `run_failed` is a pipeline that stopped, and names the stage.
+    `suite_failed` is a pipeline that reached the end and a test of the suite that
+    then failed — there is no stage to name, so it names the failing tests
+    instead. Both come from the one `run_failure` value rather than from a second
+    reading of the terminal state.
+
     On a paid run, executor evidence that came back `missed` is a finding, not a
     silence: a combination that spent a subscription and cannot show which agent
     ran is red, and the reason it is red is stated together with the control
     plane's account of the stage that stopped it. The free deterministic route
     starts no such container by design, so its verdict is what it always was —
-    the terminal state and nothing else.
+    the run's own failure and nothing else.
     """
     paid = is_paid_run(ctx)
     reasons: list[dict] = []
-    if terminal_state is not TerminalState.COMPLETED:
+    if failure.source is FailureSource.PIPELINE:
         reasons.append(
             {
                 "code": VerdictReason.RUN_FAILED.value,
                 "detail": (
                     f"the combination stopped at {terminal_state.value} ({failure_kind.value})"
+                ),
+                "control_plane_reason": reason.as_dict(),
+            }
+        )
+    if failure.failed_tests:
+        listed = ", ".join(failure.failed_tests[:FAILED_TEST_NAMES_LISTED])
+        reasons.append(
+            {
+                "code": VerdictReason.SUITE_FAILED.value,
+                "detail": (
+                    f"the pipeline reached {terminal_state.value} and "
+                    f"{len(failure.failed_tests)} test(s) of this suite failed: {listed}"
                 ),
                 "control_plane_reason": reason.as_dict(),
             }
@@ -2353,6 +2822,10 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     collector: RunEvidenceCollector = ctx["run_evidence"]
     generated_at = now if now is not None else datetime.now(tz=UTC)
     terminal_state, failure_kind = classify_outcome(ctx)
+    # Asked once, here, and handed to every reader of it below. `classify_outcome`
+    # above answers a different question — where the pipeline stopped — and is
+    # never read as an answer to this one.
+    failure = run_failure(ctx)
     started_at = collector.started_at
     reason = control_plane_reason(ctx, terminal_state, failure_kind)
     worker_executed = collector.executed_worker_agent().as_dict()
@@ -2369,12 +2842,13 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "qa_requested": ctx.get("qa_agent_type_requested"),
             "qa_executed": qa["executor_executed"],
         },
-        "failure": failure_summary(ctx, terminal_state, failure_kind, reason),
+        "failure": failure_summary(ctx, terminal_state, failure_kind, reason, failure),
         "verdict": verdict(
             ctx,
             terminal_state,
             failure_kind,
             reason,
+            failure,
             worker_executed=worker_executed,
             qa_executed=qa["executor_executed"],
             brief=brief,
@@ -2420,7 +2894,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": collector.records(),
+        "workers": retain_worker_bodies(ctx, collector.records()),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
     }
@@ -2431,17 +2905,51 @@ def write_artifact(artifact: dict, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     stamp = artifact["generated_at"].replace(":", "").replace("-", "")
     path = directory / f"run-evidence-{artifact['combination']['label']}-{stamp}.json"
+    return write_artifact_at(artifact, path)
+
+
+def write_artifact_at(artifact: dict, path: Path) -> Path:
+    """Write one artifact to a named path, replacing what is there."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
-def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
-    """Take a last capture pass and write this combination's artifact.
+@dataclass(frozen=True)
+class PendingArtifact:
+    """One combination's artifact, written early and not yet final."""
 
-    The last pass is what the run's dead workers are read in: they are still
-    labelled, so they are still listed. Workers the run's ownership manifest
-    names that no pass ever listed are reconciled in as missed captures — never
-    omitted, because an omitted worker reads as "nothing ran".
+    ctx: dict
+    path: Path
+    root: Path
+
+
+_pending_artifacts: list[PendingArtifact] = []
+
+
+def pending_artifacts() -> list[PendingArtifact]:
+    """The artifacts written but not yet finalised. For tests of this mechanism."""
+    return list(_pending_artifacts)
+
+
+def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
+    """Collect everything the host still has, write it, and register the finalisation.
+
+    Called from the fixture's `finally`, which is the last moment the containers,
+    the transcript files and the control plane still exist. Three things happen
+    here and each is here for its own reason:
+
+    * the last capture pass, because the run's dead workers are still labelled
+      and still listed, and a worker the ownership manifest names that no pass
+      listed is reconciled in as a missed capture rather than omitted;
+    * the three bodies are collected, redacted and **held**, because after
+      teardown they are unreadable — held, not necessarily published;
+    * the artifact is written, and registered for finalisation.
+
+    This write is a crash-safety copy, not the answer. Whether the run succeeded
+    is not settled yet: cleanup has not run, and a `CleanupError` after this line
+    is a red suite. `finalize_pending_run_evidence` rewrites this same path once
+    the session's outcome exists, and that write is the authoritative one.
     """
     # Resolved here as well as in build_artifact: the live harness calls this with
     # no root, and `None / "docs"` raised inside the fixture's `finally`, failing
@@ -2459,5 +2967,43 @@ def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
                 role_from_worker_id(resource.identifier),
                 NEVER_LISTED_REASON,
             )
+    hold_retained_bodies(ctx, collector.records())
     artifact = build_artifact(ctx, root=artifact_root)
-    return write_artifact(artifact, evidence_output_directory(root))
+    path = write_artifact(artifact, evidence_output_directory(root))
+    _pending_artifacts.append(PendingArtifact(ctx=ctx, path=path, root=artifact_root))
+    return path
+
+
+def finalize_pending_run_evidence() -> list[Path]:
+    """Rewrite every artifact of this session once its outcome is known.
+
+    The last hook of the session is the first moment "did this run succeed" has a
+    complete answer: every test report is in, cleanup has run and re-raised what
+    it had to, and pytest's own exit status is settled. So the artifact is built
+    once more, from the same context and the same already-captured worker
+    records, and replaces the early copy at its own path — one artifact per
+    combination, and the last write is the one a reader gets.
+
+    Nothing is captured again: the containers are gone by now, and a second
+    capture would replace true observations with the reasons they can no longer
+    be made. Nothing published earlier is dropped either — the failure signals
+    only ever accumulate, so a run that was failed at the early write is failed
+    here, and this is asserted rather than argued
+    (`test_finalisation_never_drops_a_body_the_early_write_published`).
+
+    Evidence never fails the session it describes: an artifact that cannot be
+    rewritten leaves its early copy in place and says so in the log.
+    """
+    written: list[Path] = []
+    while _pending_artifacts:
+        pending = _pending_artifacts.pop(0)
+        try:
+            artifact = build_artifact(pending.ctx, root=pending.root)
+            written.append(write_artifact_at(artifact, pending.path))
+        except Exception as error:  # noqa: BLE001 — the early copy stands
+            logger.warning(
+                "run_evidence_finalisation_failed",
+                path=str(pending.path),
+                error_type=type(error).__name__,
+            )
+    return written
