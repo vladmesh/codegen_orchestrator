@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- The Copier template pin lives only in `scripts/system_configs.yaml`, read through
+  `scripts/template_pin.py`: the live defaults, the stage-5 smoke, the fixture path and the CI gate derive it.
 - A deploy that placed nothing records `DeployRunResult.skipped_reason=already_deployed_same_sha`
   instead of only logging it, so a redundant skip is no longer a success no reader can tell apart.
 - The settings-seed follow-up stops within one poll on that skip, on a repair's typed

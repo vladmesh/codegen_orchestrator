@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
+from scripts.template_pin import TEMPLATE_PIN
 from shared.contracts.env_contract import GeneratedSecretEntry, merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
@@ -17,10 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 def _template_fixture() -> Path:
     """Return the rendered fixture for the ref the orchestrator deploys with."""
-    configs = yaml.safe_load((_REPO_ROOT / "scripts" / "system_configs.yaml").read_text())
-    refs = [c["value"] for c in configs if c["key"] == "scheduler.service_template_ref"]
-    assert len(refs) == 1, f"expected one pinned service_template_ref, found {refs}"
-    return _REPO_ROOT / "shared/tests/fixtures" / f"service-template-{refs[0]}"
+    return TEMPLATE_PIN.fixture_path()
 
 
 HEAD_SHA = "6e2fd5b4" + "0" * 32

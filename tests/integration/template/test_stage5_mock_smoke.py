@@ -11,12 +11,15 @@ from stage5_mock_smoke import (
     load_production_template,
 )
 
+from scripts.template_pin import TEMPLATE_PIN
+
 
 def test_production_template_is_loaded_from_system_config() -> None:
+    """The smoke runs the pin the orchestrator deploys, not a copy typed out here."""
     template = load_production_template()
 
-    assert template.source == "gh:vladmesh/service-template"
-    assert template.ref == "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
+    assert template.source == TEMPLATE_PIN.source
+    assert template.ref == TEMPLATE_PIN.ref
 
 
 def test_stage5_smoke_uses_an_isolated_workspace_and_project_name(tmp_path: Path) -> None:

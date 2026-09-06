@@ -7,12 +7,20 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sys
 import tomllib
 from typing import Any
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+# The Makefile runs this gate by path, so `scripts/` is on sys.path and the repository
+# root is not; the pin module can only be found from the tree.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
+
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
@@ -122,7 +130,7 @@ COMPOSE_MERGE_KEY = "<<"
 # Trees whose image references are not this repository's to pin. Reason per line, same
 # rule as the exclusions above: an unpinned image is a decision on the record.
 UNPINNED_IMAGE_DIRS = {
-    "shared/tests/fixtures/service-template-40b54d87dbfe64a9fa6ec379820e43137aaba04c": (
+    TEMPLATE_PIN.fixture_relpath: (
         "a vendored copy of a service-template release, read by the template "
         "compatibility tests; its compose files belong to that repository, and "
         "editing them here would make the fixture stop matching the release it "

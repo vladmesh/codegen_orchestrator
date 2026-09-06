@@ -13,6 +13,7 @@ import sys
 import pytest
 import yaml
 
+from scripts.template_pin import FIXTURE_PREFIX, TEMPLATE_PIN
 from shared.contracts.env_usage import (
     EnvUsageParseError,
     build_env_contract_artifact,
@@ -28,15 +29,12 @@ GENERATED_FIXTURE_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".ruff
 
 def pinned_template_ref() -> str:
     """Return the service-template ref the orchestrator actually deploys with."""
-    configs = yaml.safe_load((REPO_ROOT / "scripts" / "system_configs.yaml").read_text())
-    refs = [c["value"] for c in configs if c["key"] == "scheduler.service_template_ref"]
-    assert len(refs) == 1, f"expected one pinned service_template_ref, found {refs}"
-    return str(refs[0])
+    return TEMPLATE_PIN.ref
 
 
 def template_fixture() -> Path:
     """Return the rendered fixture for the pinned service-template ref."""
-    return FIXTURES_DIR / f"service-template-{pinned_template_ref()}"
+    return TEMPLATE_PIN.fixture_path(REPO_ROOT)
 
 
 def fixture_tree_digest(root: Path) -> str:
@@ -337,7 +335,7 @@ def test_template_fixture_tracks_the_pinned_template_ref():
 
     stale = sorted(
         path.name
-        for path in FIXTURES_DIR.glob("service-template-*")
+        for path in FIXTURES_DIR.glob(f"{FIXTURE_PREFIX}*")
         if path.is_dir() and path != fixture
     )
     assert fixture.is_dir(), (
@@ -345,7 +343,7 @@ def test_template_fixture_tracks_the_pinned_template_ref():
     )
     assert not stale, f"fixtures left behind for unpinned service-template refs: {stale}"
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
-    assert answers["_src_path"] == "gh:vladmesh/service-template"
+    assert answers["_src_path"] == TEMPLATE_PIN.source
     assert answers["_commit"].endswith(f"g{pinned_template_ref()[:7]}")
 
 
@@ -372,8 +370,8 @@ def test_template_fixture_content_matches_its_pinned_render():
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
 
     assert answers == {
-        "_commit": "0.4.0-20-g40b54d8",
-        "_src_path": "gh:vladmesh/service-template",
+        "_commit": f"0.4.0-20-g{TEMPLATE_PIN.ref[:7]}",
+        "_src_path": TEMPLATE_PIN.source,
         "author_email": "dev@example.com",
         "author_name": "Developer",
         "modules": "backend,tg_bot,notifications,frontend",

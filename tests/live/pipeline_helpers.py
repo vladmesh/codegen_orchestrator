@@ -63,6 +63,7 @@ from settings_seed_followup import (
     resolve_wait_pass,
 )
 
+from scripts.template_pin import TEMPLATE_PIN
 from shared.clients.registry import sha_image_tag
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -103,12 +104,12 @@ AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
-# The template the live suite scaffolds from. These are test-suite constants and not
-# production configuration, so falling back to the production pin when nothing overrides
-# it is what keeps the suite reproducible; the production pin itself lives in
-# scripts/system_configs.yaml and is not read from here.
-DEFAULT_TEMPLATE_REPO = "gh:vladmesh/service-template"
-DEFAULT_TEMPLATE_REF = "40b54d87dbfe64a9fa6ec379820e43137aaba04c"
+# The template the live suite scaffolds from when nothing overrides it: the production
+# pin itself, read from `scripts/system_configs.yaml` through `scripts.template_pin`, so
+# the suite scaffolds from what a deployed orchestrator scaffolds from and no copy of the
+# pin can go stale here.
+DEFAULT_TEMPLATE_REPO = TEMPLATE_PIN.source
+DEFAULT_TEMPLATE_REF = TEMPLATE_PIN.ref
 TEMPLATE_REPO_ENV = "LIVE_TEMPLATE_REPO"
 TEMPLATE_REF_ENV = "LIVE_TEMPLATE_REF"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
