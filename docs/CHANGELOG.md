@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-06
 
+- A deploy that placed nothing records `DeployRunResult.skipped_reason=already_deployed_same_sha`
+  instead of only logging it, so a redundant skip is no longer a success no reader can tell apart.
+- The settings-seed follow-up stops within one poll on that skip, on a repair's typed
+  `no_new_commit`, and names every exit in the repair-attempt record instead of spending its deadline.
+- The follow-up deploy Run an engineering result creates names its story, without which no
+  story-scoped reader could ever observe it.
 - A paid `stand-e2e` run retains per worker, in the acceptance artifact (evidence schema v15), the
   transcript body, the agent's report and its branch diff, redacted on the stand, whatever the outcome.
 - Admission demands those three of every paid artifact rather than of one that calls itself failed,

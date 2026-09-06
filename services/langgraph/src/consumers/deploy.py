@@ -19,7 +19,7 @@ from shared.contracts.dto.application import (
 )
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
+from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, MissingUserSecret
 from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY
 from shared.contracts.env_overrides import (
     EMPTY_OVERRIDES_DIGEST,
@@ -563,14 +563,17 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 allocated_resources, msg.head_sha, env_overrides
             )
         if application_id is not None:
-            reason = "already_deployed_same_sha"
+            # One reason for the log line and for the Run result: a reader across
+            # the Run boundary sees the same fact this process decided, and a
+            # follow-up wait does not have to reconstruct it from a SHA.
+            reason = DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA
             logger.info(
                 "deploy_redundant_skipped",
                 task_id=task_id,
                 project_id=project_id,
                 application_id=application_id,
                 head_sha=msg.head_sha,
-                reason=reason,
+                reason=reason.value,
             )
             await api_client.patch(
                 f"runs/{task_id}",
@@ -580,6 +583,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                         deploy_outcome=DeployOutcome.SUCCESS,
                         application_id=application_id,
                         action=msg.action,
+                        skipped_reason=reason,
                     ).model_dump(mode="json"),
                 },
             )
@@ -592,7 +596,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 telegram_chat_id=telegram_chat_id,
                 project_id=project_id,
             )
-            return live_work_settled({"status": "success", "reason": reason})
+            return live_work_settled({"status": "success", "reason": reason.value})
 
         # Pre-check: validate server state via SSH before deploying
         action = msg.action

@@ -801,6 +801,31 @@ opened for a branch that carries no commit of its own — GitHub answers that
 request 422 "No commits between". `complete_stories` classifies that same
 refusal through `shared.clients.github.NoCommitsBetweenError` and parks the
 story instead of retrying it every tick; other PR-creation errors stay transient.
+The manifest-repair follow-up deploy Run that an accepted engineering result
+creates names its story, so every story-scoped reader of deploy Runs — the live
+follow-up wait included — can observe it at all.
+
+### A deploy that placed nothing says so
+
+The deploy consumer skips a deploy whose allocation already runs the exact head
+SHA under the same environment contract. That skip is correct, and it is a
+successful no-op: nothing reached a host, so nothing the deploy would have
+applied — a settings seed above all — happened either. The Run still ends
+`completed` with `DeployOutcome.SUCCESS`, so across the Run boundary a skip and a
+real deployment are the same fact unless the skip is written down.
+`DeployRunResult.skipped_reason`
+(`shared/contracts/dto/run_result.py::DeploySkipReason`) is where it is written:
+`already_deployed_same_sha` names the one skip that exists today, and `None` —
+the ordinary case — means the deploy ran. The contract admits the field only on
+`SUCCESS`, because every other outcome names something the deploy tried and
+could not do.
+
+A reader that needs "the application was actually placed at this commit" asks
+this field rather than comparing SHAs itself: an inference reconstructs the
+decision the consumer already made and drifts from it. The live settings-seed
+follow-up is that reader — a skipped follow-up deploy seeded nothing, so it ends
+the wait within one poll with the skip as its reason instead of spending the
+repair budget on a result that cannot change.
 
 ### Deploy dispatch, withdrawal, and deadlines
 

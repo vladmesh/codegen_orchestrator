@@ -16,6 +16,7 @@ from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
+    DeploySkipReason,
     EngineeringRunResult,
     QABlocker,
     QABlockerCategory,
@@ -334,6 +335,40 @@ def _seed(failure: SettingsSeedFailureKind | None) -> SettingSeedOutcome:
         written=failure is None,
         failure=failure,
     )
+
+
+class TestASkipIsASuccessfulNoOp:
+    """A deploy that placed nothing says so in its result, not only in a log."""
+
+    def test_a_skipped_deploy_names_why_no_deployment_was_performed(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SUCCESS,
+            application_id=42,
+            skipped_reason=DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
+        )
+
+        assert result.skipped_reason is DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA
+        assert result.model_dump(mode="json")["skipped_reason"] == "already_deployed_same_sha"
+
+    def test_a_deploy_that_ran_carries_no_skip_reason(self):
+        result = DeployRunResult(
+            deploy_outcome=DeployOutcome.SUCCESS, deployed_url="https://example.com"
+        )
+
+        assert result.skipped_reason is None
+
+    def test_a_failed_deploy_cannot_claim_it_was_skipped(self):
+        with pytest.raises(ValidationError, match="skipped_reason requires success"):
+            DeployRunResult(
+                deploy_outcome=DeployOutcome.GIVE_UP,
+                skipped_reason=DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
+            )
+
+    def test_an_unknown_skip_reason_is_refused_at_the_boundary(self):
+        with pytest.raises(ValidationError):
+            DeployRunResult.model_validate(
+                {"deploy_outcome": "success", "skipped_reason": "felt_like_it"}
+            )
 
 
 class TestSuccessMeansEveryConfirmedSettingArrived:
