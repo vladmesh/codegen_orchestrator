@@ -333,7 +333,11 @@ PRIVACY_STATEMENT = (
     "a redaction that does not complete publishes its stated reason instead of "
     "its input. "
     f"Each body is bounded to {FAILURE_RETENTION_MAX_CHARS} characters and says "
-    "in the artifact when it was truncated and at what limit."
+    "in the artifact when it was truncated and at what limit. Retention has no "
+    "condition on the outcome, and this artifact's `failure` and `verdict` "
+    "classify only this combination's pipeline and its in-process suite result: "
+    "a runner-level outcome — a failed sweep, a hard timeout — is the workflow's "
+    "verdict, is not observable from inside the run, and is not represented here."
 )
 
 
