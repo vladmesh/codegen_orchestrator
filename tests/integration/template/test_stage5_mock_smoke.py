@@ -6,9 +6,12 @@ import subprocess
 
 import pytest
 from stage5_mock_smoke import (
+    KIT_PACKAGE,
     CommandTimeout,
     Stage5Smoke,
     load_production_template,
+    read_active_packages,
+    read_listed_packages,
 )
 
 from scripts.template_pin import TEMPLATE_PIN
@@ -171,6 +174,11 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(Stage5Smoke, "_make_workspace_readable", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "_run_worker_start", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "_exercise_generated_access_lifecycle", lambda *_args: None)
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_prove_kit_package_install",
+        lambda _self, ref: events.append(("package", ref)),
+    )
     monkeypatch.setattr(Stage5Smoke, "cleanup", lambda *_args: None)
 
     assert smoke.run() == pinned_sha
@@ -178,6 +186,7 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
         ("resolve", "candidate"),
         ("copier", pinned_sha),
         ("recorded", pinned_sha),
+        ("package", pinned_sha),
     ]
 
 
@@ -262,3 +271,122 @@ def test_cleanup_verification_fails_when_docker_listing_fails(
         match=r"(?s)Phase verify cleanup containers failed \(1\).*cannot connect to daemon",
     ):
         smoke._assert_no_compose_resources()
+
+
+def _write_product(root: Path, *, listed: list[str], generated: list[dict[str, str]]) -> Path:
+    (root / "codegen_kit").mkdir(parents=True)
+    (root / "codegen_kit/_active_packages.py").write_text(
+        '"""Package identities used to generate this product contract."""\n\n'
+        f"ACTIVE_PACKAGES: list[dict[str, str]] = {generated!r}\n"
+    )
+    (root / "services/backend").mkdir(parents=True)
+    (root / "services/backend/manifest.yaml").write_text(f"version: 1\npackages: {listed!r}\n")
+    return root
+
+
+def test_generated_and_listed_package_sets_are_read_from_the_product(tmp_path: Path) -> None:
+    identity = {"manifest_sha256": "0" * 64, "name": "reminders", "version": "0.1.0"}
+    product = _write_product(tmp_path / "product", listed=["reminders"], generated=[identity])
+
+    assert read_active_packages(product) == [identity]
+    assert read_listed_packages(product) == ["reminders"]
+
+
+def test_a_product_without_packages_reads_as_empty_on_both_sides(tmp_path: Path) -> None:
+    product = _write_product(tmp_path / "product", listed=[], generated=[])
+
+    assert read_active_packages(product) == []
+    assert read_listed_packages(product) == []
+
+
+def test_package_wheel_is_built_from_the_kit_source_at_the_pinned_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pinned = "b" * 40
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/codegen-product-kit", ref="9.9.9")
+    commands: list[list[str]] = []
+
+    def record(_self: Stage5Smoke, command: list[str], **_kwargs: object) -> None:
+        commands.append(command)
+        if command[:2] == ["uv", "build"]:
+            wheels = smoke.package_workspace / "wheels"
+            wheels.mkdir(parents=True)
+            (wheels / "codegen_kit_reminders-0.1.0-py3-none-any.whl").write_text("")
+
+    monkeypatch.setattr(Stage5Smoke, "_run", record)
+
+    wheel = smoke._build_package_wheel(pinned)
+
+    assert wheel.name == "codegen_kit_reminders-0.1.0-py3-none-any.whl"
+    assert commands[0][:3] == ["git", "clone", "--quiet"]
+    assert commands[1] == [
+        "git",
+        "-C",
+        str(smoke.package_workspace / "kit"),
+        "checkout",
+        "--quiet",
+        pinned,
+    ]
+    assert commands[2][:3] == ["uv", "build", "--wheel"]
+    assert commands[2][3].endswith("packages/codegen-kit-reminders")
+
+
+def test_package_install_proof_runs_kit_add_on_its_own_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pinned = "c" * 40
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/codegen-product-kit", ref="9.9.9")
+    product = smoke.package_workspace / "product"
+    wheel = tmp_path / "codegen_kit_reminders-0.1.0-py3-none-any.whl"
+    wheel.write_text("")
+    identity = {"manifest_sha256": "1" * 64, "name": "reminders", "version": "0.1.0"}
+    renders: list[Path] = []
+    kit_add: list[list[str]] = []
+
+    def render(_self: Stage5Smoke, ref: str, destination: Path, **_kwargs: object) -> None:
+        assert ref == pinned
+        renders.append(destination)
+        _write_product(destination, listed=[], generated=[])
+
+    def install(_self: Stage5Smoke, command: list[str], **_kwargs: object) -> None:
+        kit_add.append(command)
+        _write_product(
+            smoke.package_workspace / "installed", listed=["reminders"], generated=[identity]
+        )
+        for name in ("codegen_kit/_active_packages.py", "services/backend/manifest.yaml"):
+            (product / name).write_text((smoke.package_workspace / "installed" / name).read_text())
+        (product / "services/backend/packages").mkdir(parents=True)
+        (product / "services/backend/packages" / wheel.name).write_text("")
+
+    monkeypatch.setattr(Stage5Smoke, "_run_copier", render)
+    monkeypatch.setattr(Stage5Smoke, "_run_make", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Stage5Smoke, "_build_package_wheel", lambda _self, _ref: wheel)
+    monkeypatch.setattr(Stage5Smoke, "_run", install)
+
+    smoke._prove_kit_package_install(pinned)
+
+    assert renders == [product]
+    assert kit_add == [[str(product / ".venv/bin/kit"), "add", KIT_PACKAGE, "--wheel", str(wheel)]]
+    assert smoke.installed_packages == [identity]
+
+
+def test_package_install_proof_fails_when_the_generated_contract_stays_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/codegen-product-kit", ref="9.9.9")
+    wheel = tmp_path / "codegen_kit_reminders-0.1.0-py3-none-any.whl"
+    wheel.write_text("")
+
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_run_copier",
+        lambda _self, _ref, destination, **_kwargs: _write_product(
+            destination, listed=[], generated=[]
+        ),
+    )
+    monkeypatch.setattr(Stage5Smoke, "_run_make", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Stage5Smoke, "_build_package_wheel", lambda _self, _ref: wheel)
+    monkeypatch.setattr(Stage5Smoke, "_run", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(AssertionError, match="generated contract does not record the package"):
+        smoke._prove_kit_package_install("d" * 40)

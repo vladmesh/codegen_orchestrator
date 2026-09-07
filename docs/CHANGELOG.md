@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-07
+
+- The engineering worker's instructions state the kit package install recipe — build the wheel from
+  the kit at the product's pinned ref, then `kit add` — and that regeneration is part of the change.
+
 ## 2026-09-06
 
 - Documentation and the architect and engineering worker instructions name `codegen-product-kit` as
