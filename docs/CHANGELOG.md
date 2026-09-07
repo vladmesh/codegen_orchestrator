@@ -6,7 +6,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-07
 
 - An active kit package makes a central QA run owe a result per declared behaviour, each resting on
-  a read of the product's own output after the fire and the check that quotes it, or the run fails.
+  a read of the route its criterion names plus the check quoting it, or the run is red not green.
 
 - The architect prompt states the capability-shape ladder — reuse, a shared service, a container,
   then an in-process kit package — and has a package task install the wheel instead of writing one.

@@ -43,7 +43,7 @@ from src.agents.qa.packages import (
     parse_job_owners,
     parse_listed_packages,
 )
-from src.agents.qa.tools import QAJobsCapability
+from src.agents.qa.tools import QAJobsCapability, build_qa_callables
 from src.consumers._qa_runner import (
     PackageAcceptance,
     QAResult,
@@ -52,8 +52,13 @@ from src.consumers._qa_runner import (
     run_package_activation_checks,
     scheduled_behaviour_facts,
 )
-from src.consumers._qa_target import QATargetError
-from src.consumers._qa_workspace import BehaviourEvidence, ProductObservation
+from src.consumers._qa_target import (
+    QACapabilities,
+    QATargetError,
+    RemoteResult,
+    loopback_http_status,
+)
+from src.consumers._qa_workspace import BehaviourEvidence, ProductObservation, QAWorkspace
 
 # What the kit's package-contract generator writes into a product that installed
 # `reminders`, in the shape it writes it.
@@ -439,6 +444,22 @@ class TestAPackagesBehaviourUsesTheChainAServicesBehaviourUses:
         assert jobs.behaviour("reminders.sweep") is None
 
 
+class _LoopbackSession:
+    """A target whose loopback probe answers with one recorded curl result."""
+
+    def __init__(self, stdout: str) -> None:
+        self.capabilities = QACapabilities(
+            deployed_url=DEPLOYED_URL,
+            physical_root="/srv/deployments/app",
+            containers=frozenset({"app-backend-1"}),
+            loopback_ports=frozenset({8000}),
+        )
+        self._stdout = stdout
+
+    async def localhost_http_get(self, port: int, path: str) -> RemoteResult:
+        return RemoteResult(exit_status=0, stdout=self._stdout, stderr="")
+
+
 class FakeWorkspace:
     """The runner's own record of what this run fired, read back, and read.
 
@@ -526,12 +547,14 @@ class TestWhichReadAnswersACriterion:
         assert not observation_answers(TICK.observable, "http_get", "/health")
         assert not observation_answers(TICK.observable, "telegram_probe", "@bot")
 
-    def test_an_observable_naming_no_route_admits_any_read_of_the_product(self):
+    def test_an_observable_naming_no_route_can_be_bound_to_no_read(self):
+        """An observable that names nothing to read is answered by nothing."""
         prose = "the owner receives the reminder text"
 
         assert observable_paths(prose) == ()
-        assert observation_answers(prose, "telegram_probe", "@weather_bot")
-        assert observation_answers(prose, "http_get", "/reminders")
+        assert not observation_answers(prose, "telegram_probe", "@weather_bot")
+        assert not observation_answers(prose, "http_get", "/reminders")
+        assert not observation_answers(prose, "http_get", "/health")
 
     def test_a_check_may_quote_the_request_the_run_made(self):
         tokens = observation_tokens("http_get", "/reminders?user_ref=42")
@@ -642,6 +665,28 @@ class TestABehaviourRestsOnAReadOfTheProduct:
         assert "dispatch_status=undelivered" in detail
         assert "the event was never emitted" in detail
 
+    def test_a_criterion_that_names_no_route_fails_rather_than_binding_anything(self):
+        """The reviewer's route-less hole: a fire, a healthy unrelated read, a confident check."""
+        prose = ScheduledBehaviourCriterion(
+            name="reminders.tick", observable="the owner receives the reminder text"
+        )
+        claimed = {
+            "name": "reminders.tick succeeded",
+            "pass": True,
+            "detail": "after reminders.tick, GET /health was 200",
+        }
+
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[claimed], summary="OK"),
+            _acceptance(declared=(prose,)),
+            FakeWorkspace({"reminders.tick": 1}, observations=[(2, "http_get", "/health")]),
+        )
+
+        assert result.passed is False
+        detail = _row(result, TICK_ROW)["detail"]
+        assert "names no route on the deployed product that this run could read" in detail
+        assert prose.observable in detail
+
     def test_a_behaviour_fired_read_and_judged_passes_and_says_on_what(self):
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
@@ -751,3 +796,42 @@ class TestNoRouteIsInferredFromAPackagesName:
 
         assert "no prefixed-route check is required of this run" in stated
         assert "none is inferred from the package's name" in stated
+
+
+class TestOnlyASuccessfulReadIsAnObservation:
+    """An error response is the product answering about the request, not about itself.
+
+    The loopback probe runs curl without `--fail`, so a 500 comes back as exit
+    status 0 with the status written into the output. Reading that status is
+    what keeps a broken package route from standing in for a working one.
+    """
+
+    def test_the_loopback_probe_carries_the_status_it_received(self):
+        assert loopback_http_status("{}\n<<qa-http-status:200>>") == 200
+        assert loopback_http_status("error\n<<qa-http-status:500>>") == 500
+        assert loopback_http_status("curl: (7) Failed to connect") is None
+
+    async def test_an_error_answer_on_a_loopback_route_is_not_recorded_as_a_read(self, tmp_path):
+        workspace = QAWorkspace(path=tmp_path)
+        workspace.trace_path.touch()
+        calls = build_qa_callables(
+            session=_LoopbackSession("<<qa-http-status:500>>"), workspace=workspace
+        )
+
+        await calls["localhost_http_get"](8000, "/reminders")
+
+        assert workspace.observations == []
+
+    async def test_a_successful_answer_on_a_loopback_route_is_recorded(self, tmp_path):
+        workspace = QAWorkspace(path=tmp_path)
+        workspace.trace_path.touch()
+        calls = build_qa_callables(
+            session=_LoopbackSession('{"reminders": []}\n<<qa-http-status:200>>'),
+            workspace=workspace,
+        )
+
+        await calls["localhost_http_get"](8000, "/reminders")
+
+        assert [(one.tool, one.subject) for one in workspace.observations] == [
+            ("localhost_http_get", "/reminders")
+        ]

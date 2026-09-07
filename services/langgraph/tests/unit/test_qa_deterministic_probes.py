@@ -987,6 +987,53 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         assert behaviour["pass"] is False
         assert "quotes the read it rests on" in behaviour["detail"]
 
+    async def test_a_criterion_naming_no_route_fails_on_a_healthy_unrelated_read(self, tmp_path):
+        """The reviewer's exact reproduction, pinned as a failure.
+
+        An observable phrased without a route names nothing this run can read,
+        so a fire, a healthy `GET /health` and a check quoting both the job and
+        that path bind to nothing and the row fails saying so.
+        """
+        prose_criteria = (
+            "- GET /health returns 200\n"
+            '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN the owner '
+            "receives the reminder text\n"
+        )
+        claimed = json.dumps(
+            {
+                "pass": True,
+                "checks": [
+                    {
+                        "name": "reminders.tick succeeded",
+                        "pass": True,
+                        "detail": "after reminders.tick, GET /health was 200",
+                    }
+                ],
+                "summary": "OK",
+            }
+        )
+
+        with _FakeProduct() as product:
+            result = await _run_qa(
+                self._deployment(),
+                _firing_executor("reminders.tick", read_path="/health", verdict=claimed),
+                tmp_path,
+                target=replace(TARGET, deployed_url=product.url),
+                acceptance_criteria=prose_criteria,
+                jobs=QAJobsCapability(
+                    base_url=product.url,
+                    capability="jobs-capability-never-leaves-the-host",  # noqa: S106
+                    fired_by_product="proj-qa",
+                    fired_by_run="attempt-qa-run-1",
+                    behaviours=tuple(parse_scheduled_behaviours(prose_criteria)),
+                ),
+            )
+
+        assert result.passed is False
+        detail = self._row(result, self.BEHAVIOUR_ROW)["detail"]
+        assert "names no route on the deployed product that this run could read" in detail
+        assert [fire["name"] for fire in product.fired] == ["reminders.tick"]
+
     async def test_a_run_that_fired_read_and_judged_carries_the_results(self, tmp_path):
         """The passing counterpart: the product's own route, read after the fire."""
         with _FakeProduct() as product:

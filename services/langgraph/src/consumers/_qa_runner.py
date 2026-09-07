@@ -920,6 +920,24 @@ def _behaviour_row(
                 f"{criterion.observable}"
             ),
         )
+    named = observable_paths(criterion.observable)
+    if not named:
+        # Nothing to bind a read to. A behaviour is accepted on a read of the
+        # product's own output, and an observable that names no route to read
+        # leaves this run no way to make one — so the row fails saying that,
+        # rather than passing on an unrelated read or on absence. What repairs
+        # it is a criterion that names what to read.
+        return behaviour_check(
+            package,
+            behaviour=name,
+            reason=(
+                f"the criterion for {name} names no route on the deployed product that this run "
+                "could read, so no observation of the behaviour could be bound to it and nothing "
+                "here rests on what the product did. A package behaviour is accepted on a read of "
+                "the product's own output, named by the criterion. The observable as written: "
+                f"{criterion.observable}"
+            ),
+        )
     observations = [
         observation
         for observation in workspace.observations
@@ -927,17 +945,15 @@ def _behaviour_row(
         and observation_answers(criterion.observable, observation.tool, observation.subject)
     ]
     if not observations:
-        named = observable_paths(criterion.observable)
-        wanted = f" of {', '.join(named)}" if named else " of the product's own output"
         return behaviour_check(
             package,
             behaviour=name,
             reason=(
                 f"the deployed product accepted this run's fire of {name}, and the run made no "
-                f"successful read{wanted} afterwards. A fire and its recorded command are the "
-                "product core's account of the dispatch, not of the behaviour, so this result "
-                f"would rest on nothing the product did. The criterion's observable: "
-                f"{criterion.observable}"
+                f"successful read of {', '.join(named)} afterwards. A fire and its recorded "
+                "command are the product core's account of the dispatch, not of the behaviour, "
+                "so this result would rest on nothing the product did. The criterion's "
+                f"observable: {criterion.observable}"
             ),
         )
     for observation in observations:

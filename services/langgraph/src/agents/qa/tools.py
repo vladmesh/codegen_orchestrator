@@ -58,7 +58,7 @@ from ...clients.product_jobs import (
     JobCallFailure,
     JobCallOutcome,
 )
-from ...consumers._qa_target import QATargetError, QATargetSession
+from ...consumers._qa_target import QATargetError, QATargetSession, loopback_http_status
 from ...consumers._qa_workspace import QAWorkspace
 
 logger = structlog.get_logger(__name__)
@@ -113,7 +113,11 @@ def _remote_tools(session: QATargetSession, record, refuse, observe) -> dict:
         except QATargetError as exc:
             return refuse("localhost_http_get", request, exc)
         record("localhost_http_get", request, remote.stdout or remote.stderr)
-        if remote.exit_status == 0:
+        # curl runs without `--fail`, so an error response comes back as exit
+        # status 0 with the status written into the output. A 404 or a 500 is
+        # the product answering about the request, not a read of its output.
+        status = loopback_http_status(remote.stdout)
+        if remote.exit_status == 0 and status is not None and status < HTTP_ERROR:
             observe("localhost_http_get", path)
         return remote.as_dict()
 

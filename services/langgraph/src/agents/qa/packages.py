@@ -236,15 +236,15 @@ def observation_tokens(tool: str, subject: str) -> tuple[str, ...]:
 def observation_answers(observable: str, tool: str, subject: str) -> bool:
     """Whether this read is one the criterion's observable asked for.
 
-    When the observable names routes, only a read of one of them answers it: an
-    unrelated path is not this behaviour's observation. When it names none,
-    every read of the product's own output is admissible, because nothing in
-    the criterion says which one is the right one.
+    Only a read of a route the observable names answers it. An observable that
+    names no route names nothing this run can read, so nothing can be bound to
+    it and no read answers it — the behaviour row then fails saying so, rather
+    than passing on an unrelated read. That is the same rule everywhere else in
+    this path: a check that examined nothing, or examined the wrong thing, is
+    not a pass.
     """
     paths = observable_paths(observable)
-    if not paths:
-        return True
-    if tool not in {"http_get", "localhost_http_get"}:
+    if not paths or tool not in {"http_get", "localhost_http_get"}:
         return False
     read = subject.split("?")[0]
     return any(read == path or read.startswith(f"{path.rstrip('/')}/") for path in paths)
@@ -366,13 +366,15 @@ def active_package_facts(
         "already performed against this deployment, and it is in this run's result "
         "whatever you submit: the package is active in the booted product. The others are "
         "yours, one for each package behaviour named below, and none of them is finished "
-        "by firing. For each: fire it, then read the product's own output — the route the "
-        "criterion's observable names, or the bot it names — and report a check that names "
-        "the behaviour and quotes the exact request you made, so the result shows what it "
-        "rests on. A dispatch record is not that output and neither is `job_evidence`: "
-        "both answer with the product core's record of the fire. A behaviour that was not "
-        "fired, whose output was not read, or whose check rests on no read you made, "
-        "fails — one row each, so none of them can go missing.",
+        "by firing. For each: fire it, then read the route its criterion's observable "
+        "names, and report a check that names the behaviour and quotes the exact request "
+        "you made, so the result shows what it rests on. A dispatch record is not that "
+        "read and neither is `job_evidence`: both answer with the product core's record of "
+        "the fire. A behaviour that was not fired, whose named route was not read, or "
+        "whose check rests on no read you made, fails — one row each, so none of them can "
+        "go missing. A criterion whose observable names no route to read cannot be bound "
+        "to one at all, and its row fails on that; report it as failed with that reason "
+        "rather than looking for something else to pass it on.",
         "- Where a package's routes are mounted, this deployment does not say: package "
         "protocol v1 keeps the HTTP prefix in the installed package.yaml, inside the "
         "wheel, and the generated contract records only name, version and manifest "

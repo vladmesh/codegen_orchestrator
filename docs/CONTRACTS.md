@@ -857,10 +857,13 @@ declared, and they are rows in the run's result whatever the executor submits:
 2. *Each declared behaviour of the package produced its observable* — one row per behaviour, so
    two declared behaviours are two results and neither can go missing. Three things are required
    for that exact name, and each missing one is its own failure reason quoting the observable: the
-   product accepted a **fire** of it; the run then made a **successful read of the product's own
-   output** — the route the criterion's observable names, when it names one, and any successful
-   product read when it does not; and the run's result carries a **passing check that names the
-   behaviour and quotes that read**. Neither the fire's acknowledgement nor a `job_evidence` read
+   product accepted a **fire** of it; the run then made a **successful read of the route the
+   criterion's observable names** — a read that answered, since an error response is the product
+   answering about the request rather than about itself; and the run's result carries a **passing
+   check that names the behaviour and quotes that read**. A criterion whose observable names no
+   route on the deployed product names nothing this run can read, so nothing can be bound to it and
+   the row fails saying that — it does not pass on an unrelated read, and it does not pass on
+   absence. Neither the fire's acknowledgement nor a `job_evidence` read
    is that output: both answer with the product core's record of the dispatch, which says nothing
    about whether any provider consumed the event. A `job_evidence` read this run happened to make
    is not a requirement, but an `undelivered` command in it settles the row against the behaviour,
@@ -872,9 +875,11 @@ division of labour is therefore stated rather than fudged: *the executor judges 
 and *the platform establishes that the work was done and that the executor judged it*, refusing a
 verdict that rests on nothing the product did. A passing row says which read it is bound to and
 which submitted check rests on that read; it never claims the words of the observable were
-mechanically proven. Where the criterion's observable names a route, an unrelated path cannot stand
-in for it; where it names none, the platform cannot narrow which read answers it, which is a reason
-to write criteria that name one.
+mechanically proven. An unrelated path cannot stand in for the route the observable names, and an
+observable that names no route is not accepted on any read at all. Two consequences follow, and
+they are the point rather than side effects: a criterion that wants a package behaviour accepted
+must name an observable the run can read, and a run that cannot bind one is honestly red rather
+than falsely green.
 
 `apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
 when any of them failed, so a verdict that performed no package check does not pass by asserting
