@@ -178,6 +178,7 @@ OFFLINE_LIVE_IGNORES = {
     "tests/live/test_deploy_infra.py",
     "tests/live/test_full_pipeline.py",
     "tests/live/test_product_brief_pipeline.py",
+    "tests/live/test_product_brief_package_pipeline.py",
     "tests/live/test_sprint_dod.py",
     "tests/live/test_health.py",
     "tests/live/test_pipeline_engineering.py",

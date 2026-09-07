@@ -332,6 +332,7 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_deploy_infra.py \
 	--ignore=tests/live/test_full_pipeline.py \
 	--ignore=tests/live/test_product_brief_pipeline.py \
+	--ignore=tests/live/test_product_brief_package_pipeline.py \
 	--ignore=tests/live/test_sprint_dod.py \
 	--ignore=tests/live/test_health.py \
 	--ignore=tests/live/test_parallel_engineering.py \
@@ -376,6 +377,10 @@ test-live-mega-llm:
 test-live-mega-brief:
 	@echo "Running mega-brief: TestProductBriefPipeline only (one selected developer/QA pair)..."
 	@uv run pytest tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline -v --tb=long -x -s
+
+test-live-mega-brief-package:
+	@echo "Running mega-brief-package: TestProductBriefPackagePipeline only (one selected developer/QA pair)..."
+	@uv run pytest tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline -v --tb=long -x -s
 
 # Four paid stand cells: Claude/Codex developer × Claude/Codex QA.
 test-live-matrix:

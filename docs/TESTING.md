@@ -39,6 +39,7 @@ make test-live-pipeline        # All live tests
 # E2E
 make stand-run SUITE=mega-llm    # Full stand pipeline with real coding and QA agents
 make stand-run SUITE=mega-brief  # Confirmed Product Brief through Architect, engineering, deploy and QA
+make stand-run SUITE=mega-brief-package  # The same brief path onto the kit package route
 
 # Cleanup
 make test-clean                # Remove all test containers/volumes
@@ -97,7 +98,10 @@ Paid E2E tests are not part of required PR CI. Run the canonical named suites th
 exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair,
 `mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
 one selected pair. Its productive work stops at 50 minutes, then its fixture gets a separate
-10-minute evidence-and-cleanup grace; `matrix` runs all supported pairs.
+10-minute evidence-and-cleanup grace. `mega-brief-package` is the same path on a brief whose
+capability is a one-time reminder, so the Architect plans a kit package, the worker installs it
+with the kit recipe, and central QA judges the package behaviour on the route its criterion
+names; it gets 65 productive minutes and a 15-minute grace. `matrix` runs all supported pairs.
 
 **Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,
 `template_source` and `template_ref`, which point the live suite's scaffold at a template other

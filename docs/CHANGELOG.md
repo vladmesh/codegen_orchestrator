@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- `mega-brief-package` runs the confirmed-brief path on a one-time reminder contract, so one paid run
+  drives the kit package route from architect plan through kit install to central QA's route check.
+
 - An active kit package makes a central QA run owe a result per declared behaviour, each resting on
   a read of the route its criterion names plus the check quoting it, or the run is red not green.
 
