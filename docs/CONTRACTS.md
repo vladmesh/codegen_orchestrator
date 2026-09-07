@@ -817,6 +817,17 @@ Generation writes the active package set with each package's manifest digest int
 (`generated package contract is stale; run make generate-from-spec`), so a product whose manifest
 was edited without regenerating does not boot.
 
+The architect decides that a capability is a package in the first place. Its prompt
+(`services/langgraph/src/prompts/architect/__init__.py`, "Capability Shape") states the ladder —
+reuse what exists, then a shared service, then a container, then an in-process kit package — the
+two shapes that disqualify a package outright (a capability needing a synchronous call into the
+host, or a stateless consumer), and the protocol a package plan accepts: event-only outward
+dependency, prefixed settings and job names, an owned schema and migration version table, and the
+import boundary the lint enforces. A task it plans for a package asks for the install recipe above
+by reference and never for hand-written package code. The decision is carried in the task's
+description and acceptance criteria, not in a `TaskCreate` field: no tool argument names a
+capability shape.
+
 The orchestrator states this recipe to the engineering worker in
 `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. The stage-5 template
 compatibility smoke proves it against a real render rather than a replica: it renders a second

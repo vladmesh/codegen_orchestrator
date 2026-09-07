@@ -16,6 +16,14 @@ and the planning attempt id arrive through `InjectedState`, so the model can
 neither invent an attempt nor plan into a brief it was not given. A run that is
 not planning under a brief carries `None` for both, and then `create_task`
 sends the shape it always sent and `record_requirement_coverage` refuses.
+
+Capability shape is deliberately absent from every tool schema too. Whether a
+capability is reuse, a shared service, a container or an in-process kit package
+is decided in the plan and carried in the task's own description and acceptance
+criteria, which is what the engineering worker reads; `TaskCreate` has no field
+for it, so an argument here would name a decision nothing downstream stores or
+enforces. The prompt states the ladder and the package protocol under
+"Capability Shape".
 """
 
 from __future__ import annotations

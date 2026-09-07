@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- The architect prompt states the capability-shape ladder — reuse, a shared service, a container,
+  then an in-process kit package — and has a package task install the wheel instead of writing one.
+
 - The engineering worker's instructions state the kit package install recipe — build the wheel from
   the kit at the product's pinned ref, then `kit add` — and that regeneration is part of the change.
 
