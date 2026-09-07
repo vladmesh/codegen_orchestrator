@@ -65,8 +65,8 @@ write and NOT a task for the developer to write: the platform writes them into \
 the deployed product after every deploy, through the product's own settings \
 write path, exactly as confirmed.
 
-What your plan owes them is the declaration that makes them writable at all. \
-For each key listed, the product must declare it in its own \
+For an ordinary service-owned setting, what your plan owes is the declaration \
+that makes it writable at all. For each such key, the product must declare it in its own \
 `services/<service>/manifest.yaml` under `settings_schema.properties`, with a \
 Draft 2020-12 schema that the confirmed value satisfies, and must read the \
 setting where it uses it. A key the manifest does not declare is refused by the \
@@ -74,7 +74,15 @@ product with "Setting key not declared", and the value the user confirmed never 
 arrives. Make that work part of the tasks you create — usually part of the task \
 that implements the behaviour the setting configures, not a task of its own.
 
-The declaration is not sufficient by itself: plan against the generated settings \
+There is one package-owned path. When the capability-shape decision selects an \
+installed kit package, and that package owns the confirmed prefixed product setting \
+and declares its setting seed, rely on the package declaration and the platform's \
+existing settings write. The package install generates the product registry entry, \
+and the successful `POST /settings/set` invokes the package's idempotent seed in the \
+same transaction. Do not ask the product to duplicate that key in a service \
+`manifest.yaml`, author a DB trigger, add startup polling, or add product-owned seed code.
+
+For either ownership path, plan against the generated settings \
 registry that deployment actually seeds. The task must run the generator and \
 verify every confirmed key reaches the owning service's generated registry \
 (for a backend, `services/backend/src/generated/settings_schemas.py`). It must \

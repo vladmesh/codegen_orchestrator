@@ -170,10 +170,17 @@ rather than a partial implementation.
 ## Confirmed Product Brief Settings Gate
 
 When `TASK.md` or the story names confirmed initial settings, the deployer will
-write them only through the generated product settings contract. Before reporting
-success, declare every key in the owning service's `manifest.yaml`
-`settings_schema` with a schema that accepts its confirmed value. Run the generator
-and verify each exact key reaches the generated registry (for a backend,
+write them only through the generated product settings contract. For an ordinary
+service-owned key, before reporting success declare it in the owning service's
+`manifest.yaml` `settings_schema` with a schema that accepts its confirmed value.
+When an installed kit package instead owns a confirmed prefixed package-owned setting
+and declares its setting seed, rely on that package declaration and the platform's
+existing settings write. A successful `POST /settings/set` invokes the package's
+idempotent seed in the same transaction. Do not duplicate the key in a service
+manifest, author a DB trigger, add startup polling, or add product-owned seed code.
+
+For either ownership path: Run the generator and verify each exact key reaches the
+generated registry (for a backend,
 `services/backend/src/generated/settings_schemas.py`), then prove generated
 `POST /settings/set` and `POST /settings/get` set and read it under
 `SETTINGS_WRITE_CAPABILITY`. Do not replace this with an ad-hoc endpoint or claim

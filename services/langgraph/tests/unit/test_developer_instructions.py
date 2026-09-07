@@ -65,6 +65,16 @@ class TestDeveloperInstructions:
         assert "settings_schema" in self.content
         assert "settings_schemas.py" in self.content
 
+    def test_uses_an_installed_packages_declared_setting_seed(self):
+        lower = self.content.lower()
+
+        assert "package-owned" in lower
+        assert "declares its setting seed" in lower
+        assert "db trigger" in lower
+        assert "startup polling" in lower
+        assert "product-owned seed code" in lower
+        assert "duplicate" in lower and "service" in lower
+
     def test_requires_a_black_box_observable_and_a_real_provider_path_test(self):
         instructions = " ".join(self.content.lower().split())
         assert "read-only black-box observable" in instructions

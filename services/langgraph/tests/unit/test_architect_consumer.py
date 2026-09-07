@@ -885,6 +885,26 @@ class TestProductBriefInitialSettings:
         assert "POST /settings/get" in user_msg
 
     @pytest.mark.asyncio
+    async def test_package_owned_setting_names_the_declared_seed_path(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        state = await self._run(
+            _mock_api_get_project,
+            mock_redis,
+            valid_job_data,
+            [InitialSetting(key="reminders.reminder_owner_ref", value="owner-e2e")],
+        )
+
+        user_msg = state["messages"][0]["content"]
+        assert "reminders.reminder_owner_ref" in user_msg
+        assert "package-owned" in user_msg
+        assert "declares its setting seed" in user_msg
+        assert "DB trigger" in user_msg
+        assert "startup polling" in user_msg
+        assert "product-owned seed code" in user_msg
+        assert "duplicate" in user_msg and "service" in user_msg
+
+    @pytest.mark.asyncio
     async def test_a_brief_that_confirmed_no_settings_says_nothing_about_them(
         self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
     ):

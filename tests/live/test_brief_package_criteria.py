@@ -21,6 +21,7 @@ from pipeline_helpers import (
     BRIEF_PACKAGE_REMINDER_STATE,
     BRIEF_PACKAGE_ROUTE,
     BRIEF_PACKAGE_SCENARIO,
+    BRIEF_PACKAGE_SETTINGS_KEY,
     BRIEF_PACKAGE_TICK_AT,
     brief_package_detailed_spec,
 )
@@ -77,6 +78,24 @@ def test_the_variant_asks_the_architect_for_exactly_this_line():
     """The published criteria come from the brief, so the brief carries the line."""
     assert BRIEF_PACKAGE_ACCEPTANCE_CRITERION in brief_package_detailed_spec()
     assert BRIEF_PACKAGE_SCENARIO.job_name == BRIEF_PACKAGE_JOB_NAME
+
+
+def test_the_variant_uses_the_package_owned_setting_seed_contract():
+    detailed_spec = brief_package_detailed_spec()
+
+    assert BRIEF_PACKAGE_SETTINGS_KEY == "reminders.reminder_owner_ref"
+    assert BRIEF_PACKAGE_SCENARIO.settings_key == BRIEF_PACKAGE_SETTINGS_KEY
+    assert "package's declared setting seed" in detailed_spec
+    assert "POST /settings/set" in detailed_spec
+    assert "POST /settings/get" in detailed_spec
+    assert "settings.reminder_owner_ref" not in detailed_spec
+    assert (
+        "Declare it in the generated\nbackend service manifest's settings_schema"
+        not in detailed_spec
+    )
+    assert "DB trigger" in detailed_spec
+    assert "startup poll" in detailed_spec
+    assert "product-owned seed" in detailed_spec
 
 
 def test_the_two_variants_expect_different_behaviour_shapes():

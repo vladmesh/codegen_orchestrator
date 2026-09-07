@@ -141,10 +141,12 @@ inside a claimed planning attempt:
 The same brief may also carry the typed settings the product starts life with
 (`initial_settings`). They reach the agent on the graph state and by name in the
 instructions, and they are **not** disposed of one by one: the platform writes
-their values after deploy (Phase 5). What the plan owes them is the declaration
-that makes them writable — each key in the generated product's own
-`services/<service>/manifest.yaml` `settings_schema`, with a schema the
-confirmed value satisfies, read where the product uses it.
+their values after deploy (Phase 5). For an ordinary service-owned key, the plan
+owes the generated product's own `services/<service>/manifest.yaml`
+`settings_schema` declaration and the read where the product uses it. When a
+selected installed package owns the confirmed prefixed key and declares its
+setting seed, its generated package contract owns both instead; the platform's
+existing settings write invokes that seed without product-owned seed glue.
 
 A must-requirement that implies a deferred or scheduled behaviour is planned the
 same way, because the generated product's core schedules nothing: the plan
