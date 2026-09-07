@@ -20,6 +20,9 @@ PAST_THE_BOUND = MERGED_AT + timedelta(seconds=IMAGE_PUBLICATION_TIMEOUT_SECONDS
 def _github(run):
     github = AsyncMock()
     github.get_latest_workflow_run = AsyncMock(return_value=run)
+    github.get_workflow_failure_details = AsyncMock(
+        return_value={"failed_jobs": [], "unavailable_reason": None}
+    )
     return github
 
 
@@ -93,6 +96,68 @@ async def test_a_failed_ci_run_is_refused_at_once_rather_than_waited_out():
 
     assert verdict.state is ImagePublication.REFUSED
     assert verdict.ci_conclusion == "failure"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ci_run_retains_redacted_bounded_failure_details():
+    github = _github(_run("completed", "failure"))
+    github.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "build-and-push",
+                "failed_steps": ["Build image"],
+                "log_excerpt": "first line\nTOKEN=top-secret",
+                "log_unavailable_reason": None,
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    verdict = await image_publication_for_commit(
+        github,
+        "o",
+        "r",
+        BUILT_SHA,
+        waiting_since=MERGED_AT,
+        now=JUST_AFTER,
+        failure_log_excerpt_lines=2,
+        diagnostic_secrets=("top-secret",),
+    )
+
+    github.get_workflow_failure_details.assert_awaited_once_with(
+        "o", "r", 4242, log_excerpt_lines=2
+    )
+    assert verdict.failed_jobs == (
+        {
+            "name": "build-and-push",
+            "failed_steps": ["Build image"],
+            "log_excerpt": "first line\nTOKEN=[redacted]",
+            "log_unavailable_reason": None,
+        },
+    )
+    assert "top-secret" not in verdict.evidence()["failed_jobs"][0]["log_excerpt"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ci_run_names_unavailable_failure_details_without_losing_identity():
+    github = _github(_run("completed", "failure"))
+    github.get_workflow_failure_details.side_effect = RuntimeError("GitHub unavailable")
+
+    verdict = await image_publication_for_commit(
+        github,
+        "o",
+        "r",
+        BUILT_SHA,
+        waiting_since=MERGED_AT,
+        now=JUST_AFTER,
+        failure_log_excerpt_lines=20,
+    )
+
+    assert verdict.ci_run_id == 4242
+    assert verdict.ci_run_url.endswith("/4242")
+    assert verdict.ci_conclusion == "failure"
+    assert verdict.failed_jobs == ()
+    assert verdict.details_unavailable_reason == "RuntimeError"
 
 
 @pytest.mark.asyncio

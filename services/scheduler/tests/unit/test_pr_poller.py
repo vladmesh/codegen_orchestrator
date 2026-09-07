@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.tasks.pr_poller import _failure_fingerprint, poll_ci_failures, poll_merged_prs
+from src.tasks.image_publication import ImagePublication, PublicationVerdict
+from src.tasks.pr_poller import (
+    _failure_fingerprint,
+    _updated_generated_product_timeline,
+    poll_ci_failures,
+    poll_merged_prs,
+)
 
 
 def _make_story(story_id="story-1", project_id="proj-1", pr_number=None):
@@ -34,6 +40,41 @@ def _make_repo(git_url="https://github.com/org/my-repo"):
     r = AsyncMock()
     r.git_url = git_url
     return r
+
+
+def test_generated_product_timeline_keeps_every_distinct_ci_run_observed():
+    prior = {
+        "ci_runs": [
+            {"id": 899, "status": "completed", "conclusion": "cancelled"},
+        ]
+    }
+    verdict = PublicationVerdict(
+        state=ImagePublication.PUBLISHED,
+        detail="published",
+        ci_run_id=900,
+        ci_status="completed",
+        ci_conclusion="success",
+        ci_run_url="https://github.com/org/repo/actions/runs/900",
+    )
+
+    timeline = _updated_generated_product_timeline(
+        prior,
+        {
+            "number": 42,
+            "state": "closed",
+            "merged_at": "2026-09-07T12:00:00Z",
+            "merge_commit_sha": "merge-sha",
+            "head": {"sha": "head-sha"},
+        },
+        verdict,
+    )
+
+    assert [run["id"] for run in timeline["ci_runs"]] == [899, 900]
+    assert [(run["status"], run["conclusion"]) for run in timeline["ci_runs"]] == [
+        ("completed", "cancelled"),
+        ("completed", "success"),
+    ]
+    assert timeline["missed_captures"] == []
 
 
 @pytest.mark.asyncio
@@ -572,8 +613,9 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
     """The wait sits ahead of the Run, so a slow CI costs no Run and no budget.
 
     The deploy used to be dispatched nine seconds after the merge, against a
-    mutable tag. Now the story simply stays where it is and the next tick asks
-    again — nothing is created, nothing is transitioned, nothing is published.
+    mutable tag. Now the story stays where it is and the next tick asks again.
+    The App-authenticated observation is persisted, but no Run is created,
+    transition performed, or queue message published.
     """
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
@@ -604,7 +646,17 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
     api.create_run.assert_not_awaited()
     api.transition_story.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
-    api.update_story.assert_not_awaited()
+    timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
+    assert timeline["ci_runs"] == [
+        {
+            "id": 900,
+            "url": "https://github.com/org/my-repo/actions/runs/900",
+            "status": "in_progress",
+            "conclusion": None,
+            "failed_jobs": [],
+            "details_unavailable_reason": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -636,6 +688,17 @@ async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably
         "created_at": "2026-03-20T03:16:00Z",
         "head_sha": "e" * 40,
     }
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "build-and-push",
+                "failed_steps": ["Build image"],
+                "log_excerpt": "registry password: [REDACTED]",
+                "log_unavailable_reason": None,
+            }
+        ],
+        "unavailable_reason": None,
+    }
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
@@ -650,7 +713,10 @@ async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably
     assert reason["deployed_commit_sha"] == "e" * 40
     assert reason["head_sha"] == "a" * 40
     assert reason["ci_run_id"] == 900
-    api.transition_story.assert_awaited_once_with("story-1", "human_review")
+    assert reason["failed_jobs"][0]["name"] == "build-and-push"
+    assert reason["failed_jobs"][0]["failed_steps"] == ["Build image"]
+    assert "ci.yml run 900" in reason["detail"]
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
     api.fail_story.assert_not_awaited()

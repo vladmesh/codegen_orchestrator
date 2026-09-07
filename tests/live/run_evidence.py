@@ -237,6 +237,10 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      `failure.failed_tests`, and is red with a `suite_failed` verdict reason.
 #      `stage` and `failure_kind` keep their own question — where the pipeline
 #      stopped — and stay `completed`/`none` for such a run.
+# v17: `generated_product_timeline` retains every story observation made by the
+#      existing Product Brief deploy wait, including PR identity, generated CI
+#      Runs and terminal quarantine evidence. An unavailable read is a stated
+#      missed capture, so a failure before a Deploy Run remains diagnosable.
 # v16: a worker's `branch_diff` is taken against what the branch added — the
 #      merge base with the default branch, or, once the story merged, the
 #      default-branch commit its merge was made onto — and names that reference
@@ -249,7 +253,7 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 16
+EVIDENCE_SCHEMA_VERSION = 17
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -3009,6 +3013,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "story_id": ctx.get("story_id"),
             "task_id": ctx.get("task_id"),
         },
+        "generated_product_timeline": generated_product_timeline(ctx),
         "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
@@ -3044,6 +3049,52 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "workers": retain_worker_bodies(ctx, collector.records()),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
+    }
+
+
+def generated_product_timeline(ctx: dict) -> dict:
+    """Story/PR/CI observations already made by the supported deploy wait."""
+    story_id = ctx.get("story_id")
+    story_id_capture = (
+        Capture.captured(story_id)
+        if story_id is not None
+        else Capture.missed("no Story was created before this run ended")
+    )
+    observations = ctx.get("generated_product_story_observations")
+    if isinstance(observations, list) and observations:
+        capture = Capture.captured(observations)
+        latest = observations[-1]
+        if latest.get("capture_status") == CaptureStatus.MISSED.value:
+            reason = latest.get("reason") or "the latest generated-product story read failed"
+            latest_fields = {
+                field: Capture.missed(reason).as_dict()
+                for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
+            }
+        else:
+            latest_fields = {
+                "status": (
+                    Capture.captured(latest["status"])
+                    if latest.get("status") is not None
+                    else Capture.missed("status was unavailable on the latest story read")
+                ).as_dict(),
+                "quarantine_reason": Capture.captured(latest.get("quarantine_reason")).as_dict(),
+                "pull_request": (
+                    Capture.captured(latest["pull_request"])
+                    if latest.get("pull_request") is not None
+                    else Capture.missed("pull_request was unavailable on the latest story read")
+                ).as_dict(),
+                "ci_runs": Capture.captured(latest.get("ci_runs", [])).as_dict(),
+            }
+    else:
+        capture = Capture.missed("no generated-product story read was captured")
+        latest_fields = {
+            field: Capture.missed("no generated-product story read was captured").as_dict()
+            for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
+        }
+    return {
+        "story_id": story_id_capture.as_dict(),
+        "observations": capture.as_dict(),
+        "latest": latest_fields,
     }
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+import os
 from typing import TYPE_CHECKING
 import uuid
 
@@ -18,6 +19,7 @@ from shared.contracts.dto.users_grant import (
     GrantIntentLifecycleResult,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.worker_evidence import secret_env_values
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
@@ -135,7 +137,8 @@ async def _images_ready_for_deploy(
     story_id: str,
     head_sha: str,
     deployed_commit_sha: str,
-    merged_at: datetime | None,
+    pull_request: dict,
+    existing_timeline: object,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Whether this merged commit may be deployed yet, refusing it when it never can.
@@ -146,9 +149,17 @@ async def _images_ready_for_deploy(
     else's CI. Never coming means the story is refused, typed and durably, here.
     """
     verdict = await image_publication_for_commit(
-        github, owner, repo_name, deployed_commit_sha, waiting_since=merged_at
+        github,
+        owner,
+        repo_name,
+        deployed_commit_sha,
+        waiting_since=_parse_github_timestamp(pull_request.get("merged_at")),
+        failure_log_excerpt_lines=_ci_failure_log_excerpt_lines(),
+        diagnostic_secrets=tuple(secret_env_values(dict(os.environ))),
     )
+    timeline = _updated_generated_product_timeline(existing_timeline, pull_request, verdict)
     if verdict.state is ImagePublication.PUBLISHED:
+        await api_client.update_story(story_id, {"generated_product_timeline": timeline})
         log.info(
             "poll_merged_images_published",
             deployed_commit_sha=deployed_commit_sha,
@@ -156,6 +167,7 @@ async def _images_ready_for_deploy(
         )
         return True
     if verdict.state is ImagePublication.PENDING:
+        await api_client.update_story(story_id, {"generated_product_timeline": timeline})
         log.info(
             "poll_merged_awaiting_image_publication",
             deployed_commit_sha=deployed_commit_sha,
@@ -169,6 +181,7 @@ async def _images_ready_for_deploy(
         head_sha=head_sha,
         deployed_commit_sha=deployed_commit_sha,
         verdict=verdict,
+        generated_product_timeline=timeline,
         log=log,
     )
     return False
@@ -181,6 +194,7 @@ async def _refuse_unpublished_images(
     head_sha: str,
     deployed_commit_sha: str,
     verdict: PublicationVerdict,
+    generated_product_timeline: dict,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
     """End a story whose images never appeared in a state that names that.
@@ -199,13 +213,62 @@ async def _refuse_unpublished_images(
         **verdict.evidence(),
     }
     log.error("poll_merged_images_not_published", **reason)
-    await api_client.update_story(story_id, {"quarantine_reason": reason})
-    await api_client.transition_story(story_id, "human_review")
+    await api_client.update_story(
+        story_id,
+        {
+            "quarantine_reason": reason,
+            "generated_product_timeline": generated_product_timeline,
+        },
+    )
+    await api_client.transition_story(story_id, "human-review")
     await notify_admins_best_effort(
         f"Story {story_id} was not deployed: {verdict.detail}",
         level="error",
         story_id=story_id,
     )
+
+
+def _updated_generated_product_timeline(
+    existing: object, pull_request: dict, verdict: PublicationVerdict
+) -> dict:
+    """Merge this App-authenticated PR/CI observation into the story record."""
+    prior_runs = existing.get("ci_runs") if isinstance(existing, dict) else None
+    runs = (
+        [dict(item) for item in prior_runs if isinstance(item, dict)]
+        if isinstance(prior_runs, list)
+        else []
+    )
+    if verdict.ci_run_id is not None:
+        observed_run = {
+            "id": verdict.ci_run_id,
+            "url": verdict.ci_run_url,
+            "status": verdict.ci_status,
+            "conclusion": verdict.ci_conclusion,
+            "failed_jobs": list(verdict.failed_jobs),
+            "details_unavailable_reason": verdict.details_unavailable_reason,
+        }
+        runs = [item for item in runs if item.get("id") != verdict.ci_run_id]
+        runs.append(observed_run)
+    pr_observation = {
+        "number": pull_request.get("number"),
+        "state": pull_request.get("state"),
+        "merged_at": pull_request.get("merged_at"),
+        "head_sha": pull_request.get("head", {}).get("sha"),
+        "merge_commit_sha": pull_request.get("merge_commit_sha"),
+    }
+    missed = [
+        f"pull request {field} was unavailable"
+        for field, value in pr_observation.items()
+        if value is None
+    ]
+    if verdict.ci_run_id is None:
+        missed.append(f"CI run identity was unavailable: {verdict.detail}")
+    return {
+        "pull_request": pr_observation,
+        "ci_runs": runs,
+        "latest_ci_observation": verdict.evidence(),
+        "missed_captures": missed,
+    }
 
 
 async def _handle_failed_run(
@@ -366,7 +429,8 @@ async def poll_merged_prs(
             story_id=story_id,
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
-            merged_at=_parse_github_timestamp(merged_pr.get("merged_at")),
+            pull_request=merged_pr,
+            existing_timeline=getattr(story, "generated_product_timeline", None),
             log=log,
         ):
             continue

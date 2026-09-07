@@ -26,6 +26,7 @@ from enum import StrEnum
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.diagnostics import redact_diagnostic
 
 logger = structlog.get_logger(__name__)
 
@@ -62,17 +63,45 @@ class PublicationVerdict:
     state: ImagePublication
     detail: str
     ci_run_id: int | None = None
+    ci_status: str | None = None
     ci_conclusion: str | None = None
     ci_run_url: str | None = None
+    failed_jobs: tuple[dict, ...] = ()
+    details_unavailable_reason: str | None = None
 
     def evidence(self) -> dict:
         """The typed record a story-level refusal carries."""
         return {
             "ci_run_id": self.ci_run_id,
+            "ci_status": self.ci_status,
             "ci_conclusion": self.ci_conclusion,
             "ci_run_url": self.ci_run_url,
+            "failed_jobs": list(self.failed_jobs),
+            "details_unavailable_reason": self.details_unavailable_reason,
             "detail": self.detail,
         }
+
+
+def _redacted_failed_jobs(failed_jobs: list[dict], *, secrets: tuple[str, ...]) -> tuple[dict, ...]:
+    """Redact the GitHub diagnostic fields before they enter durable story evidence."""
+    redacted: list[dict] = []
+    for job in failed_jobs:
+        item = {
+            "name": redact_diagnostic(job.get("name"), secrets=secrets),
+            "failed_steps": [
+                redact_diagnostic(step, secrets=secrets) for step in job.get("failed_steps", [])
+            ],
+            "log_excerpt": None,
+            "log_unavailable_reason": None,
+        }
+        if job.get("log_excerpt") is not None:
+            item["log_excerpt"] = redact_diagnostic(job["log_excerpt"], secrets=secrets)
+        if job.get("log_unavailable_reason") is not None:
+            item["log_unavailable_reason"] = redact_diagnostic(
+                job["log_unavailable_reason"], secrets=secrets
+            )
+        redacted.append(item)
+    return tuple(redacted)
 
 
 def _elapsed_seconds(since: datetime, now: datetime) -> float:
@@ -94,6 +123,8 @@ async def image_publication_for_commit(
     waiting_since: datetime | None,
     timeout_seconds: int = IMAGE_PUBLICATION_TIMEOUT_SECONDS,
     now: datetime | None = None,
+    failure_log_excerpt_lines: int | None = None,
+    diagnostic_secrets: tuple[str, ...] = (),
 ) -> PublicationVerdict:
     """Whether this commit's images are published, still coming, or never coming.
 
@@ -153,6 +184,7 @@ async def image_publication_for_commit(
                     f"{run['status']} after {timeout_seconds}s"
                 ),
                 ci_run_id=run["id"],
+                ci_status=run["status"],
                 ci_conclusion=run.get("conclusion"),
                 ci_run_url=run.get("html_url"),
             )
@@ -160,6 +192,7 @@ async def image_publication_for_commit(
             state=ImagePublication.PENDING,
             detail=f"{CI_WORKFLOW} run {run['id']} for {commit_sha} is {run['status']}",
             ci_run_id=run["id"],
+            ci_status=run["status"],
             ci_conclusion=run.get("conclusion"),
             ci_run_url=run.get("html_url"),
         )
@@ -169,9 +202,30 @@ async def image_publication_for_commit(
             state=ImagePublication.PUBLISHED,
             detail=f"{CI_WORKFLOW} run {run['id']} published the images of {commit_sha}",
             ci_run_id=run["id"],
+            ci_status=run["status"],
             ci_conclusion=run.get("conclusion"),
             ci_run_url=run.get("html_url"),
         )
+
+    unavailable_reason = None
+    try:
+        details = await github.get_workflow_failure_details(
+            owner,
+            repo,
+            int(run["id"]),
+            log_excerpt_lines=failure_log_excerpt_lines,
+        )
+        failed_jobs = _redacted_failed_jobs(
+            details.get("failed_jobs", []), secrets=diagnostic_secrets
+        )
+        unavailable_reason = details.get("unavailable_reason")
+        if unavailable_reason is not None:
+            unavailable_reason = redact_diagnostic(unavailable_reason, secrets=diagnostic_secrets)
+        if not failed_jobs and not unavailable_reason:
+            unavailable_reason = "GitHub returned no failed jobs"
+    except Exception as error:
+        failed_jobs = ()
+        unavailable_reason = type(error).__name__
 
     return PublicationVerdict(
         state=ImagePublication.REFUSED,
@@ -180,6 +234,9 @@ async def image_publication_for_commit(
             f"{run.get('conclusion')}, so its images were never published"
         ),
         ci_run_id=run["id"],
+        ci_status=run["status"],
         ci_conclusion=run.get("conclusion"),
         ci_run_url=run.get("html_url"),
+        failed_jobs=failed_jobs,
+        details_unavailable_reason=unavailable_reason,
     )

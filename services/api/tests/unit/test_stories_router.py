@@ -36,6 +36,7 @@ def _make_story(**overrides):
         "created_by": "system",
         "user_report": None,
         "quarantine_reason": None,
+        "generated_product_timeline": None,
         "operator_acceptance": None,
         "operator_recheck": None,
         "reopened_at": None,

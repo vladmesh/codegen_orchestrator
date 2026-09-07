@@ -46,6 +46,8 @@ class Story(Base):
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
     # QA evidence kept with the story while a human decides whether to retry or fix it.
     quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Generated-repository PR/CI observations collected through the GitHub App.
+    generated_product_timeline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A credential-derived administrator decision that resolves human review.
     operator_acceptance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A credential-derived administrator decision that re-enters QA through the pipeline.
