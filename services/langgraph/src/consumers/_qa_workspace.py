@@ -42,11 +42,12 @@ class QAWorkspace:
     verdict: str | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
     telegram_probe_blocker: QABlocker | None = None
-    #: Behaviours the product accepted a fire for during this run, written by
-    #: the runtime when the product answered with a recorded command. It is the
-    #: runner's own record that a fire happened, so "the behaviour was never
-    #: fired" is decided here rather than from anything an executor reports.
-    fired_behaviours: list[str] = field(default_factory=list)
+    #: Behaviours the product accepted a fire for during this run, mapped to
+    #: how many calls this run had made when it accepted them. Written by the
+    #: runtime, so "the behaviour was never fired" and "nothing was read after
+    #: the fire" are both decided here rather than from anything an executor
+    #: reports about itself.
+    fired_behaviours: dict[str, int] = field(default_factory=dict)
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -86,9 +87,16 @@ class QAWorkspace:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def record_fired_behaviour(self, name: str) -> None:
-        """Note that the product accepted a fire of `name` in this run."""
-        if name not in self.fired_behaviours:
-            self.fired_behaviours.append(name)
+        """Note that the product accepted a fire of `name`, and where in the run.
+
+        The position is what makes "after the fire" answerable: a read of the
+        product made before it says nothing about what the fire caused.
+        """
+        self.fired_behaviours.setdefault(name, len(self._trace))
+
+    def calls_after(self, position: int) -> tuple[str, ...]:
+        """The tools this run used after the given point in its own trace."""
+        return tuple(entry["tool"] for entry in self._trace[position:])
 
     def record_telegram_probe(
         self, evidence: QATelegramProbeEvidence, blocker: QABlocker | None = None

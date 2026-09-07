@@ -680,21 +680,15 @@ class TestBotLivenessIsEstablishedBeforeTheExecutor:
 
 
 class _FakeProduct:
-    """A deployed product that answers the three things a package check asks.
+    """A deployed product that answers a fire, and shows what the fire caused.
 
-    Its route document names the package's own prefix, the prefixed route
-    answers the way a mounted router answers a request missing its query
-    parameter, and its jobs core records a fire. Nothing here is a stand-in for
-    the runner: the runner really makes these requests over the network.
+    Its jobs core records the fire and answers with a dispatch record — which
+    is all a fire ever answers — and `/reminders/last` is the product's own
+    output, the thing a criterion's observable is actually read from.
     """
 
-    def __init__(self, *, mounts_package: bool = True) -> None:
+    def __init__(self) -> None:
         product = self
-        paths = {"/health": {"get": {}}, "/jobs/fire": {"post": {}}}
-        if mounts_package:
-            paths["/reminders"] = {"get": {}, "post": {}}
-            paths["/reminders/{reminder_id}"] = {"delete": {}}
-        self.paths = paths
         self.fired: list[dict] = []
 
         class Handler(BaseHTTPRequestHandler):
@@ -707,13 +701,9 @@ class _FakeProduct:
                 self.wfile.write(body)
 
             def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's own name
-                if self.path == "/openapi.json":
-                    self._send(200, {"openapi": "3.1.0", "paths": product.paths})
-                    return
-                if self.path in product.paths:
-                    # What a mounted router answers when a required query
-                    # parameter is missing: the route exists and validated.
-                    self._send(422, {"detail": "user_ref is required"})
+                if self.path == "/reminders/last":
+                    sent = [fire["name"] for fire in product.fired]
+                    self._send(200, {"delivered": sent})
                     return
                 self._send(404, {"detail": "Not Found"})
 
@@ -759,8 +749,12 @@ class _FakeProduct:
         return f"http://127.0.0.1:{self._server.server_port}"
 
 
-def _firing_executor(name: str):
-    """An executor that fires the package's declared behaviour, then passes."""
+def _firing_executor(name: str, *, observe: bool = True, verdict: str | None = None):
+    """An executor that fires the behaviour, reads the product, and reports it.
+
+    Each half is separable, because each is a way a run can stop short: firing
+    and reading nothing, or reading and reporting no check for what it read.
+    """
     calls: list[dict] = []
 
     async def run(**kwargs):
@@ -772,9 +766,15 @@ def _firing_executor(name: str):
                 json={"tool": "fire_job", "args": {"name": name}},
                 headers=headers,
             )
+            if observe:
+                await http.post(
+                    kwargs["capability_url"],
+                    json={"tool": "http_get", "args": {"path": "/reminders/last"}},
+                    headers=headers,
+                )
             await http.post(
                 kwargs["capability_url"],
-                json={"tool": "submit_qa_result", "args": {"result": PASSING_JSON}},
+                json={"tool": "submit_qa_result", "args": {"result": verdict or PASSING_JSON}},
                 headers=headers,
             )
         return QAExecutorRun(
@@ -785,6 +785,23 @@ def _firing_executor(name: str):
 
     run.calls = calls
     return run
+
+
+#: What a run that actually judged the behaviour submits: a check that names it
+#: and says what was read from the product after the fire.
+OBSERVED_JSON = json.dumps(
+    {
+        "pass": True,
+        "checks": [
+            {
+                "name": "reminders.tick delivers the reminder",
+                "pass": True,
+                "detail": "after the fire, GET /reminders/last listed the delivered reminder",
+            }
+        ],
+        "summary": "OK",
+    }
+)
 
 
 def _closed_url() -> str:
@@ -801,11 +818,19 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
     refuses to boot on a contract that no longer matches its manifest and its
     installed wheels, so a deployment that is up with a package recorded has
     answered that package's connection check — its `startup`, which raises on
-    failure. That is one of three results the run owes; the other two are a
-    route under the package's own prefix answering, which the runner requests
-    itself, and the package's declared behaviour being fired and judged on its
-    observable. None of the three is a prompt line, and a verdict that carries
-    none of them does not pass.
+    failure. That row the runner reads for itself.
+
+    The other row is the package's declared behaviour, and it does not rest on
+    the fire. A fire is answered with a dispatch record, which this platform's
+    own contract says is not evidence anything ran, so the row requires the
+    product to have been read after the fire and the run to have reported a
+    passing check naming that behaviour. Neither a silent verdict nor a fire on
+    its own passes it.
+
+    There is no prefixed-route row: package protocol v1 keeps `http.prefix` in
+    the installed package.yaml inside the wheel, so a deployed product never
+    tells QA where its package is mounted, and a healthy package is not failed
+    over a fact the product never published.
     """
 
     MANIFEST = "name: backend\npackages:\n  - reminders\n"
@@ -816,6 +841,13 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         "]\n"
     )
     REGISTRY = 'JOB_SCHEMA_SOURCES: dict[str, str] = {"reminders.tick": "package:reminders"}\n'
+    CRITERIA = (
+        "- GET /health returns 200\n"
+        '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN the owner '
+        "receives the reminder text\n"
+    )
+    BEHAVIOUR_ROW = "package reminders scheduled behaviour produced its observable"
+    CONNECTION_ROW = "package reminders is active in the deployed product"
 
     def _deployment(self, **files: str) -> FakeConn:
         return FakeConn(
@@ -827,12 +859,6 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
             }
         )
 
-    CRITERIA = (
-        "- GET /health returns 200\n"
-        '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN the owner '
-        "receives the reminder text\n"
-    )
-
     def _jobs(self, base_url: str) -> QAJobsCapability:
         return QAJobsCapability(
             base_url=base_url,
@@ -842,117 +868,89 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
             behaviours=tuple(parse_scheduled_behaviours(self.CRITERIA)),
         )
 
-    async def test_an_executor_that_performed_no_package_check_does_not_pass(self, tmp_path):
-        """The scenario that made this round: an active package, and a verdict of nothing.
+    async def _run(self, tmp_path, executor, product, **kwargs):
+        return await _run_qa(
+            self._deployment(),
+            executor,
+            tmp_path,
+            target=replace(TARGET, deployed_url=product.url),
+            acceptance_criteria=self.CRITERIA,
+            jobs=self._jobs(product.url),
+            **kwargs,
+        )
 
-        The executor submits a passing result with an empty check list and makes
-        no call at all. The package's own checks were never performed, so the
-        run fails and names them.
-        """
-        conn = self._deployment()
+    def _row(self, result, name: str) -> dict:
+        return next(check for check in result.checks if check["name"] == name)
+
+    async def test_an_executor_that_performed_no_package_check_does_not_pass(self, tmp_path):
+        """The scenario that opened this rework: an active package, a verdict of nothing."""
         executor = _recording_executor()
-        # A closed port: the deployed product answers nothing, which is one more
-        # way the package checks cannot be performed — and never a pass.
         target = replace(TARGET, deployed_url=_closed_url())
 
-        result = await _run_qa(conn, executor, tmp_path, target=target)
+        result = await _run_qa(
+            self._deployment(), executor, tmp_path, target=target, acceptance_criteria=self.CRITERIA
+        )
 
         assert result.passed is False
-        assert "package" in result.summary
-        failed = [check["name"] for check in result.checks if not check["pass"]]
-        assert "package reminders answers on its own HTTP prefix" in failed
-        assert "package reminders scheduled behaviour produced its observable" in failed
-        # The connection check the product itself answered is a result too, and
-        # it stands beside the ones this run could not perform.
-        assert {"package reminders is active in the deployed product"} == {
-            check["name"] for check in result.checks if check["pass"]
-        }
+        assert self.BEHAVIOUR_ROW in result.summary
+        assert self._row(result, self.CONNECTION_ROW)["pass"] is True
+        assert self._row(result, self.BEHAVIOUR_ROW)["pass"] is False
 
-    async def test_a_run_that_performed_them_carries_the_three_results(self, tmp_path):
-        """The passing counterpart, against a product that really answers."""
-        conn = self._deployment()
+    async def test_a_fire_with_nothing_read_after_it_does_not_pass(self, tmp_path):
+        """The fire is answered with a dispatch record, and that is not the observable."""
         with _FakeProduct() as product:
-            target = replace(TARGET, deployed_url=product.url)
-            executor = _firing_executor("reminders.tick")
-
-            result = await _run_qa(
-                conn,
-                executor,
-                tmp_path,
-                target=target,
-                acceptance_criteria=self.CRITERIA,
-                jobs=self._jobs(product.url),
+            result = await self._run(
+                tmp_path, _firing_executor("reminders.tick", observe=False), product
             )
 
-        assert result.passed is True
-        performed = {check["name"]: check for check in result.checks}
-        assert performed["package reminders is active in the deployed product"]["pass"] is True
-        route = performed["package reminders answers on its own HTTP prefix"]
-        assert route["pass"] is True
-        assert "GET /reminders" in route["detail"] and "422" in route["detail"]
-        behaviour = performed["package reminders scheduled behaviour produced its observable"]
-        assert behaviour["pass"] is True
-        assert "reminders.tick" in behaviour["detail"]
+        assert result.passed is False
+        behaviour = self._row(result, self.BEHAVIOUR_ROW)
+        assert behaviour["pass"] is False
+        assert "read nothing from the product afterwards" in behaviour["detail"]
+        assert "the owner receives the reminder text" in behaviour["detail"]
+        # The fire really happened; it is simply not what the check rests on.
         assert [fire["name"] for fire in product.fired] == ["reminders.tick"]
 
-    async def test_a_criteria_set_that_names_no_package_behaviour_fails_that_check(self, tmp_path):
-        """QA fires only a name a criterion declared, so an unnamed behaviour fails."""
-        conn = self._deployment()
+    async def test_a_read_the_run_reported_no_check_for_does_not_pass(self, tmp_path):
+        """Reading the product and reporting nothing about it is not a judgement."""
         with _FakeProduct() as product:
-            target = replace(TARGET, deployed_url=product.url)
-            executor = _recording_executor()
-
-            result = await _run_qa(conn, executor, tmp_path, target=target)
+            result = await self._run(tmp_path, _firing_executor("reminders.tick"), product)
 
         assert result.passed is False
-        behaviour = next(
-            check
-            for check in result.checks
-            if check["name"] == "package reminders scheduled behaviour produced its observable"
-        )
+        behaviour = self._row(result, self.BEHAVIOUR_ROW)
         assert behaviour["pass"] is False
-        assert "no FIRE JOB" in behaviour["detail"]
-        assert "reminders.tick" in behaviour["detail"]
+        assert "carries no passing check naming reminders.tick" in behaviour["detail"]
 
-    async def test_a_product_that_mounts_no_package_route_fails_that_check(self, tmp_path):
-        """A prefix the running product declares nowhere is a failed check, not a skip."""
-        conn = self._deployment()
-        with _FakeProduct(mounts_package=False) as product:
-            target = replace(TARGET, deployed_url=product.url)
-
-            result = await _run_qa(conn, _recording_executor(), tmp_path, target=target)
-
-        route = next(
-            check
-            for check in result.checks
-            if check["name"] == "package reminders answers on its own HTTP prefix"
-        )
-        assert route["pass"] is False
-        assert "declares no route under a prefix named for package reminders" in route["detail"]
-
-    async def test_the_run_is_told_which_packages_the_deployment_carries(self, tmp_path):
-        """The facts remain, beside the results: the executor is not asked to redo them."""
-        conn = self._deployment()
+    async def test_a_run_that_fired_read_and_judged_carries_the_results(self, tmp_path):
+        """The passing counterpart: the observable was actually read and reported."""
         with _FakeProduct() as product:
-            target = replace(TARGET, deployed_url=product.url)
-            executor = _firing_executor("reminders.tick")
+            executor = _firing_executor("reminders.tick", verdict=OBSERVED_JSON)
 
-            await _run_qa(
-                conn,
-                executor,
-                tmp_path,
-                target=target,
-                acceptance_criteria=self.CRITERIA,
-                jobs=self._jobs(product.url),
-            )
+            result = await self._run(tmp_path, executor, product)
 
+        assert result.passed is True
+        assert self._row(result, self.CONNECTION_ROW)["pass"] is True
+        behaviour = self._row(result, self.BEHAVIOUR_ROW)
+        assert behaviour["pass"] is True
+        assert "http_get" in behaviour["detail"]
+        assert "the owner receives the reminder text" in behaviour["detail"]
+        assert "reminders.tick delivers the reminder" in behaviour["detail"]
+        assert [fire["name"] for fire in product.fired] == ["reminders.tick"]
+
+    async def test_no_route_is_required_of_a_package_the_deployment_does_not_locate(self, tmp_path):
+        """A prefix the product never publishes fails nothing and is claimed nowhere."""
+        with _FakeProduct() as product:
+            executor = _firing_executor("reminders.tick", verdict=OBSERVED_JSON)
+
+            result = await self._run(tmp_path, executor, product)
+
+        assert result.passed is True
+        package_rows = [
+            check["name"] for check in result.checks if check["name"].startswith("package ")
+        ]
+        assert package_rows == [self.CONNECTION_ROW, self.BEHAVIOUR_ROW]
         prompt = executor.calls[0]["prompt"]
-        assert "reminders 0.1.0" in prompt
-        assert ACTIVE_PACKAGE_CONTRACT in prompt
-        assert "refuses to boot" in prompt
-        assert product.url in prompt
-        assert "reminders.tick (package reminders)" in prompt
-        assert "owe results, not remarks" in prompt
+        assert "no prefixed-route check is required of this run" in prompt
 
     async def test_a_package_free_deployment_is_told_nothing_about_packages(self, tmp_path):
         """The path a product without a package takes is the path it always took."""
@@ -967,6 +965,7 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         result = await _run_qa(conn, executor, tmp_path)
 
         assert result.passed is True
+        assert result.checks == []
         assert "Kit packages active" not in executor.calls[0]["prompt"]
 
     async def test_a_listed_package_with_no_generated_contract_starts_no_executor(self, tmp_path):
@@ -979,3 +978,18 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         assert executor.calls == []
         assert result.passed is False
         assert ACTIVE_PACKAGE_CONTRACT in result.report
+
+    async def test_the_run_is_told_which_packages_the_deployment_carries(self, tmp_path):
+        """The facts remain, beside the results: the executor is not asked to redo them."""
+        with _FakeProduct() as product:
+            executor = _firing_executor("reminders.tick", verdict=OBSERVED_JSON)
+
+            await self._run(tmp_path, executor, product)
+
+        prompt = executor.calls[0]["prompt"]
+        assert "reminders 0.1.0" in prompt
+        assert ACTIVE_PACKAGE_CONTRACT in prompt
+        assert "refuses to boot" in prompt
+        assert product.url in prompt
+        assert "reminders.tick (package reminders)" in prompt
+        assert "owe results, not remarks" in prompt

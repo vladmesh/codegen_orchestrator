@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shared.contracts.acceptance import parse_scheduled_behaviours
+from shared.contracts.acceptance import ScheduledBehaviourCriterion, parse_scheduled_behaviours
 from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -35,18 +35,16 @@ from src.agents.qa.packages import (
     behaviour_check_name,
     connection_check,
     connection_check_name,
-    package_route_paths,
     parse_active_packages,
     parse_job_owners,
     parse_listed_packages,
-    route_check,
-    route_check_name,
 )
 from src.agents.qa.tools import QAJobsCapability
 from src.consumers._qa_runner import (
     PackageAcceptance,
     QAResult,
     apply_package_acceptance,
+    run_package_acceptance_checks,
     run_package_activation_checks,
     scheduled_behaviour_facts,
 )
@@ -436,127 +434,157 @@ class TestAPackagesBehaviourUsesTheChainAServicesBehaviourUses:
         assert jobs.behaviour("reminders.sweep") is None
 
 
-class TestTheRouteAPackageIsMountedUnder:
-    """Where the prefix comes from, and what answering on it means.
+class FakeWorkspace:
+    """The runner's own record of what this run fired, and what it read after.
 
-    A package's HTTP prefix is declared in its installed package.yaml, inside
-    the wheel, so no artifact of the deployment tree records it. The running
-    product does, in its own route document, and that is where QA reads it.
+    `fired_behaviours` maps a behaviour to the point in the run where the
+    product accepted its fire, and `calls_after` answers what the run did from
+    there — which is what makes "read after the fire" a fact rather than an
+    impression.
     """
 
-    OPENAPI = {
-        "paths": {
-            "/health": {"get": {}},
-            "/reminders/{reminder_id}": {"delete": {}},
-            "/reminders": {"get": {}, "post": {}},
-            "/reminders-archive": {"get": {}},
-        }
-    }
+    def __init__(
+        self, fired: dict[str, int] | None = None, after: dict[int, list[str]] | None = None
+    ) -> None:
+        self.fired_behaviours = fired or {}
+        self._after = after or {}
 
-    def test_the_paths_under_the_packages_own_prefix_are_found(self):
-        paths = package_route_paths(self.OPENAPI, REMINDERS)
-
-        # Parameterless first: one of those can be requested as it stands. A
-        # path that merely starts with the same letters is a different prefix.
-        assert paths == ("/reminders", "/reminders/{reminder_id}")
-
-    def test_a_product_that_mounts_nothing_for_the_package_offers_no_path(self):
-        assert package_route_paths({"paths": {"/health": {"get": {}}}}, REMINDERS) == ()
-        assert package_route_paths({}, REMINDERS) == ()
-        assert package_route_paths("not a route document", REMINDERS) == ()
-
-    @pytest.mark.parametrize("status", [200, 401, 405, 422])
-    def test_any_answer_but_a_missing_route_is_the_router_answering(self, status):
-        check = route_check(REMINDERS, path="/reminders", status=status)
-
-        assert check["pass"] is True
-        assert str(status) in check["detail"]
-
-    @pytest.mark.parametrize("status", [404, 500, 502])
-    def test_a_missing_route_or_a_failing_product_does_not_pass(self, status):
-        assert route_check(REMINDERS, path="/reminders", status=status)["pass"] is False
-
-    def test_a_route_that_could_not_be_requested_names_why_and_fails(self):
-        check = route_check(REMINDERS, reason="the deployed product did not answer")
-
-        assert check["pass"] is False
-        assert check["detail"] == "the deployed product did not answer"
+    def calls_after(self, position: int) -> tuple[str, ...]:
+        return tuple(self._after.get(position, []))
 
 
-class FakeWorkspace:
-    """The runner's own ledger of what the product accepted a fire for."""
+TICK = ScheduledBehaviourCriterion(
+    name="reminders.tick",
+    arguments={"at": "2026-09-07T10:00:00Z"},
+    observable="the owner receives the reminder text",
+)
+JUDGED = {
+    "name": "reminders.tick delivers the reminder",
+    "pass": True,
+    "detail": "GET /reminders/last listed it after the fire",
+}
 
-    def __init__(self, fired: list[str] | None = None) -> None:
-        self.fired_behaviours = fired or []
 
-
-def _acceptance(*, declared: tuple[str, ...] = (), owned: tuple[str, ...] = ("reminders.tick",)):
+def _acceptance(
+    *,
+    declared: tuple[ScheduledBehaviourCriterion, ...] = (),
+    owned: tuple[str, ...] = ("reminders.tick",),
+    fireable: bool = True,
+):
     return PackageAcceptance(
         activation=PackageActivation(
             packages=(REMINDERS,),
             listed=("reminders",),
             jobs={"reminders.tick": "package:reminders"},
         ),
-        checks=(connection_check(REMINDERS), route_check(REMINDERS, path="/reminders", status=422)),
+        checks=(connection_check(REMINDERS),),
         declared={"reminders": declared},
         owned={"reminders": owned},
+        fireable=fireable,
     )
 
 
-class TestAnActivePackageOwesResults:
-    """The invariant: required checks with observables, never prose."""
+class TestABehaviourRestsOnItsObservable:
+    """A fire is the precondition of this check. It is never its result."""
 
     def test_a_verdict_that_performed_nothing_fails_and_names_the_check(self):
-        verdict = QAResult(passed=True, checks=[], summary="OK")
-
         result = apply_package_acceptance(
-            verdict, _acceptance(declared=("reminders.tick",)), FakeWorkspace()
+            QAResult(passed=True, checks=[], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace(),
         )
 
         assert result.passed is False
-        assert "package" in result.summary
         [failed] = [check for check in result.checks if not check["pass"]]
         assert failed["name"] == behaviour_check_name("reminders")
-        assert "reminders.tick" in failed["detail"]
+        assert "accepted no fire" in failed["detail"]
 
-    def test_a_behaviour_this_run_fired_passes_on_the_runners_own_ledger(self):
-        verdict = QAResult(passed=True, checks=[], summary="OK")
-
+    def test_a_fire_with_nothing_read_after_it_does_not_pass(self):
+        """The product answers a fire with a dispatch record, and that is not the answer."""
         result = apply_package_acceptance(
-            verdict,
-            _acceptance(declared=("reminders.tick",)),
-            FakeWorkspace(["reminders.tick"]),
+            QAResult(passed=True, checks=[JUDGED], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 3}, {3: ["fire_job", "job_evidence"]}),
         )
-
-        assert result.passed is True
-        assert [check["pass"] for check in result.checks] == [True, True, True]
-
-    def test_a_package_that_declares_no_behaviour_owes_no_behaviour_check(self):
-        verdict = QAResult(passed=True, checks=[], summary="OK")
-
-        result = apply_package_acceptance(verdict, _acceptance(owned=()), FakeWorkspace())
-
-        assert result.passed is True
-        assert [check["name"] for check in result.checks] == [
-            connection_check_name("reminders"),
-            route_check_name("reminders"),
-        ]
-
-    def test_a_failed_route_check_fails_the_run_even_on_a_passing_verdict(self):
-        acceptance = PackageAcceptance(
-            activation=PackageActivation(packages=(REMINDERS,), listed=("reminders",), jobs={}),
-            checks=(connection_check(REMINDERS), route_check(REMINDERS, reason="nothing answered")),
-            declared={"reminders": ()},
-            owned={"reminders": ()},
-        )
-        verdict = QAResult(passed=True, checks=[{"name": "health", "pass": True, "detail": "200"}])
-
-        result = apply_package_acceptance(verdict, acceptance, FakeWorkspace())
 
         assert result.passed is False
-        assert route_check_name("reminders") in result.summary
-        # The executor's own checks are kept, after the ones the run owed.
-        assert result.checks[-1]["name"] == "health"
+        [failed] = [check for check in result.checks if not check["pass"]]
+        assert "read nothing from the product afterwards" in failed["detail"]
+        assert TICK.observable in failed["detail"]
+
+    def test_a_read_the_run_reported_no_check_for_does_not_pass(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[{"name": "health", "pass": True, "detail": "200"}]),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 3}, {3: ["fire_job", "http_get"]}),
+        )
+
+        assert result.passed is False
+        [failed] = [check for check in result.checks if not check["pass"]]
+        assert "no passing check naming reminders.tick" in failed["detail"]
+
+    def test_a_failed_check_for_the_behaviour_is_not_a_judgement_in_its_favour(self):
+        failing = {**JUDGED, "pass": False}
+
+        result = apply_package_acceptance(
+            QAResult(passed=False, checks=[failing]),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 1}, {1: ["fire_job", "telegram_probe"]}),
+        )
+
+        assert result.passed is False
+        behaviour = next(
+            check for check in result.checks if check["name"] == behaviour_check_name("reminders")
+        )
+        assert behaviour["pass"] is False
+        assert "no passing check naming reminders.tick" in behaviour["detail"]
+
+    def test_a_behaviour_fired_read_and_judged_passes_and_says_on_what(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[JUDGED], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 2}, {2: ["fire_job", "http_get", "job_evidence"]}),
+        )
+
+        assert result.passed is True
+        behaviour = result.checks[1]
+        assert behaviour["pass"] is True
+        # What it rests on, named: the fire, the read that came after it, the
+        # observable the criterion states and the check that judged it.
+        assert "reminders.tick" in behaviour["detail"]
+        assert "http_get" in behaviour["detail"]
+        assert "job_evidence" not in behaviour["detail"]
+        assert TICK.observable in behaviour["detail"]
+        assert JUDGED["name"] in behaviour["detail"]
+
+    def test_a_package_that_declares_no_behaviour_owes_no_behaviour_check(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[], summary="OK"), _acceptance(owned=()), FakeWorkspace()
+        )
+
+        assert result.passed is True
+        assert [check["name"] for check in result.checks] == [connection_check_name("reminders")]
+
+    def test_a_criteria_set_that_names_no_package_behaviour_fails_that_check(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[]), _acceptance(), FakeWorkspace()
+        )
+
+        assert result.passed is False
+        [failed] = [check for check in result.checks if not check["pass"]]
+        assert "no FIRE JOB" in failed["detail"]
+        assert "reminders.tick" in failed["detail"]
+
+    def test_a_deployment_with_no_jobs_capability_says_so(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True),
+            _acceptance(declared=(TICK,), fireable=False),
+            FakeWorkspace(),
+        )
+
+        [_, behaviour] = result.checks
+        assert behaviour["pass"] is False
+        assert "no jobs capability" in behaviour["detail"]
 
     def test_a_package_free_run_is_returned_exactly_as_it_was(self):
         verdict = QAResult(passed=True, checks=[{"name": "health", "pass": True, "detail": "200"}])
@@ -567,24 +595,32 @@ class TestAnActivePackageOwesResults:
         assert result.checks == [{"name": "health", "pass": True, "detail": "200"}]
 
 
-class TestWhyABehaviourCheckCouldNotBePerformed:
-    """The two reasons are different, and the run is told which one it hit."""
+class TestNoRouteIsInferredFromAPackagesName:
+    """Protocol v1 does not bind a package's HTTP prefix to its name."""
 
-    def test_a_deployment_with_no_jobs_capability_says_so(self):
-        acceptance = PackageAcceptance(
-            activation=PackageActivation(
+    def test_the_run_owes_only_the_connection_and_behaviour_rows(self):
+        acceptance = run_package_acceptance_checks(
+            PackageActivation(
                 packages=(REMINDERS,),
                 listed=("reminders",),
                 jobs={"reminders.tick": "package:reminders"},
             ),
-            checks=(),
-            declared={"reminders": ("reminders.tick",)},
-            owned={"reminders": ("reminders.tick",)},
-            fireable=False,
+            criteria_behaviours=(TICK,),
         )
 
-        result = apply_package_acceptance(QAResult(passed=True), acceptance, FakeWorkspace())
+        assert [check["name"] for check in acceptance.checks] == [
+            connection_check_name("reminders")
+        ]
+        assert acceptance.declared["reminders"] == (TICK,)
+        assert acceptance.owned["reminders"] == ("reminders.tick",)
 
-        [behaviour] = result.checks
-        assert behaviour["pass"] is False
-        assert "no jobs capability" in behaviour["detail"]
+    def test_the_run_is_told_the_prefix_is_not_published_rather_than_guessed(self):
+        stated = "\n".join(
+            active_package_facts(
+                PackageActivation(packages=(REMINDERS,), listed=("reminders",), jobs={}),
+                deployed_url=DEPLOYED_URL,
+            )
+        )
+
+        assert "no prefixed-route check is required of this run" in stated
+        assert "none is inferred from the package's name" in stated

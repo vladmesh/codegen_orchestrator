@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
-- An active kit package makes a central QA run owe three results against the deployed product —
-  package active, prefixed route answering, declared behaviour fired — and a run performing none fails.
+- An active kit package makes a central QA run owe two results — the package active in the booted
+  product, and its behaviour judged on the observable read after the fire — or the run fails.
 
 - The architect prompt states the capability-shape ladder — reuse, a shared service, a container,
   then an in-process kit package — and has a package task install the wheel instead of writing one.

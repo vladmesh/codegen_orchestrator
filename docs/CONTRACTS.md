@@ -845,7 +845,7 @@ generated job registry `services/backend/src/generated/jobs_schemas.py`, which a
 fireable job to the service or the `package:<name>` that declared it — and
 `run_package_activation_checks` cross-checks them against each other.
 
-**An active package makes a run owe results, not prose.** Three deploy-observable checks are
+**An active package makes a run owe results, not prose.** Two deploy-observable checks are
 required of every run against a product with an active package, and they are rows in the run's
 result whatever the executor submits:
 
@@ -854,25 +854,32 @@ result whatever the executor submits:
    and the installed wheels, and the container probe has already found the deployment up. A booted
    product carrying the package in that contract has passed it, so reading the contract off the
    live deployment performs the check rather than describing it.
-2. *A route under the package's own HTTP prefix answers.* `run_package_acceptance_checks` requests
-   it itself: it reads the running product's `/openapi.json`, takes the paths whose first segment
-   is the package's name, and GETs the first one that carries no path parameter. Any answer but
-   `404` or a `5xx` is the package's router responding — `405` and `422` included. The mounted
-   prefix is declared in the installed `package.yaml`, inside the wheel, so no artifact of the
-   deployment tree records it and the running product's own route document is the only place QA
-   can read it; a product that declares no such route fails this check with that reason.
-3. *The package's declared behaviour produced its observable.* The fire is made through the
-   existing named capability, and whether one happened is decided from the runner's own ledger
-   (`QAWorkspace.fired_behaviours`, written when the product answered a fire with a recorded
-   command) rather than from anything an executor reports. The observable the criterion states is
-   what the check is judged on, never the dispatch record.
+2. *The package's declared behaviour produced its observable.* This one does not rest on the fire.
+   A fire is answered with a dispatch record, and this platform's own contract says that record is
+   not evidence anything consumed the event or ran the behaviour — so an accepted fire is the
+   precondition of the row, never its result. `_behaviour_row` requires four things and names the
+   missing one: a criterion declared the behaviour, the deployment offered a fire, the product
+   accepted it, and the run then read the product — with a call that shows the product's own output
+   (`OBSERVING_CALLS`; neither `fire_job` nor `job_evidence` is one, because both read the core's
+   record of the dispatch) *after* the fire, and reported a passing check naming that behaviour.
+   The row's detail states what it rests on: the fire, the reads that followed it, the observable
+   the criterion states and the check that judged it.
 
 `apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
 when any of them failed, so a verdict that performed no package check does not pass by asserting
-that it did. A check the run could not perform fails with its reason: no criterion declared a
-behaviour of the package (QA fires only a name a criterion declared and never invents one), the
-deployment offers no fire, the product mounts no package route, or its route document could not be
-read. An absence is never a success.
+that it did. Whether a fire happened and what the run read afterwards are decided from the runner's
+own ledger (`QAWorkspace.fired_behaviours`, written when the product answered a fire with a
+recorded command, and `calls_after`), never from an executor's account of itself.
+
+**No prefixed-route check is required, and no prefix is inferred.** Package protocol v1 keeps a
+package's `http.prefix` in the installed `package.yaml` inside the wheel, and the kit's generated
+active-package contract records only `name`, `version` and `manifest_sha256` — so a deployed
+product never tells QA where its package is mounted, and the prefix cannot be recovered from the
+package's name, which the protocol keeps independent of it. QA therefore records that it could not
+determine the route and claims nothing about it: a healthy package is not failed over a fact the
+product never published. A criterion that names a package route is checked as the ordinary
+criterion it is. Having the kit publish `http_prefix` in that generated contract would make a
+deterministic route probe possible; it is recorded as deferred rather than taken.
 
 The rest of the kit's package acceptance procedure — install the real wheel, resolve the entry
 point, start the generated application, observe lifecycle calls, validate the manifest, run the
