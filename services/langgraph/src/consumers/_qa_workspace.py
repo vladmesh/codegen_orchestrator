@@ -32,6 +32,21 @@ TRACE_NAME = "tool-trace.jsonl"
 VERDICT_NAME = "verdict.json"
 
 
+@dataclass(frozen=True)
+class BehaviourEvidence:
+    """What the product's own record of one fired behaviour said.
+
+    `position` is where in this run the read happened, because evidence read
+    before its fire is evidence of something else. `dispatch_status` is the
+    product's own account of the event: `dispatched` once it was emitted,
+    `undelivered` when it never was — and an event that was never emitted
+    cannot have been consumed by anything.
+    """
+
+    position: int
+    dispatch_status: str
+
+
 @dataclass
 class QAWorkspace:
     """An isolated directory for one QA run."""
@@ -48,6 +63,11 @@ class QAWorkspace:
     #: the fire" are both decided here rather than from anything an executor
     #: reports about itself.
     fired_behaviours: dict[str, int] = field(default_factory=dict)
+    #: Behaviours whose recorded command this run read back. Written by the
+    #: runtime when the product answered `job_evidence` with a command, so "the
+    #: run never read the evidence" is the runner's own fact and not an
+    #: executor's account of itself.
+    behaviour_evidence: dict[str, BehaviourEvidence] = field(default_factory=dict)
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -87,16 +107,19 @@ class QAWorkspace:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def record_fired_behaviour(self, name: str) -> None:
-        """Note that the product accepted a fire of `name`, and where in the run.
-
-        The position is what makes "after the fire" answerable: a read of the
-        product made before it says nothing about what the fire caused.
-        """
+        """Note that the product accepted a fire of `name`, and where in the run."""
         self.fired_behaviours.setdefault(name, len(self._trace))
 
-    def calls_after(self, position: int) -> tuple[str, ...]:
-        """The tools this run used after the given point in its own trace."""
-        return tuple(entry["tool"] for entry in self._trace[position:])
+    def record_behaviour_evidence(self, name: str, dispatch_status: str) -> None:
+        """Note what the product's own record of `name` said, and when it was read.
+
+        The product answers an evidence read with a command only within the
+        product that fired it, so this is the one read bound to this run, this
+        deployment and this behaviour.
+        """
+        self.behaviour_evidence.setdefault(
+            name, BehaviourEvidence(position=len(self._trace), dispatch_status=dispatch_status)
+        )
 
     def record_telegram_probe(
         self, evidence: QATelegramProbeEvidence, blocker: QABlocker | None = None

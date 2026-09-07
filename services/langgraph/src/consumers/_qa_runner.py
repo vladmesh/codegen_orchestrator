@@ -40,7 +40,6 @@ from ..agents.qa.packages import (
     BACKEND_MANIFEST,
     CONTRACT_READ_LIMIT,
     GENERATED_JOB_REGISTRY,
-    OBSERVING_CALLS,
     ActivePackage,
     PackageActivation,
     PackageContractUnreadable,
@@ -82,6 +81,10 @@ HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
 ACCESS_PROBE_TIMEOUT = 60
 CONTAINER_HEALTHY = "healthy"
+#: The product's own terminal dispatch state for a command whose event was
+#: emitted. Anything else — `undelivered` — is the product saying the event
+#: never left, which no behaviour can have run from.
+DISPATCHED = "dispatched"
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 
@@ -853,81 +856,85 @@ def _judged_check(behaviour: str, submitted: Sequence[dict]) -> str:
 
 
 def _behaviour_row(
-    package: ActivePackage, acceptance: PackageAcceptance, workspace: QAWorkspace, submitted
+    package: ActivePackage,
+    criterion: ScheduledBehaviourCriterion,
+    acceptance: PackageAcceptance,
+    workspace: QAWorkspace,
+    submitted,
 ) -> dict:
-    """What this run may say about one package's declared behaviour.
+    """What this run may say about one declared behaviour of one package.
 
-    Four things have to hold, and each missing one is its own reason: a
-    criterion declared the behaviour, the deployment offered a fire, the
-    product accepted it, and the run then read the product and reported a
-    passing check naming that behaviour. The read has to come after the fire,
-    because a read taken before it says nothing about what the fire caused, and
-    the dispatch record the fire answers with is never the observable.
+    Three things have to hold for this exact name, and each missing one is its
+    own reason: the deployment offered a fire and the product accepted one, the
+    run read the product's own recorded command for that same name with
+    `job_evidence`, and the run reported a passing check naming the behaviour.
+
+    The evidence read is the anchor, and it is the one this bullet's contract
+    names: `POST /jobs/evidence` answers with a command only within the product
+    that fired it, so it is bound to this run, this deployment and this
+    behaviour in a way no other read is. What it establishes is that the named
+    evidence was read — not that the criterion's prose observable was met. That
+    judgement is the executor's, and this row requires the executor to have
+    made it in a check that names the behaviour.
     """
-    owned = acceptance.owned[package.name]
-    declared = acceptance.declared[package.name]
-    if not declared:
-        return behaviour_check(
-            package,
-            reason=(
-                f"the deployed product declares {', '.join(owned)} for active package "
-                f"{package.name}, and this run's acceptance criteria name no FIRE JOB for any "
-                "of them, so the behaviour was never exercised. QA fires only a name a "
-                "criterion declared, and never invents one"
-            ),
-        )
-    named = ", ".join(criterion.name for criterion in declared)
+    name = criterion.name
     if not acceptance.fireable:
         return behaviour_check(
             package,
+            behaviour=name,
             reason=(
-                f"this run's criteria declare {named} for package {package.name}, and this "
+                f"this run's criteria declare {name} for package {package.name}, and this "
                 "deployment holds no jobs capability for the QA runtime, so no fire could be "
                 "made and the behaviour was never exercised"
             ),
         )
-    fired = [criterion for criterion in declared if criterion.name in workspace.fired_behaviours]
-    if not fired:
+    fired = workspace.fired_behaviours.get(name)
+    if fired is None:
         return behaviour_check(
             package,
+            behaviour=name,
             reason=(
-                f"this run's criteria declare {named} for package {package.name}, and the "
-                "deployed product accepted no fire of any of them in this run, so the "
-                "behaviour was never exercised"
+                f"this run's criteria declare {name} for package {package.name}, and the "
+                "deployed product accepted no fire of it in this run, so the behaviour was "
+                "never exercised"
             ),
         )
-    criterion = fired[0]
-    observed = sorted(
-        set(workspace.calls_after(workspace.fired_behaviours[criterion.name])) & OBSERVING_CALLS
-    )
-    if not observed:
+    evidence = workspace.behaviour_evidence.get(name)
+    if evidence is None or evidence.position < fired:
         return behaviour_check(
             package,
+            behaviour=name,
             reason=(
-                f"the deployed product accepted this run's fire of {criterion.name}, and the "
-                "run read nothing from the product afterwards. A fire is answered with a "
-                "dispatch record, which is not evidence the behaviour ran, so the observable "
-                f"it owes was never looked at: {criterion.observable}"
+                f"the deployed product accepted this run's fire of {name}, and the run never "
+                f"read the product's own recorded command for it (job_evidence {name}) "
+                "afterwards. A fire is answered with a dispatch record, which is not evidence "
+                "the behaviour ran, so this result would rest on the acknowledgement alone. "
+                f"The observable the criterion states: {criterion.observable}"
             ),
         )
-    judged = _judged_check(criterion.name, submitted)
+    if evidence.dispatch_status != DISPATCHED:
+        return behaviour_check(
+            package,
+            behaviour=name,
+            reason=(
+                f"the product's own recorded command for {name} says dispatch_status="
+                f"{evidence.dispatch_status}: the event was never emitted, so nothing can have "
+                f"consumed it and the observable the criterion states was not produced: "
+                f"{criterion.observable}"
+            ),
+        )
+    judged = _judged_check(name, submitted)
     if not judged:
         return behaviour_check(
             package,
+            behaviour=name,
             reason=(
-                f"the deployed product accepted this run's fire of {criterion.name} and the "
-                f"run read the product with {', '.join(observed)} afterwards, but its result "
-                f"carries no passing check naming {criterion.name}, so nothing judged the "
+                f"this run fired {name} and read the product's recorded evidence for it, but "
+                f"its result carries no passing check naming {name}, so nothing judged the "
                 f"observable the criterion states: {criterion.observable}"
             ),
         )
-    return behaviour_check(
-        package,
-        behaviour=criterion.name,
-        observable=criterion.observable,
-        observed=observed,
-        judged=judged,
-    )
+    return behaviour_check(package, behaviour=name, observable=criterion.observable, judged=judged)
 
 
 def apply_package_acceptance(
@@ -935,20 +942,39 @@ def apply_package_acceptance(
 ) -> QAResult:
     """Require the package results, whatever the executor submitted.
 
-    The behaviour row is decided from the runner's own record of what this run
-    fired and read, and from the run's own reported check for that behaviour,
-    so an executor that reported a package check it never made does not pass
-    one and an executor that submitted nothing does not pass by silence. A
-    check this run could not perform fails with the reason, which is the rule
-    this sprint applies everywhere: an absence is never a success.
+    Every declared behaviour of every active package gets its own row: two
+    behaviours are two results, and one of them going unfired is a failure
+    rather than a silence. What each row rests on is the runner's own record of
+    what this run fired and read back, and the run's own reported check for
+    that behaviour — so an executor that reported a check it never made does
+    not pass one, and an executor that submitted nothing does not pass by
+    silence.
     """
     if acceptance is None:
         return qa_result
     rows = list(acceptance.checks)
     for package in acceptance.activation.packages:
-        if not acceptance.owned[package.name]:
+        owned = acceptance.owned[package.name]
+        if not owned:
             continue
-        rows.append(_behaviour_row(package, acceptance, workspace, qa_result.checks))
+        declared = acceptance.declared[package.name]
+        if not declared:
+            rows.append(
+                behaviour_check(
+                    package,
+                    reason=(
+                        f"the deployed product declares {', '.join(owned)} for active package "
+                        f"{package.name}, and this run's acceptance criteria name no FIRE JOB "
+                        "for any of them, so the behaviour was never exercised. QA fires only "
+                        "a name a criterion declared, and never invents one"
+                    ),
+                )
+            )
+            continue
+        rows.extend(
+            _behaviour_row(package, criterion, acceptance, workspace, qa_result.checks)
+            for criterion in declared
+        )
     failed = [row for row in rows if not row["pass"]]
     qa_result.checks = [*rows, *qa_result.checks]
     if not failed:

@@ -34,20 +34,6 @@ GENERATED_JOB_REGISTRY = "services/backend/src/generated/jobs_schemas.py"
 #: refused rather than half-read, so the read is given room for a real product.
 CONTRACT_READ_LIMIT = 262144
 
-#: Calls that read the product's own output, and so can show what a behaviour
-#: did. A fire and its evidence read the core's record of the dispatch, which
-#: the contract says is not the answer, so neither of them observes anything.
-OBSERVING_CALLS = frozenset(
-    {
-        "http_get",
-        "localhost_http_get",
-        "remote_read",
-        "remote_exec",
-        "container_logs",
-        "telegram_probe",
-        "telegram_click_button",
-    }
-)
 
 _PACKAGE_OWNER = "package:"
 _DIGEST_SHOWN = 12
@@ -232,8 +218,11 @@ def connection_check_name(package: str) -> str:
     return f"package {package} is active in the deployed product"
 
 
-def behaviour_check_name(package: str) -> str:
-    return f"package {package} scheduled behaviour produced its observable"
+def behaviour_check_name(package: str, behaviour: str = "") -> str:
+    """One row per declared behaviour, so none of them can go missing."""
+    if behaviour:
+        return f"package {package} behaviour {behaviour} produced its observable"
+    return f"package {package} declared behaviour produced its observable"
 
 
 def behaviour_check(
@@ -241,30 +230,40 @@ def behaviour_check(
     *,
     behaviour: str = "",
     observable: str = "",
-    observed: Sequence[str] = (),
     judged: str = "",
     reason: str = "",
 ) -> dict:
-    """One package's behaviour result, and what it is allowed to rest on.
+    """One declared behaviour's result, and what the platform may say about it.
 
-    Not the fire. The product answers a fire with a dispatch record, and this
+    Not the fire: the product answers a fire with a dispatch record, and this
     platform's own contract says that record is not evidence anything consumed
-    the event or ran the behaviour — so an accepted fire is the precondition of
-    this check, never its result. What the row records is the criterion's
-    stated observable, the reads of the product this run made *after* the fire,
-    and the check that judged it. Anything less fails with the reason, because
-    a row that claimed the observable on an acknowledgement would be the defect
-    it is here to prevent.
+    the event or ran the behaviour. And not a rule that reads English, because
+    the observable is prose an architect wrote and no runner-side condition can
+    decide whether it was met. The division is stated rather than fudged: the
+    executor judges the observable, and the platform establishes that the
+    evidence this contract names — the product's own recorded command for this
+    behaviour, read back with `job_evidence` for the name that was fired — was
+    actually read, and that the run reported a check resting on it.
+
+    So a passing row says what was read and who judged it. It does not claim
+    that the observable's words were satisfied; a row that claimed that would
+    be asserting more than anything here established.
     """
     if reason:
-        return {"name": behaviour_check_name(package.name), "pass": False, "detail": reason}
+        return {
+            "name": behaviour_check_name(package.name, behaviour),
+            "pass": False,
+            "detail": reason,
+        }
     return {
-        "name": behaviour_check_name(package.name),
+        "name": behaviour_check_name(package.name, behaviour),
         "pass": True,
         "detail": (
-            f"this run fired {behaviour} on the deployed product, then read the product with "
-            f"{', '.join(sorted(observed))}, and its check {judged!r} passed on the observable "
-            f"the criterion states: {observable}"
+            f"this run fired {behaviour} on the deployed product and read the product's own "
+            f"recorded evidence for it with job_evidence {behaviour}; its check {judged!r} "
+            f"passed, judging the observable the criterion states: {observable}. The platform "
+            "establishes that this evidence was read, not that the words of the observable "
+            "were met — that judgement is the executor's"
         ),
     }
 
@@ -310,13 +309,16 @@ def active_package_facts(
         "one, and never one you report as not applicable.",
         "- An active package makes this run owe results, not remarks. One the runner has "
         "already performed against this deployment, and it is in this run's result "
-        "whatever you submit: the package is active in the booted product. The other is "
-        "yours to perform, and it is not finished by firing: fire the package's declared "
-        "behaviour named below, then read the product itself for the observable its "
-        "criterion states and report a check that names the behaviour and says what you "
-        "read. A fire that nothing is read after does not pass, a dispatch record is not "
-        "the observable, and a verdict that reports no such check does not pass because "
-        "it said so.",
+        "whatever you submit: the package is active in the booted product. The others are "
+        "yours, one for each package behaviour named below, and none of them is finished "
+        "by firing. For each: fire it, then read `job_evidence <name>` for that same name "
+        "— the product answers with the command only within the product that fired it, so "
+        "that read is what ties this run's result to this behaviour on this deployment, "
+        "and it is required. It is still not the observable, because a dispatch record "
+        "never is: judge the observable from what the product itself sent, wrote or now "
+        "exposes, and report a check that names the behaviour and says what you judged. A "
+        "behaviour that was not fired, whose evidence was not read, or that no submitted "
+        "check names, fails — one row each, so none of them can go missing.",
         "- Where a package's routes are mounted, this deployment does not say: package "
         "protocol v1 keeps the HTTP prefix in the installed package.yaml, inside the "
         "wheel, and the generated contract records only name, version and manifest "

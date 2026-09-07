@@ -690,6 +690,7 @@ class _FakeProduct:
     def __init__(self) -> None:
         product = self
         self.fired: list[dict] = []
+        self.evidence_reads: list[str] = []
 
         class Handler(BaseHTTPRequestHandler):
             def _send(self, status: int, payload: dict) -> None:
@@ -710,23 +711,21 @@ class _FakeProduct:
             def do_POST(self):  # noqa: N802 — BaseHTTPRequestHandler's own name
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length) or b"{}")
-                if self.path != "/jobs/fire":
-                    self._send(404, {"detail": "Not Found"})
+                if self.path == "/jobs/fire":
+                    product.fired.append(payload)
+                    self._send(200, product.command(payload))
                     return
-                product.fired.append(payload)
-                self._send(
-                    200,
-                    {
-                        "command_id": payload["command_id"],
-                        "name": payload["name"],
-                        "arguments": payload["arguments"],
-                        "fired_by_product": payload["fired_by_product"],
-                        "fired_by_run": payload["fired_by_run"],
-                        "dispatch_status": "dispatched",
-                        "accepted_at": "2026-09-07T10:00:00Z",
-                        "dispatched_at": "2026-09-07T10:00:01Z",
-                    },
-                )
+                if self.path == "/jobs/evidence":
+                    # A command comes back only within the product that fired
+                    # it, and only for an identity that fired one.
+                    recorded = product.recorded(payload["command_id"])
+                    if recorded is None:
+                        self._send(404, {"detail": "no command recorded"})
+                        return
+                    product.evidence_reads.append(payload["command_id"])
+                    self._send(200, recorded)
+                    return
+                self._send(404, {"detail": "Not Found"})
 
             def log_message(self, format, *args):  # noqa: A002 — the base class's name
                 return
@@ -744,16 +743,42 @@ class _FakeProduct:
         self._thread.join()
         return False
 
+    @staticmethod
+    def command(payload: dict) -> dict:
+        """The dispatch record a fire is answered with, and nothing more."""
+        return {
+            "command_id": payload["command_id"],
+            "name": payload["name"],
+            "arguments": payload.get("arguments", {}),
+            "fired_by_product": payload["fired_by_product"],
+            "fired_by_run": payload.get("fired_by_run", "attempt-qa-run-1"),
+            "dispatch_status": "dispatched",
+            "accepted_at": "2026-09-07T10:00:00Z",
+            "dispatched_at": "2026-09-07T10:00:01Z",
+        }
+
+    def recorded(self, command_id: str) -> dict | None:
+        """A command exists only for an identity that fired one here."""
+        fire = next((one for one in self.fired if one["command_id"] == command_id), None)
+        return None if fire is None else self.command(fire)
+
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self._server.server_port}"
 
 
-def _firing_executor(name: str, *, observe: bool = True, verdict: str | None = None):
-    """An executor that fires the behaviour, reads the product, and reports it.
+def _firing_executor(
+    name: str,
+    *,
+    read_evidence: bool = True,
+    unrelated_read: bool = False,
+    verdict: str | None = None,
+):
+    """An executor that fires a behaviour and does, or does not, read it back.
 
-    Each half is separable, because each is a way a run can stop short: firing
-    and reading nothing, or reading and reporting no check for what it read.
+    The three halves are separable because each is a way a run can stop short:
+    firing and reading nothing, reading something unrelated instead of the
+    product's own record of this behaviour, and reporting no check for it.
     """
     calls: list[dict] = []
 
@@ -761,22 +786,20 @@ def _firing_executor(name: str, *, observe: bool = True, verdict: str | None = N
         calls.append(kwargs)
         headers = {"Authorization": f"Bearer {kwargs['capability_token']}"}
         async with aiohttp.ClientSession() as http:
-            await http.post(
-                kwargs["capability_url"],
-                json={"tool": "fire_job", "args": {"name": name}},
-                headers=headers,
-            )
-            if observe:
+
+            async def call(tool: str, args: dict):
                 await http.post(
                     kwargs["capability_url"],
-                    json={"tool": "http_get", "args": {"path": "/reminders/last"}},
+                    json={"tool": tool, "args": args},
                     headers=headers,
                 )
-            await http.post(
-                kwargs["capability_url"],
-                json={"tool": "submit_qa_result", "args": {"result": verdict or PASSING_JSON}},
-                headers=headers,
-            )
+
+            await call("fire_job", {"name": name})
+            if unrelated_read:
+                await call("http_get", {"path": "/health"})
+            if read_evidence:
+                await call("job_evidence", {"name": name})
+            await call("submit_qa_result", {"result": verdict or PASSING_JSON})
         return QAExecutorRun(
             verdict_submitted=kwargs["verdict_received"].is_set(),
             calls_served=kwargs["calls_served"](),
@@ -846,7 +869,7 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN the owner '
         "receives the reminder text\n"
     )
-    BEHAVIOUR_ROW = "package reminders scheduled behaviour produced its observable"
+    BEHAVIOUR_ROW = "package reminders behaviour reminders.tick produced its observable"
     CONNECTION_ROW = "package reminders is active in the deployed product"
 
     def _deployment(self, **files: str) -> FakeConn:
@@ -885,44 +908,63 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
     async def test_an_executor_that_performed_no_package_check_does_not_pass(self, tmp_path):
         """The scenario that opened this rework: an active package, a verdict of nothing."""
         executor = _recording_executor()
-        target = replace(TARGET, deployed_url=_closed_url())
 
-        result = await _run_qa(
-            self._deployment(), executor, tmp_path, target=target, acceptance_criteria=self.CRITERIA
-        )
+        with _FakeProduct() as product:
+            result = await self._run(tmp_path, executor, product)
 
         assert result.passed is False
         assert self.BEHAVIOUR_ROW in result.summary
         assert self._row(result, self.CONNECTION_ROW)["pass"] is True
         assert self._row(result, self.BEHAVIOUR_ROW)["pass"] is False
 
-    async def test_a_fire_with_nothing_read_after_it_does_not_pass(self, tmp_path):
-        """The fire is answered with a dispatch record, and that is not the observable."""
+    async def test_a_fire_read_back_by_nothing_does_not_pass(self, tmp_path):
+        """A dispatch record is what a fire answers with, and it is not the result."""
         with _FakeProduct() as product:
             result = await self._run(
-                tmp_path, _firing_executor("reminders.tick", observe=False), product
+                tmp_path,
+                _firing_executor("reminders.tick", read_evidence=False, verdict=OBSERVED_JSON),
+                product,
             )
 
         assert result.passed is False
         behaviour = self._row(result, self.BEHAVIOUR_ROW)
         assert behaviour["pass"] is False
-        assert "read nothing from the product afterwards" in behaviour["detail"]
+        assert "never read the product's own recorded command" in behaviour["detail"]
         assert "the owner receives the reminder text" in behaviour["detail"]
-        # The fire really happened; it is simply not what the check rests on.
+        # The fire really happened; it is simply not what the row rests on.
         assert [fire["name"] for fire in product.fired] == ["reminders.tick"]
+        assert product.evidence_reads == []
+
+    async def test_an_unrelated_read_is_not_the_evidence_this_behaviour_owes(self, tmp_path):
+        """The break the reviewer found: fire, GET /health, and a check that names the job."""
+        with _FakeProduct() as product:
+            result = await self._run(
+                tmp_path,
+                _firing_executor(
+                    "reminders.tick",
+                    read_evidence=False,
+                    unrelated_read=True,
+                    verdict=OBSERVED_JSON,
+                ),
+                product,
+            )
+
+        assert result.passed is False
+        assert self._row(result, self.BEHAVIOUR_ROW)["pass"] is False
 
     async def test_a_read_the_run_reported_no_check_for_does_not_pass(self, tmp_path):
-        """Reading the product and reporting nothing about it is not a judgement."""
+        """Reading the product's record and reporting nothing about it is not a judgement."""
         with _FakeProduct() as product:
             result = await self._run(tmp_path, _firing_executor("reminders.tick"), product)
 
         assert result.passed is False
         behaviour = self._row(result, self.BEHAVIOUR_ROW)
         assert behaviour["pass"] is False
-        assert "carries no passing check naming reminders.tick" in behaviour["detail"]
+        assert "no passing check naming reminders.tick" in behaviour["detail"]
+        assert product.evidence_reads
 
-    async def test_a_run_that_fired_read_and_judged_carries_the_results(self, tmp_path):
-        """The passing counterpart: the observable was actually read and reported."""
+    async def test_a_run_that_fired_read_back_and_judged_carries_the_results(self, tmp_path):
+        """The passing counterpart, on the evidence this contract names."""
         with _FakeProduct() as product:
             executor = _firing_executor("reminders.tick", verdict=OBSERVED_JSON)
 
@@ -932,10 +974,13 @@ class TestKitPackagesAreEstablishedFromTheDeployedProduct:
         assert self._row(result, self.CONNECTION_ROW)["pass"] is True
         behaviour = self._row(result, self.BEHAVIOUR_ROW)
         assert behaviour["pass"] is True
-        assert "http_get" in behaviour["detail"]
+        assert "job_evidence reminders.tick" in behaviour["detail"]
         assert "the owner receives the reminder text" in behaviour["detail"]
         assert "reminders.tick delivers the reminder" in behaviour["detail"]
+        # What the platform does not claim, said in the row itself.
+        assert "not that the words of the observable were met" in behaviour["detail"]
         assert [fire["name"] for fire in product.fired] == ["reminders.tick"]
+        assert len(product.evidence_reads) == 1
 
     async def test_no_route_is_required_of_a_package_the_deployment_does_not_locate(self, tmp_path):
         """A prefix the product never publishes fails nothing and is claimed nowhere."""
