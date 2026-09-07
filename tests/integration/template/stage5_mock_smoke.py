@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import ast
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,13 @@ SYSTEM_CONFIG = SYSTEM_CONFIGS_PATH
 COMPOSE_LABEL = "com.docker.compose.project"
 COMMAND_TIMEOUT_SECONDS = 20 * 60
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+# The one package the kit publishes today. Nothing publishes its wheel, so the recipe
+# builds it from the kit source at the ref the product is pinned to.
+KIT_PACKAGE = "reminders"
+KIT_PACKAGE_DISTRIBUTION = "codegen-kit-reminders"
+KIT_PACKAGE_WHEEL_GLOB = "codegen_kit_reminders-*.whl"
+ACTIVE_PACKAGES_RELPATH = Path("codegen_kit/_active_packages.py")
+BACKEND_MANIFEST_RELPATH = Path("services/backend/manifest.yaml")
 
 
 def _set_standard_umask() -> None:
@@ -51,6 +59,22 @@ def load_production_template(path: Path = SYSTEM_CONFIG) -> TemplateRevision:
     return TemplateRevision(source=pin.source, ref=pin.ref)
 
 
+def read_active_packages(product: Path) -> list[dict[str, str]]:
+    """Read the generated active-package contract the product runtime is pinned to."""
+    module = ast.parse((product / ACTIVE_PACKAGES_RELPATH).read_text())
+    for node in module.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(target, ast.Name) and target.id == "ACTIVE_PACKAGES" and node.value:
+            return ast.literal_eval(node.value)
+    raise RuntimeError(f"{product / ACTIVE_PACKAGES_RELPATH} declares no ACTIVE_PACKAGES")
+
+
+def read_listed_packages(product: Path) -> list[str]:
+    """Read the package allowlist of the product's backend manifest."""
+    manifest = yaml.safe_load((product / BACKEND_MANIFEST_RELPATH).read_text())
+    return manifest["packages"]
+
+
 @dataclass(frozen=True)
 class Stage5Smoke:
     """Run one requested template revision's full worker-mode contract."""
@@ -60,6 +84,7 @@ class Stage5Smoke:
     template: TemplateRevision
     artifact: Path
     command_timeout: int = COMMAND_TIMEOUT_SECONDS
+    installed_packages: list[dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -77,6 +102,11 @@ class Stage5Smoke:
             template=TemplateRevision(source=source, ref=ref),
             artifact=artifact or temporary_root / "template-compat-result.json",
         )
+
+    @property
+    def package_workspace(self) -> Path:
+        """Root of the throwaway render the package install recipe is proven on."""
+        return self.workspace.parent / f"{self.workspace.name}-package"
 
     def run(self) -> str:
         resolved_commit: str | None = None
@@ -97,6 +127,7 @@ class Stage5Smoke:
                 "SMOKE_URL=http://backend:8000/health",
             )
             self._exercise_generated_access_lifecycle()
+            self._prove_kit_package_install(resolved_commit)
             return resolved_commit
         except Exception as caught:
             error = str(caught)
@@ -131,9 +162,18 @@ class Stage5Smoke:
                 phase="cleanup",
             )
         self._assert_no_compose_resources()
+        shutil.rmtree(self.package_workspace, ignore_errors=True)
         shutil.rmtree(self.workspace, ignore_errors=True)
 
-    def _run_copier(self, resolved_commit: str) -> None:
+    def _run_copier(
+        self,
+        resolved_commit: str,
+        destination: Path | None = None,
+        *,
+        project_name: str = "stage5-smoke",
+        modules: str = "backend,tg_bot",
+        phase: str = "scaffold",
+    ) -> None:
         self._run(
             [
                 "copier",
@@ -144,15 +184,15 @@ class Stage5Smoke:
                 "--trust",
                 f"--vcs-ref={resolved_commit}",
                 "--data",
-                "project_name=stage5-smoke",
+                f"project_name={project_name}",
                 "--data",
-                "modules=backend,tg_bot",
+                f"modules={modules}",
                 "--data",
                 "task_description=deterministic local contract smoke",
                 self.template.source,
-                str(self.workspace),
+                str(destination or self.workspace),
             ],
-            phase="scaffold",
+            phase=phase,
         )
 
     def _read_resolved_commit(self, expected_commit: str) -> str:
@@ -226,14 +266,15 @@ class Stage5Smoke:
                     "outcome": "failed" if error else "passed",
                     "error": error,
                     "compose_project_name": self.compose_project_name,
+                    "installed_packages": list(self.installed_packages),
                 },
                 indent=2,
             )
             + "\n"
         )
 
-    def _run_make(self, target: str, *variables: str) -> None:
-        self._run(["make", target, *variables], cwd=self.workspace, phase=target)
+    def _run_make(self, target: str, *variables: str, cwd: Path | None = None) -> None:
+        self._run(["make", target, *variables], cwd=cwd or self.workspace, phase=target)
 
     def _run_worker_start(self) -> None:
         try:
@@ -315,6 +356,78 @@ asyncio.run(verify_denial())
 """,
             phase="generated bot denial after revoke",
         )
+
+    def _prove_kit_package_install(self, resolved_commit: str) -> None:
+        """Install a kit package the way an engineering worker has to, and check the contract.
+
+        Nothing publishes the package wheel, so the recipe builds it from the kit source at
+        the ref the product is pinned to. The proof runs on its own render: the smoke's own
+        product stays package-free, which is what every product without a package looks like.
+        """
+        product = self.package_workspace / "product"
+        product.mkdir(parents=True)
+        self._run_copier(
+            resolved_commit,
+            product,
+            project_name="stage5-package",
+            modules="backend",
+            phase="scaffold the package product",
+        )
+        self._run_make("setup", cwd=product)
+        if read_active_packages(product) or read_listed_packages(product):
+            raise AssertionError(
+                "a freshly rendered product must declare no packages, but it declares "
+                f"listed={read_listed_packages(product)} "
+                f"generated={read_active_packages(product)}"
+            )
+
+        wheel = self._build_package_wheel(resolved_commit)
+        self._run(
+            [str(product / ".venv/bin/kit"), "add", KIT_PACKAGE, "--wheel", str(wheel)],
+            cwd=product,
+            phase=f"kit add {KIT_PACKAGE}",
+        )
+
+        identities = read_active_packages(product)
+        self.installed_packages.extend(identities)
+        if [identity["name"] for identity in identities] != [KIT_PACKAGE]:
+            raise AssertionError(f"generated contract does not record the package: {identities}")
+        if read_listed_packages(product) != [KIT_PACKAGE]:
+            raise AssertionError(
+                f"manifest allowlist does not list the package: {read_listed_packages(product)}"
+            )
+        installed_wheel = product / "services/backend/packages" / wheel.name
+        if not installed_wheel.is_file():
+            raise AssertionError(f"kit add copied no wheel to {installed_wheel}")
+
+    def _build_package_wheel(self, resolved_commit: str) -> Path:
+        """Build the package wheel from the kit source at the ref the product is pinned to."""
+        kit = self.package_workspace / "kit"
+        wheels = self.package_workspace / "wheels"
+        self._run(
+            ["git", "clone", "--quiet", self._git_source(), str(kit)],
+            phase="clone the kit source",
+        )
+        self._run(
+            ["git", "-C", str(kit), "checkout", "--quiet", resolved_commit],
+            phase="check out the pinned kit ref",
+        )
+        self._run(
+            [
+                "uv",
+                "build",
+                "--wheel",
+                str(kit / "packages" / KIT_PACKAGE_DISTRIBUTION),
+                "--out-dir",
+                str(wheels),
+            ],
+            cwd=kit,
+            phase="build the package wheel",
+        )
+        built = sorted(wheels.glob(KIT_PACKAGE_WHEEL_GLOB))
+        if len(built) != 1:
+            raise AssertionError(f"expected exactly one {KIT_PACKAGE_DISTRIBUTION} wheel: {built}")
+        return built[0]
 
     def _run_service_python(self, service: str, source: str, *, phase: str) -> None:
         self._run(

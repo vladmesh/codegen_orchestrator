@@ -794,6 +794,36 @@ The pin is the kit's release tag, so Copier's clone reaches it and records that 
 the stage-5 smoke compares against. The bare short SHA a tagless clone used to record is
 no longer accepted; a git-describe value stays accepted for a source pinned by commit.
 
+### Installing a kit package into a generated product
+
+A kit package is an installed wheel that declares a `codegen_kit.packages` entry point, and the
+generated product activates one only when it is both installed and listed under `packages:` in
+`services/backend/manifest.yaml`. Nothing publishes those wheels: `kit add <name> --wheel
+<artifact>` deliberately takes an artifact path, because package publication and catalog
+resolution are outside package protocol v1. The recipe an engineering worker follows therefore
+builds the wheel from the kit source at the ref the product is pinned to, which the product itself
+records in `.copier-answers.yml` (`_src_path`, `_commit`): obtain the kit at `_commit`, `uv build
+--wheel packages/<distribution>`, then `kit add <name> --wheel <built wheel>` from the product
+root. Nothing has to be vendored into a product that will never install a package.
+
+`kit add` performs the whole product mutation — the wheel copy under
+`services/backend/packages/`, the backend dependency and its lock entry, the entry-point-only
+dependency record dependency linting needs, the manifest allowlist entry, `uv sync --frozen` of
+the backend environment, and regeneration. Package code is never hand-written into a product.
+
+Regeneration is part of installing or changing a package or a manifest, not an optional follow-up.
+Generation writes the active package set with each package's manifest digest into
+`codegen_kit/_active_packages.py`, and the runtime refuses a stale or changed generated contract
+(`generated package contract is stale; run make generate-from-spec`), so a product whose manifest
+was edited without regenerating does not boot.
+
+The orchestrator states this recipe to the engineering worker in
+`services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. The stage-5 template
+compatibility smoke proves it against a real render rather than a replica: it renders a second
+product from the same pinned ref, asserts that a product with no packages ships `packages: []` and
+an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add`, and asserts the generated
+contract then records the package's name, version and manifest digest.
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership

@@ -71,3 +71,21 @@ class TestDeveloperInstructions:
         assert "seed the confirmed values" in instructions
         assert "fire the real named job contract" in instructions
         assert "exactly one durable record for each configured output partition" in instructions
+
+    def test_states_the_kit_package_install_recipe(self):
+        instructions = " ".join(self.content.split())
+        assert "Package code is never hand-written into a product." in instructions
+        assert ".copier-answers.yml" in instructions
+        assert "_commit" in instructions
+        assert "uv build --wheel" in instructions
+        assert "kit add <name> --wheel <path>" in instructions
+        assert "kit add reminders --wheel" in instructions
+        assert "codegen_kit/_active_packages.py" in instructions
+        assert "services/backend/packages/" in instructions
+
+    def test_states_that_regeneration_is_part_of_a_manifest_or_package_change(self):
+        instructions = " ".join(self.content.split())
+        assert "regeneration is part of the change" in instructions
+        assert "the product refuses a stale or changed generated contract" in instructions
+        assert "generated package contract is stale; run make generate-from-spec" in instructions
+        assert "run `make generate-from-spec` in the same change" in instructions
