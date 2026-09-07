@@ -5,6 +5,7 @@ queue, so drift between the three has to fail in tests instead.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -131,6 +132,22 @@ class TestPoStartupSignal:
         [disabled] = [entry for entry in logs if entry["event"] == "po_consumer_disabled"]
         assert PO_INPUT_QUEUE in disabled["impact"]
         assert disabled["missing_env"] == ["PO_LLM_API_KEY"]
+
+    async def test_enabled_po_refuses_non_durable_checkpointer(self):
+        from src import main
+
+        settings = SimpleNamespace(checkpoint_database_url=None)
+        with (
+            patch.object(main, "_po_missing_env", return_value=[]),
+            patch.object(main, "get_settings", return_value=settings),
+            patch.object(main, "listen_provisioner_triggers") as provisioner,
+            patch.object(main, "listen_worker_events") as worker_events,
+        ):
+            with pytest.raises(RuntimeError, match="CHECKPOINT_DATABASE_URL is required"):
+                await main.run_worker()
+
+        provisioner.assert_not_called()
+        worker_events.assert_not_called()
 
 
 class TestMissingLlmEnv:

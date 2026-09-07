@@ -32,12 +32,20 @@ def _po_missing_env() -> list[str]:
 
 async def run_worker() -> None:
     """Run the LangGraph worker loop."""
+    po_missing = _po_missing_env()
+    if not po_missing:
+        settings = get_settings()
+        if not settings.checkpoint_database_url:
+            raise RuntimeError(
+                "CHECKPOINT_DATABASE_URL is required when the PO consumer is enabled; "
+                "refusing to start with non-durable conversation state"
+            )
+
     tasks = [
         listen_provisioner_triggers(),
         listen_worker_events(),
     ]
 
-    po_missing = _po_missing_env()
     if po_missing:
         logger.error(
             "po_consumer_disabled",
@@ -51,7 +59,6 @@ async def run_worker() -> None:
         from .agents.po.reminders import run_reminder_poller
         from .consumers.po import run_po_consumer
 
-        settings = get_settings()
         poller_client = RedisStreamClient(redis_url=settings.redis_url)
         await poller_client.connect()
 
