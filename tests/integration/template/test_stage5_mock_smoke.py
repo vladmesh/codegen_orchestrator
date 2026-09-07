@@ -274,7 +274,19 @@ def test_cleanup_verification_fails_when_docker_listing_fails(
         smoke._assert_no_compose_resources()
 
 
-def _write_product(root: Path, *, listed: list[str], generated: list[dict[str, str]]) -> Path:
+def _write_product(
+    root: Path,
+    *,
+    listed: list[str],
+    generated: list[dict[str, str]],
+    jobs: dict[str, str] | None = None,
+) -> Path:
+    """The three generated artifacts every rendered product carries.
+
+    The job registry is one of them: generation writes it for the backend of
+    any product, with or without a package, so a stand-in that omitted it would
+    be a product shape no render produces.
+    """
     (root / "codegen_kit").mkdir(parents=True)
     (root / "codegen_kit/_active_packages.py").write_text(
         '"""Package identities used to generate this product contract."""\n\n'
@@ -282,6 +294,10 @@ def _write_product(root: Path, *, listed: list[str], generated: list[dict[str, s
     )
     (root / "services/backend").mkdir(parents=True)
     (root / "services/backend/manifest.yaml").write_text(f"version: 1\npackages: {listed!r}\n")
+    (root / "services/backend/src/generated").mkdir(parents=True)
+    (root / "services/backend/src/generated/jobs_schemas.py").write_text(
+        f"JOB_SCHEMA_SOURCES: dict[str, str] = {jobs or {}!r}\n"
+    )
     return root
 
 
@@ -352,9 +368,18 @@ def test_package_install_proof_runs_kit_add_on_its_own_render(
     def install(_self: Stage5Smoke, command: list[str], **_kwargs: object) -> None:
         kit_add.append(command)
         _write_product(
-            smoke.package_workspace / "installed", listed=["reminders"], generated=[identity]
+            smoke.package_workspace / "installed",
+            listed=["reminders"],
+            generated=[identity],
+            # What regeneration adds for the installed package: its declared job,
+            # attributed to the package that declared it.
+            jobs={"reminders.tick": "package:reminders"},
         )
-        for name in ("codegen_kit/_active_packages.py", "services/backend/manifest.yaml"):
+        for name in (
+            "codegen_kit/_active_packages.py",
+            "services/backend/manifest.yaml",
+            "services/backend/src/generated/jobs_schemas.py",
+        ):
             (product / name).write_text((smoke.package_workspace / "installed" / name).read_text())
         (product / "services/backend/packages").mkdir(parents=True)
         (product / "services/backend/packages" / wheel.name).write_text("")
