@@ -10,6 +10,7 @@ from stage5_mock_smoke import (
     CommandTimeout,
     Stage5Smoke,
     load_production_template,
+    load_qa_package_reader,
     read_active_packages,
     read_listed_packages,
 )
@@ -390,3 +391,37 @@ def test_package_install_proof_fails_when_the_generated_contract_stays_empty(
 
     with pytest.raises(AssertionError, match="generated contract does not record the package"):
         smoke._prove_kit_package_install("d" * 40)
+
+
+def test_central_qa_reads_the_generated_package_contract_of_a_real_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader QA uses is run over the product `kit add` generated, not a copy of it.
+
+    The smoke's own product is a real render; this asserts the proof step is
+    wired into the install phase and that it refuses a product whose generated
+    contract records no package.
+    """
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+    product = tmp_path / "product"
+    (product / "codegen_kit").mkdir(parents=True)
+    (product / "services/backend/src/generated").mkdir(parents=True)
+    (product / "codegen_kit/_active_packages.py").write_text(
+        "ACTIVE_PACKAGES: list[dict[str, str]] = []\n"
+    )
+    (product / "services/backend/manifest.yaml").write_text("packages: []\n")
+    (product / "services/backend/src/generated/jobs_schemas.py").write_text(
+        "JOB_SCHEMA_SOURCES: dict[str, str] = {}\n"
+    )
+
+    with pytest.raises(AssertionError, match="central QA reads"):
+        smoke._prove_central_qa_reads_the_generated_contract(product)
+
+
+def test_the_qa_package_reader_is_the_orchestrators_own_module() -> None:
+    """Nothing here re-implements the reader: it is loaded from the shipped file."""
+    qa = load_qa_package_reader()
+
+    assert qa.ACTIVE_PACKAGE_CONTRACT == "codegen_kit/_active_packages.py"
+    assert qa.BACKEND_MANIFEST == "services/backend/manifest.yaml"
+    assert qa.GENERATED_JOB_REGISTRY == "services/backend/src/generated/jobs_schemas.py"

@@ -332,6 +332,10 @@ class _FakeTargetConn:
         # guard over what the executor then does.
         if "qa-docker inspect" in command:
             return SimpleNamespace(exit_status=0, stdout=RUNNING_STATE, stderr="")
+        # A contained read of a file this deployment does not have. It carries
+        # no kit package contract, so the package probe states nothing about it.
+        if command.startswith("sh -c") and "head -c" in command:
+            return SimpleNamespace(exit_status=5, stdout="", stderr="notafile")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):

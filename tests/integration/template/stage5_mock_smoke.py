@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 from dataclasses import dataclass, field
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,12 @@ KIT_PACKAGE_DISTRIBUTION = "codegen-kit-reminders"
 KIT_PACKAGE_WHEEL_GLOB = "codegen_kit_reminders-*.whl"
 ACTIVE_PACKAGES_RELPATH = Path("codegen_kit/_active_packages.py")
 BACKEND_MANIFEST_RELPATH = Path("services/backend/manifest.yaml")
+# The orchestrator module central QA establishes a deployment's packages with.
+# It is loaded from its own file so this smoke exercises the shipped reader
+# without importing the LangGraph service's settings.
+QA_PACKAGE_READER = ROOT / "services/langgraph/src/agents/qa/packages.py"
+# A URL for the facts the reader renders; nothing is called on it here.
+QA_FACTS_URL = "http://stage5-package.test:8000"
 
 
 def _set_standard_umask() -> None:
@@ -67,6 +74,19 @@ def read_active_packages(product: Path) -> list[dict[str, str]]:
         if isinstance(target, ast.Name) and target.id == "ACTIVE_PACKAGES" and node.value:
             return ast.literal_eval(node.value)
     raise RuntimeError(f"{product / ACTIVE_PACKAGES_RELPATH} declares no ACTIVE_PACKAGES")
+
+
+def load_qa_package_reader():
+    """Load the reader central QA uses on a deployment, from its own source."""
+    spec = importlib.util.spec_from_file_location("qa_packages_under_test", QA_PACKAGE_READER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"{QA_PACKAGE_READER} is not importable")
+    module = importlib.util.module_from_spec(spec)
+    # A dataclass in a module compiled with postponed annotations resolves them
+    # through `sys.modules`, so the module has to be registered before it runs.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def read_listed_packages(product: Path) -> list[str]:
@@ -399,6 +419,42 @@ asyncio.run(verify_denial())
         installed_wheel = product / "services/backend/packages" / wheel.name
         if not installed_wheel.is_file():
             raise AssertionError(f"kit add copied no wheel to {installed_wheel}")
+        self._prove_central_qa_reads_the_generated_contract(product)
+
+    def _prove_central_qa_reads_the_generated_contract(self, product: Path) -> None:
+        """Run central QA's package reader over the real generated artifacts.
+
+        The failure mode this defends against is a test that exercises a
+        hand-built replica instead of the generated artifact. These three files
+        were written by the kit's own generators through `kit add` moments ago,
+        and what reads them here is the module the QA runner reads a deployment
+        with — so the shape QA depends on is proven against a real render.
+        """
+        qa = load_qa_package_reader()
+        packages = qa.parse_active_packages((product / qa.ACTIVE_PACKAGE_CONTRACT).read_text())
+        listed = qa.parse_listed_packages((product / qa.BACKEND_MANIFEST).read_text())
+        owners = qa.parse_job_owners((product / qa.GENERATED_JOB_REGISTRY).read_text())
+        activation = qa.PackageActivation(packages=packages, listed=listed, jobs=owners)
+        if activation.names != [KIT_PACKAGE] or listed != (KIT_PACKAGE,):
+            raise AssertionError(
+                f"central QA reads {activation.names} listed={listed} off the generated "
+                f"contract of a product that installed {KIT_PACKAGE}"
+            )
+        if not activation.package_jobs:
+            raise AssertionError(
+                f"central QA reads no package-declared job off {qa.GENERATED_JOB_REGISTRY}: "
+                f"{owners}"
+            )
+        facts = "\n".join(
+            qa.active_package_facts(
+                activation,
+                deployed_url=QA_FACTS_URL,
+                fireable_behaviours=tuple(activation.package_jobs),
+            )
+        )
+        for expected in (KIT_PACKAGE, QA_FACTS_URL, "refuses to boot", *activation.package_jobs):
+            if expected not in facts:
+                raise AssertionError(f"the QA package facts do not state {expected!r}: {facts}")
 
     def _build_package_wheel(self, resolved_commit: str) -> Path:
         """Build the package wheel from the kit source at the ref the product is pinned to."""

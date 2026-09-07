@@ -32,6 +32,9 @@ STATUS_MARKER = "<<qa-http-status:"
 # Contained-read refusal statuses.
 READ_UNRESOLVABLE = 3
 READ_OUTSIDE_ROOT = 4
+# The path resolved inside the deployment and is not a regular file, which is
+# what the target answers for a file this deployment does not have.
+READ_NOT_A_FILE = 5
 # Provisioning-identity refusal statuses.
 IDENTITY_ABSENT = 3
 IDENTITY_KEYS_ABSENT = 4

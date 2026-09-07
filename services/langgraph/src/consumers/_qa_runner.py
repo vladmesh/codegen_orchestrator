@@ -31,12 +31,25 @@ from shared.telegram_access_probe import (
 
 from ..agents.qa.acceptance import prepare_central_qa_criteria
 from ..agents.qa.capability_service import QACapabilityService
+from ..agents.qa.packages import (
+    ACTIVE_PACKAGE_CONTRACT,
+    BACKEND_MANIFEST,
+    CONTRACT_READ_LIMIT,
+    GENERATED_JOB_REGISTRY,
+    PackageActivation,
+    PackageContractUnreadable,
+    active_package_facts,
+    parse_active_packages,
+    parse_job_owners,
+    parse_listed_packages,
+)
 from ..agents.qa.tools import QAJobsCapability, build_qa_callables
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_target import (
     CONTAINER_PROBE_ATTEMPTS,
     CONTAINER_PROBE_RETRY_DELAY,
+    READ_NOT_A_FILE,
     QACapabilityError,
     QAContainerRuntimeError,
     QAGrantError,
@@ -45,6 +58,7 @@ from ._qa_target import (
     QAIdentityAbsentError,
     QAIdentityUnreadableError,
     QATarget,
+    QATargetError,
     new_grant_marker,
     qa_target_grant,
 )
@@ -600,6 +614,140 @@ def container_state_fact(probe: QAResult) -> str:
     return f"- Container state, read from the target with docker inspect: {containers}."
 
 
+@dataclass(frozen=True)
+class PackageActivationOutcome:
+    """What the deployment said about its own kit packages.
+
+    Exactly one of the two is set, and the third case is both unset: a product
+    that carries no package contract at all. That product's run is the run it
+    always was — no package artifact was read, so nothing about packages is
+    stated, and a deployment cannot be talked into a package by silence.
+    """
+
+    activation: PackageActivation | None = None
+    failure: QAResult | None = None
+
+
+class _ContractUnread(Exception):
+    """One generated artifact of the deployment could not be read."""
+
+
+async def _read_generated_contract(session, path: str) -> str | None:
+    """Read one generated artifact of the deployment, or say it is not there.
+
+    ``None`` is "this deployment has no such file", which is an answer about
+    the product. Anything else the target says about the read is not an answer
+    about the product and is raised, because a read that failed must never
+    become the sentence "this product has no packages".
+    """
+    try:
+        remote = await session.read_file(path, max_bytes=CONTRACT_READ_LIMIT)
+    except QATargetError as exc:
+        # The contained read resolves on the target, so a path whose parent
+        # directory does not exist is reported the same way: not there.
+        if "does not exist on the target" in str(exc):
+            return None
+        raise _ContractUnread(f"{path} could not be read from the deployment: {exc}") from exc
+    if remote.exit_status == READ_NOT_A_FILE:
+        return None
+    if remote.exit_status != 0:
+        detail = (remote.stderr or remote.stdout or "no output").strip()[:300]
+        raise _ContractUnread(f"{path} could not be read from the deployment: {detail}")
+    return remote.stdout
+
+
+def _package_contract_failure(detail: str) -> QAResult:
+    """A package contract that could not be established fails the run.
+
+    It is a product verdict rather than an infrastructure blocker: these are
+    the product's own generated artifacts, on its own deployment, and a
+    product whose package contract cannot be read is a product whose runtime
+    would refuse to boot on it. Reporting it as "no packages" is the vacuous
+    pass this path exists to prevent.
+    """
+    check = {
+        "name": "the deployed product's package contract is readable",
+        "pass": False,
+        "detail": detail,
+    }
+    return QAResult(
+        passed=False,
+        checks=[check],
+        summary="QA could not establish which kit packages the deployed product carries",
+        report=f"- {check['name']}: {detail}",
+    )
+
+
+async def run_package_activation_checks(session) -> PackageActivationOutcome:
+    """Establish, from the deployment itself, which kit packages it is running.
+
+    Three artifacts of the product answer it, and they are cross-checked
+    against each other rather than trusted one at a time: the backend
+    manifest's allowlist, the generated package contract that records the set
+    generation resolved with its manifest digests, and the generated job
+    registry that attributes each fireable job to the service or package that
+    declared it. A product that booted is a product whose generated contract
+    still matches its manifest and installed wheels — the runtime refuses a
+    stale one — so this is the package's connection check, read from the
+    running product instead of re-run against a copy of it.
+
+    A product with no packages, and a product from a template that predates
+    them, both come back with nothing set: their run is unchanged. Every other
+    disagreement fails the run before an executor starts.
+    """
+    try:
+        manifest = await _read_generated_contract(session, BACKEND_MANIFEST)
+        listed = parse_listed_packages(manifest) if manifest is not None else None
+        contract = await _read_generated_contract(session, ACTIVE_PACKAGE_CONTRACT)
+        packages = parse_active_packages(contract) if contract is not None else None
+    except (_ContractUnread, PackageContractUnreadable) as exc:
+        return PackageActivationOutcome(failure=_package_contract_failure(str(exc)))
+
+    if listed is None and packages is None:
+        # Nothing in this deployment claims a package, in either place a
+        # package is claimed. There is no package check to make.
+        return PackageActivationOutcome()
+    if listed is None or packages is None:
+        missing = BACKEND_MANIFEST if listed is None else ACTIVE_PACKAGE_CONTRACT
+        return PackageActivationOutcome(
+            failure=_package_contract_failure(
+                f"the deployment declares packages in one place and not the other: "
+                f"{missing} is not there, while the other names "
+                f"{', '.join(listed or [package.name for package in packages or ()]) or 'none'}"
+            )
+        )
+    if sorted(package.name for package in packages) != sorted(listed):
+        return PackageActivationOutcome(
+            failure=_package_contract_failure(
+                f"the backend manifest lists {', '.join(listed) or 'no package'} while "
+                f"{ACTIVE_PACKAGE_CONTRACT} records "
+                f"{', '.join(package.name for package in packages) or 'no package'}; the "
+                "deployed product's generated contract and its allowlist disagree"
+            )
+        )
+    if not packages:
+        return PackageActivationOutcome()
+
+    try:
+        registry = await _read_generated_contract(session, GENERATED_JOB_REGISTRY)
+        if registry is None:
+            raise _ContractUnread(
+                f"{GENERATED_JOB_REGISTRY} is not there, so the deployed product "
+                "attributes no job to the packages it is running"
+            )
+        jobs = parse_job_owners(registry)
+    except (_ContractUnread, PackageContractUnreadable) as exc:
+        return PackageActivationOutcome(failure=_package_contract_failure(str(exc)))
+
+    activation = PackageActivation(packages=packages, listed=tuple(listed), jobs=jobs)
+    logger.info(
+        "qa_active_packages_probed",
+        packages=[package.stated for package in activation.packages],
+        package_jobs=sorted(activation.package_jobs),
+    )
+    return PackageActivationOutcome(activation=activation)
+
+
 def scheduled_behaviour_facts(
     behaviours: Sequence[ScheduledBehaviourCriterion], *, fireable: bool
 ) -> list[str]:
@@ -962,21 +1110,44 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     )
                     qa_result = container_state
                 else:
-                    qa_result = await _invoke_qa_agent(
-                        target=target,
-                        ownership=ownership,
-                        workspace=workspace,
-                        session=session,
-                        acceptance_criteria=acceptance_criteria,
-                        runtime=runtime,
-                        established_facts=[
-                            *established_facts,
-                            container_state_fact(container_state),
-                        ],
-                        settings_established=settings_established,
-                        timeout=timeout,
-                        jobs=jobs,
-                    )
+                    # What the deployment says about its own kit packages, read
+                    # before an executor exists. A product that carries none is
+                    # unchanged by this; one whose package contract cannot be
+                    # established fails here rather than being judged as if it
+                    # had no packages.
+                    activation = await run_package_activation_checks(session)
+                    if activation.failure is not None:
+                        logger.info(
+                            "qa_package_contract_unestablished",
+                            server_ip=target.server_ip,
+                            summary=activation.failure.summary,
+                        )
+                        qa_result = activation.failure
+                    else:
+                        qa_result = await _invoke_qa_agent(
+                            target=target,
+                            ownership=ownership,
+                            workspace=workspace,
+                            session=session,
+                            acceptance_criteria=acceptance_criteria,
+                            runtime=runtime,
+                            established_facts=[
+                                *established_facts,
+                                container_state_fact(container_state),
+                                *(
+                                    active_package_facts(
+                                        activation.activation,
+                                        deployed_url=target.deployed_url,
+                                        fireable_behaviours=jobs.names if jobs else (),
+                                    )
+                                    if activation.activation is not None
+                                    else []
+                                ),
+                            ],
+                            settings_established=settings_established,
+                            timeout=timeout,
+                            jobs=jobs,
+                        )
             # The network is the boundary; scan visible evidence for unexpected writes.
             write = _forbidden_application_write(
                 f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"

@@ -835,6 +835,43 @@ product from the same pinned ref, asserts that a product with no packages ships 
 an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add`, and asserts the generated
 contract then records the package's name, version and manifest digest.
 
+### Central QA of a product that carries a kit package
+
+Central QA establishes a deployment's packages from the deployment itself, before an executor
+exists. `services/langgraph/src/agents/qa/packages.py` reads three of the product's own artifacts
+over the run's target session — the backend manifest's `packages:` allowlist,
+`codegen_kit/_active_packages.py` with each package's name, version and manifest digest, and the
+generated job registry `services/backend/src/generated/jobs_schemas.py`, which attributes every
+fireable job to the service or the `package:<name>` that declared it — and
+`run_package_activation_checks` cross-checks them against each other.
+
+That is the package's connection check, asserted from the running product rather than re-run
+against a copy of it. The check is the package's `startup` raising on failure, the runtime refuses
+a generated contract that no longer matches the manifest and the installed wheels, and the
+container probe has already found the deployment up: a booted product with the package recorded has
+passed it. The acceptance checks are bound to the same deployment — its HTTP surface at the
+deployed URL, its containers, and its declared behaviours through `fire_job` — and the facts say in
+those words that a fixture, a replica or a second copy is not the product under test, and that a
+check that could not be made against this deployment is a failed check rather than a skipped one.
+
+A package's scheduled behaviour needs no mechanism of its own. The name is read off the run's
+acceptance criteria by `parse_scheduled_behaviours`, retained by `prepare_central_qa_criteria`,
+named to the executor by `scheduled_behaviour_facts` and accepted by `fire_job`, exactly as a
+service's is; a package prefix such as `reminders.tick` is a name, and the rule that a dispatch
+record is never the answer to the criterion's observable applies to it unchanged. What the deployed
+product's own registry attributes to a package is stated as a fact, and a criteria-named behaviour
+the product declares nowhere is named as a check that fails.
+
+Nothing is inferred from an absent read. A deployment with no `packages:` key and no generated
+package contract carries no package contract at all, and its run is unchanged: same criteria
+preparation, same facts, same verdict shape. Every other disagreement fails the run before an
+executor starts — a listed package with no generated contract, a generated set that disagrees with
+the allowlist, an artifact that is truncated or unparseable, a read the target refused. A package
+contract that could not be established is never reported as "no packages", because a check with
+nothing to examine has to fail. The reader is proved against a real render rather than a replica:
+the stage-5 template compatibility smoke runs it over the artifacts `kit add reminders` generated
+in the product it just rendered.
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership

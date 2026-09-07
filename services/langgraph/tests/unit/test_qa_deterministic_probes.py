@@ -34,6 +34,11 @@ from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from src.agents.qa.packages import (
+    ACTIVE_PACKAGE_CONTRACT,
+    BACKEND_MANIFEST,
+    GENERATED_JOB_REGISTRY,
+)
 from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import (
     QAResult,
@@ -89,8 +94,13 @@ class FakeConn:
         ps_exit: int = 0,
         ps_stderr: str = "",
         readlink_exit: int = 0,
+        files: dict[str, str] | None = None,
     ) -> None:
         self.commands: list[str] = []
+        # The files this deployment has. A read of anything else answers the
+        # way the target's contained read answers a file that is not there,
+        # instead of pretending every path holds an empty file.
+        self.files = files or {}
         self.containers = containers
         self.states = states or dict.fromkeys(containers, HEALTHY)
         self.inspect_exit = inspect_exit
@@ -123,6 +133,11 @@ class FakeConn:
             )
         if "grep -c -F" in command:
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        if command.startswith("sh -c") and "head -c" in command:
+            path = shlex.split(command)[5]
+            if path in self.files:
+                return SimpleNamespace(exit_status=0, stdout=self.files[path], stderr="")
+            return SimpleNamespace(exit_status=5, stdout="", stderr=f"notafile:{path}")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):
@@ -645,3 +660,74 @@ class TestBotLivenessIsEstablishedBeforeTheExecutor:
         assert result["status"] == "passed"
         api.get_bot_liveness.assert_not_awaited()
         assert run_centrally.await_args[1]["established_facts"] == []
+
+
+class TestKitPackagesAreEstablishedFromTheDeployedProduct:
+    """The third fact this runner establishes: what the product is running.
+
+    A generated product records the package set it was generated with, and it
+    refuses to boot on a contract that no longer matches its manifest and its
+    installed wheels. So a deployment that is up, with a package recorded, has
+    already answered that package's connection check — its `startup`, which
+    raises on failure. The runner reads that off the product and hands it over,
+    rather than asking an executor to install, build or start anything.
+    """
+
+    MANIFEST = "name: backend\npackages:\n  - reminders\n"
+    CONTRACT = (
+        "ACTIVE_PACKAGES: list[dict[str, str]] = [\n"
+        '    {"manifest_sha256": "8f14e45fceea167a5a36dedd4bea2543", "name": "reminders",\n'
+        '     "version": "0.1.0"}\n'
+        "]\n"
+    )
+    REGISTRY = 'JOB_SCHEMA_SOURCES: dict[str, str] = {"reminders.tick": "package:reminders"}\n'
+
+    def _deployment(self, **files: str) -> FakeConn:
+        return FakeConn(
+            files={
+                BACKEND_MANIFEST: self.MANIFEST,
+                ACTIVE_PACKAGE_CONTRACT: self.CONTRACT,
+                GENERATED_JOB_REGISTRY: self.REGISTRY,
+                **files,
+            }
+        )
+
+    async def test_the_run_is_told_which_packages_the_deployment_carries(self, tmp_path):
+        conn = self._deployment()
+        executor = _recording_executor()
+
+        result = await _run_qa(conn, executor, tmp_path)
+
+        assert result.passed is True
+        prompt = executor.calls[0]["prompt"]
+        assert "reminders 0.1.0" in prompt
+        assert ACTIVE_PACKAGE_CONTRACT in prompt
+        assert "refuses to boot" in prompt
+        assert TARGET.deployed_url in prompt
+        assert "reminders.tick (package reminders)" in prompt
+
+    async def test_a_package_free_deployment_is_told_nothing_about_packages(self, tmp_path):
+        """The path a product without a package takes is the path it always took."""
+        conn = FakeConn(
+            files={
+                BACKEND_MANIFEST: "name: backend\npackages: []\n",
+                ACTIVE_PACKAGE_CONTRACT: "ACTIVE_PACKAGES: list[dict[str, str]] = []\n",
+            }
+        )
+        executor = _recording_executor()
+
+        result = await _run_qa(conn, executor, tmp_path)
+
+        assert result.passed is True
+        assert "Kit packages active" not in executor.calls[0]["prompt"]
+
+    async def test_a_listed_package_with_no_generated_contract_starts_no_executor(self, tmp_path):
+        """A package check with nothing to examine fails; it never reads as package-free."""
+        conn = FakeConn(files={BACKEND_MANIFEST: self.MANIFEST})
+        executor = _recording_executor()
+
+        result = await _run_qa(conn, executor, tmp_path)
+
+        assert executor.calls == []
+        assert result.passed is False
+        assert ACTIVE_PACKAGE_CONTRACT in result.report
