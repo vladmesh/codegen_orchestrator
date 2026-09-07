@@ -855,31 +855,32 @@ declared, and they are rows in the run's result whatever the executor submits:
    product carrying the package in that contract has passed it, so reading the contract off the
    live deployment performs the check rather than describing it.
 2. *Each declared behaviour of the package produced its observable* — one row per behaviour, so
-   two declared behaviours are two results and neither can go missing. The row does not rest on the
-   fire: a fire is answered with a dispatch record, and this platform's own contract says that
-   record is not evidence anything consumed the event or ran the behaviour. `_behaviour_row`
-   requires, for that exact name, that the deployment offered a fire and the product accepted one,
-   that the run read the product's own recorded command back with `job_evidence` for the same name
-   *after* the fire, that the record says `dispatch_status: dispatched` rather than `undelivered`,
-   and that the run's submitted result carries a passing check naming the behaviour. Each missing
-   one is its own failure reason, quoting the observable the criterion states.
+   two declared behaviours are two results and neither can go missing. Three things are required
+   for that exact name, and each missing one is its own failure reason quoting the observable: the
+   product accepted a **fire** of it; the run then made a **successful read of the product's own
+   output** — the route the criterion's observable names, when it names one, and any successful
+   product read when it does not; and the run's result carries a **passing check that names the
+   behaviour and quotes that read**. Neither the fire's acknowledgement nor a `job_evidence` read
+   is that output: both answer with the product core's record of the dispatch, which says nothing
+   about whether any provider consumed the event. A `job_evidence` read this run happened to make
+   is not a requirement, but an `undelivered` command in it settles the row against the behaviour,
+   because an event that never left the core cannot have been consumed.
 
-**What this establishes, and what it does not.** The observable is prose an architect wrote — "the
-owner receives the reminder text" — and no runner-side rule reads English. The division of labour
-is therefore stated rather than fudged: *the executor judges the observable*, and *the platform
-establishes that the evidence this contract names was actually read*, refusing a verdict that rests
-on nothing. `POST /jobs/evidence` returns a command only within the product that fired it, so that
-read is bound to this run, this deployment and this behaviour in a way an arbitrary GET is not —
-but its payload is the recorded command, not the behaviour's output. It can therefore decide one
-thing on its own (an `undelivered` command means the event never left the core, so nothing can have
-run from it) and no more. A passing row says which evidence was read and which submitted check
-judged the observable; it never claims the words of the observable were met.
+**What this establishes, and what it does not.** The observable is prose an architect wrote — "GET
+/reminders?user_ref=42 shows the reminder as emitted" — and no runner-side rule reads English. The
+division of labour is therefore stated rather than fudged: *the executor judges the observable*,
+and *the platform establishes that the work was done and that the executor judged it*, refusing a
+verdict that rests on nothing the product did. A passing row says which read it is bound to and
+which submitted check rests on that read; it never claims the words of the observable were
+mechanically proven. Where the criterion's observable names a route, an unrelated path cannot stand
+in for it; where it names none, the platform cannot narrow which read answers it, which is a reason
+to write criteria that name one.
 
 `apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
 when any of them failed, so a verdict that performed no package check does not pass by asserting
-that it did. What this run fired and what it read back are decided from the runner's own ledger —
-`QAWorkspace.fired_behaviours` and `QAWorkspace.behaviour_evidence`, both written by the runtime
-when the product answered with a recorded command — never from an executor's account of itself.
+that it did. What this run fired, read back and read is decided from the runner's own ledgers —
+`QAWorkspace.fired_behaviours`, `behaviour_evidence` and `observations`, all written by the runtime
+when the product answered — never from an executor's account of itself.
 
 **No prefixed-route check is required, and no prefix is inferred.** Package protocol v1 keeps a
 package's `http.prefix` in the installed `package.yaml` inside the wheel, and the kit's generated

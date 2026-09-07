@@ -18,6 +18,7 @@ Three things are asserted here, and they are the three the card asks for.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,9 @@ from src.agents.qa.packages import (
     behaviour_check_name,
     connection_check,
     connection_check_name,
+    observable_paths,
+    observation_answers,
+    observation_tokens,
     parse_active_packages,
     parse_job_owners,
     parse_listed_packages,
@@ -49,7 +53,7 @@ from src.consumers._qa_runner import (
     scheduled_behaviour_facts,
 )
 from src.consumers._qa_target import QATargetError
-from src.consumers._qa_workspace import BehaviourEvidence
+from src.consumers._qa_workspace import BehaviourEvidence, ProductObservation
 
 # What the kit's package-contract generator writes into a product that installed
 # `reminders`, in the shape it writes it.
@@ -436,16 +440,17 @@ class TestAPackagesBehaviourUsesTheChainAServicesBehaviourUses:
 
 
 class FakeWorkspace:
-    """The runner's own record of what this run fired and read back.
+    """The runner's own record of what this run fired, read back, and read.
 
-    Both maps carry the point in the run where the product answered, because
-    evidence read before its fire is evidence of something else.
+    Every map carries the point in the run where the product answered, because
+    an observation made before the fire is an observation of something else.
     """
 
     def __init__(
         self,
         fired: dict[str, int] | None = None,
         evidence: dict[str, int] | None = None,
+        observations: Sequence[tuple[int, str, str]] = (),
         *,
         dispatch_status: str = "dispatched",
     ) -> None:
@@ -454,26 +459,33 @@ class FakeWorkspace:
             name: BehaviourEvidence(position=position, dispatch_status=dispatch_status)
             for name, position in (evidence or {}).items()
         }
+        self.observations = [
+            ProductObservation(position=position, tool=tool, subject=subject)
+            for position, tool, subject in observations
+        ]
 
 
 TICK = ScheduledBehaviourCriterion(
     name="reminders.tick",
     arguments={"at": "2026-09-07T10:00:00Z"},
-    observable="the owner receives the reminder text",
+    observable="GET /reminders?user_ref=42 shows the reminder as emitted",
 )
 SWEEP = ScheduledBehaviourCriterion(
     name="reminders.sweep",
-    observable="the cancelled reminders are gone from the list",
+    observable="GET /reminders?user_ref=42 no longer shows the cancelled reminder",
 )
+#: A read of the package's own route, after the fire.
+READ = (4, "http_get", "/reminders?user_ref=42")
+SWEEP_READ = (7, "http_get", "/reminders?user_ref=42")
 JUDGED = {
     "name": "reminders.tick delivers the reminder",
     "pass": True,
-    "detail": "the owner's chat shows the reminder text after the fire",
+    "detail": "GET /reminders?user_ref=42 showed the reminder as emitted",
 }
 JUDGED_SWEEP = {
-    "name": "reminders.sweep clears them",
+    "name": "reminders.sweep clears it",
     "pass": True,
-    "detail": "the list no longer shows the cancelled reminders",
+    "detail": "GET /reminders?user_ref=42 no longer lists it",
 }
 TICK_ROW = behaviour_check_name("reminders", "reminders.tick")
 SWEEP_ROW = behaviour_check_name("reminders", "reminders.sweep")
@@ -502,14 +514,39 @@ def _row(result, name: str) -> dict:
     return next(check for check in result.checks if check["name"] == name)
 
 
-class TestABehaviourRestsOnTheEvidenceThisContractNames:
-    """The platform establishes that the named evidence was read. Nothing more.
+class TestWhichReadAnswersACriterion:
+    """The criterion says where to look; the platform does not guess."""
 
-    The observable is prose an architect wrote, and no runner-side rule reads
-    English: the executor judges it, and the platform refuses a verdict that
-    rests on nothing by requiring the one read that is bound to this run, this
-    deployment and this behaviour — the product's own recorded command, read
-    back with `job_evidence` for the name that was fired.
+    def test_a_route_the_observable_names_is_the_read_it_asks_for(self):
+        assert observable_paths(TICK.observable) == ("/reminders",)
+        assert observation_answers(TICK.observable, "http_get", "/reminders?user_ref=42")
+        assert observation_answers(TICK.observable, "http_get", "/reminders/7")
+
+    def test_an_unrelated_path_is_not_that_read(self):
+        assert not observation_answers(TICK.observable, "http_get", "/health")
+        assert not observation_answers(TICK.observable, "telegram_probe", "@bot")
+
+    def test_an_observable_naming_no_route_admits_any_read_of_the_product(self):
+        prose = "the owner receives the reminder text"
+
+        assert observable_paths(prose) == ()
+        assert observation_answers(prose, "telegram_probe", "@weather_bot")
+        assert observation_answers(prose, "http_get", "/reminders")
+
+    def test_a_check_may_quote_the_request_the_run_made(self):
+        tokens = observation_tokens("http_get", "/reminders?user_ref=42")
+
+        assert "/reminders" in tokens
+        assert "/reminders?user_ref=42" in tokens
+        assert "telegram" in observation_tokens("telegram_probe", "@weather_bot")
+
+
+class TestABehaviourRestsOnAReadOfTheProduct:
+    """Fire, read the product's own output, and a check resting on that read.
+
+    What the platform establishes is that the work was done and the executor
+    judged it. The observable is prose an architect wrote; no runner-side rule
+    reads English, and the row says so rather than claiming a proof.
     """
 
     def test_a_verdict_that_performed_nothing_fails_and_names_the_check(self):
@@ -520,10 +557,9 @@ class TestABehaviourRestsOnTheEvidenceThisContractNames:
         )
 
         assert result.passed is False
-        assert _row(result, TICK_ROW)["pass"] is False
         assert "accepted no fire" in _row(result, TICK_ROW)["detail"]
 
-    def test_a_fire_read_back_by_nothing_does_not_pass(self):
+    def test_a_fire_with_no_read_of_the_product_does_not_pass(self):
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
             _acceptance(declared=(TICK,)),
@@ -532,56 +568,72 @@ class TestABehaviourRestsOnTheEvidenceThisContractNames:
 
         assert result.passed is False
         detail = _row(result, TICK_ROW)["detail"]
-        assert "never read the product's own recorded command" in detail
+        assert "made no successful read of /reminders" in detail
         assert TICK.observable in detail
 
-    def test_evidence_for_another_behaviour_is_not_this_behaviours_evidence(self):
+    def test_the_fires_own_receipt_is_not_a_read_of_the_product(self):
+        """job_evidence answers with the core's record of the dispatch, and no more."""
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
-            _acceptance(declared=(TICK,), owned=("reminders.tick", "reminders.sweep")),
-            FakeWorkspace({"reminders.tick": 3}, {"reminders.sweep": 4}),
-        )
-
-        assert result.passed is False
-        assert "never read the product's own recorded command" in _row(result, TICK_ROW)["detail"]
-
-    def test_evidence_read_before_the_fire_is_evidence_of_something_else(self):
-        result = apply_package_acceptance(
-            QAResult(passed=True, checks=[JUDGED], summary="OK"),
-            _acceptance(declared=(TICK,)),
-            FakeWorkspace({"reminders.tick": 5}, {"reminders.tick": 2}),
-        )
-
-        assert result.passed is False
-        assert _row(result, TICK_ROW)["pass"] is False
-
-    def test_a_read_the_run_reported_no_check_for_does_not_pass(self):
-        result = apply_package_acceptance(
-            QAResult(passed=True, checks=[{"name": "health", "pass": True, "detail": "200"}]),
             _acceptance(declared=(TICK,)),
             FakeWorkspace({"reminders.tick": 3}, {"reminders.tick": 4}),
         )
 
         assert result.passed is False
-        assert "no passing check naming reminders.tick" in _row(result, TICK_ROW)["detail"]
+        assert "made no successful read" in _row(result, TICK_ROW)["detail"]
+
+    def test_an_unrelated_read_is_not_this_behaviours_read(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[JUDGED], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 3}, observations=[(4, "http_get", "/health")]),
+        )
+
+        assert result.passed is False
+        assert "made no successful read of /reminders" in _row(result, TICK_ROW)["detail"]
+
+    def test_a_read_before_the_fire_is_a_read_of_something_else(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[JUDGED], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 5}, observations=[(2, *READ[1:])]),
+        )
+
+        assert result.passed is False
+        assert _row(result, TICK_ROW)["pass"] is False
+
+    def test_a_check_that_rests_on_no_read_this_run_made_does_not_pass(self):
+        unbound = {"name": "reminders.tick succeeded", "pass": True, "detail": "the job fired"}
+
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[unbound], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace({"reminders.tick": 3}, observations=[READ]),
+        )
+
+        assert result.passed is False
+        assert "quotes the read it rests on" in _row(result, TICK_ROW)["detail"]
 
     def test_a_failed_check_for_the_behaviour_is_not_a_judgement_in_its_favour(self):
         result = apply_package_acceptance(
             QAResult(passed=False, checks=[{**JUDGED, "pass": False}]),
             _acceptance(declared=(TICK,)),
-            FakeWorkspace({"reminders.tick": 1}, {"reminders.tick": 2}),
+            FakeWorkspace({"reminders.tick": 3}, observations=[READ]),
         )
 
         assert result.passed is False
-        assert "no passing check naming reminders.tick" in _row(result, TICK_ROW)["detail"]
+        assert "quotes the read it rests on" in _row(result, TICK_ROW)["detail"]
 
-    def test_a_command_the_product_never_delivered_does_not_pass(self):
-        """The one thing the evidence read can decide, decided from what it said."""
+    def test_a_command_the_product_never_delivered_settles_the_row(self):
+        """Not a requirement, but a refutation: the event never left the core."""
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
             _acceptance(declared=(TICK,)),
             FakeWorkspace(
-                {"reminders.tick": 2}, {"reminders.tick": 3}, dispatch_status="undelivered"
+                {"reminders.tick": 2},
+                {"reminders.tick": 3},
+                observations=[READ],
+                dispatch_status="undelivered",
             ),
         )
 
@@ -590,20 +642,21 @@ class TestABehaviourRestsOnTheEvidenceThisContractNames:
         assert "dispatch_status=undelivered" in detail
         assert "the event was never emitted" in detail
 
-    def test_a_behaviour_fired_read_back_and_judged_passes_and_says_on_what(self):
+    def test_a_behaviour_fired_read_and_judged_passes_and_says_on_what(self):
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
             _acceptance(declared=(TICK,)),
-            FakeWorkspace({"reminders.tick": 2}, {"reminders.tick": 3}),
+            FakeWorkspace({"reminders.tick": 3}, observations=[READ]),
         )
 
         assert result.passed is True
         detail = _row(result, TICK_ROW)["detail"]
-        assert "job_evidence reminders.tick" in detail
+        assert "http_get /reminders?user_ref=42" in detail
         assert TICK.observable in detail
         assert JUDGED["name"] in detail
         # The row states the limit of what the platform established.
-        assert "not that the words of the observable were met" in detail
+        assert "the work was done and that the executor judged it" in detail
+        assert "not a mechanical proof" in detail
 
 
 class TestEveryDeclaredBehaviourGetsItsOwnRow:
@@ -613,7 +666,7 @@ class TestEveryDeclaredBehaviourGetsItsOwnRow:
         result = apply_package_acceptance(
             QAResult(passed=True, checks=[JUDGED], summary="OK"),
             _acceptance(declared=(TICK, SWEEP), owned=("reminders.sweep", "reminders.tick")),
-            FakeWorkspace({"reminders.tick": 2}, {"reminders.tick": 3}),
+            FakeWorkspace({"reminders.tick": 2}, observations=[READ]),
         )
 
         assert result.passed is False
@@ -626,8 +679,8 @@ class TestEveryDeclaredBehaviourGetsItsOwnRow:
             QAResult(passed=True, checks=[JUDGED, JUDGED_SWEEP], summary="OK"),
             _acceptance(declared=(TICK, SWEEP), owned=("reminders.sweep", "reminders.tick")),
             FakeWorkspace(
-                {"reminders.tick": 2, "reminders.sweep": 4},
-                {"reminders.tick": 3, "reminders.sweep": 5},
+                {"reminders.tick": 2, "reminders.sweep": 6},
+                observations=[READ, SWEEP_READ],
             ),
         )
 

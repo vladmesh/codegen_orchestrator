@@ -46,6 +46,9 @@ from ..agents.qa.packages import (
     active_package_facts,
     behaviour_check,
     connection_check,
+    observable_paths,
+    observation_answers,
+    observation_tokens,
     parse_active_packages,
     parse_job_owners,
     parse_listed_packages,
@@ -843,14 +846,19 @@ def run_package_acceptance_checks(
     )
 
 
-def _judged_check(behaviour: str, submitted: Sequence[dict]) -> str:
-    """The run's own passing check for this behaviour, if it reported one."""
+def _bound_check(behaviour: str, tokens: Sequence[str], submitted: Sequence[dict]) -> str:
+    """The run's own passing check for this behaviour, resting on this read.
+
+    Naming the behaviour is not enough — a check can name anything. It has to
+    quote the request the run actually made, which is what ties the judgement
+    to the read rather than to an assertion about it.
+    """
     wanted = behaviour.casefold()
     for check in submitted:
         if not isinstance(check, dict) or not check.get("pass"):
             continue
         stated = f"{check.get('name', '')} {check.get('detail', '')}".casefold()
-        if wanted in stated:
+        if wanted in stated and any(token.casefold() in stated for token in tokens):
             return str(check.get("name", ""))
     return ""
 
@@ -864,18 +872,16 @@ def _behaviour_row(
 ) -> dict:
     """What this run may say about one declared behaviour of one package.
 
-    Three things have to hold for this exact name, and each missing one is its
-    own reason: the deployment offered a fire and the product accepted one, the
-    run read the product's own recorded command for that same name with
-    `job_evidence`, and the run reported a passing check naming the behaviour.
+    Three things, all of them: the product accepted a fire of this exact name;
+    this run then read the product's own output — the route the criterion's
+    observable names, when it names one — and the read succeeded; and the run
+    reported a passing check that names the behaviour and quotes that read.
 
-    The evidence read is the anchor, and it is the one this bullet's contract
-    names: `POST /jobs/evidence` answers with a command only within the product
-    that fired it, so it is bound to this run, this deployment and this
-    behaviour in a way no other read is. What it establishes is that the named
-    evidence was read — not that the criterion's prose observable was met. That
-    judgement is the executor's, and this row requires the executor to have
-    made it in a check that names the behaviour.
+    Neither the fire's acknowledgement nor a `job_evidence` read is that
+    output: both answer with the core's record of the dispatch, which says
+    nothing about whether any provider consumed the event. What the row
+    establishes is that the work was done and the executor judged it, and it
+    says exactly that rather than claiming the observable's words were proven.
     """
     name = criterion.name
     if not acceptance.fireable:
@@ -900,19 +906,10 @@ def _behaviour_row(
             ),
         )
     evidence = workspace.behaviour_evidence.get(name)
-    if evidence is None or evidence.position < fired:
-        return behaviour_check(
-            package,
-            behaviour=name,
-            reason=(
-                f"the deployed product accepted this run's fire of {name}, and the run never "
-                f"read the product's own recorded command for it (job_evidence {name}) "
-                "afterwards. A fire is answered with a dispatch record, which is not evidence "
-                "the behaviour ran, so this result would rest on the acknowledgement alone. "
-                f"The observable the criterion states: {criterion.observable}"
-            ),
-        )
-    if evidence.dispatch_status != DISPATCHED:
+    if evidence is not None and evidence.dispatch_status != DISPATCHED:
+        # Not a requirement — the fire's receipt is never the observation — but
+        # when this run did read it and the product said the event never left,
+        # that is the product refuting the behaviour, and it settles the row.
         return behaviour_check(
             package,
             behaviour=name,
@@ -923,18 +920,49 @@ def _behaviour_row(
                 f"{criterion.observable}"
             ),
         )
-    judged = _judged_check(name, submitted)
-    if not judged:
+    observations = [
+        observation
+        for observation in workspace.observations
+        if observation.position >= fired
+        and observation_answers(criterion.observable, observation.tool, observation.subject)
+    ]
+    if not observations:
+        named = observable_paths(criterion.observable)
+        wanted = f" of {', '.join(named)}" if named else " of the product's own output"
         return behaviour_check(
             package,
             behaviour=name,
             reason=(
-                f"this run fired {name} and read the product's recorded evidence for it, but "
-                f"its result carries no passing check naming {name}, so nothing judged the "
-                f"observable the criterion states: {criterion.observable}"
+                f"the deployed product accepted this run's fire of {name}, and the run made no "
+                f"successful read{wanted} afterwards. A fire and its recorded command are the "
+                "product core's account of the dispatch, not of the behaviour, so this result "
+                f"would rest on nothing the product did. The criterion's observable: "
+                f"{criterion.observable}"
             ),
         )
-    return behaviour_check(package, behaviour=name, observable=criterion.observable, judged=judged)
+    for observation in observations:
+        judged = _bound_check(
+            name, observation_tokens(observation.tool, observation.subject), submitted
+        )
+        if judged:
+            return behaviour_check(
+                package,
+                behaviour=name,
+                observable=criterion.observable,
+                observed=f"{observation.tool} {observation.subject}",
+                judged=judged,
+            )
+    read = "; ".join(f"{observation.tool} {observation.subject}" for observation in observations)
+    return behaviour_check(
+        package,
+        behaviour=name,
+        reason=(
+            f"this run fired {name} and read the product ({read}), but its result carries no "
+            f"passing check that both names {name} and quotes the read it rests on, so nothing "
+            f"in this verdict is tied to what the product did. The criterion's observable: "
+            f"{criterion.observable}"
+        ),
+    )
 
 
 def apply_package_acceptance(

@@ -65,13 +65,16 @@ logger = structlog.get_logger(__name__)
 
 PUBLIC_PROBE_TIMEOUT = 30
 MAX_BODY = 8000
+#: A product that answered with a client or server error answered about the
+#: request, not about itself: it is not a read of the product's own output.
+HTTP_ERROR = 400
 
 
 def _truncate(text: str) -> str:
     return text[:MAX_BODY]
 
 
-def _remote_tools(session: QATargetSession, record, refuse) -> dict:
+def _remote_tools(session: QATargetSession, record, refuse, observe) -> dict:
     """The calls that leave the QA runtime, each bounded by the capability set.
 
     None of these carries a rule of its own: `http_get` can only address the
@@ -99,6 +102,8 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
             "body": _truncate(response.text),
         }
         record("http_get", f"GET {url}", f"{response.status_code} {result['body']}")
+        if response.status_code < HTTP_ERROR:
+            observe("http_get", path if path.startswith("/") else f"/{path}")
         return result
 
     async def localhost_http_get(port: int, path: str) -> dict:
@@ -108,6 +113,8 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
         except QATargetError as exc:
             return refuse("localhost_http_get", request, exc)
         record("localhost_http_get", request, remote.stdout or remote.stderr)
+        if remote.exit_status == 0:
+            observe("localhost_http_get", path)
         return remote.as_dict()
 
     async def remote_read(path: str) -> dict:
@@ -116,6 +123,8 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
         except QATargetError as exc:
             return refuse("remote_read", path, exc)
         record("remote_read", path, remote.stdout or remote.stderr)
+        if remote.exit_status == 0:
+            observe("remote_read", path)
         return remote.as_dict()
 
     async def remote_exec(command: list[str]) -> dict:
@@ -125,6 +134,8 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
         except QATargetError as exc:
             return refuse("remote_exec", request, exc)
         record("remote_exec", request, remote.stdout or remote.stderr)
+        if remote.exit_status == 0:
+            observe("remote_exec", request)
         return remote.as_dict()
 
     async def container_logs(container: str, tail: int = 200) -> dict:
@@ -133,6 +144,8 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
         except QATargetError as exc:
             return refuse("container_logs", container, exc)
         record("container_logs", f"{container} tail={tail}", remote.stdout or remote.stderr)
+        if remote.exit_status == 0:
+            observe("container_logs", container)
         return remote.as_dict()
 
     async def container_inspect(container: str) -> dict:
@@ -174,6 +187,9 @@ class _TelegramCapability:
         """Persist runner-owned evidence and fail closed on Telegram errors."""
         blocker = self._blocker_for(evidence)
         self._workspace.record_telegram_probe(evidence, blocker)
+        if blocker is None and evidence.replies:
+            # The bot answered: what it sent is the product's own output.
+            self._workspace.record_observation(tool, f"@{self._bot_username}")
         serialized = evidence.model_dump(mode="json")
         self._workspace.record(tool, evidence.attempted, repr(serialized))
         return {"error": evidence.error, **serialized} if blocker else serialized
@@ -525,11 +541,15 @@ def build_qa_callables(
         logger.info("qa_tool_refused", tool=tool, error=str(error))
         return {"error": str(error)}
 
+    def observe(tool: str, subject: str) -> None:
+        """One successful read of the product's own output, as the runner saw it."""
+        workspace.record_observation(tool, subject)
+
     def write_qa_report(markdown: str) -> str:
         workspace.write_report(markdown)
         return f"QA report stored ({len(markdown)} characters)."
 
-    callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse))
+    callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse, observe))
     callables["write_qa_report"] = write_qa_report
     if jobs is not None and jobs.behaviours:
         jobs_capability = _JobsCapability(

@@ -21,6 +21,7 @@ import ast
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
+import re
 
 import yaml
 
@@ -37,6 +38,11 @@ CONTRACT_READ_LIMIT = 262144
 
 _PACKAGE_OWNER = "package:"
 _DIGEST_SHOWN = 12
+#: A path a criterion's observable names, so the run is told which read of the
+#: product answers it instead of the platform guessing at one.
+_OBSERVABLE_PATH = re.compile(r"(?<![\w/])/[A-Za-z0-9_][A-Za-z0-9_\-./]*")
+#: A token shorter than this matches too much to bind anything.
+_MIN_TOKEN = 3
 
 
 class PackageContractUnreadable(ValueError):
@@ -194,6 +200,56 @@ def parse_job_owners(source: str) -> dict[str, str]:
     return dict(sources)
 
 
+def observable_paths(observable: str) -> tuple[str, ...]:
+    """The product routes a criterion's observable names, if it names any.
+
+    An observable that says where to look — "GET /reminders?user_ref=42 shows
+    the reminder as emitted" — tells the run which read answers it, and the
+    platform requires that read rather than accepting an unrelated one. An
+    observable that names no route leaves the run to read what it can, and the
+    result says so instead of pretending the read was narrowed.
+    """
+    return tuple(
+        dict.fromkeys(
+            match.group(0).rstrip(".,;") for match in _OBSERVABLE_PATH.finditer(observable)
+        )
+    )
+
+
+def observation_tokens(tool: str, subject: str) -> tuple[str, ...]:
+    """What a check may quote to show it rests on this read.
+
+    The tokens are the words the request itself used, so a check that says what
+    it did contains one of them and a check that says nothing does not.
+    """
+    tokens = {subject}
+    if subject.startswith("/"):
+        tokens.add(subject.split("?")[0])
+    if subject.startswith("@"):
+        tokens.add(subject[1:])
+        tokens.add("telegram")
+    if tool == "remote_exec":
+        tokens.update(part for part in subject.split() if len(part) >= _MIN_TOKEN)
+    return tuple(sorted(token for token in tokens if len(token) >= _MIN_TOKEN))
+
+
+def observation_answers(observable: str, tool: str, subject: str) -> bool:
+    """Whether this read is one the criterion's observable asked for.
+
+    When the observable names routes, only a read of one of them answers it: an
+    unrelated path is not this behaviour's observation. When it names none,
+    every read of the product's own output is admissible, because nothing in
+    the criterion says which one is the right one.
+    """
+    paths = observable_paths(observable)
+    if not paths:
+        return True
+    if tool not in {"http_get", "localhost_http_get"}:
+        return False
+    read = subject.split("?")[0]
+    return any(read == path or read.startswith(f"{path.rstrip('/')}/") for path in paths)
+
+
 def connection_check(package: ActivePackage) -> dict:
     """The package's connection check, answered by the booted product.
 
@@ -230,24 +286,23 @@ def behaviour_check(
     *,
     behaviour: str = "",
     observable: str = "",
+    observed: str = "",
     judged: str = "",
     reason: str = "",
 ) -> dict:
     """One declared behaviour's result, and what the platform may say about it.
 
-    Not the fire: the product answers a fire with a dispatch record, and this
-    platform's own contract says that record is not evidence anything consumed
-    the event or ran the behaviour. And not a rule that reads English, because
-    the observable is prose an architect wrote and no runner-side condition can
-    decide whether it was met. The division is stated rather than fudged: the
-    executor judges the observable, and the platform establishes that the
-    evidence this contract names — the product's own recorded command for this
-    behaviour, read back with `job_evidence` for the name that was fired — was
-    actually read, and that the run reported a check resting on it.
+    Not the fire, and not the fire's receipt: the product answers both with the
+    core's record of the dispatch, and this platform's own contract says that
+    record is not evidence anything consumed the event or ran the behaviour.
+    What this row requires is that the run fired the behaviour, then read the
+    product's own output, and reported a check resting on that read.
 
-    So a passing row says what was read and who judged it. It does not claim
-    that the observable's words were satisfied; a row that claimed that would
-    be asserting more than anything here established.
+    What it establishes is said plainly, in the row itself: the work was done
+    and the executor judged it. Not that the criterion's prose observable is
+    mechanically proven — the observable is English an architect wrote, no
+    runner-side rule reads English, and a row claiming otherwise would be the
+    fault this sprint has corrected five times.
     """
     if reason:
         return {
@@ -259,11 +314,11 @@ def behaviour_check(
         "name": behaviour_check_name(package.name, behaviour),
         "pass": True,
         "detail": (
-            f"this run fired {behaviour} on the deployed product and read the product's own "
-            f"recorded evidence for it with job_evidence {behaviour}; its check {judged!r} "
-            f"passed, judging the observable the criterion states: {observable}. The platform "
-            "establishes that this evidence was read, not that the words of the observable "
-            "were met — that judgement is the executor's"
+            f"this run fired {behaviour} on the deployed product, then read the product's own "
+            f"output with {observed}, and its check {judged!r} rests on that read and passed. "
+            f"The criterion's observable: {observable}. The platform establishes that the work "
+            "was done and that the executor judged it; the words of the observable are the "
+            "executor's judgement, not a mechanical proof"
         ),
     }
 
@@ -311,14 +366,13 @@ def active_package_facts(
         "already performed against this deployment, and it is in this run's result "
         "whatever you submit: the package is active in the booted product. The others are "
         "yours, one for each package behaviour named below, and none of them is finished "
-        "by firing. For each: fire it, then read `job_evidence <name>` for that same name "
-        "— the product answers with the command only within the product that fired it, so "
-        "that read is what ties this run's result to this behaviour on this deployment, "
-        "and it is required. It is still not the observable, because a dispatch record "
-        "never is: judge the observable from what the product itself sent, wrote or now "
-        "exposes, and report a check that names the behaviour and says what you judged. A "
-        "behaviour that was not fired, whose evidence was not read, or that no submitted "
-        "check names, fails — one row each, so none of them can go missing.",
+        "by firing. For each: fire it, then read the product's own output — the route the "
+        "criterion's observable names, or the bot it names — and report a check that names "
+        "the behaviour and quotes the exact request you made, so the result shows what it "
+        "rests on. A dispatch record is not that output and neither is `job_evidence`: "
+        "both answer with the product core's record of the fire. A behaviour that was not "
+        "fired, whose output was not read, or whose check rests on no read you made, "
+        "fails — one row each, so none of them can go missing.",
         "- Where a package's routes are mounted, this deployment does not say: package "
         "protocol v1 keeps the HTTP prefix in the installed package.yaml, inside the "
         "wheel, and the generated contract records only name, version and manifest "

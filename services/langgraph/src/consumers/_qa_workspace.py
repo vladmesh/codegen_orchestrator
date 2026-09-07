@@ -33,6 +33,25 @@ VERDICT_NAME = "verdict.json"
 
 
 @dataclass(frozen=True)
+class ProductObservation:
+    """One successful read of the deployed product's own output.
+
+    Recorded by the runtime when a call came back with something the product
+    answered — a route that responded, a file that was read, a bot that
+    replied. A fire and its evidence read are not observations: both answer
+    with the core's record of the dispatch, which says nothing about what any
+    provider did with the event.
+
+    `subject` is what was read, in the words the request used, so a check that
+    claims to rest on this read can be matched against it.
+    """
+
+    position: int
+    tool: str
+    subject: str
+
+
+@dataclass(frozen=True)
 class BehaviourEvidence:
     """What the product's own record of one fired behaviour said.
 
@@ -68,6 +87,10 @@ class QAWorkspace:
     #: run never read the evidence" is the runner's own fact and not an
     #: executor's account of itself.
     behaviour_evidence: dict[str, BehaviourEvidence] = field(default_factory=dict)
+    #: Every successful read of the product's own output this run made, in
+    #: order. Written by the runtime, so what a run looked at is the runner's
+    #: fact and not an executor's account of itself.
+    observations: list[ProductObservation] = field(default_factory=list)
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -119,6 +142,12 @@ class QAWorkspace:
         """
         self.behaviour_evidence.setdefault(
             name, BehaviourEvidence(position=len(self._trace), dispatch_status=dispatch_status)
+        )
+
+    def record_observation(self, tool: str, subject: str) -> None:
+        """Note that this run read the product's own output, and what it read."""
+        self.observations.append(
+            ProductObservation(position=len(self._trace), tool=tool, subject=subject)
         )
 
     def record_telegram_probe(
