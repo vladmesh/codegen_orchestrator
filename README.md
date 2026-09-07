@@ -10,9 +10,9 @@ containers write the code; the pipeline puts it through CI, deploy and post-rele
 comes back and says "now make it send pictures of cats", and the same machinery extends the running
 project rather than generating a new one.
 
-Generated projects are built from [service-template](https://github.com/vladmesh/service-template),
-a spec-first framework, so the pipeline reasons about a declared contract instead of guessing at
-free-form code.
+Generated projects are built from
+[codegen-product-kit](https://github.com/vladmesh/codegen-product-kit), a spec-first framework, so
+the pipeline reasons about a declared contract instead of guessing at free-form code.
 
 ## How a request flows
 

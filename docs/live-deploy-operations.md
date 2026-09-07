@@ -29,9 +29,10 @@ Fail-fast boundary: an unknown computed key, empty project context, invalid port
 partial image URL must stop the deploy, not fall back to a default.
 
 Known architectural risks: deploy always reserves `postgres` and `redis` allocations
-even for a project that does not use them (correct for service-template 0.3.x; a
-general deploy should read required infrastructure from an explicit project
-contract). Re-allocating a missing module picks a freshly chosen server, so backend
+even for a project that does not use them. Under the pinned `codegen-product-kit`
+this over-reserves: the kit's compose only defines `db` for a `backend` project, so a
+`tg_bot`-only product gets a Postgres allocation it never opens. A general deploy
+should read required infrastructure from an explicit project contract. Re-allocating a missing module picks a freshly chosen server, so backend
 and postgres could in principle land on different hosts. Target invariant: all
 allocations of one application belong to one deploy target, unless the model gains
 explicit support for distributed deploys.

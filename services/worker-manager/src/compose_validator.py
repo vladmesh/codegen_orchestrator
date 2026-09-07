@@ -143,7 +143,7 @@ RESOURCE_IDENTITY_POLICY = ResourceIdentityPolicy()
 # checked there and again in the resolved project and immutable snapshot.
 #
 # The build entries are the pinned compose-go BuildConfig surface. Generated
-# projects may use only the service-template shape: static workspace-contained
+# projects may use only the codegen-product-kit shape: static workspace-contained
 # context and dockerfile plus non-host-capable build args. This table deliberately
 # does not claim to model arbitrary Compose fields outside the supported commands.
 COMPOSE_HOST_CAPABILITY_POLICIES = {

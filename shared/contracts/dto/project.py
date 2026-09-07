@@ -22,9 +22,12 @@ class ProjectStatus(StrEnum):
 
 
 class ServiceModule(StrEnum):
-    """Available project modules for scaffolding.
+    """Project modules the orchestrator can request when scaffolding.
 
-    Must match module names in service-template/copier.yml.
+    Production scaffolds from `gh:vladmesh/codegen-product-kit` at the release
+    tag pinned in `scheduler.service_template_ref`, whose `copier.yml` declares
+    `backend` and `tg_bot`. `notifications` and `frontend` are inherited from
+    the earlier `service-template` and are not available from the kit.
     """
 
     BACKEND = "backend"

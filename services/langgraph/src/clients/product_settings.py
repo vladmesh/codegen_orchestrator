@@ -1,7 +1,7 @@
 """Narrow client for the generated product's core settings write path.
 
 The same shape as `users_grant.py`, one contract along: it calls only the two
-documented endpoints of the released settings core (`service-template`,
+documented endpoints of the released settings core (`codegen-product-kit`,
 `docs/CONTRACTS.md`, "Core settings v1"), takes the deployment capability as an
 argument, puts it in a request header and nowhere else, and returns a bounded,
 credential-safe outcome per setting.

@@ -118,7 +118,7 @@ async def run_scaffold(  # noqa: PLR0915
     Args:
         project_id: Project ID for logging
         repository_id: Repository ID (used as workspace directory name)
-        template_repo: GitHub service-template source
+        template_repo: Admitted Copier source; production scaffolds from codegen-product-kit
         template_ref: Immutable release tag or commit
         project_name: Sanitized project name for copier
         modules: Comma-separated module list

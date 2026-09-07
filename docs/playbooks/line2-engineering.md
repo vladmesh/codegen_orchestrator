@@ -12,6 +12,11 @@ verify that Claude Code, Factory.ai, or OpenAI Codex builds a working project en
 
 7 test cases covering all valid module combinations (notifications excluded — requires backend and has known service-template issues).
 
+> This matrix was written against `service-template`'s module set. Production now scaffolds from
+> `codegen-product-kit`, which declares only `backend` and `tg_bot`; the `frontend` and
+> `notifications` rows below do not correspond to a module the pinned kit offers. Rebuilding the
+> matrix for the kit's module set is its own task.
+
 | # | Project Name | Modules | Task Description |
 |---|-------------|---------|------------------|
 | 1 | `todo_api` | `backend` | REST API for managing TODO items. Endpoints: `GET /todos`, `POST /todos`, `PATCH /todos/{id}`, `DELETE /todos/{id}`. Each TODO has: id, title, description, is_completed, created_at. |
@@ -351,7 +356,7 @@ For each problem, classify it into one of four types:
 | Type | Description | Where to fix |
 |------|-------------|--------------|
 | **orchestrator** | Bug or issue in this project (codegen_orchestrator) | Fix in this repo |
-| **template** | Bug or issue in `service-template` (scaffolding, framework, generated code). The template lives at `/home/dev/projects/service-template` — read it to confirm root cause. | Fix in service-template repo |
+| **template** | Bug or issue in `codegen-product-kit` (scaffolding, framework, generated code). The template lives at `/home/dev/projects/codegen-product-kit` — read it to confirm root cause. | Fix in the codegen-product-kit repo |
 | **meta** | Error in test setup: wrong commands, missing prerequisites, unclear playbook instructions | Fix by updating this playbook |
 | **other** | Network failures, hardware issues, transient errors, anything not in the above three | Document and move on |
 
