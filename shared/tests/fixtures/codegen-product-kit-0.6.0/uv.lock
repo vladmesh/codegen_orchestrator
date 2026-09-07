@@ -230,7 +230,7 @@ wheels = [
 [[package]]
 name = "codegen-kit-tooling"
 version = "0.1.0"
-source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=fc947a3d38ccf877d04f545b49f06c195b4202c5#fc947a3d38ccf877d04f545b49f06c195b4202c5" }
+source = { git = "https://github.com/vladmesh/codegen-product-kit.git?rev=1d0c0fdd8b12bf1548ab3f97882e5edee7c55763#1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" }
 dependencies = [
     { name = "datamodel-code-generator", extra = ["http"] },
     { name = "jinja2" },
@@ -389,7 +389,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=fc947a3d38ccf877d04f545b49f06c195b4202c5" }]
+requires-dist = [{ name = "codegen-kit-tooling", git = "https://github.com/vladmesh/codegen-product-kit.git?rev=1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" }]
 
 [package.metadata.requires-dev]
 dev = [

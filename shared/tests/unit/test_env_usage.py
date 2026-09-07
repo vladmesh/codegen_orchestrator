@@ -395,8 +395,24 @@ def test_template_fixture_content_matches_its_pinned_render():
     }
     assert (
         fixture_tree_digest(fixture)
-        == "83edccc916445bb6fb68970cd536a238b116685cf66e4a09568a6adc2509415d"
+        == "2add3efc3be54afa3179810280a77fe9510178758532931d511e3f0ff1002b1d"
     )
+
+
+def test_template_fixture_contains_the_0_6_runtime_boundaries():
+    fixture = template_fixture()
+    packages = (fixture / "codegen_kit/packages.py").read_text()
+    database = (fixture / "codegen_kit/database.py").read_text()
+    migrations = (fixture / "codegen_kit/migrations.py").read_text()
+    settings = (fixture / "services/backend/src/controllers/settings.py").read_text()
+
+    assert 'CORE_VERSION = "2.0.0"' in packages
+    assert "await package.runtime.startup(application)" in packages
+    assert "class SettingSeedPackage(Protocol):" in packages
+    assert "def owned_package_database(caller_path: Path)" in database
+    assert 'SET LOCAL search_path TO "{self._schema}", public' in database
+    assert 'config.attributes["version_table_schema"] = schema' in migrations
+    assert "await seed.seed_setting(session, payload.key, payload.value)" in settings
 
 
 def test_template_fixture_extracts_without_crashing(tmp_path: Path):

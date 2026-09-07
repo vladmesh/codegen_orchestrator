@@ -807,6 +807,10 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
+The production boundary is the annotated `0.6.0` tag, which dereferences to
+`1d0c0fdd8b12bf1548ab3f97882e5edee7c55763`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.0` tree is its `backend,tg_bot`
+Copier render and records that tag in `_commit`.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by
@@ -822,6 +826,14 @@ The pin is the kit's release tag, so Copier's clone reaches it and records that 
 `_commit` — the pinned ref itself, which is what the vendored fixture carries and what
 the stage-5 smoke compares against. The bare short SHA a tagless clone used to record is
 no longer accepted; a git-describe value stays accepted for a source pinned by commit.
+
+`REQUESTABLE_SERVICE_MODULES` in `shared/contracts/dto/project.py` is the
+new-project boundary and matches the kit's `copier.yml`: only `backend` and
+`tg_bot` may enter `ProjectCreate` or the PO project tool. `ServiceModule` also
+retains `notifications` and `frontend` solely to deserialize project values
+written by the released `service-template` producer. Those legacy values remain
+available to historical reads, cleanup, and port-role logic but are not offered,
+substituted, or accepted for a new scaffold.
 
 ### Installing a kit package into a generated product
 

@@ -29,7 +29,7 @@ from src.agents.po.tools import (
     validate_telegram_token,
     web_search,
 )
-from src.agents.po.tools_projects import _project_creation_identity
+from src.agents.po.tools_projects import AVAILABLE_MODULES, _project_creation_identity
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 
@@ -116,6 +116,9 @@ def _make_config(telegram_chat_id: str = "test-user", retry_story_id: str = "") 
 
 
 class TestCreateProject:
+    def test_available_modules_match_the_pinned_kit(self):
+        assert AVAILABLE_MODULES == {"backend", "tg_bot"}
+
     @pytest.mark.asyncio
     async def test_creates_project_with_modules(self, mock_api_client):
         project_data = {"id": "abc123", "title": "My Bot", "slug": "my-bot-abc1"}
@@ -256,6 +259,19 @@ class TestCreateProject:
         )
         assert "Error" in result
         assert "invalid_mod" in result
+        mock_api_client.post_raw.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("legacy_module", ["notifications", "frontend"])
+    async def test_rejects_legacy_modules_before_project_creation(
+        self, mock_api_client, legacy_module
+    ):
+        result = await create_project.ainvoke(
+            {"title": "Test", "modules": legacy_module},
+            config=_make_config("user-1"),
+        )
+
+        assert result == f"Error: invalid modules: {legacy_module}. Available: backend, tg_bot"
         mock_api_client.post_raw.assert_not_called()
 
     @pytest.mark.asyncio

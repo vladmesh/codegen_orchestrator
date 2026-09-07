@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -22,18 +22,25 @@ class ProjectStatus(StrEnum):
 
 
 class ServiceModule(StrEnum):
-    """Project modules the orchestrator can request when scaffolding.
+    """Project module values retained in persisted project records.
 
     Production scaffolds from `gh:vladmesh/codegen-product-kit` at the release
     tag pinned in `scheduler.service_template_ref`, whose `copier.yml` declares
-    `backend` and `tg_bot`. `notifications` and `frontend` are inherited from
-    the earlier `service-template` and are not available from the kit.
+    `backend` and `tg_bot`. The released `service-template` producer also wrote
+    `notifications` and `frontend`; they remain here only so historical
+    `ProjectDTO` records, cleanup, and port-role reads continue to deserialize.
     """
 
     BACKEND = "backend"
     TG_BOT = "tg_bot"
     NOTIFICATIONS = "notifications"
     FRONTEND = "frontend"
+
+
+# The complete module set accepted for new scaffolds by the pinned kit. Keep this
+# separate from ServiceModule: that enum also has to parse values released by the
+# earlier service-template producer from historically persisted ProjectDTO records.
+REQUESTABLE_SERVICE_MODULES = frozenset({ServiceModule.BACKEND, ServiceModule.TG_BOT})
 
 
 class ProjectCreate(BaseModel):
@@ -56,6 +63,21 @@ class ProjectCreate(BaseModel):
     # dead. The caller that starts the run supplies its own id here — the live
     # harness its manifest run id, the PO agent the request it opened.
     initiating_run_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("config")
+    @classmethod
+    def validate_scaffold_modules(cls, config: dict[str, Any]) -> dict[str, Any]:
+        """Reject new-project modules that the pinned kit cannot scaffold."""
+        modules = config.get("modules")
+        if modules is None:
+            return config
+        if not isinstance(modules, list):
+            raise ValueError("project config modules must be a list")
+        requestable = {module.value for module in REQUESTABLE_SERVICE_MODULES}
+        invalid = [module for module in modules if module not in requestable]
+        if invalid:
+            raise ValueError(f"unsupported scaffold modules: {', '.join(map(str, invalid))}")
+        return config
 
 
 class ProjectUpdate(BaseModel):

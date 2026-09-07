@@ -23,11 +23,12 @@ LIVE_DIR = REPO_ROOT / "tests" / "live"
 PIPELINE_HELPERS = LIVE_DIR / "pipeline_helpers.py"
 STAGE5_SMOKE = REPO_ROOT / "tests" / "integration" / "template" / "stage5_mock_smoke.py"
 CI_GATE = REPO_ROOT / "scripts" / "check-ci-gate.py"
-# The seed itself holds the pin, and the CHANGELOG records the day it last moved; both are
-# records rather than copies read by code. The fixture tree is a vendored render whose own
-# files mention the revision they came from.
+# The seed itself holds the pin; the contracts and changelog record the release boundary.
+# Those are records rather than copies read by code. The fixture tree is a vendored render
+# whose own files mention the revision they came from.
 LITERAL_ALLOWED = {
     "scripts/system_configs.yaml",
+    "docs/CONTRACTS.md",
     "docs/CHANGELOG.md",
 }
 FIXTURE_TREE = "shared/tests/fixtures/"
@@ -82,6 +83,11 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     )
 
     assert carriers == [], f"the template ref is repeated outside its definition: {carriers}"
+
+
+def test_production_pin_is_the_immutable_kit_release() -> None:
+    assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 0)
 
 
 @pytest.fixture
