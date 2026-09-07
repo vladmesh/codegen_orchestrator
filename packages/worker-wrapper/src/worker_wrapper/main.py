@@ -35,42 +35,19 @@ async def main():
         sys.exit(1)
 
     wrapper = WorkerWrapper(config=config)
+    run_task = asyncio.create_task(wrapper.run())
 
-    # Signal handling
     loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
 
     def handle_signal():
         logger.info("signal_received")
-        stop_event.set()
-        # Create task to cancel wrapper
-        if wrapper._task:
-            wrapper._task.cancel()
+        run_task.cancel()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, handle_signal)
 
     try:
-        # We run wrapper directly.
-        # wrapper.run() isn't infinite unless it loops forever.
-        # Our implementation loops until _running is false.
-        # But here we want to handle graceful shutdown via stop_event?
-        # Actually wrapper.run() handles loop. We just need to stop it.
-        # But loop.add_signal_handler callbacks are synchronous.
-        # Wrapper needs a stop method or check a flag.
-        # current wrapper.run sets _running=True.
-        # We can implement a stop() method on wrapper.
-
-        # Hack for now: signal handler cancels the task if run as task,
-        # OR sets _running=False if we can access it.
-        # But locally main runs it.
-
-        # Let's wrap in task to allow cancellation
-        wrapper._task = asyncio.create_task(wrapper.run())
-
-        # Wait for task or stop signal
-        await wrapper._task
-
+        await run_task
     except asyncio.CancelledError:
         pass
     except Exception as e:
