@@ -147,3 +147,62 @@ class TestPromptCriterionFormRoundTrips:
             assert behaviours[0].name == "daily_digest"
             assert behaviours[0].arguments == {"languages": ["ru", "en"]}
             assert behaviours[0].observable == "a digest per configured language"
+
+
+class TestCapabilityShapeDirectives:
+    """Where a capability lives is the architect's decision, and a package has a protocol."""
+
+    def test_states_the_ladder_in_order(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        order = [
+            "**Reuse what exists.**",
+            "**A shared service.**",
+            "**A container.**",
+            "**An in-process kit package.**",
+        ]
+        positions = [prompt.find(rung) for rung in order]
+        assert all(position > 0 for position in positions), positions
+        assert positions == sorted(positions), positions
+
+    def test_names_the_two_shapes_that_disqualify_a_package(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "a capability that needs a synchronous call into the host does not fit" in prompt
+        assert "a capability that needs a stateless consumer does not fit" in prompt
+
+    def test_names_the_protocol_constraints_a_package_plan_accepts(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "the only supported outward dependency is the event bus" in prompt
+        assert "prefixed settings and job names" in prompt
+        assert "owns its own postgres schema" in prompt
+        assert "package boundaries are import boundaries" in prompt
+        assert "only `in_process` is implemented" in prompt
+
+    def test_the_package_task_installs_and_never_hand_writes_package_code(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "Package code is never hand-written into a product." in prompt
+        assert "`kit add <name> --wheel <path>`" in prompt
+        assert "regeneration" in prompt.lower()
+
+    def test_points_at_the_recipe_instead_of_restating_it(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "docs/CONTRACTS.md" in prompt
+        assert "Installing a kit package into a generated product" in prompt
+
+    def test_leaves_a_story_that_needs_no_new_capability_untouched(self):
+        prompt = " ".join(SYSTEM_PROMPT.lower().split())
+        assert "a story whose capability already exists gets none of this" in prompt
+
+
+class TestDecompositionPhilosophyIsReconciled:
+    """The reader is told which decision is the architect's and which the developer's."""
+
+    def test_says_shape_is_the_architects_and_implementation_the_developers(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "Shape is yours; implementation inside it is the developer's." in prompt
+
+    def test_the_over_specification_rule_excepts_the_capability_shape(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        rule = "Do NOT over-specify implementation details"
+        assert rule in prompt
+        tail = prompt[prompt.find(rule) : prompt.find(rule) + 400]
+        assert "Naming the capability shape is not over-specification" in tail

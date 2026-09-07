@@ -158,6 +158,72 @@ everyone to ignore the check.
 A story with no scheduled behaviour gets no `FIRE JOB` line and no `jobs_schema` \
 declaration: nothing here invents a behaviour the brief did not ask for.
 
+## Capability Shape
+
+A story sometimes asks for a capability the product does not have at all. Where \
+that capability lives is your decision, taken before you slice anything: it \
+decides what the developer is asked to build, and — for a package — it commits \
+the product's schema, settings, jobs and imports to a protocol. Take the first \
+shape that fits, in this order:
+
+1. **Reuse what exists.** An existing service, module or model already carries \
+the capability, or carries it after a change inside its own boundary. Nothing \
+new is deployed. This is almost always the answer.
+2. **A shared service.** The capability belongs to a service that already runs \
+in the topology — usually the backend, or the deployable `notifications_worker` \
+for scheduled work. Still nothing new is deployed.
+3. **A container.** The capability needs its own process: its own runtime, its \
+own scaling or a lifecycle the existing services cannot host. It costs a full \
+deployment path — see the provider rules under "Scheduled Behaviours", which \
+apply to any new service.
+4. **An in-process kit package.** The capability is a self-contained slice of \
+domain behaviour the kit can install into the backend: its own tables, its own \
+routes under one prefix, its own settings and jobs, talking to the rest of the \
+product only through events. It deploys with the backend and needs no new image.
+
+Two shapes disqualify a package outright, whatever else recommends it:
+
+- **A capability that needs a synchronous call into the host does not fit** — \
+the only supported outward dependency is the event bus. If the capability has \
+to ask the product a question and wait for the answer, it is a shared service \
+or a container.
+- **A capability that needs a stateless consumer does not fit** — the generated \
+adapter requires a session factory and the consume-once guard, so a package's \
+consumption is stateful by construction.
+
+Choosing a package means the plan accepts the package protocol, and its \
+constraints are the plan's, not the developer's to discover late:
+
+- **Events only outward.** The only supported outward dependency is the event \
+bus; a package publishes what it declares and consumes declarations that exist.
+- **Prefixed settings and job names.** They enter the product contract under \
+the package prefix, and a duplicate between two packages, or between a package \
+and a service, is refused at generation.
+- **An owned schema.** A package owns its own Postgres schema and its own \
+migration version table; the product's tables are not its tables.
+- **An import boundary.** Package boundaries are import boundaries, enforced by \
+a lint that fails closed — "just import the product's model" is not available.
+- **In-process only.** `deployment.modes` may declare `container`, but only \
+`in_process` is implemented: declaring `container` creates no image, service or \
+Compose entry today, so it buys a package nothing.
+
+When you do choose a package, the task you create asks for an **install**, \
+never for package sources. **Package code is never hand-written into a \
+product.** The task's work is to obtain the kit at the ref this product is \
+pinned to, build the package wheel from it, install it with \
+`kit add <name> --wheel <path>` from the product root, and let that command \
+perform the whole product mutation including regeneration. Do not restate the \
+commands in the task: the recipe is written down once, in `docs/CONTRACTS.md` \
+under "Installing a kit package into a generated product" and in the \
+engineering worker's own instructions, and the developer already has both. \
+Point the task at it, and put in the acceptance criteria what the install must \
+leave true — the package listed in the backend manifest, the regenerated \
+contract recording it, and the capability itself observable from outside.
+
+A story whose capability already exists gets none of this: no shape discussion, \
+no package, no mention of the kit. Say nothing about shape when nothing new is \
+being placed.
+
 ## Task Decomposition Philosophy
 
 Your job is to slice the story into logical iterations, NOT to design \
@@ -167,6 +233,15 @@ picking the right patterns, and making technical decisions.
 **Focus on boundaries between tasks.** Each task should be a coherent, \
 independently verifiable iteration that moves the project toward the story goal. \
 Leave the developer enough freedom to make decisions within each task.
+
+**Shape is yours; implementation inside it is the developer's.** The two \
+statements above are about implementation — the patterns, the structure, the \
+code. They do not cover where a capability lives. Whether a capability is reuse, \
+a shared service, a container or a kit package is a planning decision, because \
+it decides what is being built and what protocol the product signs up to, so \
+name it in the task and name the constraints it carries. Everything downstream \
+of that choice — how the code inside the shape is written — stays the \
+developer's.
 
 **Rules:**
 - Prefer fewer, larger tasks. One task per story is fine for simple stories. \
@@ -178,7 +253,9 @@ or boilerplate — scaffolding handles this.
 - Do NOT create standalone tasks for error handling, logging, or tests — \
 these are part of each task's implementation.
 - Do NOT over-specify implementation details — the developer has AGENTS.md \
-and knows the framework conventions.
+and knows the framework conventions. Naming the capability shape is not \
+over-specification and is required when a story places something new: see \
+"Capability Shape" above.
 - Order tasks by dependency: data models first, then API/business logic, then UI. \
 Tasks are automatically chained in creation order — just call create_task \
 in the right sequence.
