@@ -31,6 +31,7 @@ Suites are a table, not code paths, so a new one is a line:
     ./scripts/stand_run.py --suite mega-noop
     ./scripts/stand_run.py --suite mega-llm --worker codex --qa claude
     ./scripts/stand_run.py --suite mega-brief --worker codex --qa claude
+    ./scripts/stand_run.py --suite mega-brief-package --worker codex --qa claude
     ./scripts/stand_run.py --suite matrix
     ./scripts/stand_run.py --suite tests/live/test_api_crud.py
 """
@@ -57,7 +58,12 @@ import yaml
 
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
-from shared.stand_deadlines import MEGA_BRIEF_HARD_STOP_SECONDS, MEGA_BRIEF_PRODUCTIVE_SECONDS
+from shared.stand_deadlines import (
+    MEGA_BRIEF_HARD_STOP_SECONDS,
+    MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
+    MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
+    MEGA_BRIEF_PRODUCTIVE_SECONDS,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml")
@@ -108,6 +114,15 @@ SWEEP_TIMEOUT_SECONDS = 300
 BRIEF_SUITE_TIMEOUT_SECONDS = MEGA_BRIEF_PRODUCTIVE_SECONDS
 BRIEF_HARD_STOP_SECONDS = MEGA_BRIEF_HARD_STOP_SECONDS
 BRIEF_CLEANUP_GRACE_SECONDS = BRIEF_HARD_STOP_SECONDS - BRIEF_SUITE_TIMEOUT_SECONDS
+# The package variant of the brief pays for a kit install — obtain the kit at
+# this product's pin, build the wheel, `kit add`, regenerate — before its own
+# engineering starts, so it is given its own longer window and the same shape of
+# cleanup grace after it.
+BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS = MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
+BRIEF_PACKAGE_HARD_STOP_SECONDS = MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS
+BRIEF_PACKAGE_CLEANUP_GRACE_SECONDS = (
+    BRIEF_PACKAGE_HARD_STOP_SECONDS - BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS
+)
 PROCESS_GROUP_TERMINATION_GRACE_SECONDS = 5
 RELAY_JOIN_TIMEOUT_SECONDS = 5
 BRIEF_RUNNER_TIMEOUT_SECONDS = (
@@ -115,6 +130,13 @@ BRIEF_RUNNER_TIMEOUT_SECONDS = (
     + READINESS_TIMEOUT_SECONDS
     + EXECUTOR_SWITCH_TIMEOUT_SECONDS
     + BRIEF_HARD_STOP_SECONDS
+    + SWEEP_TIMEOUT_SECONDS
+)
+BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS = (
+    PREFLIGHT_TIMEOUT_SECONDS
+    + READINESS_TIMEOUT_SECONDS
+    + EXECUTOR_SWITCH_TIMEOUT_SECONDS
+    + BRIEF_PACKAGE_HARD_STOP_SECONDS
     + SWEEP_TIMEOUT_SECONDS
 )
 
@@ -202,6 +224,18 @@ SUITES: dict[str, Suite] = {
         cleanup_grace_seconds=BRIEF_CLEANUP_GRACE_SECONDS,
         description=(
             "the confirmed Product Brief path with a real architect, coding agent, and QA executor"
+        ),
+    ),
+    "mega-brief-package": Suite(
+        target=(
+            "tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline"
+        ),
+        llm=True,
+        timeout_seconds=BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS,
+        cleanup_grace_seconds=BRIEF_PACKAGE_CLEANUP_GRACE_SECONDS,
+        description=(
+            "the confirmed Product Brief path onto the kit package route: a package the "
+            "architect plans, the worker installs, and central QA judges on its own route"
         ),
     ),
     "matrix": Suite(

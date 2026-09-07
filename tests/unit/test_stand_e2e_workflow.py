@@ -67,7 +67,14 @@ def test_only_one_e2e_at_a_time():
 def test_every_named_suite_is_offered_plus_an_arbitrary_target():
     options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
 
-    assert set(options) == {"mega-noop", "mega-llm", "mega-brief", "matrix", "custom"}
+    assert set(options) == {
+        "mega-noop",
+        "mega-llm",
+        "mega-brief",
+        "mega-brief-package",
+        "matrix",
+        "custom",
+    }
     assert "custom" in options, "an e2e invented later must be startable without a code change"
 
 

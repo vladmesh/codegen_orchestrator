@@ -26,10 +26,18 @@ class ProductiveDeadlineExceeded(RuntimeError):
     """The fixture reached its productive deadline and must enter teardown."""
 
 
-def begin(ctx: dict) -> None:
+def begin(ctx: dict, *, productive_seconds: int = PRODUCTIVE_DEADLINE_SECONDS) -> None:
+    """Open a brief run's productive window.
+
+    The window is a property of the scenario being run, not of this module: a
+    variant that pays for a kit install before its own work starts is given its
+    own budget by its caller, and the deadline this run was opened with is the
+    one its diagnostics quote.
+    """
     started_at = time.monotonic()
     ctx["brief_productive_started_at"] = started_at
-    ctx["brief_productive_deadline_at"] = started_at + PRODUCTIVE_DEADLINE_SECONDS
+    ctx["brief_productive_seconds"] = productive_seconds
+    ctx["brief_productive_deadline_at"] = started_at + productive_seconds
     ctx["brief_telemetry"] = []
     ctx["brief_next_heartbeat_at"] = started_at
 
@@ -54,7 +62,7 @@ def _check_deadline(ctx: dict, now: float) -> None:
         stopped_stage=ctx["brief_stopped_stage"],
     )
     raise ProductiveDeadlineExceeded(
-        f"mega-brief productive deadline of {PRODUCTIVE_DEADLINE_SECONDS}s exhausted"
+        f"brief productive deadline of {ctx['brief_productive_seconds']}s exhausted"
     )
 
 
@@ -205,7 +213,7 @@ def evidence(ctx: dict) -> dict | None:
         return None
     now = time.monotonic()
     return {
-        "productive_deadline_seconds": PRODUCTIVE_DEADLINE_SECONDS,
+        "productive_deadline_seconds": ctx["brief_productive_seconds"],
         "elapsed_seconds": _elapsed(ctx, now),
         "active_stage": ctx.get("brief_active_stage", "unknown"),
         "stopped_stage": ctx.get("brief_stopped_stage"),

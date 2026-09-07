@@ -8,6 +8,9 @@ from scripts import stand_run
 from scripts.stand_run import (
     AGENTS,
     BRIEF_HARD_STOP_SECONDS,
+    BRIEF_PACKAGE_HARD_STOP_SECONDS,
+    BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS,
+    BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS,
     BRIEF_RUNNER_TIMEOUT_SECONDS,
     BRIEF_SUITE_TIMEOUT_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
@@ -77,6 +80,9 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
         "mega-noop": "tests/live/test_full_pipeline.py::TestFullPipeline",
         "mega-llm": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
         "mega-brief": "tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
+        "mega-brief-package": (
+            "tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline"
+        ),
         "matrix": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
     }
 
@@ -142,6 +148,45 @@ def test_mega_brief_has_a_50_minute_productive_deadline_and_a_separate_cleanup_g
         + stand_run.SUITES["mega-brief"].cleanup_grace_seconds
         == stand_run.BRIEF_HARD_STOP_SECONDS
     )
+
+
+def test_the_package_brief_variant_is_one_named_suite_with_its_own_budget():
+    """The PO dispatches the package route by name, not by pytest target.
+
+    Its window is its own: the variant pays for a kit install — obtain the kit,
+    build the wheel, `kit add`, regenerate — before its own engineering starts,
+    and spending the digest variant's ledger on that is how a paid run dies
+    inside its own deadline.
+    """
+    suite = stand_run.SUITES["mega-brief-package"]
+
+    assert suite.llm is True
+    assert suite.combinations == ()
+    assert suite.timeout_seconds == BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS == 65 * 60
+    assert suite.timeout_seconds > SUITES["mega-brief"].timeout_seconds
+    assert suite.cleanup_grace_seconds > 0
+    assert suite.timeout_seconds + suite.cleanup_grace_seconds == BRIEF_PACKAGE_HARD_STOP_SECONDS
+    assert BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS == (
+        stand_run.PREFLIGHT_TIMEOUT_SECONDS
+        + stand_run.READINESS_TIMEOUT_SECONDS
+        + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
+        + BRIEF_PACKAGE_HARD_STOP_SECONDS
+        + stand_run.SWEEP_TIMEOUT_SECONDS
+    )
+    end_to_end = (
+        STAND_PROVISIONING_TIMEOUT_SECONDS
+        + STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS
+    )
+    assert STAND_JOB_TIMEOUT_MINUTES * 60 - end_to_end >= STAND_JOB_RESERVE_SECONDS
+
+
+def test_every_named_suite_reaches_the_help_epilog():
+    """`--help` is how the PO finds a suite it did not already know about."""
+    epilog = "; ".join(f"{name} — {one.description}" for name, one in SUITES.items())
+
+    for name in SUITES:
+        assert f"{name} — " in epilog
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():

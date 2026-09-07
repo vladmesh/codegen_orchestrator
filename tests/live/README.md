@@ -51,6 +51,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 | `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two noop engineering Tasks and deterministic QA | 1 | one project; paid admission evidence; two ordered noop Tasks on one Story worker; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port release | 75 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 281 min | derived worst case: initial lifecycle, two repairs plus one retry, post-deploy checks, 10m evidence/cleanup margin |
+| `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 281 min | derived worst case as `mega-brief`, with the kit install inside the engineering budget |
 | `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
 The local target names reflect that same contract:
@@ -59,6 +60,8 @@ The local target names reflect that same contract:
 - `make test-live-mega` is a compatibility alias for `test-live-mega-noop`.
 - `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
 - `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
+- `make test-live-mega-brief-package` runs only its package variant, the same path onto the kit
+  package route, for one locally configured pair.
 - `make test-live-matrix` delegates the four paid cells to the stand runner.
 - `make test-live-pipeline` is a legacy aggregate of scaffold, engineering, and both full-pipeline
   classes. It is not a named suite and intentionally remains visible until duplicate coverage is
@@ -117,7 +120,10 @@ release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnos
 remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
 acceptance. `mega-brief` has a 281-minute cap: 93m pre-follow-up lifecycle, up to 153m under the
 harness settings-seed ceiling (two manifest repairs plus one convergent retry), 25m post-follow-up
-lifecycle, and a 10m evidence/cleanup margin inside pytest. A recreate's readiness wait and the QA executor switch that follows it are separately
+lifecycle, and a 10m evidence/cleanup margin inside pytest. `mega-brief-package` runs the same
+lifecycle under a longer productive window — 65 minutes, then a 15-minute cleanup grace — because
+its engineering turn obtains the kit, builds the package wheel, installs it with `kit add` and
+regenerates the product contract before any of its own work starts. A recreate's readiness wait and the QA executor switch that follows it are separately
 limited to three minutes each; runner preflight and final sweep are each five minutes.
 
 For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include

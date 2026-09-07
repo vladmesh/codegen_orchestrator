@@ -7,6 +7,7 @@ These are plain functions, not pytest fixtures.
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
@@ -37,6 +38,11 @@ from live_harness import (
     resolve_repo_root,
     run_created_at,
 )
+from package_route import (
+    PACKAGE_ROUTE_ARTIFACTS,
+    package_route_facts,
+    unreadable_package_route,
+)
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
@@ -64,7 +70,13 @@ from settings_seed_followup import (
 )
 
 from scripts.template_pin import TEMPLATE_PIN
+
+# The observation binder central QA judges a package behaviour row with. The
+# harness reads the architect's published observable through the same function
+# the paid run will, so a criterion that could never bind is caught here.
+from services.langgraph.src.agents.qa.packages import observation_answers
 from shared.clients.registry import sha_image_tag
+from shared.contracts.acceptance import ScheduledBehaviourCriterion
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_budget_policy import (
@@ -95,6 +107,7 @@ from shared.live_harness_cleanup import (
     build_remote_cleanup_command,
 )
 from shared.queues import SCAFFOLD_QUEUE
+from shared.stand_deadlines import MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -242,14 +255,48 @@ BRIEF_JOB_NAME = "multilingual_digest"
 BRIEF_LANGUAGES = ["ru", "en"]
 BRIEF_SETTINGS_KEY = "settings.languages"
 
+# ``mega-brief-package`` is the same confirmed-brief path driven onto the kit
+# package route.  Its capability — one-time reminders for a user reference — is
+# a self-contained slice with its own storage, its own routes under one prefix
+# and its own scheduled behaviour, which is the shape the architect's capability
+# ladder resolves to an in-process kit package.  These names are the contract
+# that shape produces: the package prefix `/reminders`, the job `reminders.tick`
+# the package's `jobs_schema` declares with its required `at`, and the
+# `emitted` state its own chain reaches without any product subscriber.
+BRIEF_PACKAGE_NAME = "reminders"
+BRIEF_PACKAGE_JOB_NAME = "reminders.tick"
+BRIEF_PACKAGE_JOB_ARGUMENT = "at"
+# Any instant after a scheduled reminder's own moment makes it due, so the fire
+# the criterion spells is deterministic instead of racing the run's clock.
+BRIEF_PACKAGE_TICK_AT = "2999-01-01T00:00:00Z"
+BRIEF_PACKAGE_ROUTE = "/reminders"
+BRIEF_PACKAGE_OWNER_REF = "owner-e2e"
+BRIEF_PACKAGE_REMINDER_STATE = "emitted"
+BRIEF_PACKAGE_SETTINGS_KEY = "settings.reminder_owner_ref"
+
+#: The behaviour line this variant's story asks the architect to publish, and
+#: the one central QA is judged on.  It names the route the observation binder
+#: requires: a package behaviour row passes only on a post-fire HTTP read of a
+#: route the observable *names*, so an observable phrased "THEN the owner
+#: receives the reminder" would make the paid run red by design.
+BRIEF_PACKAGE_ACCEPTANCE_CRITERION = (
+    f'- FIRE JOB {BRIEF_PACKAGE_JOB_NAME} WITH {{"{BRIEF_PACKAGE_JOB_ARGUMENT}": '
+    f'"{BRIEF_PACKAGE_TICK_AT}"}} THEN GET '
+    f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF} shows that reference's "
+    f"reminder in state {BRIEF_PACKAGE_REMINDER_STATE}"
+)
+
 BRIEF_PRODUCTIVE_DEADLINE_SECONDS = PRODUCTIVE_DEADLINE_SECONDS
+BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS = MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
 BRIEF_HEARTBEAT_SECONDS = HEARTBEAT_SECONDS
 BRIEF_TELEMETRY_STATE_MAX_CHARS = STATE_MAX_CHARS
 ProductiveDeadlineExceeded = _ProductiveDeadlineExceeded
 
 
-def begin_brief_productive_window(ctx: dict) -> None:
-    begin(ctx)
+def begin_brief_productive_window(
+    ctx: dict, *, productive_seconds: int = PRODUCTIVE_DEADLINE_SECONDS
+) -> None:
+    begin(ctx, productive_seconds=productive_seconds)
 
 
 def report_brief_stage(
@@ -304,6 +351,269 @@ Make the resulting bilingual behaviour observable enough for QA to judge after
 `{BRIEF_JOB_NAME}` fires. Do not require a user-provided secret, external provider,
 or Telegram account. Add focused tests for the job and its observable behaviour.
 """
+
+
+def brief_package_detailed_spec() -> str:
+    """The product contract that drives the confirmed brief onto the package route.
+
+    Like `brief_detailed_spec`, this is an outcome contract: it says what the
+    product owes and what the outcome looks like from outside, and it never
+    names a package, a wheel, a kit command or a file to write.  What it does
+    name is the shape of the capability — a self-contained slice with its own
+    storage, its own routes under one prefix, its own scheduled behaviour and
+    no synchronous call into the rest of the product — because that shape is
+    the architect's decision to take, and this is the register in which a
+    product contract states it.  The names it fixes (the route prefix, the
+    behaviour and its argument, the states) are contract, not implementation:
+    the same register in which the digest variant fixes `multilingual_digest`
+    and `settings.languages`.
+    """
+    return f"""Build a backend-only one-time reminder product.
+
+The confirmed product setting is `{BRIEF_PACKAGE_SETTINGS_KEY}`. Declare it in the
+generated backend service manifest's settings_schema as a product-scoped string, and let
+the product read it as the user reference its reminders belong to. Run the generator and
+prove that exact key reaches `services/backend/src/generated/settings_schemas.py`; then
+test generated `POST /settings/set` and `POST /settings/get` set and read it under
+`SETTINGS_WRITE_CAPABILITY`.
+
+The product owes a one-time reminder capability, and it is a self-contained slice of
+domain behaviour: a reminder is recorded for a user reference with a text and the moment
+it is owed, it can be listed for that reference with its current state, and it can be
+cancelled while it is still waiting. A reminder that is still waiting is `scheduled`; one
+whose moment has passed and whose due event the product has published is
+`{BRIEF_PACKAGE_REMINDER_STATE}`. The capability owns its own storage, is reached from
+outside over HTTP, and reaches the rest of the product only by publishing its due event —
+it makes no synchronous call into the product and the product makes none into it.
+
+Its HTTP surface is served by the deployed backend under the prefix
+`{BRIEF_PACKAGE_ROUTE}`: `POST {BRIEF_PACKAGE_ROUTE}` records one,
+`GET {BRIEF_PACKAGE_ROUTE}?user_ref=<ref>` lists that reference's reminders with their
+state, and `DELETE {BRIEF_PACKAGE_ROUTE}/<id>?user_ref=<ref>` cancels one.
+
+The moment is evaluated by the named scheduled behaviour `{BRIEF_PACKAGE_JOB_NAME}`,
+whose single argument `{BRIEF_PACKAGE_JOB_ARGUMENT}` is the date-time it evaluates
+waiting reminders against. Firing it with an `{BRIEF_PACKAGE_JOB_ARGUMENT}` at or after a
+waiting reminder's own moment must leave that reminder in state
+`{BRIEF_PACKAGE_REMINDER_STATE}`, and it must reach that state on the product's own
+chain: no subscriber of the due event, and nothing outside the product, may be required
+for it.
+
+So that the behaviour is observable on a freshly deployed product with no manual setup,
+the deployment must already carry one waiting reminder for the user reference stored in
+`{BRIEF_PACKAGE_SETTINGS_KEY}`, whose moment has already passed.
+
+Central QA judges this behaviour by firing it and then reading the product's own HTTP
+surface, so it must be able to see which read answers the criterion. The story's
+published acceptance criteria must therefore carry exactly this line:
+
+{BRIEF_PACKAGE_ACCEPTANCE_CRITERION}
+
+Do not require a user-provided secret, external provider, or Telegram account. Add
+focused tests for the behaviour and for the listed state it leaves behind.
+"""
+
+
+# One ssh read of two small generated files on the target.
+PACKAGE_CONTRACT_PROBE_TIMEOUT = 120
+
+
+def _package_contract_args(project_name: str, server_handle: str | None) -> list[str]:
+    args = [
+        "package-contract-probe",
+        "--project-name",
+        project_name,
+        "--api-url",
+        "http://api:8000",
+    ]
+    if server_handle is not None:
+        args += ["--server-handle", server_handle]
+    for path in PACKAGE_ROUTE_ARTIFACTS:
+        args += ["--path", path]
+    return args
+
+
+def record_package_route(ctx: dict) -> str | None:
+    """Establish from the deployment that the capability is the kit package.
+
+    Returns the reason this run is red, or `None` with the package facts kept
+    on the context. Every failure of the read is a reason and none of them is a
+    skip: a suite that could not look at the deployment cannot claim the
+    package route was taken, which is the same rule central QA applies to these
+    artifacts.
+    """
+    try:
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            _package_contract_args(ctx["project_name"], ctx.get("server_handle")),
+            timeout=PACKAGE_CONTRACT_PROBE_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        return unreadable_package_route(
+            f"the probe of the deployment did not run: {type(error).__name__}: "
+            f"{redacted_dump_text(str(error))[:300]}"
+        )
+    if result.returncode != 0:
+        return unreadable_package_route(
+            f"the probe of the deployment exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr).strip()[:300]}"
+        )
+    facts, error = package_route_facts(
+        result.stdout, package=BRIEF_PACKAGE_NAME, behaviour=BRIEF_PACKAGE_JOB_NAME
+    )
+    if error is not None:
+        return error
+    ctx["brief_package_route"] = facts
+    return None
+
+
+def _digest_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
+    """The digest variant's own expectation: a behaviour that takes no arguments."""
+    if behaviour.arguments != {}:
+        return (
+            f"Architect declared unexpected arguments for {BRIEF_JOB_NAME}: {behaviour.arguments}"
+        )
+    return None
+
+
+def _package_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
+    """The package variant's own expectation: `at`, and an observable QA can bind.
+
+    The second half is the reason this variant exists.  Central QA passes a
+    package behaviour row only on a post-fire HTTP read of a route the criterion's
+    observable *names*; an observable naming no route is not bindable and fails
+    by design.  Judged here, against the binder itself, a criterion that could
+    never pass stops the run before it is paid for rather than after.
+    """
+    if BRIEF_PACKAGE_JOB_ARGUMENT not in behaviour.arguments:
+        return (
+            f"Architect declared {BRIEF_PACKAGE_JOB_NAME} without the required "
+            f"{BRIEF_PACKAGE_JOB_ARGUMENT!r} argument: {behaviour.arguments}"
+        )
+    read = f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}"
+    if not observation_answers(behaviour.observable, "http_get", read):
+        return (
+            "Architect published an observable central QA cannot bind to a read of "
+            f"{BRIEF_PACKAGE_ROUTE}, so its package behaviour row fails by design: "
+            f"{behaviour.observable!r}"
+        )
+    if BRIEF_PACKAGE_REMINDER_STATE not in behaviour.observable:
+        return (
+            f"Architect published an observable that does not name the "
+            f"{BRIEF_PACKAGE_REMINDER_STATE!r} state the behaviour must reach: "
+            f"{behaviour.observable!r}"
+        )
+    return None
+
+
+@dataclass(frozen=True)
+class BriefScenario:
+    """One confirmed-brief product contract the shared live flow can be run on.
+
+    Everything a brief run does — the fixture, the telemetry, the productive
+    window, the settings seed, the cleanup and the manifest — is the same for
+    every variant.  What differs is the product contract the PO presents, the
+    behaviour the architect is expected to publish for it, and what that
+    behaviour's shape must be.  So that is what this carries, and nothing else.
+    """
+
+    #: The suite this scenario is the target of, for diagnostics.
+    name: str
+    #: The prefix of the created project's title, so a run is recognisable.
+    project_prefix: str
+    detailed_spec: str
+    brief_title: str
+    brief_summary: str
+    must_requirements: tuple[dict[str, str], ...]
+    story_title: str
+    settings_key: str
+    settings_value: object
+    #: The scheduled behaviour the architect must publish for this contract.
+    job_name: str
+    productive_seconds: int
+    #: What else that behaviour owes beyond its name.  Each variant states its
+    #: own; neither is asserted for the other.
+    behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None]
+    #: What this variant requires of the *deployed* product before QA judges it,
+    #: read from the deployment itself.  Returns the reason the run is red, or
+    #: `None`.  A variant that requires nothing of the deployment's shape says
+    #: so with `None` here and the flow asks the deployment nothing.
+    deployment_check: Callable[[dict], str | None] | None
+
+    @property
+    def requirement_ids(self) -> set[str]:
+        return {requirement["id"] for requirement in self.must_requirements}
+
+
+BRIEF_DIGEST_SCENARIO = BriefScenario(
+    name="mega-brief",
+    project_prefix="mega-brief",
+    detailed_spec=brief_detailed_spec(),
+    brief_title="Multilingual scheduled digest",
+    brief_summary=(
+        "A backend product that records one digest for every language selected "
+        "by its confirmed product setting."
+    ),
+    must_requirements=(
+        {
+            "id": "scheduled_digest",
+            "text": "It runs a named scheduled digest behaviour on demand.",
+            "user_wording": "I need a scheduled digest I can test on demand.",
+        },
+        {
+            "id": "selected_languages",
+            "text": "One digest record is produced for every selected language.",
+            "user_wording": "The digest must be produced in Russian and English.",
+        },
+    ),
+    story_title="Build the multilingual scheduled digest",
+    settings_key=BRIEF_SETTINGS_KEY,
+    settings_value=BRIEF_LANGUAGES,
+    job_name=BRIEF_JOB_NAME,
+    productive_seconds=BRIEF_PRODUCTIVE_DEADLINE_SECONDS,
+    behaviour_error=_digest_behaviour_error,
+    # The digest product is deliberately package-free, so its deployment owes
+    # this check nothing and is asked nothing.
+    deployment_check=None,
+)
+
+BRIEF_PACKAGE_SCENARIO = BriefScenario(
+    name="mega-brief-package",
+    project_prefix="mega-brief-package",
+    detailed_spec=brief_package_detailed_spec(),
+    brief_title="One-time reminders",
+    brief_summary=(
+        "A backend product that records a one-time reminder for the user reference "
+        "its confirmed product setting names, and marks it emitted once the moment "
+        "it was owed for has passed."
+    ),
+    must_requirements=(
+        {
+            "id": "one_time_reminder",
+            "text": (
+                "A one-time reminder recorded for a user reference is marked emitted "
+                "once the moment it was owed for has passed."
+            ),
+            "user_wording": "I want to set a reminder once and know it went off.",
+        },
+        {
+            "id": "reminder_state_readable",
+            "text": (
+                "The reminders of a user reference, and the state each one is in, are "
+                "readable over the product's own HTTP surface."
+            ),
+            "user_wording": "I want to check whether my reminder has already fired.",
+        },
+    ),
+    story_title="Build the one-time reminder capability",
+    settings_key=BRIEF_PACKAGE_SETTINGS_KEY,
+    settings_value=BRIEF_PACKAGE_OWNER_REF,
+    job_name=BRIEF_PACKAGE_JOB_NAME,
+    productive_seconds=BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS,
+    behaviour_error=_package_behaviour_error,
+    deployment_check=record_package_route,
+)
 
 
 def llm_backend_task_description(marker: str) -> str:
