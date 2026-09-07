@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
 import re
@@ -13,7 +13,11 @@ import asyncssh
 import httpx
 import structlog
 
-from shared.contracts.acceptance import HealthCriterion, ScheduledBehaviourCriterion
+from shared.contracts.acceptance import (
+    HealthCriterion,
+    ScheduledBehaviourCriterion,
+    parse_scheduled_behaviours,
+)
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
@@ -36,12 +40,18 @@ from ..agents.qa.packages import (
     BACKEND_MANIFEST,
     CONTRACT_READ_LIMIT,
     GENERATED_JOB_REGISTRY,
+    OPENAPI_PATH,
+    ActivePackage,
     PackageActivation,
     PackageContractUnreadable,
     active_package_facts,
+    behaviour_check,
+    connection_check,
+    package_route_paths,
     parse_active_packages,
     parse_job_owners,
     parse_listed_packages,
+    route_check,
 )
 from ..agents.qa.tools import QAJobsCapability, build_qa_callables
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
@@ -74,6 +84,7 @@ HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
 ACCESS_PROBE_TIMEOUT = 60
 CONTAINER_HEALTHY = "healthy"
+HTTP_OK = 200
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 
@@ -748,6 +759,203 @@ async def run_package_activation_checks(session) -> PackageActivationOutcome:
     return PackageActivationOutcome(activation=activation)
 
 
+@dataclass(frozen=True)
+class PackageAcceptance:
+    """The results an active package makes one QA run owe.
+
+    Two of them the runner performs itself against the deployment, before an
+    executor exists: the package is active in the booted product, and a route
+    under its own HTTP prefix answers. The third is the package's declared
+    behaviour, which only a fire can produce — so what is kept here is which
+    names this run may fire, and whether one was fired is read afterwards off
+    the runner's own ledger.
+
+    None of the three is a prompt line. They are rows in this run's result, and
+    a run that did not perform one carries it as a failed row saying why.
+    """
+
+    activation: PackageActivation
+    checks: tuple[dict, ...]
+    #: Per package, the behaviours this run's criteria declared and the
+    #: deployed product attributes to that package.
+    declared: Mapping[str, tuple[str, ...]]
+    #: Per package, every behaviour the deployed product attributes to it.
+    owned: Mapping[str, tuple[str, ...]]
+    #: Whether this deployment offers a fire at all. A deployment holding no
+    #: jobs capability for the QA runtime cannot be fired, and that is a
+    #: different reason for the same failed row.
+    fireable: bool = True
+
+
+async def _read_openapi(deployed_url: str) -> tuple[object | None, str]:
+    """Read the running product's own route document, or say why there is none."""
+    url = f"{deployed_url.rstrip('/')}{OPENAPI_PATH}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False
+        ) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        return None, f"the deployed product did not answer {OPENAPI_PATH}: {exc}"
+    if response.status_code != HTTP_OK:
+        return None, f"the deployed product answered {response.status_code} for {OPENAPI_PATH}"
+    try:
+        return response.json(), ""
+    except ValueError as exc:
+        return None, f"the deployed product's {OPENAPI_PATH} is not a route document: {exc}"
+
+
+async def _probe_package_route(deployed_url: str, package: ActivePackage, openapi: object) -> dict:
+    """Request one route the running product mounts under this package's prefix."""
+    paths = package_route_paths(openapi, package)
+    if not paths:
+        return route_check(
+            package,
+            reason=(
+                f"the deployed product's {OPENAPI_PATH} declares no route under a prefix named "
+                f"for package {package.name}. The prefix a package is mounted under is declared "
+                "in its installed package.yaml, inside the wheel, so the running product's own "
+                "route document is the only place QA can read it — and it names none here"
+            ),
+        )
+    path = paths[0]
+    url = f"{deployed_url.rstrip('/')}{path}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False
+        ) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        return route_check(package, reason=f"the deployed product did not answer GET {path}: {exc}")
+    return route_check(package, path=path, status=response.status_code)
+
+
+async def run_package_acceptance_checks(
+    activation: PackageActivation,
+    *,
+    deployed_url: str,
+    criteria_behaviours: Sequence[str] = (),
+    fireable: bool = True,
+) -> PackageAcceptance:
+    """Perform, against the deployed product, what an active package owes.
+
+    The connection check is read off the booted product's own generated
+    contract. The prefixed-route check is a GET the runner makes itself, to a
+    route the running product says it mounts under the package's prefix: it
+    needs no executor, no capability and no write, and it cannot be answered by
+    anybody's account of having done it.
+
+    The kit's remaining acceptance steps — install the wheel, resolve the entry
+    point, start the application, validate the manifest, run the import lint —
+    are build-time proofs and are deliberately not here. They happen where the
+    product is built, and asking a read-only QA run to perform them would prove
+    nothing the build has not already proven.
+    """
+    openapi, unreadable = await _read_openapi(deployed_url)
+    checks: list[dict] = []
+    declared: dict[str, tuple[str, ...]] = {}
+    owned: dict[str, tuple[str, ...]] = {}
+    for package in activation.packages:
+        checks.append(connection_check(package))
+        checks.append(
+            route_check(package, reason=unreadable)
+            if unreadable
+            else await _probe_package_route(deployed_url, package, openapi)
+        )
+        package_jobs = [
+            job for job, owner in activation.package_jobs.items() if owner == package.name
+        ]
+        owned[package.name] = tuple(sorted(package_jobs))
+        declared[package.name] = tuple(
+            sorted(job for job in package_jobs if job in criteria_behaviours)
+        )
+    logger.info(
+        "qa_package_acceptance_probed",
+        packages=activation.names,
+        checks=[(check["name"], check["pass"]) for check in checks],
+        declared={name: list(names) for name, names in declared.items()},
+    )
+    return PackageAcceptance(
+        activation=activation,
+        checks=tuple(checks),
+        declared=declared,
+        owned=owned,
+        fireable=fireable,
+    )
+
+
+def apply_package_acceptance(
+    qa_result: QAResult, acceptance: PackageAcceptance | None, workspace: QAWorkspace
+) -> QAResult:
+    """Require the package results, whatever the executor submitted.
+
+    The behaviour row is decided from the runner's own ledger of fires, so an
+    executor that reported a package check it never made does not pass one, and
+    an executor that submitted no check at all does not pass by silence. A
+    package whose behaviour this run could not fire — because no criterion
+    declared it, or because the deployment offers no fire — fails that row with
+    the reason, which is the rule this sprint applies everywhere: an absence is
+    never a success.
+    """
+    if acceptance is None:
+        return qa_result
+    rows = list(acceptance.checks)
+    for package in acceptance.activation.packages:
+        owned = acceptance.owned[package.name]
+        if not owned:
+            continue
+        declared = acceptance.declared[package.name]
+        fired = [name for name in declared if name in workspace.fired_behaviours]
+        if fired:
+            rows.append(behaviour_check(package, fired=fired))
+        elif declared and not acceptance.fireable:
+            rows.append(
+                behaviour_check(
+                    package,
+                    reason=(
+                        f"this run's criteria declare {', '.join(declared)} for package "
+                        f"{package.name}, and this deployment holds no jobs capability for the "
+                        "QA runtime, so no fire could be made and the behaviour was never "
+                        "exercised"
+                    ),
+                )
+            )
+        elif declared:
+            rows.append(
+                behaviour_check(
+                    package,
+                    reason=(
+                        f"this run's criteria declare {', '.join(declared)} for package "
+                        f"{package.name}, and the deployed product accepted no fire of any of "
+                        "them in this run, so the behaviour was never exercised"
+                    ),
+                )
+            )
+        else:
+            rows.append(
+                behaviour_check(
+                    package,
+                    reason=(
+                        f"the deployed product declares {', '.join(owned)} for active package "
+                        f"{package.name}, and this run's acceptance criteria name no FIRE JOB "
+                        "for any of them, so the behaviour was never exercised. QA fires only a "
+                        "name a criterion declared, and never invents one"
+                    ),
+                )
+            )
+    failed = [row for row in rows if not row["pass"]]
+    qa_result.checks = [*rows, *qa_result.checks]
+    if not failed:
+        return qa_result
+    qa_result.passed = False
+    qa_result.summary = (
+        "the deployed product carries an active kit package whose checks this run did not "
+        f"pass: {'; '.join(row['name'] for row in failed)}"
+    )
+    logger.info("qa_package_acceptance_failed", failed=[row["name"] for row in failed])
+    return qa_result
+
+
 def scheduled_behaviour_facts(
     behaviours: Sequence[ScheduledBehaviourCriterion], *, fireable: bool
 ) -> list[str]:
@@ -890,7 +1098,7 @@ def _apply_telegram_probe_evidence(qa_result: QAResult, workspace: QAWorkspace) 
     return qa_result
 
 
-async def _invoke_qa_agent(
+async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
     ownership: WorkerOwnership,
@@ -902,6 +1110,7 @@ async def _invoke_qa_agent(
     settings_established: bool,
     timeout: int,
     jobs: QAJobsCapability | None,
+    acceptance: PackageAcceptance | None = None,
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint."""
     calls = build_qa_callables(
@@ -930,8 +1139,12 @@ async def _invoke_qa_agent(
             timeout=timeout,
         )
         if executor_run is not None:
-            return _apply_telegram_probe_evidence(
-                _verdict_of(workspace, service, timeout, said), workspace
+            return apply_package_acceptance(
+                _apply_telegram_probe_evidence(
+                    _verdict_of(workspace, service, timeout, said), workspace
+                ),
+                acceptance,
+                workspace,
             )
     finally:
         await service.stop()
@@ -1124,6 +1337,27 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                         )
                         qa_result = activation.failure
                     else:
+                        # An active package is performed against this deployment,
+                        # not described to an executor: the connection check and
+                        # the prefixed route are made here, and they are rows in
+                        # this run's result whatever the executor submits.
+                        acceptance = (
+                            await run_package_acceptance_checks(
+                                activation.activation,
+                                deployed_url=target.deployed_url,
+                                # The names this run's own criteria declared, read
+                                # here the same way the fire capability reads them,
+                                # so "no criterion named it" and "this deployment
+                                # offers no fire" stay two different answers.
+                                criteria_behaviours=[
+                                    one.name
+                                    for one in parse_scheduled_behaviours(acceptance_criteria)
+                                ],
+                                fireable=jobs is not None,
+                            )
+                            if activation.activation is not None
+                            else None
+                        )
                         qa_result = await _invoke_qa_agent(
                             target=target,
                             ownership=ownership,
@@ -1147,6 +1381,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             settings_established=settings_established,
                             timeout=timeout,
                             jobs=jobs,
+                            acceptance=acceptance,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             write = _forbidden_application_write(

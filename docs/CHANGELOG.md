@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
-- Central QA reads a deployment's active kit packages off the product's own generated artifacts, so
-  a package's connection check is answered by the booted product and an unreadable one fails the run.
+- An active kit package makes a central QA run owe three results against the deployed product —
+  package active, prefixed route answering, declared behaviour fired — and a run performing none fails.
 
 - The architect prompt states the capability-shape ladder — reuse, a shared service, a container,
   then an in-process kit package — and has a package task install the wheel instead of writing one.

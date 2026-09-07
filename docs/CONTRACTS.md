@@ -845,14 +845,42 @@ generated job registry `services/backend/src/generated/jobs_schemas.py`, which a
 fireable job to the service or the `package:<name>` that declared it — and
 `run_package_activation_checks` cross-checks them against each other.
 
-That is the package's connection check, asserted from the running product rather than re-run
-against a copy of it. The check is the package's `startup` raising on failure, the runtime refuses
-a generated contract that no longer matches the manifest and the installed wheels, and the
-container probe has already found the deployment up: a booted product with the package recorded has
-passed it. The acceptance checks are bound to the same deployment — its HTTP surface at the
-deployed URL, its containers, and its declared behaviours through `fire_job` — and the facts say in
-those words that a fixture, a replica or a second copy is not the product under test, and that a
-check that could not be made against this deployment is a failed check rather than a skipped one.
+**An active package makes a run owe results, not prose.** Three deploy-observable checks are
+required of every run against a product with an active package, and they are rows in the run's
+result whatever the executor submits:
+
+1. *The package is active in the deployed product.* The check is the package's `startup`, which
+   raises on failure; the runtime refuses a generated contract that no longer matches the manifest
+   and the installed wheels, and the container probe has already found the deployment up. A booted
+   product carrying the package in that contract has passed it, so reading the contract off the
+   live deployment performs the check rather than describing it.
+2. *A route under the package's own HTTP prefix answers.* `run_package_acceptance_checks` requests
+   it itself: it reads the running product's `/openapi.json`, takes the paths whose first segment
+   is the package's name, and GETs the first one that carries no path parameter. Any answer but
+   `404` or a `5xx` is the package's router responding — `405` and `422` included. The mounted
+   prefix is declared in the installed `package.yaml`, inside the wheel, so no artifact of the
+   deployment tree records it and the running product's own route document is the only place QA
+   can read it; a product that declares no such route fails this check with that reason.
+3. *The package's declared behaviour produced its observable.* The fire is made through the
+   existing named capability, and whether one happened is decided from the runner's own ledger
+   (`QAWorkspace.fired_behaviours`, written when the product answered a fire with a recorded
+   command) rather than from anything an executor reports. The observable the criterion states is
+   what the check is judged on, never the dispatch record.
+
+`apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
+when any of them failed, so a verdict that performed no package check does not pass by asserting
+that it did. A check the run could not perform fails with its reason: no criterion declared a
+behaviour of the package (QA fires only a name a criterion declared and never invents one), the
+deployment offers no fire, the product mounts no package route, or its route document could not be
+read. An absence is never a success.
+
+The rest of the kit's package acceptance procedure — install the real wheel, resolve the entry
+point, start the generated application, observe lifecycle calls, validate the manifest, run the
+import lint — is deliberately **not** here. Those are build-time proofs, performed where the
+product is built: in the kit's own CI and in the install recipe proof above, which runs them
+against a real render. Central QA meets an already-deployed product and is read-only apart from the
+one named fire, so asking it to install or lint anything would break that boundary and prove
+nothing the build has not already proven.
 
 A package's scheduled behaviour needs no mechanism of its own. The name is read off the run's
 acceptance criteria by `parse_scheduled_behaviours`, retained by `prepare_central_qa_criteria`,

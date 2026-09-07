@@ -473,6 +473,11 @@ class _JobsCapability:
             "observable": behaviour.observable,
             "dispatch_is_not_proof": DISPATCH_IS_NOT_PROOF,
         }
+        if tool == "fire_job":
+            # The product answered a fire with a recorded command, so this run
+            # did invoke the behaviour. That fact is the runner's, not the
+            # executor's account of itself.
+            self._workspace.record_fired_behaviour(behaviour.name)
         self._workspace.record(tool, request, repr(answer))
         return answer
 

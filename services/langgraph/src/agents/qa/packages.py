@@ -34,6 +34,15 @@ GENERATED_JOB_REGISTRY = "services/backend/src/generated/jobs_schemas.py"
 #: refused rather than half-read, so the read is given room for a real product.
 CONTRACT_READ_LIMIT = 262144
 
+#: Where a running product publishes the routes it actually mounted. A package's
+#: HTTP prefix is declared in the installed `package.yaml`, inside the wheel, so
+#: no artifact of the deployment tree records it; the running product does.
+OPENAPI_PATH = "/openapi.json"
+#: A route that answers 404 is not mounted; a 5xx is the product failing. Every
+#: other status — 200, 401, 405, 422 — is the package's router answering.
+ROUTE_NOT_MOUNTED = 404
+ROUTE_SERVER_ERROR = 500
+
 _PACKAGE_OWNER = "package:"
 _DIGEST_SHOWN = 12
 
@@ -193,6 +202,107 @@ def parse_job_owners(source: str) -> dict[str, str]:
     return dict(sources)
 
 
+def _normalized(name: str) -> str:
+    """Package names compare with hyphens and underscores treated alike."""
+    return name.replace("-", "_").casefold()
+
+
+def connection_check(package: ActivePackage) -> dict:
+    """The package's connection check, answered by the booted product.
+
+    The check is the package's `startup`, which raises on failure, and the
+    runtime refuses a generated contract that no longer matches the manifest
+    and the installed wheels. A product that is up, carrying this package in
+    that contract, has passed it — so reading the contract off the live
+    deployment is performing the check, not describing it.
+    """
+    return {
+        "name": connection_check_name(package.name),
+        "pass": True,
+        "detail": (
+            f"{package.stated}, read from {ACTIVE_PACKAGE_CONTRACT} on the deployment and "
+            f"listed in {BACKEND_MANIFEST}; the product booted with this generated contract, "
+            "and a stale or absent one refuses to boot"
+        ),
+    }
+
+
+def connection_check_name(package: str) -> str:
+    return f"package {package} is active in the deployed product"
+
+
+def route_check_name(package: str) -> str:
+    return f"package {package} answers on its own HTTP prefix"
+
+
+def behaviour_check_name(package: str) -> str:
+    return f"package {package} scheduled behaviour produced its observable"
+
+
+def package_route_paths(openapi: object, package: ActivePackage) -> tuple[str, ...]:
+    """The paths the running product declares under this package's own prefix.
+
+    The prefix is the package's first path segment: a package owns one HTTP
+    prefix, and this is the only place a deployed product states which one it
+    mounted. Paths without a path parameter come first, because one of those
+    can be requested as it stands.
+    """
+    paths = openapi.get("paths") if isinstance(openapi, dict) else None
+    if not isinstance(paths, dict):
+        return ()
+    wanted = _normalized(package.name)
+    under = [
+        path
+        for path in paths
+        if isinstance(path, str)
+        and path.startswith("/")
+        and _normalized(path.split("/")[1] if len(path.split("/")) > 1 else "") == wanted
+    ]
+    return tuple(sorted(under, key=lambda path: ("{" in path, len(path), path)))
+
+
+def route_check(
+    package: ActivePackage, *, path: str = "", status: int = 0, reason: str = ""
+) -> dict:
+    """One package's prefixed-route result, or why the run has none.
+
+    A route that answers 404 is not mounted and a 5xx is the product failing;
+    anything else the product answers is its router responding under the
+    package's prefix, which is what this check asks.
+    """
+    if reason:
+        return {"name": route_check_name(package.name), "pass": False, "detail": reason}
+    mounted = status != ROUTE_NOT_MOUNTED and status < ROUTE_SERVER_ERROR
+    return {
+        "name": route_check_name(package.name),
+        "pass": mounted,
+        "detail": (
+            f"GET {path} on the deployed product answered {status}"
+            + ("" if mounted else "; the package's router is not answering there")
+        ),
+    }
+
+
+def behaviour_check(package: ActivePackage, *, fired: Sequence[str] = (), reason: str = "") -> dict:
+    """One package's behaviour result: it was fired in this run, or it was not.
+
+    Firing is what this check requires; the observable the criterion states is
+    what the verdict on it rests on, and that judgement stays with the executor
+    and its criteria. What is refused here is the third way — neither fired nor
+    judged, and reported as though it had been.
+    """
+    if reason:
+        return {"name": behaviour_check_name(package.name), "pass": False, "detail": reason}
+    return {
+        "name": behaviour_check_name(package.name),
+        "pass": True,
+        "detail": (
+            f"this run fired {', '.join(sorted(fired))} on the deployed product and judged it "
+            "on the observable its criterion states, not on the dispatch record"
+        ),
+    }
+
+
 def active_package_facts(
     activation: PackageActivation,
     *,
@@ -232,6 +342,13 @@ def active_package_facts(
         "assemble yourself is not the product under test. A check you could not make "
         "against this deployment is a failed check — never a passed one, never a skipped "
         "one, and never one you report as not applicable.",
+        "- An active package makes this run owe results, not remarks. The runner has "
+        "already performed two of them against this deployment and they are in this "
+        "run's result whatever you submit: the package is active in the booted product, "
+        "and a route under its own HTTP prefix answers. The third is yours: fire the "
+        "package's declared behaviour named below and judge the observable its criterion "
+        "states. A run that fires nothing fails that check, and a verdict that reports "
+        "no package check does not pass because it said so.",
     ]
     package_jobs = activation.package_jobs
     owned = sorted(
