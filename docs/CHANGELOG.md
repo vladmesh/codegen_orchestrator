@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- Architect and `mega-brief-package` now use a kit package's declared setting seed, so initial
+  settings create package-owned state without duplicate product seed glue.
+
 - Terminal generated-product CI failures retain App-authenticated failed jobs, steps and redacted
   bounded logs on the Story, then park through the supported human-review action.
 - Paid stand artifacts retain their existing Story poll as a PR/CI timeline, so pre-deploy failures

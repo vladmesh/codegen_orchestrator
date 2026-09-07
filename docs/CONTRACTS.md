@@ -279,11 +279,20 @@ project secret *value* to seed a setting.
 (`ArchitectState.initial_settings`) and named in its instructions, the same way
 it receives the must-requirements. They are not disposed of one by one — that is
 what a must-requirement is — because the platform, not the plan, writes them.
-What the plan owes them is the declaration that makes them writable at all: each
-key declared in the generated product's own `services/<service>/manifest.yaml`
-`settings_schema` with a schema the confirmed value satisfies, and read where
-the product uses it. An undeclared key is refused by the product, so an
-undeclared key means the value the user confirmed never arrives.
+For an ordinary service-owned setting, what the plan owes is the declaration
+that makes it writable at all: the key declared in the generated product's own
+`services/<service>/manifest.yaml` `settings_schema` with a schema the confirmed
+value satisfies, and read where the product uses it. An undeclared key is
+refused by the product, so an undeclared key means the value the user confirmed
+never arrives.
+
+An installed kit package can own this declaration instead. When the selected
+package owns the confirmed prefixed product key and declares its product-scope
+setting seed, the plan relies on that package contract and the ordinary package
+installation/regeneration path. It does not duplicate the key in a service
+manifest or add a product DB trigger, startup poller, or product-owned seed.
+Ordinary service-owned settings retain the service manifest and generated
+registry requirements above.
 
 *As a value.* After a successful deploy of a brief-backed story, the deploy
 result handler reads the brief through `GET /api/product-briefs/by-story/{story_id}`
@@ -299,6 +308,13 @@ diagnostic or LLM-facing text. Writing is idempotent by `(key, scope,
 subject_id)`, so redeploying the same story writes the same values and ends in
 the same state; a story with no brief and a brief with no settings touch
 nothing.
+
+For a package-owned product setting, that same successful `POST /settings/set`
+write invokes the installed package's declared idempotent setting seed inside
+the settings transaction. The package declaration, namespaced into the
+generated registry under the package prefix, is both the setting schema and the
+seed ownership boundary. The platform still performs and proves only its one
+set/readback sequence; there is no second deploy seed path.
 
 `DeployRunResult.settings_seed` is the durable record — one
 `SettingSeedOutcome` per confirmed setting, naming it the way the product

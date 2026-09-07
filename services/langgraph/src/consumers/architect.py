@@ -268,10 +268,10 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
 
     They are named here rather than described, because the platform writes them
     into the deployed product itself, through the product's own settings write
-    path, exactly as the user confirmed them. What the architect owes them is
-    the declaration that makes them writable at all: a key absent from the
-    product's `settings_schema` is refused by the product, and the confirmed
-    value never arrives.
+    path, exactly as the user confirmed them. For a service-owned key, what the
+    architect owes is the declaration that makes it writable at all. A selected
+    installed package can instead own the prefixed declaration and its setting
+    seed.
     """
     if not attempt.initial_settings:
         return ""
@@ -287,10 +287,18 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
         f"{listed}\n"
         "Do NOT plan work that writes these values: the platform writes them into the "
         "deployed product after deploy, through the product's own settings write path. "
-        "Your plan must make every key above writable — each one has to be declared in "
-        "the product's own services/<service>/manifest.yaml settings_schema, with a "
-        "JSON Schema the value shown above satisfies, and the product has to read the "
-        "setting where it uses it. The task must run the generator and verify each exact "
+        "For an ordinary service-owned setting, your plan must make the key writable: "
+        "declare it in the product's own services/<service>/manifest.yaml "
+        "settings_schema, with a JSON Schema the value shown above satisfies, and have "
+        "the product read the setting where it uses it. When your capability-shape "
+        "decision instead selects an installed kit package that owns a confirmed "
+        "prefixed package-owned setting and declares its setting seed, rely on that "
+        "package declaration and the platform's existing settings write. The package "
+        "install generates the registry entry, and successful POST /settings/set invokes "
+        "the package's idempotent seed in the same transaction. Do NOT ask the product "
+        "to duplicate the key in a service manifest, author a DB trigger, add startup "
+        "polling, or add product-owned seed code. In either case, the task must run the "
+        "generator and verify each exact "
         "key reaches the generated settings registry (for a backend, "
         "services/backend/src/generated/settings_schemas.py), then test generated "
         "POST /settings/set and POST /settings/get with SETTINGS_WRITE_CAPABILITY. A key "

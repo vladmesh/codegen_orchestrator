@@ -272,7 +272,7 @@ BRIEF_PACKAGE_TICK_AT = "2999-01-01T00:00:00Z"
 BRIEF_PACKAGE_ROUTE = "/reminders"
 BRIEF_PACKAGE_OWNER_REF = "owner-e2e"
 BRIEF_PACKAGE_REMINDER_STATE = "emitted"
-BRIEF_PACKAGE_SETTINGS_KEY = "settings.reminder_owner_ref"
+BRIEF_PACKAGE_SETTINGS_KEY = "reminders.reminder_owner_ref"
 
 #: The behaviour line this variant's story asks the architect to publish, and
 #: the one central QA is judged on.  It names the route the observation binder
@@ -363,19 +363,19 @@ def brief_package_detailed_spec() -> str:
     storage, its own routes under one prefix, its own scheduled behaviour and
     no synchronous call into the rest of the product — because that shape is
     the architect's decision to take, and this is the register in which a
-    product contract states it.  The names it fixes (the route prefix, the
-    behaviour and its argument, the states) are contract, not implementation:
-    the same register in which the digest variant fixes `multilingual_digest`
-    and `settings.languages`.
+    product contract states it. The reminders package and its prefixed setting
+    are named because this fixture specifically consumes their released
+    contract. The route prefix, behaviour, argument and states remain outcomes.
     """
     return f"""Build a backend-only one-time reminder product.
 
-The confirmed product setting is `{BRIEF_PACKAGE_SETTINGS_KEY}`. Declare it in the
-generated backend service manifest's settings_schema as a product-scoped string, and let
-the product read it as the user reference its reminders belong to. Run the generator and
-prove that exact key reaches `services/backend/src/generated/settings_schemas.py`; then
-test generated `POST /settings/set` and `POST /settings/get` set and read it under
-`SETTINGS_WRITE_CAPABILITY`.
+The confirmed product setting is the reminders package's generated product-scoped key
+`{BRIEF_PACKAGE_SETTINGS_KEY}`. The platform writes and reads back that confirmed value
+through the existing capability-protected `POST /settings/set` and `POST /settings/get`
+endpoints after deploy. The installed reminders package owns the declaration, and the
+package's declared setting seed must create the initial waiting reminder in that same
+successful settings-write transaction. Do not duplicate the key in the backend service
+manifest, add a DB trigger or startup poll, or implement a product-owned seed.
 
 The product owes a one-time reminder capability, and it is a self-contained slice of
 domain behaviour: a reminder is recorded for a user reference with a text and the moment

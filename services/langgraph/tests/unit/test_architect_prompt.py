@@ -65,6 +65,16 @@ class TestInitialSettingsDirectives:
         assert "settings_schema" in SYSTEM_PROMPT
         assert "settings_schemas.py" in SYSTEM_PROMPT
 
+    def test_package_owned_seed_replaces_product_owned_setting_glue(self):
+        lower = SYSTEM_PROMPT.lower()
+
+        assert "package-owned" in lower
+        assert "declares its setting seed" in lower
+        assert "db trigger" in lower
+        assert "startup polling" in lower
+        assert "product-owned seed code" in lower
+        assert "duplicate" in lower and "service" in lower
+
 
 class TestScheduledBehaviourDirectives:
     """A behaviour the product runs on a schedule is declared, provided and fired."""
