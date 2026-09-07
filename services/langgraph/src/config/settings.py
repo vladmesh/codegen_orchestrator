@@ -1,7 +1,7 @@
 """LangGraph service configuration.
 
 Requires: REDIS_URL, API_BASE_URL
-Optional: CHECKPOINT_DATABASE_URL (PostgreSQL for LangGraph checkpointer persistence)
+PO consumer additionally requires CHECKPOINT_DATABASE_URL for durable conversation state.
 """
 
 from functools import lru_cache
@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     # port is chosen per run and the token with it.
     qa_capability_host: str = "qa-worker"
 
-    # Optional: PostgreSQL URL for LangGraph checkpointer persistence
-    # Falls back to MemorySaver (in-memory) if not set
+    # Optional for the shared langgraph process, required when PO is enabled.
+    # Tests may still construct the PO graph explicitly with MemorySaver.
     checkpoint_database_url: str | None = None
 
     # Summarization config (used by SummarizationNode)
