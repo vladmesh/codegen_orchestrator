@@ -29,7 +29,11 @@ LOCALHOST_PROBE_TIMEOUT = 30
 MAX_REMOTE_OUTPUT = 8000
 MAX_PORT = 65535
 STATUS_MARKER = "<<qa-http-status:"
-_STATUS_READ = re.compile(rf"{re.escape('<<qa-http-status:')}(?P<status>\d{{3}})>>")
+# Anchored at the end of stdout, because that is where `curl --write-out`
+# appends it and the response body is everything before it. A route that
+# answers 500 with a counterfeit marker in its body does not get to speak for
+# curl: only the last marker, with nothing but whitespace after it, is read.
+_STATUS_READ = re.compile(rf"{re.escape('<<qa-http-status:')}(?P<status>\d{{3}})>>\s*\Z")
 # Contained-read refusal statuses.
 READ_UNRESOLVABLE = 3
 READ_OUTSIDE_ROOT = 4
@@ -486,6 +490,12 @@ def loopback_http_status(stdout: str) -> int | None:
     `curl` is run without `--fail`, so an error response is exit status 0 with
     the status in the body marker. Reading it is how a 500 stays a 500 instead
     of passing for a successful read of the product.
+
+    The marker read is the one `curl` wrote, and it wrote it last: the response
+    body precedes it and a route can put anything it likes there, including the
+    text of a 200 marker. So the read is anchored to the end of the output, and
+    output with no marker at its end answers ``None`` — an unanswered read,
+    never a successful one.
     """
     match = _STATUS_READ.search(stdout)
     return int(match.group("status")) if match else None

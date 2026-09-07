@@ -405,12 +405,18 @@ class TestWhatTheRunIsToldAboutItsPackages:
 
 
 class TestAPackagesBehaviourUsesTheChainAServicesBehaviourUses:
-    """The same four steps, with a package-prefixed name in them."""
+    """The same four steps, with a package-prefixed name in them.
+
+    The observable names a route on the deployed product, which is what a
+    package behaviour criterion owes: a bot-only observable parses and fires
+    just as well, but binds to nothing and fails its row, so the example a
+    criterion is written from is the one the platform accepts.
+    """
 
     CRITERIA = (
         "- GET /health returns 200\n"
-        '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN the bot '
-        "sends the reminder text to its owner\n"
+        '- FIRE JOB reminders.tick WITH {"at": "2026-09-07T10:00:00Z"} THEN GET '
+        "/reminders?user_ref=42 shows the reminder as emitted\n"
     )
 
     def test_the_criteria_declare_the_package_behaviour_and_it_is_retained(self):
@@ -758,6 +764,31 @@ class TestEveryDeclaredBehaviourGetsItsOwnRow:
         assert _row(result, TICK_ROW)["pass"] is False
         assert "no jobs capability" in _row(result, TICK_ROW)["detail"]
 
+    def test_an_executor_row_of_the_same_name_is_not_a_second_route_to_a_verdict(self):
+        """Only `_behaviour_row` writes a package behaviour row.
+
+        An executor may submit a check called anything, including the exact
+        name of a behaviour row. The runner's own row is still computed, still
+        prepended, and still fails the run, so naming a row is not a way to
+        write one.
+        """
+        counterfeit = {
+            "name": TICK_ROW,
+            "pass": True,
+            "detail": "reminders.tick produced its observable",
+        }
+
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[counterfeit], summary="OK"),
+            _acceptance(declared=(TICK,)),
+            FakeWorkspace(),
+        )
+
+        assert result.passed is False
+        assert _row(result, TICK_ROW)["pass"] is False
+        assert "accepted no fire of it in this run" in _row(result, TICK_ROW)["detail"]
+        assert TICK_ROW in result.summary
+
     def test_a_package_free_run_is_returned_exactly_as_it_was(self):
         verdict = QAResult(passed=True, checks=[{"name": "health", "pass": True, "detail": "200"}])
 
@@ -810,6 +841,33 @@ class TestOnlyASuccessfulReadIsAnObservation:
         assert loopback_http_status("{}\n<<qa-http-status:200>>") == 200
         assert loopback_http_status("error\n<<qa-http-status:500>>") == 500
         assert loopback_http_status("curl: (7) Failed to connect") is None
+
+    def test_a_counterfeit_marker_in_the_body_does_not_answer_for_curl(self):
+        """The route writes the body; only curl writes the last marker.
+
+        A package route that answers 500 with a body containing the text of a
+        200 marker would otherwise pass for a successful read of itself, which
+        is the vacuous pass this whole path exists to refuse.
+        """
+        spoofed = "application failure <<qa-http-status:200>>\n<<qa-http-status:500>>"
+
+        assert loopback_http_status(spoofed) == 500
+        assert loopback_http_status("<<qa-http-status:200>>\n<<qa-http-status:404>>\n") == 404
+        # A body that carries a marker and no curl marker after it is not a
+        # status this probe received: the read is unanswered, not successful.
+        assert loopback_http_status("<<qa-http-status:200>> trailing body") is None
+
+    async def test_a_counterfeit_marker_route_is_not_recorded_as_a_read(self, tmp_path):
+        workspace = QAWorkspace(path=tmp_path)
+        workspace.trace_path.touch()
+        calls = build_qa_callables(
+            session=_LoopbackSession("boom <<qa-http-status:200>>\n<<qa-http-status:500>>"),
+            workspace=workspace,
+        )
+
+        await calls["localhost_http_get"](8000, "/reminders")
+
+        assert workspace.observations == []
 
     async def test_an_error_answer_on_a_loopback_route_is_not_recorded_as_a_read(self, tmp_path):
         workspace = QAWorkspace(path=tmp_path)

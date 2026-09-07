@@ -70,8 +70,16 @@ def parse_health_only_criteria(criteria: str) -> list[HealthCriterion] | None:
 #: it ran. The behaviour's name is read off this line deterministically — the
 #: executor never guesses it, and nothing infers it from the prose around it:
 #:
-#:     - FIRE JOB daily_digest THEN the bot sends today's digest to the owner
-#:     - FIRE JOB daily_digest WITH {"chat_id": 42} THEN the bot sends ...
+#:     - FIRE JOB daily_digest THEN GET /digests?owner=42 shows today's digest
+#:     - FIRE JOB daily_digest WITH {"chat_id": 42} THEN GET /digests?owner=42 ...
+#:
+#: The observable of a behaviour declared by a *kit package* must name a route
+#: on the deployed product, as those examples do. Central QA binds a package
+#: behaviour's verdict to an HTTP read of a route the observable names, so a
+#: bot-only observable — "THEN the bot sends today's digest to the owner" —
+#: cannot be bound and its row fails saying the criterion named no route this
+#: run could read. That is a known accepted limitation of the package path, not
+#: an oversight; `docs/CONTRACTS.md` records it and what would lift it.
 #:
 #: `WITH` carries the arguments the product's declared `jobs_schema` must
 #: accept, as one JSON object. A line whose arguments are not a JSON object is
@@ -95,6 +103,14 @@ class ScheduledBehaviourCriterion(BaseModel):
     product's own output answers the observable. A recorded dispatch is never
     the answer to `observable` — the core publishes an event, and publishing it
     says nothing about whether any provider consumed it or ran the behaviour.
+
+    `observable` is prose, and for a service's own behaviour it may name any
+    product output. For a behaviour declared by a kit package it must name a
+    route on the deployed product — `GET /reminders?user_ref=42 shows the
+    reminder as emitted` — because central QA binds that row to an HTTP read of
+    a named route and nothing else. A package behaviour whose observable names
+    no such route is not currently bindable and its row fails naming that; the
+    limitation is known and accepted, and `docs/CONTRACTS.md` states it.
     """
 
     model_config = ConfigDict(extra="forbid")

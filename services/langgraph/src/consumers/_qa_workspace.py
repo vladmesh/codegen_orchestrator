@@ -44,6 +44,14 @@ class ProductObservation:
 
     `subject` is what was read, in the words the request used, so a check that
     claims to rest on this read can be matched against it.
+
+    Not every observation recorded here can be bound to a criterion. A package
+    behaviour's row is bound only by an HTTP read of a route the criterion's
+    observable names (`observation_answers` in `agents.qa.packages`), so a bot
+    reply recorded here is product output for every other purpose in this run
+    and still does not answer a package behaviour's observable. That is a known
+    accepted limitation of the package path, not an oversight: see
+    `docs/CONTRACTS.md`.
     """
 
     position: int

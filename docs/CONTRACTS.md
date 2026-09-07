@@ -881,6 +881,29 @@ they are the point rather than side effects: a criterion that wants a package be
 must name an observable the run can read, and a run that cannot bind one is honestly red rather
 than falsely green.
 
+**One predicate decides it, and only an HTTP route binds.** Whether a recorded read answers a
+criterion's observable is decided in exactly one place, `observation_answers` in
+`services/langgraph/src/agents/qa/packages.py`, and exactly one caller turns that into a verdict,
+`_behaviour_row` in `_qa_runner.py`; no other path writes a package behaviour row. A read answers
+only when all three hold: the tool is an HTTP read of the deployed product (`http_get` or
+`localhost_http_get`); the read genuinely succeeded, judged from the final status marker `curl`
+itself wrote — the marker is read anchored to the end of the output, so a response body carrying
+the text of a `200` marker cannot speak for `curl` and a failing route stays failed; and its path
+matches a route the observable names.
+
+**A bot-only observable is not currently bindable, and that is accepted.** A package behaviour
+criterion is accepted only when its observable names a route on the deployed product — for the
+reminders package, `GET /reminders?user_ref=42` showing the reminder in state `emitted` after
+`reminders.tick`. An observable phrased as bot delivery — "THEN the bot sends the reminder text to
+its owner" — names no such route, so nothing binds to it and its row fails saying the criterion
+named no observable this run could read, even though this run's `telegram_probe` may have recorded
+a bot reply as product output for every other purpose. This is a known accepted limitation of the
+package path, not an oversight: admitting a probe read back into the binder would restore "any
+post-fire observation answers", the hole this path exists to close, and a trustworthy non-HTTP
+observation-target contract is a change to the QA acceptance contract that is deferred rather than
+attempted. Criteria for a package behaviour are therefore written against a route, and the criterion
+examples and the `ScheduledBehaviourCriterion` and `ProductObservation` docstrings say so.
+
 `apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
 when any of them failed, so a verdict that performed no package check does not pass by asserting
 that it did. What this run fired, read back and read is decided from the runner's own ledgers —
