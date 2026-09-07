@@ -7,8 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Production now pins the immutable kit `0.6.1` package-environment correction and its fresh
   `backend,tg_bot` render through the single template-pin source.
-- Worker completion refusals retain the agent's final report, and failed story-branch CI is merged
-  into the Story timeline before repair or human review so control-host evidence stays diagnostic.
+- Worker completion refusals retain the authoritative report through the attempt event, while
+  Story PR/CI timelines replace stale misses with recovered evidence before repair or review.
 
 - Production scaffolds pin the immutable kit `0.6.0` render and accept only its `backend` and
   `tg_bot` modules, while legacy project module values remain readable.

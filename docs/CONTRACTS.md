@@ -642,7 +642,10 @@ its in-flight ids so one process does not reclaim its own active dispatch.
    it. A run that will never publish refuses at once; the bound refuses the rest.
    Every observation is persisted in `Story.generated_product_timeline` with the
    PR identity and every distinct CI run id, status and conclusion seen through
-   the GitHub App. A refusal creates no Run, so its typed reason lands on the
+   the GitHub App. Its missed-capture list is recomputed from the best merged
+   observation: later positive PR, run, job, step or log facts clear earlier
+   misses, and recovered failure details clear their unavailability reason. A
+   refusal creates no Run, so its typed reason lands on the
    story (`quarantine_reason.deploy_outcome = images_not_published`, with the
    commits, CI run, failed jobs and steps, and redacted bounded log evidence)
    before `POST /api/stories/{id}/human-review` parks it for human review.
@@ -740,12 +743,21 @@ credential. A failed story-branch run is merged there before its CI-fix task is
 created, the Story is retried, or exhausted attempts park it for human review;
 the task retains the same run URL and identity, branch/head, conclusion, failed
 jobs and steps, bounded redacted excerpt, and named unavailability. Repeated
-polls and later default-branch publication observations merge by run id, retaining
-richer prior evidence without duplicates and naming missed captures explicitly.
+polls and later default-branch publication observations merge positive facts by
+run id without duplicates. Missed captures and detail-unavailability claims are
+recomputed from the current merged observation rather than retained after the
+fact becomes available.
 A terminal publication failure also copies its evidence into `quarantine_reason`.
 The Product Brief harness retains its existing Story reads as evidence schema
 v17, and stand acceptance copies that artifact without GitHub access to the
 generated-product organization or a read of the generated repository.
+
+**Developer completion reports survive refusal.** The worker wrapper treats an
+actual `REPORT.md` as authoritative and uses a completed result's content only
+when no fuller report exists. If ordered commit verification refuses completion,
+that report crosses the failed worker result and developer node into the existing
+engineering-attempt `worker_report` task event; the refusal never becomes a
+completed result.
 
 <a id="rundto"></a>
 

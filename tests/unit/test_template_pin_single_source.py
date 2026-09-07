@@ -74,7 +74,7 @@ def _load(name: str, path: Path) -> ModuleType:
 
 def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     ref = template_pin.TEMPLATE_PIN.ref
-    literal = re.compile(rf"(?<![\d.]){re.escape(ref)}(?![\d.])")
+    literal = re.compile(rf"(?<![\d.]){re.escape(ref)}(?!\.?\d)")
     carriers = sorted(
         name
         for name in _tracked_files()

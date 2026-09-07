@@ -27,6 +27,7 @@ from shared.redis import RedisStreamClient
 from .. import startup
 from ._recipients import resolve_project_recipient
 from .image_publication import (
+    DEFAULT_BRANCH,
     IMAGE_PUBLICATION_TIMEOUT_SECONDS,
     ImagePublication,
     PublicationVerdict,
@@ -161,7 +162,7 @@ async def _images_ready_for_deploy(
         existing_timeline,
         pull_request,
         verdict,
-        branch="main",
+        branch=DEFAULT_BRANCH,
         head_sha=deployed_commit_sha,
     )
     if verdict.state is ImagePublication.PUBLISHED:
@@ -249,6 +250,7 @@ def _updated_generated_product_timeline(
         if isinstance(prior_runs, list)
         else []
     )
+    current_run = None
     if verdict.ci_run_id is not None:
         observed_run = {
             "id": verdict.ci_run_id,
@@ -261,14 +263,19 @@ def _updated_generated_product_timeline(
             "details_unavailable_reason": verdict.details_unavailable_reason,
         }
         previous = next((item for item in runs if item.get("id") == verdict.ci_run_id), {})
-        if previous.get("failed_jobs") and not observed_run["failed_jobs"]:
-            observed_run["failed_jobs"] = previous["failed_jobs"]
+        observed_jobs = observed_run["failed_jobs"]
+        previous_jobs = previous.get("failed_jobs")
+        if previous_jobs and not observed_jobs:
+            observed_run["failed_jobs"] = previous_jobs
         observed_run = {
             key: previous.get(key) if value is None else value
             for key, value in observed_run.items()
         }
+        if observed_run["failed_jobs"]:
+            observed_run["details_unavailable_reason"] = None
         runs = [item for item in runs if item.get("id") != verdict.ci_run_id]
         runs.append(observed_run)
+        current_run = observed_run
     previous_pr = existing.get("pull_request", {}) if isinstance(existing, dict) else {}
     observed_pr = {
         "number": pull_request.get("number"),
@@ -280,29 +287,62 @@ def _updated_generated_product_timeline(
     pr_observation = {
         key: previous_pr.get(key) if value is None else value for key, value in observed_pr.items()
     }
-    missed = list(existing.get("missed_captures", [])) if isinstance(existing, dict) else []
-    missed.extend(
+    missed = [
         f"pull request {field} was unavailable"
         for field, value in pr_observation.items()
         if value is None
-    )
+    ]
     if verdict.ci_run_id is None:
         missed.append(f"CI run identity was unavailable: {verdict.detail}")
     else:
         missed.extend(
             f"CI run {verdict.ci_run_id} {field} was unavailable"
             for field, value in {
-                "URL": verdict.ci_run_url,
-                "status": verdict.ci_status,
-                "branch": branch,
-                "head SHA": head_sha,
+                "URL": current_run["url"],
+                "status": current_run["status"],
+                "branch": current_run["branch"],
+                "head SHA": current_run["head_sha"],
             }.items()
             if value is None
+        )
+        if current_run["conclusion"] == "failure":
+            failed_jobs = current_run["failed_jobs"]
+            unavailable_reason = current_run["details_unavailable_reason"]
+            if not failed_jobs:
+                detail = f": {unavailable_reason}" if unavailable_reason else ""
+                missed.append(
+                    f"CI run {verdict.ci_run_id} failure details were unavailable{detail}"
+                )
+            for index, job in enumerate(failed_jobs, start=1):
+                job_name = job.get("name") or f"#{index}"
+                if not job.get("name"):
+                    missed.append(f"CI run {verdict.ci_run_id} job {index} name was unavailable")
+                if not job.get("failed_steps"):
+                    missed.append(
+                        f"CI run {verdict.ci_run_id} job {job_name} failed steps were unavailable"
+                    )
+                if not job.get("log_excerpt"):
+                    reason = job.get("log_unavailable_reason")
+                    detail = f": {reason}" if reason else ""
+                    missed.append(
+                        f"CI run {verdict.ci_run_id} job {job_name} log was unavailable{detail}"
+                    )
+    latest_ci_observation = verdict.evidence()
+    if current_run is not None:
+        latest_ci_observation.update(
+            {
+                "ci_run_id": current_run["id"],
+                "ci_status": current_run["status"],
+                "ci_conclusion": current_run["conclusion"],
+                "ci_run_url": current_run["url"],
+                "failed_jobs": current_run["failed_jobs"],
+                "details_unavailable_reason": current_run["details_unavailable_reason"],
+            }
         )
     return {
         "pull_request": pr_observation,
         "ci_runs": runs,
-        "latest_ci_observation": verdict.evidence(),
+        "latest_ci_observation": latest_ci_observation,
         "missed_captures": list(dict.fromkeys(missed)),
     }
 
@@ -326,6 +366,14 @@ async def _handle_failed_run(
     head_sha = run.get("head_sha") or "unknown"
     tasks = await api_client.get_tasks_by_story(story_id)
     prior_evidence = [item for task in tasks if (item := _ci_metadata(task))]
+
+    timeline_runs = existing_timeline.get("ci_runs") if isinstance(existing_timeline, dict) else []
+    timeline_has_run = isinstance(timeline_runs, list) and any(
+        isinstance(item, dict) and item.get("id") == run_id for item in timeline_runs
+    )
+    task_has_run = any(item.get("run_id") == run_id for item in prior_evidence)
+    if task_has_run and timeline_has_run:
+        return False
 
     try:
         details = await github.get_workflow_failure_details(
@@ -371,7 +419,7 @@ async def _handle_failed_run(
         head_sha=head_sha if head_sha != "unknown" else None,
     )
     await api_client.update_story(story_id, {"generated_product_timeline": timeline})
-    if any(item.get("run_id") == run_id for item in prior_evidence):
+    if task_has_run:
         return False
 
     if attempt > _ci_failure_limit():

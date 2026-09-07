@@ -116,7 +116,102 @@ def test_generated_product_timeline_repoll_keeps_richer_run_evidence():
     assert timeline["ci_runs"][0]["failed_jobs"] == [
         {"name": "unit", "failed_steps": ["Run pytest"]}
     ]
+    assert timeline["ci_runs"][0]["details_unavailable_reason"] is None
+
+
+def test_pr_ci_failure_then_merge_clears_resolved_missed_captures():
+    failure = PublicationVerdict(
+        state=ImagePublication.REFUSED,
+        detail="story CI failed",
+        ci_run_id=34162226616,
+        ci_status="completed",
+        ci_conclusion="failure",
+        ci_run_url="https://github.com/org/repo/actions/runs/34162226616",
+        failed_jobs=({"name": "unit", "failed_steps": ["Run pytest"]},),
+    )
+    timeline = _updated_generated_product_timeline(
+        None,
+        {"number": 42, "state": "open", "head": {"sha": "story-head"}},
+        failure,
+        branch="story/story-1",
+        head_sha="story-head",
+    )
+    assert "pull request merged_at was unavailable" in timeline["missed_captures"]
+
+    published = PublicationVerdict(
+        state=ImagePublication.PUBLISHED,
+        detail="images published",
+        ci_run_id=34170000000,
+        ci_status="completed",
+        ci_conclusion="success",
+        ci_run_url="https://github.com/org/repo/actions/runs/34170000000",
+    )
+    timeline = _updated_generated_product_timeline(
+        timeline,
+        {
+            "number": 42,
+            "state": "closed",
+            "merged_at": "2026-09-07T23:00:00Z",
+            "merge_commit_sha": "merge-head",
+            "head": {"sha": "story-head"},
+        },
+        published,
+        branch="main",
+        head_sha="merge-head",
+    )
+
+    assert timeline["missed_captures"] == []
+    assert [run["id"] for run in timeline["ci_runs"]] == [34162226616, 34170000000]
+
+
+def test_transient_detail_failure_then_success_clears_unavailability():
+    unavailable = PublicationVerdict(
+        state=ImagePublication.REFUSED,
+        detail="details unavailable",
+        ci_run_id=34162226616,
+        ci_status="completed",
+        ci_conclusion="failure",
+        ci_run_url="https://github.com/org/repo/actions/runs/34162226616",
+        details_unavailable_reason="HTTPStatusError",
+    )
+    pr = {"number": 42, "state": "open", "head": {"sha": "story-head"}}
+    timeline = _updated_generated_product_timeline(
+        None,
+        pr,
+        unavailable,
+        branch="story/story-1",
+        head_sha="story-head",
+    )
     assert timeline["ci_runs"][0]["details_unavailable_reason"] == "HTTPStatusError"
+
+    recovered = PublicationVerdict(
+        state=ImagePublication.REFUSED,
+        detail="details captured",
+        ci_run_id=34162226616,
+        ci_status="completed",
+        ci_conclusion="failure",
+        ci_run_url="https://github.com/org/repo/actions/runs/34162226616",
+        failed_jobs=(
+            {
+                "name": "unit",
+                "failed_steps": ["Run pytest"],
+                "log_excerpt": "bounded redacted excerpt",
+                "log_unavailable_reason": None,
+            },
+        ),
+    )
+    timeline = _updated_generated_product_timeline(
+        timeline,
+        pr,
+        recovered,
+        branch="story/story-1",
+        head_sha="story-head",
+    )
+
+    run = timeline["ci_runs"][0]
+    assert run["failed_jobs"][0]["log_excerpt"] == "bounded redacted excerpt"
+    assert run["details_unavailable_reason"] is None
+    assert not any("details" in miss for miss in timeline["missed_captures"])
 
 
 @pytest.mark.asyncio
@@ -470,11 +565,20 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.get_tasks_by_story.return_value = [prior]
     api.create_task.reset_mock()
     api.update_story.reset_mock()
-    story.generated_product_timeline = timeline
+    story.generated_product_timeline = None
+    gh.get_workflow_failure_details.reset_mock()
     assert await poll_ci_failures(api) == 0
     api.create_task.assert_not_awaited()
+    gh.get_workflow_failure_details.assert_awaited_once()
     repeated = api.update_story.await_args.args[1]["generated_product_timeline"]
     assert repeated["ci_runs"] == timeline["ci_runs"]
+
+    story.generated_product_timeline = repeated
+    api.update_story.reset_mock()
+    gh.get_workflow_failure_details.reset_mock()
+    assert await poll_ci_failures(api) == 0
+    api.update_story.assert_not_awaited()
+    gh.get_workflow_failure_details.assert_not_awaited()
 
 
 @pytest.mark.asyncio

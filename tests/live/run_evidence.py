@@ -3083,7 +3083,11 @@ def generated_product_timeline(ctx: dict) -> dict:
                     if latest.get("pull_request") is not None
                     else Capture.missed("pull_request was unavailable on the latest story read")
                 ).as_dict(),
-                "ci_runs": Capture.captured(latest.get("ci_runs", [])).as_dict(),
+                "ci_runs": (
+                    Capture.captured(latest["ci_runs"])
+                    if isinstance(latest.get("ci_runs"), list) and latest["ci_runs"]
+                    else Capture.missed("no ci.yml run was retained on the latest story read")
+                ).as_dict(),
             }
     else:
         capture = Capture.missed("no generated-product story read was captured")

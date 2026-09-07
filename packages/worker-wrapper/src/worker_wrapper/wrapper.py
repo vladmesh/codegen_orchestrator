@@ -591,7 +591,7 @@ class WorkerWrapper:
     ) -> WorkerResult:
         """Attach worker report and stdout tail to a result without mutating it."""
         updates: dict[str, Any] = {}
-        if report and not result.worker_report:
+        if report:
             updates["worker_report"] = report
         if stdout_tail:
             updates["agent_stdout_tail"] = stdout_tail
