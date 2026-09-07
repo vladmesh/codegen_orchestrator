@@ -22,7 +22,7 @@ graph TD
     Bot <--> |Redis Stream| PO[Product Owner Agent]
 
     PO --> |tools| API[API Service]
-    PO --> |create story| ArchQueue[architect:queue]
+    PO --> |create story| ArchQueue["architect:queue"]
 
     subgraph Scheduler
         Dispatcher[Task Dispatcher]
@@ -30,10 +30,10 @@ graph TD
 
     ArchQueue --> Architect[Architect]
     Architect --> |tasks| API
-    Dispatcher --> |scaffold:queue| Scaffolder[Scaffolder]
-    Dispatcher --> |engineering:queue| Eng[Engineering Worker]
-    Dispatcher --> |deploy:queue| Dep[Deploy Worker]
-    Dep --> |qa:queue| QA[QA Worker]
+    Dispatcher --> |"scaffold:queue"| Scaffolder[Scaffolder]
+    Dispatcher --> |"engineering:queue"| Eng[Engineering Worker]
+    Dispatcher --> |"deploy:queue"| Dep[Deploy Worker]
+    Dep --> |"qa:queue"| QA[QA Worker]
 
     Eng --> |manages| Workers[Coding Agent Containers]
 

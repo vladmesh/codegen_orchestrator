@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- Quoted the colon-bearing labels in the README architecture diagram so GitHub's current Mermaid renders it
+  again instead of failing with "Cannot read properties of undefined (reading 'render')".
 - Architect and `mega-brief-package` now use a kit package's declared setting seed, so initial
   settings create package-owned state without duplicate product seed glue.
 
