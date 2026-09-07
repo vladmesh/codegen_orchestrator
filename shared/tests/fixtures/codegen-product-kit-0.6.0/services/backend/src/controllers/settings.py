@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import HTTPException, status
 from jsonschema import Draft202012Validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from codegen_kit.packages import ActivatedPackage, SettingSeedPackage
 from services.backend.src.app.models.setting import Setting, SettingScope
 from services.backend.src.app.repositories.setting import SettingRepository
 from services.backend.src.generated.protocols import SettingsControllerProtocol
@@ -68,6 +70,16 @@ def _to_contract(setting: Setting) -> SettingValue:
 class SettingsController(SettingsControllerProtocol):
     """Read and write only manifest-declared, schema-valid product settings."""
 
+    def __init__(self, packages: Sequence[ActivatedPackage] = ()) -> None:
+        self._product_seeds: dict[str, SettingSeedPackage] = {}
+        for package in packages:
+            runtime = package.runtime
+            for scope, local_key in package.manifest.setting_seeds:
+                if scope == "product":
+                    key = f"{package.manifest.name.replace('-', '_')}.{local_key}"
+                    assert isinstance(runtime, SettingSeedPackage)
+                    self._product_seeds[key] = runtime
+
     async def get(self, session: AsyncSession, payload: SettingGet) -> SettingValue:
         setting = await SettingRepository(session).get(
             payload.key,
@@ -82,10 +94,14 @@ class SettingsController(SettingsControllerProtocol):
 
     async def set(self, session: AsyncSession, payload: SettingSet) -> SettingValue:
         _validate_value(payload.key, payload.value)
+        scope = _contract_scope(payload.scope)
         setting = await SettingRepository(session).set(
             payload.key,
-            _storage_scope(payload.scope),
+            _storage_scope(scope),
             _subject_id(payload.scope, payload.subject_id),
             payload.value,
         )
+        seed = self._product_seeds.get(payload.key) if scope is ContractScope.product else None
+        if seed is not None:
+            await seed.seed_setting(session, payload.key, payload.value)
         return _to_contract(setting)

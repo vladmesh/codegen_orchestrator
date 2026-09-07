@@ -25,7 +25,7 @@ verify that Claude Code, Factory.ai, or OpenAI Codex builds a working project en
 | 4 | `weather_bot` | `backend,tg_bot` | Telegram weather bot. `/weather <city>` returns temperature and conditions (mock data, no real API key needed). Backend caches results in PostgreSQL for 30 minutes. `GET /api/weather/{city}` endpoint also available. |
 | 5 | `url_shortener` | `backend,frontend` | URL shortener. Backend: `POST /api/shorten` accepts `{url}`, returns short code. `GET /{code}` redirects. `GET /api/stats/{code}` returns click count. Frontend: form to enter URL, displays shortened link, shows click stats. |
 | 6 | `bot_landing` | `tg_bot,frontend` | Telegram bot with a landing page. Bot: handles `/start`, `/help`, echoes messages with emoji decoration. Frontend: static page describing the bot features with a "Try it" link to `t.me/botname`. No shared backend. |
-| 7 | `expense_tracker` | `backend,tg_bot,frontend` | Personal expense tracker. Backend: CRUD API for expenses and categories, `GET /api/summary` for monthly totals. Bot: `/add <amount> <category> <note>` logs expense, `/summary` shows monthly total. Frontend: dashboard with expense table and category breakdown. |
+| 7 | `expense_tracker` | `backend,tg_bot` | Personal expense tracker. Backend: CRUD API for expenses and categories, `GET /api/summary` for monthly totals. Bot: `/add <amount> <category> <note>` logs expense, `/summary` shows monthly total. |
 
 ### Worker Audit
 
@@ -463,7 +463,7 @@ For running all 7 tests at a given level:
 - [ ] #4 `weather_bot` (backend,tg_bot)
 - [ ] #5 `url_shortener` (backend,frontend)
 - [ ] #6 `bot_landing` (tg_bot,frontend)
-- [ ] #7 `expense_tracker` (backend,tg_bot,frontend)
+- [ ] #7 `expense_tracker` (backend,tg_bot)
 
 **Recommendation**: Run sequentially (one at a time) to avoid resource contention on worker-manager. Each test creates a Docker container that needs CPU/RAM for Claude Code.
 

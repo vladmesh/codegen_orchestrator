@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
-from fastapi import status
+from fastapi import FastAPI, status
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.backend.src.app.models.setting import Setting
+from services.backend.src.core.db import get_async_db
 from services.backend.src.core.settings import get_settings
 from services.backend.src.generated.settings_schemas import SETTINGS_SCHEMAS
 
@@ -28,6 +31,7 @@ def declared_settings() -> Generator[None, None, None]:
         {
             "languages": {"type": "array", "items": {"type": "string"}},
             "digest_size": {"type": "integer", "minimum": 1, "maximum": 10},
+            "seeded.owner": {"type": "string", "minLength": 1},
         }
     )
     yield
@@ -145,3 +149,84 @@ async def test_user_scoped_settings_are_isolated_by_subject(client: AsyncClient)
     assert second["value"] == SECOND_SUBJECT_VALUE
     assert first_read.json() == first
     assert invalid_scope.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_product_setting_seed_routes_only_exact_declared_key_and_scope(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    callback = AsyncMock()
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(
+                name="seeded",
+                setting_seeds=(("product", "owner"),),
+            ),
+            runtime=SimpleNamespace(seed_setting=callback),
+        )
+    )
+
+    await _set(client, {"key": "seeded.owner", "value": "product-owner"})
+    await _set(client, {"key": "languages", "value": ["en"]})
+    await _set(
+        client,
+        {"key": "seeded.owner", "scope": "user", "subject_id": 7, "value": "user-owner"},
+    )
+
+    callback.assert_awaited_once_with(db_session, "seeded.owner", "product-owner")
+
+
+@pytest.mark.asyncio
+async def test_setting_seed_failure_rolls_back_core_and_package_writes(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    class FailingSeed:
+        async def seed_setting(self, session: AsyncSession, key: str, value: Any) -> None:
+            session.add(Setting(key="package.marker", scope="product", subject_id=0, value=value))
+            await session.flush()
+            raise RuntimeError("seed failed")
+
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(
+                name="seeded",
+                setting_seeds=(("product", "owner"),),
+            ),
+            runtime=FailingSeed(),
+        )
+    )
+
+    async def transactional_session() -> AsyncGenerator[AsyncSession, None]:
+        try:
+            yield db_session
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
+
+    app.dependency_overrides[get_async_db] = transactional_session
+
+    response = await client.post(
+        "/settings/set",
+        headers=_headers(),
+        json={"key": "seeded.owner", "value": "owner"},
+    )
+
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert (await db_session.execute(select(Setting))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_package_without_setting_seeds_keeps_settings_write_as_noop_extension(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    app.state.codegen_packages.append(
+        SimpleNamespace(
+            manifest=SimpleNamespace(name="plain", setting_seeds=()),
+            runtime=SimpleNamespace(),
+        )
+    )
+
+    written = await _set(client, {"key": "languages", "value": ["en"]})
+
+    assert written["value"] == ["en"]

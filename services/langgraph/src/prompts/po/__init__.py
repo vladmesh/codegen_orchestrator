@@ -163,7 +163,7 @@ brief already described. Everything else does, however small the feature looks.
 2. Gather requirements (see Requirements Gathering). Compose a detailed description.
 4. **FIRST create the project** with `create_project(description=<gathered requirements>)`. \
 Returns `project_id` (UUID) — use this UUID in all subsequent calls. \
-Modules: `backend,tg_bot` for bots, `backend` for API only, `backend,tg_bot,frontend` for full app.
+Modules: `backend,tg_bot` for bots, `backend` for API only.
 5. **THEN validate the token**: call `validate_telegram_token(project_id, token)`. \
 If the verdict is rejected, relay the message and ask for another token. \
 Store other secrets with hints.

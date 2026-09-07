@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib import metadata
+import inspect
 from pathlib import Path
 import re
 from typing import Any, Protocol, runtime_checkable
@@ -16,8 +17,9 @@ from packaging.version import InvalidVersion, Version
 import yaml
 
 PACKAGE_PROTOCOL_VERSION = 1
-CORE_VERSION = "1.2.0"
+CORE_VERSION = "2.0.0"
 ENTRY_POINT_GROUP = "codegen_kit.packages"
+SETTING_SEED_PARAMETER_COUNT = 3
 
 
 class PackageActivationError(RuntimeError):
@@ -68,6 +70,14 @@ class DuplicatePackageHttpPrefixError(PackageActivationError):
     """Two activated packages declare the same HTTP mount prefix."""
 
 
+class MissingSettingSeedCallbackError(PackageActivationError):
+    """A package declares a setting seed but does not implement its callback."""
+
+
+class PackageDatabaseOwnershipError(PackageActivationError):
+    """A database capability caller is not owned by one installed package manifest."""
+
+
 @dataclass(frozen=True)
 class PackageManifest:
     """The activation subset of a validated package.yaml."""
@@ -80,6 +90,7 @@ class PackageManifest:
     deployment_modes: tuple[str, ...] = ("in_process",)
     database_schema: str | None = None
     database_migrations: str | None = None
+    setting_seeds: tuple[tuple[str, str], ...] = ()
 
 
 @runtime_checkable
@@ -93,6 +104,14 @@ class Package(Protocol):
 
     def shutdown(self, application: Any) -> Awaitable[None]:
         """Stop package resources before core resources are disconnected."""
+
+
+@runtime_checkable
+class SettingSeedPackage(Protocol):
+    """Optional runtime callback required by a declared setting seed."""
+
+    def seed_setting(self, session: Any, key: str, value: Any) -> Awaitable[None]:
+        """Seed package state inside the core setting transaction."""
 
 
 @dataclass(frozen=True)
@@ -169,6 +188,7 @@ def _validate_manifest_fields(data: dict[str, Any]) -> None:
         "database",
         "events",
         "settings_schema",
+        "setting_seeds",
         "jobs_schema",
         "deployment",
         "environment",
@@ -261,6 +281,47 @@ def _deployment_modes(data: dict[str, Any]) -> tuple[str, ...]:
     return tuple(modes)
 
 
+def _setting_seed_binding(declaration: object, properties: dict[str, Any]) -> tuple[str, str]:
+    """Validate one product-setting callback binding."""
+
+    if not isinstance(declaration, dict):
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    if set(declaration) != {"key", "scope"}:
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    key = declaration["key"]
+    scope = declaration["scope"]
+    if not isinstance(key, str):
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    if not key or key.strip() != key:
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    if scope != "product" or key not in properties:
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    return scope, key
+
+
+def _setting_seeds(data: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Return validated product-setting callback bindings."""
+
+    declarations = data.get("setting_seeds", [])
+    if not isinstance(declarations, list):
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    if not declarations:
+        return ()
+    settings_schema = data.get("settings_schema")
+    if not isinstance(settings_schema, dict):
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    properties = settings_schema.get("properties")
+    if not isinstance(properties, dict):
+        raise PackageManifestError("package.yaml has malformed setting_seeds declaration")
+    bindings: list[tuple[str, str]] = []
+    for declaration in declarations:
+        binding = _setting_seed_binding(declaration, properties)
+        if binding in bindings:
+            raise PackageManifestError("package.yaml has duplicate setting_seeds declaration")
+        bindings.append(binding)
+    return tuple(bindings)
+
+
 def _parse_manifest(path: Path) -> PackageManifest:
     data = _load_manifest_data(path)
     _validate_manifest_fields(data)
@@ -274,6 +335,7 @@ def _parse_manifest(path: Path) -> PackageManifest:
         deployment_modes=_deployment_modes(data),
         database_schema=database_schema,
         database_migrations=database_migrations,
+        setting_seeds=_setting_seeds(data),
     )
 
 
@@ -316,6 +378,48 @@ def _validate_compatibility(name: str, manifest: PackageManifest) -> None:
         )
 
 
+def _setting_seed_parameters(name: str, callback: Any) -> tuple[inspect.Parameter, ...]:
+    """Read a seed callback signature as a named activation error."""
+
+    try:
+        return tuple(inspect.signature(callback).parameters.values())
+    except (TypeError, ValueError) as error:
+        raise MissingSettingSeedCallbackError(
+            f"package {name!r} seed_setting must be async (session, key, value)"
+        ) from error
+
+
+def _validate_setting_seed_callback(name: str, manifest: PackageManifest, runtime: Package) -> None:
+    """Require the exact optional callback contract when seeds are declared."""
+
+    if not manifest.setting_seeds:
+        return
+    if not isinstance(runtime, SettingSeedPackage):
+        raise MissingSettingSeedCallbackError(
+            f"package {name!r} declares setting_seeds but does not implement seed_setting"
+        )
+    callback = runtime.seed_setting
+    parameters = _setting_seed_parameters(name, callback)
+    parameter_names = tuple(parameter.name for parameter in parameters)
+    positional_kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    if not inspect.iscoroutinefunction(callback):
+        raise MissingSettingSeedCallbackError(
+            f"package {name!r} seed_setting must be async (session, key, value)"
+        )
+    if len(parameters) != SETTING_SEED_PARAMETER_COUNT or parameter_names != (
+        "session",
+        "key",
+        "value",
+    ):
+        raise MissingSettingSeedCallbackError(
+            f"package {name!r} seed_setting must be async (session, key, value)"
+        )
+    if any(parameter.kind not in positional_kinds for parameter in parameters):
+        raise MissingSettingSeedCallbackError(
+            f"package {name!r} seed_setting must be async (session, key, value)"
+        )
+
+
 def _activate_entry_point(name: str, entry_point: metadata.EntryPoint) -> ActivatedPackage:
     """Validate and load one allowlisted entry point."""
 
@@ -337,12 +441,49 @@ def _activate_entry_point(name: str, entry_point: metadata.EntryPoint) -> Activa
         raise PackageActivationError(
             f"package {name!r} entry point does not implement the Package protocol"
         )
+    _validate_setting_seed_callback(name, manifest, runtime)
     return ActivatedPackage(
         manifest=manifest,
         runtime=runtime,
         package_root=package_root,
         manifest_sha256=sha256(manifest_path.read_bytes()).hexdigest(),
     )
+
+
+def owned_database_schema(caller_path: Path) -> str:
+    """Resolve one caller path to the database schema its installed manifest owns."""
+
+    caller_path = caller_path.resolve()
+    matches: list[tuple[metadata.EntryPoint, Path]] = []
+    for entry_point in _entry_points():
+        try:
+            package_root, _ = _package_root(entry_point)
+        except PackageActivationError:
+            continue
+        if caller_path.is_relative_to(package_root.resolve()):
+            matches.append((entry_point, package_root))
+    if len(matches) != 1:
+        raise PackageDatabaseOwnershipError(
+            f"database caller {caller_path} is not owned by exactly one installed package"
+        )
+
+    entry_point, package_root = matches[0]
+    manifest = _parse_manifest(_manifest_path(entry_point, package_root))
+    if manifest.name != entry_point.name:
+        raise PackageDatabaseOwnershipError(
+            f"entry point {entry_point.name!r} does not match package manifest name "
+            f"{manifest.name!r}"
+        )
+    _validate_compatibility(entry_point.name, manifest)
+    if entry_point.dist is None or manifest.version != entry_point.dist.version:
+        raise PackageDatabaseOwnershipError(
+            f"package {entry_point.name!r} manifest version does not match its distribution"
+        )
+    if manifest.database_schema is None:
+        raise PackageDatabaseOwnershipError(
+            f"package {entry_point.name!r} does not own a database schema"
+        )
+    return manifest.database_schema
 
 
 def _validate_http_prefixes(packages: Sequence[ActivatedPackage]) -> None:

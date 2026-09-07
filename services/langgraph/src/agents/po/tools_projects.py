@@ -11,9 +11,9 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import (
+    REQUESTABLE_SERVICE_MODULES,
     ProjectStatus,
     ProjectTeardownResult,
-    ServiceModule,
     TeardownStatus,
 )
 from shared.contracts.dto.telegram import (
@@ -31,9 +31,9 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Available modules (single source of truth: ServiceModule enum)
+# Available modules for new projects (single source of truth: pinned-kit contract)
 # ---------------------------------------------------------------------------
-AVAILABLE_MODULES = {m.value for m in ServiceModule}
+AVAILABLE_MODULES = {module.value for module in REQUESTABLE_SERVICE_MODULES}
 AVAILABLE_DEVELOPER_AGENTS = {
     AgentType.CLAUDE.value,
     AgentType.FACTORY.value,
@@ -96,7 +96,7 @@ async def create_project(
 
     Args:
         title: Human-readable project title.
-        modules: Comma-separated modules: backend, tg_bot, notifications, frontend.
+        modules: Comma-separated modules: backend, tg_bot.
         description: What the project should do.
         agent_type: Optional developer-worker override: claude, factory, or codex.
     """

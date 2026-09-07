@@ -7,9 +7,8 @@ from importlib import resources
 from pathlib import Path
 import re
 
+from alembic import command
 from alembic.config import Config
-from alembic.runtime.environment import EnvironmentContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, create_engine, text
 
 from services.backend.src.core.settings import get_settings
@@ -46,24 +45,9 @@ def _upgrade(connection: Connection, package: ActivatedPackage) -> None:
 
     config = Config()
     config.set_main_option("script_location", str(_migration_directory(declaration)))
-    script = ScriptDirectory.from_config(config)
-
-    def upgrade_revisions(revision: str, _context: object) -> Iterable[object]:
-        return script._upgrade_revs("head", revision)  # noqa: SLF001
-
-    with EnvironmentContext(
-        config,
-        script,
-        fn=upgrade_revisions,
-        destination_rev="head",
-    ) as environment:
-        environment.configure(
-            connection=connection,
-            version_table="alembic_version",
-            version_table_schema=schema,
-        )
-        with environment.begin_transaction():
-            environment.run_migrations()
+    config.attributes["connection"] = connection
+    config.attributes["version_table_schema"] = schema
+    command.upgrade(config, "head")
 
 
 def upgrade_packages(

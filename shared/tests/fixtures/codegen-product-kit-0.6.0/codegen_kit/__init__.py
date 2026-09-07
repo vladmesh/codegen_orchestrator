@@ -1,8 +1,8 @@
 """Stable public API for packages installed into a generated product."""
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import datetime
+import inspect
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -10,25 +10,19 @@ from .packages import (
     CORE_VERSION,
     PACKAGE_PROTOCOL_VERSION,
     Package,
+    SettingSeedPackage,
 )
 
 
-def package_base(schema: str) -> Any:
-    """Create the package's independent declarative base."""
+def package_database() -> Any:
+    """Return the database capability owned by the calling installed package."""
 
-    from .database import package_base as create_base
+    from .database import owned_package_database
 
-    return create_base(schema)
-
-
-@asynccontextmanager
-async def package_session(schema: str) -> AsyncIterator[Any]:
-    """Open a core-owned, schema-local package transaction lazily."""
-
-    from .database import package_session as open_session
-
-    async with open_session(schema) as session:
-        yield session
+    frame = inspect.currentframe()
+    if frame is None or frame.f_back is None:
+        raise RuntimeError("cannot identify the package database caller")
+    return owned_package_database(Path(frame.f_back.f_code.co_filename))
 
 
 async def publish_event(
@@ -56,7 +50,7 @@ __all__ = [
     "CORE_VERSION",
     "PACKAGE_PROTOCOL_VERSION",
     "Package",
-    "package_base",
-    "package_session",
+    "SettingSeedPackage",
+    "package_database",
     "publish_event",
 ]

@@ -3,7 +3,9 @@
 from fastapi import FastAPI
 
 from codegen_kit.packages import configure_generated_packages
+from services.backend.src.controllers.settings import SettingsController
 from services.backend.src.core.settings import get_settings
+from services.backend.src.generated.registry import get_settings_controller
 
 from .api.router import api_router
 from .grant_capability import GrantCapabilityMiddleware
@@ -33,4 +35,7 @@ def create_app() -> FastAPI:
     application.add_middleware(RequestLoggingMiddleware)
     application.include_router(api_router)
     configure_generated_packages(application)
+    application.dependency_overrides[get_settings_controller] = lambda: SettingsController(
+        application.state.codegen_packages
+    )
     return application

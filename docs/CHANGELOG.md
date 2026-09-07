@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- Production scaffolds pin the immutable kit `0.6.0` render and accept only its `backend` and
+  `tg_bot` modules, while legacy project module values remain readable.
 - Quoted the colon-bearing labels in the README architecture diagram so GitHub's current Mermaid renders it
   again instead of failing with "Cannot read properties of undefined (reading 'render')".
 - Architect and `mega-brief-package` now use a kit package's declared setting seed, so initial
