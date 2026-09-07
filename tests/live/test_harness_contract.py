@@ -3374,7 +3374,24 @@ async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatc
         if request.url.path == "/api/runs/":
             return httpx.Response(200, json=[], request=request)
         if request.url.path == "/api/stories/story-1":
-            return httpx.Response(200, json={"id": "story-1", "status": status}, request=request)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "story-1",
+                    "status": status,
+                    "quarantine_reason": {"deploy_outcome": "images_not_published"},
+                    "pr_number": 42,
+                    "generated_product_timeline": {
+                        "pull_request": {
+                            "number": 42,
+                            "state": "closed",
+                            "merge_commit_sha": "abc123",
+                        },
+                        "ci_runs": [{"id": 900, "status": "completed", "conclusion": "failure"}],
+                    },
+                },
+                request=request,
+            )
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     ctx = {"project_id": "project-1", "story_id": "story-1"}
@@ -3389,8 +3406,15 @@ async def test_wait_brief_deploy_run_stops_at_a_story_no_deploy_state(monkeypatc
     assert calls == ["/api/runs/", "/api/stories/story-1"]
     assert ctx["brief_deploy_story_status"] == status
     assert ctx["deploy_run_error"] == (
-        f"story story-1 reached no-deploy state {status} before a deploy Run appeared"
+        f"story story-1 reached terminal deploy refusal {status}: "
+        '{"deploy_outcome": "images_not_published"} before a deploy Run appeared'
     )
+    observation = ctx["generated_product_story_observations"][0]
+    assert observation["story_id"] == "story-1"
+    assert observation["status"] == status
+    assert observation["quarantine_reason"] == {"deploy_outcome": "images_not_published"}
+    assert observation["pull_request"]["merge_commit_sha"] == "abc123"
+    assert observation["ci_runs"] == [{"id": 900, "status": "completed", "conclusion": "failure"}]
 
 
 @pytest.mark.asyncio

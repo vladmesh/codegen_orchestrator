@@ -624,9 +624,12 @@ its in-flight ids so one process does not reclaim its own active dispatch.
    the project's own `ci.yml` run for the built commit on its default branch —
    that run's `build-and-push` is the publication. Nothing retriggers or repairs
    it. A run that will never publish refuses at once; the bound refuses the rest.
-   A refusal creates no Run, so its typed reason lands on the story
-   (`quarantine_reason.deploy_outcome = images_not_published`, with the commits
-   and CI run it looked at) and the story goes to human review.
+   Every observation is persisted in `Story.generated_product_timeline` with the
+   PR identity and every distinct CI run id, status and conclusion seen through
+   the GitHub App. A refusal creates no Run, so its typed reason lands on the
+   story (`quarantine_reason.deploy_outcome = images_not_published`, with the
+   commits, CI run, failed jobs and steps, and redacted bounded log evidence)
+   before `POST /api/stories/{id}/human-review` parks it for human review.
 3. A durable deploy Run is created once that is true, before `DeployMessage`
    publication. Inside the deploy, before any external effect, the deployer reads
    the registry once for exactly the `*_IMAGE` references it resolved: absent
@@ -673,7 +676,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 
 | Surface / model family | Canonical source | API exposure / owner | Non-type invariant |
 |---|---|---|---|
-| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; owner notifications and QA handoff are durable story lifecycle state |
+| Story create/update/status | `shared/contracts/dto/story.py` | `schemas/story.py`, `routers/stories.py`, `routers/_story_helpers.py`, `routers/_story_actions.py` | status and `waiting_on` are written only by a transition, together on one locked row; `StoryUpdate` refuses both; App-authenticated generated-product evidence, owner notifications and QA handoff are durable story lifecycle state |
 | Task create/update/event/status | `shared/contracts/dto/task.py` | `schemas/task.py`, `routers/tasks.py` | scheduler dispatches only durable eligible task state |
 | Product Brief and requirement coverage | `shared/contracts/dto/product_brief.py` | `routers/product_briefs.py` | confirmed content is immutable; one live planning attempt; one idempotent admission releases that attempt's tasks |
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
@@ -713,6 +716,16 @@ section (`WaitingStory`, at most `WAITING_STORY_LIMIT` rows, filtered in SQL on
 `StoryWaitingOn.RESOURCES` is declared and unset: no Story status maps to it,
 because work parks for resources at the *Task* level (`waiting_resources`) while
 the Story stays `in_progress`.
+
+**Generated-product evidence stays with the Story.**
+`stories.generated_product_timeline` is the durable JSON record of the exact PR
+and distinct `ci.yml` Runs the scheduler observed through its existing GitHub App
+credential. A terminal publication failure copies the same run identity,
+conclusion, failed jobs and steps, and redacted configured log excerpt into
+`quarantine_reason`; unavailable jobs or logs are named rather than erasing the
+run. The Product Brief harness retains its existing Story reads as evidence
+schema v17, with explicit missed captures, and stand acceptance copies that
+artifact without reading the generated repository.
 
 <a id="rundto"></a>
 

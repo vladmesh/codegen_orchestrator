@@ -5,6 +5,11 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- Terminal generated-product CI failures retain App-authenticated failed jobs, steps and redacted
+  bounded logs on the Story, then park through the supported human-review action.
+- Paid stand artifacts retain their existing Story poll as a PR/CI timeline, so pre-deploy failures
+  remain diagnosable after generated-product access is unavailable.
+
 - `mega-brief-package` runs the confirmed-brief path on a one-time reminder contract, so one paid run
   drives the kit package route from architect plan through kit install to central QA's route check.
 

@@ -65,6 +65,7 @@ PROFILE_ATTESTATION_MARKER = "stand-codex-profile-redaction-v1"
 # its writer did not owe it.  Later artifact versions remain admissible: this is
 # a floor, not a writer-version lockstep.
 MIN_PAID_FAILURE_EVIDENCE_SCHEMA_VERSION = 15
+GENERATED_PRODUCT_TIMELINE_SCHEMA_VERSION = 17
 # These classifications are assigned only after the harness has selected a
 # deploy Run and observed the part of its lifecycle that stopped the pipeline.
 # They are therefore independent evidence that a current Run record is owed.
@@ -217,6 +218,15 @@ def _capture_is_captured(capture: object) -> bool:
     )
 
 
+def _timeline_capture_is_stated(capture: object) -> bool:
+    """Timeline reads may capture a meaningful null quarantine reason."""
+    if not isinstance(capture, dict):
+        return False
+    if capture.get("status") == "captured":
+        return "value" in capture
+    return capture.get("status") == "missed" and bool(capture.get("reason"))
+
+
 def _deployment_has_known_run(failure: dict[str, Any], deployment: dict[str, Any]) -> bool:
     """Whether evidence establishes a deploy Run whose current record is owed.
 
@@ -258,6 +268,23 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
     # retention is checked. Everything below is failure attribution and stays
     # scoped to a failure.
     errors += _worker_retention_errors(name, artifact)
+    if (
+        isinstance(schema_version, int)
+        and schema_version >= GENERATED_PRODUCT_TIMELINE_SCHEMA_VERSION
+    ):
+        timeline = artifact.get("generated_product_timeline")
+        latest = timeline.get("latest") if isinstance(timeline, dict) else None
+        if (
+            not isinstance(timeline, dict)
+            or not _timeline_capture_is_stated(timeline.get("story_id"))
+            or not _timeline_capture_is_stated(timeline.get("observations"))
+            or not isinstance(latest, dict)
+            or any(
+                not _timeline_capture_is_stated(latest.get(field))
+                for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
+            )
+        ):
+            errors.append(f"paid_generated_product_timeline_missing:{name}")
     if not failure.get("failed"):
         return errors
     if not failure.get("stage") or not failure.get("failure_kind"):

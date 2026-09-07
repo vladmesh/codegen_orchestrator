@@ -64,6 +64,7 @@ class StoryRead(TimestampedDTO):
     created_by: str
     user_report: str | None = None
     quarantine_reason: dict[str, Any] | None = None
+    generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None
     operator_recheck: StoryRecheck | None = None
     reopened_at: datetime | None = None

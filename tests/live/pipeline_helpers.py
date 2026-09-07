@@ -2800,14 +2800,59 @@ async def wait_brief_deploy_run(
 
     async def story_alive() -> bool:
         story_id = ctx["story_id"]
-        response = await api_internal.get(f"/api/stories/{story_id}")
-        response.raise_for_status()
-        status = response.json().get("status")
+        try:
+            response = await api_internal.get(f"/api/stories/{story_id}")
+            response.raise_for_status()
+            story = response.json()
+        except Exception as error:
+            missed = {
+                "story_id": story_id,
+                "capture_status": "missed",
+                "reason": redact_diagnostic(
+                    f"story read failed: {type(error).__name__}: {error}",
+                    secrets=secret_env_values(dict(os.environ)),
+                ),
+            }
+            observations = ctx.setdefault("generated_product_story_observations", [])
+            if not observations or observations[-1] != missed:
+                observations.append(missed)
+            return True
+        timeline = story.get("generated_product_timeline")
+        missed_captures = []
+        if not isinstance(timeline, dict):
+            timeline = {}
+            missed_captures.append("generated_product_timeline was unavailable on the story read")
+        if timeline.get("pull_request") is None:
+            missed_captures.append("pull_request was unavailable on the story read")
+        if not isinstance(timeline.get("ci_runs"), list):
+            missed_captures.append("ci_runs were unavailable on the story read")
+        if isinstance(timeline.get("missed_captures"), list):
+            missed_captures.extend(timeline["missed_captures"])
+        observation = redacted_payload(
+            {
+                "story_id": story_id,
+                "status": story.get("status"),
+                "quarantine_reason": story.get("quarantine_reason"),
+                "pull_request": timeline.get("pull_request"),
+                "ci_runs": (
+                    timeline.get("ci_runs") if isinstance(timeline.get("ci_runs"), list) else []
+                ),
+                "missed_captures": missed_captures,
+            }
+        )
+        observations = ctx.setdefault("generated_product_story_observations", [])
+        if not observations or observations[-1] != observation:
+            observations.append(observation)
+        status = story.get("status")
         ctx["brief_deploy_story_status"] = status
         if status not in _BRIEF_NO_DEPLOY_STORY_STATUSES:
             return True
+        quarantine = json.dumps(
+            observation["quarantine_reason"], sort_keys=True, separators=(", ", ": ")
+        )
         ctx["deploy_run_error"] = (
-            f"story {story_id} reached no-deploy state {status} before a deploy Run appeared"
+            f"story {story_id} reached terminal deploy refusal {status}: "
+            f"{quarantine} before a deploy Run appeared"
         )
         return False
 

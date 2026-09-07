@@ -38,6 +38,7 @@ export interface Story {
   created_by: string
   user_report?: string | null
   quarantine_reason?: Record<string, unknown> | null
+  generated_product_timeline?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
   operator_recheck?: StoryRecheck | null
   reopened_at?: string | null

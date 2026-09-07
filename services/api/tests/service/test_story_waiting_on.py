@@ -77,6 +77,38 @@ async def test_a_wait_is_cleared_by_the_transition_that_ends_it(
 
 
 @pytest.mark.asyncio
+async def test_ci_publication_refusal_evidence_reaches_the_real_human_review_route(
+    async_client: AsyncClient, _tasks_project
+) -> None:
+    story_id = await _create_story(async_client, "Failed generated-product CI")
+    await async_client.post(f"/api/stories/{story_id}/start", json={"actor": "scheduler"})
+    await async_client.post(f"/api/stories/{story_id}/pr_review", json={"actor": "scheduler"})
+    reason = {
+        "deploy_outcome": "images_not_published",
+        "ci_run_id": 900,
+        "detail": "ci.yml run 900 failed",
+    }
+    timeline = {
+        "pull_request": {"number": 42, "state": "closed", "merge_commit_sha": "abc123"},
+        "ci_runs": [{"id": 900, "status": "completed", "conclusion": "failure"}],
+    }
+    patched = await async_client.patch(
+        f"/api/stories/{story_id}",
+        json={"quarantine_reason": reason, "generated_product_timeline": timeline},
+    )
+    assert patched.status_code == status.HTTP_200_OK, patched.text
+
+    parked = await async_client.post(
+        f"/api/stories/{story_id}/human-review", json={"actor": "scheduler"}
+    )
+
+    assert parked.status_code == status.HTTP_200_OK, parked.text
+    assert parked.json()["status"] == StoryStatus.WAITING_HUMAN_REVIEW
+    assert parked.json()["quarantine_reason"] == reason
+    assert parked.json()["generated_product_timeline"] == timeline
+
+
+@pytest.mark.asyncio
 async def test_composite_ci_retry_commits_the_wait_of_the_status_it_lands_on(
     async_client: AsyncClient, _tasks_project
 ) -> None:

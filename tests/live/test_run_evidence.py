@@ -1142,7 +1142,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 16
+    assert EVIDENCE_SCHEMA_VERSION == 17
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1160,7 +1160,26 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "story_id": "story-1",
         "task_id": "task-1",
     }
-
+    assert artifact["generated_product_timeline"] == {
+        "story_id": {
+            "status": CaptureStatus.CAPTURED.value,
+            "value": "story-1",
+            "reason": None,
+        },
+        "observations": {
+            "status": CaptureStatus.MISSED.value,
+            "value": None,
+            "reason": "no generated-product story read was captured",
+        },
+        "latest": {
+            field: {
+                "status": CaptureStatus.MISSED.value,
+                "value": None,
+                "reason": "no generated-product story read was captured",
+            }
+            for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
+        },
+    }
     assert artifact["discovery"]["run_id"] == RUN_ID
     assert artifact["discovery"]["docker_filters"] == [
         "label=com.codegen.type=worker",
@@ -1241,6 +1260,51 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
     assert worker["container"] == DEV_CONTAINER
     assert worker["image"]["value"]["tag"] == "worker-base-codex:latest"
     assert worker["state"]["value"]["status"] == "exited"
+
+
+def test_failed_publication_timeline_is_retained_in_the_run_artifact(codex_docker, tmp_path):
+    collector = collector_for(codex_docker)
+    collector.capture()
+    reason = {
+        "deploy_outcome": "images_not_published",
+        "ci_run_id": 900,
+        "failed_jobs": [
+            {
+                "name": "build-and-push",
+                "failed_steps": ["Build image"],
+                "log_excerpt": "safe bounded tail",
+            }
+        ],
+    }
+    ctx = base_ctx(
+        collector,
+        generated_product_story_observations=[
+            {
+                "story_id": "story-1",
+                "status": "waiting_human_review",
+                "quarantine_reason": reason,
+                "pull_request": {
+                    "number": 42,
+                    "state": "closed",
+                    "merge_commit_sha": "abc123",
+                },
+                "ci_runs": [{"id": 900, "status": "completed", "conclusion": "failure"}],
+            }
+        ],
+    )
+
+    timeline = build_artifact(ctx, root=tmp_path)["generated_product_timeline"]
+
+    assert timeline["story_id"]["value"] == "story-1"
+    assert timeline["observations"]["status"] == CaptureStatus.CAPTURED.value
+    retained = timeline["observations"]["value"][0]
+    assert retained["status"] == "waiting_human_review"
+    assert retained["quarantine_reason"] == reason
+    assert retained["ci_runs"][0]["id"] == 900
+    assert timeline["latest"]["status"]["value"] == "waiting_human_review"
+    assert timeline["latest"]["quarantine_reason"]["value"] == reason
+    assert timeline["latest"]["pull_request"]["value"]["merge_commit_sha"] == "abc123"
+    assert timeline["latest"]["ci_runs"]["value"][0]["id"] == 900
 
 
 def test_missing_release_record_is_reported_not_guessed(codex_docker, tmp_path):

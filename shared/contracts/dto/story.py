@@ -149,6 +149,9 @@ class StoryDTO(TimestampedDTO):
     created_by: str
     user_report: str | None = None
     quarantine_reason: dict[str, Any] | None = None
+    # App-authenticated observations of the generated repository's PR and CI.
+    # This remains readable after the generated-product organization is gone.
+    generated_product_timeline: dict[str, Any] | None = None
     operator_acceptance: "StoryAcceptance | None" = None
     operator_recheck: "StoryRecheck | None" = None
     reopened_at: datetime | None = None
@@ -195,6 +198,7 @@ class StoryUpdate(BaseModel):
     priority: int | None = None
     blocked_by_story_id: str | None = None
     quarantine_reason: dict[str, Any] | None = None
+    generated_product_timeline: dict[str, Any] | None = None
     pr_number: int | None = None
 
     @model_validator(mode="before")

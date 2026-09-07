@@ -108,6 +108,33 @@ async def test_no_commits_between_takes_the_story_out_of_the_retry_set(api_clien
 
 
 @pytest.mark.asyncio
+async def test_a_parked_story_is_not_selected_by_the_next_completion_cycle(
+    api_client, redis_client
+):
+    selected = [_story()]
+    api_client.get_stories_by_status.side_effect = lambda status: (
+        selected if status == StoryStatus.IN_PROGRESS else []
+    )
+
+    async def park(story_id, action):
+        assert (story_id, action) == ("story-1", "human-review")
+        selected.clear()
+
+    api_client.transition_story.side_effect = park
+    github = AsyncMock()
+    github.create_pull_request.side_effect = NoCommitsBetweenError(
+        "Cannot open PR story/story-1->main: No commits between main and story/story-1."
+    )
+
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+        assert await complete_stories(api_client, redis_client) == 0
+        assert await complete_stories(api_client, redis_client) == 0
+
+    assert github.create_pull_request.await_count == 1
+    assert api_client.get_tasks_by_story.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_generic_pr_creation_error_keeps_the_story_in_progress(api_client, redis_client):
     """A transient GitHub error keeps its current behaviour: retry on the next tick."""
     github = AsyncMock()

@@ -579,10 +579,30 @@ def test_a_paid_failure_on_a_future_schema_is_admitted(tmp_path):
     """The minimum schema is a compatibility floor, not an exact version."""
     evidence = _run_evidence(paid=True, failed=True)
     evidence["schema_version"] = EVIDENCE_SCHEMA_VERSION + 1
+    evidence["generated_product_timeline"] = {
+        "story_id": _captured("story-1"),
+        "observations": _missed("the story read was unavailable before the failure"),
+        "latest": {
+            field: _missed("the story read was unavailable before the failure")
+            for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
+        },
+    }
     manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
     output = tmp_path / "acceptance"
 
     assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+
+
+def test_current_paid_artifact_must_name_its_generated_product_timeline(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["schema_version"] = EVIDENCE_SCHEMA_VERSION
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"paid_generated_product_timeline_missing:{PAID_EVIDENCE_NAME}" in _incompleteness(
+        output
+    )
 
 
 def test_a_failed_paid_run_that_cannot_say_what_the_url_answered_is_refused(tmp_path):
