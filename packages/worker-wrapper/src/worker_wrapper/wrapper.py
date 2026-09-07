@@ -200,7 +200,6 @@ class WorkerWrapper:
             )
             self._owns_broker = True
         self._running = False
-        self._task: asyncio.Task | None = None
         self._http_server: ResultHttpServer | None = None
         self._result_event: asyncio.Event | None = None
         self._agent_stdout_tail: str | None = None
