@@ -77,6 +77,11 @@ class FakeConn:
             return SimpleNamespace(exit_status=0, stdout=RUNNING_STATE, stderr="")
         if "grep -c -F" in command:
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        # A read of a file this deployment does not have. It carries no kit
+        # package contract, so the run states nothing about packages — which is
+        # what these tests' deployment is.
+        if command.startswith("sh -c") and "head -c" in command:
+            return SimpleNamespace(exit_status=5, stdout="", stderr="notafile")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):

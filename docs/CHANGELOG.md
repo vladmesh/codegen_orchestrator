@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- An active kit package makes a central QA run owe a result per declared behaviour, each resting on
+  a read of the route its criterion names plus the check quoting it, or the run is red not green.
+
+- The QA loopback probe reads only the status marker `curl` wrote, anchored at the end of its
+  output, so a route answering 500 with a counterfeit marker in its body no longer reads as a 200.
+
 - The architect prompt states the capability-shape ladder — reuse, a shared service, a container,
   then an in-process kit package — and has a package task install the wheel instead of writing one.
 

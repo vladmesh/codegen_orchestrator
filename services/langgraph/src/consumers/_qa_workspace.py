@@ -32,6 +32,48 @@ TRACE_NAME = "tool-trace.jsonl"
 VERDICT_NAME = "verdict.json"
 
 
+@dataclass(frozen=True)
+class ProductObservation:
+    """One successful read of the deployed product's own output.
+
+    Recorded by the runtime when a call came back with something the product
+    answered — a route that responded, a file that was read, a bot that
+    replied. A fire and its evidence read are not observations: both answer
+    with the core's record of the dispatch, which says nothing about what any
+    provider did with the event.
+
+    `subject` is what was read, in the words the request used, so a check that
+    claims to rest on this read can be matched against it.
+
+    Not every observation recorded here can be bound to a criterion. A package
+    behaviour's row is bound only by an HTTP read of a route the criterion's
+    observable names (`observation_answers` in `agents.qa.packages`), so a bot
+    reply recorded here is product output for every other purpose in this run
+    and still does not answer a package behaviour's observable. That is a known
+    accepted limitation of the package path, not an oversight: see
+    `docs/CONTRACTS.md`.
+    """
+
+    position: int
+    tool: str
+    subject: str
+
+
+@dataclass(frozen=True)
+class BehaviourEvidence:
+    """What the product's own record of one fired behaviour said.
+
+    `position` is where in this run the read happened, because evidence read
+    before its fire is evidence of something else. `dispatch_status` is the
+    product's own account of the event: `dispatched` once it was emitted,
+    `undelivered` when it never was — and an event that was never emitted
+    cannot have been consumed by anything.
+    """
+
+    position: int
+    dispatch_status: str
+
+
 @dataclass
 class QAWorkspace:
     """An isolated directory for one QA run."""
@@ -42,6 +84,21 @@ class QAWorkspace:
     verdict: str | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
     telegram_probe_blocker: QABlocker | None = None
+    #: Behaviours the product accepted a fire for during this run, mapped to
+    #: how many calls this run had made when it accepted them. Written by the
+    #: runtime, so "the behaviour was never fired" and "nothing was read after
+    #: the fire" are both decided here rather than from anything an executor
+    #: reports about itself.
+    fired_behaviours: dict[str, int] = field(default_factory=dict)
+    #: Behaviours whose recorded command this run read back. Written by the
+    #: runtime when the product answered `job_evidence` with a command, so "the
+    #: run never read the evidence" is the runner's own fact and not an
+    #: executor's account of itself.
+    behaviour_evidence: dict[str, BehaviourEvidence] = field(default_factory=dict)
+    #: Every successful read of the product's own output this run made, in
+    #: order. Written by the runtime, so what a run looked at is the runner's
+    #: fact and not an executor's account of itself.
+    observations: list[ProductObservation] = field(default_factory=list)
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -79,6 +136,27 @@ class QAWorkspace:
         self._trace.append(entry)
         with self.trace_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def record_fired_behaviour(self, name: str) -> None:
+        """Note that the product accepted a fire of `name`, and where in the run."""
+        self.fired_behaviours.setdefault(name, len(self._trace))
+
+    def record_behaviour_evidence(self, name: str, dispatch_status: str) -> None:
+        """Note what the product's own record of `name` said, and when it was read.
+
+        The product answers an evidence read with a command only within the
+        product that fired it, so this is the one read bound to this run, this
+        deployment and this behaviour.
+        """
+        self.behaviour_evidence.setdefault(
+            name, BehaviourEvidence(position=len(self._trace), dispatch_status=dispatch_status)
+        )
+
+    def record_observation(self, tool: str, subject: str) -> None:
+        """Note that this run read the product's own output, and what it read."""
+        self.observations.append(
+            ProductObservation(position=len(self._trace), tool=tool, subject=subject)
+        )
 
     def record_telegram_probe(
         self, evidence: QATelegramProbeEvidence, blocker: QABlocker | None = None

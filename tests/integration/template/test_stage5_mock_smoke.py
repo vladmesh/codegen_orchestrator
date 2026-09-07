@@ -10,6 +10,7 @@ from stage5_mock_smoke import (
     CommandTimeout,
     Stage5Smoke,
     load_production_template,
+    load_qa_package_reader,
     read_active_packages,
     read_listed_packages,
 )
@@ -273,7 +274,19 @@ def test_cleanup_verification_fails_when_docker_listing_fails(
         smoke._assert_no_compose_resources()
 
 
-def _write_product(root: Path, *, listed: list[str], generated: list[dict[str, str]]) -> Path:
+def _write_product(
+    root: Path,
+    *,
+    listed: list[str],
+    generated: list[dict[str, str]],
+    jobs: dict[str, str] | None = None,
+) -> Path:
+    """The three generated artifacts every rendered product carries.
+
+    The job registry is one of them: generation writes it for the backend of
+    any product, with or without a package, so a stand-in that omitted it would
+    be a product shape no render produces.
+    """
     (root / "codegen_kit").mkdir(parents=True)
     (root / "codegen_kit/_active_packages.py").write_text(
         '"""Package identities used to generate this product contract."""\n\n'
@@ -281,6 +294,10 @@ def _write_product(root: Path, *, listed: list[str], generated: list[dict[str, s
     )
     (root / "services/backend").mkdir(parents=True)
     (root / "services/backend/manifest.yaml").write_text(f"version: 1\npackages: {listed!r}\n")
+    (root / "services/backend/src/generated").mkdir(parents=True)
+    (root / "services/backend/src/generated/jobs_schemas.py").write_text(
+        f"JOB_SCHEMA_SOURCES: dict[str, str] = {jobs or {}!r}\n"
+    )
     return root
 
 
@@ -351,9 +368,18 @@ def test_package_install_proof_runs_kit_add_on_its_own_render(
     def install(_self: Stage5Smoke, command: list[str], **_kwargs: object) -> None:
         kit_add.append(command)
         _write_product(
-            smoke.package_workspace / "installed", listed=["reminders"], generated=[identity]
+            smoke.package_workspace / "installed",
+            listed=["reminders"],
+            generated=[identity],
+            # What regeneration adds for the installed package: its declared job,
+            # attributed to the package that declared it.
+            jobs={"reminders.tick": "package:reminders"},
         )
-        for name in ("codegen_kit/_active_packages.py", "services/backend/manifest.yaml"):
+        for name in (
+            "codegen_kit/_active_packages.py",
+            "services/backend/manifest.yaml",
+            "services/backend/src/generated/jobs_schemas.py",
+        ):
             (product / name).write_text((smoke.package_workspace / "installed" / name).read_text())
         (product / "services/backend/packages").mkdir(parents=True)
         (product / "services/backend/packages" / wheel.name).write_text("")
@@ -390,3 +416,37 @@ def test_package_install_proof_fails_when_the_generated_contract_stays_empty(
 
     with pytest.raises(AssertionError, match="generated contract does not record the package"):
         smoke._prove_kit_package_install("d" * 40)
+
+
+def test_central_qa_reads_the_generated_package_contract_of_a_real_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader QA uses is run over the product `kit add` generated, not a copy of it.
+
+    The smoke's own product is a real render; this asserts the proof step is
+    wired into the install phase and that it refuses a product whose generated
+    contract records no package.
+    """
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+    product = tmp_path / "product"
+    (product / "codegen_kit").mkdir(parents=True)
+    (product / "services/backend/src/generated").mkdir(parents=True)
+    (product / "codegen_kit/_active_packages.py").write_text(
+        "ACTIVE_PACKAGES: list[dict[str, str]] = []\n"
+    )
+    (product / "services/backend/manifest.yaml").write_text("packages: []\n")
+    (product / "services/backend/src/generated/jobs_schemas.py").write_text(
+        "JOB_SCHEMA_SOURCES: dict[str, str] = {}\n"
+    )
+
+    with pytest.raises(AssertionError, match="central QA reads"):
+        smoke._prove_central_qa_reads_the_generated_contract(product)
+
+
+def test_the_qa_package_reader_is_the_orchestrators_own_module() -> None:
+    """Nothing here re-implements the reader: it is loaded from the shipped file."""
+    qa = load_qa_package_reader()
+
+    assert qa.ACTIVE_PACKAGE_CONTRACT == "codegen_kit/_active_packages.py"
+    assert qa.BACKEND_MANIFEST == "services/backend/manifest.yaml"
+    assert qa.GENERATED_JOB_REGISTRY == "services/backend/src/generated/jobs_schemas.py"

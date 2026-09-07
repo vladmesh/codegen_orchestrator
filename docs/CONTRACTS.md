@@ -835,6 +835,117 @@ product from the same pinned ref, asserts that a product with no packages ships 
 an empty `ACTIVE_PACKAGES`, installs `reminders` through `kit add`, and asserts the generated
 contract then records the package's name, version and manifest digest.
 
+### Central QA of a product that carries a kit package
+
+Central QA establishes a deployment's packages from the deployment itself, before an executor
+exists. `services/langgraph/src/agents/qa/packages.py` reads three of the product's own artifacts
+over the run's target session — the backend manifest's `packages:` allowlist,
+`codegen_kit/_active_packages.py` with each package's name, version and manifest digest, and the
+generated job registry `services/backend/src/generated/jobs_schemas.py`, which attributes every
+fireable job to the service or the `package:<name>` that declared it — and
+`run_package_activation_checks` cross-checks them against each other.
+
+**An active package makes a run owe results, not prose.** A run against a product with an active
+package owes one row for the package itself and one for each behaviour of it the run's criteria
+declared, and they are rows in the run's result whatever the executor submits:
+
+1. *The package is active in the deployed product.* The check is the package's `startup`, which
+   raises on failure; the runtime refuses a generated contract that no longer matches the manifest
+   and the installed wheels, and the container probe has already found the deployment up. A booted
+   product carrying the package in that contract has passed it, so reading the contract off the
+   live deployment performs the check rather than describing it.
+2. *Each declared behaviour of the package produced its observable* — one row per behaviour, so
+   two declared behaviours are two results and neither can go missing. Three things are required
+   for that exact name, and each missing one is its own failure reason quoting the observable: the
+   product accepted a **fire** of it; the run then made a **successful read of the route the
+   criterion's observable names** — a read that answered, since an error response is the product
+   answering about the request rather than about itself; and the run's result carries a **passing
+   check that names the behaviour and quotes that read**. A criterion whose observable names no
+   route on the deployed product names nothing this run can read, so nothing can be bound to it and
+   the row fails saying that — it does not pass on an unrelated read, and it does not pass on
+   absence. Neither the fire's acknowledgement nor a `job_evidence` read
+   is that output: both answer with the product core's record of the dispatch, which says nothing
+   about whether any provider consumed the event. A `job_evidence` read this run happened to make
+   is not a requirement, but an `undelivered` command in it settles the row against the behaviour,
+   because an event that never left the core cannot have been consumed.
+
+**What this establishes, and what it does not.** The observable is prose an architect wrote — "GET
+/reminders?user_ref=42 shows the reminder as emitted" — and no runner-side rule reads English. The
+division of labour is therefore stated rather than fudged: *the executor judges the observable*,
+and *the platform establishes that the work was done and that the executor judged it*, refusing a
+verdict that rests on nothing the product did. A passing row says which read it is bound to and
+which submitted check rests on that read; it never claims the words of the observable were
+mechanically proven. An unrelated path cannot stand in for the route the observable names, and an
+observable that names no route is not accepted on any read at all. Two consequences follow, and
+they are the point rather than side effects: a criterion that wants a package behaviour accepted
+must name an observable the run can read, and a run that cannot bind one is honestly red rather
+than falsely green.
+
+**One predicate decides it, and only an HTTP route binds.** Whether a recorded read answers a
+criterion's observable is decided in exactly one place, `observation_answers` in
+`services/langgraph/src/agents/qa/packages.py`, and exactly one caller turns that into a verdict,
+`_behaviour_row` in `_qa_runner.py`; no other path writes a package behaviour row. A read answers
+only when all three hold: the tool is an HTTP read of the deployed product (`http_get` or
+`localhost_http_get`); the read genuinely succeeded, judged from the final status marker `curl`
+itself wrote — the marker is read anchored to the end of the output, so a response body carrying
+the text of a `200` marker cannot speak for `curl` and a failing route stays failed; and its path
+matches a route the observable names.
+
+**A bot-only observable is not currently bindable, and that is accepted.** A package behaviour
+criterion is accepted only when its observable names a route on the deployed product — for the
+reminders package, `GET /reminders?user_ref=42` showing the reminder in state `emitted` after
+`reminders.tick`. An observable phrased as bot delivery — "THEN the bot sends the reminder text to
+its owner" — names no such route, so nothing binds to it and its row fails saying the criterion
+named no observable this run could read, even though this run's `telegram_probe` may have recorded
+a bot reply as product output for every other purpose. This is a known accepted limitation of the
+package path, not an oversight: admitting a probe read back into the binder would restore "any
+post-fire observation answers", the hole this path exists to close, and a trustworthy non-HTTP
+observation-target contract is a change to the QA acceptance contract that is deferred rather than
+attempted. Criteria for a package behaviour are therefore written against a route, and the criterion
+examples and the `ScheduledBehaviourCriterion` and `ProductObservation` docstrings say so.
+
+`apply_package_acceptance` puts those rows in front of the executor's own checks and fails the run
+when any of them failed, so a verdict that performed no package check does not pass by asserting
+that it did. What this run fired, read back and read is decided from the runner's own ledgers —
+`QAWorkspace.fired_behaviours`, `behaviour_evidence` and `observations`, all written by the runtime
+when the product answered — never from an executor's account of itself.
+
+**No prefixed-route check is required, and no prefix is inferred.** Package protocol v1 keeps a
+package's `http.prefix` in the installed `package.yaml` inside the wheel, and the kit's generated
+active-package contract records only `name`, `version` and `manifest_sha256` — so a deployed
+product never tells QA where its package is mounted, and the prefix cannot be recovered from the
+package's name, which the protocol keeps independent of it. QA therefore records that it could not
+determine the route and claims nothing about it: a healthy package is not failed over a fact the
+product never published. A criterion that names a package route is checked as the ordinary
+criterion it is. Having the kit publish `http_prefix` in that generated contract would make a
+deterministic route probe possible; it is recorded as deferred rather than taken.
+
+The rest of the kit's package acceptance procedure — install the real wheel, resolve the entry
+point, start the generated application, observe lifecycle calls, validate the manifest, run the
+import lint — is deliberately **not** here. Those are build-time proofs, performed where the
+product is built: in the kit's own CI and in the install recipe proof above, which runs them
+against a real render. Central QA meets an already-deployed product and is read-only apart from the
+one named fire, so asking it to install or lint anything would break that boundary and prove
+nothing the build has not already proven.
+
+A package's scheduled behaviour needs no mechanism of its own. The name is read off the run's
+acceptance criteria by `parse_scheduled_behaviours`, retained by `prepare_central_qa_criteria`,
+named to the executor by `scheduled_behaviour_facts` and accepted by `fire_job`, exactly as a
+service's is; a package prefix such as `reminders.tick` is a name, and the rule that a dispatch
+record is never the answer to the criterion's observable applies to it unchanged. What the deployed
+product's own registry attributes to a package is stated as a fact, and a criteria-named behaviour
+the product declares nowhere is named as a check that fails.
+
+Nothing is inferred from an absent read. A deployment with no `packages:` key and no generated
+package contract carries no package contract at all, and its run is unchanged: same criteria
+preparation, same facts, same verdict shape. Every other disagreement fails the run before an
+executor starts — a listed package with no generated contract, a generated set that disagrees with
+the allowlist, an artifact that is truncated or unparseable, a read the target refused. A package
+contract that could not be established is never reported as "no packages", because a check with
+nothing to examine has to fail. The reader is proved against a real render rather than a replica:
+the stage-5 template compatibility smoke runs it over the artifacts `kit add reminders` generated
+in the product it just rendered.
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership

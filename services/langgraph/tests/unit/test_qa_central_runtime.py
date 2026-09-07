@@ -154,8 +154,12 @@ class FakeConn:
         *,
         provisioned: bool = True,
         container_states: dict[str, str] | None = None,
+        files: dict[str, str] | None = None,
     ) -> None:
         self.commands: list[str] = []
+        # The files this deployment has. Anything else answers the way the
+        # target's contained read answers a path that is not a regular file.
+        self.files = files or {}
         self.authorized_keys: list[str] | None = [SENTINEL] if provisioned else None
         self.installed: list[str] = []
         self.written_as: list[str] = []
@@ -200,6 +204,11 @@ class FakeConn:
         remaining = sum(1 for line in self.authorized_keys if marker in line)
         return SimpleNamespace(exit_status=0, stdout=f"{remaining}\n", stderr="")
 
+    def _read(self, path: str):
+        if path not in self.files:
+            return SimpleNamespace(exit_status=5, stdout="", stderr=f"notafile:{path}")
+        return SimpleNamespace(exit_status=0, stdout=self.files[path], stderr="")
+
     async def run(self, command, *, check=False, timeout=None):
         self.commands.append(command)
         script = self._script(command)
@@ -209,6 +218,8 @@ class FakeConn:
                 return self._install(*args)
             if "grep -c -F" in body:
                 return self._revoke(*args)
+            if "head -c" in body:
+                return self._read(args[1])
         if command.startswith("readlink -f --"):
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
         if QA_DOCKER_WRAPPER in command and " ps " in command:
