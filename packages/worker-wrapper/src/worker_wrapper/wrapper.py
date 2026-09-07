@@ -456,7 +456,9 @@ class WorkerWrapper:
         if not isinstance(branch, str) or not branch:
             await self.broker.submit_output(
                 lease_id,
-                WorkerFailedResult(error="Worker completed without the configured story branch."),
+                self._refused_completed_result(
+                    result, "Worker completed without the configured story branch."
+                ),
             )
             return
 
@@ -474,13 +476,20 @@ class WorkerWrapper:
             branch=branch,
             commit_sha=result.commit_sha,
         )
+        await self.broker.submit_output(
+            lease_id,
+            self._refused_completed_result(result, push_error),
+        )
+
+    @staticmethod
+    def _refused_completed_result(result: WorkerCompletedResult, error: str) -> WorkerFailedResult:
+        """Refuse completion without discarding its best diagnostic report."""
         metadata = result.model_dump(
             mode="python", exclude={"status", "commit_sha", "content"}, exclude_none=True
         )
-        await self.broker.submit_output(
-            lease_id,
-            WorkerFailedResult(error=push_error, **metadata),
-        )
+        if result.content and "worker_report" not in metadata:
+            metadata["worker_report"] = result.content
+        return WorkerFailedResult(error=error, **metadata)
 
     def _pushed_completed_result(
         self, result: WorkerCompletedResult, branch: object
@@ -582,7 +591,7 @@ class WorkerWrapper:
     ) -> WorkerResult:
         """Attach worker report and stdout tail to a result without mutating it."""
         updates: dict[str, Any] = {}
-        if report:
+        if report and not result.worker_report:
             updates["worker_report"] = report
         if stdout_tail:
             updates["agent_stdout_tail"] = stdout_tail

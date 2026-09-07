@@ -9,6 +9,7 @@ literal in the tree, and a changed definition arriving at every derived site.
 
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import ModuleType
@@ -73,13 +74,14 @@ def _load(name: str, path: Path) -> ModuleType:
 
 def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     ref = template_pin.TEMPLATE_PIN.ref
+    literal = re.compile(rf"(?<![\d.]){re.escape(ref)}(?![\d.])")
     carriers = sorted(
         name
         for name in _tracked_files()
         if not name.startswith(FIXTURE_TREE)
         and not _is_dependency_manifest(name)
         and name not in LITERAL_ALLOWED
-        and ref in (REPO_ROOT / name).read_text(errors="ignore")
+        and literal.search((REPO_ROOT / name).read_text(errors="ignore"))
     )
 
     assert carriers == [], f"the template ref is repeated outside its definition: {carriers}"
@@ -87,7 +89,22 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 0)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 1)
+
+
+def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
+    """The fixture resolves corrected tooling, not the old tree under a new directory."""
+    fixture = template_pin.TEMPLATE_PIN.fixture_path()
+    answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
+    project = (fixture / "pyproject.toml").read_text()
+    lock = (fixture / "uv.lock").read_text()
+    corrected_commit = "c54d3e4e2890118ec15e2f2b5c59144e3db98080"
+
+    assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
+    assert answers["modules"] == "backend,tg_bot"
+    assert f"codegen-product-kit.git@{corrected_commit}" in project
+    assert f"rev={corrected_commit}" in lock
+    assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
 
 
 @pytest.fixture

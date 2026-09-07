@@ -157,7 +157,13 @@ async def _images_ready_for_deploy(
         failure_log_excerpt_lines=_ci_failure_log_excerpt_lines(),
         diagnostic_secrets=tuple(secret_env_values(dict(os.environ))),
     )
-    timeline = _updated_generated_product_timeline(existing_timeline, pull_request, verdict)
+    timeline = _updated_generated_product_timeline(
+        existing_timeline,
+        pull_request,
+        verdict,
+        branch="main",
+        head_sha=deployed_commit_sha,
+    )
     if verdict.state is ImagePublication.PUBLISHED:
         await api_client.update_story(story_id, {"generated_product_timeline": timeline})
         log.info(
@@ -229,7 +235,12 @@ async def _refuse_unpublished_images(
 
 
 def _updated_generated_product_timeline(
-    existing: object, pull_request: dict, verdict: PublicationVerdict
+    existing: object,
+    pull_request: dict,
+    verdict: PublicationVerdict,
+    *,
+    branch: str | None = None,
+    head_sha: str | None = None,
 ) -> dict:
     """Merge this App-authenticated PR/CI observation into the story record."""
     prior_runs = existing.get("ci_runs") if isinstance(existing, dict) else None
@@ -244,30 +255,55 @@ def _updated_generated_product_timeline(
             "url": verdict.ci_run_url,
             "status": verdict.ci_status,
             "conclusion": verdict.ci_conclusion,
+            "branch": branch,
+            "head_sha": head_sha,
             "failed_jobs": list(verdict.failed_jobs),
             "details_unavailable_reason": verdict.details_unavailable_reason,
         }
+        previous = next((item for item in runs if item.get("id") == verdict.ci_run_id), {})
+        if previous.get("failed_jobs") and not observed_run["failed_jobs"]:
+            observed_run["failed_jobs"] = previous["failed_jobs"]
+        observed_run = {
+            key: previous.get(key) if value is None else value
+            for key, value in observed_run.items()
+        }
         runs = [item for item in runs if item.get("id") != verdict.ci_run_id]
         runs.append(observed_run)
-    pr_observation = {
+    previous_pr = existing.get("pull_request", {}) if isinstance(existing, dict) else {}
+    observed_pr = {
         "number": pull_request.get("number"),
         "state": pull_request.get("state"),
         "merged_at": pull_request.get("merged_at"),
         "head_sha": pull_request.get("head", {}).get("sha"),
         "merge_commit_sha": pull_request.get("merge_commit_sha"),
     }
-    missed = [
+    pr_observation = {
+        key: previous_pr.get(key) if value is None else value for key, value in observed_pr.items()
+    }
+    missed = list(existing.get("missed_captures", [])) if isinstance(existing, dict) else []
+    missed.extend(
         f"pull request {field} was unavailable"
         for field, value in pr_observation.items()
         if value is None
-    ]
+    )
     if verdict.ci_run_id is None:
         missed.append(f"CI run identity was unavailable: {verdict.detail}")
+    else:
+        missed.extend(
+            f"CI run {verdict.ci_run_id} {field} was unavailable"
+            for field, value in {
+                "URL": verdict.ci_run_url,
+                "status": verdict.ci_status,
+                "branch": branch,
+                "head SHA": head_sha,
+            }.items()
+            if value is None
+        )
     return {
         "pull_request": pr_observation,
         "ci_runs": runs,
         "latest_ci_observation": verdict.evidence(),
-        "missed_captures": missed,
+        "missed_captures": list(dict.fromkeys(missed)),
     }
 
 
@@ -281,6 +317,8 @@ async def _handle_failed_run(
     project_id: str,
     branch: str,
     run: dict,
+    pull_request: dict,
+    existing_timeline: object,
 ) -> bool:
     """Persist one run's evidence and either create a fix or escalate."""
     run_url = run.get("html_url", "")
@@ -288,8 +326,6 @@ async def _handle_failed_run(
     head_sha = run.get("head_sha") or "unknown"
     tasks = await api_client.get_tasks_by_story(story_id)
     prior_evidence = [item for task in tasks if (item := _ci_metadata(task))]
-    if any(item.get("run_id") == run_id for item in prior_evidence):
-        return False
 
     try:
         details = await github.get_workflow_failure_details(
@@ -317,6 +353,26 @@ async def _handle_failed_run(
         "fingerprint": fingerprint,
         "fingerprint_attempt": attempt,
     }
+    verdict = PublicationVerdict(
+        state=ImagePublication.REFUSED,
+        detail=f"ci.yml run {run_id} on {branch} ended failure",
+        ci_run_id=run_id,
+        ci_status=run.get("status"),
+        ci_conclusion=run.get("conclusion"),
+        ci_run_url=run_url or None,
+        failed_jobs=tuple(failed_jobs),
+        details_unavailable_reason=unavailable_reason,
+    )
+    timeline = _updated_generated_product_timeline(
+        existing_timeline,
+        pull_request,
+        verdict,
+        branch=branch,
+        head_sha=head_sha if head_sha != "unknown" else None,
+    )
+    await api_client.update_story(story_id, {"generated_product_timeline": timeline})
+    if any(item.get("run_id") == run_id for item in prior_evidence):
+        return False
 
     if attempt > _ci_failure_limit():
         await api_client.transition_story(story_id, "human-review")
@@ -583,6 +639,19 @@ async def poll_ci_failures(
         run_id = run.get("id", "")
         log.info("poll_ci_failure_detected", run_url=run_url, run_id=run_id)
 
+        pull_request = {"number": getattr(story, "pr_number", None)}
+        if isinstance(pull_request["number"], int):
+            try:
+                pull_request = await github.get_pull_request(
+                    owner, repo_name, pull_request["number"]
+                )
+            except Exception:
+                log.exception(
+                    "poll_ci_pull_request_error",
+                    run_id=run_id,
+                    pr_number=pull_request["number"],
+                )
+
         try:
             created = await _handle_failed_run(
                 api_client,
@@ -593,6 +662,8 @@ async def poll_ci_failures(
                 project_id=project_id,
                 branch=branch,
                 run=run,
+                pull_request=pull_request,
+                existing_timeline=getattr(story, "generated_product_timeline", None),
             )
         except Exception:
             log.exception("poll_ci_handle_failure_error", run_id=run_id)

@@ -153,6 +153,99 @@ class TestCompletedResultPush:
         submitted = wrapper.broker.submit_output.await_args.args[1]
         assert submitted.status == WorkerResultStatus.FAILED
         assert submitted.error == "Worker commit could not be verified on origin/story/story-789."
+        assert submitted.worker_report == "Done"
+
+    @pytest.mark.asyncio
+    async def test_run_34160792874_mismatch_keeps_final_report_without_replacing_report(
+        self, wrapper
+    ):
+        """A refused completion retains the best existing diagnostic surface."""
+        wrapper.broker.submit_output = AsyncMock()
+        result = WorkerCompletedResult(
+            commit_sha="bad-claim",
+            content="Useful final explanation from the agent",
+            worker_report="More complete REPORT.md evidence",
+        )
+
+        with patch.object(
+            wrapper,
+            "_pushed_completed_result",
+            return_value=(None, "Worker reported commit bad-claim does not match its local HEAD."),
+        ):
+            await wrapper._submit_checked_result(
+                "lease-34160792874", {"branch": "story/story-1"}, result
+            )
+
+        submitted = wrapper.broker.submit_output.await_args.args[1]
+        assert submitted.status == WorkerResultStatus.FAILED
+        assert submitted.worker_report == "More complete REPORT.md evidence"
+        assert "Useful final explanation" not in submitted.worker_report
+
+    def test_reported_commit_mismatch_stops_before_push(self, wrapper):
+        """The completion boundary refuses a stale claim before any remote write."""
+        branch = "story/story-1"
+        claimed_sha = "1" * 40
+        head_sha = "2" * 40
+        reported = MagicMock(returncode=0, stdout=f"{claimed_sha}\n", stderr="")
+        head = MagicMock(returncode=0, stdout=f"{head_sha}\n", stderr="")
+
+        with (
+            patch.object(wrapper, "_get_git_branch", return_value=branch),
+            patch("subprocess.run", side_effect=[reported, head]) as run,
+        ):
+            result, error = wrapper._pushed_completed_result(
+                WorkerCompletedResult(commit_sha=claimed_sha, content="diagnosis"), branch
+            )
+
+        assert result is None
+        assert error == f"Worker reported commit {claimed_sha} does not match its local HEAD."
+        assert run.call_count == 2
+
+    def test_wrong_checkout_branch_stops_before_commit_resolution(self, wrapper):
+        """No commit or remote operation runs when the checkout is on another branch."""
+        expected = "story/story-1"
+
+        with (
+            patch.object(wrapper, "_get_git_branch", return_value="story/other"),
+            patch("subprocess.run") as run,
+        ):
+            result, error = wrapper._pushed_completed_result(
+                WorkerCompletedResult(commit_sha="5" * 40, content="Done"), expected
+            )
+
+        assert result is None
+        assert error == "Worker checkout is on story/other, expected story/story-1."
+        run.assert_not_called()
+
+    def test_remote_readback_mismatch_refuses_completion_after_non_force_push(self, wrapper):
+        """A successful push is not completion until the configured ref reads back exactly."""
+        branch = "story/story-1"
+        head_sha = "3" * 40
+        other_sha = "4" * 40
+
+        def git_result(*, stdout="", returncode=0, stderr=""):
+            return MagicMock(stdout=stdout, returncode=returncode, stderr=stderr)
+
+        with (
+            patch.object(wrapper, "_get_git_branch", return_value=branch),
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    git_result(stdout=f"{head_sha}\n"),
+                    git_result(stdout=f"{head_sha}\n"),
+                    git_result(),
+                    git_result(stdout=f"{other_sha}\trefs/heads/{branch}\n"),
+                ],
+            ) as run,
+        ):
+            result, error = wrapper._pushed_completed_result(
+                WorkerCompletedResult(commit_sha=head_sha, content="Done"), branch
+            )
+
+        assert result is None
+        assert error == f"Worker commit {head_sha} could not be verified on origin/{branch}."
+        assert run.call_args_list[2].args[0][1:3] == ["push", "origin"]
+        assert not any("--force" in call.args[0] for call in run.call_args_list)
 
     @pytest.mark.asyncio
     async def test_publishes_failure_when_completed_result_has_no_branch(self, wrapper):
@@ -166,3 +259,4 @@ class TestCompletedResultPush:
         submitted = wrapper.broker.submit_output.await_args.args[1]
         assert submitted.status == WorkerResultStatus.FAILED
         assert submitted.error == "Worker completed without the configured story branch."
+        assert submitted.worker_report == "Done"

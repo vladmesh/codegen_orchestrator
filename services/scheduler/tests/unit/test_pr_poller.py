@@ -67,6 +67,8 @@ def test_generated_product_timeline_keeps_every_distinct_ci_run_observed():
             "head": {"sha": "head-sha"},
         },
         verdict,
+        branch="main",
+        head_sha="merge-sha",
     )
 
     assert [run["id"] for run in timeline["ci_runs"]] == [899, 900]
@@ -75,6 +77,46 @@ def test_generated_product_timeline_keeps_every_distinct_ci_run_observed():
         ("completed", "success"),
     ]
     assert timeline["missed_captures"] == []
+
+
+def test_generated_product_timeline_repoll_keeps_richer_run_evidence():
+    prior = {
+        "ci_runs": [
+            {
+                "id": 900,
+                "url": "https://github.com/org/repo/actions/runs/900",
+                "status": "completed",
+                "conclusion": "failure",
+                "branch": "story/story-1",
+                "head_sha": "head-sha",
+                "failed_jobs": [{"name": "unit", "failed_steps": ["Run pytest"]}],
+                "details_unavailable_reason": None,
+            }
+        ]
+    }
+    verdict = PublicationVerdict(
+        state=ImagePublication.REFUSED,
+        detail="failure observed again",
+        ci_run_id=900,
+        ci_status="completed",
+        ci_conclusion="failure",
+        ci_run_url="https://github.com/org/repo/actions/runs/900",
+        details_unavailable_reason="HTTPStatusError",
+    )
+
+    timeline = _updated_generated_product_timeline(
+        prior,
+        {"number": 42, "state": "open", "head": {"sha": "head-sha"}},
+        verdict,
+        branch="story/story-1",
+        head_sha="head-sha",
+    )
+
+    assert len(timeline["ci_runs"]) == 1
+    assert timeline["ci_runs"][0]["failed_jobs"] == [
+        {"name": "unit", "failed_steps": ["Run pytest"]}
+    ]
+    assert timeline["ci_runs"][0]["details_unavailable_reason"] == "HTTPStatusError"
 
 
 @pytest.mark.asyncio
@@ -337,6 +379,8 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     mock_gh_cls.return_value = gh
     api = AsyncMock()
     story = _make_story()
+    story.pr_number = 42
+    story.generated_product_timeline = None
     api.get_stories_by_status.return_value = [story]
     api.get_primary_repository.return_value = _make_repo()
     api.get_tasks_by_story.return_value = []
@@ -352,7 +396,19 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
         ],
         "unavailable_reason": None,
     }
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "merge_commit_sha": None,
+        "head": {"sha": "sha-101"},
+    }
     api.create_task.return_value.id = "fix-101"
+
+    effects = []
+    api.update_story.side_effect = lambda *_: effects.append("timeline")
+    api.create_task.side_effect = lambda *_: effects.append("task")
+    api.retry_story_after_ci_failure.side_effect = lambda *_: effects.append("retry")
 
     assert await poll_ci_failures(api) == 1
     task = api.create_task.call_args.args[0]
@@ -379,6 +435,33 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     assert "FileNotFoundError: settings.yaml" in task["description"]
     assert "sha-101" in task["description"]
     notify.assert_not_awaited()
+    assert effects == ["timeline", "task", "retry"]
+
+    timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
+    assert timeline["pull_request"]["state"] == "open"
+    assert timeline["ci_runs"] == [
+        {
+            "id": 101,
+            "url": "https://github.com/org/my-repo/actions/runs/101",
+            "status": "completed",
+            "conclusion": "failure",
+            "branch": "story/story-1",
+            "head_sha": "sha-101",
+            "failed_jobs": [
+                {
+                    "name": "unit",
+                    "failed_steps": ["Run pytest"],
+                    "log_excerpt": "FileNotFoundError: settings.yaml",
+                    "log_unavailable_reason": None,
+                }
+            ],
+            "details_unavailable_reason": None,
+        }
+    ]
+    assert timeline["missed_captures"] == [
+        "pull request merged_at was unavailable",
+        "pull request merge_commit_sha was unavailable",
+    ]
 
     gh.get_workflow_failure_details.assert_awaited_with("org", "my-repo", 101, log_excerpt_lines=40)
 
@@ -386,8 +469,53 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     prior.failure_metadata = task["failure_metadata"]
     api.get_tasks_by_story.return_value = [prior]
     api.create_task.reset_mock()
+    api.update_story.reset_mock()
+    story.generated_product_timeline = timeline
     assert await poll_ci_failures(api) == 0
     api.create_task.assert_not_awaited()
+    repeated = api.update_story.await_args.args[1]["generated_product_timeline"]
+    assert repeated["ci_runs"] == timeline["ci_runs"]
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_run_34162226616_timeline_survives_fix_task_creation_failure(mock_gh_cls):
+    """The control-host evidence lands before a failed fix attempt can hide it."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    story = _make_story(pr_number=42)
+    story.generated_product_timeline = None
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    api.create_task.side_effect = RuntimeError("fix task unavailable")
+    gh.get_latest_workflow_run.return_value = _failed_run(34162226616, "bad-head")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "unit",
+                "failed_steps": ["Run pytest"],
+                "log_excerpt": "bounded redacted excerpt",
+                "log_unavailable_reason": None,
+            }
+        ],
+        "unavailable_reason": None,
+    }
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "merge_commit_sha": None,
+        "head": {"sha": "bad-head"},
+    }
+
+    assert await poll_ci_failures(api) == 0
+
+    timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
+    assert timeline["ci_runs"][0]["id"] == 34162226616
+    assert timeline["ci_runs"][0]["failed_jobs"][0]["name"] == "unit"
+    api.retry_story_after_ci_failure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -653,6 +781,8 @@ async def test_no_deploy_run_exists_while_the_projects_ci_is_still_building(mock
             "url": "https://github.com/org/my-repo/actions/runs/900",
             "status": "in_progress",
             "conclusion": None,
+            "branch": "main",
+            "head_sha": "e" * 40,
             "failed_jobs": [],
             "details_unavailable_reason": None,
         }

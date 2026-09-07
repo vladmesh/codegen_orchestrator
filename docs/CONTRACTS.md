@@ -736,12 +736,16 @@ the Story stays `in_progress`.
 **Generated-product evidence stays with the Story.**
 `stories.generated_product_timeline` is the durable JSON record of the exact PR
 and distinct `ci.yml` Runs the scheduler observed through its existing GitHub App
-credential. A terminal publication failure copies the same run identity,
-conclusion, failed jobs and steps, and redacted configured log excerpt into
-`quarantine_reason`; unavailable jobs or logs are named rather than erasing the
-run. The Product Brief harness retains its existing Story reads as evidence
-schema v17, with explicit missed captures, and stand acceptance copies that
-artifact without reading the generated repository.
+credential. A failed story-branch run is merged there before its CI-fix task is
+created, the Story is retried, or exhausted attempts park it for human review;
+the task retains the same run URL and identity, branch/head, conclusion, failed
+jobs and steps, bounded redacted excerpt, and named unavailability. Repeated
+polls and later default-branch publication observations merge by run id, retaining
+richer prior evidence without duplicates and naming missed captures explicitly.
+A terminal publication failure also copies its evidence into `quarantine_reason`.
+The Product Brief harness retains its existing Story reads as evidence schema
+v17, and stand acceptance copies that artifact without GitHub access to the
+generated-product organization or a read of the generated repository.
 
 <a id="rundto"></a>
 
@@ -790,6 +794,16 @@ above names a shared contract import.
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
+For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
+boundary. It first resolves the reported commit, including an unambiguous
+abbreviation, and requires it to equal local `HEAD`; it then non-force pushes
+that exact `HEAD` to the configured story branch and reads the remote branch ref
+back. Only an exact readback publishes `completed`. A wrong checkout branch,
+commit mismatch, push failure, or readback mismatch publishes `failed` instead,
+and retains the agent's final `content` as `worker_report` when no fuller report
+already occupies that diagnostic surface. Credentials and Git stderr never enter
+the result.
+
 ### The template a project is scaffolded from
 
 `shared/contracts/template.py` owns the pair `ScaffoldMessage` carries.
@@ -807,9 +821,9 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.0` tag, which dereferences to
-`1d0c0fdd8b12bf1548ab3f97882e5edee7c55763`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.0` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.1` tag, which dereferences to
+`c54d3e4e2890118ec15e2f2b5c59144e3db98080`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.1` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
