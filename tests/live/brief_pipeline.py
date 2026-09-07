@@ -141,7 +141,7 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
     assert ctx["brief_read"].get("story_id") == ctx["story_id"]
 
 
-async def run_brief_pipeline(  # noqa: PLR0911, PLR0915 - terminal phase evidence is explicit
+async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's exit is explicit
     scenario: BriefScenario,
 ):
     """PO tools → brief → Architect admission → engineering → deploy → QA.
@@ -349,6 +349,18 @@ async def run_brief_pipeline(  # noqa: PLR0911, PLR0915 - terminal phase evidenc
                 if not record_deployed_image_tags(ctx):
                     yield ctx
                     return
+                if scenario.deployment_check is not None:
+                    # What the deployed product had to be for this variant to
+                    # prove anything, judged before a QA turn is spent on it and
+                    # from the deployment's own artifacts. Every answer other
+                    # than "it is" ends the run here with the reason.
+                    report_brief_stage(
+                        ctx, "deployment_shape", observed_state="application_running"
+                    )
+                    ctx["brief_deployment_error"] = scenario.deployment_check(ctx)
+                    if ctx["brief_deployment_error"] is not None:
+                        yield ctx
+                        return
                 ctx["brief_settings_readback"] = await read_product_setting(
                     ctx, key=scenario.settings_key
                 )

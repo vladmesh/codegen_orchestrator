@@ -47,6 +47,17 @@ REMOTE_DIAGNOSTICS_SCRIPT = Path(__file__).with_name("live_harness_remote_diagno
 # tail as well; this is the ceiling for the whole thing.
 DIAGNOSTICS_MAX_CHARS = 200_000
 
+# How the read-only artifact probe below labels what it found. A file that is
+# there is announced and printed; a file that is not there is announced as
+# absent. The two are different answers about the product and are never merged:
+# a read that failed is neither, and fails the probe instead.
+PACKAGE_CONTRACT_FILE_MARKER = "PACKAGE_CONTRACT_FILE:"
+PACKAGE_CONTRACT_ABSENT_MARKER = "PACKAGE_CONTRACT_ABSENT:"
+# The same ceiling central QA reads a generated contract under
+# (`agents.qa.packages.CONTRACT_READ_LIMIT`): a generated contract is bigger
+# than a probe answer, and a truncated one must be refused rather than half-read.
+PACKAGE_CONTRACT_MAX_BYTES = 262144
+
 
 class _CleanupServerPolicyAdapter:
     """Adapt an API server DTO to the authoritative provisioning policy."""
@@ -500,6 +511,64 @@ def build_remote_residue_command(prefixes: list[str], service_base: str = "/opt/
     return shlex.join(["sh", "-c", script])
 
 
+def build_remote_package_contract_command(
+    project_name: str, paths: list[str], service_base: str = "/opt/services"
+) -> str:
+    """Read named generated artifacts out of one deployment, and nothing else.
+
+    Read-only, and it distinguishes the two answers that matter: a file that is
+    not there is announced absent, while a file that is there and could not be
+    read exits non-zero. A probe that could not read is never allowed to look
+    like a product that carries nothing — that is the same rule central QA
+    applies to these artifacts.
+    """
+    root = f"{service_base.rstrip('/')}/{project_name}"
+    steps = []
+    for path in paths:
+        full = shlex.quote(f"{root}/{path}")
+        quoted = shlex.quote(path)
+        steps.append(
+            f"if [ -f {full} ]; then "
+            f"printf '%s %s\\n' {shlex.quote(PACKAGE_CONTRACT_FILE_MARKER)} {quoted}; "
+            f"head -c {PACKAGE_CONTRACT_MAX_BYTES} -- {full} || exit 1; "
+            "printf '\\n'; "
+            f"else printf '%s %s\\n' {shlex.quote(PACKAGE_CONTRACT_ABSENT_MARKER)} {quoted}; fi"
+        )
+    return shlex.join(["sh", "-c", "; ".join(steps)])
+
+
+async def read_package_contracts(
+    *,
+    project_name: str,
+    api_url: str,
+    paths: list[str],
+    server_handle: str | None = None,
+) -> str:
+    """The deployment's own generated artifacts, read before it is torn down.
+
+    Unlike the diagnostics snapshot, this one raises on every failure it meets.
+    Its caller decides whether a product took the kit package route, and a read
+    that did not happen must never be able to answer that question at all: one
+    unresolved target, an ssh that did not run, a remote read that failed are
+    each stated and raised rather than returned as an empty product.
+    """
+    targets = await _resolve_ssh_targets(api_url, server_handle)
+    if len(targets) != 1:
+        raise RuntimeError(
+            f"the deployment of {project_name} resolves to {len(targets)} managed targets, "
+            "so there is no one host its generated artifacts can be read from"
+        )
+    destination, key, handle = targets[0]
+    remote_cmd = build_remote_package_contract_command(project_name, paths)
+    result = _run_over_ssh(destination, key, remote_cmd, "", timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"the generated artifacts of {project_name} could not be read on {handle}: "
+            f"ssh exited {result.returncode}: {result.stderr.strip()[:300]}"
+        )
+    return result.stdout
+
+
 async def _resolve_cleanup_targets(
     client: httpx.AsyncClient, server_handle: str | None
 ) -> list[dict[str, Any]]:
@@ -684,6 +753,17 @@ async def _run(args: argparse.Namespace) -> None:
             server_handle=args.server_handle,
             api_url=args.api_url,
         )
+    elif args.command == "package-contract-probe":
+        # stdout is the probe answer itself: the live suite parses what this
+        # prints, so nothing else may be written to it.
+        print(
+            await read_package_contracts(
+                project_name=args.project_name,
+                server_handle=args.server_handle,
+                api_url=args.api_url,
+                paths=args.path,
+            )
+        )
     elif args.command == "server-diagnostics":
         # stdout is the snapshot itself: the live suite redacts and retains what
         # this prints, so nothing else may be written to it.
@@ -739,6 +819,12 @@ def _parser() -> argparse.ArgumentParser:
     # the stack name is cleared on every server the API lists.
     server.add_argument("--server-handle")
     server.add_argument("--api-url", required=True)
+
+    package_contract = sub.add_parser("package-contract-probe")
+    package_contract.add_argument("--project-name", required=True)
+    package_contract.add_argument("--server-handle")
+    package_contract.add_argument("--api-url", required=True)
+    package_contract.add_argument("--path", action="append", required=True)
 
     diagnostics = sub.add_parser("server-diagnostics")
     diagnostics.add_argument("--project-name", required=True)

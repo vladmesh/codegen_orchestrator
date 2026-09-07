@@ -963,6 +963,22 @@ where the digest variant's behaviour takes no arguments. `scripts/stand_run.py` 
 and it runs under a longer productive window than `mega-brief` because its engineering turn pays
 for the kit install first (`shared/stand_deadlines.py`).
 
+**And the variant establishes the package route from the deployment, or it is red.** The capability
+ladder puts a shared service *above* the package option, so an architect may choose one and a worker
+may hand-write a `reminders.tick` job and a `/reminders` route. That product satisfies everything
+this suite reads off the control plane, and central QA finds no activation on it, writes no package
+behaviour row, and passes it through the ordinary fire-and-read path — a green run that proves
+nothing about packages. So before a QA turn is spent, the variant reads the deployment's own
+generated artifacts, the ones this section's checks read (`codegen_kit/_active_packages.py` and
+`services/backend/src/generated/jobs_schemas.py`), with the same parsers, and requires two facts:
+the product records `reminders` as an active package, and its own registry attributes the fired
+behaviour to that package rather than to a service of its own. Anything else ends the run with the
+reason, and an artifact that could not be read is one of those reasons rather than a skip. This is
+an assertion in the variant's harness about what this run must have produced
+(`tests/live/package_route.py`), not a new rule in the runner: a package-free product's QA path is
+unchanged. A run whose architect chose another permitted shape is a run that failed to demonstrate
+the package route, and it says so rather than being prevented from happening.
+
 ## Lifecycle and security invariants
 
 ### Typed `Run.result` and terminal ownership

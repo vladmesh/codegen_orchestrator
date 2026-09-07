@@ -38,6 +38,11 @@ from live_harness import (
     resolve_repo_root,
     run_created_at,
 )
+from package_route import (
+    PACKAGE_ROUTE_ARTIFACTS,
+    package_route_facts,
+    unreadable_package_route,
+)
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
@@ -258,6 +263,7 @@ BRIEF_SETTINGS_KEY = "settings.languages"
 # that shape produces: the package prefix `/reminders`, the job `reminders.tick`
 # the package's `jobs_schema` declares with its required `at`, and the
 # `emitted` state its own chain reaches without any product subscriber.
+BRIEF_PACKAGE_NAME = "reminders"
 BRIEF_PACKAGE_JOB_NAME = "reminders.tick"
 BRIEF_PACKAGE_JOB_ARGUMENT = "at"
 # Any instant after a scheduled reminder's own moment makes it due, so the fire
@@ -408,6 +414,60 @@ focused tests for the behaviour and for the listed state it leaves behind.
 """
 
 
+# One ssh read of two small generated files on the target.
+PACKAGE_CONTRACT_PROBE_TIMEOUT = 120
+
+
+def _package_contract_args(project_name: str, server_handle: str | None) -> list[str]:
+    args = [
+        "package-contract-probe",
+        "--project-name",
+        project_name,
+        "--api-url",
+        "http://api:8000",
+    ]
+    if server_handle is not None:
+        args += ["--server-handle", server_handle]
+    for path in PACKAGE_ROUTE_ARTIFACTS:
+        args += ["--path", path]
+    return args
+
+
+def record_package_route(ctx: dict) -> str | None:
+    """Establish from the deployment that the capability is the kit package.
+
+    Returns the reason this run is red, or `None` with the package facts kept
+    on the context. Every failure of the read is a reason and none of them is a
+    skip: a suite that could not look at the deployment cannot claim the
+    package route was taken, which is the same rule central QA applies to these
+    artifacts.
+    """
+    try:
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            _package_contract_args(ctx["project_name"], ctx.get("server_handle")),
+            timeout=PACKAGE_CONTRACT_PROBE_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        return unreadable_package_route(
+            f"the probe of the deployment did not run: {type(error).__name__}: "
+            f"{redacted_dump_text(str(error))[:300]}"
+        )
+    if result.returncode != 0:
+        return unreadable_package_route(
+            f"the probe of the deployment exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr).strip()[:300]}"
+        )
+    facts, error = package_route_facts(
+        result.stdout, package=BRIEF_PACKAGE_NAME, behaviour=BRIEF_PACKAGE_JOB_NAME
+    )
+    if error is not None:
+        return error
+    ctx["brief_package_route"] = facts
+    return None
+
+
 def _digest_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
     """The digest variant's own expectation: a behaviour that takes no arguments."""
     if behaviour.arguments != {}:
@@ -475,6 +535,11 @@ class BriefScenario:
     #: What else that behaviour owes beyond its name.  Each variant states its
     #: own; neither is asserted for the other.
     behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None]
+    #: What this variant requires of the *deployed* product before QA judges it,
+    #: read from the deployment itself.  Returns the reason the run is red, or
+    #: `None`.  A variant that requires nothing of the deployment's shape says
+    #: so with `None` here and the flow asks the deployment nothing.
+    deployment_check: Callable[[dict], str | None] | None
 
     @property
     def requirement_ids(self) -> set[str]:
@@ -508,6 +573,9 @@ BRIEF_DIGEST_SCENARIO = BriefScenario(
     job_name=BRIEF_JOB_NAME,
     productive_seconds=BRIEF_PRODUCTIVE_DEADLINE_SECONDS,
     behaviour_error=_digest_behaviour_error,
+    # The digest product is deliberately package-free, so its deployment owes
+    # this check nothing and is asked nothing.
+    deployment_check=None,
 )
 
 BRIEF_PACKAGE_SCENARIO = BriefScenario(
@@ -544,6 +612,7 @@ BRIEF_PACKAGE_SCENARIO = BriefScenario(
     job_name=BRIEF_PACKAGE_JOB_NAME,
     productive_seconds=BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS,
     behaviour_error=_package_behaviour_error,
+    deployment_check=record_package_route,
 )
 
 

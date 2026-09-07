@@ -20,6 +20,7 @@ from brief_pipeline import run_brief_pipeline
 from pipeline_helpers import (
     BRIEF_PACKAGE_JOB_ARGUMENT,
     BRIEF_PACKAGE_JOB_NAME,
+    BRIEF_PACKAGE_NAME,
     BRIEF_PACKAGE_OWNER_REF,
     BRIEF_PACKAGE_REMINDER_STATE,
     BRIEF_PACKAGE_ROUTE,
@@ -83,6 +84,27 @@ class TestProductBriefPackagePipeline:
         assert BRIEF_PACKAGE_REMINDER_STATE in observable
         assert not observation_answers(observable, "fire_job", BRIEF_PACKAGE_JOB_NAME)
 
+    async def test_the_deployed_product_carries_the_kit_package(
+        self, product_brief_package_pipeline
+    ):
+        """The one thing this variant exists to establish, read off the deployment.
+
+        Every other fact in this suite holds just as well for a hand-written
+        `reminders.tick` and a hand-written `/reminders` route: on such a
+        product central QA finds no activation, writes no package behaviour row,
+        and passes it through the ordinary fire-and-read path. So the package
+        route is established here, from the deployment's own generated
+        artifacts, and a run that could not read them is red rather than silent.
+        """
+        ctx = product_brief_package_pipeline
+        assert ctx.get("brief_deployment_error") is None, ctx.get("brief_deployment_error")
+        route = ctx["brief_package_route"]
+
+        assert route["package"] == BRIEF_PACKAGE_NAME
+        assert route["behaviour"] == BRIEF_PACKAGE_JOB_NAME
+        assert route["declared_by"] == f"package:{BRIEF_PACKAGE_NAME}"
+        assert route["version"] and route["manifest_sha256"]
+
     async def test_engineering_deploy_and_settings_seed_succeeded(
         self, product_brief_package_pipeline
     ):
@@ -127,6 +149,10 @@ class TestProductBriefPackagePipeline:
         assert evidence["command_id"] == f"qa-{ctx['qa_result']['run_id']}-{BRIEF_PACKAGE_JOB_NAME}"
         assert evidence["name"] == BRIEF_PACKAGE_JOB_NAME
         assert BRIEF_PACKAGE_JOB_ARGUMENT in evidence["arguments"]
+        # The behaviour this run fired is the one the deployed product's own
+        # registry attributes to the package, so the fire and the package route
+        # are the same behaviour rather than two facts that merely coexist.
+        assert evidence["name"] == ctx["brief_package_route"]["behaviour"]
         assert evidence["fired_by_product"] == ctx["project_id"]
         assert evidence["fired_by_run"] == ctx["qa_result"]["run_id"]
         assert evidence["dispatch_status"] == "dispatched"
