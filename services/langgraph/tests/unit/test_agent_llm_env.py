@@ -149,6 +149,31 @@ class TestPoStartupSignal:
         provisioner.assert_not_called()
         worker_events.assert_not_called()
 
+    async def test_enabled_po_refuses_unavailable_summarization_config_before_loops(self):
+        from src import main
+        from src.consumers import po
+
+        settings = SimpleNamespace(
+            checkpoint_database_url="postgresql://checkpoint",
+            api_base_url="http://api:8000",
+        )
+        with (
+            patch.object(main, "_po_missing_env", return_value=[]),
+            patch.object(main, "get_settings", return_value=settings),
+            patch.object(
+                po,
+                "load_summarization_config",
+                side_effect=RuntimeError("summarization config unavailable"),
+            ),
+            patch.object(main, "listen_provisioner_triggers") as provisioner,
+            patch.object(main, "listen_worker_events") as worker_events,
+        ):
+            with pytest.raises(RuntimeError, match="summarization config unavailable"):
+                await main.run_worker()
+
+        provisioner.assert_not_called()
+        worker_events.assert_not_called()
+
 
 class TestMissingLlmEnv:
     def test_reports_only_unset_vars(self):

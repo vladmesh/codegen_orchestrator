@@ -33,6 +33,7 @@ def _po_missing_env() -> list[str]:
 async def run_worker() -> None:
     """Run the LangGraph worker loop."""
     po_missing = _po_missing_env()
+    summarization_config = None
     if not po_missing:
         settings = get_settings()
         if not settings.checkpoint_database_url:
@@ -40,6 +41,13 @@ async def run_worker() -> None:
                 "CHECKPOINT_DATABASE_URL is required when the PO consumer is enabled; "
                 "refusing to start with non-durable conversation state"
             )
+
+        # Validate every PO-only startup dependency before unrelated background
+        # loops begin. Operational summarization tuning is required system config;
+        # an unavailable/malformed source is not an env-fallback mode.
+        from .consumers.po import load_summarization_config
+
+        summarization_config = load_summarization_config(settings.api_base_url)
 
     tasks = [
         listen_provisioner_triggers(),
@@ -63,7 +71,7 @@ async def run_worker() -> None:
         await poller_client.connect()
 
         logger.info("po_consumer_enabled")
-        tasks.append(run_po_consumer())
+        tasks.append(run_po_consumer(summarization_config=summarization_config))
         tasks.append(run_reminder_poller(poller_client))
 
     await asyncio.gather(*tasks)
