@@ -897,6 +897,35 @@ class TestTheTargetRefusesWhatWrites:
     @pytest.mark.parametrize(
         "argv",
         [
+            ["read-contract", "backend", "/etc/passwd", "262144"],
+            ["read-contract", "backend", "infra/.env", "262144"],
+            ["read-contract", "backend", "codegen_kit/_active_packages.py", "1"],
+            ["read-contract", "backend", "codegen_kit/_active_packages.py", "262144", "sh"],
+        ],
+    )
+    def test_a_contract_read_with_any_unbounded_argument_is_refused(self, docker, argv):
+        result = self._wrapper(docker, *argv)
+
+        assert result.returncode != 0
+        assert not docker.exists()
+
+    def test_the_fixed_contract_read_reaches_only_the_named_container_and_path(self, docker):
+        result = self._wrapper(
+            docker,
+            "read-contract",
+            "weather-bot-backend-1",
+            "codegen_kit/_active_packages.py",
+            "262144",
+        )
+
+        assert result.returncode == 0, result.stderr
+        reached = docker.read_text()
+        assert reached.startswith("exec weather-bot-backend-1 sh -c ")
+        assert reached.endswith(" _ codegen_kit/_active_packages.py 262144\n")
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
             ["logs", "--tail", "200", "weather-bot-backend-1"],
             ["inspect", "--format", "{{json .State}}", "weather-bot-backend-1"],
             ["diff", "weather-bot-backend-1"],

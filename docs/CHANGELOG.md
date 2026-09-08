@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-08
 
+- Package acceptance and central QA read generated contracts from the deployment's running backend
+  image, so image-only hosts prove activation without a product checkout.
+
 - Production pins immutable kit `0.6.2`; its fresh `backend,tg_bot` render locks root and backend
   sync before main-push generation.
 

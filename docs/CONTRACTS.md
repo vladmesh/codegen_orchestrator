@@ -908,11 +908,20 @@ contract then records the package's name, version and manifest digest.
 
 Central QA establishes a deployment's packages from the deployment itself, before an executor
 exists. `services/langgraph/src/agents/qa/packages.py` reads three of the product's own artifacts
-over the run's target session — the backend manifest's `packages:` allowlist,
+from `/app` in the one running backend container attributed to the deployment by its Docker
+Compose project and service labels — the backend manifest's `packages:` allowlist,
 `codegen_kit/_active_packages.py` with each package's name, version and manifest digest, and the
 generated job registry `services/backend/src/generated/jobs_schemas.py`, which attributes every
 fireable job to the service or the `package:<name>` that declared it — and
 `run_package_activation_checks` cross-checks them against each other.
+
+This is a fixed read boundary, not container exec access. The target's root-owned `qa-docker`
+wrapper accepts only those three relative paths, resolves them below `/app`, requires a readable
+regular file, and refuses a different byte limit. The caller may name only a container already in
+the run's Compose-project capability set and selects exactly one running `backend` service.
+Absence is the wrapper's distinct `5` result. No backend, two backends, a stopped backend, an
+outside or refused path, Docker failure, unreadability, and a contract over 262144 bytes are read
+failures, never evidence of a package-free product.
 
 **An active package makes a run owe results, not prose.** A run against a product with an active
 package owes one row for the package itself and one for each behaviour of it the run's criteria
@@ -1037,16 +1046,18 @@ ladder puts a shared service *above* the package option, so an architect may cho
 may hand-write a `reminders.tick` job and a `/reminders` route. That product satisfies everything
 this suite reads off the control plane, and central QA finds no activation on it, writes no package
 behaviour row, and passes it through the ordinary fire-and-read path — a green run that proves
-nothing about packages. So before a QA turn is spent, the variant reads the deployment's own
-generated artifacts, the ones this section's checks read (`codegen_kit/_active_packages.py` and
+nothing about packages. So before a QA turn is spent, the variant resolves the same running backend
+container and reads the deployment's generated artifacts below its `/app`, the ones this section's
+checks read (`codegen_kit/_active_packages.py` and
 `services/backend/src/generated/jobs_schemas.py`), with the same parsers, and requires two facts:
 the product records `reminders` as an active package, and its own registry attributes the fired
 behaviour to that package rather than to a service of its own. Anything else ends the run with the
 reason, and an artifact that could not be read is one of those reasons rather than a skip. This is
 an assertion in the variant's harness about what this run must have produced
-(`tests/live/package_route.py`), not a new rule in the runner: a package-free product's QA path is
-unchanged. A run whose architect chose another permitted shape is a run that failed to demonstrate
-the package route, and it says so rather than being prevented from happening.
+(`tests/live/package_route.py`), not a new rule in the runner. The host needs only its production
+Compose files; no product checkout is inspected. A package-free product's QA path is unchanged. A
+run whose architect chose another permitted shape is a run that failed to demonstrate the package
+route, and it says so rather than being prevented from happening.
 
 ## Lifecycle and security invariants
 

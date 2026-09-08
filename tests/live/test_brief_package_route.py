@@ -9,6 +9,8 @@ permitted architect choice produces, and neither may be green.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import subprocess
 
 from package_route import (
@@ -140,16 +142,53 @@ def test_a_probe_that_answered_nothing_at_all_is_a_failure():
     )
 
 
-def test_the_probe_reads_the_named_artifacts_of_one_deployment(tmp_path):
-    """The command is exercised, not described: a fake deployment answers it."""
-    root = tmp_path / "proj-1"
-    (root / "codegen_kit").mkdir(parents=True)
-    (root / "codegen_kit" / "_active_packages.py").write_text(_REMINDERS_CONTRACT)
+def _image_only_target(tmp_path: Path, *, containers: str = "proj-1-backend-1\n"):
+    """A host checkout with only compose files and contracts inside its image."""
+    host = tmp_path / "services" / "proj-1" / "infra"
+    host.mkdir(parents=True)
+    (host / "compose.base.yml").write_text("services: {}\n")
+    (host / "compose.prod.yml").write_text("services: {}\n")
+    container = tmp_path / "container" / "app"
+    (container / "codegen_kit").mkdir(parents=True)
+    (container / "services/backend/src/generated").mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text("#!/bin/sh\nprintf '%s' \"$FAKE_BACKEND_CONTAINERS\"\n")
+    docker.chmod(0o755)
+    wrapper = bin_dir / "qa-docker"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "path=$3\n"
+        '[ "$path" != "$FAKE_UNREADABLE" ] || exit 7\n'
+        "file=$FAKE_CONTAINER_ROOT/app/$path\n"
+        '[ -f "$file" ] || exit 5\n'
+        'size=$(wc -c < "$file")\n'
+        '[ "$size" -le "$4" ] || exit 6\n'
+        'cat "$file"\n'
+    )
+    wrapper.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FAKE_BACKEND_CONTAINERS": containers,
+        "FAKE_CONTAINER_ROOT": str(tmp_path / "container"),
+        "FAKE_UNREADABLE": "",
+    }
+    return container, wrapper, env
+
+
+def test_the_probe_reads_the_named_artifacts_from_the_running_backend_container(tmp_path):
+    container, wrapper, env = _image_only_target(tmp_path)
+    (container / ACTIVE_PACKAGE_CONTRACT).write_text(_REMINDERS_CONTRACT)
     command = build_remote_package_contract_command(
-        "proj-1", list(PACKAGE_ROUTE_ARTIFACTS), service_base=str(tmp_path)
+        "proj-1", list(PACKAGE_ROUTE_ARTIFACTS), docker_wrapper=str(wrapper)
     )
 
-    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)  # noqa: S602
+    result = subprocess.run(  # noqa: S602
+        command, shell=True, capture_output=True, text=True, check=False, env=env
+    )
 
     assert result.returncode == 0
     artifacts = parse_package_probe(result.stdout)
@@ -158,23 +197,75 @@ def test_the_probe_reads_the_named_artifacts_of_one_deployment(tmp_path):
 
 
 def test_a_file_that_cannot_be_read_fails_the_probe_rather_than_reading_absent(tmp_path):
-    """An unreadable artifact must never arrive as "this product has none"."""
-    root = tmp_path / "proj-1"
-    (root / "codegen_kit").mkdir(parents=True)
-    unreadable = root / "codegen_kit" / "_active_packages.py"
-    unreadable.write_text(_REMINDERS_CONTRACT)
-    unreadable.chmod(0o000)
+    container, wrapper, env = _image_only_target(tmp_path)
+    (container / ACTIVE_PACKAGE_CONTRACT).write_text(_REMINDERS_CONTRACT)
+    env["FAKE_UNREADABLE"] = ACTIVE_PACKAGE_CONTRACT
     command = build_remote_package_contract_command(
-        "proj-1", [ACTIVE_PACKAGE_CONTRACT], service_base=str(tmp_path)
+        "proj-1", [ACTIVE_PACKAGE_CONTRACT], docker_wrapper=str(wrapper)
     )
 
-    try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)  # noqa: S602
-    finally:
-        unreadable.chmod(0o600)
+    result = subprocess.run(  # noqa: S602
+        command, shell=True, capture_output=True, text=True, check=False, env=env
+    )
 
     assert result.returncode != 0
     assert PACKAGE_CONTRACT_ABSENT_MARKER not in result.stdout
+
+
+@pytest.mark.parametrize("containers", ["", "proj-1-backend-1\nproj-1-backend-2\n"])
+def test_the_probe_refuses_a_missing_or_ambiguous_backend_container(tmp_path, containers):
+    _, wrapper, env = _image_only_target(tmp_path, containers=containers)
+    command = build_remote_package_contract_command(
+        "proj-1", [ACTIVE_PACKAGE_CONTRACT], docker_wrapper=str(wrapper)
+    )
+
+    result = subprocess.run(  # noqa: S602
+        command, shell=True, capture_output=True, text=True, check=False, env=env
+    )
+
+    assert result.returncode != 0
+    assert "backend container" in result.stderr
+
+
+def test_an_absent_container_file_is_reported_absent(tmp_path):
+    _, wrapper, env = _image_only_target(tmp_path)
+    command = build_remote_package_contract_command(
+        "proj-1", [ACTIVE_PACKAGE_CONTRACT], docker_wrapper=str(wrapper)
+    )
+
+    result = subprocess.run(  # noqa: S602
+        command, shell=True, capture_output=True, text=True, check=False, env=env
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == f"{PACKAGE_CONTRACT_ABSENT_MARKER} {ACTIVE_PACKAGE_CONTRACT}\n"
+
+
+def test_an_oversized_container_file_fails_instead_of_returning_a_truncated_contract(tmp_path):
+    container, wrapper, env = _image_only_target(tmp_path)
+    (container / ACTIVE_PACKAGE_CONTRACT).write_text("x" * 262145)
+    command = build_remote_package_contract_command(
+        "proj-1", [ACTIVE_PACKAGE_CONTRACT], docker_wrapper=str(wrapper)
+    )
+
+    result = subprocess.run(  # noqa: S602
+        command, shell=True, capture_output=True, text=True, check=False, env=env
+    )
+
+    assert result.returncode != 0
+    assert PACKAGE_CONTRACT_FILE_MARKER not in result.stdout
+
+
+def test_the_probe_refuses_every_path_outside_the_fixed_contract_set():
+    with pytest.raises(ValueError, match="not a readable generated contract"):
+        build_remote_package_contract_command("proj-1", ["../infra/.env"])
+
+
+def test_backend_resolution_uses_exact_compose_project_and_service_labels():
+    command = build_remote_package_contract_command("proj-1", [ACTIVE_PACKAGE_CONTRACT])
+
+    assert "label=com.docker.compose.project=proj-1" in command
+    assert "label=com.docker.compose.service=backend" in command
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):

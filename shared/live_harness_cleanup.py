@@ -17,6 +17,11 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.generated_contracts import (
+    CONTRACT_ABSENT,
+    GENERATED_CONTRACT_READ_LIMIT,
+    validate_generated_contract_path,
+)
 from shared.provisioning_policy import (
     BITLAUNCH_PROVIDER,
     authorize_run_owned_target,
@@ -56,7 +61,8 @@ PACKAGE_CONTRACT_ABSENT_MARKER = "PACKAGE_CONTRACT_ABSENT:"
 # The same ceiling central QA reads a generated contract under
 # (`agents.qa.packages.CONTRACT_READ_LIMIT`): a generated contract is bigger
 # than a probe answer, and a truncated one must be refused rather than half-read.
-PACKAGE_CONTRACT_MAX_BYTES = 262144
+PACKAGE_CONTRACT_MAX_BYTES = GENERATED_CONTRACT_READ_LIMIT
+QA_DOCKER_WRAPPER = "/usr/local/bin/qa-docker"
 
 
 class _CleanupServerPolicyAdapter:
@@ -512,29 +518,43 @@ def build_remote_residue_command(prefixes: list[str], service_base: str = "/opt/
 
 
 def build_remote_package_contract_command(
-    project_name: str, paths: list[str], service_base: str = "/opt/services"
+    project_name: str, paths: list[str], docker_wrapper: str = QA_DOCKER_WRAPPER
 ) -> str:
-    """Read named generated artifacts out of one deployment, and nothing else.
-
-    Read-only, and it distinguishes the two answers that matter: a file that is
-    not there is announced absent, while a file that is there and could not be
-    read exits non-zero. A probe that could not read is never allowed to look
-    like a product that carries nothing — that is the same rule central QA
-    applies to these artifacts.
-    """
-    root = f"{service_base.rstrip('/')}/{project_name}"
-    steps = []
-    for path in paths:
-        full = shlex.quote(f"{root}/{path}")
+    """Read fixed generated artifacts from one deployment's backend container."""
+    validated = [validate_generated_contract_path(path) for path in paths]
+    project_filter = f"label=com.docker.compose.project={project_name}"
+    service_filter = "label=com.docker.compose.service=backend"
+    script = (
+        "listing=$(docker ps --no-trunc "
+        f"--filter {shlex.quote(project_filter)} --filter {shlex.quote(service_filter)} "
+        "--format '{{.Names}}' 2>&1); status=$?; "
+        "if [ $status -ne 0 ]; then "
+        "printf 'backend container lookup failed: %.300s\\n' \"$listing\" >&2; exit 10; fi; "
+        "count=$(printf '%s\\n' \"$listing\" | awk 'NF { count++ } END { print count + 0 }'); "
+        'if [ "$count" -ne 1 ]; then '
+        "printf 'deployment backend container count is %s, expected 1\\n' \"$count\" >&2; "
+        "exit 11; fi; "
+        "container=$(printf '%s\\n' \"$listing\" | awk 'NF { print; exit }'); "
+    )
+    steps: list[str] = []
+    wrapper = (
+        ["sudo", "-n", docker_wrapper] if docker_wrapper == QA_DOCKER_WRAPPER else [docker_wrapper]
+    )
+    wrapper_command = shlex.join(wrapper)
+    for path in validated:
         quoted = shlex.quote(path)
         steps.append(
-            f"if [ -f {full} ]; then "
-            f"printf '%s %s\\n' {shlex.quote(PACKAGE_CONTRACT_FILE_MARKER)} {quoted}; "
-            f"head -c {PACKAGE_CONTRACT_MAX_BYTES} -- {full} || exit 1; "
-            "printf '\\n'; "
-            f"else printf '%s %s\\n' {shlex.quote(PACKAGE_CONTRACT_ABSENT_MARKER)} {quoted}; fi"
+            f'content=$({wrapper_command} read-contract "$container" {quoted} '
+            f"{PACKAGE_CONTRACT_MAX_BYTES}); status=$?; "
+            f"if [ $status -eq 0 ]; then printf '%s %s\\n' "
+            f"{shlex.quote(PACKAGE_CONTRACT_FILE_MARKER)} {quoted}; "
+            "printf '%s\\n' \"$content\"; "
+            f"elif [ $status -eq {CONTRACT_ABSENT} ]; then printf '%s %s\\n' "
+            f"{shlex.quote(PACKAGE_CONTRACT_ABSENT_MARKER)} {quoted}; "
+            "else printf 'container contract read failed for %s (status %s)\\n' "
+            f'{quoted} "$status" >&2; exit 12; fi'
         )
-    return shlex.join(["sh", "-c", "; ".join(steps)])
+    return shlex.join(["sh", "-c", script + "; ".join(steps)])
 
 
 async def read_package_contracts(

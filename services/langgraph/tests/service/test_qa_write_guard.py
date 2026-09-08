@@ -331,10 +331,12 @@ class _FakeTargetConn:
         # executor. This deployment is up; what is under test here is the write
         # guard over what the executor then does.
         if "qa-docker inspect" in command:
+            if "com.docker.compose.service" in command:
+                return SimpleNamespace(exit_status=0, stdout="backend true\n", stderr="")
             return SimpleNamespace(exit_status=0, stdout=RUNNING_STATE, stderr="")
-        # A contained read of a file this deployment does not have. It carries
-        # no kit package contract, so the package probe states nothing about it.
-        if command.startswith("sh -c") and "head -c" in command:
+        # A backend-container read of a contract this deployment does not have.
+        # It carries no kit package contract, so the probe states nothing.
+        if "qa-docker read-contract" in command:
             return SimpleNamespace(exit_status=5, stdout="", stderr="notafile")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 

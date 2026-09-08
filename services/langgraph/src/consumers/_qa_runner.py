@@ -655,12 +655,8 @@ async def _read_generated_contract(session, path: str) -> str | None:
     become the sentence "this product has no packages".
     """
     try:
-        remote = await session.read_file(path, max_bytes=CONTRACT_READ_LIMIT)
+        remote = await session.read_backend_contract(path, max_bytes=CONTRACT_READ_LIMIT)
     except QATargetError as exc:
-        # The contained read resolves on the target, so a path whose parent
-        # directory does not exist is reported the same way: not there.
-        if "does not exist on the target" in str(exc):
-            return None
         raise _ContractUnread(f"{path} could not be read from the deployment: {exc}") from exc
     if remote.exit_status == READ_NOT_A_FILE:
         return None
