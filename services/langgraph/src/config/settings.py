@@ -67,12 +67,10 @@ class Settings(BaseSettings):
     # Tests may still construct the PO graph explicitly with MemorySaver.
     checkpoint_database_url: str | None = None
 
-    # Summarization config (used by SummarizationNode)
-    # Defaults here are fallbacks — production reads from system_configs DB via ConfigStore
-    summarization_model: str | None = None  # None = fallback to po_llm_model
-    summarization_max_tokens: int = 20000
-    summarization_trigger_tokens: int = 70000
-    summarization_max_summary_tokens: int = 2000
+    # Summarization model selection is process configuration. The numeric tuning
+    # values are operational system configs and are intentionally absent here so
+    # production has one source of truth for them.
+    summarization_model: str | None = None  # None = use po_llm_model
 
 
 @lru_cache
