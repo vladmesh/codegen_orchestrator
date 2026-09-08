@@ -833,10 +833,12 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.1` tag, which dereferences to
-`c54d3e4e2890118ec15e2f2b5c59144e3db98080`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.1` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.2` tag, which dereferences to
+`9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.2` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
+Its main-push image workflow runs frozen root sync, frozen `services/backend`
+sync, and generation in that order before building either service image.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults
 (`tests/live/pipeline_helpers.py`, still overridable per run by
