@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-08
+
+- Production pins immutable kit `0.6.2`; its fresh `backend,tg_bot` render locks root and backend
+  sync before main-push generation.
+
 ## 2026-09-07
 
 - Production now pins the immutable kit `0.6.1` package-environment correction and its fresh

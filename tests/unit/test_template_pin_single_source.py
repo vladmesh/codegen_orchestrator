@@ -89,7 +89,7 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
 
 def test_production_pin_is_the_immutable_kit_release() -> None:
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
-    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 1)
+    assert tuple(map(int, template_pin.TEMPLATE_PIN.ref.split("."))) == (0, 6, 2)
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:
@@ -98,13 +98,25 @@ def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None
     answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
     project = (fixture / "pyproject.toml").read_text()
     lock = (fixture / "uv.lock").read_text()
-    corrected_commit = "c54d3e4e2890118ec15e2f2b5c59144e3db98080"
+    corrected_commit = "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914"
 
     assert answers["_commit"] == template_pin.TEMPLATE_PIN.ref
     assert answers["modules"] == "backend,tg_bot"
     assert f"codegen-product-kit.git@{corrected_commit}" in project
     assert f"rev={corrected_commit}" in lock
     assert "1d0c0fdd8b12bf1548ab3f97882e5edee7c55763" not in project
+
+
+def test_pinned_fixture_syncs_both_locked_environments_before_generation() -> None:
+    workflow = (
+        template_pin.TEMPLATE_PIN.fixture_path() / ".github" / "workflows" / "ci.yml"
+    ).read_text()
+    root_sync = workflow.index("uv sync --frozen")
+    backend_sync = workflow.index("uv sync --project services/backend --frozen", root_sync + 1)
+    generation = workflow.index("make generate-from-spec", backend_sync + 1)
+    image_build = workflow.index("docker/build-push-action", generation + 1)
+
+    assert root_sync < backend_sync < generation < image_build
 
 
 @pytest.fixture
