@@ -809,26 +809,32 @@ above names a shared contract import.
 For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
 boundary. It first resolves the reported commit, including an unambiguous
 abbreviation, and requires it to equal local `HEAD`. The shared workspace-overlay
-lifecycle keeps its manifest, exclude rules and tracked-file index containment
-under `.git`, not in product source. Worker-manager uses the same class to install
-developer instructions and initial task context; worker-wrapper recovers it before
-every pull and exposes persistent `TASK.md`, `.story/STORY.md`, task archives,
-`PROGRESS.md`, relocated venvs and the authenticated localhost Compose targets
-during the turn. Failed, interrupted and no-result restoration removes only the
-marker-delimited tracked-file overlays from the worktree. It does not change
-`HEAD` or the index, commit staged product work, or delete retry context.
+lifecycle keeps its manifest and untracked-path exclude rules under `.git`, not in
+product source. Product-owned tracked paths retain normal index semantics, so an
+agent's ordinary `git add -A` can commit legitimate instruction-file and Makefile
+edits even while their marker-delimited overlays are visible. Worker-manager uses
+the same class to install developer instructions and initial task context;
+worker-wrapper recovers it before every pull and exposes persistent `TASK.md`,
+`.story/STORY.md`, task archives, `PROGRESS.md`, relocated venvs and the authenticated
+localhost Compose targets during the turn. Failed, interrupted and no-result
+restoration removes only the marker-delimited tracked-file overlays from the
+worktree. It does not change `HEAD` or the index, commit staged product work, or
+delete retry context.
 
-For completion, sanitation resolves `origin/<branch>` and requires it to be an
-ancestor of the reported pre-sanitation `HEAD`. It rebuilds only that unpublished
-linear commit range through an isolated index, removing control paths and exact
-overlay sections while preserving product edits, then verifies every outgoing
-commit. The published base and ambient index are never commit inputs or rewrite
-targets. Only after this proof does the wrapper update local `HEAD`, non-force push
-it, and read the remote ref back. Only an exact readback publishes `completed`. A
-wrong checkout branch, reported-commit mismatch, unsafe range, sanitation failure,
-push failure, or readback mismatch publishes `failed` instead, retaining the
-agent's final `content` as `worker_report` when no fuller report already occupies
-that diagnostic surface. Credentials and Git stderr never enter the result.
+For completion, sanitation resolves `origin/<branch>`. When that ref already equals
+the reported pre-sanitation `HEAD`, the published SHA is returned unchanged without
+inspecting or rewriting its tree. Otherwise the remote must be its ancestor and
+sanitation rebuilds only that unpublished linear commit range through an isolated
+index, removing control paths and exact overlay sections while preserving product
+edits, then verifies every outgoing commit. Merge commits and any other unsupported
+unpublished history are refused rather than flattened. The published base and
+ambient index are never commit inputs or rewrite targets. Only after this proof does
+the wrapper compare-and-swap local `HEAD`, non-force push it, and read the remote ref
+back. Only an exact readback publishes `completed`. A wrong checkout branch,
+reported-commit mismatch, unsafe range, sanitation failure, push failure, or readback
+mismatch publishes `failed` instead, retaining the agent's final `content` as
+`worker_report` when no fuller report already occupies that diagnostic surface.
+Credentials and Git stderr never enter the result.
 
 ### The template a project is scaffolded from
 

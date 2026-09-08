@@ -49,10 +49,10 @@ def test_runtime_overlay_is_visible_but_sanitized_commit_keeps_product_tree(
     assert (product / ".story" / "STORY.md").read_text() == "Story context\n"
 
     (product / "product.py").write_text("VALUE = 2\n")
+    with (product / instruction_name).open("a") as stream:
+        stream.write("\nProduct-authored instruction\n")
     with (product / "Makefile").open("a") as stream:
         stream.write("\nproduct-check:\n\t@echo checked\n")
-    _git(product, "update-index", "--no-skip-worktree", "--", instruction_name)
-    _git(product, "update-index", "--no-skip-worktree", "--", "Makefile")
     _git(product, "add", "-A")
     _git(product, "commit", "-m", "agent change")
 
@@ -74,11 +74,19 @@ def test_runtime_overlay_is_visible_but_sanitized_commit_keeps_product_tree(
         }
         & tree
     )
-    assert _git(product, "show", f"HEAD:{instruction_name}").stdout == original_instruction
+    committed_instruction = _git(product, "show", f"HEAD:{instruction_name}").stdout
+    assert committed_instruction.startswith(original_instruction)
+    assert "Product-authored instruction" in committed_instruction
+    assert "Dynamic worker instructions" not in committed_instruction
     committed_makefile = _git(product, "show", "HEAD:Makefile").stdout
     assert committed_makefile.startswith(original_makefile)
     assert "product-check:" in committed_makefile
     assert "orchestrator overrides" not in committed_makefile
+    assert _git(product, "status", "--porcelain").stdout.splitlines() == [
+        f" M {instruction_name}",
+        " M Makefile",
+    ]
+    overlay.deactivate()
     assert _git(product, "status", "--porcelain").stdout == ""
 
 

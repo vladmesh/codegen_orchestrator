@@ -6,7 +6,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-08
 
 - Production pins immutable kit `0.6.2`; its fresh render locks root and backend sync before main-push generation.
-- Git-local overlays retain retry context and staged WIP while sanitizing every unpublished commit before worker publication.
+- Worker publication preserves ordinary tracked-file edits, sanitizes only new linear history, and accepts an unchanged published tip.
 
 ## 2026-09-07
 

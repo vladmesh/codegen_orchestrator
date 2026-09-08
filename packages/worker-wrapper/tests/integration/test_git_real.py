@@ -127,14 +127,14 @@ def test_completed_result_pushes_only_the_sanitized_product_tree(
     (workspace / ".story" / "old_tasks").mkdir()
     (workspace / ".story" / "old_tasks" / "prior.md").write_text("prior task\n")
     (workspace / "product.py").write_text("VALUE = 2\n")
-    _git(str(workspace), "update-index", "--no-skip-worktree", "--", instruction_name)
-    _git(str(workspace), "update-index", "--no-skip-worktree", "--", "Makefile")
+    with (workspace / instruction_name).open("a") as stream:
+        stream.write("\nProduct-authored instruction\n")
+    with (workspace / "Makefile").open("a") as stream:
+        stream.write("\nproduct-check:\n\t@echo checked\n")
     _git(
         str(workspace),
         "add",
         "-f",
-        instruction_name,
-        "Makefile",
         "TASK.md",
         ".story",
         "PROGRESS.md",
@@ -190,4 +190,44 @@ def test_completed_result_pushes_only_the_sanitized_product_tree(
         assert "dynamic instructions" not in _git(
             str(remote), "show", f"{commit}:{instruction_name}"
         )
-        assert "orchestrator overrides" not in _git(str(remote), "show", f"{commit}:Makefile")
+        committed_instruction = _git(str(remote), "show", f"{commit}:{instruction_name}")
+        assert "Product-authored instruction" in committed_instruction
+        committed_makefile = _git(str(remote), "show", f"{commit}:Makefile")
+        assert "orchestrator overrides" not in committed_makefile
+        assert "product-check:" in committed_makefile
+
+
+def test_completed_result_accepts_unchanged_published_polluted_tip(wrapper, tmp_path, monkeypatch):
+    """A no-op completion does not inspect or rewrite historical published pollution."""
+    remote = tmp_path / "remote.git"
+    workspace = tmp_path / "workspace"
+    remote.mkdir()
+    workspace.mkdir()
+    _git(str(remote), "init", "--bare")
+    _git(str(workspace), "init", "-b", "story/test")
+    _git(str(workspace), "config", "user.email", "test@test.com")
+    _git(str(workspace), "config", "user.name", "Test")
+    (workspace / "AGENTS.md").write_text("product agents\n")
+    (workspace / "Makefile").write_text("worker-start:\n\t@docker compose up\n")
+    (workspace / "PROGRESS.md").write_text("historical pollution\n")
+    (workspace / ".venv_paths_fixed").touch()
+    _git(str(workspace), "add", "-A")
+    _git(str(workspace), "commit", "-m", "historically polluted tip")
+    _git(str(workspace), "remote", "add", "origin", str(remote))
+    _git(str(workspace), "push", "-u", "origin", "story/test")
+    published = _git(str(workspace), "rev-parse", "HEAD")
+
+    overlay = WorkspaceOverlay(workspace)
+    overlay.configure_instruction("AGENTS.md", "dynamic instructions\n")
+    overlay.activate(task="task\n", story="story\n")
+    monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(workspace))
+
+    result, error = wrapper._pushed_completed_result(
+        WorkerCompletedResult(commit_sha=published, content="nothing to change"), "story/test"
+    )
+
+    assert error is None
+    assert result is not None
+    assert result.commit_sha == published
+    assert _git(str(remote), "rev-parse", "refs/heads/story/test") == published
+    assert "PROGRESS.md" in _git(str(remote), "ls-tree", "-r", "--name-only", published)

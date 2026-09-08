@@ -84,7 +84,6 @@ class WorkspaceOverlay:
         state = self._load_state()
         instruction_path = state.get("instruction_path")
         instruction_content = state.get("instruction_content")
-        self._set_overlay_index_flags(instruction_path, enabled=True)
         if isinstance(instruction_path, str) and isinstance(instruction_content, str):
             path = self.workspace / instruction_path
             product = self._strip_instruction(path.read_text() if path.is_file() else "")
@@ -131,7 +130,6 @@ class WorkspaceOverlay:
             makefile = self.workspace / "Makefile"
             if makefile.is_file():
                 self._write_text(makefile, self._strip_makefile(makefile.read_text()))
-            self._set_overlay_index_flags(instruction_path, enabled=False)
         except WorkspaceOverlayError:
             raise
         except OSError as exc:
@@ -167,6 +165,8 @@ class WorkspaceOverlay:
         remote_head = remote.stdout.split(maxsplit=1)[0] if remote.stdout.strip() else ""
         if remote.returncode != 0 or not remote_head:
             raise WorkspaceOverlayError(f"origin/{branch} could not be resolved before sanitation")
+        if remote_head == expected_head:
+            return expected_head
         if self._git(
             "merge-base", "--is-ancestor", remote_head, expected_head, check=False
         ).returncode:
@@ -187,9 +187,6 @@ class WorkspaceOverlay:
         rows = self._git(
             "rev-list", "--reverse", "--topo-order", "--parents", f"{remote_head}..{expected_head}"
         ).stdout.splitlines()
-        if not rows:
-            self._verify_clean_commit(expected_head, instruction_path)
-            return expected_head
 
         rewritten_parent = remote_head
         old_parent = remote_head
@@ -214,7 +211,6 @@ class WorkspaceOverlay:
         branch_ref = f"refs/heads/{branch}"
         self._git("update-ref", branch_ref, rewritten_parent, expected_head)
         self._reset_overlay_index_paths(rewritten_parent, overlay_paths)
-        self._set_overlay_index_flags(instruction_path, enabled=True)
         return rewritten_parent
 
     def _sanitized_tree(
@@ -320,12 +316,6 @@ class WorkspaceOverlay:
 
     def _reset_overlay_index_paths(self, head: str, overlay_paths: list[str]) -> None:
         self._git("reset", "-q", head, "--", *overlay_paths)
-
-    def _set_overlay_index_flags(self, instruction_path: Any, *, enabled: bool) -> None:
-        flag = "--skip-worktree" if enabled else "--no-skip-worktree"
-        for relative_path in self._overlay_paths(instruction_path)[:2]:
-            if self._is_tracked(relative_path):
-                self._git("update-index", flag, "--", relative_path)
 
     @staticmethod
     def _overlay_paths(instruction_path: Any) -> list[str]:
