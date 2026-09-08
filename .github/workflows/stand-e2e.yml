@@ -504,9 +504,6 @@ jobs:
           GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SUMMARIZATION_MODEL: ${{ secrets.SUMMARIZATION_MODEL }}
-          SUMMARIZATION_MAX_TOKENS: ${{ secrets.SUMMARIZATION_MAX_TOKENS }}
-          SUMMARIZATION_TRIGGER_TOKENS: ${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
-          SUMMARIZATION_MAX_SUMMARY_TOKENS: ${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
           GITHUB_APP_PEM_PATH: /opt/secrets/github_app.pem
           HOST_UID: ${{ steps.identity.outputs.runtime_uid }}
           HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
@@ -529,8 +526,7 @@ jobs:
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
               "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
-              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "SUMMARIZATION_MAX_TOKENS",
-              "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS", "LIVE_CONTOUR",
+              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR",
           )
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
