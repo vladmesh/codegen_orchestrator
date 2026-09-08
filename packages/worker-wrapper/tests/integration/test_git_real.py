@@ -5,7 +5,10 @@ import subprocess
 from unittest.mock import MagicMock
 
 import pytest
+from worker_wrapper.workspace_overlay import WorkspaceOverlay
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
+
+from shared.contracts.queues.worker_result import WorkerCompletedResult
 
 
 @pytest.fixture
@@ -89,3 +92,55 @@ class TestGetGitBranchReal:
         result = wrapper._get_git_branch()
 
         assert result is None
+
+
+@pytest.mark.parametrize("instruction_name", ["AGENTS.md", "CLAUDE.md"])
+def test_completed_result_pushes_only_the_sanitized_product_tree(
+    wrapper, tmp_path, monkeypatch, instruction_name
+):
+    """Reproduce an agent `git add -A` commit and inspect the exact bare-remote tree."""
+    remote = tmp_path / "remote.git"
+    workspace = tmp_path / "workspace"
+    remote.mkdir()
+    workspace.mkdir()
+    _git(str(remote), "init", "--bare")
+    _git(str(workspace), "init", "-b", "story/test")
+    _git(str(workspace), "config", "user.email", "test@test.com")
+    _git(str(workspace), "config", "user.name", "Test")
+    (workspace / "AGENTS.md").write_text("product agents\n")
+    (workspace / "CLAUDE.md").write_text("product claude\n")
+    (workspace / "Makefile").write_text("worker-start:\n\t@docker compose up\n")
+    (workspace / "product.py").write_text("VALUE = 1\n")
+    _git(str(workspace), "add", "-A")
+    _git(str(workspace), "commit", "-m", "initial")
+    _git(str(workspace), "remote", "add", "origin", str(remote))
+    _git(str(workspace), "push", "-u", "origin", "story/test")
+
+    overlay = WorkspaceOverlay(workspace)
+    overlay.configure_instruction(instruction_name, "dynamic instructions\n")
+    overlay.activate(task="task\n", story="story\n")
+    (workspace / "PROGRESS.md").write_text("progress\n")
+    (workspace / ".venv_paths_fixed").touch()
+    (workspace / "product.py").write_text("VALUE = 2\n")
+    _git(str(workspace), "add", "-A")
+    _git(str(workspace), "commit", "-m", "agent product edit")
+    reported = _git(str(workspace), "rev-parse", "HEAD")
+    monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(workspace))
+
+    result, error = wrapper._pushed_completed_result(
+        WorkerCompletedResult(commit_sha=reported, content="done"), "story/test"
+    )
+
+    assert error is None
+    assert result is not None
+    assert result.commit_sha != reported
+    assert _git(str(remote), "rev-parse", "refs/heads/story/test") == result.commit_sha
+    tree = set(_git(str(remote), "ls-tree", "-r", "--name-only", result.commit_sha).splitlines())
+    assert "product.py" in tree
+    assert not {"TASK.md", ".story/STORY.md", "PROGRESS.md", ".venv_paths_fixed"} & tree
+    assert "dynamic instructions" not in _git(
+        str(remote), "show", f"{result.commit_sha}:{instruction_name}"
+    )
+    assert "orchestrator overrides" not in _git(
+        str(remote), "show", f"{result.commit_sha}:Makefile"
+    )

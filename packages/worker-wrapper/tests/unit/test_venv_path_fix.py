@@ -112,11 +112,13 @@ class TestFixVenvPaths:
         wrapper._fix_venv_paths()
         assert pth.read_text() == "/some/other/path"  # not touched again
 
-    def test_sentinel_file_created(self, wrapper, tmp_path):
-        """Sentinel .venv_paths_fixed is created after run."""
+    def test_relocation_state_is_git_local(self, wrapper, tmp_path):
+        """Relocation state is kept under .git rather than in the product tree."""
         _make_venv(tmp_path)
         wrapper._fix_venv_paths()
-        assert (tmp_path / ".venv_paths_fixed").exists()
+        state = json.loads((tmp_path / ".git/codegen-workspace-overlay.json").read_text())
+        assert state["venv_paths_fixed"] is True
+        assert not (tmp_path / ".venv_paths_fixed").exists()
 
     def test_old_sentinel_removed(self, wrapper, tmp_path):
         """Old .shebangs_fixed sentinel is cleaned up."""
@@ -126,12 +128,13 @@ class TestFixVenvPaths:
 
         wrapper._fix_venv_paths()
         assert not old_sentinel.exists()
-        assert (tmp_path / ".venv_paths_fixed").exists()
+        assert not (tmp_path / ".venv_paths_fixed").exists()
 
     def test_no_venv_noop(self, wrapper, tmp_path):
-        """No venv in workspace → no crash, sentinel created."""
+        """No venv in workspace records the Git-local relocation state."""
         wrapper._fix_venv_paths()
-        assert (tmp_path / ".venv_paths_fixed").exists()
+        state = json.loads((tmp_path / ".git/codegen-workspace-overlay.json").read_text())
+        assert state["venv_paths_fixed"] is True
 
     def test_already_correct_noop(self, wrapper, tmp_path):
         """Paths already pointing to workspace dir → no changes."""
@@ -150,7 +153,7 @@ class TestFixVenvPaths:
         pth.write_text(f"{tmp_path}/shared")
 
         wrapper._fix_venv_paths()
-        assert (tmp_path / ".venv_paths_fixed").exists()
+        assert not (tmp_path / ".venv_paths_fixed").exists()
         # Content unchanged
         assert pth.read_text() == f"{tmp_path}/shared"
 

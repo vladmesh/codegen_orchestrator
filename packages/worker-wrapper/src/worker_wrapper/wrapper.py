@@ -23,6 +23,7 @@ from .broker import WorkerBrokerClient
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
 from .observability import extract_effort_metrics, save_transcript
+from .workspace_overlay import WorkspaceOverlay, WorkspaceOverlayError
 
 logger = structlog.get_logger(__name__)
 
@@ -301,7 +302,14 @@ class WorkerWrapper:
             await self.broker.update_status(context_update)
 
         # 1. Pre-turn setup
-        await self._prepare_workspace(data)
+        try:
+            await self._prepare_workspace(data)
+        except WorkspaceOverlayError as exc:
+            logger.error("workspace_overlay_preparation_failed", error=str(exc))
+            await self.broker.submit_output(
+                msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}")
+            )
+            return
 
         # Everything from here to the agent launch is about a repository, and a
         # QA executor has none. Its workspace is one scratch directory holding
@@ -383,6 +391,8 @@ class WorkerWrapper:
         finally:
             await self._http_server.stop()
             self._http_server = None
+            if not self.is_qa_executor:
+                self._restore_workspace_after_turn()
 
     async def _publish_result(
         self, lease_id: str, data: dict, error: str | None, status: str, report: str | None
@@ -541,6 +551,11 @@ class WorkerWrapper:
             )
 
         try:
+            head_sha = self._sanitize_workspace_commit(head_sha)
+        except WorkspaceOverlayError:
+            return None, (f"Worker commit {head_sha} could not be sanitized for publication.")
+
+        try:
             pushed = subprocess.run(
                 ["/usr/bin/git", "push", "origin", f"HEAD:refs/heads/{branch}"],
                 cwd=WORKSPACE_DIR,
@@ -612,6 +627,8 @@ class WorkerWrapper:
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
         if not self.is_qa_executor:
+            if os.path.isdir(os.path.join(WORKSPACE_DIR, ".git")):
+                await asyncio.to_thread(WorkspaceOverlay(WORKSPACE_DIR).recover)
             await self._git_pull()
 
         prompt = data.get("prompt")
@@ -721,15 +738,14 @@ class WorkerWrapper:
         3. direct_url.json in .dist-info/ dirs has wrong file:// URLs
 
         Detects the original scaffold prefix and rewrites all affected files.
-        Runs once per workspace (sentinel: .venv_paths_fixed).
+        Runs once per persistent checkout state recorded under ``.git``.
         """
-        sentinel = os.path.join(WORKSPACE_DIR, ".venv_paths_fixed")
-        if os.path.exists(sentinel):
+        if not os.path.isdir(WORKSPACE_DIR):
             return
-
-        # Also skip if old sentinel exists (workspace already had shebangs fixed
-        # by previous wrapper version — but .pth files still need fixing)
-        old_sentinel = os.path.join(WORKSPACE_DIR, ".shebangs_fixed")
+        overlay = WorkspaceOverlay(WORKSPACE_DIR)
+        if overlay.venv_paths_fixed():
+            self._clear_venv_sentinels()
+            return
 
         import glob
         import re
@@ -741,9 +757,8 @@ class WorkerWrapper:
             scaffold_prefix = self._detect_scaffold_prefix_from_pth()
 
         if not scaffold_prefix:
-            self._touch(sentinel)
-            if os.path.exists(old_sentinel):
-                os.remove(old_sentinel)
+            overlay.mark_venv_paths_fixed()
+            self._clear_venv_sentinels()
             return
 
         logger.info("fixing_venv_paths", scaffold_prefix=scaffold_prefix)
@@ -813,10 +828,14 @@ class WorkerWrapper:
             pth_files=pth_count,
             direct_urls=url_count,
         )
-        self._touch(sentinel)
-        # Remove old sentinel if present
-        if os.path.exists(old_sentinel):
-            os.remove(old_sentinel)
+        overlay.mark_venv_paths_fixed()
+        self._clear_venv_sentinels()
+
+    @staticmethod
+    def _clear_venv_sentinels() -> None:
+        """Remove both generations of product-tree relocation state."""
+        Path(WORKSPACE_DIR, ".venv_paths_fixed").unlink(missing_ok=True)
+        Path(WORKSPACE_DIR, ".shebangs_fixed").unlink(missing_ok=True)
 
     def _detect_scaffold_prefix_from_pth(self) -> str | None:
         """Detect scaffold prefix from .pth files when shebangs are already fixed.
@@ -853,14 +872,6 @@ class WorkerWrapper:
                     return "/".join(parts[:i]) + "/"
         return None
 
-    @staticmethod
-    def _touch(path: str):
-        """Create an empty file (sentinel marker)."""
-        try:
-            open(path, "w").close()
-        except OSError:
-            pass
-
     def _inject_makefile_overrides(self):
         """Inject Makefile overrides so worker-mode targets use the compose proxy.
 
@@ -877,37 +888,28 @@ class WorkerWrapper:
                 return
             raise RuntimeError("Makefile is missing; cannot install worker compose proxy overrides")
 
-        override_marker = "# --- orchestrator overrides ---"
         try:
-            content = open(makefile).read()
-            if override_marker in content:
-                return  # already injected
-
-            override = (
-                f"\n{override_marker}\n"
-                "worker-start:\n"
-                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
-                """-H 'Content-Type: application/json' """
-                """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}')\"; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
-                "\n"
-                "worker-stop:\n"
-                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
-                """-H 'Content-Type: application/json' """
-                """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}')\"; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
-            )
-            with open(makefile, "a") as f:
-                f.write(override)
+            WorkspaceOverlay(WORKSPACE_DIR).activate(task=None, story=None)
             logger.info("makefile_overrides_injected")
-        except OSError as exc:
+        except (OSError, WorkspaceOverlayError) as exc:
             raise RuntimeError("Could not write worker compose proxy overrides") from exc
+
+    @staticmethod
+    def _sanitize_workspace_commit(current_head: str) -> str:
+        """Return the exact publishable HEAD after removing the turn overlay."""
+        if not os.path.isdir(os.path.join(WORKSPACE_DIR, ".git")):
+            return current_head
+        return WorkspaceOverlay(WORKSPACE_DIR).sanitize_commit()
+
+    @staticmethod
+    def _restore_workspace_after_turn() -> None:
+        """Keep a failed/interrupted turn from leaking controls into its retry."""
+        if not os.path.isdir(os.path.join(WORKSPACE_DIR, ".git")):
+            return
+        try:
+            WorkspaceOverlay(WORKSPACE_DIR).sanitize_commit()
+        except WorkspaceOverlayError as exc:
+            logger.error("workspace_overlay_cleanup_failed", error=str(exc))
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.
@@ -1379,10 +1381,6 @@ class WorkerWrapper:
 
         try:
             os.makedirs(OLD_TASKS_DIR, exist_ok=True)
-
-            # Ensure .story is gitignored
-            gitignore_path = os.path.join(WORKSPACE_DIR, ".gitignore")
-            self._ensure_gitignore_entry(gitignore_path, ".story/")
 
             archive_path = os.path.join(OLD_TASKS_DIR, f"{archive_id}.md")
             with open(archive_path, "w") as f:

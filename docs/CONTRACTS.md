@@ -808,13 +808,23 @@ above names a shared contract import.
 
 For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
 boundary. It first resolves the reported commit, including an unambiguous
-abbreviation, and requires it to equal local `HEAD`; it then non-force pushes
-that exact `HEAD` to the configured story branch and reads the remote branch ref
-back. Only an exact readback publishes `completed`. A wrong checkout branch,
-commit mismatch, push failure, or readback mismatch publishes `failed` instead,
-and retains the agent's final `content` as `worker_report` when no fuller report
-already occupies that diagnostic surface. Credentials and Git stderr never enter
-the result.
+abbreviation, and requires it to equal local `HEAD`. The shared workspace-overlay
+lifecycle then removes its marker-delimited instruction and Makefile sections and
+all turn-only context, archives and relocation sentinels from the worktree and
+index, amending only that sanitation into `HEAD`. Its manifest and exclude rules
+live under `.git`, not in product source. Worker-manager uses the same class to
+install developer instructions and initial task context; worker-wrapper recovers
+it before every pull, exposes `TASK.md`, `.story/STORY.md`, relocated venvs and the
+authenticated localhost Compose targets during the turn, and sanitizes after a
+failed or interrupted turn so a retry starts from product state.
+
+Only after sanitation succeeds does the wrapper non-force push the resulting exact
+`HEAD` to the configured story branch and read the remote branch ref back. Only an
+exact readback publishes `completed`. A wrong checkout branch, reported-commit
+mismatch, cleanup failure, push failure, or readback mismatch publishes `failed`
+instead, and retains the agent's final `content` as `worker_report` when no fuller
+report already occupies that diagnostic surface. Credentials and Git stderr never
+enter the result.
 
 ### The template a project is scaffolded from
 
@@ -833,9 +843,9 @@ That seed is the single definition of the pin: it is what a deployed orchestrato
 reads, so nothing else in the repository writes the source or the ref down again.
 Production scaffolds from `gh:vladmesh/codegen-product-kit`, pinned by that
 repository's release tag and no longer from `service-template`.
-The production boundary is the annotated `0.6.1` tag, which dereferences to
-`c54d3e4e2890118ec15e2f2b5c59144e3db98080`; the matching
-`shared/tests/fixtures/codegen-product-kit-0.6.1` tree is its `backend,tg_bot`
+The production boundary is the annotated `0.6.2` tag, which dereferences to
+`9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914`; the matching
+`shared/tests/fixtures/codegen-product-kit-0.6.2` tree is its `backend,tg_bot`
 Copier render and records that tag in `_commit`.
 `scripts/template_pin.py` parses it and every other site derives from
 `TEMPLATE_PIN` — the live suite's scaffold defaults

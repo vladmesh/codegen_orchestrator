@@ -847,7 +847,7 @@ class WorkerManager:
                 # it STARTING until AGENTS/CLAUDE, TASK and /workspace/qa are
                 # all usable, so the central runner cannot publish its turn to
                 # a partial workspace.
-                publish_ready=not is_qa_worker,
+                publish_ready=False,
             )
             if is_qa_worker:
                 # Proof, not intent: whatever was asked for, this is what Docker
@@ -875,8 +875,44 @@ class WorkerManager:
             if branch:
                 await git_ops.checkout_branch(self.docker, container_id, branch, worker_id)
 
-            # Inject instructions AFTER git clone (so instruction file doesn't block clone)
-            if instructions:
+            # Developer controls are installed through the worker image's one
+            # Git-local overlay boundary. QA has no Git checkout and keeps its
+            # deliberately ephemeral direct injection path.
+            if not is_qa_worker and (instructions or task_content):
+                instruction_path = agent.get_instruction_path()
+                payload = base64.b64encode(
+                    json.dumps(
+                        {
+                            "instruction_path": instruction_path.rsplit("/", 1)[-1],
+                            "instructions": instructions,
+                            "task": task_content,
+                        }
+                    ).encode()
+                ).decode()
+                cmd = (
+                    'python3 -c "import base64,json; '
+                    "from worker_wrapper.workspace_overlay import WorkspaceOverlay; "
+                    f"p=json.loads(base64.b64decode('{payload}')); "
+                    "o=WorkspaceOverlay('/workspace'); "
+                    "o.configure_instruction(p['instruction_path'], p['instructions']) "
+                    "if p['instructions'] is not None else None; "
+                    "o.activate(task=p['task'], story=None)\""
+                )
+                exit_code, output = await self.docker.exec_in_container(container_id, cmd)
+                if exit_code != 0:
+                    container_logs = await self.docker.get_container_logs(container_id)
+                    logger.error(
+                        "workspace_overlay_injection_failed",
+                        worker_id=worker_id,
+                        error=output,
+                        container_logs=container_logs,
+                    )
+                    failed_path = instruction_path if instructions else "/workspace/TASK.md"
+                    raise RuntimeError(f"could not inject {failed_path} for {worker_id}: {output}")
+
+            # Inject instructions AFTER container creation for the ephemeral QA
+            # workspace (there is intentionally no product tree to overlay).
+            if is_qa_worker and instructions:
                 target_path = agent.get_instruction_path()
                 logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
 
@@ -898,7 +934,7 @@ class WorkerManager:
                     )
                     raise RuntimeError(f"could not inject {target_path} for {worker_id}: {output}")
 
-            if task_content:
+            if is_qa_worker and task_content:
                 task_path = "/workspace/TASK.md"
                 logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
 
@@ -922,8 +958,9 @@ class WorkerManager:
 
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id)
-                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
                 logger.info("qa_executor_ready", worker_id=worker_id)
+
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
             return worker_id
         except Exception as exc:

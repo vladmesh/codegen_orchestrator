@@ -387,8 +387,9 @@ class TestTaskArchiving:
         assert "# Developer Report" in content
         assert "---" in content  # separator between task and report
 
-        # .gitignore should have .story/ entry
-        assert ".story/" in gitignore.read_text()
+        # Turn-local archives are contained through .git/info/exclude; the
+        # generated product's committed ignore policy is not worker state.
+        assert not gitignore.exists()
 
     def test_archive_without_report(self, config, broker_client, tmp_path):
         """Archive works without a report — just saves task description."""

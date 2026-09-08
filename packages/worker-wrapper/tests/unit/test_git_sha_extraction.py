@@ -260,3 +260,21 @@ class TestCompletedResultPush:
         assert submitted.status == WorkerResultStatus.FAILED
         assert submitted.error == "Worker completed without the configured story branch."
         assert submitted.worker_report == "Done"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_refuses_completion_and_keeps_best_report(self, wrapper):
+        """A tree that cannot be sanitized is never published as completed."""
+        wrapper.broker.submit_output = AsyncMock()
+        result = WorkerCompletedResult(commit_sha="e" * 40, content="Useful agent report")
+
+        with patch.object(
+            wrapper,
+            "_pushed_completed_result",
+            return_value=(None, "Worker commit could not be sanitized for publication."),
+        ):
+            await wrapper._submit_checked_result("lease-cleanup", {"branch": "story/test"}, result)
+
+        submitted = wrapper.broker.submit_output.await_args.args[1]
+        assert submitted.status == WorkerResultStatus.FAILED
+        assert submitted.error == "Worker commit could not be sanitized for publication."
+        assert submitted.worker_report == "Useful agent report"
