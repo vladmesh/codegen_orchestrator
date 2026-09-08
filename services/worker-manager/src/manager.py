@@ -843,10 +843,9 @@ class WorkerManager:
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
-                # A QA container starts before its injected files exist. Keep
-                # it STARTING until AGENTS/CLAUDE, TASK and /workspace/qa are
-                # all usable, so the central runner cannot publish its turn to
-                # a partial workspace.
+                # Developer and QA workspaces both have a post-create overlay
+                # gate. Keep the container STARTING until its injected files
+                # are usable, so no runner can publish a partial workspace.
                 publish_ready=False,
             )
             if is_qa_worker:

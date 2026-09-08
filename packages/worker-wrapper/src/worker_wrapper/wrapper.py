@@ -551,8 +551,8 @@ class WorkerWrapper:
             )
 
         try:
-            head_sha = self._sanitize_workspace_commit(head_sha)
-        except WorkspaceOverlayError:
+            head_sha = self._sanitize_workspace_commit(head_sha, branch)
+        except (OSError, WorkspaceOverlayError):
             return None, (f"Worker commit {head_sha} could not be sanitized for publication.")
 
         try:
@@ -895,19 +895,19 @@ class WorkerWrapper:
             raise RuntimeError("Could not write worker compose proxy overrides") from exc
 
     @staticmethod
-    def _sanitize_workspace_commit(current_head: str) -> str:
-        """Return the exact publishable HEAD after removing the turn overlay."""
+    def _sanitize_workspace_commit(current_head: str, branch: str) -> str:
+        """Return a verified publishable HEAD from the unpublished commit range."""
         if not os.path.isdir(os.path.join(WORKSPACE_DIR, ".git")):
             return current_head
-        return WorkspaceOverlay(WORKSPACE_DIR).sanitize_commit()
+        return WorkspaceOverlay(WORKSPACE_DIR).sanitize_unpublished_commits(branch, current_head)
 
     @staticmethod
     def _restore_workspace_after_turn() -> None:
-        """Keep a failed/interrupted turn from leaking controls into its retry."""
+        """Deactivate tracked overlays without changing retry context or Git state."""
         if not os.path.isdir(os.path.join(WORKSPACE_DIR, ".git")):
             return
         try:
-            WorkspaceOverlay(WORKSPACE_DIR).sanitize_commit()
+            WorkspaceOverlay(WORKSPACE_DIR).deactivate()
         except WorkspaceOverlayError as exc:
             logger.error("workspace_overlay_cleanup_failed", error=str(exc))
 

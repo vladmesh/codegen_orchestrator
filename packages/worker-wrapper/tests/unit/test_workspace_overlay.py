@@ -10,6 +10,9 @@ def _git(root, *args, check=True):
 
 @pytest.fixture
 def product(tmp_path):
+    remote = tmp_path.parent / f"{tmp_path.name}-remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare")
     _git(tmp_path, "init", "-b", "story/test")
     _git(tmp_path, "config", "user.name", "Test")
     _git(tmp_path, "config", "user.email", "test@example.com")
@@ -19,6 +22,8 @@ def product(tmp_path):
     (tmp_path / "product.py").write_text("VALUE = 1\n")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "remote", "add", "origin", str(remote))
+    _git(tmp_path, "push", "-u", "origin", "story/test")
     return tmp_path
 
 
@@ -46,10 +51,14 @@ def test_runtime_overlay_is_visible_but_sanitized_commit_keeps_product_tree(
     (product / "product.py").write_text("VALUE = 2\n")
     with (product / "Makefile").open("a") as stream:
         stream.write("\nproduct-check:\n\t@echo checked\n")
+    _git(product, "update-index", "--no-skip-worktree", "--", instruction_name)
+    _git(product, "update-index", "--no-skip-worktree", "--", "Makefile")
     _git(product, "add", "-A")
     _git(product, "commit", "-m", "agent change")
 
-    sanitized = overlay.sanitize_commit()
+    sanitized = overlay.sanitize_unpublished_commits(
+        "story/test", _git(product, "rev-parse", "HEAD").stdout.strip()
+    )
 
     assert sanitized == _git(product, "rev-parse", "HEAD").stdout.strip()
     tree = set(_git(product, "ls-tree", "-r", "--name-only", "HEAD").stdout.splitlines())
@@ -77,28 +86,72 @@ def test_second_turn_recovers_an_interrupted_overlay_without_duplication(product
     overlay = WorkspaceOverlay(product)
     overlay.configure_instruction("AGENTS.md", "dynamic\n")
     overlay.activate(task="first\n", story="first story\n")
+    (product / ".story" / "old_tasks").mkdir(parents=True)
+    (product / ".story" / "old_tasks" / "old.md").write_text("old context\n")
+    (product / "product.py").write_text("VALUE = 2\n")
     _git(product, "add", "-A")
     _git(product, "commit", "-m", "interrupted polluted commit")
 
+    head_before = _git(product, "rev-parse", "HEAD").stdout.strip()
     overlay.recover()
     overlay.activate(task="second\n", story="second story\n")
 
+    assert _git(product, "rev-parse", "HEAD").stdout.strip() == head_before
     assert (product / "AGENTS.md").read_text().count("dynamic") == 1
     assert (product / "Makefile").read_text().count("# --- orchestrator overrides ---") == 1
     assert (product / "TASK.md").read_text() == "second\n"
-    overlay.sanitize_commit()
-    assert _git(product, "status", "--porcelain").stdout == ""
+    assert (product / ".story" / "old_tasks" / "old.md").read_text() == "old context\n"
 
 
 def test_cleanup_failure_is_explicit(product, monkeypatch):
     overlay = WorkspaceOverlay(product)
     overlay.configure_instruction("AGENTS.md", "dynamic\n")
     overlay.activate(task="task\n", story=None)
+    (product / "product.py").write_text("VALUE = 2\n")
+    _git(product, "add", "-A")
+    _git(product, "commit", "-m", "agent change")
 
-    def fail_write(*_args, **_kwargs):
-        raise OSError("disk full")
+    def fail_sanitation(*_args, **_kwargs):
+        raise WorkspaceOverlayError("disk full")
 
-    monkeypatch.setattr(overlay, "_write_text", fail_write)
+    monkeypatch.setattr(overlay, "_sanitized_tree", fail_sanitation)
 
     with pytest.raises(WorkspaceOverlayError, match="disk full"):
-        overlay.sanitize_commit()
+        overlay.sanitize_unpublished_commits(
+            "story/test", _git(product, "rev-parse", "HEAD").stdout.strip()
+        )
+
+
+def test_failed_turn_deactivation_preserves_head_index_wip_and_context(product, monkeypatch):
+    overlay = WorkspaceOverlay(product)
+    overlay.configure_instruction("AGENTS.md", "dynamic\n")
+    overlay.activate(task="retry me\n", story="persistent story\n")
+    (product / ".story" / "old_tasks").mkdir(parents=True)
+    (product / ".story" / "old_tasks" / "prior.md").write_text("prior task\n")
+    (product / "PROGRESS.md").write_text("unfinished plan\n")
+    (product / "product.py").write_text("VALUE = 2\n")
+    _git(product, "add", "-A")
+    head_before = _git(product, "rev-parse", "HEAD").stdout.strip()
+    staged_before = _git(product, "diff", "--cached", "--binary").stdout
+    monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(product))
+
+    from worker_wrapper.wrapper import WorkerWrapper
+
+    WorkerWrapper._restore_workspace_after_turn()
+
+    assert _git(product, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert _git(product, "diff", "--cached", "--binary").stdout == staged_before
+    assert (product / "TASK.md").read_text() == "retry me\n"
+    assert (product / ".story" / "STORY.md").read_text() == "persistent story\n"
+    assert (product / ".story" / "old_tasks" / "prior.md").read_text() == "prior task\n"
+    assert (product / "PROGRESS.md").read_text() == "unfinished plan\n"
+    assert not (product / ".git" / "MERGE_HEAD").exists()
+
+    overlay.recover()
+    overlay.activate(task=None, story=None)
+
+    assert _git(product, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert _git(product, "diff", "--cached", "--binary").stdout == staged_before
+    assert (product / "TASK.md").read_text() == "retry me\n"
+    assert (product / ".story" / "STORY.md").read_text() == "persistent story\n"
+    assert not (product / ".git" / "MERGE_HEAD").exists()

@@ -115,15 +115,39 @@ def test_completed_result_pushes_only_the_sanitized_product_tree(
     _git(str(workspace), "commit", "-m", "initial")
     _git(str(workspace), "remote", "add", "origin", str(remote))
     _git(str(workspace), "push", "-u", "origin", "story/test")
+    base_sha = _git(str(workspace), "rev-parse", "HEAD")
 
     overlay = WorkspaceOverlay(workspace)
     overlay.configure_instruction(instruction_name, "dynamic instructions\n")
     overlay.activate(task="task\n", story="story\n")
     (workspace / "PROGRESS.md").write_text("progress\n")
+    (workspace / "REPORT.md").write_text("report\n")
     (workspace / ".venv_paths_fixed").touch()
+    (workspace / ".shebangs_fixed").touch()
+    (workspace / ".story" / "old_tasks").mkdir()
+    (workspace / ".story" / "old_tasks" / "prior.md").write_text("prior task\n")
     (workspace / "product.py").write_text("VALUE = 2\n")
+    _git(str(workspace), "update-index", "--no-skip-worktree", "--", instruction_name)
+    _git(str(workspace), "update-index", "--no-skip-worktree", "--", "Makefile")
+    _git(
+        str(workspace),
+        "add",
+        "-f",
+        instruction_name,
+        "Makefile",
+        "TASK.md",
+        ".story",
+        "PROGRESS.md",
+        "REPORT.md",
+        ".venv_paths_fixed",
+        ".shebangs_fixed",
+    )
     _git(str(workspace), "add", "-A")
-    _git(str(workspace), "commit", "-m", "agent product edit")
+    _git(str(workspace), "commit", "-m", "agent product edit one")
+    (workspace / "product.py").write_text("VALUE = 3\n")
+    (workspace / "TASK.md").write_text("second task\n")
+    _git(str(workspace), "add", "-A")
+    _git(str(workspace), "commit", "-m", "agent product edit two")
     reported = _git(str(workspace), "rev-parse", "HEAD")
     monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(workspace))
 
@@ -137,10 +161,33 @@ def test_completed_result_pushes_only_the_sanitized_product_tree(
     assert _git(str(remote), "rev-parse", "refs/heads/story/test") == result.commit_sha
     tree = set(_git(str(remote), "ls-tree", "-r", "--name-only", result.commit_sha).splitlines())
     assert "product.py" in tree
-    assert not {"TASK.md", ".story/STORY.md", "PROGRESS.md", ".venv_paths_fixed"} & tree
+    control_files = {
+        "TASK.md",
+        ".story/STORY.md",
+        ".story/old_tasks/prior.md",
+        "PROGRESS.md",
+        "REPORT.md",
+        ".venv_paths_fixed",
+        ".shebangs_fixed",
+    }
+    assert not control_files & tree
     assert "dynamic instructions" not in _git(
         str(remote), "show", f"{result.commit_sha}:{instruction_name}"
     )
     assert "orchestrator overrides" not in _git(
         str(remote), "show", f"{result.commit_sha}:Makefile"
     )
+    outgoing = _git(
+        str(remote),
+        "rev-list",
+        "--reverse",
+        f"{base_sha}..{result.commit_sha}",
+    ).splitlines()
+    assert len(outgoing) == 2
+    for commit in outgoing:
+        commit_tree = set(_git(str(remote), "ls-tree", "-r", "--name-only", commit).splitlines())
+        assert not control_files & commit_tree
+        assert "dynamic instructions" not in _git(
+            str(remote), "show", f"{commit}:{instruction_name}"
+        )
+        assert "orchestrator overrides" not in _git(str(remote), "show", f"{commit}:Makefile")

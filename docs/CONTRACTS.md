@@ -809,22 +809,26 @@ above names a shared contract import.
 For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
 boundary. It first resolves the reported commit, including an unambiguous
 abbreviation, and requires it to equal local `HEAD`. The shared workspace-overlay
-lifecycle then removes its marker-delimited instruction and Makefile sections and
-all turn-only context, archives and relocation sentinels from the worktree and
-index, amending only that sanitation into `HEAD`. Its manifest and exclude rules
-live under `.git`, not in product source. Worker-manager uses the same class to
-install developer instructions and initial task context; worker-wrapper recovers
-it before every pull, exposes `TASK.md`, `.story/STORY.md`, relocated venvs and the
-authenticated localhost Compose targets during the turn, and sanitizes after a
-failed or interrupted turn so a retry starts from product state.
+lifecycle keeps its manifest, exclude rules and tracked-file index containment
+under `.git`, not in product source. Worker-manager uses the same class to install
+developer instructions and initial task context; worker-wrapper recovers it before
+every pull and exposes persistent `TASK.md`, `.story/STORY.md`, task archives,
+`PROGRESS.md`, relocated venvs and the authenticated localhost Compose targets
+during the turn. Failed, interrupted and no-result restoration removes only the
+marker-delimited tracked-file overlays from the worktree. It does not change
+`HEAD` or the index, commit staged product work, or delete retry context.
 
-Only after sanitation succeeds does the wrapper non-force push the resulting exact
-`HEAD` to the configured story branch and read the remote branch ref back. Only an
-exact readback publishes `completed`. A wrong checkout branch, reported-commit
-mismatch, cleanup failure, push failure, or readback mismatch publishes `failed`
-instead, and retains the agent's final `content` as `worker_report` when no fuller
-report already occupies that diagnostic surface. Credentials and Git stderr never
-enter the result.
+For completion, sanitation resolves `origin/<branch>` and requires it to be an
+ancestor of the reported pre-sanitation `HEAD`. It rebuilds only that unpublished
+linear commit range through an isolated index, removing control paths and exact
+overlay sections while preserving product edits, then verifies every outgoing
+commit. The published base and ambient index are never commit inputs or rewrite
+targets. Only after this proof does the wrapper update local `HEAD`, non-force push
+it, and read the remote ref back. Only an exact readback publishes `completed`. A
+wrong checkout branch, reported-commit mismatch, unsafe range, sanitation failure,
+push failure, or readback mismatch publishes `failed` instead, retaining the
+agent's final `content` as `worker_report` when no fuller report already occupies
+that diagnostic surface. Credentials and Git stderr never enter the result.
 
 ### The template a project is scaffolded from
 
