@@ -145,7 +145,7 @@ class FakeSession:
         self.unreadable = unreadable or {}
         self.read: list[str] = []
 
-    async def read_file(self, path: str, *, max_bytes: int = 8000):
+    async def read_backend_contract(self, path: str, *, max_bytes: int = 8000):
         self.read.append(path)
         if path in self.unreadable:
             raise QATargetError(self.unreadable[path])

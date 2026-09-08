@@ -135,13 +135,17 @@ class FakeConn:
                 return SimpleNamespace(
                     exit_status=self.inspect_exit, stdout="", stderr=self.inspect_stderr
                 )
-            return SimpleNamespace(
-                exit_status=0, stdout=self.states[shlex.split(command)[-1]], stderr=""
-            )
+            name = shlex.split(command)[-1]
+            if "com.docker.compose.service" in command:
+                service = "backend" if "-backend-" in name else "db"
+                running = "true" if '"Running":true' in self.states[name] else "false"
+                return SimpleNamespace(exit_status=0, stdout=f"{service} {running}\n", stderr="")
+            return SimpleNamespace(exit_status=0, stdout=self.states[name], stderr="")
         if "grep -c -F" in command:
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
-        if command.startswith("sh -c") and "head -c" in command:
-            path = shlex.split(command)[5]
+        if " read-contract " in command:
+            tokens = shlex.split(command)
+            path = tokens[tokens.index("read-contract") + 2]
             if path in self.files:
                 return SimpleNamespace(exit_status=0, stdout=self.files[path], stderr="")
             return SimpleNamespace(exit_status=5, stdout="", stderr=f"notafile:{path}")
@@ -275,7 +279,12 @@ class TestContainerStateIsEstablishedBeforeTheExecutor:
         result = await _run_qa(conn, executor, tmp_path)
 
         assert result.passed is True
-        assert len(conn.inspected) == len(CONTAINERS)
+        state_reads = [command for command in conn.inspected if "json .State" in command]
+        service_reads = [
+            command for command in conn.inspected if "com.docker.compose.service" in command
+        ]
+        assert len(state_reads) == len(CONTAINERS)
+        assert len(service_reads) == len(CONTAINERS)
         prompt = executor.calls[0]["prompt"]
         assert "Already established" in prompt
         for container in CONTAINERS:

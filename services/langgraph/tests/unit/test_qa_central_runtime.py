@@ -226,8 +226,15 @@ class FakeConn:
             return SimpleNamespace(
                 exit_status=0, stdout="".join(f"{name}\n" for name in self.containers), stderr=""
             )
+        if QA_DOCKER_WRAPPER in command and " read-contract " in command:
+            tokens = shlex.split(command)
+            path = tokens[tokens.index("read-contract") + 2]
+            return self._read(path)
         if QA_DOCKER_WRAPPER in command and " inspect " in command:
             name = shlex.split(command)[-1]
+            if "com.docker.compose.service" in command:
+                service = "backend" if "-backend-" in name else "db"
+                return SimpleNamespace(exit_status=0, stdout=f"{service} true\n", stderr="")
             return SimpleNamespace(exit_status=0, stdout=self.container_states[name], stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
@@ -999,6 +1006,58 @@ class TestASecondProjectOnTheSameHost:
             names = set(build_qa_callables(session=_session(), workspace=workspace))
 
         assert "telegram_probe" not in names
+
+
+class TestGeneratedContractsStayInsideTheBackendContainer:
+    class ContractConn(FakeConn):
+        def __init__(self, services):
+            super().__init__()
+            self.services = services
+
+        async def run(self, command, *, check=False, timeout=None):
+            self.commands.append(command)
+            if "inspect --format" in command and "com.docker.compose.service" in command:
+                name = shlex.split(command)[-1]
+                return SimpleNamespace(exit_status=0, stdout=f"{self.services[name]}\n", stderr="")
+            return SimpleNamespace(exit_status=0, stdout="contract\n", stderr="")
+
+    async def test_a_contract_is_read_from_the_one_backend_in_the_run_capability(self):
+        conn = self.ContractConn(
+            {OWN_CONTAINERS[0]: "backend true", OWN_CONTAINERS[1]: "tg_bot true"}
+        )
+
+        result = await _session(conn).read_backend_contract(
+            "codegen_kit/_active_packages.py", max_bytes=262144
+        )
+
+        assert result.stdout == "contract\n"
+        read = conn.commands[-1]
+        assert f"{QA_DOCKER_WRAPPER} read-contract {OWN_CONTAINERS[0]}" in read
+        assert "codegen_kit/_active_packages.py 262144" in read
+
+    @pytest.mark.parametrize(
+        "services",
+        [
+            {OWN_CONTAINERS[0]: "worker true", OWN_CONTAINERS[1]: "tg_bot true"},
+            {OWN_CONTAINERS[0]: "backend true", OWN_CONTAINERS[1]: "backend true"},
+            {OWN_CONTAINERS[0]: "backend false", OWN_CONTAINERS[1]: "tg_bot true"},
+        ],
+    )
+    async def test_a_missing_or_ambiguous_backend_is_refused(self, services):
+        with pytest.raises(QATargetError, match="backend container"):
+            await _session(self.ContractConn(services)).read_backend_contract(
+                "services/backend/manifest.yaml"
+            )
+
+    async def test_a_non_contract_path_is_refused_before_docker(self):
+        conn = self.ContractConn(
+            {OWN_CONTAINERS[0]: "backend true", OWN_CONTAINERS[1]: "tg_bot true"}
+        )
+
+        with pytest.raises(QATargetError, match="generated contract"):
+            await _session(conn).read_backend_contract("infra/.env")
+
+        assert conn.commands == []
 
 
 class TestTheAgentHasNoShellAndNoHostView:

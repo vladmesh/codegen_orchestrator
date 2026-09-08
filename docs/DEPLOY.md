@@ -491,10 +491,12 @@ artifact can show whether the role ran on a host that provisioned successfully.
 That account cannot become root: its primary group is its own (`qa-observer`, set explicitly, so a
 retrofit moves an account somebody created inside `docker` out of it), it is in no secondary group
 either, it cannot open the docker socket, and its only sudo rule is
-`/usr/local/bin/qa-docker` — a wrapper that refuses every docker sub-command except
-`diff, inspect, logs, port, ps, stats, top`. `exec`, `run`, `cp`, `build`, `commit` and the rest are
-refused **by the target**, whatever the orchestrator sends. It reads the deployment tree through a
-named ACL entry (`u:qa-observer:rx` on `/opt/services`) and can write nothing under it.
+`/usr/local/bin/qa-docker` — a wrapper that admits the read-only Docker queries plus one fixed
+`read-contract` operation for the three non-secret generated product contracts below `/app`.
+General `exec`, `run`, `cp`, `build`, `commit` and the rest are refused **by the target**, whatever
+the orchestrator sends. The fixed operation validates its path, containment and byte limit before
+reading; it cannot express another container command. The account can write nothing under the
+deployment tree.
 
 **What the run does to the target**: for each run the runtime mints a one-shot ed25519 key and
 appends it, with `restrict` and an `expiry-time`, to `qa-observer`'s `authorized_keys` — the file the

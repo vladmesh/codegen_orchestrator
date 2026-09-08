@@ -7,12 +7,14 @@
 # and sudo lets it run this command only.
 #
 # The allowlist is here rather than in sudoers because this is the question
-# sudoers cannot answer. `docker exec` and `docker run` mount and write; `docker
-# cp` writes into a container; `docker build`, `commit` and `save` create host
+# sudoers cannot answer. General `docker exec` and `docker run` mount and write;
+# `docker cp` writes into a container; `docker build`, `commit` and `save` create host
 # state. A sudoers wildcard over `docker *` would allow every one of them, and a
 # per-sub-command sudoers wildcard matches arguments as one concatenated string,
 # which is not a boundary anybody can read. So the boundary is a list of names,
-# checked before docker is reached at all.
+# checked before docker is reached at all. `read-contract` is not an admitted
+# Docker sub-command: it expands here into one fixed, contained read of three
+# non-secret paths, with no caller-controlled program or arguments.
 #
 # What this does NOT decide is which containers a run may look at. That is the
 # run's capability set, resolved in the orchestrator from deployment data, and
@@ -26,7 +28,7 @@
 
 set -eu
 
-ALLOWED="diff inspect logs port ps stats top"
+ALLOWED="diff inspect logs port ps read-contract stats top"
 
 if [ "$#" -eq 0 ]; then
     echo "qa-docker: a docker sub-command is required; allowed: $ALLOWED" >&2
@@ -35,7 +37,64 @@ fi
 
 subcommand=$1
 
+if [ "$subcommand" = "read-contract" ]; then
+    if [ "$#" -ne 4 ]; then
+        echo "qa-docker: read-contract requires container, contract path and fixed limit" >&2
+        exit 2
+    fi
+    container=$2
+    path=$3
+    limit=$4
+    case "$path" in
+        codegen_kit/_active_packages.py|services/backend/manifest.yaml|services/backend/src/generated/jobs_schemas.py) ;;
+        *) echo "qa-docker: refused generated contract path" >&2; exit 2 ;;
+    esac
+    if [ "$limit" != "262144" ]; then
+        echo "qa-docker: refused generated contract byte limit" >&2
+        exit 2
+    fi
+    exec docker exec "$container" sh -c '
+set -eu
+root=$(readlink -f -- /app) || {
+    echo "container /app does not resolve" >&2
+    exit 4
+}
+requested=$1
+limit=$2
+candidate=$root/$requested
+if [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+    exit 5
+fi
+resolved=$(readlink -f -- "$candidate") || {
+    echo "contract path does not resolve" >&2
+    exit 4
+}
+case "$resolved" in
+    "$root"/*) ;;
+    *) echo "contract path resolves outside /app" >&2; exit 4 ;;
+esac
+[ -e "$resolved" ] || exit 5
+[ -f "$resolved" ] && [ -r "$resolved" ] || {
+    echo "contract is not a readable regular file" >&2
+    exit 7
+}
+size=$(wc -c < "$resolved") || {
+    echo "contract size could not be read" >&2
+    exit 7
+}
+[ "$size" -le "$limit" ] || {
+    echo "contract exceeds the read limit" >&2
+    exit 6
+}
+cat -- "$resolved" || {
+    echo "contract read failed" >&2
+    exit 7
+}
+' _ "$path" "$limit"
+fi
+
 for allowed in $ALLOWED; do
+    [ "$allowed" = "read-contract" ] && continue
     if [ "$subcommand" = "$allowed" ]; then
         exec docker "$@"
     fi

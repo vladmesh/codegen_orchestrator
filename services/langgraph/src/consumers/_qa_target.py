@@ -16,6 +16,11 @@ import asyncssh
 import structlog
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrant, QASshGrantState
+from shared.generated_contracts import (
+    CONTRACT_ABSENT,
+    GENERATED_CONTRACT_READ_LIMIT,
+    validate_generated_contract_path,
+)
 
 from ..runtime_identity import SERVICE_BASE_DIR
 
@@ -52,6 +57,7 @@ IDENTITY_KEYS_ABSENT = 4
 IDENTITY_UNREADABLE = 5
 # Docker's authoritative deployment-container label.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
 
 # Shared retry policy for target Docker reads.
 CONTAINER_PROBE_ATTEMPTS = 3
@@ -338,6 +344,7 @@ class QATargetSession:
         self._target = target
         self._conn = conn
         self._capabilities = capabilities
+        self._backend_container: str | None = None
 
     @property
     def target(self) -> QATarget:
@@ -408,6 +415,64 @@ class QATargetSession:
             )
         if result.exit_status == READ_UNRESOLVABLE:
             raise QATargetError(f"{path} does not exist on the target")
+        return result
+
+    async def read_backend_contract(
+        self, path: str, *, max_bytes: int = GENERATED_CONTRACT_READ_LIMIT
+    ) -> RemoteResult:
+        """Read one allowlisted contract from this deployment's backend image."""
+        try:
+            validated = validate_generated_contract_path(path)
+        except ValueError as exc:
+            raise QATargetError(str(exc)) from exc
+        if max_bytes != GENERATED_CONTRACT_READ_LIMIT:
+            raise QATargetError(
+                f"generated contracts must use the fixed {GENERATED_CONTRACT_READ_LIMIT}-byte limit"
+            )
+        if self._backend_container is None:
+            backend: list[str] = []
+            for container in sorted(self._capabilities.containers):
+                result = await self._run(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        f'{{{{ index .Config.Labels "{COMPOSE_SERVICE_LABEL}" }}}} '
+                        "{{.State.Running}}",
+                        container,
+                    ],
+                    timeout=REMOTE_EXEC_TIMEOUT,
+                )
+                if result.exit_status != 0:
+                    detail = (result.stderr or result.stdout or "no output").strip()[:300]
+                    raise QATargetError(
+                        f"could not identify the backend container of this deployment: {detail}"
+                    )
+                if result.stdout.strip() == "backend true":
+                    backend.append(container)
+            if len(backend) != 1:
+                raise QATargetError(
+                    f"this deployment has {len(backend)} backend containers in its capability set; "
+                    "exactly one is required"
+                )
+            self._backend_container = backend[0]
+        result = await self._run(
+            [
+                "docker",
+                "read-contract",
+                self._backend_container,
+                validated,
+                str(max_bytes),
+            ],
+            timeout=REMOTE_EXEC_TIMEOUT,
+        )
+        if result.exit_status == CONTRACT_ABSENT:
+            return result
+        if result.exit_status != 0:
+            detail = (result.stderr or result.stdout or "no output").strip()[:300]
+            raise QATargetError(
+                f"{validated} could not be read from the backend container: {detail}"
+            )
         return result
 
     async def exec(self, argv: list[str]) -> RemoteResult:

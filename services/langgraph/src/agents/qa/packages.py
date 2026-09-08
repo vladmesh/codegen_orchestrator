@@ -25,15 +25,14 @@ import re
 
 import yaml
 
-#: The generated artifacts a deployed product's package activation is read
-#: from, relative to the deployment root the QA session can read.
-ACTIVE_PACKAGE_CONTRACT = "codegen_kit/_active_packages.py"
-BACKEND_MANIFEST = "services/backend/manifest.yaml"
-GENERATED_JOB_REGISTRY = "services/backend/src/generated/jobs_schemas.py"
+from shared.generated_contracts import (
+    ACTIVE_PACKAGE_CONTRACT,
+    BACKEND_MANIFEST,
+    GENERATED_CONTRACT_READ_LIMIT,
+    GENERATED_JOB_REGISTRY as GENERATED_JOB_REGISTRY,
+)
 
-#: A generated contract is bigger than a probe answer, and a truncated one is
-#: refused rather than half-read, so the read is given room for a real product.
-CONTRACT_READ_LIMIT = 262144
+CONTRACT_READ_LIMIT = GENERATED_CONTRACT_READ_LIMIT
 
 
 _PACKAGE_OWNER = "package:"
