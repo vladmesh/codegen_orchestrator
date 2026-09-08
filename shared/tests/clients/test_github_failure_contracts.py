@@ -57,13 +57,9 @@ async def test_create_or_update_file_creates_after_explicit_404():
         json={"content": {"sha": "new-sha"}},
         request=httpx.Request("PUT", "https://api.github.com/example"),
     )
-    client._make_request = AsyncMock(
-        side_effect=[_http_error(httpx.codes.NOT_FOUND), created]
-    )
+    client._make_request = AsyncMock(side_effect=[_http_error(httpx.codes.NOT_FOUND), created])
 
-    result = await client.create_or_update_file(
-        "org", "repo", "README.md", "body", "create"
-    )
+    result = await client.create_or_update_file("org", "repo", "README.md", "body", "create")
 
     assert result == {"sha": "new-sha"}
     assert client._make_request.await_count == 2
