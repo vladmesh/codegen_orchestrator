@@ -31,6 +31,7 @@ delivery count grows.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import os
 import socket
 
@@ -38,6 +39,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import TypeAdapter
 import structlog
 
+from shared.config_store import ConfigStore
 from shared.contracts.queues.po import (
     POInputMessage,
     POResponse,
@@ -59,6 +61,36 @@ from ..config.settings import get_settings
 logger = structlog.get_logger(__name__)
 
 MAX_CONCURRENT = 10
+
+SUMMARIZATION_CONFIG_KEYS = (
+    "llm.summarization_max_tokens",
+    "llm.summarization_trigger_tokens",
+    "llm.summarization_max_summary_tokens",
+)
+
+
+@dataclass(frozen=True)
+class SummarizationConfig:
+    max_tokens: int
+    trigger_tokens: int
+    max_summary_tokens: int
+
+
+def load_summarization_config(api_base_url: str) -> SummarizationConfig:
+    """Read the required PO summarization tuning from system config.
+
+    Operational tuning has one production source of truth. Missing keys,
+    malformed values, and an unavailable config API are startup failures rather
+    than reasons to silently change summarization policy.
+    """
+    config = ConfigStore(api_base_url)
+    config.validate_required(list(SUMMARIZATION_CONFIG_KEYS))
+    return SummarizationConfig(
+        max_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[0]),
+        trigger_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[1]),
+        max_summary_tokens=config.get_int(SUMMARIZATION_CONFIG_KEYS[2]),
+    )
+
 
 # The identity of this process inside the consumer group. The PID alone is not
 # one: two standard containers are both PID 1, and two processes answering to
@@ -144,33 +176,18 @@ async def _consume_po_input(
         task.add_done_callback(lambda done, msg_id=message.message_id: _dispatched(done, msg_id))
 
 
-async def run_po_consumer() -> None:
+async def run_po_consumer(
+    summarization_config: SummarizationConfig | None = None,
+) -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
+    effective_summarization = summarization_config or load_summarization_config(
+        settings.api_base_url
+    )
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
 
     init_po_clients(api_client, client)
-
-    # Read summarization config from DB (ConfigStore), fall back to settings
-    from shared.config_store import ConfigStore
-
-    try:
-        _cfg = ConfigStore(settings.api_base_url)
-        _sum_max = _cfg.get_int(
-            "llm.summarization_max_tokens", default=settings.summarization_max_tokens
-        )
-        _sum_trigger = _cfg.get_int(
-            "llm.summarization_trigger_tokens", default=settings.summarization_trigger_tokens
-        )
-        _sum_max_summary = _cfg.get_int(
-            "llm.summarization_max_summary_tokens",
-            default=settings.summarization_max_summary_tokens,
-        )
-    except Exception:
-        _sum_max = settings.summarization_max_tokens
-        _sum_trigger = settings.summarization_trigger_tokens
-        _sum_max_summary = settings.summarization_max_summary_tokens
 
     graph = await create_po_graph(
         model=settings.po_llm_model,
@@ -178,15 +195,16 @@ async def run_po_consumer() -> None:
         api_key=settings.po_llm_api_key,
         checkpoint_database_url=settings.checkpoint_database_url,
         summarization_model=settings.summarization_model,
-        summarization_max_tokens=_sum_max,
-        summarization_trigger_tokens=_sum_trigger,
-        summarization_max_summary_tokens=_sum_max_summary,
+        summarization_max_tokens=effective_summarization.max_tokens,
+        summarization_trigger_tokens=effective_summarization.trigger_tokens,
+        summarization_max_summary_tokens=effective_summarization.max_summary_tokens,
     )
     logger.info(
         "po_summarization_configured",
         model=settings.summarization_model or settings.po_llm_model,
-        max_tokens=settings.summarization_max_tokens,
-        trigger_tokens=settings.summarization_trigger_tokens,
+        max_tokens=effective_summarization.max_tokens,
+        trigger_tokens=effective_summarization.trigger_tokens,
+        max_summary_tokens=effective_summarization.max_summary_tokens,
     )
 
     logger.info("po_consumer_started", consumer=CONSUMER_NAME)
