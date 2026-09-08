@@ -17,13 +17,13 @@ import pytest
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.product_brief import ProposedProductBriefContent
-from src.agents.po.tools import init_po_clients
 from src.agents.po.tools_briefs import (
     PRODUCT_BRIEF_POINTER_KEY,
     _creation_request_id,
     confirm_product_brief,
     present_product_brief,
 )
+from src.agents.po.tools_shared import init_po_clients
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
 BRIEF_ID = "brief-1"

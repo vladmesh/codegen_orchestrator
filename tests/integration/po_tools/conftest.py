@@ -22,7 +22,7 @@ if _LANGGRAPH_DIR not in sys.path:
 
 from shared.clients.internal_api import InternalAPIClient  # noqa: E402
 from shared.redis.client import RedisStreamClient  # noqa: E402
-from src.agents.po.tools import init_po_clients  # noqa: E402
+from src.agents.po.tools_shared import init_po_clients  # noqa: E402
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

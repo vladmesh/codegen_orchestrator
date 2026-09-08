@@ -10,17 +10,15 @@ import json
 
 import pytest
 
-from src.agents.po.tools import (
-    confirm_product_brief,
+from src.agents.po.tools_briefs import confirm_product_brief, present_product_brief
+from src.agents.po.tools_projects import (
     create_project,
-    create_story,
     get_project,
     list_projects,
-    list_stories,
-    present_product_brief,
     set_project_secret,
 )
 from src.agents.po.tools_shared import init_po_clients
+from src.agents.po.tools_stories import create_story, list_stories
 
 from .conftest import make_config
 
