@@ -138,18 +138,11 @@ class TestRunReminderPoller:
 
 
 class TestSetReminderUsesConstant:
-    def test_tools_module_imports_constant(self):
-        """Verify set_reminder uses PO_REMINDERS_KEY, not a hardcoded string."""
-        import src.agents.po.tools as tools_module
-
-        # The module should import PO_REMINDERS_KEY
-        assert hasattr(tools_module, "PO_REMINDERS_KEY")
-        assert tools_module.PO_REMINDERS_KEY == "po:reminders"
-
     @pytest.mark.asyncio
     async def test_set_reminder_uses_constant(self):
         """set_reminder should call zadd with PO_REMINDERS_KEY."""
-        from src.agents.po.tools import init_po_clients, set_reminder
+        from src.agents.po.tools import set_reminder
+        from src.agents.po.tools_shared import init_po_clients
 
         mock_client = AsyncMock()
         mock_client.redis = AsyncMock()

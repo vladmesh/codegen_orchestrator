@@ -1,9 +1,10 @@
 """PO ReactAgent tools.
 
 Async tools for the Product Owner agent. Uses the shared internal API client and
-the Redis client, both initialized at consumer startup via init_po_clients().
+the Redis client, both initialized at consumer startup via tools_shared.init_po_clients().
 
-This module aggregates the public PO tools from the domain-specific modules.
+get_all_tools() composes the agent tool list. Import domain tools and constants
+from their owner modules; this module owns only the utility tools below.
 """
 
 from __future__ import annotations
@@ -17,44 +18,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
+from shared import queues
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
-from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
 
-from . import tools_shared
-
-# Re-export the Product Brief tools
-from .tools_briefs import (  # noqa: F401
-    PRODUCT_BRIEF_POINTER_KEY,
-    confirm_product_brief,
-    present_product_brief,
-)
-
-# Re-export project tools
-from .tools_projects import (  # noqa: F401
-    AVAILABLE_MODULES,
-    HTTP_UNPROCESSABLE,
-    create_project,
-    get_project,
-    grant_project_user,
-    list_projects,
-    set_project_secret,
-    teardown_project,
-    transfer_project_ownership,
-    validate_telegram_token,
-)
-
-# Keep the startup entrypoint on the aggregate module until its callers migrate.
-from .tools_shared import init_po_clients as init_po_clients
-
-# Re-export story/run tools
-from .tools_stories import (  # noqa: F401
-    create_story,
-    get_run_status,
-    get_story,
-    list_stories,
-    reopen_story,
-)
+from . import tools_briefs, tools_projects, tools_shared, tools_stories
 
 logger = structlog.get_logger(__name__)
 
@@ -92,7 +60,7 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
             "timestamp": datetime.now(UTC).isoformat(),
         }
     )
-    await redis.zadd(PO_REMINDERS_KEY, {reminder: fire_at})
+    await redis.zadd(queues.PO_REMINDERS_KEY, {reminder: fire_at})
 
     logger.info("po_reminder_set", telegram_chat_id=telegram_chat_id, delay_minutes=delay_minutes)
     return f"Reminder set for {delay_minutes} minutes: {reason}"
@@ -113,7 +81,7 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     client = tools_shared._get_stream_client()
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
     msg = POProactiveMessage(text=message, telegram_chat_id=telegram_chat_id)
-    await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))
+    await client.publish_flat(queues.PO_PROACTIVE_QUEUE, to_flat_fields(msg))
 
     logger.info("po_notify_user", telegram_chat_id=telegram_chat_id, text_length=len(message))
     return "Message sent to user."
@@ -196,21 +164,21 @@ def web_search(query: str, max_results: int = 5) -> str:
 def get_all_tools() -> list:
     """Return all PO tools for the ReactAgent."""
     return [
-        create_project,
-        list_projects,
-        get_project,
-        grant_project_user,
-        set_project_secret,
-        transfer_project_ownership,
-        teardown_project,
-        validate_telegram_token,
-        present_product_brief,
-        confirm_product_brief,
-        create_story,
-        list_stories,
-        reopen_story,
-        get_story,
-        get_run_status,
+        tools_projects.create_project,
+        tools_projects.list_projects,
+        tools_projects.get_project,
+        tools_projects.grant_project_user,
+        tools_projects.set_project_secret,
+        tools_projects.transfer_project_ownership,
+        tools_projects.teardown_project,
+        tools_projects.validate_telegram_token,
+        tools_briefs.present_product_brief,
+        tools_briefs.confirm_product_brief,
+        tools_stories.create_story,
+        tools_stories.list_stories,
+        tools_stories.reopen_story,
+        tools_stories.get_story,
+        tools_stories.get_run_status,
         get_budget_balance,
         set_reminder,
         notify_user,
@@ -219,35 +187,9 @@ def get_all_tools() -> list:
 
 
 __all__ = [
-    # Startup client initialization
-    "init_po_clients",
-    # Project tools
-    "AVAILABLE_MODULES",
-    "HTTP_UNPROCESSABLE",
-    "create_project",
-    "grant_project_user",
-    "list_projects",
-    "get_project",
-    "set_project_secret",
-    "teardown_project",
-    "transfer_project_ownership",
-    "validate_telegram_token",
-    # Product Brief tools
-    "PRODUCT_BRIEF_POINTER_KEY",
-    "present_product_brief",
-    "confirm_product_brief",
-    # Story/run tools
-    "create_story",
-    "list_stories",
-    "reopen_story",
-    "get_story",
-    "get_run_status",
-    "get_budget_balance",
-    # Utility tools
-    "set_reminder",
-    "notify_user",
-    "web_search",
     "get_all_tools",
-    # Constants
-    "PO_REMINDERS_KEY",
+    "get_budget_balance",
+    "notify_user",
+    "set_reminder",
+    "web_search",
 ]

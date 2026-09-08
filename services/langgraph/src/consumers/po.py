@@ -54,7 +54,7 @@ from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
-from ..agents.po.tools import init_po_clients
+from ..agents.po.tools_shared import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import get_settings
 
