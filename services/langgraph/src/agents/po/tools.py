@@ -3,7 +3,7 @@
 Async tools for the Product Owner agent. Uses the shared internal API client and
 the Redis client, both initialized at consumer startup via init_po_clients().
 
-This module re-exports all tools from sub-modules for backward compatibility.
+This module aggregates the public PO tools from the domain-specific modules.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import structlog
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
+
+from . import tools_shared
 
 # Re-export the Product Brief tools
 from .tools_briefs import (  # noqa: F401
@@ -42,15 +44,8 @@ from .tools_projects import (  # noqa: F401
     validate_telegram_token,
 )
 
-# Re-export shared helpers so existing patch targets still work:
-#   patch("src.agents.po.tools._get_api", ...)
-#   patch("src.agents.po.tools.init_po_clients", ...)
-from .tools_shared import (  # noqa: F401
-    _get_api,
-    _get_stream_client,
-    _user_headers,
-    init_po_clients,
-)
+# Keep the startup entrypoint on the aggregate module until its callers migrate.
+from .tools_shared import init_po_clients as init_po_clients
 
 # Re-export story/run tools
 from .tools_stories import (  # noqa: F401
@@ -83,7 +78,7 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
         delay_minutes: Minutes until reminder fires.
         reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
     """
-    redis = _get_stream_client().redis
+    redis = tools_shared._get_stream_client().redis
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
     fire_at = time.time() + delay_minutes * 60
     story_match = _STORY_ID_RE.search(reason)
@@ -115,7 +110,7 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     Args:
         message: Text to send to the user right now.
     """
-    client = _get_stream_client()
+    client = tools_shared._get_stream_client()
     telegram_chat_id = config["configurable"]["telegram_chat_id"]
     msg = POProactiveMessage(text=message, telegram_chat_id=telegram_chat_id)
     await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))
@@ -132,9 +127,9 @@ async def get_budget_balance(*, config: RunnableConfig) -> str:
     reopening a story. The returned remaining amount already accounts for all
     internal holds; do not recalculate it.
     """
-    response = await _get_api().get_raw(
+    response = await tools_shared._get_api().get_raw(
         "engineering-budget-policy/balance",
-        headers=_user_headers(config),
+        headers=tools_shared._user_headers(config),
     )
     response.raise_for_status()
     data = response.json()
@@ -224,11 +219,8 @@ def get_all_tools() -> list:
 
 
 __all__ = [
-    # Shared helpers
+    # Startup client initialization
     "init_po_clients",
-    "_get_api",
-    "_get_stream_client",
-    "_user_headers",
     # Project tools
     "AVAILABLE_MODULES",
     "HTTP_UNPROCESSABLE",
