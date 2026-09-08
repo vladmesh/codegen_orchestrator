@@ -1272,7 +1272,11 @@ def test_failed_publication_timeline_is_retained_in_the_run_artifact(codex_docke
             {
                 "name": "build-and-push",
                 "failed_steps": ["Build image"],
-                "log_excerpt": "safe bounded tail",
+                "log_excerpt": (
+                    "AssertionError: expected package environment\n"
+                    "Authorization: Bearer [redacted]\n"
+                    "scheduler token=[redacted]"
+                ),
             }
         ],
     }
@@ -1305,7 +1309,12 @@ def test_failed_publication_timeline_is_retained_in_the_run_artifact(codex_docke
     )
 
     timeline = build_artifact(ctx, root=tmp_path)["generated_product_timeline"]
+    serialized = json.dumps(timeline)
 
+    assert "foreign-ci-bearer-34160792874" not in serialized
+    assert "scheduler-known-secret-34160792874" not in serialized
+    assert "Authorization: Bearer [redacted]" in serialized
+    assert "AssertionError: expected package environment" in serialized
     assert timeline["story_id"]["value"] == "story-1"
     assert timeline["observations"]["status"] == CaptureStatus.CAPTURED.value
     retained = timeline["observations"]["value"][0]

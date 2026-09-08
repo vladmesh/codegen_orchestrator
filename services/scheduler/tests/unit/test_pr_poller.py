@@ -9,6 +9,7 @@ import pytest
 from src.tasks.image_publication import ImagePublication, PublicationVerdict
 from src.tasks.pr_poller import (
     _failure_fingerprint,
+    _handle_failed_run,
     _updated_generated_product_timeline,
     poll_ci_failures,
     poll_merged_prs,
@@ -467,9 +468,134 @@ def _failed_run(run_id: int, sha: str) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_story_ci_failure_redacts_task_and_timeline_evidence(monkeypatch):
+    protected_value = "scheduler-known-secret-34160792874"
+    bearer = "foreign-ci-bearer-34160792874"
+    monkeypatch.setenv("SCHEDULER_TEST_TOKEN", protected_value)
+    github = AsyncMock()
+    github.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": f"unit {protected_value}",
+                "failed_steps": [f"Run pytest with {protected_value}"],
+                "log_excerpt": (
+                    "AssertionError: expected package environment\n"
+                    f"Authorization: Bearer {bearer}\n"
+                    f"scheduler token={protected_value}"
+                ),
+                "log_unavailable_reason": None,
+            }
+        ],
+        "unavailable_reason": f"diagnostic mirror used {protected_value}",
+    }
+    api = AsyncMock()
+    api.get_tasks_by_story.return_value = []
+
+    assert (
+        await _handle_failed_run(
+            api,
+            github,
+            owner="org",
+            repo_name="repo",
+            story_id="story-1",
+            project_id="project-1",
+            branch="story/story-1",
+            run=_failed_run(34162226616, "bad-head"),
+            pull_request={"number": 42, "state": "open", "head": {"sha": "bad-head"}},
+            existing_timeline=None,
+        )
+        is True
+    )
+
+    task = api.create_task.await_args.args[0]
+    timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
+    durable = repr({"task": task, "timeline": timeline})
+    assert bearer not in durable
+    assert protected_value not in durable
+    assert "Authorization: Bearer [redacted]" in durable
+    assert "AssertionError: expected package environment" in durable
+    assert task["failure_metadata"]["ci_failure"]["details_unavailable_reason"] == (
+        "diagnostic mirror used [redacted]"
+    )
+    assert timeline["ci_runs"][0]["details_unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_failed_run_recovers_transient_details_on_a_later_poll():
+    github = AsyncMock()
+    github.get_workflow_failure_details.side_effect = [
+        RuntimeError("temporary"),
+        {
+            "failed_jobs": [
+                {
+                    "name": "unit",
+                    "failed_steps": ["Run pytest"],
+                    "log_excerpt": "AssertionError: useful bounded detail",
+                    "log_unavailable_reason": None,
+                }
+            ],
+            "unavailable_reason": None,
+        },
+    ]
+    api = AsyncMock()
+    api.get_tasks_by_story.return_value = []
+    run = _failed_run(34162226616, "bad-head")
+    pull_request = {"number": 42, "state": "open", "head": {"sha": "bad-head"}}
+
+    assert (
+        await _handle_failed_run(
+            api,
+            github,
+            owner="org",
+            repo_name="repo",
+            story_id="story-1",
+            project_id="project-1",
+            branch="story/story-1",
+            run=run,
+            pull_request=pull_request,
+            existing_timeline=None,
+        )
+        is True
+    )
+    first_task = api.create_task.await_args.args[0]
+    first_timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
+    assert first_timeline["ci_runs"][0]["failed_jobs"] == []
+    assert first_timeline["ci_runs"][0]["details_unavailable_reason"] == "RuntimeError"
+
+    prior = AsyncMock()
+    prior.failure_metadata = first_task["failure_metadata"]
+    api.get_tasks_by_story.return_value = [prior]
+    api.create_task.reset_mock()
+    api.update_story.reset_mock()
+
+    assert (
+        await _handle_failed_run(
+            api,
+            github,
+            owner="org",
+            repo_name="repo",
+            story_id="story-1",
+            project_id="project-1",
+            branch="story/story-1",
+            run=run,
+            pull_request=pull_request,
+            existing_timeline=first_timeline,
+        )
+        is False
+    )
+
+    recovered = api.update_story.await_args.args[1]["generated_product_timeline"]["ci_runs"][0]
+    assert recovered["failed_jobs"][0]["log_excerpt"] == ("AssertionError: useful bounded detail")
+    assert recovered["details_unavailable_reason"] is None
+    assert github.get_workflow_failure_details.await_count == 2
+    api.create_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
 @patch("src.tasks.pr_poller.GitHubAppClient")
-async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, notify):
+async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, notify, monkeypatch):
+    monkeypatch.setenv("REGISTRY_PASSWORD", "fixture-registry-password")
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     api = AsyncMock()

@@ -20,6 +20,7 @@ from shared.contracts.dto.users_grant import (
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 from shared.contracts.worker_evidence import secret_env_values
+from shared.diagnostics import redact_diagnostic
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
@@ -31,6 +32,7 @@ from .image_publication import (
     IMAGE_PUBLICATION_TIMEOUT_SECONDS,
     ImagePublication,
     PublicationVerdict,
+    _redacted_failed_jobs,
     image_publication_for_commit,
 )
 from .story_completion import _parse_owner_repo
@@ -347,6 +349,20 @@ def _updated_generated_product_timeline(
     }
 
 
+def _has_usable_failed_job_evidence(run: object) -> bool:
+    """Whether a stored run can safely skip another failure-detail read."""
+    if not isinstance(run, dict):
+        return False
+    failed_jobs = run.get("failed_jobs")
+    return bool(failed_jobs) and all(
+        isinstance(job, dict)
+        and job.get("name")
+        and job.get("failed_steps")
+        and (job.get("log_excerpt") or job.get("log_unavailable_reason"))
+        for job in failed_jobs
+    )
+
+
 async def _handle_failed_run(
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
@@ -368,13 +384,19 @@ async def _handle_failed_run(
     prior_evidence = [item for task in tasks if (item := _ci_metadata(task))]
 
     timeline_runs = existing_timeline.get("ci_runs") if isinstance(existing_timeline, dict) else []
-    timeline_has_run = isinstance(timeline_runs, list) and any(
-        isinstance(item, dict) and item.get("id") == run_id for item in timeline_runs
+    timeline_run = (
+        next(
+            (item for item in timeline_runs if isinstance(item, dict) and item.get("id") == run_id),
+            None,
+        )
+        if isinstance(timeline_runs, list)
+        else None
     )
     task_has_run = any(item.get("run_id") == run_id for item in prior_evidence)
-    if task_has_run and timeline_has_run:
+    if task_has_run and _has_usable_failed_job_evidence(timeline_run):
         return False
 
+    diagnostic_secrets = tuple(secret_env_values(dict(os.environ)))
     try:
         details = await github.get_workflow_failure_details(
             owner,
@@ -384,8 +406,13 @@ async def _handle_failed_run(
         )
     except Exception as exc:
         details = {"failed_jobs": [], "unavailable_reason": type(exc).__name__}
-    failed_jobs = details["failed_jobs"]
+    failed_jobs = list(_redacted_failed_jobs(details["failed_jobs"], secrets=diagnostic_secrets))
     unavailable_reason = details.get("unavailable_reason")
+    if unavailable_reason is not None:
+        unavailable_reason = redact_diagnostic(
+            unavailable_reason,
+            secrets=diagnostic_secrets,
+        )
     if not failed_jobs and not unavailable_reason:
         unavailable_reason = "GitHub returned no failed jobs"
     fingerprint = _failure_fingerprint(failed_jobs, unavailable_reason)
