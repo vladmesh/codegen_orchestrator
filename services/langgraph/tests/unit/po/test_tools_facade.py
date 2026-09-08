@@ -1,8 +1,7 @@
 """Boundary tests for the PO tools aggregate module."""
 
-import src.agents.po.tools as tools
+from src.agents.po import tools
 from src.agents.po.tools_shared import init_po_clients
-
 
 _PRIVATE_SHARED_HELPERS = ("_get_api", "_get_stream_client", "_user_headers")
 
