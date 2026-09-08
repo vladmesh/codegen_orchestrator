@@ -279,9 +279,11 @@ is never passed into coding-worker containers.
 | `ARCHITECT_LLM_BASE_URL` | Architect agent LLM base URL |
 | `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
 | `SUMMARIZATION_MODEL` | Summarization model name |
-| `SUMMARIZATION_MAX_TOKENS` | Max tokens for summarization |
-| `SUMMARIZATION_TRIGGER_TOKENS` | Token threshold to trigger summarization |
-| `SUMMARIZATION_MAX_SUMMARY_TOKENS` | Max summary output tokens |
+
+Numeric PO summarization tuning is not environment or secret configuration. Production reads
+`llm.summarization_max_tokens`, `llm.summarization_trigger_tokens`, and
+`llm.summarization_max_summary_tokens` from required system config seeded by
+`scripts/system_configs.yaml`.
 
 The `PO_LLM_*` and `ARCHITECT_LLM_*` triples are all-or-nothing: an agent starts only when
 every var of its group carries a value, so leaving one of the three empty silently keeps that
