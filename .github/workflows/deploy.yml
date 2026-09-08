@@ -167,11 +167,8 @@ jobs:
             ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
             ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
 
-            # Summarization
+            # Summarization model selection; numeric tuning is seeded as system config below.
             SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
-            SUMMARIZATION_MAX_TOKENS=${{ secrets.SUMMARIZATION_MAX_TOKENS }}
-            SUMMARIZATION_TRIGGER_TOKENS=${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
-            SUMMARIZATION_MAX_SUMMARY_TOKENS=${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
 
             # GitHub
             GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
