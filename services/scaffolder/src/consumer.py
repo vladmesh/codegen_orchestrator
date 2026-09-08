@@ -12,6 +12,7 @@ from pathlib import Path
 import signal
 import uuid
 
+import httpx
 from pydantic import ValidationError
 import structlog
 
@@ -163,12 +164,18 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     """Full scaffold: create repo, copier, make setup, git push."""
     org = repo_full_name.split("/")[0]
 
-    # Create GitHub repo (idempotent — ignores 422 if already exists)
-    github_repo = None
+    # Create GitHub repo. A 422 may be an idempotent existing-repository case;
+    # verify it with a read before continuing. Every other failure propagates.
     try:
         github_repo = await github.create_repo(org, msg.project_name, private=True)
-    except Exception as e:
-        if "422" not in str(e):
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
+            raise
+        try:
+            github_repo = await github.get_repo(org, msg.project_name)
+        except httpx.HTTPStatusError as lookup_exc:
+            if lookup_exc.response.status_code == httpx.codes.NOT_FOUND:
+                raise exc from lookup_exc
             raise
 
     # Update repository git_url + provider_repo_id so github_sync can match
@@ -293,11 +300,14 @@ async def _process_ensure_mode(
     """Ensure workspace exists. Skip if present, clone+setup if missing."""
     org = repo_full_name.split("/")[0]
 
-    # Check if repo exists on GitHub
+    # Only a GitHub 404 means the repository is absent. Authentication,
+    # transport and server failures must not be converted into "does not exist".
     repo_exists = True
     try:
         await github.get_repo(org, msg.project_name)
-    except Exception:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != httpx.codes.NOT_FOUND:
+            raise
         repo_exists = False
 
     result = await run_ensure_workspace(

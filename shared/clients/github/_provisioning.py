@@ -39,22 +39,18 @@ class ProvisioningMixin:
         # 3. Create repository
         try:
             repo = await self.create_repo(org, repo_name, description, private=True)
-        except httpx.HTTPStatusError as e:
-            # Idempotency: Use existing repo if it already exists
-            # GitHub API returns 422 Unprocessable Entity for existing repos
-            if e.response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
-                logger.info("github_repo_already_exists_using_existing", org=org, repo=repo_name)
+        except httpx.HTTPStatusError as exc:
+            # Idempotency is a narrow HTTP contract: a 422 is accepted only if
+            # a read proves that the repository actually exists.
+            if exc.response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
+                raise
+            try:
                 repo = await self.get_repo(org, repo_name)
-            else:
-                raise e
-        except Exception as e:
-            if "422" in str(e):  # Fallback for non-HTTPStatusError exceptions if any
-                logger.info(
-                    "github_repo_already_exists_using_existing_fallback", org=org, repo=repo_name
-                )
-                repo = await self.get_repo(org, repo_name)
-            else:
-                raise e
+            except httpx.HTTPStatusError as lookup_exc:
+                if lookup_exc.response.status_code == httpx.codes.NOT_FOUND:
+                    raise exc from lookup_exc
+                raise
+            logger.info("github_repo_already_exists_using_existing", org=org, repo=repo_name)
 
         # 4. Add .project.yaml if spec provided
         if project_spec:
