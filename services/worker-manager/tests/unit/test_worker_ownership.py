@@ -20,11 +20,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fakeredis import aioredis
 import pytest
-
+from fakeredis import aioredis
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.redis import decode_redis_fields
+
 from src.manager import DEV_NETWORK_TYPE_LABEL, QA_WORKER_TYPE, WorkerManager
 
 pytestmark = pytest.mark.asyncio

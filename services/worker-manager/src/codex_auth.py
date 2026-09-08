@@ -1,9 +1,9 @@
 """Fail-fast validation for the dedicated Codex host-session profile."""
 
 import json
-from pathlib import Path
 import stat
 import tomllib
+from pathlib import Path
 
 
 def _mode(path: Path) -> int:

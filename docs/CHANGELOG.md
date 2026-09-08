@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-08
 
+- Update Python and frontend dependencies together and bring worker-manager code under Ruff 0.16,
+  so the dependency refresh passes formatting and lint checks.
+
 - Package acceptance and central QA read generated contracts from the deployment's running backend
   image, so image-only hosts prove activation without a product checkout.
 

@@ -1,8 +1,9 @@
-import pytest
-import docker
+from collections import namedtuple
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
-from collections import namedtuple
+
+import docker
+import pytest
 
 from src.docker_ops import DockerClientWrapper
 
@@ -116,7 +117,7 @@ class TestDockerExec:
         assert exit_code == 0
         assert "hello" in output.decode()
         mock_container.exec_run.assert_called_once()
-        args, kwargs = mock_container.exec_run.call_args
+        _args, kwargs = mock_container.exec_run.call_args
         assert kwargs["cmd"] == "echo hello"
         assert kwargs["user"] == "worker"
 

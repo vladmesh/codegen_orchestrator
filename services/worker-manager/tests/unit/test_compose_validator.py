@@ -3,13 +3,13 @@ from pathlib import Path
 import pytest
 
 from src.compose_validator import (
+    ALLOWED_COMMANDS,
     COMPOSE_HOST_CAPABILITY_POLICIES,
     RESOURCE_IDENTITY_POLICY,
+    resolve_compose_path,
     validate_command,
     validate_compose_file,
     validate_effective_compose,
-    resolve_compose_path,
-    ALLOWED_COMMANDS,
 )
 
 

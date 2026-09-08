@@ -191,6 +191,7 @@ async def reset_server_password(
 
 
 async def reinstall_and_provision(  # noqa: PLR0913
+    *,
     time4vps_client: Time4VPSClient,
     server_handle: str,
     provider: str | None,

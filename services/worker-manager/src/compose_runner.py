@@ -94,11 +94,15 @@ def _apply_effective_overrides(data: dict, worker_id: str) -> None:
     """Apply manager-owned resource identities, limits, and port policy to the resolved project."""
     services = data.get("services")
     if not isinstance(services, dict):
-        raise ValueError("Resolved Compose configuration must contain services")
+        raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+            "Resolved Compose configuration must contain services"
+        )
     RESOURCE_IDENTITY_POLICY.apply(data, worker_id)
     for name, service in services.items():
         if not isinstance(service, dict):
-            raise ValueError(f"Service '{name}' must be a mapping")
+            raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+                f"Service '{name}' must be a mapping"
+            )
         service["ports"] = []
         deploy = service.setdefault("deploy", {})
         if not isinstance(deploy, dict):
@@ -115,10 +119,14 @@ def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: lis
     """Persist the validated resolved project outside the worker-writable workspace."""
     services = data.get("services")
     if not isinstance(services, dict):
-        raise ValueError("Resolved Compose configuration must contain services")
+        raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+            "Resolved Compose configuration must contain services"
+        )
     for service_name, service in services.items():
         if not isinstance(service, dict):
-            raise ValueError(f"Service '{service_name}' must be a mapping")
+            raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+                f"Service '{service_name}' must be a mapping"
+            )
         for directive in _SNAPSHOT_LOADER_DIRECTIVES:
             if directive in service:
                 raise ValueError(f"Service '{service_name}': {directive} cannot be retained in an execution snapshot")
@@ -426,7 +434,9 @@ class ComposeRunner:
         except yaml.YAMLError as exc:
             raise ValueError(f"docker compose config returned invalid YAML: {exc}") from exc
         if not isinstance(data, dict):
-            raise ValueError("docker compose config returned no project mapping")  # noqa: TRY004
+            raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+                "docker compose config returned no project mapping"
+            )
         if self._subcommand(args) in CONTAINER_CREATING_COMMANDS:
             _apply_effective_overrides(data, worker_id)
             policy_result = validate_effective_compose(data, worker_id, invocation.workspace_path)

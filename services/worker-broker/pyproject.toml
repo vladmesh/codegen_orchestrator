@@ -18,4 +18,6 @@ dependencies = [
 ]
 
 [tool.ruff]
+# This local configuration is intentional: keep the broker aligned with worker-manager's
+# stable Ruff 0.16 defaults until both services migrate to the repository rule set together.
 line-length = 120

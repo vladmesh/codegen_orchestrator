@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from scripts.template_pin import TEMPLATE_PIN
+
 from src.compose_runner import ComposeInvocation, ComposeRunner, _write_snapshot
 from src.compose_validator import RESOURCE_IDENTITY_POLICY, validate_effective_compose
 
@@ -121,7 +121,7 @@ class TestComposeRunner:
         mock_result.stderr = ""
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            exit_code, stdout, stderr = await runner.run("worker-123", ["ps"])
+            exit_code, _stdout, _stderr = await runner.run("worker-123", ["ps"])
 
         assert exit_code == 0
         call_args = mock_run.call_args[0][0]  # first positional arg = cmd list
@@ -258,12 +258,14 @@ class TestComposeRunner:
         """run() should raise ValueError (not TimeoutExpired) when compose times out."""
         runner = ComposeRunner(str(workspace))
 
-        with patch(
-            "subprocess.run",
-            side_effect=[_safe_compose_result(), subprocess.TimeoutExpired(cmd="docker compose", timeout=1)],
+        with (
+            patch(
+                "subprocess.run",
+                side_effect=[_safe_compose_result(), subprocess.TimeoutExpired(cmd="docker compose", timeout=1)],
+            ),
+            pytest.raises(ValueError, match="[Tt]imed? ?out"),
         ):
-            with pytest.raises(ValueError, match="[Tt]imed? ?out"):
-                await runner.run("worker-123", ["up", "-d"], timeout=1)
+            await runner.run("worker-123", ["up", "-d"], timeout=1)
 
     @pytest.mark.asyncio
     async def test_ports_override_generated_for_up(self, workspace):
@@ -486,9 +488,11 @@ class TestComposeRunner:
         )
         mock_result = MagicMock(returncode=0, stdout=config, stderr="")
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            with pytest.raises(ValueError, match="privileged"):
-                await runner.run("worker-123", ["up", "-d"])
+        with (
+            patch("subprocess.run", return_value=mock_result) as mock_run,
+            pytest.raises(ValueError, match="privileged"),
+        ):
+            await runner.run("worker-123", ["up", "-d"])
 
         assert mock_run.call_count == 1
         assert mock_run.call_args.args[0][-3:] == ["config", "--format", "json"]
@@ -497,9 +501,8 @@ class TestComposeRunner:
     async def test_direct_run_scope_flag_is_rejected_before_resolution(self, workspace):
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="--volume"):
-                await runner.run("worker-123", ["run", "--volume=/:/host", "db"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="--volume"):
+            await runner.run("worker-123", ["run", "--volume=/:/host", "db"])
 
         mock_run.assert_not_called()
 
@@ -509,9 +512,8 @@ class TestComposeRunner:
         compose.write_text("services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n")
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="env_file"):
-                await runner.run("worker-123", ["up", "-d"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
+            await runner.run("worker-123", ["up", "-d"])
 
         mock_run.assert_not_called()
 
@@ -524,9 +526,11 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="label_file is not supported"):
-                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+        with (
+            patch("subprocess.run") as mock_run,
+            pytest.raises(ValueError, match="label_file is not supported"),
+        ):
+            await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
 
         mock_run.assert_not_called()
         assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
@@ -541,12 +545,11 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="env_file"):
-                await runner.inspect(
-                    "worker-123",
-                    ["-f", "infra/compose.base.yml", "-f", "a/b/c/d/e/override.yml", "up", "-d"],
-                )
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
+            await runner.inspect(
+                "worker-123",
+                ["-f", "infra/compose.base.yml", "-f", "a/b/c/d/e/override.yml", "up", "-d"],
+            )
 
         mock_run.assert_not_called()
 
@@ -564,9 +567,8 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="interpolation"):
-                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="interpolation"):
+            await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
 
         mock_run.assert_not_called()
         assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
@@ -579,9 +581,8 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="interpolation"):
-                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="interpolation"):
+            await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
 
         mock_run.assert_not_called()
 
@@ -594,9 +595,8 @@ class TestComposeRunner:
         (root / "evil.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n")
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="env_file"):
-                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
+            await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
 
         mock_run.assert_not_called()
         assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
@@ -614,9 +614,8 @@ class TestComposeRunner:
         (deep / "leaf.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n")
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="env_file"):
-                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
+            await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
 
         mock_run.assert_not_called()
         assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
@@ -630,9 +629,8 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="build network"):
-                await runner.run("worker-123", args)
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="build network"):
+            await runner.run("worker-123", args)
 
         mock_run.assert_not_called()
 
@@ -650,9 +648,11 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match=f"build {build_key} is not supported"):
-                await runner.run("worker-123", args)
+        with (
+            patch("subprocess.run") as mock_run,
+            pytest.raises(ValueError, match=f"build {build_key} is not supported"),
+        ):
+            await runner.run("worker-123", args)
 
         mock_run.assert_not_called()
         assert victim_snapshot.is_file()
@@ -702,9 +702,11 @@ class TestComposeRunner:
         compose.write_text(content)
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="container_name|Volume 'data': name"):
-                await runner.run("worker-123", ["up", "-d"])
+        with (
+            patch("subprocess.run") as mock_run,
+            pytest.raises(ValueError, match="container_name|Volume 'data': name"),
+        ):
+            await runner.run("worker-123", ["up", "-d"])
 
         mock_run.assert_not_called()
 
@@ -771,9 +773,8 @@ class TestComposeRunner:
     async def test_recovery_rejects_worker_selected_compose_files(self, workspace):
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run") as mock_run:
-            with pytest.raises(ValueError, match="Recovery.*file"):
-                await runner.run("worker-123", ["-f", "/etc/shadow", "ps"])
+        with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="Recovery.*file"):
+            await runner.run("worker-123", ["-f", "/etc/shadow", "ps"])
 
         mock_run.assert_not_called()
 

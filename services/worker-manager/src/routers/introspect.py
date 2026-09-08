@@ -12,7 +12,6 @@ import docker
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
-
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.queues import STORY_WORKERS_KEY
@@ -160,7 +159,7 @@ async def _inventory_context(request: Request) -> _InventoryContext:
     else:
         try:
             active_runs = await attempts.list_running()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — inventory reports partial dependency failure
             logger.warning("worker_inventory_attempts_unavailable", error_type=type(exc).__name__)
             context.attempts_error = "running engineering attempts unavailable"
         else:
@@ -173,7 +172,7 @@ async def _inventory_context(request: Request) -> _InventoryContext:
                 context.attempt_runs[run_id] = AttemptRun(id=run_id, status=run_status)
                 try:
                     turn = AttemptTurnMetadata.from_run_metadata(run.get("run_metadata"))
-                except Exception:
+                except Exception:  # noqa: BLE001 — malformed stored metadata is skipped
                     logger.warning("worker_inventory_attempt_metadata_invalid", run_id=run.get("id"))
                     continue
                 if turn.worker_id is None or turn.active_turn_request_id is None:
@@ -189,7 +188,7 @@ async def _inventory_context(request: Request) -> _InventoryContext:
 
     try:
         bindings = decode_redis_fields(await request.app.state.redis.hgetall(STORY_WORKERS_KEY))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — inventory reports partial dependency failure
         logger.warning("worker_inventory_bindings_unavailable", error_type=type(exc).__name__)
         context.story_bindings_error = "story bindings are unreadable"
     else:
@@ -204,7 +203,7 @@ async def _container_fact(docker_client, worker_id: str) -> tuple[ContainerFact 
         attrs = await docker_client.inspect_container(container_name)
     except docker.errors.NotFound:
         return None, None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — Docker SDK exposes heterogeneous failures
         logger.warning("worker_inventory_container_unreadable", worker_id=worker_id, error_type=type(exc).__name__)
         return None, "container is unreadable"
     container_id = attrs.get("Id")
@@ -244,7 +243,7 @@ async def _inventory_fields(
                 started_at=active_turn.started_at.isoformat(),
                 deadline_at=active_turn.deadline_at.isoformat(),
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 — malformed stored lease becomes inventory evidence
         lease_error = "active turn lease is invalid or unreadable"
         logger.warning("worker_inventory_active_turn_unreadable", worker_id=worker_id)
     return {
@@ -276,7 +275,7 @@ async def list_workers(request: Request):
         status_error = None
         try:
             status_data = decode_redis_fields(await redis.hgetall(f"worker:status:{worker_id}"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — inventory reports partial dependency failure
             logger.warning(
                 "worker_inventory_agent_status_unreadable", worker_id=worker_id, error_type=type(exc).__name__
             )
@@ -285,7 +284,7 @@ async def list_workers(request: Request):
         meta_error = None
         try:
             meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — inventory reports partial dependency failure
             logger.warning("worker_inventory_metadata_unreadable", worker_id=worker_id, error_type=type(exc).__name__)
             meta = {}
             meta_error = "worker metadata is unreadable"
@@ -294,9 +293,8 @@ async def list_workers(request: Request):
         # Docker and the worker process report different facts. Preserve both.
         redis_status = status_data.get("status", WorkerStatus.UNKNOWN)
         container, container_error = await _container_fact(docker, worker_id)
-        if container is None and container_error is None:
-            if redis_status == WorkerStatus.RUNNING:
-                redis_status = WorkerStatus.GONE
+        if container is None and container_error is None and redis_status == WorkerStatus.RUNNING:
+            redis_status = WorkerStatus.GONE
 
         workers.append(
             WorkerSummary(
@@ -334,7 +332,7 @@ async def get_worker(worker_id: str, request: Request):
     meta_error = None
     try:
         meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — inventory reports partial dependency failure
         logger.warning("worker_inventory_metadata_unreadable", worker_id=worker_id, error_type=type(exc).__name__)
         meta = {}
         meta_error = "worker metadata is unreadable"

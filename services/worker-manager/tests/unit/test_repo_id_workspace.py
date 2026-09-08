@@ -6,10 +6,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from shared.contracts.queues.worker import AgentType, WorkerCapability, WorkerConfig, WorkerOwnership
-from src.workspace import get_scaffolded_workspace
 
+from src.workspace import get_scaffolded_workspace
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.

@@ -12,11 +12,9 @@ from typing import Any
 import docker
 import redis.asyncio as aioredis
 import structlog
-
-from shared.contracts.queues.worker_result import WorkerFailedResult
-
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.queues.worker_result import WorkerFailedResult
 
 logger = structlog.get_logger()
 
@@ -58,7 +56,7 @@ class DockerEventsListener:
                     if not self._running:
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, event)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — thread bridge reports any Docker stream failure
                 if self._running:
                     loop.call_soon_threadsafe(queue.put_nowait, {"_error": str(e)})
 
@@ -68,7 +66,7 @@ class DockerEventsListener:
             while self._running:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=2.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
                 if "_error" in event:
@@ -77,7 +75,7 @@ class DockerEventsListener:
 
                 try:
                     await self._handle_event(event)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — one malformed event must not stop the stream
                     logger.error("docker_event_handler_error", error=str(e))
         except asyncio.CancelledError:
             pass
@@ -86,15 +84,15 @@ class DockerEventsListener:
             if self._events_stream:
                 try:
                     self._events_stream.close()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
                     logger.debug("cleanup_events_stream_close_error", error=str(e))
             try:
                 client.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
                 logger.debug("cleanup_docker_client_close_error", error=str(e))
             try:
                 await pump_future
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
                 logger.debug("cleanup_pump_future_error", error=str(e))
             executor.shutdown(wait=False)
             logger.info("docker_events_listener_stopped")
@@ -105,7 +103,7 @@ class DockerEventsListener:
         if self._events_stream:
             try:
                 self._events_stream.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort resource cleanup
                 logger.debug("cleanup_events_stream_close_error", error=str(e))
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
@@ -143,11 +141,11 @@ class DockerEventsListener:
         try:
             await self.redis.xadd(output_stream, {"data": error_payload})
             logger.info("worker_death_published", worker_id=worker_id, stream=output_stream)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — death notification must not crash event handling
             logger.error("worker_death_publish_failed", worker_id=worker_id, error=str(e))
 
         # 2. Mark worker status as DEAD so liveness checks also detect it
         try:
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WORKER_DEAD_STATUS})
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — status repair must not crash event handling
             logger.error("worker_status_update_failed", worker_id=worker_id, error=str(e))

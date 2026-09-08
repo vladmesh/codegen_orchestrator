@@ -1,8 +1,9 @@
-import docker
 import asyncio
-from typing import Any, Dict, List, Tuple
-import structlog
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+import docker
+import structlog
 
 logger = structlog.get_logger()
 
@@ -30,7 +31,7 @@ class DockerClientWrapper:
         """Get a container by ID."""
         return await self._run(self._client.containers.get, container_id)
 
-    async def list_containers(self, filters: Dict[str, Any] | None = None, all: bool = False) -> List[Any]:
+    async def list_containers(self, filters: dict[str, Any] | None = None, all: bool = False) -> list[Any]:
         """List containers."""
         return await self._run(self._client.containers.list, all=all, filters=filters)
 
@@ -78,7 +79,7 @@ class DockerClientWrapper:
         container = await self.get_container(container_id)
         await self._run(container.unpause)
 
-    async def inspect_container(self, container_id: str) -> Dict[str, Any]:
+    async def inspect_container(self, container_id: str) -> dict[str, Any]:
         """Inspect a container."""
         # container attrs are cached, need to reload to get fresh status
         container = await self.get_container(container_id)
@@ -105,13 +106,9 @@ class DockerClientWrapper:
 
     async def pull_image(self, image: str) -> Any:
         """Pull an image."""
-        try:
-            return await self._run(self._client.images.pull, image)
-        except Exception:
-            # Re-raise or handle? For now re-raise
-            raise
+        return await self._run(self._client.images.pull, image)
 
-    async def list_images(self, name: str | None = None, all: bool = False) -> List[Any]:
+    async def list_images(self, name: str | None = None, all: bool = False) -> list[Any]:
         """List images."""
         return await self._run(self._client.images.list, name=name, all=all)
 
@@ -154,7 +151,7 @@ class DockerClientWrapper:
             context.seek(0)
 
             # Build the image
-            image, build_logs = self._client.images.build(
+            image, _build_logs = self._client.images.build(
                 fileobj=context,
                 custom_context=True,
                 tag=tag,
@@ -172,7 +169,7 @@ class DockerClientWrapper:
             container = await self.get_container(container_id)
             logs = await self._run(container.logs, tail=tail)
             return logs.decode(errors="replace")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — diagnostics return Docker SDK failures as text
             return f"Failed to get logs: {e}"
 
     async def read_container_logs(self, container_id: str, tail: int = 50) -> str:
@@ -187,7 +184,7 @@ class DockerClientWrapper:
         logs = await self._run(container.logs, tail=tail, stdout=True, stderr=True)
         return logs.decode(errors="replace")
 
-    async def list_networks(self) -> List[Any]:
+    async def list_networks(self) -> list[Any]:
         """List all Docker networks."""
         return await self._run(self._client.networks.list)
 
@@ -196,7 +193,7 @@ class DockerClientWrapper:
         name: str,
         driver: str = "bridge",
         internal: bool = False,
-        labels: Dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
     ) -> Any:
         """Create a Docker network. `internal` means no route off the network.
 
@@ -208,7 +205,7 @@ class DockerClientWrapper:
             self._client.networks.create, name, driver=driver, internal=internal, labels=labels or {}
         )
 
-    async def inspect_network(self, name: str) -> Dict[str, Any]:
+    async def inspect_network(self, name: str) -> dict[str, Any]:
         """Read a network's attributes, including whether it is internal."""
         network = await self._run(self._client.networks.get, name)
         return network.attrs
@@ -221,7 +218,7 @@ class DockerClientWrapper:
         except docker.errors.NotFound:
             pass
 
-    async def connect_network(self, network_name: str, container_id: str, aliases: List[str] | None = None) -> None:
+    async def connect_network(self, network_name: str, container_id: str, aliases: list[str] | None = None) -> None:
         """Connect a container to a network."""
         network = await self._run(self._client.networks.get, network_name)
         await self._run(network.connect, container_id, aliases=aliases)
@@ -236,7 +233,7 @@ class DockerClientWrapper:
 
     async def exec_in_container(
         self, container_id: str, command: str, user: str = "worker", timeout: int = 30
-    ) -> Tuple[int, bytes]:
+    ) -> tuple[int, bytes]:
         """
         Execute a command in a running container.
 

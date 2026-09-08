@@ -1,10 +1,11 @@
 """Worker-manager publishes credential-safe executor availability."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from shared.contracts.dto.executor_diagnostics import ExecutorAuthMode, ExecutorAvailability
 from shared.contracts.vocab import AgentType
+
 from src.executor_diagnostics import ExecutorDiagnostics
 from src.manager import WorkerManager
 

@@ -6,9 +6,11 @@ launch policy and wrong for a service test: a service test that talks to the
 real broker must not be quietly served a mock instead.
 """
 
-import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from src.config import WorkerManagerSettings
 
 

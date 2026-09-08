@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Dict
 
 import structlog
 from redis.asyncio import Redis
-
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_LINES,
@@ -54,7 +52,7 @@ class WorkerRemoval:
         self._release_workspace_lock = release_workspace_lock
 
     @staticmethod
-    def _ownership_from_meta(meta: Dict[str, str] | None) -> WorkerOwnership | None:
+    def _ownership_from_meta(meta: dict[str, str] | None) -> WorkerOwnership | None:
         """The worker's own ownership, or None if its record does not carry one.
 
         Every worker is stamped with all three facts before its container can
@@ -77,7 +75,7 @@ class WorkerRemoval:
         self,
         worker_id: str,
         container_name: str,
-        meta: Dict[str, str] | None,
+        meta: dict[str, str] | None,
         ownership: WorkerOwnership,
         reason: str | None,
     ) -> bool:
@@ -143,7 +141,7 @@ class WorkerRemoval:
         self,
         worker_id: str,
         container_name: str,
-        meta: Dict[str, str] | None,
+        meta: dict[str, str] | None,
         ownership: WorkerOwnership,
         reason: str | None,
         missed: str,
@@ -170,7 +168,7 @@ class WorkerRemoval:
         )
 
     @staticmethod
-    def _worker_type_fact(meta: Dict[str, str] | None) -> RemovalFact:
+    def _worker_type_fact(meta: dict[str, str] | None) -> RemovalFact:
         worker_type = meta.get("worker_type") if meta else None
         if worker_type:
             return RemovalFact.read(worker_type)
@@ -180,13 +178,13 @@ class WorkerRemoval:
         self,
         worker_id: str,
         container_name: str,
-        meta: Dict[str, str] | None,
+        meta: dict[str, str] | None,
         ownership: WorkerOwnership,
         reason: str | None,
     ) -> RemovedWorkerEvidence:
         """Read the ending off the container while there still is one."""
         inspected = await self.docker.inspect_container(container_name)
-        environment: Dict[str, str] = {}
+        environment: dict[str, str] = {}
         for entry in inspected["Config"]["Env"] or []:
             name, _, value = entry.partition("=")
             environment[name] = value
@@ -255,7 +253,7 @@ class WorkerRemoval:
         )
 
     @staticmethod
-    def _bounded_tail(raw: str, environment: Dict[str, str]) -> str:
+    def _bounded_tail(raw: str, environment: dict[str, str]) -> str:
         """Bound and redact one log tail before it is persisted.
 
         The tail is the container's own structlog output, never agent stdout —
@@ -326,7 +324,7 @@ class WorkerRemoval:
             elif stored_workspace:
                 try:
                     runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
-                    exit_code, stdout, stderr = await runner.run(
+                    exit_code, _stdout, stderr = await runner.run(
                         worker_id,
                         ["down", "-v"],
                         timeout=60,
@@ -339,7 +337,7 @@ class WorkerRemoval:
                             exit_code=exit_code,
                             stderr=stderr,
                         )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — Compose cleanup must fall through to Docker cleanup
                     logger.warning("compose_down_failed", worker_id=worker_id, error=str(e))
 
             # Read while Docker can still describe the container, but do not
@@ -353,7 +351,7 @@ class WorkerRemoval:
                         evidence_task,
                         timeout=settings.WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 — one container must not stop removal
                     evidence = self._unreadable_removal_evidence(
                         worker_id,
                         container_name,
@@ -372,14 +370,14 @@ class WorkerRemoval:
                     await self._store_removal_evidence(
                         evidence.model_copy(update={"removed_at": datetime.now(tz=UTC).isoformat()})
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 — one container must not stop removal
                     keep_meta = True
                     logger.warning("worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc))
 
             if dev_network:
                 await self.docker.remove_network(dev_network)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — deletion returns collected evidence after any SDK failure
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
         if not removed:
             # No evidence and no lock release: a failed Docker call is not a

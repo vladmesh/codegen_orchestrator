@@ -15,17 +15,16 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fakeredis import aioredis
 import pytest
-
+from fakeredis import aioredis
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
 from shared.qa_probe_cli import QA_PROBE_PATH
 from shared.queues import WORKER_COMMANDS
+
 from src import qa_egress
 from src import workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
-
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
@@ -479,7 +478,7 @@ class TestTheOneCommandItIsGiven:
 
 class TestNothingSurvivesTheRun:
     async def test_deleting_the_executor_removes_its_workspace(self, qa_worker, tmp_path):
-        wrapper, manager, _ = await qa_worker()
+        _wrapper, manager, _ = await qa_worker()
         workspace = tmp_path / f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
         (workspace / "scratch.md").write_text("notes")
 

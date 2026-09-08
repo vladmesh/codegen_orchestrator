@@ -253,6 +253,7 @@ async def create_run(
 
 @router.get("/engineering-attempts", response_model=list[EngineeringAttemptRead])
 async def list_engineering_attempts(  # noqa: PLR0913
+    *,
     user_id: int | None = None,
     project_id: uuid.UUID | None = None,
     story_id: str | None = None,
@@ -339,6 +340,7 @@ async def get_run(
 
 @router.get("/", response_model=list[RunRead])
 async def list_runs(  # noqa: PLR0913
+    *,
     project_id: uuid.UUID | None = None,
     task_id: str | None = None,
     story_id: str | None = None,

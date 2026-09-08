@@ -224,6 +224,7 @@ class ProvisionerNode(FunctionalNode):
 
     async def _run_reinstall_path(  # noqa: PLR0913
         self,
+        *,
         time4vps_client,
         server_handle: str,
         provider: str,

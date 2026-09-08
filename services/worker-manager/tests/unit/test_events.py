@@ -1,12 +1,12 @@
 """Tests for DockerEventsListener container death detection."""
 
 import json
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.events import DockerEventsListener, WORKER_DEAD_STATUS
+import pytest
 from shared.contracts.queues.worker_result import WorkerFailedResult, parse_worker_result
+
+from src.events import WORKER_DEAD_STATUS, DockerEventsListener
 
 
 class TestHandleEvent:

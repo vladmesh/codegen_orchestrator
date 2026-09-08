@@ -182,7 +182,7 @@ async def serve(allowed: frozenset[tuple[str, int]], port: int = LISTEN_PORT) ->
             print(f"qa_egress_client_error error={exc}", flush=True)
             writer.close()
 
-    server = await asyncio.start_server(_client, "0.0.0.0", port)  # noqa: S104
+    server = await asyncio.start_server(_client, "0.0.0.0", port)
     print(
         f"qa_egress_listening port={port} allowed={','.join(sorted(f'{h}:{p}' for h, p in allowed))}",
         flush=True,

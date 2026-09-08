@@ -8,16 +8,15 @@ from pathlib import Path
 
 import structlog
 from redis.asyncio import Redis
-
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
 from shared.redis import decode_redis_fields
 
-from .config import settings
-from .docker_ops import DockerClientWrapper
 from . import qa_egress
 from . import workspace as workspace_mod
+from .config import settings
+from .docker_ops import DockerClientWrapper
 
 logger = structlog.get_logger()
 
@@ -57,7 +56,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
     # --- Orphaned containers ---
     try:
         containers = await docker.list_containers(filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — one unavailable Docker listing must not stop GC
         logger.error("orphan_gc_list_containers_failed", error=str(e))
         containers = []
 
@@ -85,7 +84,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
         logger.info("orphan_gc_removing_container", worker_id=worker_id)
         try:
             await delete_worker_fn(worker_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — one orphan must not stop the sweep
             logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
 
     # --- Stale Redis entries (Redis says alive, but no container) ---
@@ -100,7 +99,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                 )
                 try:
                     await delete_worker_fn(worker_id)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — one stale worker must not stop the sweep
                     logger.error(
                         "orphan_gc_stale_cleanup_failed",
                         worker_id=worker_id,
@@ -115,7 +114,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
         proxies = await docker.list_containers(
             filters={"label": f"{WorkerLabel.TYPE.value}={qa_egress.PROXY_TYPE_LABEL}"}, all=True
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — unavailable proxy inventory must not stop GC
         logger.error("orphan_gc_list_proxies_failed", error=str(e))
         proxies = []
 
@@ -139,7 +138,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
     # --- Orphaned networks ---
     try:
         networks = await docker.list_networks()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — unavailable network inventory must not stop GC
         logger.error("orphan_gc_list_networks_failed", error=str(e))
         networks = []
 
@@ -154,7 +153,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                 logger.info("orphan_gc_removing_network", network=name, worker_id=worker_id)
                 try:
                     await docker.remove_network(name)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — one network must not stop the sweep
                     logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
 
     logger.info("orphan_gc_complete")
@@ -192,7 +191,7 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
             entries = os.listdir(base_path)
         except FileNotFoundError:
             continue
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — one unreadable workspace must not stop the sweep
             logger.error("workspace_gc_list_failed", base_path=base_path, error=str(e))
             continue
 
@@ -232,7 +231,7 @@ async def _notify_workspace_deleted(repo_id: str) -> None:
                 )
         finally:
             await client.close()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — GC notification is best-effort
         logger.warning("workspace_gc_notify_error", repo_id=repo_id, error=str(exc))
 
 
@@ -241,7 +240,7 @@ async def garbage_collect_images(
 ) -> None:
     """Remove unused images."""
     images = await docker.list_images()
-    now = datetime.now()
+    now = time.time()
 
     for img in images:
         tags = getattr(img, "tags", [])
@@ -251,7 +250,7 @@ async def garbage_collect_images(
             last_used_str = await redis.get(f"worker:image:last_used:{tag}")
             if last_used_str:
                 last_used = datetime.fromisoformat(last_used_str)
-                age = (now - last_used).total_seconds()
+                age = now - last_used.timestamp()
                 if age > retention_seconds:
                     logger.info("gc_removing_image", image=tag, age=age)
                     await docker.remove_image(tag, force=True)

@@ -18,17 +18,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fakeredis import aioredis
-
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
-from shared.redis import decode_redis_fields
 from shared.queues import WORKER_COMMANDS
+from shared.redis import decode_redis_fields
 
-from src.garbage_collector import garbage_collect_workspaces
 from src.executor_diagnostics import ExecutorDiagnostics
+from src.garbage_collector import garbage_collect_workspaces
 from src.manager import WorkerManager
-
 
 PROJECT = "proj-shared-checkout"
 

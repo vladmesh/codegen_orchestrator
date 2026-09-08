@@ -5,14 +5,15 @@ import hashlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fakeredis import FakeAsyncRedis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 from shared.contracts.vocab import WorkerType
-from src.routers.compose import router as compose_router
+
 from src.compose_runner import ComposeRunner
 from src.compose_validator import RESOURCE_IDENTITY_POLICY
+from src.routers.compose import router as compose_router
 
 BROKER_TOKEN = "broker-test-token"
 

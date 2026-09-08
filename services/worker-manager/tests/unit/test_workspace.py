@@ -80,8 +80,14 @@ class TestPrepareWorkerPaths:
 
         assert transcript.is_dir()
         assert run.call_args_list == [
-            ((["chown", "-R", "1000:1000", str(workspace)],), {"capture_output": True, "text": True}),
-            ((["chown", "-R", "1000:1000", str(transcript)],), {"capture_output": True, "text": True}),
+            (
+                (["chown", "-R", "1000:1000", str(workspace)],),
+                {"capture_output": True, "check": False, "text": True},
+            ),
+            (
+                (["chown", "-R", "1000:1000", str(transcript)],),
+                {"capture_output": True, "check": False, "text": True},
+            ),
         ]
 
     def test_chown_failure_is_reported(self, tmp_path):
