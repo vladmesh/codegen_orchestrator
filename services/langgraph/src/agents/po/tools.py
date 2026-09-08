@@ -22,6 +22,7 @@ from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
 
 from . import tools_shared
+
 # Re-export the Product Brief tools
 from .tools_briefs import (  # noqa: F401
     PRODUCT_BRIEF_POINTER_KEY,
