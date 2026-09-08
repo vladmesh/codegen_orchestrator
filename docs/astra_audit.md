@@ -601,7 +601,7 @@ No architectural redesign is needed.
 `shared/live_contour.py` gives the production contour:
 
 ```python
-legacy=("mega-test",)
+legacy = ("mega-test",)
 ```
 
 The prefix participates in cleanup ownership but not new stand resource creation.
