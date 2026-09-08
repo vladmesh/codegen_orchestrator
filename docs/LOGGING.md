@@ -101,10 +101,9 @@ logger.warning("rate_limit_approaching", current=90, limit=100)
 try:
     do_something()
 except Exception as e:
-    logger.error("operation_failed",
-        error=str(e),
-        error_type=type(e).__name__,
-        exc_info=True)  # Includes stack trace
+    logger.error(
+        "operation_failed", error=str(e), error_type=type(e).__name__, exc_info=True
+    )  # Includes stack trace
 ```
 
 ### Context Propagation
@@ -115,10 +114,7 @@ Use `contextvars` to bind context that persists across function calls:
 import structlog
 
 # Bind context for all subsequent logs in this request
-structlog.contextvars.bind_contextvars(
-    correlation_id="msg_123_1735167345",
-    user_id=123
-)
+structlog.contextvars.bind_contextvars(correlation_id="msg_123_1735167345", user_id=123)
 
 # All logs now include correlation_id and user_id
 logger.info("step_one")  # Has correlation_id, user_id
@@ -138,12 +134,13 @@ import structlog
 
 logger = structlog.get_logger()
 
+
 @log_node_execution("my_node")
 async def my_node(state: dict) -> dict:
     # Logs "node_start" automatically
-    
+
     logger.info("doing_work", item_count=len(items))
-    
+
     # Logs "node_complete" with duration on success
     # Logs "node_failed" with error on exception
     return {"key": "value"}
@@ -307,17 +304,16 @@ sum by (event) (count_over_time({service="api"} | json [1h]))
 logger.info("user_created", user_id=123)
 
 # Include relevant context
-logger.info("deployment_complete", 
-    server_handle="main-1",
-    duration_sec=45.2,
-    services_count=3)
+logger.info("deployment_complete", server_handle="main-1", duration_sec=45.2, services_count=3)
 
 # Log errors with full context
-logger.error("api_call_failed",
+logger.error(
+    "api_call_failed",
     url=url,
     status_code=response.status_code,
     error=response.text[:200],
-    exc_info=True)
+    exc_info=True,
+)
 ```
 
 ### DON'T

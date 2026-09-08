@@ -16,7 +16,7 @@ dev = [
     # stops treating services/worker-manager as its own config root, which surfaces 132
     # real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
     # Adopting it means fixing those first.
-    "ruff>=0.15.5,<0.16",
+    "ruff>=0.15.5,<0.17",
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
