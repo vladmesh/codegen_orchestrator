@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 
+import httpx
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
@@ -40,7 +41,10 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
 
     github_client = GitHubAppClient()
 
-    # Step 1: Create repository (idempotent — handles "already exists")
+    # Step 1: Create repository. A 422 is only classified as stale existing-repo
+    # state after a read proves that repository exists. Typed HTTP/transport
+    # failures keep their original type; an unexpected client implementation
+    # failure is wrapped without reclassifying it from its message text.
     logger.info("creating_repo", org=org_name, repo=repo_name)
     try:
         await github_client.create_repo(
@@ -50,16 +54,24 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
             private=True,
         )
         logger.info("repo_created", repo=repo_full_name)
-    except Exception as e:
-        error_str = str(e).lower()
-        if "already exists" in error_str or "422" in error_str:
-            raise RuntimeError(
-                f"Repository {repo_full_name} already exists. "
-                "This likely means a previous run was not cleaned up. "
-                "Delete the repo and retry, or create a new project."
-            ) from e
-        else:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
             raise
+        try:
+            await github_client.get_repo(org_name, repo_name)
+        except httpx.HTTPStatusError as lookup_exc:
+            if lookup_exc.response.status_code == httpx.codes.NOT_FOUND:
+                raise exc from lookup_exc
+            raise
+        raise RuntimeError(
+            f"Repository {repo_full_name} already exists. "
+            "This likely means a previous run was not cleaned up. "
+            "Delete the repo and retry, or create a new project."
+        ) from exc
+    except httpx.HTTPError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"GitHub repository creation failed: {exc}") from exc
 
     # Step 2: Set registry secrets so CI can push Docker images
     registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")

@@ -218,15 +218,6 @@ class ReposMixin:
             if e.response.status_code == httpx.codes.NOT_FOUND:
                 return []
             raise
-        except Exception as e:
-            logger.warning(
-                "github_list_files_failed",
-                owner=owner,
-                repo=repo,
-                path=path,
-                error=str(e),
-            )
-            return []
 
     async def list_repo_files_recursive(
         self, owner: str, repo: str, ref: str = "main"
@@ -278,7 +269,8 @@ class ReposMixin:
             "Accept": "application/vnd.github+json",
         }
 
-        # First, try to get existing file SHA to support updates
+        # First, try to get existing file SHA to support updates. Only an explicit
+        # 404 means the file is absent; every other failure must keep its meaning.
         sha = None
         try:
             resp = await self._make_request(
@@ -291,9 +283,6 @@ class ReposMixin:
         except httpx.HTTPStatusError as e:
             if e.response.status_code != httpx.codes.NOT_FOUND:
                 raise
-        except Exception as e:
-            # File might not exist or other error, proceed to create
-            logger.debug("github_file_check_failed", error=str(e))
 
         # Prepare payload
         content_b64 = base64.b64encode(content.encode()).decode()
