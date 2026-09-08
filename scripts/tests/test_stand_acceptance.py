@@ -605,6 +605,75 @@ def test_current_paid_artifact_must_name_its_generated_product_timeline(tmp_path
     )
 
 
+def test_paid_failure_refuses_an_empty_ci_runs_capture(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["schema_version"] = EVIDENCE_SCHEMA_VERSION
+    evidence["generated_product_timeline"] = {
+        "story_id": _captured("story-1"),
+        "observations": _captured(
+            [
+                {
+                    "status": "waiting_human_review",
+                    "pull_request": {"number": 42, "state": "open"},
+                    "ci_runs": [],
+                }
+            ]
+        ),
+        "latest": {
+            "status": _captured("waiting_human_review"),
+            "quarantine_reason": _captured(None),
+            "pull_request": _captured({"number": 42, "state": "open"}),
+            "ci_runs": _captured([]),
+        },
+    }
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is False
+    assert f"paid_generated_product_ci_runs_empty:{PAID_EVIDENCE_NAME}" in _incompleteness(output)
+
+
+def test_run_34160792874_product_ci_timeline_is_admitted(tmp_path):
+    evidence = _run_evidence(paid=True, failed=True)
+    evidence["schema_version"] = EVIDENCE_SCHEMA_VERSION
+    ci_run = {
+        "id": 34162226616,
+        "url": "https://github.com/org/repo/actions/runs/34162226616",
+        "status": "completed",
+        "conclusion": "failure",
+        "branch": "story/story-1",
+        "head_sha": "bad-head",
+        "failed_jobs": [
+            {
+                "name": "build-and-push",
+                "failed_steps": ["Set up Docker Buildx with retry"],
+                "log_excerpt": "registry returned 503 after retries",
+                "log_unavailable_reason": None,
+            }
+        ],
+        "details_unavailable_reason": None,
+    }
+    observation = {
+        "status": "waiting_human_review",
+        "quarantine_reason": {"deploy_outcome": "images_not_published"},
+        "pull_request": {"number": 42, "state": "closed"},
+        "ci_runs": [ci_run],
+    }
+    evidence["generated_product_timeline"] = {
+        "story_id": _captured("story-1"),
+        "observations": _captured([observation]),
+        "latest": {
+            "status": _captured(observation["status"]),
+            "quarantine_reason": _captured(observation["quarantine_reason"]),
+            "pull_request": _captured(observation["pull_request"]),
+            "ci_runs": _captured([ci_run]),
+        },
+    }
+    manifest, run_dir, cleanup = _paid_failure_inputs(tmp_path, evidence)
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, tmp_path / "acceptance") is True
+
+
 def test_a_failed_paid_run_that_cannot_say_what_the_url_answered_is_refused(tmp_path):
     evidence = _qa_stage_evidence()
     del evidence["deployment"]["reachability"]["harness_probe"]

@@ -5,6 +5,13 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-07
 
+- Production now pins the immutable kit `0.6.1` package-environment correction and its fresh
+  `backend,tg_bot` render through the single template-pin source.
+- Worker completion refusals retain the authoritative report through the attempt event, while
+  Story PR/CI timelines replace stale misses with recovered evidence before repair or review.
+- Story-branch CI diagnostics are redacted before task and timeline persistence, and transient
+  detail misses remain recoverable on later polls.
+
 - Production scaffolds pin the immutable kit `0.6.0` render and accept only its `backend` and
   `tg_bot` modules, while legacy project module values remain readable.
 - Quoted the colon-bearing labels in the README architecture diagram so GitHub's current Mermaid renders it

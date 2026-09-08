@@ -204,6 +204,20 @@ class TestStdoutCapture:
         assert isinstance(result.claude_evidence, ClaudeResultEvidence)
         assert result.model_dump(mode="json")["claude_evidence"]["cost_microusd"] == 40_001
 
+    def test_attach_metadata_prefers_report_file_over_result_report(self):
+        result = WorkerWrapper._attach_metadata(
+            WorkerCompletedResult(
+                commit_sha="abc123",
+                content="Done",
+                worker_report="short HTTP result",
+            ),
+            report="authoritative REPORT.md",
+            stdout_tail=None,
+            observability={},
+        )
+
+        assert result.worker_report == "authoritative REPORT.md"
+
     def test_attach_metadata_keeps_factory_evidence_typed_without_money(self):
         result = WorkerWrapper._attach_metadata(
             WorkerCompletedResult(commit_sha="abc123", content="Done"),

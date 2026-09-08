@@ -285,6 +285,8 @@ def _paid_failure_errors(name: str, artifact: dict[str, Any]) -> list[str]:
             )
         ):
             errors.append(f"paid_generated_product_timeline_missing:{name}")
+        elif latest["ci_runs"].get("status") == "captured" and latest["ci_runs"].get("value") == []:
+            errors.append(f"paid_generated_product_ci_runs_empty:{name}")
     if not failure.get("failed"):
         return errors
     if not failure.get("stage") or not failure.get("failure_kind"):

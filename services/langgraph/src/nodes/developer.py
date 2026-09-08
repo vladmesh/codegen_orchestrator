@@ -470,6 +470,7 @@ class DeveloperNode(FunctionalNode):
             "messages": [AIMessage(content=f"Development failed:\n{error_msg}")],
             "engineering_status": EngineeringStatus.FAILED,
             "errors": state.get("errors", []) + [f"Development failed: {error_msg}"],
+            "worker_report": worker_result.worker_report,
             # Why the turn stopped, when the worker said why. It travels to the
             # attempt's run_metadata so a failed run is readable as "ran out of
             # its limit" rather than as an unexplained failure.

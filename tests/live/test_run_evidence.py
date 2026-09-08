@@ -1267,12 +1267,16 @@ def test_failed_publication_timeline_is_retained_in_the_run_artifact(codex_docke
     collector.capture()
     reason = {
         "deploy_outcome": "images_not_published",
-        "ci_run_id": 900,
+        "ci_run_id": 34162226616,
         "failed_jobs": [
             {
                 "name": "build-and-push",
                 "failed_steps": ["Build image"],
-                "log_excerpt": "safe bounded tail",
+                "log_excerpt": (
+                    "AssertionError: expected package environment\n"
+                    "Authorization: Bearer [redacted]\n"
+                    "scheduler token=[redacted]"
+                ),
             }
         ],
     }
@@ -1288,23 +1292,60 @@ def test_failed_publication_timeline_is_retained_in_the_run_artifact(codex_docke
                     "state": "closed",
                     "merge_commit_sha": "abc123",
                 },
-                "ci_runs": [{"id": 900, "status": "completed", "conclusion": "failure"}],
+                "ci_runs": [
+                    {
+                        "id": 34162226616,
+                        "url": "https://github.com/org/repo/actions/runs/34162226616",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "branch": "story/story-1",
+                        "head_sha": "bad-head",
+                        "failed_jobs": reason["failed_jobs"],
+                        "details_unavailable_reason": None,
+                    }
+                ],
             }
         ],
     )
 
     timeline = build_artifact(ctx, root=tmp_path)["generated_product_timeline"]
+    serialized = json.dumps(timeline)
 
+    assert "foreign-ci-bearer-34160792874" not in serialized
+    assert "scheduler-known-secret-34160792874" not in serialized
+    assert "Authorization: Bearer [redacted]" in serialized
+    assert "AssertionError: expected package environment" in serialized
     assert timeline["story_id"]["value"] == "story-1"
     assert timeline["observations"]["status"] == CaptureStatus.CAPTURED.value
     retained = timeline["observations"]["value"][0]
     assert retained["status"] == "waiting_human_review"
     assert retained["quarantine_reason"] == reason
-    assert retained["ci_runs"][0]["id"] == 900
+    assert retained["ci_runs"][0]["id"] == 34162226616
     assert timeline["latest"]["status"]["value"] == "waiting_human_review"
     assert timeline["latest"]["quarantine_reason"]["value"] == reason
     assert timeline["latest"]["pull_request"]["value"]["merge_commit_sha"] == "abc123"
-    assert timeline["latest"]["ci_runs"]["value"][0]["id"] == 900
+    assert timeline["latest"]["ci_runs"]["value"][0]["id"] == 34162226616
+
+
+def test_empty_ci_runs_is_a_stated_miss_not_a_capture(codex_docker, tmp_path):
+    ctx = base_ctx(
+        collector_for(codex_docker),
+        generated_product_story_observations=[
+            {
+                "story_id": "story-1",
+                "status": "waiting_human_review",
+                "quarantine_reason": None,
+                "pull_request": {"number": 42, "state": "open"},
+                "ci_runs": [],
+            }
+        ],
+    )
+
+    latest = build_artifact(ctx, root=tmp_path)["generated_product_timeline"]["latest"]
+
+    assert latest["ci_runs"]["status"] == CaptureStatus.MISSED.value
+    assert latest["ci_runs"]["value"] is None
+    assert "no ci.yml run" in latest["ci_runs"]["reason"]
 
 
 def test_missing_release_record_is_reported_not_guessed(codex_docker, tmp_path):

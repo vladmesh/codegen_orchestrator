@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.queues.worker_result import WorkerFailedResult
+from shared.contracts.vocab import AgentType
+from src.clients.worker_spawner import spawn_result_from_output
 from src.consumers.engineering import EngineeringSuccessParams
+from src.nodes.developer import DeveloperNode
 from tests.unit.factories import make_project, make_repository
 
 
@@ -446,6 +451,75 @@ class TestNotificationDecoupling:
 
 class TestFeatureActionFlow:
     """Tests for action=feature through process_engineering_job."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.consumers.engineering.resource_allocator_node")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    async def test_commit_head_refusal_report_reaches_the_engineering_attempt(
+        self,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """Run 34160792874's final explanation survives every production hop."""
+        from src.consumers.engineering import process_engineering_job
+
+        explanation = "The reported commit did not resolve to the checkout HEAD."
+        wrapper_output = WorkerFailedResult(
+            error="Worker reported commit bad-claim does not match its local HEAD.",
+            worker_report=explanation,
+        )
+        spawn_result = spawn_result_from_output(
+            wrapper_output.model_dump(mode="json"),
+            request_id="lease-34160792874",
+            worker_id="dev-run-34160792874",
+        )
+        node_result = DeveloperNode._build_result_state(
+            spawn_result,
+            "test-project",
+            "org/test-project",
+            {
+                "executor_decision": SimpleNamespace(agent_type=AgentType.CLAUDE),
+                "project_spec": {"config": {}},
+                "errors": [],
+            },
+        )
+        assert node_result["engineering_status"] == EngineeringStatus.FAILED
+
+        mock_api.get_project.return_value = make_project(
+            name="test-project",
+            status="active",
+            config={"modules": ["backend"]},
+        )
+        mock_allocator.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
+        mock_create_subgraph.return_value.ainvoke = AsyncMock(return_value=node_result)
+
+        await process_engineering_job(
+            {
+                "task_id": "eng-run-34160792874",
+                "project_id": "proj-1",
+                "initiating_run_id": "live-34160792874",
+                "planning_task_id": "fix-attempt-1",
+                "action": "fix",
+                "description": "Repair failed CI",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        event = next(
+            call
+            for call in mock_api.post.await_args_list
+            if call.args[0] == "tasks/fix-attempt-1/events"
+        )
+        assert event.kwargs["json"] == {
+            "event_type": "worker_report",
+            "details": {"report": explanation},
+            "actor": "engineering-worker",
+        }
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
