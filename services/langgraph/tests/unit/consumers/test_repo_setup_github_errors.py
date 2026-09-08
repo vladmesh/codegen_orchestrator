@@ -27,9 +27,7 @@ def _project():
 async def test_http_422_is_stale_repo_only_when_lookup_confirms_it(mock_client_cls):
     github = AsyncMock()
     mock_client_cls.return_value = github
-    github.create_repo.side_effect = _http_error(
-        httpx.codes.UNPROCESSABLE_ENTITY, method="POST"
-    )
+    github.create_repo.side_effect = _http_error(httpx.codes.UNPROCESSABLE_ENTITY, method="POST")
     github.get_repo.return_value = SimpleNamespace(id=123)
 
     with pytest.raises(RuntimeError, match="already exists"):
