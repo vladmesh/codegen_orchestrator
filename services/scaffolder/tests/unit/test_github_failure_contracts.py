@@ -53,9 +53,7 @@ async def test_full_mode_does_not_parse_422_from_exception_text():
 @pytest.mark.asyncio
 async def test_full_mode_verifies_existing_repo_after_http_422():
     github = AsyncMock()
-    github.create_repo.side_effect = _http_error(
-        httpx.codes.UNPROCESSABLE_ENTITY, method="POST"
-    )
+    github.create_repo.side_effect = _http_error(httpx.codes.UNPROCESSABLE_ENTITY, method="POST")
     github.get_repo.return_value = SimpleNamespace(id=123)
     api = AsyncMock()
     api.get_project.return_value = SimpleNamespace(config={})
