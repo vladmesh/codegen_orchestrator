@@ -1,4 +1,3 @@
-from typing import List
 from .base import AgentConfig
 
 
@@ -9,7 +8,7 @@ class ClaudeCodeAgent(AgentConfig):
     worker-base-claude image for faster builds.
     """
 
-    def get_install_commands(self) -> List[str]:
+    def get_install_commands(self) -> list[str]:
         # CLI is pre-installed in worker-base-claude image
         return []
 

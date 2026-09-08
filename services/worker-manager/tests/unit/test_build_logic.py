@@ -7,13 +7,14 @@ Tests cover:
 - Cache hit vs cache miss behavior
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from shared.contracts.queues.worker import WorkerOwnership
 
 from src.docker_ops import DockerClientWrapper
-from src.manager import WorkerManager
-from shared.contracts.queues.worker import WorkerOwnership
 from src.image_builder import compute_image_hash
+from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.

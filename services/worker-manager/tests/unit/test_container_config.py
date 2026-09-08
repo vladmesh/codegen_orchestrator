@@ -2,7 +2,6 @@ import pytest
 
 from src.container_config import WorkerContainerConfig
 
-
 BROKER_ARGS = {
     "broker_url": "http://worker-broker:8001",
     "broker_token": "x" * 43,

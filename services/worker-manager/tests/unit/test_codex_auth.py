@@ -3,12 +3,11 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from src.codex_auth import validate_codex_host_session
-from src.manager import WorkerManager
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 
+from src.codex_auth import validate_codex_host_session
+from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.

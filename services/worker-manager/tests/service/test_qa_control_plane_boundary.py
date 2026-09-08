@@ -34,8 +34,8 @@ import docker
 import httpx
 import pytest
 from redis.asyncio import Redis
-
 from shared.contracts.vocab import WorkerType
+
 from src.compose_validator import RESOURCE_IDENTITY_POLICY
 from src.manager import WorkerManager
 

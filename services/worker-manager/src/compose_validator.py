@@ -2,8 +2,8 @@
 
 import math
 import re
-from hashlib import sha256
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +72,14 @@ class ResourceIdentityPolicy:
         """Replace worker-selected global identities in the manager-owned effective plan."""
         services = data.get("services")
         if not isinstance(services, dict):
-            raise ValueError("Resolved Compose configuration must contain services")
+            raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+                "Resolved Compose configuration must contain services"
+            )
         for service_name, service in services.items():
             if not isinstance(service, dict):
-                raise ValueError(f"Service '{service_name}' must be a mapping")
+                raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+                    f"Service '{service_name}' must be a mapping"
+                )
             if service.get("build") is not None:
                 service["image"] = self.build_image(worker_id, str(service_name))
         volumes = data.get("volumes")
@@ -361,7 +365,9 @@ def assert_permitted_build_shape(service_name: str, service_config: dict[str, An
     if build is None or isinstance(build, str):
         return
     if not isinstance(build, dict):
-        raise ValueError(f"Service '{service_name}': build must be a mapping")
+        raise ValueError(  # noqa: TRY004 — Compose validation consistently exposes ValueError
+            f"Service '{service_name}': build must be a mapping"
+        )
     if unsupported := _unsupported_build_keys(build):
         raise ValueError(f"Service '{service_name}': build.{unsupported[0]} is not supported")
 

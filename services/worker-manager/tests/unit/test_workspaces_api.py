@@ -1,6 +1,7 @@
 """Unit tests for the workspace introspection API router."""
 
 from http import HTTPStatus
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -2,7 +2,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 WORKER_OWNER = "1000:1000"
 
 # Where a QA executor's scratch directory lives. It is a direct child of the
@@ -71,6 +70,7 @@ def prepare_worker_paths(workspace_path: str | Path, transcript_path: str | Path
             result = subprocess.run(
                 ["chown", "-R", WORKER_OWNER, str(path)],
                 capture_output=True,
+                check=False,
                 text=True,
             )
         except OSError as exc:

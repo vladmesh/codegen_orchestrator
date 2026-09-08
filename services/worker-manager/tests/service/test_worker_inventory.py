@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
 import secrets
+from datetime import UTC, datetime, timedelta
 
 import docker
 import httpx
 from redis.asyncio import Redis
-
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from shared.queues import STORY_WORKERS_KEY
 

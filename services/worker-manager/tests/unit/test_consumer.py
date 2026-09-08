@@ -1,25 +1,24 @@
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock, AsyncMock
 from fakeredis import aioredis
-from structlog.testing import capture_logs
-
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
+    AgentType,
     CreateWorkerCommand,
+    CreateWorkerResponse,
     DeleteWorkerCommand,
     StatusWorkerCommand,
+    WorkerCapability,
+    WorkerCommand,
     WorkerConfig,
     WorkerOwnership,
-    AgentType,
-    WorkerCapability,
-    CreateWorkerResponse,
-    WorkerCommand,
 )
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis import RedisStreamClient
+from structlog.testing import capture_logs
 
 from src.consumer import WorkerCommandConsumer, resolve_local_auth_mode
 from src.manager import WorkerManager
@@ -68,7 +67,7 @@ async def _drain_once(consumer):
             break
         try:
             await consumer.process_entry(msg)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — production loop logs and leaves entry unacked
             pass  # run() logs and leaves the entry unacked for reclaim
 
 

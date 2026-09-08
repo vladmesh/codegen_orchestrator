@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+
 from src.manager import WorkerManager
 
 _OWNERSHIP = WorkerOwnership(

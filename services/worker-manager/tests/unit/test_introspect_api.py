@@ -1,14 +1,15 @@
 """Unit tests for the introspection API router."""
 
-import pytest
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock, call
+
 import docker as docker_sdk
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from src.routers.introspect import router as introspect_router
 from src.routers._shared import safe_resolve
+from src.routers.introspect import router as introspect_router
 
 
 def _make_app(

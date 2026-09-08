@@ -1,20 +1,19 @@
 import json
+import uuid
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
-import uuid
 from fakeredis import aioredis
-
 from shared.contracts.dto.worker import WorkerStatus
-from shared.contracts.worker_turn import active_turn_key
 from shared.contracts.queues.worker import WorkerOwnership
-from shared.queues import WORKER_COMMANDS
 from shared.contracts.vocab import AgentType
+from shared.contracts.worker_turn import active_turn_key
+from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields
-from src.manager import WorkerManager
-from src.container_config import WorkerContainerConfig
 
+from src.container_config import WorkerContainerConfig
+from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
@@ -998,8 +997,8 @@ async def test_checkout_branch_called_when_branch_provided():
                 b64_part = parts[1].split(" |")[0].strip()
                 try:
                     decoded_cmds.append(b64.b64decode(b64_part).decode())
-                except Exception:
-                    pass
+                except (UnicodeDecodeError, ValueError):
+                    continue
     branch_cmds = [d for d in decoded_cmds if "story/story-abc" in d]
     assert len(branch_cmds) > 0, f"No branch checkout found. Decoded cmds: {decoded_cmds}"
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import secrets
 from datetime import UTC, datetime, timedelta
+
 import structlog
 from redis.asyncio import Redis
-
 from shared.contracts.dto.executor_diagnostics import (
     EXECUTOR_DIAGNOSTICS_REDIS_KEY,
     ExecutorAuthMode,
@@ -69,7 +69,7 @@ class ExecutorDiagnostics:
                 worker_id: decode_redis_value(await self.redis.hget(f"worker:status:{worker_id}", "status"))
                 for worker_id in metas
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — diagnostics report unavailable inventory as unknown
             logger.warning("executor_diagnostics_inventory_unreadable", error=str(exc))
             return None
 

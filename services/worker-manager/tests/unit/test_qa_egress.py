@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from shared.contracts.vocab import AgentType
+
 from src import qa_egress
 from src.qa_egress_proxy import (
     Refused,

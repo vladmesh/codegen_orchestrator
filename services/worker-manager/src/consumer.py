@@ -1,15 +1,14 @@
 import asyncio
 
 import structlog
-
 from shared.contracts.queues.worker import (
-    WorkerCommand,
     CreateWorkerCommand,
-    DeleteWorkerCommand,
-    StatusWorkerCommand,
     CreateWorkerResponse,
+    DeleteWorkerCommand,
     DeleteWorkerResponse,
+    StatusWorkerCommand,
     StatusWorkerResponse,
+    WorkerCommand,
     WorkerResponse,
 )
 from shared.log_config.correlation import bind_message_context, unbind_message_context
@@ -62,7 +61,7 @@ class WorkerCommandConsumer:
             except asyncio.CancelledError:
                 logger.info("worker_consumer_stopping")
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — consumer loop must survive dependency failures
                 # Transient processing error — leave unacked so it gets retried.
                 logger.error(
                     "worker_consumer_message_error",
@@ -93,7 +92,7 @@ class WorkerCommandConsumer:
             elif isinstance(command, StatusWorkerCommand):
                 return await self._handle_status(command)
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — command boundary returns a typed error response
             logger.error("handler_error", error=str(e), command=command.command)
             # Return error response
             return self._create_error_response(command, str(e))
@@ -146,7 +145,7 @@ class WorkerCommandConsumer:
             )
             # No return — early ACK already sent, status is RUNNING in Redis
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — post-ACK failure is recorded instead of requeued
             logger.error("worker_creation_failed_after_ack", worker_id=worker_id, error=str(e))
             # Worker status is already FAILED in Redis (set by manager cleanup)
             # No second response needed — spawner polls status and will see FAILED
@@ -156,7 +155,7 @@ class WorkerCommandConsumer:
         try:
             await self.manager.delete_worker(cmd.worker_id, reason=cmd.reason)
             return DeleteWorkerResponse(request_id=cmd.request_id, success=True)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — command boundary returns a typed error response
             return DeleteWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))
 
     async def _handle_status(self, cmd: StatusWorkerCommand) -> StatusWorkerResponse:
@@ -167,7 +166,7 @@ class WorkerCommandConsumer:
                 success=True,
                 status=status.lower(),  # map to literal
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — command boundary returns a typed error response
             return StatusWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))
 
     def _create_error_response(self, cmd: WorkerCommand, error: str) -> WorkerResponse:

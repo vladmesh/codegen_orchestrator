@@ -44,7 +44,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import structlog
-
 from shared.contracts.queues.worker import WorkerLabel
 from shared.contracts.vocab import AgentType
 
@@ -154,7 +153,7 @@ async def require_internal_network(docker, network: str) -> None:
     """Refuse to start a QA run on a network that can route off itself."""
     try:
         attrs = await docker.inspect_network(network)
-    except Exception as exc:  # noqa: BLE001 — absence and API failure both mean "no policy"
+    except Exception as exc:
         raise QAEgressError(
             f"the QA egress network {network!r} could not be inspected ({exc}); "
             f"a QA executor is not started without one"

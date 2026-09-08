@@ -1,12 +1,10 @@
-from typing import List
-
 from .base import AgentConfig
 
 
 class CodexAgent(AgentConfig):
     """Configuration for the OpenAI Codex CLI developer worker."""
 
-    def get_install_commands(self) -> List[str]:
+    def get_install_commands(self) -> list[str]:
         return []
 
     def get_instruction_path(self) -> str:

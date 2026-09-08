@@ -35,8 +35,8 @@ import secrets
 
 import docker
 import pytest
-
 from shared.contracts.vocab import AgentType
+
 from src import qa_egress
 from src.container_config import WorkerContainerConfig
 from src.docker_ops import DockerClientWrapper
@@ -50,8 +50,7 @@ APP_PORT = 8080
 BACKEND_PORT = 8443
 CAPABILITY_PORT = 9000
 
-RECORDING_APP = (
-    """
+RECORDING_APP = """
 import http.server, json
 RECORDED = []
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -80,13 +79,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_DELETE = _write
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer(("0.0.0.0", %d), Handler).serve_forever()
-"""
-    % APP_PORT
-)
+http.server.ThreadingHTTPServer(("0.0.0.0", __PORT__), Handler).serve_forever()
+""".replace("__PORT__", str(APP_PORT))
 
-CAPABILITY_ENDPOINT = (
-    """
+CAPABILITY_ENDPOINT = """
 import http.server, json
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -98,13 +94,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer(("0.0.0.0", %d), Handler).serve_forever()
-"""
-    % CAPABILITY_PORT
-)
+http.server.ThreadingHTTPServer(("0.0.0.0", __PORT__), Handler).serve_forever()
+""".replace("__PORT__", str(CAPABILITY_PORT))
 
-MODEL_BACKEND = (
-    """
+MODEL_BACKEND = """
 import http.server
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -115,10 +108,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer(("0.0.0.0", %d), Handler).serve_forever()
-"""
-    % BACKEND_PORT
-)
+http.server.ThreadingHTTPServer(("0.0.0.0", __PORT__), Handler).serve_forever()
+""".replace("__PORT__", str(BACKEND_PORT))
 
 # Speaks CONNECT by hand: `curl` will not tunnel to a plain-HTTP origin, and the
 # point of the check is the tunnel, not TLS.
@@ -355,9 +346,11 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
                         [
                             "python3",
                             "-c",
-                            "import sys, urllib.request\n"
-                            "r = urllib.request.Request(sys.argv[1], data=b'{}', method=sys.argv[2])\n"
-                            "print(urllib.request.urlopen(r, timeout=8).status)",
+                            (
+                                "import sys, urllib.request\n"
+                                "r = urllib.request.Request(sys.argv[1], data=b'{}', method=sys.argv[2])\n"
+                                "print(urllib.request.urlopen(r, timeout=8).status)"
+                            ),
                             target,
                             method,
                         ],

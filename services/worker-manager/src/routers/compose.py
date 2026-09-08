@@ -6,7 +6,6 @@ import hmac
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
-
 from shared.contracts.worker_control_plane import (
     WorkerControlPlaneOperation,
     control_plane_denial,

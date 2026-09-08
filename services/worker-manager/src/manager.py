@@ -1,34 +1,32 @@
 import base64
 import hashlib
-from pathlib import Path
 import json
 import os
 import secrets
-from datetime import datetime
-from typing import Optional, Dict, List
+import time
+from datetime import UTC, datetime
+from pathlib import Path
 
-import structlog
 import httpx
+import structlog
 from redis.asyncio import Redis
-
-from shared.contracts.dto.worker import WorkerStatus
-from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
 from shared.constants import Timeouts
+from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
-from shared.redis import decode_redis_fields, decode_redis_value
 from shared.queues import WORKER_COMMANDS
+from shared.redis import decode_redis_fields, decode_redis_value
 
-from .config import settings
-from .docker_ops import DockerClientWrapper
-from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
-from .container_config import TRANSCRIPT_MOUNT, WorkerContainerConfig
-from .executor_diagnostics import ExecutorDiagnostics
-from . import workspace as workspace_mod
 from . import garbage_collector as gc
-from . import git_ops
-from . import qa_egress
+from . import git_ops, qa_egress
+from . import workspace as workspace_mod
+from .config import settings
+from .container_config import TRANSCRIPT_MOUNT, WorkerContainerConfig
+from .docker_ops import DockerClientWrapper
+from .executor_diagnostics import ExecutorDiagnostics
+from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
 from .worker_removal import QA_WORKER_TYPE, WorkerRemoval
 
 logger = structlog.get_logger()
@@ -48,7 +46,7 @@ class WorkerManager:
     Manages worker container lifecycle.
     """
 
-    def __init__(self, redis: Redis, docker_client: Optional[DockerClientWrapper] = None):
+    def __init__(self, redis: Redis, docker_client: DockerClientWrapper | None = None):
         self.redis = redis
         self.docker = docker_client or DockerClientWrapper()
         self._executor_diagnostics = ExecutorDiagnostics(self.redis, self.docker)
@@ -104,7 +102,7 @@ class WorkerManager:
                     headers={"X-Broker-Internal-Token": settings.WORKER_BROKER_INTERNAL_TOKEN},
                 )
                 response.raise_for_status()
-        except Exception:
+        except Exception:  # noqa: BLE001 — broker unregistration is best-effort cleanup
             logger.warning("broker_worker_unregistration_failed", worker_id=worker_id)
 
     async def ensure_image(self, image: str) -> None:
@@ -114,7 +112,7 @@ class WorkerManager:
             logger.info("pulling_image", image=image)
             await self.docker.pull_image(image)
 
-        await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
+        await self.redis.set(f"worker:image:last_used:{image}", datetime.now(UTC).isoformat())
 
     def _resolve_worker_network(self, *, for_qa: bool = False) -> tuple[str, bool]:
         """Return the worker network and whether a test-only host mode is permitted.
@@ -317,12 +315,12 @@ class WorkerManager:
         image: str,
         *,
         ownership: WorkerOwnership,
-        env_vars: Dict[str, str] = None,
-        volumes: Dict[str, Dict[str, str]] = None,
-        network_name: Optional[str] = None,
+        env_vars: dict[str, str] | None = None,
+        volumes: dict[str, dict[str, str]] | None = None,
+        network_name: str | None = None,
         create_dev_network: bool = True,
-        workspace_path: Optional[str] = None,
-        container_config: Optional[WorkerContainerConfig] = None,
+        workspace_path: str | None = None,
+        container_config: WorkerContainerConfig | None = None,
         allow_host_network: bool = False,
         publish_ready: bool = True,
     ) -> str:
@@ -418,7 +416,7 @@ class WorkerManager:
             if create_dev_network:
                 await self.docker.connect_network(dev_network, container.id)
 
-            meta: Dict[str, str] = {"dev_network": dev_network}
+            meta: dict[str, str] = {"dev_network": dev_network}
             if workspace_path:
                 meta["workspace_path"] = workspace_path
             await self.redis.hset(f"worker:meta:{worker_id}", mapping=meta)
@@ -478,7 +476,7 @@ class WorkerManager:
 
     async def ensure_or_build_image(
         self,
-        capabilities: List[str],
+        capabilities: list[str],
         base_image: str,
         prefix: str,
         agent_type: AgentType = AgentType.CLAUDE,
@@ -529,7 +527,7 @@ class WorkerManager:
 
         await self.redis.set(
             f"worker:image:last_used:{image_tag}",
-            datetime.now().isoformat(),
+            datetime.now(UTC).isoformat(),
         )
 
         return image_tag
@@ -575,7 +573,7 @@ class WorkerManager:
     async def create_worker_with_capabilities(
         self,
         worker_id: str,
-        capabilities: List[str],
+        capabilities: list[str],
         base_image: str,
         ownership: WorkerOwnership,
         agent_type: AgentType = AgentType.CLAUDE,
@@ -586,7 +584,7 @@ class WorkerManager:
         host_claude_dir: str | None = None,
         host_codex_home: str | None = None,
         api_key: str | None = None,
-        env_vars: Dict[str, str] = None,
+        env_vars: dict[str, str] | None = None,
         worker_type: str = "developer",
         repo_id: str | None = None,
         branch: str | None = None,
@@ -976,7 +974,7 @@ class WorkerManager:
         try:
             root = Path(settings.WORKER_TRANSCRIPT_STORAGE_PATH)
             root.mkdir(parents=True, exist_ok=True)
-            cutoff = datetime.now().timestamp() - settings.WORKER_TRANSCRIPT_RETENTION_DAYS * 86400
+            cutoff = time.time() - settings.WORKER_TRANSCRIPT_RETENTION_DAYS * 86400
             for artifact in root.rglob("*.log"):
                 if artifact.stat().st_mtime < cutoff:
                     artifact.unlink()

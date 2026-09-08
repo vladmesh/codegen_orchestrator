@@ -77,6 +77,7 @@ class AnsibleRunner:
 
     def run_playbook(  # noqa: PLR0913, PLR0915
         self,
+        *,
         server_ip: str,
         server_handle: str,
         playbook_name: str,

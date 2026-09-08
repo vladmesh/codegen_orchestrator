@@ -88,7 +88,7 @@ def compute_image_hash(capabilities: list[str], agent_type: str, source_hash: st
         raise ValueError("source_hash is required to compute a worker image hash")
 
     # Normalize: uppercase, deduplicate, sort
-    normalized = sorted(set(cap.upper() for cap in capabilities))
+    normalized = sorted({cap.upper() for cap in capabilities})
 
     # Create canonical string representation
     # Include agent_type and source_hash to ensure uniqueness per agent and per base code
@@ -146,7 +146,7 @@ class ImageBuilder:
         lines.append(f'LABEL com.codegen.agent_type="{agent_type}"')
 
         # Normalize capabilities
-        caps = sorted(set(cap.upper() for cap in capabilities))
+        caps = sorted({cap.upper() for cap in capabilities})
 
         # Only switch to root if we need to install something
         has_installations = any(cap in CAPABILITY_INSTALL_MAP and CAPABILITY_INSTALL_MAP[cap] for cap in caps) or any(

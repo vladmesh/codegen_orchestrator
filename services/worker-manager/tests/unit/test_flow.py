@@ -1,11 +1,12 @@
-import pytest
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch, AsyncMock
-from fakeredis import aioredis
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from fakeredis import aioredis
 from shared.contracts.dto.worker import WorkerStatus
-from src.manager import WorkerManager
 from shared.contracts.queues.worker import WorkerOwnership
+
+from src.manager import WorkerManager
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +123,8 @@ async def test_image_caching_strategy(mock_docker_client, worker_settings):
 
 
 @pytest.mark.asyncio
-async def test_garbage_collection_real_logic(mock_docker_client, worker_settings):
+@pytest.mark.parametrize("legacy_naive_timestamp", [False, True])
+async def test_garbage_collection_real_logic(mock_docker_client, worker_settings, legacy_naive_timestamp):
     """
     Test GC logic deleting old images.
     """
@@ -135,7 +137,9 @@ async def test_garbage_collection_real_logic(mock_docker_client, worker_settings
 
     # Make retention very short for test
 
-    now = datetime.now()
+    now = datetime.now(UTC)
+    if legacy_naive_timestamp:
+        now = now.replace(tzinfo=None)
     old_time = (now - timedelta(seconds=10)).isoformat()
     new_time = (now - timedelta(seconds=0)).isoformat()
 

@@ -1,17 +1,17 @@
 import asyncio
 from contextlib import asynccontextmanager
+
+import structlog
 from fastapi import FastAPI
 from redis.asyncio import Redis
-import structlog
-
 from shared.redis import RedisStreamClient
 
-from .config import settings
-from .manager import WorkerManager
-from .consumer import WorkerCommandConsumer
-from .events import DockerEventsListener
-from .engineering_attempts import EngineeringAttemptInventory
 from .compose_runner import ComposeRunner
+from .config import settings
+from .consumer import WorkerCommandConsumer
+from .engineering_attempts import EngineeringAttemptInventory
+from .events import DockerEventsListener
+from .manager import WorkerManager
 from .routers.compose import router as compose_router
 from .routers.introspect import router as introspect_router
 from .routers.workspaces import router as workspaces_router
@@ -32,7 +32,7 @@ async def run_periodic_task(coro_func, interval: int, name: str):
             await coro_func()
         except asyncio.CancelledError:
             break
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — periodic supervisor must survive task failures
             logger.error("periodic_task_error", task=name, error=str(e))
 
         await asyncio.sleep(interval)
@@ -123,8 +123,8 @@ async def lifespan(app: FastAPI):
             diagnostics_task,
             return_exceptions=True,
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — shutdown must continue through cleanup failures
+        logger.warning("shutdown_task_cleanup_failed", error=str(exc))
 
     await redis.close()
     await app.state.engineering_attempts.close()

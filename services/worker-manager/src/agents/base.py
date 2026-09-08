@@ -1,10 +1,10 @@
-from typing import Protocol, List
+from typing import Protocol
 
 
 class AgentConfig(Protocol):
     """Protocol for defining agent-specific configuration."""
 
-    def get_install_commands(self) -> List[str]:
+    def get_install_commands(self) -> list[str]:
         """Return a list of shell commands to install the agent in the Docker image."""
         ...
 

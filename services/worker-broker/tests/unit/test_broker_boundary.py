@@ -4,13 +4,12 @@ import json
 import httpx
 import pytest
 from fakeredis import FakeAsyncRedis
-
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import WorkerControlPlaneOperation
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 
-from src.auth import credential_key, verify_token
 from src import main
+from src.auth import credential_key, verify_token
 from src.config import BrokerSettings
 
 

@@ -20,15 +20,15 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-from fakeredis import aioredis
 import pytest
-
+from fakeredis import aioredis
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_MAX_CHARS,
     RemovedWorkerEvidence,
     removed_worker_evidence_key,
 )
+
 from src.config import settings
 from src.worker_removal import WorkerRemoval
 

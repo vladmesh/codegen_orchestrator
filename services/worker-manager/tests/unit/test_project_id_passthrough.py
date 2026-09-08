@@ -1,13 +1,12 @@
 """Tests for worker ownership passthrough from consumer to manager."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from fakeredis import aioredis
 from pydantic import ValidationError
-
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,

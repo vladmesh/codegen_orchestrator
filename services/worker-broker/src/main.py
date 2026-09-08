@@ -12,14 +12,13 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
-
 from shared.contracts.queues.worker_result import parse_worker_result
-from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
     WorkerControlPlaneOperation,
     control_plane_denial,
 )
+from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 
 from .auth import credential_key, token_digest, verify_token
 from .config import settings

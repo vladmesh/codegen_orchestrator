@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import Any
 
-from shared.contracts.vocab import AgentType
 from shared.constants import Timeouts
+from shared.contracts.vocab import AgentType
 
 # The host Claude session directory is mounted here, and the Claude CLI is told
 # to keep its whole config there via CLAUDE_CONFIG_DIR. Without that variable the
@@ -24,14 +24,14 @@ class WorkerContainerConfig:
     worker_id: str
     worker_type: str
     agent_type: AgentType
-    capabilities: List[str]
+    capabilities: list[str]
     auth_mode: str = "host_session"  # "host_session", "api_key", or "stand_token"
-    host_claude_dir: Optional[str] = None
-    host_codex_home: Optional[str] = None
-    api_key: Optional[str] = None
-    stand_claude_code_oauth_token: Optional[str] = None
-    workspace_host_path: Optional[str] = None
-    transcript_host_path: Optional[str] = None
+    host_claude_dir: str | None = None
+    host_codex_home: str | None = None
+    api_key: str | None = None
+    stand_claude_code_oauth_token: str | None = None
+    workspace_host_path: str | None = None
+    transcript_host_path: str | None = None
     transcript_max_bytes: int = 5 * 1024 * 1024
 
     def to_env_vars(
@@ -39,7 +39,7 @@ class WorkerContainerConfig:
         broker_url: str,
         broker_token: str,
         subprocess_timeout_seconds: int = Timeouts.AGENT_TURN,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Generate environment variables for the container.
 
         Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
@@ -76,12 +76,15 @@ class WorkerContainerConfig:
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
 
-        if self.auth_mode == "stand_token":
-            if self.agent_type == AgentType.CLAUDE and self.stand_claude_code_oauth_token:
-                env["CLAUDE_CODE_OAUTH_TOKEN"] = self.stand_claude_code_oauth_token
+        if (
+            self.auth_mode == "stand_token"
+            and self.agent_type == AgentType.CLAUDE
+            and self.stand_claude_code_oauth_token
+        ):
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.stand_claude_code_oauth_token
         return env
 
-    def to_volume_mounts(self) -> Dict[str, Dict[str, str]]:
+    def to_volume_mounts(self) -> dict[str, dict[str, str]]:
         """Generate volume mounts for the container."""
         volumes = {}
 
@@ -114,10 +117,10 @@ class WorkerContainerConfig:
 
     def to_docker_run_kwargs(
         self,
-        network_name: Optional[str] = None,
+        network_name: str | None = None,
         *,
         allow_host_network: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate kwargs for docker.containers.run().
 
         Args:
