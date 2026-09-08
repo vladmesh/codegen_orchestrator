@@ -44,10 +44,12 @@ This is a lightweight status refresh against the current repository after severa
 
 ### Completed or materially reduced
 
-- **H2 — core issue completed in PR #476 (merged 2026-09-08).** Production PO numeric summarization tuning now comes from required `llm.summarization_*` system config, ConfigStore failures no longer silently switch policy to Settings defaults, startup fails before unrelated langgraph loops, and logs report effective values. A small cleanup residue remains: old numeric `SUMMARIZATION_*` env documentation / compose / workflow wiring is still present even though it is no longer the production source of truth. Treat that as dead configuration plumbing to recheck separately, not as the original H2 runtime bug.
+- **H2 — completed in PRs #476 and #478 (merged 2026-09-08).** Required `llm.summarization_*` system config is the sole production source for numeric PO summarization tuning. Startup fails on missing/unavailable config and logs effective values. PR #478 also removed the retired numeric env/example/Compose/deploy/stand-workflow wiring and added a guard against its return. `SUMMARIZATION_MODEL` remains process configuration.
 - **H3 — completed in PR #477 (merged 2026-09-08).** GitHub repository/file paths no longer classify errors by matching `"422"` / `"already exists"` in exception text or turn arbitrary failures into empty/missing resources. Expected 404/422 cases are status-driven, 422 repository creation is verified with `get_repo()`, and transport/auth/server/unexpected failures retain failure semantics. The narrow repo-token → org-token deletion fallback was deliberately preserved.
 - **M1 — immediate ownership hack completed in PR #463 (merged 2026-09-07).** The private `_task` / `stop_event` split ownership described below is gone. Revisit only if a richer graceful-stop API is actually needed.
 - **M3 — completed in PR #464 (merged 2026-09-07).** Enabled PO now requires durable checkpoint configuration at startup; `MemorySaver` remains an explicit test construction path rather than a production downgrade.
+
+- **M6 — completed in PRs #479 and #480 (last merge 2026-09-08).** PR #479 removed private shared-helper re-exports. PR #480 migrated startup, unit/integration tests and live preflight to owner modules, removed the remaining domain/startup/constant compatibility exports, and retained `get_all_tools()` plus the four locally owned utility tools. Boundary tests pin owner imports, the removed exports, and the same 19 tool objects in the same order.
 
 ### Recheck / refresh before implementation
 
@@ -56,14 +58,13 @@ This is a lightweight status refresh against the current repository after severa
 - **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
 - **M4:** `_attach_ledger_compatibility()` still exists. The item remains current, but consumer/data-migration proof should be refreshed before dropping fields or columns.
 - **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
-- **M6:** the PO `tools.py` backward-compatibility re-export facade and old patch targets still exist. Still current and still likely localized; rerun code search before deletion.
 - **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
 - **M8:** both frontend Dockerfiles still use `npm ci --legacy-peer-deps`; item remains current.
 - **L1 / L2:** the Makefile aliases/legacy aggregate and `mega-test` cleanup prefix still exist. Both remain low-risk cleanup candidates, but L2 still needs the operational resource sweep/proof described below.
 - **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
 - **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
 
-The **Suggested cleanup order** at the end is therefore partly historical: Phase 1 items for GitHub handling, worker-wrapper ownership, PO checkpoint durability, and PO summarization runtime fallback are already done. Use the refresh notes above when selecting the next iteration.
+The cleanup order below now marks completed iterations explicitly. Five of the sixteen H/M/L findings are complete (H2, H3, M1, M3, M6); H4 is partially addressed and the other ten remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
 
 ---
 
@@ -382,7 +383,7 @@ If unit tests need memory persistence, pass `MemorySaver` or `checkpoint_databas
 
 ### Progress
 
-**Implemented in PR #464 (open as of 2026-09-07).** The cleanup is intentionally scoped to the production PO startup boundary:
+**Completed in PR #464 (merged 2026-09-07).** The cleanup is intentionally scoped to the production PO startup boundary:
 
 - when PO LLM configuration enables the PO consumer, `CHECKPOINT_DATABASE_URL` is now required before the langgraph background loops start;
 - missing durable persistence raises immediately instead of allowing PO to start with in-memory conversation state;
@@ -390,7 +391,7 @@ If unit tests need memory persistence, pass `MemorySaver` or `checkpoint_databas
 - explicit `create_po_graph(..., checkpoint_database_url=None)` / `MemorySaver` construction remains available for unit tests;
 - a startup unit test pins the fail-fast behavior.
 
-Production compose already supplies the PostgreSQL URL, so the normal production path is unchanged; the removed behavior is only the silent durability downgrade under misconfiguration. This item is complete once PR #464 merges.
+Production compose already supplies the PostgreSQL URL, so the normal production path is unchanged; the removed behavior is only the silent durability downgrade under misconfiguration. This item is complete.
 
 ---
 
@@ -496,6 +497,20 @@ The facade makes old import topology part of the de facto API and lets tests pin
 Keep `get_all_tools()` as the public composition point, but update internal tests/importers to patch/import the real owner modules. Then remove compatibility re-exports that are not part of the intended public surface.
 
 This should be easy to do with code search and is unlikely to affect runtime behavior.
+
+
+### Progress
+
+**Completed in PRs #479 and #480 (last merge 2026-09-08).**
+
+- PR #479 removed `_get_api`, `_get_stream_client`, and `_user_headers` from the aggregate surface.
+- PR #480 moved `init_po_clients` imports to `tools_shared` in the production consumer, tests and live preflight.
+- Domain tools and constants are imported from `tools_projects`, `tools_briefs`, and `tools_stories`; `tools.py` no longer re-exports them or the startup initializer.
+- `get_all_tools()` composes the same 19 tool objects in the same order through owner modules. The four utility tools remain defined in `tools.py`; their names, schemas and behavior are unchanged.
+- Boundary tests reject old caller imports and retired exports and pin composition identity/order. The existing behavioral reminder queue assertion remains.
+- PR #480 CI passed on `cf867e3637ec6d003184afc5b5b891e82cba74ad` before merge (https://github.com/vladmesh/codegen_orchestrator/actions/runs/34292309962).
+
+No compatibility-export cleanup remains under M6. Moving locally owned utility implementations elsewhere would be a separate architectural choice.
 
 ---
 
@@ -718,10 +733,10 @@ For polling/observability settings, last-known-good is reasonable resilience. Fo
 
 ## Phase 1 — safe, localized removals
 
-1. Remove GitHub exception-string parsing and broad "return empty" behavior.
+1. **Completed in PR #477:** remove GitHub exception-string parsing and broad "return empty" behavior.
 2. **Completed in PR #463:** remove the `worker-wrapper` private task-ownership hack; `main` now owns and cancels the run task directly.
-3. **Implemented in PR #464 (pending merge):** make PO checkpointer persistence required in the production consumer path while retaining explicit `MemorySaver` construction for tests.
-4. Remove PO summarization's broad ConfigStore → env fallback and log effective values.
+3. **Completed in PR #464:** make PO checkpointer persistence required in the production consumer path while retaining explicit `MemorySaver` construction for tests.
+4. **Completed in PRs #476 and #478:** require system summarization config, log effective values, and remove retired numeric env/deploy wiring.
 5. Repair frontend peer dependencies and remove `--legacy-peer-deps`.
 6. Remove obsolete Makefile aliases whose callers are already gone.
 
@@ -733,7 +748,7 @@ These are high-confidence changes with limited architectural surface.
 2. Prove no live target-less temporary-access grants exist, then remove the retired slot lifecycle schema and guards.
 3. Prove no old recipient payload can remain in Redis, then remove the `user_id` tombstone.
 4. Sweep old `mega-test` resources and remove the prefix.
-5. Update tests/importers and remove PO tool compatibility re-exports.
+5. **Completed in PRs #479 and #480:** migrate tests/importers to owner modules and remove PO tool compatibility re-exports.
 
 The important word here is **proof**: these are easy to delete mechanically but unsafe to delete based only on code search.
 
@@ -741,7 +756,7 @@ The important word here is **proof**: these are easy to delete mechanically but 
 
 1. Split scheduler runtime ownership into independently deployable entrypoints.
 2. Separate live-test harness code from runtime `shared` code.
-3. Clean `worker-manager` under the current root lint policy and unpin Ruff.
+3. **Partially addressed by PR #475:** Ruff is already on 0.16. Migrate `worker-manager` and `worker-broker` from their local rules to the root lint policy; first re-count current violations.
 4. Normalize long-lived external HTTP client ownership.
 
 This phase reduces future change cost more than it removes current bugs.
