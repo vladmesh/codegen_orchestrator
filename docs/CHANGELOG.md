@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-09
 
+- Run responses no longer project engineering token/cost accounting; Grafana and admin consumers read the
+  append-only engineering ledger, and the retired Run columns are dropped.
+
 - Worker services inherit the root Ruff policy; split launch, Compose admission and cleanup phases
   while preserving worker ownership, QA isolation and readiness ordering.
 
