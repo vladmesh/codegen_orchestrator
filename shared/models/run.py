@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.run import RunStatus
@@ -62,11 +62,8 @@ class Run(Base):
     )
     iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Observability stays outside Run.result, whose type-specific shape is strict.
-    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Runtime observability artifacts that belong to the Run itself. Engineering
+    # token and cost facts live only in the append-only engineering-attempt ledger.
     agent_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     transcript_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     transcript_truncated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
