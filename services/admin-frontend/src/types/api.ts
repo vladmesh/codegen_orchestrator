@@ -544,10 +544,6 @@ export interface Run {
   started_at: string | null
   callback_stream: string | null
   iteration: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  total_tokens: number | null
-  cost_usd: number | null
   agent_profile: Record<string, unknown> | null
   transcript_path: string | null
   transcript_truncated: boolean | null
