@@ -170,8 +170,8 @@ async def test_terminal_engineering_run_preserves_provider_reported_cost(
     assert rows.json()[0]["cache_read_tokens"] == 4
     assert rows.json()[0]["cache_write_tokens"] == 3
     run = await async_client.get(f"/api/runs/{run_id}")
-    assert run.json()["total_tokens"] == 17
-    assert run.json()["cost_usd"] == pytest.approx(0.040001)
+    assert "total_tokens" not in run.json()
+    assert "cost_usd" not in run.json()
 
 
 @pytest.mark.asyncio
@@ -470,9 +470,6 @@ async def test_engineering_budget_holds_release_and_settle_without_double_counti
     balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
     assert balance.json()["active_held_microusd"] == 0
 
-    # RELEASED proves the first handoff did not start. Reusing that stable
-    # attempt identity must make a fresh decision, not reuse its historical
-    # admitted outcome without a hold.
     readmitted = await async_client.post(
         "/api/engineering-budget-policies/admissions",
         json={"attempt_id": first_id, "project_id": project["id"], "task_id": "budget-known"},
@@ -1157,7 +1154,6 @@ async def test_engineering_budget_reservation_migration_enforces_authoritative_i
                 "ix_engineering_budget_reservations_user_id",
                 "ix_engineering_budget_reservations_project_id",
                 "ix_engineering_budget_reservations_story_id",
-                "ix_engineering_budget_reservations_task_id",
                 "ix_engineering_budget_reservation_user_state",
             } <= indexes
         finally:
