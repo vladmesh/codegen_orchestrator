@@ -89,12 +89,20 @@ class WorkerContainerConfig:
         volumes = {}
 
         # Mount host session directory if in host_session mode
-        if self.auth_mode == "host_session" and self.agent_type == AgentType.CLAUDE and self.host_claude_dir:
+        if (
+            self.auth_mode == "host_session"
+            and self.agent_type == AgentType.CLAUDE
+            and self.host_claude_dir
+        ):
             # Mount to /home/worker/.claude inside container — the same directory
             # CLAUDE_CONFIG_DIR points at, so config and session share one owner.
             volumes[self.host_claude_dir] = {"bind": CLAUDE_CONFIG_DIR, "mode": "rw"}
 
-        if self.auth_mode == "host_session" and self.agent_type == AgentType.CODEX and self.host_codex_home:
+        if (
+            self.auth_mode == "host_session"
+            and self.agent_type == AgentType.CODEX
+            and self.host_codex_home
+        ):
             volumes[self.host_codex_home] = {
                 "bind": "/home/worker/.codex",
                 "mode": "rw",

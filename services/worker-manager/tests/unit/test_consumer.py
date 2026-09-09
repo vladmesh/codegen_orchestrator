@@ -1,9 +1,11 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+from fakeredis import aioredis
 import pytest
 import pytest_asyncio
-from fakeredis import aioredis
+from structlog.testing import capture_logs
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
@@ -18,8 +20,6 @@ from shared.contracts.queues.worker import (
 )
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis import RedisStreamClient
-from structlog.testing import capture_logs
-
 from src.consumer import WorkerCommandConsumer, resolve_local_auth_mode
 from src.manager import WorkerManager
 
@@ -161,7 +161,9 @@ async def test_consume_status_worker_command(redis_client, stream_client, mock_w
 
 
 @pytest.mark.asyncio
-async def test_broken_json_is_discarded_terminally(redis_client, stream_client, mock_worker_manager):
+async def test_broken_json_is_discarded_terminally(
+    redis_client, stream_client, mock_worker_manager
+):
     """A malformed payload never reaches the manager and is ACKed away."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
@@ -176,7 +178,9 @@ async def test_broken_json_is_discarded_terminally(redis_client, stream_client, 
 
 
 @pytest.mark.asyncio
-async def test_schema_invalid_payload_is_discarded_terminally(redis_client, stream_client, mock_worker_manager):
+async def test_schema_invalid_payload_is_discarded_terminally(
+    redis_client, stream_client, mock_worker_manager
+):
     """Valid JSON that matches no command type is discarded, not dispatched."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
@@ -212,7 +216,9 @@ async def test_transient_processing_error_leaves_message_unacked(
 
 
 @pytest.mark.asyncio
-async def test_invalid_command_does_not_leak_secrets_in_logs(redis_client, stream_client, mock_worker_manager):
+async def test_invalid_command_does_not_leak_secrets_in_logs(
+    redis_client, stream_client, mock_worker_manager
+):
     """A schema-invalid create command carrying secrets must not log them."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
@@ -283,7 +289,9 @@ async def test_qa_worker_on_an_unassigned_agent_never_starts(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_type", ["claude", "codex"])
-async def test_qa_worker_on_an_assigned_subscription_agent_starts(agent_type, stream_client, mock_worker_manager):
+async def test_qa_worker_on_an_assigned_subscription_agent_starts(
+    agent_type, stream_client, mock_worker_manager
+):
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
     await stream_client.publish(WORKER_COMMANDS, _qa_create_payload(agent_type))
@@ -291,12 +299,16 @@ async def test_qa_worker_on_an_assigned_subscription_agent_starts(agent_type, st
     await _drain_once(consumer)
 
     mock_worker_manager.create_worker_with_capabilities.assert_called_once()
-    assert mock_worker_manager.create_worker_with_capabilities.call_args.kwargs["agent_type"] == AgentType(agent_type)
+    assert mock_worker_manager.create_worker_with_capabilities.call_args.kwargs[
+        "agent_type"
+    ] == AgentType(agent_type)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_type", ["factory", "noop"])
-async def test_a_developer_worker_still_accepts_every_agent(agent_type, stream_client, mock_worker_manager):
+async def test_a_developer_worker_still_accepts_every_agent(
+    agent_type, stream_client, mock_worker_manager
+):
     """The restriction belongs to QA alone; developer workers are unchanged."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 

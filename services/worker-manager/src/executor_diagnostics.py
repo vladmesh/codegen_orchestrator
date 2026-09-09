@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime, timedelta
+import secrets
 
-import structlog
 from redis.asyncio import Redis
+import structlog
+
 from shared.contracts.dto.executor_diagnostics import (
     EXECUTOR_DIAGNOSTICS_REDIS_KEY,
     ExecutorAuthMode,
@@ -66,7 +67,9 @@ class ExecutorDiagnostics:
                 metas[worker_id] = decode_redis_fields(await self.redis.hgetall(key))
             containers = await self.docker.list_containers(all=True)
             statuses = {
-                worker_id: decode_redis_value(await self.redis.hget(f"worker:status:{worker_id}", "status"))
+                worker_id: decode_redis_value(
+                    await self.redis.hget(f"worker:status:{worker_id}", "status")
+                )
                 for worker_id in metas
             }
         except Exception as exc:  # noqa: BLE001 — diagnostics report unavailable inventory as unknown
@@ -144,7 +147,10 @@ class ExecutorDiagnostics:
             "com.codegen.agent_type": meta.get("agent_type"),
             "com.codegen.auth_mode": meta.get("auth_mode"),
         }
-        return all(expected_value and labels.get(label) == expected_value for label, expected_value in expected.items())
+        return all(
+            expected_value and labels.get(label) == expected_value
+            for label, expected_value in expected.items()
+        )
 
     @staticmethod
     def _docker_worker_is_terminal(status: object) -> bool | None:
@@ -164,7 +170,9 @@ class ExecutorDiagnostics:
     ) -> ExecutorDiagnostic:
         if settings.LIVE_CONTOUR == "stand" and executor is AgentType.CLAUDE:
             failures = self.stand_token_failures()
-            failure = next((item for item in failures if item.name == f"{executor.value.title()} token"), None)
+            failure = next(
+                (item for item in failures if item.name == f"{executor.value.title()} token"), None
+            )
             if leases is None:
                 return ExecutorDiagnostic(
                     executor=executor,
@@ -201,7 +209,9 @@ class ExecutorDiagnostics:
                 reason=safe_executor_diagnostic_reason("stand_token_ready"),
             )
 
-        profile = settings.HOST_CLAUDE_DIR if executor is AgentType.CLAUDE else settings.HOST_CODEX_HOME
+        profile = (
+            settings.HOST_CLAUDE_DIR if executor is AgentType.CLAUDE else settings.HOST_CODEX_HOME
+        )
         if not profile:
             return ExecutorDiagnostic(
                 executor=executor,

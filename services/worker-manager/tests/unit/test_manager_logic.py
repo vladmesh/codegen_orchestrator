@@ -1,23 +1,25 @@
 import json
-import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
-import pytest
 from fakeredis import aioredis
+import pytest
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.contracts.worker_turn import active_turn_key
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields
-
 from src.container_config import WorkerContainerConfig
 from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+_OWNERSHIP = WorkerOwnership(
+    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+)
 
 
 @pytest.mark.asyncio
@@ -209,7 +211,8 @@ async def test_stand_token_is_not_a_docker_label():
     redis.set = AsyncMock()
     redis.hset = AsyncMock()
     wrapper = _make_docker_mock()
-    token = "fake-stand-claude-token"
+    # Dummy credential for mocked authentication.
+    token = "fake-stand-claude-token"  # noqa: S105
     config = WorkerContainerConfig(
         worker_id="stand-label-boundary",
         worker_type="developer",
@@ -236,7 +239,10 @@ async def test_stand_token_is_not_a_docker_label():
 
 @pytest.mark.asyncio
 async def test_network_selection_uses_worker_network():
-    """When DOCKER_NETWORK is empty, workers should connect to WORKER_NETWORK, not INTERNAL_NETWORK."""
+    """
+    When DOCKER_NETWORK is empty, workers should connect to WORKER_NETWORK, not
+    INTERNAL_NETWORK.
+    """
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
@@ -245,8 +251,13 @@ async def test_network_selection_uses_worker_network():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
     ):
         mock_settings.DOCKER_NETWORK = ""
         mock_settings.INTERNAL_NETWORK = "codegen_internal"
@@ -269,7 +280,10 @@ async def test_network_selection_uses_worker_network():
 
     # run_container should have been called with network="codegen_worker"
     run_call = wrapper.run_container.call_args
-    assert run_call.kwargs.get("network") == "codegen_worker" or run_call[1].get("network") == "codegen_worker"
+    assert (
+        run_call.kwargs.get("network") == "codegen_worker"
+        or run_call[1].get("network") == "codegen_worker"
+    )
     container_env = run_call.kwargs.get("environment") or run_call[1]["environment"]
     assert container_env["WORKER_BROKER_URL"] == "http://worker-broker:8001"
     assert "WORKER_REDIS_URL" not in container_env
@@ -287,8 +301,13 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = ""
@@ -333,8 +352,13 @@ async def test_production_launch_rejects_host_network_configuration():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = "host"
@@ -373,8 +397,13 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
     ):
         mock_settings.ENVIRONMENT = "test"
         mock_settings.DOCKER_NETWORK = "host"
@@ -415,9 +444,17 @@ async def test_ownership_preparation_failure_aborts_before_container_launch():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
-        patch("src.manager.workspace_mod.prepare_worker_paths", side_effect=RuntimeError("ownership failed")),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
+        patch(
+            "src.manager.workspace_mod.prepare_worker_paths",
+            side_effect=RuntimeError("ownership failed"),
+        ),
     ):
         mock_settings.ENVIRONMENT = "production"
         mock_settings.DOCKER_NETWORK = ""
@@ -457,7 +494,11 @@ async def test_create_worker_creates_dev_network():
     worker_id = "worker-net-test"
 
     await manager.create_worker(
-        worker_id, "worker:latest", ownership=_OWNERSHIP, network_name="codegen_internal", create_dev_network=True
+        worker_id,
+        "worker:latest",
+        ownership=_OWNERSHIP,
+        network_name="codegen_internal",
+        create_dev_network=True,
     )
 
     assert wrapper.create_network.await_args.args == (f"dev_proj_{worker_id}",)
@@ -473,7 +514,11 @@ async def test_create_worker_connects_to_both_networks():
     worker_id = "worker-dual-net"
 
     await manager.create_worker(
-        worker_id, "worker:latest", ownership=_OWNERSHIP, network_name="codegen_internal", create_dev_network=True
+        worker_id,
+        "worker:latest",
+        ownership=_OWNERSHIP,
+        network_name="codegen_internal",
+        create_dev_network=True,
     )
 
     # Should have been called to attach to the dev network
@@ -495,11 +540,13 @@ async def test_create_worker_creates_workspace_dir():
         ownership=_OWNERSHIP,
         network_name="codegen_internal",
         create_dev_network=True,
-        workspace_path="/tmp/codegen/workspaces/worker-ws-test/workspace",
+        # Fixture path; no host temporary file is created.
+        workspace_path="/tmp/codegen/workspaces/worker-ws-test/workspace",  # noqa: S108
     )
 
     meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
-    assert meta["workspace_path"] == "/tmp/codegen/workspaces/worker-ws-test/workspace"
+    # Fixture path; no host temporary file is created.
+    assert meta["workspace_path"] == "/tmp/codegen/workspaces/worker-ws-test/workspace"  # noqa: S108
     assert meta["dev_network"] == f"dev_proj_{worker_id}"
 
 
@@ -517,7 +564,8 @@ async def test_delete_worker_full_cleanup():
         f"worker:meta:{worker_id}",
         mapping={
             "dev_network": f"dev_proj_{worker_id}",
-            "workspace_path": f"/tmp/codegen/workspaces/{worker_id}/workspace",
+            # Fixture path; no host temporary file is created.
+            "workspace_path": f"/tmp/codegen/workspaces/{worker_id}/workspace",  # noqa: S108
         },
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
@@ -636,7 +684,9 @@ async def test_gc_removes_orphaned_network():
 
 @pytest.mark.asyncio
 async def test_gc_does_not_remove_workspaces():
-    """Orphan GC should not remove workspaces (scaffolded workspaces are managed by time-based GC)."""
+    """
+    Orphan GC should not remove workspaces (scaffolded workspaces are managed by time-based GC).
+    """
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
 
@@ -680,7 +730,8 @@ async def test_gc_skips_known_workers():
     ):
         await manager.garbage_collect_orphaned_resources()
 
-    # Nothing should be deleted — container removal not called, network not removed, workspace not removed
+    # Nothing should be deleted — container removal not called, network not removed,
+    # workspace not removed
     wrapper.remove_container.assert_not_awaited()
     wrapper.remove_network.assert_not_awaited()
     mock_rm_ws.assert_not_called()
@@ -955,7 +1006,9 @@ async def test_checkout_branch_called_when_branch_provided():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
         patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
@@ -1014,7 +1067,9 @@ async def test_no_checkout_branch_when_branch_is_none():
 
     with (
         patch("src.manager.settings") as mock_settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"
+        ),
         patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),

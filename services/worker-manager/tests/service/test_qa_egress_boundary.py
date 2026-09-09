@@ -35,8 +35,8 @@ import secrets
 
 import docker
 import pytest
-from shared.contracts.vocab import AgentType
 
+from shared.contracts.vocab import AgentType
 from src import qa_egress
 from src.container_config import WorkerContainerConfig
 from src.docker_ops import DockerClientWrapper
@@ -291,14 +291,31 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
             environment = None
             if unset_proxy:
                 environment = dict.fromkeys(
-                    ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
+                    [
+                        "HTTP_PROXY",
+                        "http_proxy",
+                        "HTTPS_PROXY",
+                        "https_proxy",
+                        "ALL_PROXY",
+                        "all_proxy",
+                    ],
                     "",
                 )
             return executor.exec_run(command, user="root", environment=environment)
 
         # --- positive control: the ledger works ------------------------------
         allowed_write = scenario["control"].exec_run(
-            ["curl", "-sS", "-m", "10", "-X", "POST", f"http://{app_ip}:{APP_PORT}/orders", "-d", "{}"]
+            [
+                "curl",
+                "-sS",
+                "-m",
+                "10",
+                "-X",
+                "POST",
+                f"http://{app_ip}:{APP_PORT}/orders",
+                "-d",
+                "{}",
+            ]
         )
         assert allowed_write.exit_code == 0, allowed_write.output
         assert b"created" in allowed_write.output
@@ -323,7 +340,9 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
         assert capability_call.exit_code == 0, capability_call.output
         assert b'"status": 200' in capability_call.output
 
-        tunnel = in_executor(["python3", "-c", TUNNEL, f"{egress.proxy_host}:3128", f"backend:{BACKEND_PORT}"])
+        tunnel = in_executor(
+            ["python3", "-c", TUNNEL, f"{egress.proxy_host}:3128", f"backend:{BACKEND_PORT}"]
+        )
         assert tunnel.exit_code == 0, tunnel.output
         assert b"model-backend-answered" in tunnel.output
 
@@ -348,7 +367,8 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
                             "-c",
                             (
                                 "import sys, urllib.request\n"
-                                "r = urllib.request.Request(sys.argv[1], data=b'{}', method=sys.argv[2])\n"
+                                "r = urllib.request.Request(sys.argv[1], "
+                                "data=b'{}', method=sys.argv[2])\n"
                                 "print(urllib.request.urlopen(r, timeout=8).status)"
                             ),
                             target,
@@ -363,7 +383,9 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
         # Through the one door the run does have, which answers — and refuses.
         # These exit 0 because the *proxy* replied, so the assertion is what it
         # replied, and below, what the application never received.
-        tunnelled = in_executor(["python3", "-c", TUNNEL, f"{egress.proxy_host}:3128", f"{app_ip}:{APP_PORT}"])
+        tunnelled = in_executor(
+            ["python3", "-c", TUNNEL, f"{egress.proxy_host}:3128", f"{app_ip}:{APP_PORT}"]
+        )
         assert tunnelled.exit_code != 0
         assert b"403" in tunnelled.output, tunnelled.output
 
@@ -388,7 +410,9 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
             assert b"created" not in attempt.output, attempt.output
 
         # --- the application's own ledger ------------------------------------
-        ledger = scenario["control"].exec_run(["curl", "-sS", "-m", "10", f"http://{app_ip}:{APP_PORT}/__recorded"])
+        ledger = scenario["control"].exec_run(
+            ["curl", "-sS", "-m", "10", f"http://{app_ip}:{APP_PORT}/__recorded"]
+        )
         assert ledger.exit_code == 0, ledger.output
         recorded = json.loads(ledger.output.decode().strip().splitlines()[-1])
         assert recorded == ["POST /orders"], (

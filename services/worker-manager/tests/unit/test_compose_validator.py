@@ -122,7 +122,9 @@ class TestValidateComposeFile:
         assert COMPOSE_HOST_CAPABILITY_POLICIES["label_file"].allowed is False
 
     @pytest.mark.parametrize("build_key", ["cache_from", "cache_to", "entitlements"])
-    def test_unadmitted_build_properties_are_rejected_before_compose_resolution(self, tmp_path, build_key):
+    def test_unadmitted_build_properties_are_rejected_before_compose_resolution(
+        self, tmp_path, build_key
+    ):
         source = tmp_path / "infra" / "compose.yml"
         source.parent.mkdir()
         source.write_text(
@@ -133,20 +135,27 @@ class TestValidateComposeFile:
             f"      {build_key}: type=local,dest=/manager-owned-path\n"
         )
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid, result.errors
         assert result.errors == [f"Service 'app': build {build_key} is not supported"]
 
     def test_build_target_selects_a_dockerfile_stage_and_is_admitted(self, tmp_path):
-        """A stage selector resolves nothing on the manager host and reaches no daemon capability."""
+        """
+        A stage selector resolves nothing on the manager host and reaches no daemon capability.
+        """
         source = tmp_path / "infra" / "compose.yml"
         source.parent.mkdir()
         source.write_text(
-            "services:\n  app:\n    build:\n      context: ..\n      dockerfile: Dockerfile\n      target: dev\n"
+            "services:\n  app:\n    build:\n      context: ..\n "
+            "     dockerfile: Dockerfile\n      target: dev\n"
         )
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert result.valid, result.errors
         assert COMPOSE_HOST_CAPABILITY_POLICIES["build.target"].allowed is True
@@ -156,10 +165,13 @@ class TestValidateComposeFile:
         source = tmp_path / "infra" / "compose.yml"
         source.parent.mkdir()
         source.write_text(
-            f"services:\n  app:\n    build:\n      context: ..\n      target: dev\n      {build_key}: value\n"
+            f"services:\n  app:\n    build:\n      context: "
+            f"..\n      target: dev\n      {build_key}: value\n"
         )
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid, result.errors
         assert result.errors == [f"Service 'app': build {build_key} is not supported"]
@@ -283,7 +295,9 @@ services:
         source.parent.mkdir()
         source.write_text(f"services:\n  app:\n    image: alpine\n    {fragment}\n")
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid, result.errors
 
@@ -291,10 +305,13 @@ services:
     def test_external_or_host_file_sources_are_rejected(self, tmp_path, kind):
         source = tmp_path / "compose.yml"
         source.write_text(
-            f"services:\n  app:\n    image: alpine\n{kind}:\n  host:\n    external: true\n    file: /etc/passwd\n"
+            f"services:\n  app:\n    image: alpine\n{kind}:\n  "
+            f"host:\n    external: true\n    file: /etc/passwd\n"
         )
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid, result.errors
 
@@ -302,7 +319,9 @@ services:
         source = tmp_path / "compose.yml"
         source.write_text("include: /etc/compose.yml\nservices:\n  app:\n    image: alpine\n")
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid, result.errors
 
@@ -312,7 +331,9 @@ services:
         nested_source = workspace / "a" / "b" / "c" / "d" / "e" / "override.yml"
         project_directory.mkdir(parents=True)
         nested_source.parent.mkdir(parents=True)
-        nested_source.write_text("services:\n  app:\n    image: alpine\n    env_file: ../../../../HOSTSECRET.env\n")
+        nested_source.write_text(
+            "services:\n  app:\n    image: alpine\n    env_file: ../../../../HOSTSECRET.env\n"
+        )
 
         result = validate_compose_file(
             nested_source.read_text(),
@@ -324,13 +345,17 @@ services:
         assert not result.valid, result.errors
         assert any("env_file" in error for error in result.errors)
 
-    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
+    @pytest.mark.parametrize(
+        "label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"]
+    )
     def test_label_file_is_rejected_at_the_source_directive_boundary(self, tmp_path, label_file):
         source = tmp_path / "infra" / "compose.yml"
         source.parent.mkdir()
         source.write_text(f"services:\n  app:\n    image: alpine\n    label_file: {label_file}\n")
 
-        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+        result = validate_compose_file(
+            source.read_text(), source_file=source, workspace_path=tmp_path
+        )
 
         assert not result.valid
         assert result.errors == ["Service 'app': label_file is not supported"]
@@ -377,13 +402,16 @@ class TestValidateEffectiveCompose:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         compose = _safe_effective_compose()
-        compose["services"]["db"].update(build={"context": str(workspace)}, image="codegen-orchestrator/victim:latest")
+        compose["services"]["db"].update(
+            build={"context": str(workspace)}, image="codegen-orchestrator/victim:latest"
+        )
 
         result = validate_effective_compose(compose, "worker-123", workspace)
 
         assert not result.valid, result.errors
         assert result.errors == [
-            f"Service 'db': build image must be '{RESOURCE_IDENTITY_POLICY.build_image('worker-123', 'db')}'"
+            f"Service 'db': build image must be "
+            f"'{RESOURCE_IDENTITY_POLICY.build_image('worker-123', 'db')}'"
         ]
 
     def test_effective_daemon_global_resource_identities_are_rejected(self):
@@ -463,9 +491,14 @@ class TestValidateEffectiveCompose:
 
     def test_named_local_bind_volume_is_rejected(self):
         compose = _safe_effective_compose()
-        compose["services"]["db"]["volumes"] = [{"type": "volume", "source": "hostroot", "target": "/host"}]
+        compose["services"]["db"]["volumes"] = [
+            {"type": "volume", "source": "hostroot", "target": "/host"}
+        ]
         compose["volumes"] = {
-            "hostroot": {"driver": "local", "driver_opts": {"type": "none", "device": "/", "o": "bind"}}
+            "hostroot": {
+                "driver": "local",
+                "driver_opts": {"type": "none", "device": "/", "o": "bind"},
+            }
         }
 
         result = validate_effective_compose(compose, "worker-123")
@@ -515,7 +548,9 @@ class TestValidateEffectiveCompose:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         compose = _safe_effective_compose()
-        compose["services"]["db"]["volumes"] = [{"type": "bind", "source": str(workspace / "data"), "target": "/data"}]
+        compose["services"]["db"]["volumes"] = [
+            {"type": "bind", "source": str(workspace / "data"), "target": "/data"}
+        ]
 
         safe_result = validate_effective_compose(compose, "worker-123", workspace)
         compose["services"]["db"]["volumes"][0]["source"] = "/etc"
@@ -534,7 +569,9 @@ class TestValidateEffectiveCompose:
             "context": str(build_context),
             "dockerfile": "Dockerfile",
         }
-        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image("worker-123", "db")
+        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image(
+            "worker-123", "db"
+        )
 
         result = validate_effective_compose(compose, "worker-123", workspace)
 
@@ -566,7 +603,9 @@ class TestValidateEffectiveCompose:
             "context": str(workspace),
             build_key: ["type=local,dest=/manager-owned-path"],
         }
-        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image("worker-123", "db")
+        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image(
+            "worker-123", "db"
+        )
 
         result = validate_effective_compose(compose, "worker-123", workspace)
 

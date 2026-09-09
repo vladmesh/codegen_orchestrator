@@ -1,9 +1,12 @@
 """Fail-fast validation for the dedicated Codex host-session profile."""
 
 import json
+from pathlib import Path
 import stat
 import tomllib
-from pathlib import Path
+
+_PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
 
 
 def _mode(path: Path) -> int:
@@ -21,13 +24,13 @@ def validate_codex_host_session(profile_path: str | None) -> None:
     profile = Path(profile_path)
     if not profile.is_dir():
         raise RuntimeError("HOST_CODEX_HOME is not an existing directory")
-    if _mode(profile) != 0o700:
+    if _mode(profile) != _PRIVATE_DIRECTORY_MODE:
         raise RuntimeError("HOST_CODEX_HOME must have mode 0700")
 
     auth_path = profile / "auth.json"
     if not auth_path.is_file() or auth_path.stat().st_size == 0:
         raise RuntimeError("Codex host session is missing a non-empty auth.json")
-    if _mode(auth_path) != 0o600:
+    if _mode(auth_path) != _PRIVATE_FILE_MODE:
         raise RuntimeError("Codex auth.json must have mode 0600")
     try:
         auth_data = json.loads(auth_path.read_text())
@@ -37,14 +40,15 @@ def validate_codex_host_session(profile_path: str | None) -> None:
         raise RuntimeError("Codex auth.json does not contain a cached session")
     tokens = auth_data.get("tokens")
     if not isinstance(tokens, dict) or not all(
-        isinstance(tokens.get(name), str) and tokens[name] for name in ("access_token", "refresh_token")
+        isinstance(tokens.get(name), str) and tokens[name]
+        for name in ("access_token", "refresh_token")
     ):
         raise RuntimeError("Codex auth.json does not contain a refresh-capable ChatGPT session")
 
     config_path = profile / "config.toml"
     if not config_path.is_file():
         raise RuntimeError("Codex host session is missing config.toml")
-    if _mode(config_path) != 0o600:
+    if _mode(config_path) != _PRIVATE_FILE_MODE:
         raise RuntimeError("Codex config.toml must have mode 0600")
     try:
         config = tomllib.loads(config_path.read_text())

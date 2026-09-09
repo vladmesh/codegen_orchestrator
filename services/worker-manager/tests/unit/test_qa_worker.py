@@ -15,20 +15,21 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fakeredis import aioredis
+import pytest
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
 from shared.qa_probe_cli import QA_PROBE_PATH
 from shared.queues import WORKER_COMMANDS
-
-from src import qa_egress
-from src import workspace as workspace_mod
+from src import qa_egress, workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+_OWNERSHIP = WorkerOwnership(
+    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+)
 
 
 QA_NETWORK = "codegen_qa_egress"
@@ -46,7 +47,9 @@ def _docker_mock():
     wrapper.connect_network = AsyncMock()
     wrapper.remove_network = AsyncMock()
     wrapper.inspect_network = AsyncMock(return_value={"Internal": True})
-    wrapper.inspect_container = AsyncMock(return_value={"NetworkSettings": {"Networks": {QA_NETWORK: {}}}})
+    wrapper.inspect_container = AsyncMock(
+        return_value={"NetworkSettings": {"Networks": {QA_NETWORK: {}}}}
+    )
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
     wrapper.get_container_logs = AsyncMock(return_value="")
     return wrapper
@@ -92,7 +95,9 @@ def qa_worker(tmp_path):
             manager_holder["manager"] = manager
         with (
             patch("src.manager.settings") as settings,
-            patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"),
+            patch.object(
+                manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"
+            ),
             patch("src.manager.workspace_mod.prepare_worker_paths"),
         ):
             settings.ENVIRONMENT = "production"
@@ -115,7 +120,9 @@ def qa_worker(tmp_path):
                 "base_image": "worker-base:latest",
                 # A QA executor is owned like any other worker: a project under
                 # test and the QA run that made it.
-                "ownership": WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
+                "ownership": WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 "agent_type": agent_type,
                 "worker_type": QA_WORKER_TYPE,
                 "instructions": "# QA executor",
@@ -149,7 +156,9 @@ class TestAQaExecutorNeedsNoRepository:
         assert workspace.is_dir()
         assert list(workspace.iterdir()) == []
 
-    async def test_a_codex_qa_worker_gets_its_instructions_and_task_before_execution(self, qa_worker):
+    async def test_a_codex_qa_worker_gets_its_instructions_and_task_before_execution(
+        self, qa_worker
+    ):
         """Creation writes the two files the non-Git Codex turn reads."""
         with patch("src.codex_auth.validate_codex_host_session"):
             wrapper, _, _ = await qa_worker(agent_type=AgentType.CODEX)
@@ -157,7 +166,9 @@ class TestAQaExecutorNeedsNoRepository:
         commands = [call.args[1] for call in wrapper.exec_in_container.await_args_list]
         instructions = base64.b64encode(b"# QA executor").decode()
         task = base64.b64encode(b"run the regression test").decode()
-        assert any("/workspace/AGENTS.md" in command and instructions in command for command in commands)
+        assert any(
+            "/workspace/AGENTS.md" in command and instructions in command for command in commands
+        )
         assert any("/workspace/TASK.md" in command and task in command for command in commands)
 
     async def test_it_carries_no_github_credential(self, qa_worker):
@@ -166,7 +177,8 @@ class TestAQaExecutorNeedsNoRepository:
         env = _executor_run(wrapper)["environment"]
         assert "GITHUB_TOKEN" not in env
         assert "GH_TOKEN" not in env
-        assert env["QA_CAPABILITY_TOKEN"] == "run-token"
+        # Dummy credential for mocked authentication.
+        assert env["QA_CAPABILITY_TOKEN"] == "run-token"  # noqa: S105
 
     async def test_it_gets_no_project_network_of_its_own(self, qa_worker):
         wrapper, _, _ = await qa_worker()
@@ -241,7 +253,9 @@ class TestItCannotReachTheApplicationAtAll:
         with patch("src.codex_auth.validate_codex_host_session"):
             wrapper, _, _ = await qa_worker(agent_type=AgentType.CODEX)
 
-        assert _proxy_run(wrapper)["command"] == list(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CODEX])
+        assert _proxy_run(wrapper)["command"] == list(
+            qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CODEX]
+        )
 
     async def test_the_executor_is_pointed_at_the_proxy_for_everything_else(self, qa_worker):
         wrapper, _, _ = await qa_worker()
@@ -301,7 +315,9 @@ class TestItCannotReachTheApplicationAtAll:
 
         with (
             patch("src.manager.settings") as settings,
-            patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"),
+            patch.object(
+                manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"
+            ),
             patch("src.manager.workspace_mod.prepare_worker_paths"),
             patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(repo, True)),
         ):
@@ -335,7 +351,9 @@ class TestTheOneCommandItIsGiven:
         wrapper, _, _ = await qa_worker()
 
         installed = [
-            call.args[1] for call in wrapper.exec_in_container.await_args_list if QA_PROBE_PATH in call.args[1]
+            call.args[1]
+            for call in wrapper.exec_in_container.await_args_list
+            if QA_PROBE_PATH in call.args[1]
         ]
         assert installed, "the QA executor was started without its one command"
         assert "chmod" in installed[0]
@@ -392,9 +410,14 @@ class TestTheOneCommandItIsGiven:
 
         assert observed_statuses
         assert observed_statuses[-1] != WorkerStatus.RUNNING
-        assert await manager_holder["manager"].redis.hget("worker:status:qa-1", "status") == WorkerStatus.RUNNING
+        assert (
+            await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+            == WorkerStatus.RUNNING
+        )
 
-    async def test_codex_first_turn_sees_all_materials_after_real_creation_readiness(self, qa_worker, tmp_path):
+    async def test_codex_first_turn_sees_all_materials_after_real_creation_readiness(
+        self, qa_worker, tmp_path
+    ):
         """Interleave immediate readiness polling with creation, then execute the first turn."""
         wrapper = _docker_mock()
         manager_holder: dict = {}
@@ -404,14 +427,21 @@ class TestTheOneCommandItIsGiven:
 
         async def consume_first_turn_after_ready():
             nonlocal verdict
-            while await manager_holder["manager"].redis.hget("worker:status:qa-1", "status") != WorkerStatus.RUNNING:
+            while (
+                await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+                != WorkerStatus.RUNNING
+            ):
                 await asyncio.sleep(0)
 
             assert (workspace / "AGENTS.md").read_text() == "# QA executor"
             assert (workspace / "TASK.md").read_text() == "run the regression test"
             assert (workspace / "qa").is_file()
             assert (workspace / "qa").stat().st_mode & 0o111
-            verdict = {"pass": True, "checks": [], "summary": "submitted through capability endpoint"}
+            verdict = {
+                "pass": True,
+                "checks": [],
+                "summary": "submitted through capability endpoint",
+            }
 
         async def run_container(**kwargs):
             nonlocal first_turn
@@ -440,7 +470,11 @@ class TestTheOneCommandItIsGiven:
 
         assert first_turn is not None
         await first_turn
-        assert verdict == {"pass": True, "checks": [], "summary": "submitted through capability endpoint"}
+        assert verdict == {
+            "pass": True,
+            "checks": [],
+            "summary": "submitted through capability endpoint",
+        }
 
     async def test_a_half_built_executor_is_failed_and_still_owned(self, qa_worker, tmp_path):
         """The container is already started but not ready, so two things have to be true.
@@ -522,7 +556,9 @@ class TestTheContract:
             instructions="# QA executor",
             allowed_commands=["*"],
             capabilities=[],
-            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
+            ownership=WorkerOwnership(
+                project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+            ),
         )
 
         assert config.repo_id is None

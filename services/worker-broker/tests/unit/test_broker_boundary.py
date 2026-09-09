@@ -1,13 +1,13 @@
 import hashlib
 import json
 
+from fakeredis import FakeAsyncRedis
 import httpx
 import pytest
-from fakeredis import FakeAsyncRedis
+
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import WorkerControlPlaneOperation
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
-
 from src import main
 from src.auth import credential_key, verify_token
 from src.config import BrokerSettings
@@ -89,7 +89,9 @@ async def test_session_expiry_and_all_worker_paths_require_scoped_credentials(mo
         lambda token: main.submit_output(
             "two", main.Submission(lease_id="1-0", result={"status": "failed", "error": "x"}), token
         ),
-        lambda token: main.update_status("two", main.StatusUpdate(values={"status": "running"}), token),
+        lambda token: main.update_status(
+            "two", main.StatusUpdate(values={"status": "running"}), token
+        ),
         lambda token: main.get_session("two", token),
         lambda token: main.set_session("two", main.SessionUpdate(session_id="x"), token),
         lambda token: main.clear_session("two", token),
@@ -179,7 +181,9 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
     await main.set_session(worker_id, main.SessionUpdate(session_id="session-1"), worker_token)
     assert await main.get_session(worker_id, worker_token) == {"session_id": "session-1"}
-    await main.update_status(worker_id, main.StatusUpdate(values={"status": "running"}), worker_token)
+    await main.update_status(
+        worker_id, main.StatusUpdate(values={"status": "running"}), worker_token
+    )
     assert await redis.hgetall(f"worker:status:{worker_id}") == {"status": "running"}
 
     forwarded = {}
@@ -192,7 +196,9 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(upstream)
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    monkeypatch.setattr(
+        main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs)
+    )
 
     compose_response = await main.compose(worker_id, {"args": ["up", "-d"]}, worker_token)
     assert compose_response.status_code == 400
@@ -205,7 +211,9 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
 
     await main.submit_output(
         worker_id,
-        main.Submission(lease_id=lease["lease_id"], result={"status": "failed", "error": "agent failed"}),
+        main.Submission(
+            lease_id=lease["lease_id"], result={"status": "failed", "error": "agent failed"}
+        ),
         worker_token,
     )
     output = await redis.xrange(registration.output_stream)
@@ -247,7 +255,11 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
     # engineering attempt/deadline, so it must not be rejected after XREADGROUP.
     await redis.xadd(
         f"worker:{worker_id}:input",
-        {"data": json.dumps({"request_id": "qa-request-1", "task_id": "qa-1", "prompt": "test it"})},
+        {
+            "data": json.dumps(
+                {"request_id": "qa-request-1", "task_id": "qa-1", "prompt": "test it"}
+            )
+        },
     )
     lease = await main.lease_input(worker_id, token)
     assert lease["data"]["task_id"] == "qa-1"
@@ -258,7 +270,9 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
     await main.clear_session(worker_id, token)
     await main.submit_output(
         worker_id,
-        main.Submission(lease_id=lease["lease_id"], result={"status": "failed", "error": "qa run aborted"}),
+        main.Submission(
+            lease_id=lease["lease_id"], result={"status": "failed", "error": "qa run aborted"}
+        ),
         token,
     )
 
@@ -268,7 +282,9 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(upstream)
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    monkeypatch.setattr(
+        main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs)
+    )
 
     with pytest.raises(main.HTTPException) as denied:
         await main.compose(worker_id, {"args": ["build"]}, token)
@@ -282,7 +298,10 @@ async def test_a_credential_registered_without_a_recorded_type_is_refused_everyt
     redis = FakeAsyncRedis(decode_responses=True)
     main.app.state.redis = redis
     token = "u" * 43
-    await redis.hset(credential_key("stray"), mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()})
+    await redis.hset(
+        credential_key("stray"),
+        mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()},
+    )
 
     for operation in WorkerControlPlaneOperation:
         with pytest.raises(main.HTTPException) as denied:

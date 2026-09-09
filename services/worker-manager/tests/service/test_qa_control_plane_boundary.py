@@ -34,8 +34,8 @@ import docker
 import httpx
 import pytest
 from redis.asyncio import Redis
-from shared.contracts.vocab import WorkerType
 
+from shared.contracts.vocab import WorkerType
 from src.compose_validator import RESOURCE_IDENTITY_POLICY
 from src.manager import WorkerManager
 
@@ -46,7 +46,9 @@ WORKSPACES = os.environ["SCAFFOLDED_WORKSPACE_PATH"]
 
 # Present on the management daemon because this compose file built it. A build
 # `FROM` it needs no registry, so the check does not depend on network access.
-BUILD_BASE_IMAGE = os.environ.get("QA_EGRESS_TEST_IMAGE", "codegen-orchestrator/worker-manager:test")
+BUILD_BASE_IMAGE = os.environ.get(
+    "QA_EGRESS_TEST_IMAGE", "codegen-orchestrator/worker-manager:test"
+)
 
 SERVICE_NAME = "probe"
 BUILD_TIMEOUT_SECONDS = 300
@@ -72,15 +74,22 @@ def _write_buildable_project(worker_id: str, marker: str) -> str:
     with open(os.path.join(workspace, "Dockerfile"), "w") as handle:
         # `/tmp` because the base image runs as a non-root user; where the file
         # lands is irrelevant, that the instruction ran on the host is not.
-        handle.write(f"FROM {BUILD_BASE_IMAGE}\nRUN printf '{marker}' > /tmp/host-side-build-marker\n")
+        handle.write(
+            f"FROM {BUILD_BASE_IMAGE}\nRUN printf '{marker}' > /tmp/host-side-build-marker\n"
+        )
     with open(os.path.join(infra, "compose.base.yml"), "w") as handle:
-        handle.write(f"services:\n  {SERVICE_NAME}:\n    build:\n      context: ..\n      dockerfile: Dockerfile\n")
+        handle.write(
+            f"services:\n  {SERVICE_NAME}:\n    build:\n   "
+            f"   context: ..\n      dockerfile: Dockerfile\n"
+        )
     with open(os.path.join(infra, "compose.dev.yml"), "w") as handle:
         handle.write("services: {}\n")
     return workspace
 
 
-async def _issue_credential(worker_id: str, token: str, worker_type: WorkerType, workspace: str) -> None:
+async def _issue_credential(
+    worker_id: str, token: str, worker_type: WorkerType, workspace: str
+) -> None:
     """Create the worker's server-side records exactly as worker creation does.
 
     `_register_broker_worker` is the production call and is used unchanged. The
@@ -189,7 +198,8 @@ def test_a_developer_worker_really_can_build_on_the_management_host(daemon, work
     # The image is not enough: run it and read what the `RUN` instruction wrote.
     output = daemon.containers.run(
         _build_image_tag(worker.worker_id),
-        entrypoint=["cat", "/tmp/host-side-build-marker"],
+        # Marker lives inside the disposable test container.
+        entrypoint=["cat", "/tmp/host-side-build-marker"],  # noqa: S108
         remove=True,
     )
     assert worker.marker.encode() in output, output
@@ -208,7 +218,9 @@ def test_a_qa_worker_cannot_build_anything_with_its_own_token(daemon, worker):
     assert direct.status_code == 403, direct.text
     assert direct.json()["detail"] == "a qa worker may not call infra.compose"
 
-    assert not _image_exists(daemon, worker.worker_id), "a QA worker caused a build on the management host"
+    assert not _image_exists(daemon, worker.worker_id), (
+        "a QA worker caused a build on the management host"
+    )
     assert not os.path.exists(os.path.join(WORKSPACES, ".compose-plans", worker.worker_id)), (
         "a QA worker got as far as a compiled Compose plan"
     )
@@ -224,7 +236,9 @@ def test_the_qa_worker_still_runs_its_own_turn(worker):
         lease = client.post(f"{base}/input/lease", headers=headers)
         assert lease.status_code == 204, lease.text
 
-        status = client.post(f"{base}/status", json={"values": {"status": "running"}}, headers=headers)
+        status = client.post(
+            f"{base}/status", json={"values": {"status": "running"}}, headers=headers
+        )
         assert status.status_code == 200, status.text
 
         session = client.put(f"{base}/session", json={"session_id": "qa-session"}, headers=headers)
@@ -233,7 +247,10 @@ def test_the_qa_worker_still_runs_its_own_turn(worker):
 
         result = client.post(
             f"{base}/output",
-            json={"lease_id": "0-0", "result": {"status": "failed", "error": "no deployment under test"}},
+            json={
+                "lease_id": "0-0",
+                "result": {"status": "failed", "error": "no deployment under test"},
+            },
             headers=headers,
         )
         assert result.status_code == 200, result.text

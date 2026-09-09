@@ -1,20 +1,20 @@
 """Garbage collection for orphaned containers, networks, workspaces, and images."""
 
-import os
-import time
 from datetime import datetime
 from http import HTTPStatus
+import os
 from pathlib import Path
+import time
 
-import structlog
 from redis.asyncio import Redis
+import structlog
+
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
 from shared.redis import decode_redis_fields
 
-from . import qa_egress
-from . import workspace as workspace_mod
+from . import qa_egress, workspace as workspace_mod
 from .config import settings
 from .docker_ops import DockerClientWrapper
 
@@ -35,7 +35,9 @@ def _is_live(container) -> bool:
     return container.status in _LIVE_CONTAINER_STATES
 
 
-async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientWrapper, *, delete_worker_fn) -> None:
+async def garbage_collect_orphaned_resources(
+    redis: Redis, docker: DockerClientWrapper, *, delete_worker_fn
+) -> None:
     """Find and remove orphaned containers, networks, and workspaces.
 
     After a crash/OOM, resources may be left behind without corresponding
@@ -55,7 +57,9 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
 
     # --- Orphaned containers ---
     try:
-        containers = await docker.list_containers(filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True)
+        containers = await docker.list_containers(
+            filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True
+        )
     except Exception as e:  # noqa: BLE001 — one unavailable Docker listing must not stop GC
         logger.error("orphan_gc_list_containers_failed", error=str(e))
         containers = []
@@ -106,6 +110,15 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                         error=str(e),
                     )
 
+    await _collect_orphaned_network_resources(docker, known_ids, protected_ids)
+
+    logger.info("orphan_gc_complete")
+
+
+async def _collect_orphaned_network_resources(
+    docker: DockerClientWrapper, known_ids: set[str], protected_ids: set[str]
+) -> None:
+    """Sweep proxies before networks, preserving each live worker's network leg."""
     # --- Orphaned QA egress proxies ---
     # A QA run's proxy holds the second network leg its executor is not allowed
     # to have. If the run's own cleanup never happened, the proxy is exactly the
@@ -155,8 +168,6 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                     await docker.remove_network(name)
                 except Exception as e:  # noqa: BLE001 — one network must not stop the sweep
                     logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
-
-    logger.info("orphan_gc_complete")
 
 
 async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -> None:
@@ -220,7 +231,9 @@ async def _notify_workspace_deleted(repo_id: str) -> None:
     try:
         client = InternalAPIClient(api_url, timeout=10)
         try:
-            resp = await client.request_raw("POST", f"repositories/{repo_id}/notify-workspace-deleted")
+            resp = await client.request_raw(
+                "POST", f"repositories/{repo_id}/notify-workspace-deleted"
+            )
             if resp.status_code == HTTPStatus.OK:
                 logger.info("workspace_gc_notified_api", repo_id=repo_id)
             else:

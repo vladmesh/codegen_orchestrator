@@ -6,13 +6,20 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from shared.contracts.queues.worker import AgentType, WorkerCapability, WorkerConfig, WorkerOwnership
 
+from shared.contracts.queues.worker import (
+    AgentType,
+    WorkerCapability,
+    WorkerConfig,
+    WorkerOwnership,
+)
 from src.workspace import get_scaffolded_workspace
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+_OWNERSHIP = WorkerOwnership(
+    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+)
 
 
 class TestWorkerConfigRepoId:
@@ -122,7 +129,8 @@ def mock_redis():
 
 class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested"])
+    # Fixture path; no host temporary file is created.
+    @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested"])  # noqa: S108
     @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock)
     @patch("src.manager.workspace_mod.prepare_worker_paths")
     async def test_rejects_unsafe_repo_id_before_worker_setup(
@@ -168,7 +176,10 @@ class TestCreateWorkerWithRepoId:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-123"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-123"),
+            True,
+        )
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
@@ -187,7 +198,9 @@ class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_repo_id_missing_workspace_raises(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+    async def test_repo_id_missing_workspace_raises(
+        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker
+    ):
         """repo_id present but dir doesn't exist → RuntimeError."""
         from src.manager import WorkerManager
 
@@ -196,7 +209,10 @@ class TestCreateWorkerWithRepoId:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-999"), False)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-999"),
+            False,
+        )
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
@@ -225,7 +241,10 @@ class TestCreateWorkerWithRepoId:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-123"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-123"),
+            True,
+        )
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
@@ -243,7 +262,9 @@ class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_no_repo_id_raises_error(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+    async def test_no_repo_id_raises_error(
+        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker
+    ):
         """No repo_id → RuntimeError (legacy workspace creation removed)."""
         from src.manager import WorkerManager
 

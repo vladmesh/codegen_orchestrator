@@ -44,6 +44,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import structlog
+
 from shared.contracts.queues.worker import WorkerLabel
 from shared.contracts.vocab import AgentType
 
@@ -244,7 +245,9 @@ async def _await_proxy(docker, container_id: str, name: str) -> None:
     only place the check can be made from. A proxy that never listens is a
     policy that did not establish.
     """
-    probe = f"python3 -c \"import socket; socket.create_connection(('127.0.0.1', {PROXY_PORT}), 2)\""
+    probe = (
+        f"python3 -c \"import socket; socket.create_connection(('127.0.0.1', {PROXY_PORT}), 2)\""
+    )
     for _ in range(PROXY_READY_ATTEMPTS):
         try:
             exit_code, _ = await docker.exec_in_container(container_id, probe, user="root")

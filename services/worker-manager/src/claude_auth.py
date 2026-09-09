@@ -16,5 +16,9 @@ def validate_claude_host_session(profile_path: str | None) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("Claude host session credentials are unreadable") from exc
     oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-    if not isinstance(oauth, dict) or not isinstance(oauth.get("refreshToken"), str) or not oauth["refreshToken"]:
+    if (
+        not isinstance(oauth, dict)
+        or not isinstance(oauth.get("refreshToken"), str)
+        or not oauth["refreshToken"]
+    ):
         raise RuntimeError("Claude host session has no refresh-capable credentials")

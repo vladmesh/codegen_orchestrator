@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from scripts.template_pin import TEMPLATE_PIN
 
+from scripts.template_pin import TEMPLATE_PIN
 from src.compose_runner import ComposeInvocation, ComposeRunner, _write_snapshot
 from src.compose_validator import RESOURCE_IDENTITY_POLICY, validate_effective_compose
 
@@ -60,7 +60,9 @@ class TestComposeRunner:
         )
 
         with pytest.raises(ValueError, match="label_file cannot be retained"):
-            _write_snapshot(invocation, {"services": {"app": {"label_file": ["/etc/passwd"]}}}, ["up"])
+            _write_snapshot(
+                invocation, {"services": {"app": {"label_file": ["/etc/passwd"]}}}, ["up"]
+            )
 
         assert not snapshot.exists()
 
@@ -81,7 +83,11 @@ class TestComposeRunner:
         with pytest.raises(ValueError, match="build.cache_to is not supported"):
             _write_snapshot(
                 invocation,
-                {"services": {"app": {"build": {"context": str(tmp_path), "cache_to": ["type=local"]}}}},
+                {
+                    "services": {
+                        "app": {"build": {"context": str(tmp_path), "cache_to": ["type=local"]}}
+                    }
+                },
                 ["build"],
             )
 
@@ -185,7 +191,9 @@ class TestComposeRunner:
             await runner.run("worker-123", args)
 
         call_args = mock_run.call_args[0][0]
-        assert str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
+        assert (
+            str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
+        )
 
     @pytest.mark.asyncio
     async def test_no_network_override_for_ps(self, workspace):
@@ -230,7 +238,9 @@ class TestComposeRunner:
         infra = actual_ws / "infra"
         infra.mkdir(parents=True)
         (infra / "compose.base.yml").write_text("services:\n  db:\n    image: postgres:16\n")
-        (infra / "compose.dev.yml").write_text("services:\n  db:\n    ports:\n      - '5432:5432'\n")
+        (infra / "compose.dev.yml").write_text(
+            "services:\n  db:\n    ports:\n      - '5432:5432'\n"
+        )
 
         runner = ComposeRunner(str(tmp_path))
 
@@ -261,7 +271,10 @@ class TestComposeRunner:
         with (
             patch(
                 "subprocess.run",
-                side_effect=[_safe_compose_result(), subprocess.TimeoutExpired(cmd="docker compose", timeout=1)],
+                side_effect=[
+                    _safe_compose_result(),
+                    subprocess.TimeoutExpired(cmd="docker compose", timeout=1),
+                ],
             ),
             pytest.raises(ValueError, match="[Tt]imed? ?out"),
         ):
@@ -309,7 +322,9 @@ class TestComposeRunner:
             await runner.run("worker-123", ["up", "-d"])
 
         call_args = mock_run.call_args[0][0]
-        assert str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
+        assert (
+            str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
+        )
 
     @pytest.mark.asyncio
     async def test_limits_override_is_in_the_inspected_and_executed_invocation(self, workspace):
@@ -330,7 +345,9 @@ class TestComposeRunner:
         fixture = TEMPLATE_PIN.fixture_path()
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
-        (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
+        (workspace / ".env").write_text(
+            "POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n"
+        )
         runner = ComposeRunner(str(tmp_path))
 
         resolved, _ = await runner.inspect("fixture", ["up", "-d"], workspace_dir=str(workspace))
@@ -343,14 +360,21 @@ class TestComposeRunner:
     def test_service_template_has_no_label_file_compatibility_consumer(self):
         fixture = TEMPLATE_PIN.fixture_path()
 
-        assert all("label_file" not in source.read_text() for source in (fixture / "infra").glob("compose*.yml"))
+        assert all(
+            "label_file" not in source.read_text()
+            for source in (fixture / "infra").glob("compose*.yml")
+        )
 
     @pytest.mark.asyncio
-    async def test_real_documented_integration_resolution_passes_the_production_validator(self, tmp_path):
+    async def test_real_documented_integration_resolution_passes_the_production_validator(
+        self, tmp_path
+    ):
         fixture = TEMPLATE_PIN.fixture_path()
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
-        (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
+        (workspace / ".env").write_text(
+            "POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n"
+        )
         (workspace / "infra" / ".env.test").write_text("POSTGRES_PASSWORD=postgres\n")
         runner = ComposeRunner(str(tmp_path))
 
@@ -435,7 +459,9 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     async def test_project_dot_env_still_reaches_compose(self, workspace, monkeypatch):
         """The project's own .env is what compose is supposed to interpolate."""
-        (workspace / "worker-123" / "workspace" / ".env").write_text("# project settings\nAPP_SECRET=project-value\n")
+        (workspace / "worker-123" / "workspace" / ".env").write_text(
+            "# project settings\nAPP_SECRET=project-value\n"
+        )
         monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", "orchestrator-platform-key")
         runner = ComposeRunner(str(workspace))
 
@@ -469,9 +495,16 @@ class TestComposeRunner:
         assert resolved["networks"]["default"]["name"] == "dev_proj_worker-123"
         config_command = mock_run.call_args_list[0].args[0]
         execution_command = mock_run.call_args_list[1].args[0]
-        assert config_command[:4] == [config_command[0], "compose", "--project-name", "worker_worker-123"]
+        assert config_command[:4] == [
+            config_command[0],
+            "compose",
+            "--project-name",
+            "worker_worker-123",
+        ]
         project_directory_index = config_command.index("--project-directory")
-        assert config_command[project_directory_index + 1] == str(workspace / "worker-123" / "workspace" / "infra")
+        assert config_command[project_directory_index + 1] == str(
+            workspace / "worker-123" / "workspace" / "infra"
+        )
         assert ".codegen-network.yml" in " ".join(config_command)
         assert config_command[-3:] == ["config", "--format", "json"]
         assert "--project-directory" in execution_command
@@ -518,7 +551,9 @@ class TestComposeRunner:
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
+    @pytest.mark.parametrize(
+        "label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"]
+    )
     async def test_label_file_is_rejected_before_compose_or_snapshot(self, workspace, label_file):
         root = workspace / "worker-123" / "workspace"
         (root / "infra" / "compose.base.yml").write_text(
@@ -558,7 +593,9 @@ class TestComposeRunner:
         ("env_file", "project_env"),
         [("${EVIL}", "EVIL=../../HOSTSECRET.env\n"), ("${HOME}/HOSTSECRET.env", None)],
     )
-    async def test_interpolated_env_file_is_rejected_before_compose_resolution(self, workspace, env_file, project_env):
+    async def test_interpolated_env_file_is_rejected_before_compose_resolution(
+        self, workspace, env_file, project_env
+    ):
         root = workspace / "worker-123" / "workspace"
         if project_env:
             (root / ".env").write_text(project_env)
@@ -592,7 +629,9 @@ class TestComposeRunner:
         (root / "infra" / "compose.base.yml").write_text(
             "services:\n  db:\n    extends: {file: ../evil.yml, service: db}\n"
         )
-        (root / "evil.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n")
+        (root / "evil.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n"
+        )
         runner = ComposeRunner(str(workspace))
 
         with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
@@ -609,9 +648,13 @@ class TestComposeRunner:
         (root / "infra" / "compose.base.yml").write_text(
             "services:\n  db:\n    extends: {file: ../deep/mid.yml, service: db}\n"
         )
-        (deep / "mid.yml").write_text("services:\n  db:\n    extends: {file: leaf.yml, service: db}\n")
+        (deep / "mid.yml").write_text(
+            "services:\n  db:\n    extends: {file: leaf.yml, service: db}\n"
+        )
         (root / "infra" / "leaf.yml").write_text("services:\n  db:\n    image: postgres:16\n")
-        (deep / "leaf.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n")
+        (deep / "leaf.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n"
+        )
         runner = ComposeRunner(str(workspace))
 
         with patch("subprocess.run") as mock_run, pytest.raises(ValueError, match="env_file"):
@@ -625,7 +668,8 @@ class TestComposeRunner:
     async def test_build_network_is_rejected_before_create_execution(self, workspace, args):
         compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
         compose.write_text(
-            "services:\n  db:\n    build:\n      context: ..\n      dockerfile: Dockerfile\n      network: host\n"
+            "services:\n  db:\n    build:\n      context: ..\n "
+            "     dockerfile: Dockerfile\n      network: host\n"
         )
         runner = ComposeRunner(str(workspace))
 
@@ -637,14 +681,21 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("args", [["build"], ["up", "--build"], ["up", "-d"]])
     @pytest.mark.parametrize("build_key", ["cache_from", "cache_to"])
-    async def test_build_cache_is_rejected_before_every_create_route(self, workspace, args, build_key):
+    async def test_build_cache_is_rejected_before_every_create_route(
+        self, workspace, args, build_key
+    ):
         victim_snapshot = workspace / ".compose-plans" / "worker-victim" / "compose.resolved.yml"
         victim_snapshot.parent.mkdir(parents=True)
         victim_snapshot.write_text("victim plan\n")
-        cache_value = "type=local,src=/etc" if build_key == "cache_from" else f"type=local,dest={victim_snapshot}"
+        cache_value = (
+            "type=local,src=/etc"
+            if build_key == "cache_from"
+            else f"type=local,dest={victim_snapshot}"
+        )
         compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
         compose.write_text(
-            f"services:\n  db:\n    build:\n      context: ..\n      {build_key}:\n        - {cache_value}\n"
+            f"services:\n  db:\n    build:\n      context: "
+            f"..\n      {build_key}:\n        - {cache_value}\n"
         )
         runner = ComposeRunner(str(workspace))
 
@@ -664,7 +715,8 @@ class TestComposeRunner:
     async def test_manager_replaces_build_output_tag_for_every_create_route(self, workspace, args):
         compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
         compose.write_text(
-            "services:\n  db:\n    image: codegen-orchestrator/victim:latest\n    build:\n      context: ..\n"
+            "services:\n  db:\n    image: codegen-orchestrator/victim:latest\n "
+            "   build:\n      context: ..\n"
         )
         resolved = _safe_compose_result()
         resolved.stdout = json.dumps(
@@ -697,7 +749,9 @@ class TestComposeRunner:
             "services:\n  db:\n    image: postgres:16\nvolumes:\n  data:\n    name: victim-data\n",
         ],
     )
-    async def test_daemon_global_resource_identities_are_rejected_before_resolution(self, workspace, content):
+    async def test_daemon_global_resource_identities_are_rejected_before_resolution(
+        self, workspace, content
+    ):
         compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
         compose.write_text(content)
         runner = ComposeRunner(str(workspace))
@@ -732,7 +786,9 @@ class TestComposeRunner:
             return subprocess.run([docker, *args], check=check, capture_output=True, text=True)
 
         docker_run("build", "-t", victim_image, str(workspace))
-        victim_before = docker_run("image", "inspect", "--format", "{{.Id}}", victim_image).stdout.strip()
+        victim_before = docker_run(
+            "image", "inspect", "--format", "{{.Id}}", victim_image
+        ).stdout.strip()
         dockerfile.write_text("FROM scratch\nLABEL marker=worker\n")
         (infra / "compose.base.yml").write_text(
             f"services:\n  app:\n    image: {victim_image}\n    build:\n      context: ..\n"
@@ -741,7 +797,10 @@ class TestComposeRunner:
         runner = ComposeRunner(str(tmp_path))
         try:
             await runner.run(worker_id, ["build"], workspace_dir=str(workspace))
-            assert docker_run("image", "inspect", "--format", "{{.Id}}", victim_image).stdout.strip() == victim_before
+            assert (
+                docker_run("image", "inspect", "--format", "{{.Id}}", victim_image).stdout.strip()
+                == victim_before
+            )
             assert docker_run("image", "inspect", output_image).returncode == 0
 
             docker_run("volume", "create", victim_volume)

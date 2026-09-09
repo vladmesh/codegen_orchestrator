@@ -134,7 +134,8 @@ class TestWorkerContainerConfig:
         assert env["WORKER_AUTH_MODE"] == "api_key"
 
     def test_stand_token_mode_injects_claude_token_without_a_host_mount(self):
-        token = "claude-test-token"
+        # Dummy credential for mocked authentication.
+        token = "claude-test-token"  # noqa: S105
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
@@ -247,12 +248,16 @@ class TestWorkerContainerConfig:
             worker_type="developer",
             agent_type="claude",
             capabilities=[],
-            workspace_host_path="/tmp/codegen/workspaces/test-1/workspace",
+            # Fixture path; no host temporary file is created.
+            workspace_host_path="/tmp/codegen/workspaces/test-1/workspace",  # noqa: S108
         )
         volumes = config.to_volume_mounts()
-        assert "/tmp/codegen/workspaces/test-1/workspace" in volumes
-        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["bind"] == "/workspace"
-        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["mode"] == "rw"
+        # Fixture path; no host temporary file is created.
+        assert "/tmp/codegen/workspaces/test-1/workspace" in volumes  # noqa: S108
+        # Fixture path; no host temporary file is created.
+        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["bind"] == "/workspace"  # noqa: S108
+        # Fixture path; no host temporary file is created.
+        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["mode"] == "rw"  # noqa: S108
 
     def test_transcript_bind_mount_is_writable(self):
         config = WorkerContainerConfig(

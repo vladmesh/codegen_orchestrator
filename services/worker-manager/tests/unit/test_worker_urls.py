@@ -9,7 +9,8 @@ from src.config import WorkerManagerSettings
 def test_worker_broker_url_is_explicitly_configurable():
     settings = WorkerManagerSettings(
         WORKER_BROKER_URL="http://worker-broker.internal:8001",
-        WORKER_BROKER_INTERNAL_TOKEN="test-internal-token",
+        # Dummy credential for mocked authentication.
+        WORKER_BROKER_INTERNAL_TOKEN="test-internal-token",  # noqa: S106
     )
 
     assert settings.WORKER_BROKER_URL == "http://worker-broker.internal:8001"

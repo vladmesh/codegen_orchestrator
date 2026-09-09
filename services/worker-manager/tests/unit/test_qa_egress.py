@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from shared.contracts.vocab import AgentType
 
+from shared.contracts.vocab import AgentType
 from src import qa_egress
 from src.qa_egress_proxy import (
     Refused,
@@ -103,7 +103,9 @@ class TestTheProxyAnswersOverARealSocket:
         return answer
 
     async def test_a_post_to_the_deployment_is_answered_with_405(self):
-        answer = await self._speak(b"POST http://app.example.com/orders HTTP/1.1\r\nHost: app.example.com\r\n\r\n")
+        answer = await self._speak(
+            b"POST http://app.example.com/orders HTTP/1.1\r\nHost: app.example.com\r\n\r\n"
+        )
 
         assert answer.startswith(b"HTTP/1.1 405")
 
@@ -131,7 +133,9 @@ class TestWhatTheRuntimeRefusesToStartWithout:
         await qa_egress.require_internal_network(Docker(), "codegen_qa_egress")
 
     def test_a_container_on_exactly_the_run_network_is_accepted(self):
-        qa_egress.verify_isolation({"NetworkSettings": {"Networks": {"codegen_qa_egress": {}}}}, "codegen_qa_egress")
+        qa_egress.verify_isolation(
+            {"NetworkSettings": {"Networks": {"codegen_qa_egress": {}}}}, "codegen_qa_egress"
+        )
 
     def test_a_container_with_a_second_network_is_refused(self):
         with pytest.raises(qa_egress.QAEgressError, match="codegen_worker"):
@@ -157,7 +161,9 @@ class TestWhichBackendsARunOpens:
         assert "api.anthropic.com" not in qa_egress.model_backends(AgentType.CODEX)
 
     def test_an_operator_override_replaces_the_defaults(self):
-        assert qa_egress.model_backends(AgentType.CLAUDE, "proxy.internal:8443") == ("proxy.internal:8443",)
+        assert qa_egress.model_backends(AgentType.CLAUDE, "proxy.internal:8443") == (
+            "proxy.internal:8443",
+        )
 
     def test_an_agent_with_no_known_backend_stops_the_run(self):
         """An egress policy nobody can describe is not one to start a run with."""
@@ -193,4 +199,6 @@ class TestWhatTheExecutorIsToldAboutIt:
         """
         from worker_wrapper.wrapper import QA_EGRESS_PROXY_ENV
 
-        assert set(qa_egress.proxy_env("qa-egress-qa-1", ("qa-worker",))) == set(QA_EGRESS_PROXY_ENV)
+        assert set(qa_egress.proxy_env("qa-egress-qa-1", ("qa-worker",))) == set(
+            QA_EGRESS_PROXY_ENV
+        )

@@ -1,6 +1,7 @@
 import asyncio
 
 import structlog
+
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     CreateWorkerResponse,
@@ -22,7 +23,11 @@ logger = structlog.get_logger()
 
 def resolve_local_auth_mode(*, requested_mode: str, agent_type, live_contour: str | None) -> str:
     """Select the stand's local auth without widening the queue producer API."""
-    if live_contour == "stand" and requested_mode == "host_session" and agent_type.value == "claude":
+    if (
+        live_contour == "stand"
+        and requested_mode == "host_session"
+        and agent_type.value == "claude"
+    ):
         return "stand_token"
     return requested_mode
 
@@ -111,7 +116,9 @@ class WorkerCommandConsumer:
         # Validate early (project lock, retry limit) — these are fast checks
         # done inside create_worker_with_capabilities before the heavy work.
         # Send early ACK with worker_id so spawner can poll status.
-        early_resp = CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+        early_resp = CreateWorkerResponse(
+            request_id=cmd.request_id, success=True, worker_id=worker_id
+        )
         await self.publish_response(cmd, early_resp)
 
         try:
