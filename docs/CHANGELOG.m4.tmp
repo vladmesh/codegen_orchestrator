@@ -1,0 +1,2 @@
+- Run responses no longer project engineering token/cost accounting; Grafana and admin consumers read the
+  append-only engineering ledger, and the retired Run columns are dropped.
