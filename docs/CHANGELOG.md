@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-09
+
+- Frontend Docker builds enforce peer dependencies with plain `npm ci`, matching the existing CI
+  checks and removing an obsolete dependency-resolution bypass.
+
 ## 2026-09-08
 
 - PO tool callers import from the owning modules; the aggregator keeps tool composition and utilities,
