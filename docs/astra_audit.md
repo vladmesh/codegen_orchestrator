@@ -38,7 +38,7 @@ Each cleanup item has three ratings:
 
 "Removal" means removing the debt, shim, fallback, duplicated responsibility, or compatibility path — not deleting the product feature it currently supports.
 
-## Refresh note — 2026-09-08
+## Refresh note — 2026-09-09
 
 This is a lightweight status refresh against the current repository after several cleanup PRs, **not** a new deep audit. The original evidence below is intentionally kept as the historical reason each item was raised; use these notes before taking the next item so stale evidence is not mistaken for current `main`.
 
@@ -51,20 +51,21 @@ This is a lightweight status refresh against the current repository after severa
 
 - **M6 — completed in PRs #479 and #480 (last merge 2026-09-08).** PR #479 removed private shared-helper re-exports. PR #480 migrated startup, unit/integration tests and live preflight to owner modules, removed the remaining domain/startup/constant compatibility exports, and retained `get_all_tools()` plus the four locally owned utility tools. Boundary tests pin owner imports, the removed exports, and the same 19 tool objects in the same order.
 
+- **H4 — completed in PR #482 (merged 2026-09-09).** Both worker services now inherit the unchanged root Ruff policy; the local Ruff configs are removed. The migration fixes imports/formatting, extracts launch/Compose/GC phases and preserves exception causes. Narrow documented line exceptions remain for test fixtures, deliberate proxy/PATH boundaries and the two existing launch signatures; there are no new root exclusions or complexity suppressions.
+- **M8 — completed in PR #481 (merged 2026-09-09).** Both frontend Dockerfiles use plain `npm ci`. Existing dependencies and lockfiles already passed normal peer resolution, lint and production build locally and in PR CI, so no dependency updates were needed. Full frontend Docker images were not built in that iteration.
+
 ### Recheck / refresh before implementation
 
 - **H1:** quick check says the scheduler still has the same broad multi-domain ownership shape. The item remains current, but this area has changed heavily since 2026-09-06; reread current `scheduler.main`, startup keys, and dispatcher responsibilities before designing the split rather than implementing the exact process list below mechanically.
-- **H4:** **original evidence is materially stale.** PR #475 moved the root dependency to `ruff>=0.16,<0.17`, so there is no longer a root `<0.16` pin hiding the subtree. The remaining issue is that `worker-manager` and `worker-broker` intentionally keep local Ruff 0.16 defaults and 120-character formatting instead of the full repository rule set. Reframe H4 as a **local quality-policy island**, and re-count the current violations against the root rule set before taking it; do not use the old “132 violations / remove the version pin” plan as-is.
 - **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
 - **M4:** `_attach_ledger_compatibility()` still exists. The item remains current, but consumer/data-migration proof should be refreshed before dropping fields or columns.
 - **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
 - **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
-- **M8:** both frontend Dockerfiles still use `npm ci --legacy-peer-deps`; item remains current.
 - **L1 / L2:** the Makefile aliases/legacy aggregate and `mega-test` cleanup prefix still exist. Both remain low-risk cleanup candidates, but L2 still needs the operational resource sweep/proof described below.
 - **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
 - **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
 
-The cleanup order below now marks completed iterations explicitly. Five of the sixteen H/M/L findings are complete (H2, H3, M1, M3, M6); H4 is partially addressed and the other ten remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
+The cleanup order below now marks completed iterations explicitly. Seven of the sixteen H/M/L findings are complete (H2, H3, H4, M1, M3, M6, M8); the other nine remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
 
 ---
 
@@ -737,7 +738,7 @@ For polling/observability settings, last-known-good is reasonable resilience. Fo
 2. **Completed in PR #463:** remove the `worker-wrapper` private task-ownership hack; `main` now owns and cancels the run task directly.
 3. **Completed in PR #464:** make PO checkpointer persistence required in the production consumer path while retaining explicit `MemorySaver` construction for tests.
 4. **Completed in PRs #476 and #478:** require system summarization config, log effective values, and remove retired numeric env/deploy wiring.
-5. Repair frontend peer dependencies and remove `--legacy-peer-deps`.
+5. **Completed in PR #481:** remove the obsolete `--legacy-peer-deps` flag; both current lockfiles already pass plain `npm ci`.
 6. Remove obsolete Makefile aliases whose callers are already gone.
 
 These are high-confidence changes with limited architectural surface.
@@ -756,7 +757,7 @@ The important word here is **proof**: these are easy to delete mechanically but 
 
 1. Split scheduler runtime ownership into independently deployable entrypoints.
 2. Separate live-test harness code from runtime `shared` code.
-3. **Partially addressed by PR #475:** Ruff is already on 0.16. Migrate `worker-manager` and `worker-broker` from their local rules to the root lint policy; first re-count current violations.
+3. **Completed in PR #482 after the Ruff upgrade in #475:** both worker services inherit the root lint policy; local configs are removed and the 464 reported root-rule violations have been addressed, including explicit, narrow exceptions for intentional boundaries.
 4. Normalize long-lived external HTTP client ownership.
 
 This phase reduces future change cost more than it removes current bugs.
@@ -772,7 +773,7 @@ The remaining debt has a recognizable shape:
 - **transition residue**: old fields, aliases, tombstones, compatibility projections;
 - **resilience residue**: broad fallbacks that survived earlier iterations even though the repository now prefers typed failure;
 - **process-boundary lag**: modules have been separated more cleanly than runtime ownership has;
-- **tooling lag**: `worker-manager` is still protected from the repo's current quality gate;
+- **tooling lag (resolved by #482)**: both worker services now inherit the repository quality gate;
 - **shared-package sprawl**: runtime and test-harness concerns coexist in one ambient dependency tree.
 
 The best cleanup strategy is therefore not a rewrite. The repository is already close to the architecture it says it wants. The highest leverage is to **finish migrations that are already half-complete and make the runtime/process boundaries match the code boundaries that already exist**.
