@@ -7,7 +7,7 @@ Single source of terminology for the codegen_orchestrator project.
 ### Service
 A long-lived process. One container = one service.
 
-**Examples:** `api`, `telegram-bot`, `langgraph`, `scheduler`
+**Examples:** `api`, `telegram-bot`, `langgraph`, `scheduler-pipeline`
 
 ### Consumer
 **A role, not a service name.** Any service or component that listens to a Redis queue.

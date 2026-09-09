@@ -4402,7 +4402,14 @@ def dump_debug(ctx: dict, test_name: str) -> None:
             lines.extend([f"- dynamic worker log capture failed: {type(error).__name__}", ""])
 
     # Collect docker logs from relevant services
-    for service in ["scaffolder", "engineering-worker", "scheduler", "deploy-worker"]:
+    for service in [
+        "scaffolder",
+        "engineering-worker",
+        "scheduler-pipeline",
+        "scheduler-infrastructure",
+        "scheduler-maintenance",
+        "deploy-worker",
+    ]:
         try:
             result = subprocess.run(
                 ["docker", "compose", "logs", f"--tail={DEBUG_DUMP_SERVICE_TAIL_LINES}", service],

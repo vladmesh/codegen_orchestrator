@@ -102,7 +102,7 @@ The system supports a hybrid infrastructure synchronized with the provider (Time
         health/allocation/provisioning consumers through `is_managed=False`.
     *   Existing rows are never auto-provisioned when added to the allowlist; destructive reinstall
         also requires an explicit `force-rebuild` request.
-    *   The scheduler and infra-service both enforce the same policy, and the reinstall operation
+    *   `scheduler-infrastructure` and infra-service both enforce the same policy, and the reinstall operation
         repeats it at the provider API boundary.
     *   A stale scheduled row that no longer passes policy is moved to `reserved` and produces one
         administrator alert instead of being retried indefinitely.
@@ -133,7 +133,7 @@ For parallel workers (see [docs/parallel-workers.md](parallel-workers.md)) the s
    * The agent calls `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards it through worker-broker, which authenticates and scopes the request before worker-manager manages sidecars in that namespace.
 2. **Garbage Collection**:
    * Explicit removal: on completion LangGraph calls `delete_worker` on `worker-manager`, which removes the containers, the network and the space on disk.
-   * Background garbage collection (GC): the `scheduler` triggers GC in `worker-manager` every 30 minutes. The `WorkerManager.garbage_collect_orphaned_resources()` method finds "orphaned" worker containers, `dev_proj_*` networks and directories on disk (matching them against the active `worker:status:*` keys in Redis) and removes them, protecting the system from leaks after crashes or OOM events.
+   * Background garbage collection (GC): `scheduler-pipeline` triggers GC in `worker-manager` every 30 minutes. The `WorkerManager.garbage_collect_orphaned_resources()` method finds "orphaned" worker containers, `dev_proj_*` networks and directories on disk (matching them against the active `worker:status:*` keys in Redis) and removes them, protecting the system from leaks after crashes or OOM events.
 
 ## See also
 

@@ -592,6 +592,14 @@ jobs:
             ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/agent_configs.yaml
+            for service in scheduler-pipeline scheduler-infrastructure scheduler-maintenance; do
+              remaining=60
+              until ${COMPOSE} logs --no-color "${service}" | grep -q system_configs_validated; do
+                test "${remaining}" -gt 0 || exit 1
+                sleep 2
+                remaining=$((remaining - 2))
+              done
+            done
           '
 
       # The stand's seeded scheduler configuration has to name the same template the
@@ -665,7 +673,7 @@ jobs:
               # worker. The second observer below proves the real probe made
               # the target allocatable; it never stamps freshness itself.
               COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler python -m src.stand_health_probe
+              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler-infrastructure python -m src.stand_health_probe
               python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
                 tee -a "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
               if [ "${wait_status}" -eq 0 ]; then
@@ -689,7 +697,7 @@ jobs:
             services_out="${diagnostics_dir}/provisioning-services.log"
             services_partial="${services_out}.partial"
             rm -f "${services_partial}"
-            if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler 2>&1 | \
+            if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
               ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
               python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
@@ -892,7 +900,8 @@ jobs:
                 # are piped straight into it, and a run that could not complete
                 # that pipe publishes the stated reason instead of the input.
                 if ${COMPOSE} logs --no-color --tail 300 \
-                     scheduler engineering-worker worker-manager worker-broker api \
+                     scheduler-pipeline scheduler-infrastructure scheduler-maintenance \
+                     engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \

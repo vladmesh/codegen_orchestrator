@@ -186,7 +186,7 @@ def test_provisioning_failure_evidence_survives_a_pre_pytest_failure():
     assert "provisioning-state.jsonl" in provision
     assert "provisioning-services.log" in provision
     assert "docker compose" in provision
-    assert "infra-service scheduler" in provision
+    assert "infra-service scheduler-infrastructure" in provision
     assert "redact_diagnostic" in provision
     assert "provisioning-state.jsonl" in collect
     assert "provisioning-services.log" in collect
@@ -215,7 +215,7 @@ def test_the_provisioning_service_tails_are_kept_when_provisioning_succeeds():
     collection = next(
         index
         for index, line in enumerate(lines)
-        if "logs --no-color --tail 300 infra-service scheduler" in line
+        if "logs --no-color --tail 300 infra-service scheduler-infrastructure" in line
     )
     guard = next(
         index
@@ -241,7 +241,8 @@ def test_suite_failure_captures_every_service_that_carries_the_pipeline():
     collect = _steps()["Record machine manifest"]["run"]
 
     assert "logs --no-color --tail 300" in collect
-    assert "scheduler engineering-worker worker-manager worker-broker api" in collect
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in collect
+    assert "engineering-worker worker-manager worker-broker api" in collect
     assert "qa-worker deploy-worker" in collect
     # One redaction path on this side: the service tails. The target-host
     # snapshot is redacted by the suite that takes it, through the same helper.
@@ -364,11 +365,11 @@ def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_prob
 
     assert "--profile stand_e2e" in provision
     assert "--no-require-fresh-metrics" in provision
-    assert "scheduler python -m src.stand_health_probe" in provision
+    assert "scheduler-infrastructure python -m src.stand_health_probe" in provision
     assert "first_health_ready" in provision
     assert (
         provision.index("--no-require-fresh-metrics")
-        < provision.index("scheduler python -m src.stand_health_probe")
+        < provision.index("scheduler-infrastructure python -m src.stand_health_probe")
         < provision.rindex("scripts.wait_stand_provisioning")
     )
 

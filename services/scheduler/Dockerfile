@@ -41,7 +41,7 @@ ENV PYTHONPATH=/app
 COPY services/scheduler/src ./src
 
 # Run application
-CMD ["python", "-m", "src.main"]
+CMD ["python", "-m", "src.pipeline"]
 
 # Which tree this image baked shared from; read by scripts/shared_freshness.py.
 ARG SOURCE_HASH=unknown

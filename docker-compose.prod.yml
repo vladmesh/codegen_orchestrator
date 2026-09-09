@@ -32,7 +32,13 @@ services:
   telegram_bot:
     restart: unless-stopped
 
-  scheduler:
+  scheduler-pipeline:
+    restart: unless-stopped
+
+  scheduler-infrastructure:
+    restart: unless-stopped
+
+  scheduler-maintenance:
     restart: unless-stopped
 
   db:

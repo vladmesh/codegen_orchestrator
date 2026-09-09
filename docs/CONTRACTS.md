@@ -544,17 +544,17 @@ are repository-relative.
 
 | Stream / pattern | Group | Message source | Logical producer | Consumer |
 |---|---|---|---|---|
-| `scaffold:queue` | `scaffold-consumers` | `queues/scaffold.py` | scheduler dispatcher | scaffolder |
+| `scaffold:queue` | `scaffold-consumers` | `queues/scaffold.py` | scheduler-pipeline | scaffolder |
 | `architect:queue` | `architect-consumers` | `queues/architect.py` | PO/API story action | architect consumer |
-| `engineering:queue` | `capability-workers` | `queues/engineering.py` | scheduler dispatcher | langgraph engineering consumer |
-| `deploy:queue` | `capability-workers` | `queues/deploy.py` | scheduler or API action | langgraph deploy consumer |
+| `engineering:queue` | `capability-workers` | `queues/engineering.py` | scheduler-pipeline | langgraph engineering consumer |
+| `deploy:queue` | `capability-workers` | `queues/deploy.py` | scheduler-pipeline or API action | langgraph deploy consumer |
 | `qa:queue` | `qa-consumers` | `queues/qa.py` | deploy supervisor or admin action | langgraph QA consumer |
 | `worker:commands` | `worker_manager` | `queues/worker.py` | langgraph | worker-manager |
 | `worker:responses:developer` | response stream | `queues/worker.py` | worker-manager | langgraph |
 | `worker:{worker_id}:input` | broker session | `queues/developer_worker.py` | developer node | worker-wrapper/broker |
 | `worker:{worker_id}:output` | broker session | `queues/developer_worker.py` | worker-wrapper/broker | developer node |
-| `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler | infra-service |
-| `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler, telegram-bot |
+| `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler-infrastructure | infra-service |
+| `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler-infrastructure, telegram-bot |
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
 | `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot |
 | `po:proactive` | `tg-bot-proactive` | `queues/po.py` | PO notification tools | telegram-bot |
@@ -795,14 +795,14 @@ above names a shared contract import.
 
 | Message / result family | Canonical source | Producers | Consumers | Delivery and ownership rule |
 |---|---|---|---|---|
-| `ScaffoldMessage` | `queues/scaffold.py` | scheduler | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
-| `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler | architect consumer | story identity, not conversational state, drives decomposition |
-| `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
-| `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
+| `ScaffoldMessage` | `queues/scaffold.py` | scheduler-pipeline | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
+| `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler-pipeline | architect consumer | story identity, not conversational state, drives decomposition |
+| `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
+| `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | developer input/output | `queues/developer_worker.py` | developer node / wrapper | wrapper / developer node | broker request id and single typed accepted output settle a leased turn |
-| provisioning request/result | `queues/provisioner.py` | scheduler / infra-service | infra-service / scheduler and bot | result consumers use their own group semantics |
+| provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 

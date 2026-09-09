@@ -27,7 +27,8 @@ only source, and it reaches consumers through three channels.
 
 **Bind-mount** `./shared:/app/shared` — ten compose services: `api`, `langgraph`,
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
-`scheduler`, `scaffolder`. An edit under `shared/` is picked up by restarting the container
+`scheduler-pipeline`, `scheduler-infrastructure`, `scheduler-maintenance`, `scaffolder`. An edit
+under `shared/` is picked up by restarting the containers
 (`docker compose restart <service>`), no image rebuild is needed.
 
 **`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
@@ -72,7 +73,7 @@ provisioned servers will be lost together with the database.
 2. Kills orphaned `worker-*` containers that do not belong to the project.
 3. `docker compose build` — all services.
 4. `make rebuild-worker-images` — the four base worker images.
-5. `docker compose up -d`.
+5. `docker compose up -d --remove-orphans`.
 
 Volumes are not touched, so the database and the registry survive the rebuild.
 

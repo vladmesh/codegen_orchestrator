@@ -14,7 +14,8 @@ async def test_probe_initializes_config_before_loading_and_checking_server(monke
     events: list[str] = []
     server = object()
 
-    def init_config():
+    def init_config(required_keys):
+        assert required_keys == stand_health_probe.startup.INFRASTRUCTURE_REQUIRED_KEYS
         events.append("init_config")
 
     async def get_server(target_handle: str):

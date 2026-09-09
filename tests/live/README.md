@@ -360,8 +360,8 @@ directory with the run evidence and names it when one was asked for and did not 
 `scripts/stand_acceptance.py` refuses a paid failure that asked for the snapshot and can say neither
 what became of it nor where it is. The free `mega-noop` route asks for nothing from the target host.
 
-Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of `scheduler`,
-`engineering-worker`, `worker-manager`, `worker-broker`, `api`, `qa-worker` and `deploy-worker` into
+Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of all three
+scheduler services, `engineering-worker`, `worker-manager`, `worker-broker`, `api`, `qa-worker` and `deploy-worker` into
 `suite-services.log` when the suite fails — through the same `shared.diagnostics.redact_diagnostic` helper and the same
 protected-name allow-list the provisioning-failure branch uses, with the stated reason published in
 place of the tails if that pipe cannot complete. And `dump_debug` now writes beside the run evidence,
