@@ -102,34 +102,6 @@ def _engineering_attempt_key(run_id: str) -> str:
     return f"engineering-run:{run_id}"
 
 
-async def _attach_ledger_compatibility(runs: list[Run], db: AsyncSession) -> None:
-    """Expose old Run observability fields as projections of the ledger.
-
-    The database columns remain for rolling compatibility only. New engineering
-    writes never populate them; API responses prefer the canonical ledger row.
-    """
-    if not runs:
-        return
-    rows = (
-        await db.execute(
-            select(EngineeringAttemptLedger).where(
-                EngineeringAttemptLedger.run_id.in_([run.id for run in runs])
-            )
-        )
-    ).scalars()
-    attempts = {attempt.run_id: attempt for attempt in rows}
-    for run in runs:
-        attempt = attempts.get(run.id)
-        if attempt is None:
-            continue
-        run._ledger_input_tokens = attempt.input_tokens
-        run._ledger_output_tokens = attempt.output_tokens
-        run._ledger_total_tokens = attempt.total_tokens
-        run._ledger_cost_usd = (
-            attempt.cost_microusd / 1_000_000 if attempt.cost_microusd is not None else None
-        )
-
-
 async def _record_engineering_attempt(
     run: Run,
     attempt: EngineeringAttemptLedgerInput | None,
@@ -334,7 +306,6 @@ async def get_run(
         is_internal=_is_internal,
         credentials=credentials,
     )
-    await _attach_ledger_compatibility([run], db)
     return run
 
 
@@ -394,9 +365,7 @@ async def list_runs(  # noqa: PLR0913
     query = query.order_by(Run.created_at.desc())
 
     result = await db.execute(query)
-    runs = result.scalars().all()
-    await _attach_ledger_compatibility(list(runs), db)
-    return list(runs)
+    return list(result.scalars().all())
 
 
 @router.get("/qa-ssh-grants/held", response_model=list[RunRead])
@@ -669,7 +638,6 @@ async def update_run(
 
     await db.commit()
     await db.refresh(run)
-    await _attach_ledger_compatibility([run], db)
 
     logger.info(
         "run_updated",
