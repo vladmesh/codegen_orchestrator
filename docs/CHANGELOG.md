@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-09
 
+- Worker services inherit the root Ruff policy; split launch, Compose admission and cleanup phases
+  while preserving worker ownership, QA isolation and readiness ordering.
+
 - Frontend Docker builds enforce peer dependencies with plain `npm ci`, matching the existing CI
   checks and removing an obsolete dependency-resolution bypass.
 

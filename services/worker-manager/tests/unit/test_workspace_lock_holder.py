@@ -16,14 +16,14 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fakeredis import aioredis
+import pytest
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields
-
 from src.executor_diagnostics import ExecutorDiagnostics
 from src.garbage_collector import garbage_collect_workspaces
 from src.manager import WorkerManager
@@ -55,7 +55,8 @@ def _ownership(run_id: str, attempt_id: str) -> WorkerOwnership:
 async def _create(manager: WorkerManager, worker_id: str, run_id: str) -> str:
     with patch(
         "src.manager.workspace_mod.get_scaffolded_workspace",
-        return_value=(Path("/tmp/ws/repo-1"), True),
+        # Fixture path; no host temporary file is created.
+        return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
     ):
         return await manager.create_worker_with_capabilities(
             worker_id=worker_id,
@@ -243,10 +244,17 @@ async def test_a_finished_qa_executor_is_not_swept_as_the_projects_stale_holder(
     await _create(manager, "worker-a", "run-a")
     await redis.hset(
         "worker:meta:qa-executor",
-        mapping={"worker_type": "qa", "project_id": PROJECT, "run_id": "run-a", "attempt_id": "qa-attempt"},
+        mapping={
+            "worker_type": "qa",
+            "project_id": PROJECT,
+            "run_id": "run-a",
+            "attempt_id": "qa-attempt",
+        },
     )
 
-    with patch("src.garbage_collector.settings.SCAFFOLDED_WORKSPACE_PATH", "/nonexistent-workspace-root"):
+    with patch(
+        "src.garbage_collector.settings.SCAFFOLDED_WORKSPACE_PATH", "/nonexistent-workspace-root"
+    ):
         await garbage_collect_workspaces(redis)
 
     assert await redis.sismember("workspace:active_projects", PROJECT)
@@ -289,14 +297,20 @@ async def test_the_stale_sweep_cannot_run_inside_an_acquisition(docker):
 
             return wrapped
 
-        return state, patch.object(redis, "sadd", _wrap("sadd")), patch.object(redis, "hset", _wrap("hset"))
+        return (
+            state,
+            patch.object(redis, "sadd", _wrap("sadd")),
+            patch.object(redis, "hset", _wrap("hset")),
+        )
 
     # How many points there are to interleave at: every write the create path
     # makes is one, and the acquisition's two are among them.
     counting_redis = aioredis.FakeRedis(decode_responses=True)
     counted, sadd_patch, hset_patch = _instrument(counting_redis, sweep_after=0)
     with sadd_patch, hset_patch:
-        await _create(WorkerManager(redis=counting_redis, docker_client=docker), "worker-count", "run-count")
+        await _create(
+            WorkerManager(redis=counting_redis, docker_client=docker), "worker-count", "run-count"
+        )
     write_count = counted["writes"]
     assert write_count > 2
 

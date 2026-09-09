@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
-
 from src.manager import WorkerManager
 
 _OWNERSHIP = WorkerOwnership(
@@ -57,10 +57,16 @@ def valid_stand_claude_token(monkeypatch):
 
     expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
     monkeypatch.setattr(
-        diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN", "stand-claude-token", raising=False
+        diagnostics_module.settings,
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "stand-claude-token",
+        raising=False,
     )
     monkeypatch.setattr(
-        diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", expires_at, raising=False
+        diagnostics_module.settings,
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        expires_at,
+        raising=False,
     )
 
 
@@ -76,7 +82,10 @@ async def test_stand_token_claude_worker_reaches_container_creation(
     mock_builder.get_image_tag.return_value = "worker:test"
     mock_builder.generate_dockerfile.return_value = "FROM base"
     mock_builder_cls.return_value = mock_builder
-    mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-stand"), True)
+    mock_workspace.get_scaffolded_workspace.return_value = (
+        Path("/data/workspaces/repo-stand"),
+        True,
+    )
     docker = _make_docker_mock()
 
     manager = WorkerManager(redis=_make_redis_mock(), docker_client=docker)
@@ -98,14 +107,23 @@ async def test_stand_token_claude_worker_reaches_container_creation(
 @pytest.mark.asyncio
 @patch("src.manager.workspace_mod")
 @patch("src.manager.ImageBuilder")
-async def test_stand_token_claude_worker_refuses_on_an_unusable_token(mock_builder_cls, mock_workspace, monkeypatch):
+async def test_stand_token_claude_worker_refuses_on_an_unusable_token(
+    mock_builder_cls, mock_workspace, monkeypatch
+):
     """The same reading still refuses, so the fix did not drop the check."""
     import src.executor_diagnostics as diagnostics_module
 
     mock_builder_cls.return_value = MagicMock()
-    mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-stand"), True)
-    monkeypatch.setattr(diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN", None, raising=False)
-    monkeypatch.setattr(diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", None, raising=False)
+    mock_workspace.get_scaffolded_workspace.return_value = (
+        Path("/data/workspaces/repo-stand"),
+        True,
+    )
+    monkeypatch.setattr(
+        diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN", None, raising=False
+    )
+    monkeypatch.setattr(
+        diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", None, raising=False
+    )
     docker = _make_docker_mock()
 
     manager = WorkerManager(redis=_make_redis_mock(), docker_client=docker)

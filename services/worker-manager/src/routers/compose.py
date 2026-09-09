@@ -3,9 +3,10 @@
 import hashlib
 import hmac
 
-import structlog
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
+import structlog
+
 from shared.contracts.worker_control_plane import (
     WorkerControlPlaneOperation,
     control_plane_denial,
@@ -58,7 +59,9 @@ async def run_compose(
     # broker. The type comes from this service's own record of the worker it
     # created, written before the credential existed.
     meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
-    denial = control_plane_denial(meta.get("worker_type"), WorkerControlPlaneOperation.INFRA_COMPOSE)
+    denial = control_plane_denial(
+        meta.get("worker_type"), WorkerControlPlaneOperation.INFRA_COMPOSE
+    )
     if denial:
         logger.warning(
             "worker_control_plane_operation_denied",
@@ -82,7 +85,7 @@ async def run_compose(
             workspace_dir=stored_workspace,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception:
         logger.exception(
             "compose_run_failed",

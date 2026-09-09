@@ -26,7 +26,11 @@ class TestGetScaffoldedWorkspace:
         path, _ = get_scaffolded_workspace(str(tmp_path), "repo-abc")
         assert str(path) == str(tmp_path / "repo-abc")
 
-    @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested", ".", ".."])
+    @pytest.mark.parametrize(
+        "repo_id",
+        # Fixture path; no host temporary file is created.
+        ["/tmp/outside", "../outside", "repo-123/nested", ".", ".."],  # noqa: S108
+    )
     def test_rejects_repo_ids_that_are_not_direct_workspace_children(self, tmp_path, repo_id):
         with pytest.raises(ValueError, match="direct child"):
             get_scaffolded_workspace(str(tmp_path), repo_id)

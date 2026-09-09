@@ -1,11 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fakeredis import aioredis
+import pytest
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
-
 from src.manager import WorkerManager
 
 
@@ -40,7 +40,9 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     mock_docker_client.pause_container = AsyncMock()
     mock_docker_client.unpause_container = AsyncMock()
     mock_docker_client.remove_container = AsyncMock()
-    mock_docker_client.image_exists = AsyncMock(return_value=True)  # Default to exists for this test
+    mock_docker_client.image_exists = AsyncMock(
+        return_value=True
+    )  # Default to exists for this test
     mock_docker_client.get_image_label = AsyncMock(return_value="basehash0001")
     mock_docker_client.pull_image = AsyncMock()
     mock_docker_client.create_network = AsyncMock()
@@ -53,7 +55,9 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     container_id = await manager.create_worker(
         worker_id,
         image,
-        ownership=WorkerOwnership(project_id="proj-flow", run_id="eng-flow", attempt_id="attempt-eng-flow"),
+        ownership=WorkerOwnership(
+            project_id="proj-flow", run_id="eng-flow", attempt_id="attempt-eng-flow"
+        ),
     )
 
     assert container_id == "container-123"
@@ -124,7 +128,9 @@ async def test_image_caching_strategy(mock_docker_client, worker_settings):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_naive_timestamp", [False, True])
-async def test_garbage_collection_real_logic(mock_docker_client, worker_settings, legacy_naive_timestamp):
+async def test_garbage_collection_real_logic(
+    mock_docker_client, worker_settings, legacy_naive_timestamp
+):
     """
     Test GC logic deleting old images.
     """
@@ -164,7 +170,8 @@ async def test_garbage_collection_real_logic(mock_docker_client, worker_settings
     mock_docker_client.remove_image.assert_called_with(old_image, force=True)
 
     # Verify new image kept
-    # We can't easily assert NOT called with specific arg effectively if we don't know call order perfectly,
+    # We can't easily assert NOT called with specific arg effectively if we don't know call
+    # order perfectly,
     # but we can check call_args_list
     removed_images = [call.args[0] for call in mock_docker_client.remove_image.call_args_list]
     assert old_image in removed_images

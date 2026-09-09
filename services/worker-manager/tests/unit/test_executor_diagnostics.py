@@ -3,9 +3,9 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from shared.contracts.dto.executor_diagnostics import ExecutorAuthMode, ExecutorAvailability
 from shared.contracts.vocab import AgentType
-
 from src.executor_diagnostics import ExecutorDiagnostics
 from src.manager import WorkerManager
 
@@ -30,10 +30,16 @@ def test_claude_diagnostic_uses_manager_visible_validation_path(monkeypatch):
     import src.executor_diagnostics as diagnostics_module
 
     now = datetime.now(UTC)
-    monkeypatch.setattr(diagnostics_module.settings, "HOST_CLAUDE_DIR", "/host-source/.claude", raising=False)
-    monkeypatch.setattr(diagnostics_module.settings, "HOST_CLAUDE_VALIDATION_PATH", "/host-claude", raising=False)
+    monkeypatch.setattr(
+        diagnostics_module.settings, "HOST_CLAUDE_DIR", "/host-source/.claude", raising=False
+    )
+    monkeypatch.setattr(
+        diagnostics_module.settings, "HOST_CLAUDE_VALIDATION_PATH", "/host-claude", raising=False
+    )
     observed: list[str | None] = []
-    monkeypatch.setattr("src.claude_auth.validate_claude_host_session", lambda path: observed.append(path))
+    monkeypatch.setattr(
+        "src.claude_auth.validate_claude_host_session", lambda path: observed.append(path)
+    )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
 
     diagnostic = diagnostics._executor_diagnostic(
@@ -53,9 +59,13 @@ def test_unreconciled_inventory_does_not_claim_zero_leases(monkeypatch):
     import src.executor_diagnostics as diagnostics_module
 
     now = datetime.now(UTC)
-    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/host-source/.codex", raising=False)
+    monkeypatch.setattr(
+        diagnostics_module.settings, "HOST_CODEX_HOME", "/host-source/.codex", raising=False
+    )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
-    diagnostic = diagnostics._executor_diagnostic(AgentType.CODEX, now, now + timedelta(seconds=60), None)
+    diagnostic = diagnostics._executor_diagnostic(
+        AgentType.CODEX, now, now + timedelta(seconds=60), None
+    )
 
     assert diagnostic.availability is ExecutorAvailability.UNKNOWN
     assert diagnostic.active_lease_count is None
@@ -69,7 +79,10 @@ def test_stand_token_diagnostic_accepts_manager_local_opaque_claude_metadata(mon
     now = datetime.now(UTC)
     monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", "stand", raising=False)
     monkeypatch.setattr(
-        diagnostics_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fake", raising=False
+        diagnostics_module.settings,
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "sk-ant-oat01-fake",
+        raising=False,
     )
     monkeypatch.setattr(
         diagnostics_module.settings,
@@ -98,8 +111,12 @@ def test_stand_codex_diagnostic_refuses_an_invalid_refreshable_profile(monkeypat
 
     now = datetime.now(UTC)
     monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", "stand", raising=False)
-    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/host/stand-codex", raising=False)
-    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", "/host-codex", raising=False)
+    monkeypatch.setattr(
+        diagnostics_module.settings, "HOST_CODEX_HOME", "/host/stand-codex", raising=False
+    )
+    monkeypatch.setattr(
+        diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", "/host-codex", raising=False
+    )
     monkeypatch.setattr(
         "src.codex_auth.validate_codex_host_session",
         lambda _profile: (_ for _ in ()).throw(RuntimeError("invalid profile")),
@@ -134,7 +151,9 @@ async def test_redis_docker_disagreement_makes_lease_inventory_unknown():
 @pytest.mark.asyncio
 async def test_terminal_redis_worker_without_a_container_is_a_settled_zero_lease():
     """A pre-container workspace-lock refusal retains FAILED metadata by design."""
-    redis = _inventory_redis(["workspace-lock-refusal"], statuses={"workspace-lock-refusal": "FAILED"})
+    redis = _inventory_redis(
+        ["workspace-lock-refusal"], statuses={"workspace-lock-refusal": "FAILED"}
+    )
     docker = MagicMock()
     docker.list_containers = AsyncMock(return_value=[])
 
@@ -148,7 +167,9 @@ async def test_terminal_redis_worker_without_a_container_is_a_settled_zero_lease
 async def test_terminal_redis_worker_with_a_terminal_matching_container_is_zero_lease():
     redis = _inventory_redis(["worker-1"], statuses={"worker-1": "FAILED"})
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session", status="exited")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session", status="exited")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() == {
         AgentType.CLAUDE: 0,
@@ -169,7 +190,9 @@ async def test_nonterminal_redis_worker_without_a_container_remains_unknown():
 async def test_terminal_redis_worker_with_a_nonterminal_container_remains_unknown():
     redis = _inventory_redis(["worker-1"], statuses={"worker-1": "FAILED"})
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
@@ -203,7 +226,9 @@ async def test_duplicate_docker_identity_makes_lease_inventory_unknown():
 async def test_docker_only_worker_makes_lease_inventory_unknown():
     redis = _inventory_redis([])
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
@@ -213,7 +238,9 @@ async def test_docker_only_worker_makes_lease_inventory_unknown():
 async def test_absent_or_unknown_status_makes_lease_inventory_unknown(status):
     redis = _inventory_redis(["worker-1"], statuses={"worker-1": status})
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
@@ -223,7 +250,9 @@ async def test_unreadable_status_makes_lease_inventory_unknown():
     redis = _inventory_redis(["worker-1"])
     redis.hget.side_effect = RuntimeError("redis unavailable")
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
@@ -232,7 +261,9 @@ async def test_unreadable_status_makes_lease_inventory_unknown():
 async def test_exited_container_with_running_redis_status_makes_inventory_unknown():
     redis = _inventory_redis(["worker-1"], statuses={"worker-1": "RUNNING"})
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session", status="exited")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session", status="exited")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
@@ -241,14 +272,18 @@ async def test_exited_container_with_running_redis_status_makes_inventory_unknow
 async def test_label_disagreement_makes_lease_inventory_unknown():
     redis = _inventory_redis(["worker-1"])
     docker = MagicMock()
-    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "claude", "host_session")])
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "claude", "host_session")]
+    )
 
     assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() is None
 
 
 @pytest.mark.asyncio
 async def test_reconciler_returns_exact_mixed_executor_counts():
-    redis = _inventory_redis(["claude-1", "codex-1"], agent_types={"claude-1": "claude", "codex-1": "codex"})
+    redis = _inventory_redis(
+        ["claude-1", "codex-1"], agent_types={"claude-1": "claude", "codex-1": "codex"}
+    )
     docker = MagicMock()
     docker.list_containers = AsyncMock(
         return_value=[

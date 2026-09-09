@@ -3,15 +3,17 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
-
 from src.codex_auth import validate_codex_host_session
 from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+_OWNERSHIP = WorkerOwnership(
+    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+)
 
 
 def _write_profile(path, *, auth_mode=0o600, config_mode=0o600):
@@ -70,15 +72,20 @@ async def test_manager_rejects_missing_codex_session_before_image_resolution(tmp
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda profile: os.chmod(profile, 0o755), "0700"),
+        # Exercise rejection of permissive profile permissions.
+        (lambda profile: os.chmod(profile, 0o755), "0700"),  # noqa: S103
         (lambda profile: os.chmod(profile / "auth.json", 0o644), "0600"),
         (lambda profile: (profile / "auth.json").write_text(""), "auth.json"),
         (
-            lambda profile: (profile / "auth.json").write_text(json.dumps({"tokens": {"access_token": "test-access"}})),
+            lambda profile: (profile / "auth.json").write_text(
+                json.dumps({"tokens": {"access_token": "test-access"}})
+            ),
             "refresh-capable",
         ),
         (
-            lambda profile: (profile / "config.toml").write_text('cli_auth_credentials_store = "keyring"\n'),
+            lambda profile: (profile / "config.toml").write_text(
+                'cli_auth_credentials_store = "keyring"\n'
+            ),
             "cli_auth_credentials_store",
         ),
     ],

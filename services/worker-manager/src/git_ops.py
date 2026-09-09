@@ -9,7 +9,9 @@ from .docker_ops import DockerClientWrapper
 logger = structlog.get_logger()
 
 
-async def checkout_branch(docker: DockerClientWrapper, container_id: str, branch: str, worker_id: str) -> bool:
+async def checkout_branch(
+    docker: DockerClientWrapper, container_id: str, branch: str, worker_id: str
+) -> bool:
     """Checkout a story branch in the workspace.
 
     Creates the branch from current HEAD if it doesn't exist,

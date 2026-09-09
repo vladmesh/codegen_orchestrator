@@ -69,6 +69,9 @@ def parse_allowlist(entries: list[str]) -> frozenset[tuple[str, int]]:
     return frozenset(allowed)
 
 
+_CONNECT_MIN_PARTS = 2
+
+
 def parse_connect(request_line: str) -> tuple[str, int]:
     """Return the `host, port` of a CONNECT line, or refuse.
 
@@ -77,7 +80,7 @@ def parse_connect(request_line: str) -> tuple[str, int]:
     proxying this boundary exists to not do.
     """
     parts = request_line.split()
-    if len(parts) < 2 or parts[0].upper() != "CONNECT":
+    if len(parts) < _CONNECT_MIN_PARTS or parts[0].upper() != "CONNECT":
         method = parts[0].upper() if parts else "(empty)"
         raise Refused(
             "405 Method Not Allowed",
@@ -182,9 +185,11 @@ async def serve(allowed: frozenset[tuple[str, int]], port: int = LISTEN_PORT) ->
             print(f"qa_egress_client_error error={exc}", flush=True)
             writer.close()
 
-    server = await asyncio.start_server(_client, "0.0.0.0", port)
+    # Proxy must accept its isolated executor network.
+    server = await asyncio.start_server(_client, "0.0.0.0", port)  # noqa: S104
     print(
-        f"qa_egress_listening port={port} allowed={','.join(sorted(f'{h}:{p}' for h, p in allowed))}",
+        f"qa_egress_listening port={port} "
+        f"allowed={','.join(sorted(f'{h}:{p}' for h, p in allowed))}",
         flush=True,
     )
     async with server:

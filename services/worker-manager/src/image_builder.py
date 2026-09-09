@@ -51,8 +51,12 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
     "GITHUB_CLI": [
         # GitHub CLI installation per official docs
         "RUN apt-get update && apt-get install -y --no-install-recommends curl gpg && \\",
-        "    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \\",
-        '    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \\',
+        "    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+        "| gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \\",
+        '    echo "deb [arch=$(dpkg --print-architecture) '
+        "signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] "
+        'https://cli.github.com/packages stable main" | tee '
+        "/etc/apt/sources.list.d/github-cli.list > /dev/null && \\",
         "    apt-get update && apt-get install -y --no-install-recommends gh && \\",
         "    rm -rf /var/lib/apt/lists/*",
     ],
@@ -149,9 +153,9 @@ class ImageBuilder:
         caps = sorted({cap.upper() for cap in capabilities})
 
         # Only switch to root if we need to install something
-        has_installations = any(cap in CAPABILITY_INSTALL_MAP and CAPABILITY_INSTALL_MAP[cap] for cap in caps) or any(
-            cap in APT_PACKAGES for cap in caps
-        )
+        has_installations = any(
+            cap in CAPABILITY_INSTALL_MAP and CAPABILITY_INSTALL_MAP[cap] for cap in caps
+        ) or any(cap in APT_PACKAGES for cap in caps)
 
         if has_installations:
             lines.append("")
@@ -172,7 +176,8 @@ class ImageBuilder:
             packages_str = " ".join(sorted(apt_packages))
             lines.append("")
             lines.append(
-                f"RUN apt-get update && apt-get install -y --no-install-recommends {packages_str} && rm -rf /var/lib/apt/lists/*"
+                f"RUN apt-get update && apt-get install -y --no-install-recommends "
+                f"{packages_str} && rm -rf /var/lib/apt/lists/*"
             )
 
         # Add complex installations (GITHUB_CLI)
@@ -190,7 +195,9 @@ class ImageBuilder:
 
         return "\n".join(lines)
 
-    def get_image_tag(self, capabilities: list[str], prefix: str, agent_type: str, source_hash: str) -> str:
+    def get_image_tag(
+        self, capabilities: list[str], prefix: str, agent_type: str, source_hash: str
+    ) -> str:
         """
         Generate Docker image tag for given capabilities.
 

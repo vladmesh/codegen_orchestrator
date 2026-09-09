@@ -164,7 +164,9 @@ class TestDockerNetworks:
         wrapper = DockerClientWrapper()
         await wrapper.create_network("dev_proj_worker1", labels={"com.codegen.run.id": "live-1"})
 
-        assert client_mock.networks.create.call_args.kwargs["labels"] == {"com.codegen.run.id": "live-1"}
+        assert client_mock.networks.create.call_args.kwargs["labels"] == {
+            "com.codegen.run.id": "live-1"
+        }
 
     @pytest.mark.asyncio
     async def test_remove_network(self, mock_docker):

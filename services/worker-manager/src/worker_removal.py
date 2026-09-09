@@ -6,8 +6,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-import structlog
 from redis.asyncio import Redis
+import structlog
+
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_LINES,
@@ -20,8 +21,7 @@ from shared.contracts.worker_evidence import (
 from shared.diagnostics import redact_diagnostic
 from shared.redis import decode_redis_fields
 
-from . import qa_egress
-from . import workspace as workspace_mod
+from . import qa_egress, workspace as workspace_mod
 from .compose_runner import ComposeRunner
 from .config import settings
 from .container_config import TRANSCRIPT_MOUNT
@@ -110,7 +110,8 @@ class WorkerRemoval:
                 meta,
                 ownership,
                 reason,
-                f"the container could not be read before it was removed: {type(exc).__name__}: {exc}",
+                f"the container could not be read before it "
+                f"was removed: {type(exc).__name__}: {exc}",
             )
         store = self._store_removal_evidence(evidence)
         try:
@@ -198,7 +199,9 @@ class WorkerRemoval:
                 "the container was still running when it was removed, so it never had an exit code"
             )
         elif state["Status"] == "created":
-            exit_code = RemovalFact.missed("the container was created but never started, so it has no exit code")
+            exit_code = RemovalFact.missed(
+                "the container was created but never started, so it has no exit code"
+            )
         else:
             exit_code = RemovalFact.read(int(state["ExitCode"]))
 
@@ -303,7 +306,10 @@ class WorkerRemoval:
             logger.warning(
                 "worker_removal_evidence_unattributable",
                 worker_id=worker_id,
-                error="this worker's metadata names no project, run and attempt to file its ending under",
+                error=(
+                    "this worker's metadata names no project, "
+                    "run and attempt to file its ending under"
+                ),
             )
 
         try:
@@ -345,7 +351,9 @@ class WorkerRemoval:
             if ownership is not None:
                 try:
                     evidence_task = asyncio.create_task(
-                        self._read_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                        self._read_removal_evidence(
+                            worker_id, container_name, meta, ownership, reason
+                        )
                     )
                     evidence = await asyncio.wait_for(
                         evidence_task,
@@ -372,7 +380,9 @@ class WorkerRemoval:
                     )
                 except Exception as exc:  # noqa: BLE001 — one container must not stop removal
                     keep_meta = True
-                    logger.warning("worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc))
+                    logger.warning(
+                        "worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc)
+                    )
 
             if dev_network:
                 await self.docker.remove_network(dev_network)
@@ -412,7 +422,9 @@ class WorkerRemoval:
                 "worker_meta_retained_for_attribution",
                 worker_id=worker_id,
                 run_id=ownership.run_id,
-                error="no removal record could be stored, so the worker keeps its last durable name",
+                error=(
+                    "no removal record could be stored, so the worker keeps its last durable name"
+                ),
             )
         else:
             keys_to_delete.append(f"worker:meta:{worker_id}")

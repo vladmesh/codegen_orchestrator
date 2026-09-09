@@ -4,8 +4,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from shared.contracts.queues.worker_result import WorkerFailedResult, parse_worker_result
 
+from shared.contracts.queues.worker_result import WorkerFailedResult, parse_worker_result
 from src.events import WORKER_DEAD_STATUS, DockerEventsListener
 
 
@@ -68,7 +68,9 @@ class TestHandleEvent:
 
         await listener._handle_event(event)
 
-        mock_redis.hset.assert_called_once_with("worker:status:dev-abc", mapping={"status": WORKER_DEAD_STATUS})
+        mock_redis.hset.assert_called_once_with(
+            "worker:status:dev-abc", mapping={"status": WORKER_DEAD_STATUS}
+        )
 
     @pytest.mark.asyncio
     async def test_ignores_normal_exit(self):

@@ -10,15 +10,17 @@ Tests cover:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from shared.contracts.queues.worker import WorkerOwnership
 
+from shared.contracts.queues.worker import WorkerOwnership
 from src.docker_ops import DockerClientWrapper
 from src.image_builder import compute_image_hash
 from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+_OWNERSHIP = WorkerOwnership(
+    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+)
 
 
 BASE_SOURCE_HASH = "basehash0001"
@@ -115,7 +117,9 @@ class TestWorkerManagerBuildLogic:
         mock_docker.image_exists.assert_awaited_once()
         mock_docker.build_image.assert_awaited_once()
         # Should return the correct tag
-        expected_hash = compute_image_hash(["GIT"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
+        expected_hash = compute_image_hash(
+            ["GIT"], agent_type="claude", source_hash=BASE_SOURCE_HASH
+        )
         assert image_tag == f"worker-test:{expected_hash}"
 
     @pytest.mark.asyncio
@@ -137,7 +141,9 @@ class TestWorkerManagerBuildLogic:
         # Should NOT have built (cache hit)
         mock_docker.build_image.assert_not_awaited()
         # Should still return correct tag
-        expected_hash = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
+        expected_hash = compute_image_hash(
+            ["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH
+        )
         assert image_tag == f"worker-test:{expected_hash}"
 
     @pytest.mark.asyncio
@@ -162,7 +168,9 @@ class TestWorkerManagerBuildLogic:
         assert len(lru_calls) >= 1
 
     @pytest.mark.asyncio
-    async def test_ensure_or_build_image_generates_correct_dockerfile(self, mock_redis, mock_docker):
+    async def test_ensure_or_build_image_generates_correct_dockerfile(
+        self, mock_redis, mock_docker
+    ):
         """Build should use correctly generated Dockerfile with agent label."""
         mock_docker.image_exists.return_value = False
 
@@ -281,7 +289,10 @@ class TestWorkerManagerCreateWithCapabilities:
         """create_worker should accept capabilities and build image if needed."""
         from pathlib import Path
 
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-1"),
+            True,
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
         manager._refresh_git_token = AsyncMock(return_value=True)
 
@@ -298,7 +309,9 @@ class TestWorkerManagerCreateWithCapabilities:
         mock_docker.image_exists.assert_awaited()
         mock_docker.run_container.assert_awaited_once()
         call_kwargs = mock_docker.run_container.call_args[1]
-        expected_hash = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
+        expected_hash = compute_image_hash(
+            ["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH
+        )
         assert expected_hash in call_kwargs["image"]
 
     @pytest.mark.asyncio
@@ -311,7 +324,10 @@ class TestWorkerManagerCreateWithCapabilities:
         from pathlib import Path
 
         monkeypatch.setenv("FACTORY_API_KEY", "fk-test")
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-1"),
+            True,
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         await manager.create_worker_with_capabilities(
@@ -337,7 +353,10 @@ class TestWorkerManagerCreateWithCapabilities:
         from pathlib import Path
 
         monkeypatch.delenv("FACTORY_API_KEY", raising=False)
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-1"),
+            True,
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         await manager.create_worker_with_capabilities(
@@ -365,7 +384,10 @@ class TestWorkerManagerCreateWithCapabilities:
         from pathlib import Path
 
         monkeypatch.delenv("FACTORY_API_KEY", raising=False)
-        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        mock_workspace.get_scaffolded_workspace.return_value = (
+            Path("/data/workspaces/repo-1"),
+            True,
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with pytest.raises(RuntimeError, match="FACTORY_API_KEY is not set"):
@@ -382,4 +404,7 @@ class TestWorkerManagerCreateWithCapabilities:
 
         mock_docker.run_container.assert_not_awaited()
         mock_redis.xadd.assert_not_awaited()
-        assert all(call.args[0] != "worker:meta:factory-worker-1" for call in mock_redis.hset.await_args_list)
+        assert all(
+            call.args[0] != "worker:meta:factory-worker-1"
+            for call in mock_redis.hset.await_args_list
+        )

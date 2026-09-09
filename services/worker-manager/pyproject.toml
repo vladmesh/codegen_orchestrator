@@ -20,8 +20,3 @@ dependencies = [
     "cryptography>=43.0.0",
     "pgvector>=0.2.5",
 ]
-
-[tool.ruff]
-# Strategy C from issue:cf94cc4173a7fe971b71: this service deliberately keeps Ruff's
-# stable 0.16 defaults while its larger migration to the repository rule set remains deferred.
-line-length = 120
