@@ -48,6 +48,7 @@ This is a lightweight status refresh against the current repository after severa
 - **H3 — completed in PR #477 (merged 2026-09-08).** GitHub repository/file paths no longer classify errors by matching `"422"` / `"already exists"` in exception text or turn arbitrary failures into empty/missing resources. Expected 404/422 cases are status-driven, 422 repository creation is verified with `get_repo()`, and transport/auth/server/unexpected failures retain failure semantics. The narrow repo-token → org-token deletion fallback was deliberately preserved.
 - **M1 — immediate ownership hack completed in PR #463 (merged 2026-09-07).** The private `_task` / `stop_event` split ownership described below is gone. Revisit only if a richer graceful-stop API is actually needed.
 - **M3 — completed in PR #464 (merged 2026-09-07).** Enabled PO now requires durable checkpoint configuration at startup; `MemorySaver` remains an explicit test construction path rather than a production downgrade.
+- **M4 — completed in PR #483 (merged 2026-09-09).** Run responses no longer project engineering token/cost accounting from the ledger. The legacy Run API/model/admin fields and DB columns are removed; Grafana reads those facts directly from `engineering_attempt_ledger`, and boundary tests forbid restoring the old surface.
 
 - **M6 — completed in PRs #479 and #480 (last merge 2026-09-08).** PR #479 removed private shared-helper re-exports. PR #480 migrated startup, unit/integration tests and live preflight to owner modules, removed the remaining domain/startup/constant compatibility exports, and retained `get_all_tools()` plus the four locally owned utility tools. Boundary tests pin owner imports, the removed exports, and the same 19 tool objects in the same order.
 
@@ -58,14 +59,13 @@ This is a lightweight status refresh against the current repository after severa
 
 - **H1:** quick check says the scheduler still has the same broad multi-domain ownership shape. The item remains current, but this area has changed heavily since 2026-09-06; reread current `scheduler.main`, startup keys, and dispatcher responsibilities before designing the split rather than implementing the exact process list below mechanically.
 - **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
-- **M4:** `_attach_ledger_compatibility()` still exists. The item remains current, but consumer/data-migration proof should be refreshed before dropping fields or columns.
 - **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
 - **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
 - **L1 / L2:** the Makefile aliases/legacy aggregate and `mega-test` cleanup prefix still exist. Both remain low-risk cleanup candidates, but L2 still needs the operational resource sweep/proof described below.
 - **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
 - **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
 
-The cleanup order below now marks completed iterations explicitly. Seven of the sixteen H/M/L findings are complete (H2, H3, H4, M1, M3, M6, M8); the other nine remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
+The cleanup order below now marks completed iterations explicitly. Eight of the sixteen H/M/L findings are complete (H2, H3, H4, M1, M3, M4, M6, M8); the other eight remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
 
 ---
 
@@ -428,6 +428,17 @@ Treat this as a deletion project with an explicit deadline:
 
 Do not remove the projection before verifying admin/dashboard consumers and historical response expectations.
 
+### Progress
+
+**Completed in PR #483 (merged 2026-09-09).** The canonical ledger is now the only engineering token/cost read surface:
+
+- `_attach_ledger_compatibility()` and its transient `_ledger_*` projections are removed;
+- Run read/update schemas, the SQLAlchemy model and the admin frontend no longer expose `input_tokens`, `output_tokens`, `total_tokens` or `cost_usd`;
+- Alembic drops those four retired `runs` columns;
+- Grafana token/cost panels read `engineering_attempt_ledger` directly;
+- service and boundary tests pin the ledger read path and prevent the compatibility surface from returning.
+
+
 ---
 
 ## M5. Temporary-access lifecycle still carries a retired schema and runtime guards
@@ -745,7 +756,7 @@ These are high-confidence changes with limited architectural surface.
 
 ## Phase 2 — compatibility deletion with proof
 
-1. Migrate old Run observability consumers to the engineering ledger and drop compatibility projections/columns.
+1. **Completed in PR #483:** migrate Run observability consumers to the engineering ledger and drop compatibility projections/columns.
 2. Prove no live target-less temporary-access grants exist, then remove the retired slot lifecycle schema and guards.
 3. Prove no old recipient payload can remain in Redis, then remove the `user_id` tombstone.
 4. Sweep old `mega-test` resources and remove the prefix.
