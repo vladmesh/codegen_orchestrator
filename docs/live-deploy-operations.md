@@ -79,8 +79,9 @@ dotenv assembly (mixed only in the deployer).
 ## Running the mega
 
 ```bash
-make test-live-mega      # full pipeline; live LLM worker path needs a working agent credential
-make test-live-clean     # always run after a live attempt
+make test-live-mega-noop                              # free full pipeline, no model call
+make stand-run SUITE=mega-llm WORKER=codex QA=claude # one real coding/QA pair on the stand
+make test-live-clean                                  # always run after a local live attempt
 ```
 
 The mega runs only on explicit request. Live-run logs go to `.live-runs/`, debug
