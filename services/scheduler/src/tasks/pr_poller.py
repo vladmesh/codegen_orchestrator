@@ -19,6 +19,7 @@ from shared.contracts.dto.users_grant import (
     GrantIntentLifecycleResult,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.notifications import notify_admins_best_effort
@@ -35,6 +36,7 @@ from .image_publication import (
     _redacted_failed_jobs,
     image_publication_for_commit,
 )
+from .owner_notifications import deliver_owed_notification, owe_story_owner_notification
 from .story_completion import _parse_owner_repo
 
 if TYPE_CHECKING:
@@ -131,13 +133,15 @@ def _build_failure_description(evidence: dict) -> str:
     return "\n".join(lines)
 
 
-async def _images_ready_for_deploy(
+async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
+    redis_client: RedisStreamClient,
     *,
     owner: str,
     repo_name: str,
     story_id: str,
+    project_id: str,
     head_sha: str,
     deployed_commit_sha: str,
     pull_request: dict,
@@ -186,7 +190,9 @@ async def _images_ready_for_deploy(
         return False
     await _refuse_unpublished_images(
         api_client,
+        redis_client,
         story_id=story_id,
+        project_id=project_id,
         head_sha=head_sha,
         deployed_commit_sha=deployed_commit_sha,
         verdict=verdict,
@@ -198,8 +204,10 @@ async def _images_ready_for_deploy(
 
 async def _refuse_unpublished_images(
     api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
     *,
     story_id: str,
+    project_id: str,
     head_sha: str,
     deployed_commit_sha: str,
     verdict: PublicationVerdict,
@@ -229,11 +237,45 @@ async def _refuse_unpublished_images(
             "generated_product_timeline": generated_product_timeline,
         },
     )
+    # The owner hears about this ending, not only the administrators. It is
+    # terminal for them in the only sense they have — their product stops moving
+    # until a person looks at it — and the story leaves PR_REVIEW on the next
+    # line, so no later tick scans it and nothing else would ever tell them.
+    owed = await owe_story_owner_notification(
+        api_client,
+        story_id,
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=_images_not_published_text(verdict.detail),
+        project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        log=log,
+    )
     await api_client.transition_story(story_id, "human-review")
+    await deliver_owed_notification(
+        api_client, redis_client, story_id, owed, log, story_record=True
+    )
     await notify_admins_best_effort(
         f"Story {story_id} was not deployed: {verdict.detail}",
         level="error",
         story_id=story_id,
+    )
+
+
+def _images_not_published_text(detail: str) -> str:
+    """Tell the owner their build never produced anything deployable."""
+    return (
+        "The project's build finished without publishing the images the deploy needs, "
+        f"so nothing was deployed. Reason: {detail}. A specialist has to look at this; "
+        "nothing more happens automatically."
+    )
+
+
+def _ci_attempts_exhausted_text(attempts: int) -> str:
+    """Tell the owner the automatic CI-fix loop has given up."""
+    return (
+        f"The same CI failure came back after {attempts} automatic fix attempts, "
+        "so the automatic retries have stopped. A specialist has to look at this; "
+        "nothing more happens automatically."
     )
 
 
@@ -363,9 +405,10 @@ def _has_usable_failed_job_evidence(run: object) -> bool:
     )
 
 
-async def _handle_failed_run(
+async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
+    redis_client: RedisStreamClient,
     *,
     owner: str,
     repo_name: str,
@@ -377,6 +420,7 @@ async def _handle_failed_run(
     existing_timeline: object,
 ) -> bool:
     """Persist one run's evidence and either create a fix or escalate."""
+    log = logger.bind(story_id=story_id, project_id=project_id)
     run_url = run.get("html_url", "")
     run_id = run.get("id", "")
     head_sha = run.get("head_sha") or "unknown"
@@ -450,7 +494,22 @@ async def _handle_failed_run(
         return False
 
     if attempt > _ci_failure_limit():
+        # Same reason as the unpublished-images refusal: the story leaves
+        # PR_REVIEW here and nothing scans it afterwards, so this is the last
+        # moment its owner can be told the retries have stopped.
+        owed = await owe_story_owner_notification(
+            api_client,
+            story_id,
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text=_ci_attempts_exhausted_text(_ci_failure_limit()),
+            project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
         await api_client.transition_story(story_id, "human-review")
+        await deliver_owed_notification(
+            api_client, redis_client, story_id, owed, log, story_record=True
+        )
         await notify_admins_best_effort(
             f"CI failure {fingerprint} exhausted {_ci_failure_limit()} fix attempts "
             f"for story {story_id}",
@@ -555,9 +614,11 @@ async def poll_merged_prs(
         if not await _images_ready_for_deploy(
             api_client,
             github,
+            redis_client,
             owner=owner,
             repo_name=repo_name,
             story_id=story_id,
+            project_id=project_id,
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
             pull_request=merged_pr,
@@ -662,6 +723,7 @@ async def poll_merged_prs(
 
 async def poll_ci_failures(
     api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
 ) -> int:
     """Check CI status on open PRs for stories in pr_review.
 
@@ -731,6 +793,7 @@ async def poll_ci_failures(
             created = await _handle_failed_run(
                 api_client,
                 github,
+                redis_client,
                 owner=owner,
                 repo_name=repo_name,
                 story_id=story_id,

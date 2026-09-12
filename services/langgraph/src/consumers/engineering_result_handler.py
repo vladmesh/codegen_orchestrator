@@ -200,7 +200,15 @@ def _stop_patch(stop_reason: WorkerStopReason | None, agent_limit_seconds: int |
     return {"run_metadata": metadata}
 
 
-async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg: str) -> None:
+async def _park_story_without_new_commit(
+    story_id: str,
+    task_id: str,
+    error_msg: str,
+    *,
+    redis: RedisStreamClient,
+    project_id: str,
+    telegram_chat_id: str,
+) -> None:
     """Take a story whose engineering produced no new commit out of the retry set.
 
     The story is not defective and nothing about it is transient: no PR can be
@@ -208,6 +216,13 @@ async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg:
     ``in_progress`` only feeds `complete_stories` a pull request GitHub refuses
     with 422 for ever. A person has to decide what happens next, and the reason
     they need travels with the story rather than only in this process's log.
+
+    Both audiences are told, for the same reason the ``gave_up`` route tells
+    them: the administrators because a parked story is operational work, and the
+    owner because their product stops here until a person moves it. The durable
+    owner-notification record lives in the scheduler and is not reachable from
+    this consumer, so the owner's message is the best-effort ``po:input``
+    publish this module already uses.
     """
     reason = {
         "reason": EngineeringFailureReason.NO_NEW_COMMIT.value,
@@ -228,9 +243,39 @@ async def _park_story_without_new_commit(story_id: str, task_id: str, error_msg:
         story_id=story_id,
         task_id=task_id,
     )
+    await notify_admins_best_effort(
+        f"Story {story_id} parked in human review: attempt {task_id} produced no new commit "
+        f"({error_msg})",
+        level="warning",
+        component="engineering_result_handler",
+        story_id=story_id,
+        task_id=task_id,
+        project_id=project_id,
+    )
+    if telegram_chat_id:
+        try:
+            await publish_story_event(
+                redis,
+                telegram_chat_id=telegram_chat_id,
+                event=OwnerNotificationEvent.STORY_BLOCKED,
+                text=(
+                    "The last attempt finished without changing any code, so there is nothing "
+                    "to review or deploy. A specialist has to look at this; nothing more "
+                    "happens automatically."
+                ),
+                story_id=story_id,
+                project_id=project_id,
+            )
+        except Exception:
+            logger.warning(
+                "po_notify_on_no_new_commit_failed",
+                story_id=story_id,
+                task_id=task_id,
+                exc_info=True,
+            )
 
 
-async def fail_job(
+async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part named
     task_id: str,
     error_msg: str,
     planning_task_id: str | None = None,
@@ -242,6 +287,8 @@ async def fail_job(
     turn_result_consumed: bool = False,
     story_id: str | None = None,
     failure_reason: EngineeringFailureReason | None = None,
+    project_id: str = "",
+    telegram_chat_id: str = "",
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await prepare_terminal_settlement(
@@ -265,7 +312,14 @@ async def fail_job(
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     if failure_reason is EngineeringFailureReason.NO_NEW_COMMIT and story_id:
-        await _park_story_without_new_commit(story_id, task_id, error_msg)
+        await _park_story_without_new_commit(
+            story_id,
+            task_id,
+            error_msg,
+            redis=redis,
+            project_id=project_id,
+            telegram_chat_id=telegram_chat_id,
+        )
     return live_work_unsettled({"status": "failed", "error": error_msg})
 
 
