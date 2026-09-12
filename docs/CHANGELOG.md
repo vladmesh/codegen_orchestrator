@@ -10,6 +10,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - `POST`, `PATCH` and `DELETE /api/system-configs` require internal or administrator access, so an ordinary
   LK bearer can no longer rewrite the scheduler and admission constants the fleet runs on.
 - `.env.example` documents `ADMIN_TELEGRAM_IDS`; an empty value means no account can mint invites.
+- A paid refusal parks its story through the story-backed owner notice when the work was initiated by a PO
+  request rather than a Run, and one task's failure no longer skips the rest of the dispatcher cycle.
 - A coding worker is handed a GitHub token minted for its own repository only, so a prompt-injected
   worker container can no longer reach every repository the App installation covers.
 - Worker output consumer groups are created at `0` before the first read, so a result published

@@ -175,13 +175,14 @@ def _paid_refusal(
     budget: EngineeringBudgetAdmissionRead | None = None,
     message: str | None = None,
     run_id: str = "eng-test",
+    initiating_run_id: str = "live-run-1",
 ) -> EngineeringDispatchRead:
     """A refusal from the paid gate, carrying the paid decision it wraps."""
     return EngineeringDispatchRead(
         outcome=EngineeringDispatchOutcome.REFUSED,
         reason=reason,
         run_id=run_id,
-        initiating_run_id="live-run-1",
+        initiating_run_id=initiating_run_id,
         paid_work=PaidRunStartRead(
             admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED, message=message),
             engineering_budget=budget,
@@ -1492,3 +1493,216 @@ class TestPollMergedPRs:
 
         assert result == 1
         api_client.transition_story.assert_called_once_with("story-2", "deploy")
+
+
+class _RefusalWorld:
+    """The API and stream a paid refusal's owner notification actually meets.
+
+    The pieces the delivery consults are real — the story whose status the
+    record is checked against, the project and user the recipient comes from,
+    and both places a record can live — so a test can tell a message that was
+    published from one that was only intended.
+    """
+
+    OWNER_USER_ID = 4242
+    OWNER_CHAT_ID = "900004242"
+
+    def __init__(self, api_client, *, initiating_run: RunDTO | None):
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        self.story = _story(id="story-1", project_id=PROJ_ID, status="in_progress")
+        self.initiating_run = initiating_run
+        self.story_record: dict | None = None
+        self.run_records: list[tuple[str, dict]] = []
+        self.published: list[dict] = []
+        self.task_transitions: list[tuple[tuple, dict]] = []
+        api_client.get_run = _AsyncMock(side_effect=self._get_run)
+        api_client.get_story = _AsyncMock(side_effect=self._get_story)
+        api_client.transition_story = _AsyncMock(side_effect=self._transition_story)
+        api_client.transition_task = _AsyncMock(side_effect=self._transition_task)
+        api_client.update_story_owner_notification = _AsyncMock(side_effect=self._write_story)
+        api_client.update_run = _AsyncMock(side_effect=self._write_run)
+        api_client.get_project = _AsyncMock(return_value=self._project())
+        api_client.get_user = _AsyncMock(return_value=self._owner())
+
+    def _project(self):
+        from uuid import UUID
+
+        from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+
+        return ProjectDTO(
+            id=UUID(PROJ_ID),
+            initiating_run_id="po-1e07a3205c84",
+            title="Test Project",
+            slug="test-project",
+            status=ProjectStatus.ACTIVE,
+            config={"workspace_ready": True},
+            owner_id=self.OWNER_USER_ID,
+            created_at=_NOW,
+        )
+
+    def _owner(self):
+        from shared.contracts.dto.user import UserDTO
+
+        return UserDTO(
+            id=self.OWNER_USER_ID,
+            telegram_id=int(self.OWNER_CHAT_ID),
+            is_admin=False,
+            created_at=_NOW,
+        )
+
+    async def _get_run(self, run_id: str) -> RunDTO:
+        if self.initiating_run is not None and run_id == self.initiating_run.id:
+            return self.initiating_run
+        raise _not_found_error(f"runs/{run_id}")
+
+    async def _get_story(self, story_id: str) -> StoryDTO:
+        assert story_id == self.story.id
+        return self.story
+
+    async def _transition_story(self, story_id: str, action: str):
+        assert (story_id, action) == (self.story.id, "human-review")
+        self.story = self.story.model_copy(update={"status": StoryStatus.WAITING_HUMAN_REVIEW})
+        return self.story
+
+    async def _transition_task(self, task_id, status, actor, **kwargs):
+        self.task_transitions.append(((task_id, status, actor), kwargs))
+        return {}
+
+    async def _write_story(self, story_id: str, record: dict) -> None:
+        assert story_id == self.story.id
+        self.story_record = record
+
+    async def _write_run(self, run_id: str, data: dict) -> None:
+        record = data["run_metadata"]["owner_notification"]
+        self.run_records.append((run_id, record))
+        assert self.initiating_run is not None
+        self.initiating_run = self.initiating_run.model_copy(
+            update={"run_metadata": {"owner_notification": record}}
+        )
+
+    def redis(self):
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        client = _AsyncMock()
+        client.publish_flat = _AsyncMock(side_effect=self._publish_flat)
+        return client
+
+    async def _publish_flat(self, queue: str, fields: dict) -> None:
+        from shared.queues import PO_INPUT_QUEUE
+
+        assert queue == PO_INPUT_QUEUE
+        self.published.append(fields)
+
+    @property
+    def owner_message(self) -> dict:
+        assert len(self.published) == 1, self.published
+        return self.published[0]
+
+
+def _not_found_error(path: str):
+    """The error the API client raises for a GET that does not resolve."""
+    import httpx
+
+    request = httpx.Request("GET", f"http://api/{path}")
+    return httpx.HTTPStatusError(
+        "404 Not Found", request=request, response=httpx.Response(404, request=request)
+    )
+
+
+class TestRefusalWithoutARun:
+    """A paid refusal parks its story whether or not a Run initiated it."""
+
+    @staticmethod
+    def _todo_task():
+        return _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_whose_initiator_is_not_a_run_still_parks_the_story(self, api_client):
+        """A project born from a PO brief has a request id, not a Run, behind it.
+
+        Nothing dispatched this work, so there is no Run to hang the record on
+        and the story carries it instead — the same place the PR poller puts one.
+        The owner still hears why their story stopped.
+        """
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        world = _RefusalWorld(api_client, initiating_run=None)
+        redis_client = world.redis()
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            EngineeringDispatchRefusal.PAID_WORK_LIMIT,
+            message="Your plan does not cover more work on this story.",
+            initiating_run_id="po-1e07a3205c84",
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        assert world.story.status is StoryStatus.WAITING_HUMAN_REVIEW
+        message = world.owner_message
+        assert message["story_id"] == "story-1"
+        assert message["telegram_chat_id"] == world.OWNER_CHAT_ID
+        assert message["text"] == "Your plan does not cover more work on this story."
+        # Owed on the story and settled there: no Run was invented to hold it.
+        assert world.story_record["state"] == "delivered"
+        assert world.run_records == []
+        # The rest of the refusal ran: the task is out of todo and in review.
+        assert [call[0] for call in world.task_transitions] == [
+            ("task-1", "in_dev", "dispatcher"),
+            ("task-1", "waiting_human_review", "dispatcher"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_initiated_by_a_real_run_keeps_the_run_backed_record(self, api_client):
+        """A Run that exists is still where its own refusal is recorded."""
+        from _run_routing_factories import _make_run
+
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        run = _make_run(
+            id="live-run-1", project_id=PROJ_ID, type=RunType.ENGINEERING, status=RunStatus.RUNNING
+        )
+        world = _RefusalWorld(api_client, initiating_run=run)
+        redis_client = world.redis()
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            EngineeringDispatchRefusal.PAID_WORK_LIMIT,
+            message="Your plan does not cover more work on this story.",
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        assert world.story.status is StoryStatus.WAITING_HUMAN_REVIEW
+        assert world.owner_message["story_id"] == "story-1"
+        assert world.story_record is None
+        assert [run_id for run_id, _ in world.run_records] == ["live-run-1", "live-run-1"]
+        assert world.run_records[-1][1]["state"] == "delivered"
+
+    @pytest.mark.asyncio
+    async def test_one_task_that_raises_does_not_skip_the_rest_of_the_cycle(
+        self, api_client, redis_client
+    ):
+        """A cycle serves every candidate; one broken task is not a cycle failure."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo"),
+            _task(id="task-2", project_id=PROJ_ID, story_id="story-2", status="todo"),
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.get_story.return_value = _story(id="story-2", project_id=PROJ_ID)
+        api_client.admit_engineering_dispatch.side_effect = [
+            _paid_refusal(
+                EngineeringDispatchRefusal.PAID_WORK_LIMIT,
+                message="Your plan does not cover more work on this story.",
+            ),
+            _admitted(),
+        ]
+        api_client.get_run.side_effect = RuntimeError("api unavailable")
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
+
+        redis_client.publish_message.assert_called_once()
+        assert redis_client.publish_message.call_args[0][1].task_id == "eng-test"
