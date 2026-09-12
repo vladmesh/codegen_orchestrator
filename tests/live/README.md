@@ -57,15 +57,14 @@ JUnit metadata, logs, and run directories always record the canonical name.
 The local target names reflect that same contract:
 
 - `make test-live-mega-noop` runs only the noop class.
-- `make test-live-mega` is a compatibility alias for `test-live-mega-noop`.
 - `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
 - `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
 - `make test-live-mega-brief-package` runs only its package variant, the same path onto the kit
   package route, for one locally configured pair.
 - `make test-live-matrix` delegates the four paid cells to the stand runner.
-- `make test-live-pipeline` is a legacy aggregate of scaffold, engineering, and both full-pipeline
-  classes. It is not a named suite and intentionally remains visible until duplicate coverage is
-  removed in a later iteration.
+
+There is no compatibility alias or aggregate target in the local Makefile: select the named class
+that owns the coverage you want, or use `make stand-run SUITE=<suite>` for a canonical stand run.
 
 ### Switching the QA executor
 
@@ -184,8 +183,8 @@ test-live-clean` can remove the leftovers once debugging is done. Without the fl
 fail-closed exactly as above.
 
 ```bash
-LIVE_NO_CLEANUP=1 make test-live-mega   # leave resources for inspection on failure
-make test-live-clean                    # remove them afterwards
+LIVE_NO_CLEANUP=1 make test-live-mega-noop   # leave resources for inspection on failure
+make test-live-clean                         # remove them afterwards
 ```
 
 The full pipeline has a separate post-deploy gate. Once the application is `running`, the harness
