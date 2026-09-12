@@ -40,7 +40,7 @@ Each cleanup item has three ratings:
 
 ## Refresh note — 2026-09-12
 
-This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 update checks H1 against merged PR [#485](https://github.com/vladmesh/codegen_orchestrator/pull/485), merge commit `41d9388c`; other findings retain their 2026-09-09 validation scope. Original evidence below remains historical context, not a claim about current `main`.
+This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 update checks H1 against merged PR [#485](https://github.com/vladmesh/codegen_orchestrator/pull/485), merge commit `41d9388c`, and L1 against merged PR [#486](https://github.com/vladmesh/codegen_orchestrator/pull/486), merge commit `f9ac3eb8`; other findings retain their 2026-09-09 validation scope. Original evidence below remains historical context, not a claim about current `main`.
 
 ### Completed or materially reduced
 
@@ -56,6 +56,7 @@ This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 u
 
 - **H4 — completed in PR #482 (merged 2026-09-09).** Both worker services now inherit the unchanged root Ruff policy; the local Ruff configs are removed. The migration fixes imports/formatting, extracts launch/Compose/GC phases and preserves exception causes. Narrow documented line exceptions remain for test fixtures, deliberate proxy/PATH boundaries and the two existing launch signatures; there are no new root exclusions or complexity suppressions.
 - **M8 — completed in PR #481 (merged 2026-09-09).** Both frontend Dockerfiles use plain `npm ci`. Existing dependencies and lockfiles already passed normal peer resolution, lint and production build locally and in PR CI, so no dependency updates were needed. Full frontend Docker images were not built in that iteration.
+- **L1 — completed in PR #486 (merged 2026-09-12).** The retired `test-live-mega` compatibility target and `test-live-pipeline` legacy aggregate are removed from the Makefile and `.PHONY`; live/operator docs use canonical named targets, and a regression guard prevents restoring either retired target or its documented command spelling. The already-existing package brief target is now also represented in `.PHONY` and `make help`.
 
 ### Recheck / refresh before implementation
 
@@ -63,11 +64,11 @@ This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 u
 - **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
 - **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
 - **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
-- **L1 / L2:** the Makefile aliases/legacy aggregate and `mega-test` cleanup prefix still exist. Both remain low-risk cleanup candidates, but L2 still needs the operational resource sweep/proof described below.
+- **L2:** the `mega-test` cleanup prefix still exists and still needs the operational resource sweep/proof described below.
 - **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
 - **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
 
-The cleanup order below now marks completed iterations explicitly. Of sixteen H/M/L findings, eight are complete (H2, H3, H4, M1, M3, M4, M6, M8), H1 is partially complete, and seven others remain open (M2, M5, M7, L1–L4). K1–K4 are conditional retention notes, not four additional deletion tasks.
+The cleanup order below now marks completed iterations explicitly. Of sixteen H/M/L findings, nine are complete (H2, H3, H4, M1, M3, M4, M6, M8, L1), H1 is partially complete, and six others remain open (M2, M5, M7, L2–L4). K1–K4 are conditional retention notes, not four additional deletion tasks.
 
 ---
 
@@ -639,6 +640,17 @@ For each alias, identify callers in CI/docs/scripts. When only humans/docs remai
 
 No architectural redesign is needed.
 
+### Progress — 2026-09-12
+
+**Completed in [PR #486](https://github.com/vladmesh/codegen_orchestrator/pull/486) (merged 2026-09-12).**
+
+- removed the actual `test-live-mega` compatibility target and `test-live-pipeline` legacy aggregate from the Makefile and `.PHONY`;
+- updated `docs/TESTING.md`, `docs/live-deploy-operations.md`, and `tests/live/README.md` to use canonical named targets;
+- added a regression guard against restoring either retired target or its retired documented command spelling;
+- added the already-existing `test-live-mega-brief-package` target to `.PHONY` and `make help` while normalizing the target inventory.
+
+**Validation:** full CI run `34697654584` passed on head `08a556c`; merged as `f9ac3eb8`.
+
 ---
 
 ## L2. Legacy live-test prefix `mega-test` remains sweepable
@@ -774,7 +786,7 @@ For polling/observability settings, last-known-good is reasonable resilience. Fo
 3. **Completed in PR #464:** make PO checkpointer persistence required in the production consumer path while retaining explicit `MemorySaver` construction for tests.
 4. **Completed in PRs #476 and #478:** require system summarization config, log effective values, and remove retired numeric env/deploy wiring.
 5. **Completed in PR #481:** remove the obsolete `--legacy-peer-deps` flag; both current lockfiles already pass plain `npm ci`.
-6. Remove obsolete Makefile aliases whose callers are already gone.
+6. **Completed in PR #486:** remove the obsolete live-test Makefile alias/legacy aggregate, update docs to canonical named targets, and pin their absence with a regression guard.
 
 These are high-confidence changes with limited architectural surface.
 
