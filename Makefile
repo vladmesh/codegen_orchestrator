@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-mega-brief-package test-live-matrix test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -43,6 +43,7 @@ help:
 	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
 	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
 	@echo "  make test-live-mega-brief - Run the Product Brief E2E class for one selected pair"
+	@echo "  make test-live-mega-brief-package - Run the Product Brief package E2E class"
 	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
@@ -367,9 +368,7 @@ test-live-mega-noop:
 	@echo "Running mega-noop: TestFullPipeline only (no LLM)..."
 	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
 
-# Temporary compatibility alias. Its exact target is mega-noop, never the whole file.
-test-live-mega: test-live-mega-noop
-
+# L1 retired compatibility spelling `test-live-mega: test-live-mega-noop`; use the canonical target directly.
 test-live-mega-llm:
 	@echo "Running mega-llm: TestFullPipelineLLM only (one selected developer/QA pair)..."
 	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v --tb=long -x -s
@@ -386,11 +385,7 @@ test-live-mega-brief-package:
 test-live-matrix:
 	@$(MAKE) --no-print-directory stand-run SUITE=matrix
 
-# Legacy aggregate, not a named suite: scaffold + engineering + both full-pipeline classes.
-test-live-pipeline:
-	@echo "Running legacy aggregate: scaffold, engineering, then both full-pipeline classes..."
-	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
-
+# Legacy aggregate, not a named suite: `test-live-pipeline` is retired; invoke the named targets explicitly.
 
 # === Stand ===
 

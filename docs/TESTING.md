@@ -33,8 +33,7 @@ make test-integration-backend-dind  # Worker-container tests; CI runs these on p
 # Live pipeline (real services, no LLM — structured 3-tier)
 make test-live-smoke           # Scaffold phase only (~30s)
 make test-live-engineering     # Scaffold + engineering (~3.5 min)
-make test-live-mega            # Full pipeline with deploy (~7-10 min)
-make test-live-pipeline        # All live tests
+make test-live-mega-noop       # Free full pipeline with deploy and deterministic QA
 
 # E2E
 make stand-run SUITE=mega-llm    # Full stand pipeline with real coding and QA agents
@@ -141,7 +140,7 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 |------|----------------|-------|----------|----------------|
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
-| Full | `test-live-mega` | ~3 | ~7-10 min | Deploy, infra, full pipeline end-to-end |
+| Full | `test-live-mega-noop` | ~3 | ~7-10 min | Deploy, infra, full pipeline end-to-end |
 
 **Key properties**:
 - Module-scoped async fixtures share one pipeline run across tests per tier
@@ -161,9 +160,10 @@ nested-daemon suite costs more than it protects. On `main`, `Required CI Gate` c
 before worker images may be released, so a failed DinD run blocks the release marker for the exact
 SHA it tested.
 Worker-path coverage is available through `make test-live-engineering`
-(`tests/live/test_pipeline_engineering.py`). Use `make test-live-pipeline` for the broader
-scaffold, engineering, and deploy path. The default `make test-live` intentionally excludes
-pipeline tests and does not cover worker creation.
+(`tests/live/test_pipeline_engineering.py`). Use `make test-live-mega-noop` for the deterministic
+scaffold, engineering, deploy and QA path, or a named `make stand-run SUITE=...` for model-backed
+E2E. The default `make test-live` intentionally excludes pipeline tests and does not cover worker
+creation.
 
 The Docker-in-Docker suite spins up the full stack:
 - **Services**: api, langgraph, engineering-worker, worker-manager
