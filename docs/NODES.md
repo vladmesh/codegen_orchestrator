@@ -185,7 +185,7 @@ infra-service
 **Output**: the results go to the Redis Stream `provisioner:results`
 
 Server discovery is fail-closed: unknown provider servers are recorded as reserved and unmanaged.
-The scheduler publishes provisioning triggers only for managed records, including its startup retry
+`scheduler-infrastructure` publishes provisioning triggers only for managed records, including its startup retry
 path. The infra-service repeats both the managed-record check and the provider-ID allowlist check
 before any provisioning path, then repeats the allowlist at the destructive operation boundary, so
 direct or stale queue messages cannot bypass the discovery policy. Unauthorized scheduled rows are
@@ -247,4 +247,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → User
 ```
 
-**Important**: the PO ReactAgent coordinates the flow through LangChain tools. The Scaffolder prepares the repository before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. The scheduler PR poller detects a merge and triggers deploy.
+**Important**: the PO ReactAgent coordinates the flow through LangChain tools. The Scaffolder prepares the repository before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. The `scheduler-pipeline` PR poller detects a merge and triggers deploy.

@@ -59,7 +59,7 @@ logger.info("event_name", key1="value1", key2=123)
 | `LOG_LEVEL` | `INFO` | Logging level: DEBUG, INFO, WARNING, ERROR |
 | `LOG_FORMAT` | `console` | Output format: `json` (production) or `console` (dev) |
 | `SERVICE_NAME` | `unknown` | Service name added to all logs |
-| `LOKI_URL` | — | Loki **read** address for log consumers (`http://loki:3100`). The scheduler's analytics aggregator refuses to start without it. Unrelated to `LOKI_PUSH_*`, which are Promtail's write credentials. |
+| `LOKI_URL` | — | Loki **read** address for log consumers (`http://loki:3100`). `scheduler-maintenance` refuses to start without it; pipeline and infrastructure do not read it. |
 
 ### Example Output
 
@@ -197,12 +197,17 @@ async def my_node(state: dict) -> dict:
 | `ansible_stderr` | warning | Ansible stderr output | `output` |
 | `ansible_playbook_timeout` | error | Ansible timeout | `playbook`, `timeout` |
 
-### Scheduler
+### Scheduler services
 
 | Event | Level | Description | Context Fields |
 |-------|-------|-------------|----------------|
-| `scheduler_started` | info | Scheduler started | — |
-| `scheduler_shutdown_requested` | info | Shutdown signal | — |
+| `scheduler_pipeline_started` | info | Pipeline dispatcher started | — |
+| `scheduler_infrastructure_started` | info | Infrastructure loops started | — |
+| `scheduler_maintenance_started` | info | Maintenance loops started | — |
+| `service_workers_started` | info | The process launched its owned long-lived loops | `service`, `workers` |
+| `service_shutdown_requested` | info | One scheduler process received cancellation | `service` |
+| `service_worker_failed` | error | One loop failed and the process is stopping its siblings | `service` |
+| `service_workers_stopped` | info | Every loop in the process has stopped | `service` |
 | `health_check_start` | info | Health check started | `servers_count` |
 | `server_healthy` | debug | Server is healthy | `server_handle` |
 | `incident_recovery_triggered` | info | Recovery triggered | `server_handle` |
@@ -256,7 +261,7 @@ docker compose logs langgraph | jq 'select(.event=="node_start")'
 docker compose logs | jq 'select(.level=="error")'
 
 # Filter by service
-docker compose logs | jq 'select(.service=="scheduler")'
+docker compose logs scheduler-pipeline scheduler-infrastructure scheduler-maintenance
 
 # Trace by correlation_id
 docker compose logs | jq 'select(.correlation_id=="msg_123_1735167345")'
@@ -354,6 +359,4 @@ logger.info("error")  # BAD
 1. Avoid logging large objects (truncate if needed)
 2. Use `DEBUG` level for high-frequency logs
 3. Set `LOG_LEVEL=INFO` in production
-
-
 

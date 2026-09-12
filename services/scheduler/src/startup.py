@@ -1,9 +1,10 @@
-"""Scheduler startup: validate system configs and expose ConfigStore.
+"""Scheduler startup: validate process-owned configs and expose ConfigStore.
 
-Call init_config() once at startup before any workers start.
+Call init_config() with the process key set before any workers start.
 Other modules import `config` and use `config.get_int(...)`.
 """
 
+from collections.abc import Collection
 import os
 
 from shared.config_store import ConfigStore
@@ -11,20 +12,13 @@ from shared.config_store import ConfigStore
 # Module-level singleton — initialized by init_config()
 config: ConfigStore | None = None
 
-# All config keys required by the scheduler service
-REQUIRED_KEYS = [
+# Config ownership follows the process boundary. A process validates only the
+# values its own loops can read, so an unrelated missing value cannot block it.
+PIPELINE_REQUIRED_KEYS = {
     "scheduler.dispatch_interval_seconds",
-    "scheduler.github_sync_interval",
-    "scheduler.github_sync_missing_threshold",
-    "scheduler.server_sync_interval",
-    "scheduler.server_details_sync_interval",
-    "scheduler.provisioning_stuck_timeout_seconds",
-    "scheduler.provisioning_trigger_cooldown_seconds",
     "scheduler.scaffold_inflight_ttl",
     "scheduler.service_template_source",
     "scheduler.service_template_ref",
-    "scheduler.ssl_check_timeout",
-    "scheduler.rag_summarizer_poll_interval",
     "scheduler.ci_failure_max_fingerprint_attempts",
     "scheduler.ci_failure_log_excerpt_lines",
     "deploy.max_deploy_retries",
@@ -33,6 +27,7 @@ REQUIRED_KEYS = [
     "supervisor.story_stuck_threshold_minutes",
     "supervisor.story_max_architect_retries",
     "supervisor.story_retry_ttl",
+    "supervisor.qa_handoff_recovery_minutes",
     "supervisor.qa_failure_max_fingerprint_attempts",
     "supervisor.qa_max_fix_attempts",
     "supervisor.resource_wait_timeout_minutes",
@@ -43,6 +38,14 @@ REQUIRED_KEYS = [
     "supervisor.temporary_access_revoke_stale_minutes",
     "supervisor.temporary_access_max_revoke_attempts",
     "supervisor.temporary_access_unrevoked_ttl_minutes",
+}
+
+INFRASTRUCTURE_REQUIRED_KEYS = {
+    "scheduler.server_sync_interval",
+    "scheduler.server_details_sync_interval",
+    "scheduler.provisioning_stuck_timeout_seconds",
+    "scheduler.provisioning_trigger_cooldown_seconds",
+    "scheduler.ssl_check_timeout",
     "health.ram_threshold_pct",
     "health.disk_threshold_pct",
     "health.consecutive_failure_threshold",
@@ -50,7 +53,17 @@ REQUIRED_KEYS = [
     "health.metrics_retention_hours",
     "health.metrics_cleanup_interval_seconds",
     "health.http_timeout",
-]
+}
+
+MAINTENANCE_REQUIRED_KEYS = {
+    "scheduler.github_sync_interval",
+    "scheduler.github_sync_missing_threshold",
+    "scheduler.rag_summarizer_poll_interval",
+}
+
+REQUIRED_KEYS = sorted(
+    PIPELINE_REQUIRED_KEYS | INFRASTRUCTURE_REQUIRED_KEYS | MAINTENANCE_REQUIRED_KEYS
+)
 
 
 def get_config() -> ConfigStore:
@@ -62,8 +75,8 @@ def get_config() -> ConfigStore:
     return config
 
 
-def init_config() -> ConfigStore:
-    """Initialize ConfigStore and validate all required keys.
+def init_config(required_keys: Collection[str]) -> ConfigStore:
+    """Initialize ConfigStore and validate the requested process keys.
 
     Raises RuntimeError if any required config is missing.
     Must be called before workers start.
@@ -74,5 +87,5 @@ def init_config() -> ConfigStore:
         raise RuntimeError("API_BASE_URL is not set")
 
     config = ConfigStore(api_base_url)
-    config.validate_required(REQUIRED_KEYS)
+    config.validate_required(required_keys)
     return config

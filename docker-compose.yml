@@ -377,7 +377,7 @@ services:
       - qa_egress
     restart: unless-stopped
 
-  scheduler:
+  scheduler-pipeline:
     image: codegen-orchestrator/scheduler:local
     build:
       context: .
@@ -392,12 +392,90 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      SERVICE_NAME: scheduler
+      SERVICE_NAME: scheduler-pipeline
+    command: ["python", "-m", "src.pipeline"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
+    volumes:
+      - ./services/scheduler/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  scheduler-infrastructure:
+    image: codegen-orchestrator/scheduler:local
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scheduler-infrastructure
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
-      # Loki read address for the analytics aggregator. Not the push path —
-      # LOKI_PUSH_* are Promtail's write credentials. Required: without it
-      # product analytics are not collected, so compose refuses to start.
-      LOKI_URL: ${LOKI_URL:?set LOKI_URL to the Loki read address, e.g. http://loki:3100}
+    command: ["python", "-m", "src.infrastructure"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
+    volumes:
+      - ./services/scheduler/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+    depends_on:
+      api:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  scheduler-maintenance:
+    image: codegen-orchestrator/scheduler:local
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scheduler-maintenance
+    command: ["python", "-m", "src.maintenance"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated

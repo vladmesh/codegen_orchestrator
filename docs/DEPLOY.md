@@ -163,7 +163,7 @@ means that no Time4VPS server is managed. Every other newly discovered server is
 provisioning trigger.
 
 The same allowlist is checked again by `infra-service` before either Ansible or reinstall work and
-once more immediately before an OS reinstall. The `is_managed` database flag and the scheduler
+once more immediately before an OS reinstall. The `is_managed` database flag and `scheduler-infrastructure`
 trigger filters are separate guards, so a stale status or a manually published queue message cannot
 by itself authorize provisioning.
 
@@ -178,7 +178,7 @@ To adopt a new blank target:
    an accidentally removed ID preserves the server's prior operational status. For a verified blank
    existing row, explicitly PATCH its status to `pending_setup` to use the non-destructive SSH path.
 4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
-   explicitly through the admin API and watch the provisioning logs. The scheduler keeps that
+   explicitly through the admin API and watch the provisioning logs. `scheduler-infrastructure` keeps that
    persisted intent until infra-service claims it, then infra-service changes the lifecycle status
    to `provisioning` immediately before the guarded reinstall path.
 

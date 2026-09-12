@@ -4751,7 +4751,7 @@ def test_a_debug_dump_bounds_the_log_slices_it_embeds(
     assert (
         embedded
         == [pipeline_helpers.LOG_TAIL_MAX_CHARS]
-        + [pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS] * 4
+        + [pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS] * 6
     )
     assert [
         "docker",
@@ -4764,7 +4764,7 @@ def test_a_debug_dump_bounds_the_log_slices_it_embeds(
         "compose",
         "logs",
         f"--tail={pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_LINES}",
-        "scheduler",
+        "scheduler-pipeline",
     ] in commands
 
 

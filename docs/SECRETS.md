@@ -74,4 +74,4 @@ Application deployment is fully delegated to GitHub Actions. This allows secure 
 3.  **Infra Service provisions Server** → Uses L1 Keys (Time4VPS API) for server setup. Ansible playbooks for Docker/firewall/users.
 4.  **Scaffolder pushes code** → CI (`ci.yml`, auto on push) → builds Docker images → pushes to self-hosted registry.
 5.  **Orchestrator triggers deploy** → DevOps subgraph: environment-contract resolution → DOTENV → GitHub Secrets → `workflow_dispatch deploy.yml` → pull images from registry → `docker compose up`.
-6.  **Feature deploy** → a merged story PR is detected by the scheduler PR poller → `deploy:queue` → re-resolve env → deploy.
+6.  **Feature deploy** → a merged story PR is detected by the `scheduler-pipeline` PR poller → `deploy:queue` → re-resolve env → deploy.

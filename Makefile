@@ -83,7 +83,7 @@ lock-deps:
 # === Docker ===
 
 up:
-	$(DOCKER_COMPOSE) up -d 
+	$(DOCKER_COMPOSE) up -d --remove-orphans
 
 down:
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
@@ -112,7 +112,7 @@ rebuild:
 	@echo "🔨 Building worker base images..."
 	@$(MAKE) rebuild-worker-images
 	@echo "🚀 Starting stack..."
-	$(DOCKER_COMPOSE) up -d
+	$(DOCKER_COMPOSE) up -d --remove-orphans
 	@echo "✅ Rebuild complete!"
 
 # === Worker Base Images ===

@@ -60,7 +60,7 @@ Both must pass.
 | api | 6 files | 2 files | via backend suite | via stand mega suites |
 | langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) + po-tools suite (9 tests) | via stand mega suites |
 | worker-manager | 15 files | — | 4 tests (worker creation/execution) | via stand mega suites |
-| scheduler | 2 files | 2 files | — | — |
+| scheduler | 30+ files | 4 files | infrastructure stack | via stand mega |
 | telegram_bot | 3 files | — | via frontend suite | — |
 | infra-service | — | — | 1 file (Ansible) | — |
 | scaffolder | 67 tests | — | — | — |
