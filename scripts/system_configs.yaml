@@ -4,6 +4,19 @@
 # change made through the typed API survives later deploys. Keys absent from
 # this file are owned by the database alone and are never touched.
 
+# --- admission ---
+# Starting budget an invited user receives when they redeem the promo code the
+# bot mints for them. Zero credits would leave the account admitted nowhere.
+- key: admission.invite_credits_microusd
+  value: 5000000
+  category: admission
+  description: "Credits in micro-USD armed on an invited user's engineering budget ($5)"
+
+- key: admission.invite_attempt_reservation_microusd
+  value: 1000000
+  category: admission
+  description: "Micro-USD held per engineering attempt for an invited user ($1)"
+
 # --- scheduler ---
 - key: work_admission.max_projects_per_user
   value: 3
