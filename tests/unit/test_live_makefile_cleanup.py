@@ -1,7 +1,7 @@
 """Regression guards for retired live-test Makefile compatibility targets."""
 
-import re
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).parents[2]
 MAKEFILE = ROOT / "Makefile"
