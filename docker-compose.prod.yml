@@ -6,40 +6,128 @@
 #   - restart: unless-stopped on stateless services (already set on workers/caddy/registry)
 #   - DB credentials have no defaults (fail-fast if .env is misconfigured)
 #   - Redis AOF persistence enabled
+#   - Every platform container rotates its JSON logs and, where its footprint is
+#     known, runs under a memory limit
+#
+# Log rotation: the host's Docker daemon keeps json-file logs unbounded by
+# default, so a chatty container fills the disk with nothing to stop it. Every
+# service below carries `logging: *default-logging`, which caps one container at
+# 5 files of 50 MB (250 MB), and every service in docker-compose.yml has an entry
+# here so a new one cannot ship without rotation — `tests/unit/test_production_
+# compose_limits.py` fails the build if one is missing.
+#
+# Memory limits: compose v2 outside swarm honours `mem_limit` and ignores
+# `deploy.resources.limits`, so the limits are written as `mem_limit`, the same
+# form worker-manager uses for the containers it creates. The coding workers this
+# host also runs are 4 GiB each with `engineering.worker_slots=1`, so the platform
+# is deliberately kept well under the rest of the host's RAM. The four LangGraph
+# agent consumers (architect, engineering-worker, deploy-worker, qa-worker) carry
+# no limit yet: their footprint has not been measured, and a limit guessed too low
+# would kill an agent mid-run.
 #
 # Secret paths (SSH key, GitHub App PEM, HOST_CLAUDE_DIR, HOST_CODEX_HOME)
 # are controlled via env vars in .env — see docs/DEPLOY.md for required values.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
 
 services:
   api:
     restart: unless-stopped
     ports: !reset []
+    logging: *default-logging
+    mem_limit: 768m
 
   admin-frontend:
     # Operator access goes through an SSH tunnel until the admin UI has an
     # authenticated TLS route in Caddy. Never publish Basic Auth over HTTP.
     ports: !override
       - "127.0.0.1:3001:80"
+    logging: *default-logging
+    mem_limit: 64m
 
   user-dashboard:
     # Public access is served by Caddy at /lk; a direct port would bypass TLS
     # and expose nginx's unrestricted /api proxy.
     ports: !reset []
+    logging: *default-logging
+    mem_limit: 64m
 
   langgraph:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 1536m
+
+  architect:
+    logging: *default-logging
+
+  engineering-worker:
+    logging: *default-logging
+
+  deploy-worker:
+    logging: *default-logging
+
+  qa-worker:
+    logging: *default-logging
 
   telegram_bot:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 256m
+
+  infra-service:
+    logging: *default-logging
+    mem_limit: 512m
+
+  scaffolder:
+    logging: *default-logging
+    mem_limit: 512m
+
+  worker-manager:
+    logging: *default-logging
+    mem_limit: 512m
+
+  worker-broker:
+    logging: *default-logging
+    mem_limit: 256m
 
   scheduler-pipeline:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
 
   scheduler-infrastructure:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
 
   scheduler-maintenance:
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+
+  caddy:
+    logging: *default-logging
+    mem_limit: 128m
+
+  registry:
+    logging: *default-logging
+    mem_limit: 256m
+
+  loki:
+    logging: *default-logging
+    mem_limit: 512m
+
+  promtail:
+    logging: *default-logging
+    mem_limit: 128m
+
+  grafana:
+    logging: *default-logging
+    mem_limit: 256m
 
   db:
     # PostgreSQL is an internal control-plane dependency, not a host service.
@@ -48,6 +136,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    logging: *default-logging
+    mem_limit: 1g
 
   redis:
     command: redis-server --appendonly yes
+    logging: *default-logging
+    mem_limit: 512m
