@@ -101,7 +101,14 @@ services:
       - TIME4VPS_PASSWORD=test
       - HEALTH_CHECK_INTERVAL=60
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SERVICE_NAME=scheduler-infrastructure
     command: ["python", "-m", "src.infrastructure"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     depends_on:
       system-config-seed:
         condition: service_healthy
@@ -121,7 +128,14 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SERVICE_NAME=scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     depends_on:
       system-config-seed:
         condition: service_healthy
@@ -146,9 +160,9 @@ services:
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       scheduler-infrastructure:
-        condition: service_started
+        condition: service_healthy
       scheduler-pipeline:
-        condition: service_started
+        condition: service_healthy
       api:
         condition: service_healthy
     volumes:

@@ -429,7 +429,9 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            bash scripts/wait_scheduler_services.sh 60 ${{ env.COMPOSE_ARGS }}
+            docker compose ${{ env.COMPOSE_ARGS }} \
+              up -d --force-recreate --no-deps --wait --wait-timeout 180 \
+              scheduler-pipeline scheduler-infrastructure scheduler-maintenance
 
       - name: Cleanup
         uses: appleboy/ssh-action@v1

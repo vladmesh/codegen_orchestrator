@@ -138,13 +138,13 @@ def test_a_template_override_reaches_the_suite_and_the_seeded_stand_configuratio
     )
 
 
-def test_stand_uses_shared_scheduler_readiness_after_seeding():
+def test_stand_recreates_and_waits_for_scheduler_health_after_seeding():
     bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
 
-    assert "bash scripts/wait_scheduler_services.sh" in bring_up
-    assert bring_up.index("seed_agent_configs.py") < bring_up.index(
-        "bash scripts/wait_scheduler_services.sh"
-    )
+    gate = "up -d --force-recreate --no-deps --wait --wait-timeout 180"
+    assert gate in bring_up
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in bring_up
+    assert bring_up.index("seed_agent_configs.py") < bring_up.index(gate)
     assert "grep -q system_configs_validated" not in bring_up
 
 

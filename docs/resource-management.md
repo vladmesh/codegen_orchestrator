@@ -133,6 +133,7 @@ For parallel workers (see [docs/parallel-workers.md](parallel-workers.md)) the s
    * The agent calls `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards it through worker-broker, which authenticates and scopes the request before worker-manager manages sidecars in that namespace.
 2. **Garbage Collection**:
    * Explicit removal: on completion LangGraph calls `delete_worker` on `worker-manager`, which removes the containers, the network and the space on disk.
+   * Background cleanup: `worker-manager` sweeps orphaned worker containers, `dev_proj_*` networks and workspace directories every 30 minutes, covering crashes and OOM exits.
 
 ## See also
 

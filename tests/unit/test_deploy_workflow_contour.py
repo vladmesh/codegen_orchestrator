@@ -196,5 +196,7 @@ def test_scheduler_readiness_runs_after_system_config_seed():
     names = list(steps)
     readiness = steps["Wait for scheduler services"]
 
-    assert "scripts/wait_scheduler_services.sh" in readiness["with"]["script"]
+    script = readiness["with"]["script"]
+    assert "up -d --force-recreate --no-deps --wait --wait-timeout 180" in script
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in script
     assert names.index("Apply system configs") < names.index("Wait for scheduler services")

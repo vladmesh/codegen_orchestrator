@@ -394,6 +394,12 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -427,6 +433,12 @@ services:
       SERVICE_NAME: scheduler-infrastructure
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
     command: ["python", "-m", "src.infrastructure"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -458,6 +470,12 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-maintenance
     command: ["python", "-m", "src.maintenance"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated

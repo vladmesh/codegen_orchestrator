@@ -89,11 +89,38 @@ def test_compose_runs_independent_scheduler_processes():
         )
     ]
     assert builds[0] == builds[1] == builds[2]
+    expected_healthcheck = {
+        "test": [
+            "CMD-SHELL",
+            '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]',
+        ],
+        "interval": "5s",
+        "timeout": "3s",
+        "retries": 3,
+        "start_period": "120s",
+    }
     for name in ("scheduler-pipeline", "scheduler-infrastructure", "scheduler-maintenance"):
+        assert services[name]["healthcheck"] == expected_healthcheck
         assert not (
             {"scheduler-pipeline", "scheduler-infrastructure", "scheduler-maintenance"}
             & set(services[name]["depends_on"])
         )
+
+
+def test_infra_stack_waits_for_scheduler_health():
+    compose = yaml.safe_load((REPO_ROOT / "tests/compose/integration/infra.yml").read_text())
+    services = compose["services"]
+
+    assert services["scheduler-pipeline"]["healthcheck"]
+    assert services["scheduler-infrastructure"]["healthcheck"]
+    assert "SERVICE_NAME=scheduler-pipeline" in services["scheduler-pipeline"]["environment"]
+    assert (
+        "SERVICE_NAME=scheduler-infrastructure"
+        in services["scheduler-infrastructure"]["environment"]
+    )
+    runner_dependencies = services["integration-test-runner"]["depends_on"]
+    assert runner_dependencies["scheduler-pipeline"]["condition"] == "service_healthy"
+    assert runner_dependencies["scheduler-infrastructure"]["condition"] == "service_healthy"
 
 
 @pytest.mark.asyncio
