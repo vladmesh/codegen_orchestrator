@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import httpx
 import structlog
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
@@ -36,6 +37,7 @@ from ._recipients import resolve_project_recipient
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
+    owe_story_owner_notification,
     supervise_owed_owner_notifications,
 )
 from .pr_poller import poll_ci_failures, poll_merged_prs
@@ -201,20 +203,7 @@ async def _handle_refusal(
         return
     admission = decision.paid_work.admission
     if task.story_id and admission.message:
-        source_run = await api_client.get_run(decision.initiating_run_id)
-        owed = await owe_owner_notification(
-            api_client,
-            source_run,
-            event=OwnerNotificationEvent.STORY_QUARANTINED,
-            text=admission.message,
-            story_id=task.story_id,
-            project_id=str(task.project_id),
-            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-            task_id=task.id,
-            log=log,
-        )
-        await api_client.transition_story(task.story_id, "human-review")
-        await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
+        await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget
     await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
     if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
@@ -236,6 +225,76 @@ async def _handle_refusal(
         task_id=task.id,
         reason=decision.reason.value,
     )
+
+
+async def _initiating_run(
+    api_client: SchedulerAPIClient,
+    initiating_run_id: str,
+    log: structlog.BoundLogger,
+) -> RunDTO | None:
+    """The Run this work was initiated by, or None when the id is not a Run's.
+
+    A project created through the PO brief flow carries the id of the request
+    the owner made, not of a Run — nothing was dispatched to produce it. The
+    API answering 404 is the evidence for that, and the only thing it is taken
+    as: any other failure is a failure to find out and is raised.
+    """
+    try:
+        return await api_client.get_run(initiating_run_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != httpx.codes.NOT_FOUND:
+            raise
+        log.info("task_refusal_initiator_is_not_a_run", initiating_run_id=initiating_run_id)
+        return None
+
+
+async def _park_refused_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task: TaskDTO,
+    decision: EngineeringDispatchRead,
+    message: str,
+    log: structlog.BoundLogger,
+) -> None:
+    """Hand the story to a human and tell its owner why it stopped moving.
+
+    Where the durable record lives follows from what initiated the work. A Run
+    keeps its own refusal, as it always has. A story whose initiator is a PO
+    request has no Run to hang one on, so the record goes on the story — the
+    same place the PR poller puts one for an ending nothing dispatched.
+    """
+    source_run = await _initiating_run(api_client, decision.initiating_run_id, log)
+    if source_run is None:
+        owed = await owe_story_owner_notification(
+            api_client,
+            task.story_id,
+            # The event the PO prompt describes for exactly this ending: a
+            # specialist has the story now. `story_quarantined`, which the
+            # run-backed branch below sends, is not in the prompt's list.
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text=message,
+            project_id=str(task.project_id),
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
+        await api_client.transition_story(task.story_id, "human-review")
+        await deliver_owed_notification(
+            api_client, redis_client, task.story_id, owed, log, story_record=True
+        )
+        return
+    owed = await owe_owner_notification(
+        api_client,
+        source_run,
+        event=OwnerNotificationEvent.STORY_QUARANTINED,
+        text=message,
+        story_id=task.story_id,
+        project_id=str(task.project_id),
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        task_id=task.id,
+        log=log,
+    )
+    await api_client.transition_story(task.story_id, "human-review")
+    await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
 
 
 async def _publish_admitted_dispatch(
@@ -341,13 +400,20 @@ async def dispatch_todo_tasks(
             log.exception("task_dispatch_admission_failed")
             continue
 
-        if decision.outcome is EngineeringDispatchOutcome.REFUSED:
-            await _handle_refusal(api_client, redis_client, task, decision, log)
-        elif decision.outcome is EngineeringDispatchOutcome.REPAIR:
-            if await _execute_repair(api_client, task, decision, log):
+        # One task's handling must not end the cycle: the candidates after it
+        # are unrelated work, and a cycle that stops at the first broken task
+        # leaves them in todo for as long as the failure lasts.
+        try:
+            if decision.outcome is EngineeringDispatchOutcome.REFUSED:
+                await _handle_refusal(api_client, redis_client, task, decision, log)
+            elif decision.outcome is EngineeringDispatchOutcome.REPAIR:
+                if await _execute_repair(api_client, task, decision, log):
+                    dispatched += 1
+            elif await _publish_admitted_dispatch(api_client, redis_client, task, decision, log):
                 dispatched += 1
-        elif await _publish_admitted_dispatch(api_client, redis_client, task, decision, log):
-            dispatched += 1
+        except Exception:
+            log.exception("task_dispatch_handling_failed", task_id=task.id)
+            continue
 
     return dispatched
 
