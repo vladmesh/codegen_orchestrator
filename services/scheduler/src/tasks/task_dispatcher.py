@@ -368,7 +368,7 @@ async def task_dispatcher_loop() -> None:
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
                 merged = await poll_merged_prs(api_client, redis_client)
-                await poll_ci_failures(api_client)
+                await poll_ci_failures(api_client, redis_client)
 
                 # Supervisor checks
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)

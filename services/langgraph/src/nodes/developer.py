@@ -200,9 +200,11 @@ class DeveloperNode(FunctionalNode):
         if not repo_id:
             repo_id = state.get("repo_id")
 
-        # Get GitHub App token
+        # Get a GitHub App token scoped to this project's repository only. The
+        # worker is an ephemeral coding-agent container with unrestricted egress,
+        # so an installation-wide token would hand it every tenant's repository.
         github_client = GitHubAppClient()
-        access_token = await github_client.get_token(owner, repo_name)
+        access_token = await github_client.get_repo_scoped_token(owner, repo_name)
 
         # Build comprehensive task message for Claude
         task_message = build_task_message(

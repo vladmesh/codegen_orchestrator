@@ -48,7 +48,7 @@ class TestDeveloperNodeWorkerId:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_success_includes_worker_id(self, mock_github_cls, mock_api, mock_spawn):
         """DeveloperNode should include worker_id from SpawnResult on success."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(

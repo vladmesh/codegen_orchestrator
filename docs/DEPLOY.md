@@ -694,6 +694,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alem
 docker image prune -f
 ```
 
+### What the production overlay adds
+
+`docker-compose.prod.yml` gives every platform container `logging` with the
+json-file driver capped at `max-size: 50m` × `max-file: 5`, so one container's
+logs can never exceed 250 MB on disk — the daemon's default is unbounded. Memory
+limits live in the same overlay as `mem_limit` (compose v2 outside swarm ignores
+`deploy.resources`), sized to leave the host room for the 4 GiB coding worker;
+the four LangGraph agent consumers (`architect`, `engineering-worker`,
+`deploy-worker`, `qa-worker`) are deliberately left unsized until their
+footprint is measured. Every service in `docker-compose.yml` must have an entry
+in the overlay, and `tests/unit/test_production_compose_limits.py` fails if one
+does not.
+
 `worker-manager` and `worker-broker` are one control plane and roll out
 together — which the command above does, and the deploy workflow does the same.
 Do not restart one alone. They share the worker authorization record: the
