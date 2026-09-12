@@ -46,7 +46,7 @@ class TestBlockedFlowEndToEnd:
         mock_api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/test-repo")
         )
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghp_test")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghp_test")
 
         node = DeveloperNode()
         result = await node.run(

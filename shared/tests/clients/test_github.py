@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+import json
 import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1015,3 +1016,116 @@ async def test_an_externally_cancelled_run_is_not_reported_as_a_failure(authed_c
         )
 
     authed_client.get_workflow_failure_logs.assert_not_called()
+
+
+# --- repository-scoped installation tokens ---
+
+
+@pytest.mark.asyncio
+async def test_scoped_mint_sends_repositories_body(client, mock_jwt):
+    """A worker token must be minted for one repository, not the whole installation."""
+    installation_id = 4242
+
+    async with respx.mock(base_url="https://api.github.com") as respx_mock:
+        route = respx_mock.post(f"/app/installations/{installation_id}/access_tokens").mock(
+            return_value=httpx.Response(
+                httpx.codes.CREATED,
+                json={
+                    "token": "ghs_scoped",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        )
+
+        with patch.object(client, "get_installation_id", return_value=installation_id):
+            token = await client.get_repo_scoped_token("my-org", "my-repo")
+
+        assert token == "ghs_scoped"  # noqa: S105
+        assert json.loads(route.calls.last.request.content) == {"repositories": ["my-repo"]}
+
+
+@pytest.mark.asyncio
+async def test_unscoped_mint_sends_no_repositories_body(client, mock_jwt):
+    """The platform's own token stays installation-wide, with no request body."""
+    installation_id = 4343
+
+    async with respx.mock(base_url="https://api.github.com") as respx_mock:
+        route = respx_mock.post(f"/app/installations/{installation_id}/access_tokens").mock(
+            return_value=httpx.Response(
+                httpx.codes.CREATED,
+                json={
+                    "token": "ghs_broad",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        )
+
+        assert await client._get_installation_token(installation_id) == "ghs_broad"  # noqa: S105
+        assert not route.calls.last.request.content
+
+
+@pytest.mark.asyncio
+async def test_scoped_and_unscoped_tokens_use_separate_cache_entries(client, mock_jwt):
+    """A cached installation-wide token must never be served where a scoped one was asked for."""
+    installation_id = 4444
+    client._token_cache[installation_id] = (
+        "broad_cached",
+        datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    async with respx.mock(base_url="https://api.github.com") as respx_mock:
+        respx_mock.post(f"/app/installations/{installation_id}/access_tokens").mock(
+            return_value=httpx.Response(
+                httpx.codes.CREATED,
+                json={
+                    "token": "ghs_scoped",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        )
+
+        with patch.object(client, "get_installation_id", return_value=installation_id):
+            scoped = await client.get_repo_scoped_token("my-org", "my-repo")
+            # Second call is served from the scoped cache entry.
+            scoped_again = await client.get_repo_scoped_token("my-org", "my-repo")
+
+    assert scoped == "ghs_scoped"  # noqa: S105
+    assert scoped_again == "ghs_scoped"  # noqa: S105
+    # The installation-wide entry is untouched and still returned to platform callers.
+    assert client._token_cache[installation_id][0] == "broad_cached"  # noqa: S105
+    assert await client._get_installation_token(installation_id) == "broad_cached"  # noqa: S105
+
+
+@pytest.mark.asyncio
+async def test_scoped_cache_is_per_repository(client, mock_jwt):
+    """Two repositories in one installation must not share a scoped token."""
+    installation_id = 4545
+    minted = iter(["ghs_repo_a", "ghs_repo_b"])
+
+    def _mint(request):
+        return httpx.Response(
+            httpx.codes.CREATED,
+            json={
+                "token": next(minted),
+                "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+            },
+        )
+
+    async with respx.mock(base_url="https://api.github.com") as respx_mock:
+        respx_mock.post(f"/app/installations/{installation_id}/access_tokens").mock(
+            side_effect=_mint
+        )
+
+        with patch.object(client, "get_installation_id", return_value=installation_id):
+            assert await client.get_repo_scoped_token("my-org", "repo-a") == "ghs_repo_a"  # noqa: S105
+            assert await client.get_repo_scoped_token("my-org", "repo-b") == "ghs_repo_b"  # noqa: S105
+            # Both stay cached independently.
+            assert await client.get_repo_scoped_token("my-org", "repo-a") == "ghs_repo_a"  # noqa: S105

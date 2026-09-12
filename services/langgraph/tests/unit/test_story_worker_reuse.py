@@ -75,7 +75,7 @@ class TestDeveloperNodeWorkerReuse:
         self, mock_github_cls, mock_api, mock_spawn, mock_send_task
     ):
         """When worker_id is in state, should use send_task_to_worker."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send_task.return_value = SpawnResult(
@@ -118,7 +118,7 @@ class TestDeveloperNodeWorkerReuse:
         self, mock_github_cls, mock_api, mock_spawn, mock_send_task
     ):
         """A timeout is only a teardown request, never spawn permission."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         # send_task_to_worker times out
@@ -158,7 +158,7 @@ class TestDeveloperNodeWorkerReuse:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_spawns_when_no_worker_id(self, mock_github_cls, mock_api, mock_spawn):
         """When no worker_id in state, should use request_spawn as before."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(

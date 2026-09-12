@@ -397,7 +397,7 @@ class TestDeveloperNodeStoryContext:
         """story_context from state flows into task_content sent to worker."""
         from src.clients.worker_spawner import SpawnResult
 
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -440,7 +440,7 @@ class TestDeveloperNodeStoryContext:
         """story_md from state flows to request_spawn as keyword argument."""
         from src.clients.worker_spawner import SpawnResult
 
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
