@@ -17,6 +17,22 @@ from src.keyboards import (
 )
 
 
+def _config_response(values: dict[str, int]):
+    """Answer `system-configs/<key>` the way the API does: 200 with a value, or 404."""
+
+    async def get_raw(path: str):
+        key = path.removeprefix("system-configs/")
+        response = MagicMock()
+        if key not in values:
+            response.status_code = 404
+            return response
+        response.status_code = 200
+        response.json.return_value = {"key": key, "value": values[key]}
+        return response
+
+    return get_raw
+
+
 class TestMainMenuKeyboardAddUser:
     """Test that Add User button appears for admins."""
 
@@ -65,8 +81,51 @@ class TestAddUserInput:
     """Test text handler for receiving telegram_id."""
 
     @pytest.mark.asyncio
-    async def test_valid_telegram_id_mints_a_promo_code(self):
-        from src.handlers import handle_add_user_input
+    async def test_valid_telegram_id_mints_a_promo_code_with_the_configured_budget(self):
+        """An invited user must arrive with a budget admission will actually pass."""
+        from src.handlers import (
+            INVITE_CREDITS_CONFIG_KEY,
+            INVITE_RESERVATION_CONFIG_KEY,
+            handle_add_user_input,
+        )
+
+        update = MagicMock()
+        update.message.text = "123456789"
+        update.message.reply_text = AsyncMock()
+        update.effective_user.id = 111
+
+        context = MagicMock()
+        context.user_data = {"awaiting_add_user": True}
+
+        configs = {
+            INVITE_CREDITS_CONFIG_KEY: 5_000_000,
+            INVITE_RESERVATION_CONFIG_KEY: 1_000_000,
+        }
+
+        with patch("src.handlers.api_client") as mock_api:
+            mock_api.get_raw = AsyncMock(side_effect=_config_response(configs))
+            mock_api.post_json = AsyncMock(return_value=[{"code": "PROMO-CODE"}])
+            await handle_add_user_input(update, context)
+
+        mock_api.post_json.assert_called_once()
+        call_args = mock_api.post_json.call_args
+        assert call_args[0][0] == "promo-codes/batch"
+        assert call_args[1]["json"] == {
+            "quantity": 1,
+            "credits_microusd": 5_000_000,
+            "attempt_reservation_microusd": 1_000_000,
+        }
+        assert context.user_data.get("awaiting_add_user") is None
+        update.message.reply_text.assert_called_once()
+        reply = update.message.reply_text.call_args[0][0]
+        assert "PROMO-CODE" in reply
+        assert "$5.00" in reply
+        assert "$1.00" in reply
+
+    @pytest.mark.asyncio
+    async def test_missing_invite_budget_config_mints_nothing(self):
+        """No fallback literal: an unseeded budget refuses the invite out loud."""
+        from src.handlers import INVITE_CREDITS_CONFIG_KEY, handle_add_user_input
 
         update = MagicMock()
         update.message.text = "123456789"
@@ -77,16 +136,13 @@ class TestAddUserInput:
         context.user_data = {"awaiting_add_user": True}
 
         with patch("src.handlers.api_client") as mock_api:
-            mock_api.post_json = AsyncMock(return_value=[{"code": "PROMO-CODE"}])
+            mock_api.get_raw = AsyncMock(side_effect=_config_response({}))
+            mock_api.post_json = AsyncMock()
             await handle_add_user_input(update, context)
 
-        mock_api.post_json.assert_called_once()
-        call_args = mock_api.post_json.call_args
-        assert call_args[0][0] == "promo-codes/batch"
-        assert call_args[1]["json"]["quantity"] == 1
+        mock_api.post_json.assert_not_called()
         assert context.user_data.get("awaiting_add_user") is None
-        update.message.reply_text.assert_called_once()
-        assert "PROMO-CODE" in update.message.reply_text.call_args[0][0]
+        assert INVITE_CREDITS_CONFIG_KEY in update.message.reply_text.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_invalid_input_asks_again(self):
@@ -129,6 +185,14 @@ class TestAddUserInput:
         mock_response.json.return_value = {"detail": "User with this telegram_id already exists"}
 
         with patch("src.handlers.api_client") as mock_api:
+            mock_api.get_raw = AsyncMock(
+                side_effect=_config_response(
+                    {
+                        "admission.invite_credits_microusd": 5_000_000,
+                        "admission.invite_attempt_reservation_microusd": 1_000_000,
+                    }
+                )
+            )
             mock_api.post_json = AsyncMock(
                 side_effect=httpx.HTTPStatusError(
                     "400", request=MagicMock(), response=mock_response

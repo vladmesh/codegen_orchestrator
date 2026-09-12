@@ -431,6 +431,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 turn_result_consumed=result.get("turn_result_consumed", False),
                 story_id=story_id,
                 failure_reason=result.get("failure_reason"),
+                project_id=project_id or "",
+                telegram_chat_id=telegram_chat_id,
             )
 
     except Exception as e:

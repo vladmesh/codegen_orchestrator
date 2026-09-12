@@ -12,6 +12,8 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from shared.engineering_budget_display import format_microusd
+
 from .clients.api import api_client
 from .config import get_settings
 from .keyboards import (
@@ -37,6 +39,29 @@ from .keyboards import (
 from .middleware import is_admin
 
 logger = structlog.get_logger()
+
+# The starting budget an invited user is handed. Both are system config, not
+# literals: an invite minted with zero credits produces an account that is
+# admitted nowhere, and the operator must be able to change the amount without
+# a deploy.
+INVITE_CREDITS_CONFIG_KEY = "admission.invite_credits_microusd"
+INVITE_RESERVATION_CONFIG_KEY = "admission.invite_attempt_reservation_microusd"
+
+
+class MissingSystemConfigError(RuntimeError):
+    """A required system config is absent. The bot refuses to guess a value."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"System config '{key}' is not set")
+        self.key = key
+
+
+async def _required_int_config(key: str) -> int:
+    """Read one integer system config, or fail — there is no default here."""
+    response = await api_client.get_raw(f"system-configs/{key}")
+    if response.status_code != HTTPStatus.OK:
+        raise MissingSystemConfigError(key)
+    return int(response.json()["value"])
 
 
 def _get_stream_client():
@@ -404,19 +429,36 @@ async def handle_add_user_input(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Mint a code; the recipient must register through the canonical promo gate.
     try:
+        credits_microusd = await _required_int_config(INVITE_CREDITS_CONFIG_KEY)
+        reservation_microusd = await _required_int_config(INVITE_RESERVATION_CONFIG_KEY)
         codes = await api_client.post_json(
             "promo-codes/batch",
-            json={"quantity": 1, "credits_microusd": 0, "attempt_reservation_microusd": 1},
+            json={
+                "quantity": 1,
+                "credits_microusd": credits_microusd,
+                "attempt_reservation_microusd": reservation_microusd,
+            },
         )
         promo_code = codes[0]["code"]
         context.user_data.pop("awaiting_add_user", None)
         await update.message.reply_text(
-            f"✅ Промокод для {new_telegram_id}: <code>{promo_code}</code>", parse_mode="HTML"
+            f"✅ Промокод для {new_telegram_id}: <code>{promo_code}</code>\n"
+            f"Стартовый баланс: {format_microusd(credits_microusd)}, "
+            f"резерв на попытку: {format_microusd(reservation_microusd)}",
+            parse_mode="HTML",
         )
         logger.info(
             "user_added_by_admin",
             admin_id=update.effective_user.id,
             new_user_telegram_id=new_telegram_id,
+            credits_microusd=credits_microusd,
+            attempt_reservation_microusd=reservation_microusd,
+        )
+    except MissingSystemConfigError as e:
+        context.user_data.pop("awaiting_add_user", None)
+        logger.error("add_user_missing_system_config", key=e.key)
+        await update.message.reply_text(
+            f"⚠️ Не задан системный конфиг {e.key}. Промокод не выпущен."
         )
     except httpx.HTTPStatusError as e:
         context.user_data.pop("awaiting_add_user", None)

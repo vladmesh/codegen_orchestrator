@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models import SystemConfig
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas.system_config import SystemConfigCreate, SystemConfigRead, SystemConfigUpdate
 
 router = APIRouter(prefix="/system-configs", tags=["system-configs"])
@@ -35,6 +36,7 @@ def _reject_protected_key(key: str) -> None:
 async def create_or_update_system_config(
     data: SystemConfigCreate,
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
 ) -> SystemConfig:
     """Create a system config, or update if key already exists (upsert)."""
     _reject_protected_key(data.key)
@@ -87,6 +89,7 @@ async def update_system_config(
     key: str,
     updates: SystemConfigUpdate,
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
 ) -> SystemConfig:
     """Update a system config."""
     _reject_protected_key(key)
@@ -110,6 +113,7 @@ async def update_system_config(
 async def delete_system_config(
     key: str,
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
 ) -> None:
     """Delete a system config."""
     _reject_protected_key(key)

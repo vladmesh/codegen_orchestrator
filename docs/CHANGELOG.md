@@ -5,6 +5,19 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-12
 
+- The bot mints an invite with the credits and attempt reservation from `admission.invite_*` system config
+  instead of a zero budget, so an invited user is admitted to paid work at all.
+- `POST`, `PATCH` and `DELETE /api/system-configs` require internal or administrator access, so an ordinary
+  LK bearer can no longer rewrite the scheduler and admission constants the fleet runs on.
+- `.env.example` documents `ADMIN_TELEGRAM_IDS`; an empty value means no account can mint invites.
+- A coding worker is handed a GitHub token minted for its own repository only, so a prompt-injected
+  worker container can no longer reach every repository the App installation covers.
+- Worker output consumer groups are created at `0` before the first read, so a result published
+  between a failed read and the group's creation is delivered instead of lost to nobody.
+- A story parked in human review by the PR poller (images never published, CI fix budget spent) or by
+  the no-new-commit path now tells its owner, durably where a record fits, instead of only the admins.
+- `docker-compose.prod.yml` gives every platform container json-file rotation (50m x 5) and, where the
+  footprint is known, a `mem_limit`, so an unbounded log can no longer fill the production disk.
 - Split scheduler pipeline, infrastructure and maintenance into independently configured processes,
   so auxiliary failures cannot stop dispatch or provisioning recovery.
 

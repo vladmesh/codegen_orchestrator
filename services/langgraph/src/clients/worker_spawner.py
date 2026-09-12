@@ -290,12 +290,19 @@ async def _wait_for_response(
     stream: str = WORKER_RESPONSES,
     worker_id: str | None = None,
     output_request_id: str | None = None,
+    group_start_id: str = "0",
 ) -> dict | None:
     """Wait for a specific response in the stream.
 
     If request_id is None, returns the first message (used for worker output streams).
     If worker_id is provided, periodically checks that the worker container is still
     alive. Returns None immediately if the worker is detected as dead.
+
+    `group_start_id` is the position the group is re-created at when a read finds
+    it gone. It must be the position the caller bootstrapped the group with:
+    silently narrowing to `$` here drops any message that arrived between the
+    failed read and the re-creation, and once the group owns the stream position
+    nobody else will read it.
     """
     start_time = asyncio.get_running_loop().time()
     last_liveness_check = start_time
@@ -328,9 +335,12 @@ async def _wait_for_response(
             )
         except redis.ResponseError as e:
             if "NOGROUP" in str(e):
-                # Group doesn't exist yet, create it
+                # Group is gone (never created, or the stream was dropped under
+                # it). Re-create it where the caller wanted it to start.
                 try:
-                    await redis_client.xgroup_create(stream, group_name, id="$", mkstream=True)
+                    await redis_client.xgroup_create(
+                        stream, group_name, id=group_start_id, mkstream=True
+                    )
                 except redis.ResponseError:
                     pass
                 continue
@@ -656,7 +666,12 @@ async def request_spawn(
     worker_id = None
 
     try:
-        # 1. Create consumer group for responses
+        # 1. Create consumer group for responses.
+        # `$` is deliberate here and nothing can be lost by it: the group exists
+        # before the create command below is published, so worker-manager's reply
+        # necessarily lands after it. WORKER_RESPONSES is shared by every spawn in
+        # flight, so `0` would instead replay every other request's retained reply
+        # through this group.
         try:
             await redis_client.xgroup_create(WORKER_RESPONSES, group_name, id="$", mkstream=True)
         except redis.ResponseError as e:
@@ -699,7 +714,12 @@ async def request_spawn(
 
         # 3. Wait for early ACK (worker_id) — should be near-instant
         create_resp = await _wait_for_response(
-            redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
+            redis_client,
+            group_name,
+            consumer_id,
+            request_id,
+            CREATION_TIMEOUT,
+            group_start_id="$",
         )
 
         if not create_resp:
@@ -852,9 +872,13 @@ async def send_task_to_worker(
         if adopted is not None:
             return adopted
 
-        # 1. Set up output stream consumer group BEFORE sending task
+        # 1. Set up output stream consumer group BEFORE sending the task.
+        # Start at `0` like every other reader of a worker output stream: the
+        # group owns the position, so anything it skips is read by nobody. Output
+        # retained from an earlier turn is harmless — the wait below matches on
+        # this turn's request id and acks the rest.
         try:
-            await redis_client.xgroup_create(output_stream, group_name, id="$", mkstream=True)
+            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise

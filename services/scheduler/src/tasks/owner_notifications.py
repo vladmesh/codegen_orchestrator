@@ -211,6 +211,53 @@ async def owe_owner_notification(
     return record
 
 
+async def owe_story_owner_notification(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    *,
+    event: OwnerNotificationEvent,
+    text: str,
+    project_id: str,
+    terminal_status: StoryStatus,
+    log: structlog.stdlib.BoundLogger,
+) -> OwnerNotification:
+    """Write down that the owner is owed this message, on the story. Call before
+    the transition.
+
+    The run-backed form above cannot serve every terminal ending, because not
+    every ending has a Run. The PR poller decides two of them before anything is
+    dispatched: a merge whose images were never published, and a story branch
+    whose CI kept failing the same way until the fix budget ran out. Both take
+    the story to human review and neither has a Run to hang the record on, so
+    the record goes on the story — the same place the completion transaction
+    puts one, and the same place the recovery sweep already looks.
+
+    Written unconditionally: the transition on the next line takes the story out
+    of the only status the poller scans, so no tick reaches this twice for the
+    same ending, and a story that comes back from human review and ends this way
+    again is owed the message again.
+    """
+    record = OwnerNotification(
+        event=event,
+        text=text,
+        story_id=story_id,
+        project_id=project_id,
+        terminal_status=terminal_status,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+    )
+    await _write_story_record(api_client, story_id, record)
+    log.info(
+        "owner_notification_owed",
+        po_event=event,
+        story_id=story_id,
+        project_id=project_id,
+        terminal_status=terminal_status.value,
+        notification_source="story",
+    )
+    return record
+
+
 async def _settle(
     api_client: SchedulerAPIClient,
     source_id: str,
