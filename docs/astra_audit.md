@@ -15,15 +15,15 @@ The repository is in better shape than the words `legacy`, `fallback`, and `comp
 - QA capability isolation is unusually explicit and defensive;
 - queue recovery semantics, idempotency, and terminal outcomes are documented instead of being implicit.
 
-The main architectural problem is therefore **not** that the system has too many services. The bigger issue is that a few old transition mechanisms and one oversized orchestration process cut across otherwise good boundaries.
+At the original audit, the main architectural problem was **not** the number of services: old transition mechanisms and one oversized orchestration process cut across otherwise good boundaries. PR #485 has since separated the scheduler into three services; the ordered pipeline dispatcher remains the substantial H1 follow-up.
 
-The highest-value cleanup areas are:
+The original cleanup priorities, with current progress, are:
 
-1. split the scheduler's giant process / giant dispatcher cycle into independently owned workers;
-2. remove silent config fallback paths and choose one source of truth per setting;
-3. make GitHub client failures typed instead of guessing from exception strings or converting failures into empty data;
-4. clean the `worker-manager` quality island that is currently hidden behind a Ruff version pin;
-5. remove lifecycle ownership hacks in `worker-wrapper`;
+1. finish separating the scheduler's ordered dispatcher responsibilities after the three-service split in #485;
+2. choose one source of truth per setting (H2 completed; M7 policy classification remains);
+3. preserve typed GitHub failure semantics (H3 completed);
+4. bring worker services under the root lint policy (H4 completed);
+5. remove lifecycle ownership hacks in `worker-wrapper` (M1 completed);
 6. progressively delete explicit compatibility surfaces once their data/producers are proven gone.
 
 No finding in this pass looks like a **Critical** architectural defect. The highest findings are **High** because they increase blast radius, hide failure, or preserve a substantial island of old behavior.
@@ -38,11 +38,13 @@ Each cleanup item has three ratings:
 
 "Removal" means removing the debt, shim, fallback, duplicated responsibility, or compatibility path — not deleting the product feature it currently supports.
 
-## Refresh note — 2026-09-09
+## Refresh note — 2026-09-12
 
-This is a lightweight status refresh against the current repository after several cleanup PRs, **not** a new deep audit. The original evidence below is intentionally kept as the historical reason each item was raised; use these notes before taking the next item so stale evidence is not mistaken for current `main`.
+This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 update checks H1 against merged PR [#485](https://github.com/vladmesh/codegen_orchestrator/pull/485), merge commit `41d9388c`; other findings retain their 2026-09-09 validation scope. Original evidence below remains historical context, not a claim about current `main`.
 
 ### Completed or materially reduced
+
+- **H1 — partially completed in PR #485 (merged 2026-09-12).** The aggregate scheduler is replaced by `scheduler-pipeline`, `scheduler-infrastructure` and `scheduler-maintenance`, using one image with separate required config sets and a shared lifecycle. Native Docker healthchecks and post-seed Compose readiness cover production/stand startup. The ordered dispatcher remains intact; see the H1 progress and follow-up below.
 
 - **H2 — completed in PRs #476 and #478 (merged 2026-09-08).** Required `llm.summarization_*` system config is the sole production source for numeric PO summarization tuning. Startup fails on missing/unavailable config and logs effective values. PR #478 also removed the retired numeric env/example/Compose/deploy/stand-workflow wiring and added a guard against its return. `SUMMARIZATION_MODEL` remains process configuration.
 - **H3 — completed in PR #477 (merged 2026-09-08).** GitHub repository/file paths no longer classify errors by matching `"422"` / `"already exists"` in exception text or turn arbitrary failures into empty/missing resources. Expected 404/422 cases are status-driven, 422 repository creation is verified with `get_repo()`, and transport/auth/server/unexpected failures retain failure semantics. The narrow repo-token → org-token deletion fallback was deliberately preserved.
@@ -57,7 +59,7 @@ This is a lightweight status refresh against the current repository after severa
 
 ### Recheck / refresh before implementation
 
-- **H1:** quick check says the scheduler still has the same broad multi-domain ownership shape. The item remains current, but this area has changed heavily since 2026-09-06; reread current `scheduler.main`, startup keys, and dispatcher responsibilities before designing the split rather than implementing the exact process list below mechanically.
+- **H1:** the process split and aggregate-entrypoint deletion are complete. Remaining work is inside `tasks/task_dispatcher.py`: define durable ownership and ordering guarantees before separating dispatch/PR lifecycle, supervision, QA routing and access cleanup. Do not recreate the old aggregate or mechanically apply the original five-process sketch.
 - **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
 - **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
 - **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
@@ -65,19 +67,41 @@ This is a lightweight status refresh against the current repository after severa
 - **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
 - **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
 
-The cleanup order below now marks completed iterations explicitly. Eight of the sixteen H/M/L findings are complete (H2, H3, H4, M1, M3, M4, M6, M8); the other eight remain open. K1–K4 are conditional retention notes, not four additional deletion tasks.
+The cleanup order below now marks completed iterations explicitly. Of sixteen H/M/L findings, eight are complete (H2, H3, H4, M1, M3, M4, M6, M8), H1 is partially complete, and seven others remain open (M2, M5, M7, L1–L4). K1–K4 are conditional retention notes, not four additional deletion tasks.
 
 ---
 
 # High severity
 
-## H1. `scheduler` is a multi-domain mega-process
+## H1. Scheduler process split completed; ordered dispatcher remains
 
 **Severity:** High  
 **Removal safety:** 3/5  
 **Removal simplicity:** 1/5
 
-### Evidence
+### Progress — 2026-09-12
+
+**Partially completed in [PR #485](https://github.com/vladmesh/codegen_orchestrator/pull/485).** The three independently launched services reuse the scheduler image and package:
+
+| Service | Owned loops |
+|---------|-------------|
+| `scheduler-pipeline` | The existing ordered dispatcher: scaffold, engineering admission, story/PR/CI lifecycle and supervision, including QA and temporary access |
+| `scheduler-infrastructure` | Server sync, health checks, provisioning results and startup provisioning retry |
+| `scheduler-maintenance` | GitHub sync, RAG summarization, analytics and queue cleanup |
+
+Each validates only its required config keys. All use one failure/cancellation lifecycle; the provisioning consumer lives in its task module and retains its stream, consumer group and PEL recovery semantics. `src/main.py` is removed, and deployment cutover removes the old aggregate container.
+
+The three services expose native Docker healthchecks backed by process-owned readiness markers. Production and stand recreate only these services after config seeding and wait up to 180 seconds, resetting missing-config restart backoff without recreating dependencies. Missing `LOKI_URL` cannot block Compose parsing or pipeline startup; the analytics loop retains its canonical failure, and full deployment must pass the maintenance healthcheck.
+
+**Validation:** all applicable PR CI checks, including scheduler service and real infra integration with `service_healthy` dependencies, passed at `2bbb4254`; Claude Opus high thermonuclear review approved that exact head in round 3. Local unit/lint and native Docker readiness smoke passed. The final local infra attempts stopped at API startup health before scheduler; CI subsequently passed the full infra flow. No external live stand or production rollout is claimed by this evidence.
+
+### Remaining scope and next H1 iteration
+
+`task_dispatcher_loop()` still owns one sequential cycle and one failure boundary for dispatch, PR/CI, recovery, QA and access cleanup. Splitting the outer process does not close this part of H1.
+
+Before extracting independently scheduled pipeline responsibilities, make their ordering guarantees explicit in durable state and test retries/interleavings at the API/Redis boundary. In particular, owed owner notifications are recovered before new QA routing, and QA routing precedes temporary-access cleanup. Preserve those guarantees: the three-service iteration deliberately left the dispatcher body unchanged. This is the next substantial H1 iteration, rather than further renaming or splitting entrypoint files.
+
+### Original evidence — before PR #485
 
 `services/scheduler/src/main.py` starts all of these in one process:
 
@@ -96,7 +120,7 @@ The dispatcher itself (`services/scheduler/src/tasks/task_dispatcher.py`) is als
 
 The comments in that function correctly explain subtle ordering constraints, but those comments are also evidence that many independently meaningful workflows share one clock and one failure boundary.
 
-### Why it matters
+### Original rationale
 
 This creates a large blast radius:
 
@@ -109,7 +133,7 @@ This creates a large blast radius:
 
 The code already has good module boundaries, so the process boundary is lagging behind the code boundary.
 
-### Recommendation
+### Original recommendation — superseded by the staged split above
 
 Keep the same image initially, but run separate entrypoints/processes for at least:
 
@@ -121,7 +145,7 @@ Keep the same image initially, but run separate entrypoints/processes for at lea
 
 Do **not** begin by creating five new repositories or deployment stacks. First separate runtime ownership while reusing the same package and image.
 
-### Safe removal path
+### Original safe removal path
 
 1. Give each loop its own entrypoint.
 2. Move required config validation next to the process that consumes it.
@@ -766,7 +790,7 @@ The important word here is **proof**: these are easy to delete mechanically but 
 
 ## Phase 3 — architectural cleanup
 
-1. Split scheduler runtime ownership into independently deployable entrypoints.
+1. **H1 partially completed in PR #485:** pipeline, infrastructure and maintenance now have separate entrypoints and config/readiness boundaries. Next, establish durable ordering/ownership guarantees before splitting the remaining dispatcher cycle.
 2. Separate live-test harness code from runtime `shared` code.
 3. **Completed in PR #482 after the Ruff upgrade in #475:** both worker services inherit the root lint policy; local configs are removed and the 464 reported root-rule violations have been addressed, including explicit, narrow exceptions for intentional boundaries.
 4. Normalize long-lived external HTTP client ownership.
@@ -783,7 +807,7 @@ The remaining debt has a recognizable shape:
 
 - **transition residue**: old fields, aliases, tombstones, compatibility projections;
 - **resilience residue**: broad fallbacks that survived earlier iterations even though the repository now prefers typed failure;
-- **process-boundary lag**: modules have been separated more cleanly than runtime ownership has;
+- **process-boundary lag (reduced by #485)**: scheduler services are separate; the ordered pipeline dispatcher still combines several responsibilities;
 - **tooling lag (resolved by #482)**: both worker services now inherit the repository quality gate;
 - **shared-package sprawl**: runtime and test-harness concerns coexist in one ambient dependency tree.
 
