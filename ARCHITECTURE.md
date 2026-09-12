@@ -74,9 +74,9 @@ taken from the default value.
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
-| `scheduler-pipeline` | One ordered dispatcher cycle: scaffold and engineering admission, story completion, PR/CI, supervisors, owed notifications, QA routing, then temporary-access cleanup |
-| `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption |
-| `scheduler-maintenance` | GitHub project sync, RAG summarization, analytics aggregation and queue cleanup |
+| `scheduler-pipeline` | One ordered dispatcher cycle: scaffold and engineering admission, story completion, PR/CI, supervisors, owed notifications, QA routing, then temporary-access cleanup. A container of the shared `scheduler` image |
+| `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
+| `scheduler-maintenance` | GitHub project sync, RAG summarization, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
 | `infra-service` | An Ansible runner and SSH operations |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000 (stamping `X-Internal-Key` in, so the browser never holds it), `/wm-api/*` → worker-manager. Basic auth via htpasswd decides who reaches that proxy. Grafana is embedded at `/grafana/` |
 | `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |

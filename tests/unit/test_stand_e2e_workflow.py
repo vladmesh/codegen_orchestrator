@@ -138,6 +138,16 @@ def test_a_template_override_reaches_the_suite_and_the_seeded_stand_configuratio
     )
 
 
+def test_stand_uses_shared_scheduler_readiness_after_seeding():
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+
+    assert "bash scripts/wait_scheduler_services.sh" in bring_up
+    assert bring_up.index("seed_agent_configs.py") < bring_up.index(
+        "bash scripts/wait_scheduler_services.sh"
+    )
+    assert "grep -q system_configs_validated" not in bring_up
+
+
 def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     steps = list(_steps())
     resolve = _steps()["Resolve the suite"]

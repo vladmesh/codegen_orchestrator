@@ -25,11 +25,13 @@ workspace member. The root `pyproject.toml` has no `[tool.uv.sources]` entry for
 `pyproject.toml` under `shared/` declares third-party dependency parity. The repository tree is the
 only source, and it reaches consumers through three channels.
 
-**Bind-mount** `./shared:/app/shared` — ten compose services: `api`, `langgraph`,
+**Bind-mount** `./shared:/app/shared` — twelve compose services: `api`, `langgraph`,
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
 `scheduler-pipeline`, `scheduler-infrastructure`, `scheduler-maintenance`, `scaffolder`. An edit
 under `shared/` is picked up by restarting the containers
 (`docker compose restart <service>`), no image rebuild is needed.
+The three scheduler services declare the same build route and tag; Compose builds that shared image
+once and starts it with three explicit module commands.
 
 **`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
 `worker-manager` is the only service in `docker-compose.yml` without a mount, so in the dev stack an

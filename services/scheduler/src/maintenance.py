@@ -1,7 +1,6 @@
 """Maintenance scheduler service entry point."""
 
 import asyncio
-import os
 
 import structlog
 
@@ -19,8 +18,6 @@ logger = structlog.get_logger()
 
 async def main() -> None:
     setup_logging(service_name="scheduler-maintenance")
-    if not os.environ.get("LOKI_URL"):
-        raise RuntimeError("LOKI_URL is not set")
     logger.info("scheduler_maintenance_started")
     await runtime.initialize_configs(
         MAINTENANCE_REQUIRED_KEYS, service_name="scheduler-maintenance"

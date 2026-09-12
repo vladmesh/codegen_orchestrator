@@ -3,10 +3,12 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
-## 2026-09-09
+## 2026-09-12
 
 - Split scheduler pipeline, infrastructure and maintenance into independently configured processes,
   so auxiliary failures cannot stop dispatch or provisioning recovery.
+
+## 2026-09-09
 
 - Run responses no longer project engineering token/cost accounting; Grafana and admin consumers read the
   append-only engineering ledger, and the retired Run columns are dropped.

@@ -131,8 +131,10 @@ def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_startup_retries_config_validation_until_api_is_available(monkeypatch):
+async def test_startup_retries_config_validation_until_api_is_available(monkeypatch, tmp_path):
     attempts = 0
+    marker = tmp_path / "scheduler-ready"
+    marker.write_text("stale-process")
 
     def validate_configs(_required_keys):
         nonlocal attempts
@@ -141,8 +143,9 @@ async def test_startup_retries_config_validation_until_api_is_available(monkeypa
             raise ConfigStoreUnavailableError("System config API is unavailable")
 
     async def no_wait(_seconds):
-        return None
+        assert not marker.exists()
 
+    monkeypatch.setattr(runtime, "READINESS_PATH", marker)
     monkeypatch.setattr(runtime.startup, "init_config", validate_configs)
     monkeypatch.setattr(runtime.asyncio, "sleep", no_wait)
 

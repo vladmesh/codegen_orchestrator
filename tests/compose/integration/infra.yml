@@ -112,6 +112,11 @@ services:
 
   scheduler-pipeline:
     image: codegen-orchestrator/scheduler:test
+    build:
+      context: ../../..
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000

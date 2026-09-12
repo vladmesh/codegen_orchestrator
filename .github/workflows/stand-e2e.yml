@@ -592,14 +592,8 @@ jobs:
             ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/agent_configs.yaml
-            for service in scheduler-pipeline scheduler-infrastructure scheduler-maintenance; do
-              remaining=60
-              until ${COMPOSE} logs --no-color "${service}" | grep -q system_configs_validated; do
-                test "${remaining}" -gt 0 || exit 1
-                sleep 2
-                remaining=$((remaining - 2))
-              done
-            done
+            bash scripts/wait_scheduler_services.sh 60 \
+              -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml
           '
 
       # The stand's seeded scheduler configuration has to name the same template the

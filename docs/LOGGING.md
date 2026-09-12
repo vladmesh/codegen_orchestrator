@@ -204,7 +204,10 @@ async def my_node(state: dict) -> dict:
 | `scheduler_pipeline_started` | info | Pipeline dispatcher started | — |
 | `scheduler_infrastructure_started` | info | Infrastructure loops started | — |
 | `scheduler_maintenance_started` | info | Maintenance loops started | — |
+| `service_workers_started` | info | The process launched its owned long-lived loops | `service`, `workers` |
 | `service_shutdown_requested` | info | One scheduler process received cancellation | `service` |
+| `service_worker_failed` | error | One loop failed and the process is stopping its siblings | `service` |
+| `service_workers_stopped` | info | Every loop in the process has stopped | `service` |
 | `health_check_start` | info | Health check started | `servers_count` |
 | `server_healthy` | debug | Server is healthy | `server_handle` |
 | `incident_recovery_triggered` | info | Recovery triggered | `server_handle` |
@@ -356,5 +359,4 @@ logger.info("error")  # BAD
 1. Avoid logging large objects (truncate if needed)
 2. Use `DEBUG` level for high-frequency logs
 3. Set `LOG_LEVEL=INFO` in production
-
 

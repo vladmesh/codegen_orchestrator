@@ -411,6 +411,11 @@ services:
 
   scheduler-infrastructure:
     image: codegen-orchestrator/scheduler:local
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -438,6 +443,11 @@ services:
 
   scheduler-maintenance:
     image: codegen-orchestrator/scheduler:local
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -447,8 +457,6 @@ services:
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-maintenance
-      # Loki is required only by this process's analytics loop.
-      LOKI_URL: ${LOKI_URL:-}
     command: ["python", "-m", "src.maintenance"]
     volumes:
       - ./services/scheduler/src:/app/src:delegated

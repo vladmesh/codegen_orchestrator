@@ -15,6 +15,14 @@ from src.tasks.analytics_aggregator import (
 )
 
 
+@pytest.mark.asyncio
+async def test_worker_refuses_to_run_without_loki(monkeypatch):
+    monkeypatch.delenv("LOKI_URL")
+
+    with pytest.raises(RuntimeError, match="analytics aggregator cannot read logs"):
+        await analytics_aggregator_worker()
+
+
 def _make_request_log(
     path="/api/health",
     status_code=200,

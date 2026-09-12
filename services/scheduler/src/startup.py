@@ -4,6 +4,7 @@ Call init_config() with the process key set before any workers start.
 Other modules import `config` and use `config.get_int(...)`.
 """
 
+from collections.abc import Collection
 import os
 
 from shared.config_store import ConfigStore
@@ -74,7 +75,7 @@ def get_config() -> ConfigStore:
     return config
 
 
-def init_config(required_keys=REQUIRED_KEYS) -> ConfigStore:
+def init_config(required_keys: Collection[str]) -> ConfigStore:
     """Initialize ConfigStore and validate the requested process keys.
 
     Raises RuntimeError if any required config is missing.

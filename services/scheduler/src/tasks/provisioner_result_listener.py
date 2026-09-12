@@ -4,6 +4,8 @@ Listens to provisioner:results stream and updates server status in DB via API.
 Notifies admins on provisioning failures.
 """
 
+import os
+
 import httpx
 from pydantic import ValidationError
 import structlog
@@ -13,9 +15,37 @@ from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
+from shared.redis import RedisStreamClient
 from src.clients.api import api_client
 
 logger = structlog.get_logger(__name__)
+CONSUMER_NAME = f"scheduler-infrastructure-{os.getpid()}"
+
+
+async def provisioner_results_worker() -> None:
+    """Consume provisioner results with restart-safe PEL reclamation."""
+    client = RedisStreamClient()
+    await client.connect()
+    logger.info(
+        "provisioner_results_worker_started", stream=PROVISIONER_RESULTS, consumer=CONSUMER_NAME
+    )
+    try:
+        async for msg in client.consume(
+            PROVISIONER_RESULTS,
+            SCHEDULER_CONSUMER_GROUP,
+            CONSUMER_NAME,
+            auto_ack=False,
+            claim_pending=True,
+        ):
+            if msg is None:
+                continue
+            try:
+                await handle_provisioner_entry(client, msg)
+            except Exception:
+                logger.exception("provisioner_result_processing_error", entry_id=msg.message_id)
+    finally:
+        await client.close()
+        logger.info("provisioner_results_worker_stopped")
 
 
 async def handle_provisioner_entry(client, msg) -> None:

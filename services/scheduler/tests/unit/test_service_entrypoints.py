@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import multiprocessing
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,50 +13,6 @@ from shared.config_store import ConfigStore
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-
-
-def _run_pipeline_process(started):
-    from src import pipeline
-
-    async def initialize(*_args, **_kwargs):
-        return None
-
-    async def dispatcher():
-        started.set()
-        await asyncio.Event().wait()
-
-    pipeline.runtime.initialize_configs = initialize
-    pipeline.task_dispatcher_loop = dispatcher
-    asyncio.run(pipeline.main())
-
-
-def _run_infrastructure_process(started):
-    from src import infrastructure
-
-    async def initialize(*_args, **_kwargs):
-        return None
-
-    async def no_wait(*_args, **_kwargs):
-        return None
-
-    async def run_workers(*_args, **_kwargs):
-        started.set()
-        await asyncio.Event().wait()
-
-    infrastructure.runtime.initialize_configs = initialize
-    infrastructure.runtime.run_workers = run_workers
-    infrastructure.asyncio.sleep = no_wait
-    infrastructure.retry_pending_servers = no_wait
-    infrastructure.validate_provider_policies = lambda: None
-    infrastructure.managed_provider_ids = lambda _provider: frozenset()
-    asyncio.run(infrastructure.main())
-
-
-def _run_broken_maintenance_process():
-    from src import maintenance
-
-    os.environ.pop("LOKI_URL", None)
-    asyncio.run(maintenance.main())
 
 
 def test_config_ownership_matches_runtime_callers():
@@ -126,7 +80,15 @@ def test_compose_runs_independent_scheduler_processes():
     ]
     assert "loki" not in services["scheduler-pipeline"]["depends_on"]
     assert "LOKI_URL" not in services["scheduler-pipeline"]["environment"]
-    assert services["scheduler-maintenance"]["environment"]["LOKI_URL"] == "${LOKI_URL:-}"
+    builds = [
+        services[name]["build"]
+        for name in (
+            "scheduler-pipeline",
+            "scheduler-infrastructure",
+            "scheduler-maintenance",
+        )
+    ]
+    assert builds[0] == builds[1] == builds[2]
     for name in ("scheduler-pipeline", "scheduler-infrastructure", "scheduler-maintenance"):
         assert not (
             {"scheduler-pipeline", "scheduler-infrastructure", "scheduler-maintenance"}
@@ -136,7 +98,7 @@ def test_compose_runs_independent_scheduler_processes():
 
 @pytest.mark.asyncio
 async def test_unexpected_worker_exit_cancels_its_process_siblings():
-    from src.runtime import run_workers
+    from src import runtime
 
     sibling_stopped = asyncio.Event()
 
@@ -150,11 +112,57 @@ async def test_unexpected_worker_exit_cancels_its_process_siblings():
             sibling_stopped.set()
 
     with pytest.raises(RuntimeError, match="long-lived worker exited: exits"):
-        await run_workers(
+        await runtime.run_workers(
             [("exits", exits), ("sibling", sibling)], service_name="scheduler-maintenance"
         )
 
     assert sibling_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_readiness_marker_is_current_and_removed_on_stop(tmp_path, monkeypatch):
+    from src import runtime
+
+    marker = tmp_path / "scheduler-ready"
+    worker_observed_marker = asyncio.Event()
+
+    async def worker():
+        assert marker.read_text() == "scheduler-pipeline"
+        worker_observed_marker.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "READINESS_PATH", marker)
+    service = asyncio.create_task(
+        runtime.run_workers([("worker", worker)], service_name="scheduler-pipeline")
+    )
+    await asyncio.wait_for(worker_observed_marker.wait(), timeout=1)
+    assert marker.read_text() == "scheduler-pipeline"
+
+    service.cancel()
+    await service
+
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_config_startup_removes_stale_readiness_even_when_validation_fails(
+    tmp_path, monkeypatch
+):
+    from src import runtime
+
+    marker = tmp_path / "scheduler-ready"
+    marker.write_text("scheduler-maintenance")
+    monkeypatch.setattr(runtime, "READINESS_PATH", marker)
+    monkeypatch.setattr(
+        runtime.startup,
+        "init_config",
+        MagicMock(side_effect=RuntimeError("Missing required system configs")),
+    )
+
+    with pytest.raises(RuntimeError, match="Missing required system configs"):
+        await runtime.initialize_configs({"scheduler.dispatch_interval_seconds"}, service_name="x")
+
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio
@@ -163,67 +171,63 @@ async def test_pipeline_starts_without_loki(monkeypatch):
 
     monkeypatch.delenv("LOKI_URL", raising=False)
     initialize = AsyncMock()
-    dispatcher = AsyncMock(side_effect=asyncio.CancelledError)
+    run_workers = AsyncMock()
     monkeypatch.setattr(pipeline.runtime, "initialize_configs", initialize)
-    monkeypatch.setattr(pipeline, "task_dispatcher_loop", dispatcher)
+    monkeypatch.setattr(pipeline.runtime, "run_workers", run_workers)
 
     await pipeline.main()
 
     initialize.assert_awaited_once_with(
         pipeline.PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline"
     )
-    dispatcher.assert_awaited_once()
+    workers = run_workers.await_args.args[0]
+    assert [(name, worker) for name, worker in workers] == [
+        ("task_dispatcher", pipeline.task_dispatcher_loop)
+    ]
 
 
 @pytest.mark.asyncio
-async def test_maintenance_fails_before_config_or_workers_when_loki_is_missing(monkeypatch):
-    from src import maintenance
+async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
+    from src import infrastructure, maintenance, pipeline
 
-    monkeypatch.delenv("LOKI_URL", raising=False)
-    initialize = AsyncMock()
-    run_workers = AsyncMock()
-    monkeypatch.setattr(maintenance.runtime, "initialize_configs", initialize)
-    monkeypatch.setattr(maintenance.runtime, "run_workers", run_workers)
+    inventories = {}
 
-    with pytest.raises(RuntimeError, match="LOKI_URL is not set"):
-        await maintenance.main()
+    async def capture(module, service_name):
+        run_workers = AsyncMock()
+        monkeypatch.setattr(module.runtime, "initialize_configs", AsyncMock())
+        monkeypatch.setattr(module.runtime, "run_workers", run_workers)
+        if module is infrastructure:
+            monkeypatch.setattr(module, "validate_provider_policies", lambda: None)
+            monkeypatch.setattr(module, "managed_provider_ids", lambda _provider: frozenset())
+            monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+            monkeypatch.setattr(module, "retry_pending_servers", AsyncMock())
+        await module.main()
+        assert run_workers.await_args.kwargs["service_name"] == service_name
+        inventories[service_name] = {name for name, _worker in run_workers.await_args.args[0]}
 
-    initialize.assert_not_awaited()
-    run_workers.assert_not_awaited()
+    await capture(pipeline, "scheduler-pipeline")
+    await capture(infrastructure, "scheduler-infrastructure")
+    await capture(maintenance, "scheduler-maintenance")
 
-
-def test_maintenance_process_failure_leaves_pipeline_and_infrastructure_running():
-    """A process-local startup failure cannot cancel either critical service."""
-    context = multiprocessing.get_context("fork")
-    pipeline_started = context.Event()
-    infrastructure_started = context.Event()
-    pipeline_process = context.Process(target=_run_pipeline_process, args=(pipeline_started,))
-    infrastructure_process = context.Process(
-        target=_run_infrastructure_process, args=(infrastructure_started,)
-    )
-    maintenance_process = context.Process(target=_run_broken_maintenance_process)
-
-    pipeline_process.start()
-    infrastructure_process.start()
-    try:
-        assert pipeline_started.wait(timeout=5)
-        assert infrastructure_started.wait(timeout=5)
-        maintenance_process.start()
-        maintenance_process.join(timeout=5)
-
-        assert maintenance_process.exitcode not in (None, 0)
-        assert pipeline_process.is_alive()
-        assert infrastructure_process.is_alive()
-    finally:
-        for process in (pipeline_process, infrastructure_process, maintenance_process):
-            if process.is_alive():
-                process.terminate()
-            process.join(timeout=5)
+    assert set().union(*inventories.values()) == {
+        "task_dispatcher",
+        "server_sync",
+        "health_checker",
+        "provisioner_results",
+        "github_sync",
+        "rag_summarizer",
+        "analytics_aggregator",
+        "queue_cleanup",
+    }
+    pipeline_workers, infrastructure_workers, maintenance_workers = inventories.values()
+    assert not pipeline_workers & infrastructure_workers
+    assert not pipeline_workers & maintenance_workers
+    assert not infrastructure_workers & maintenance_workers
 
 
 @pytest.mark.asyncio
 async def test_provisioner_consumer_preserves_recovery_topology(monkeypatch):
-    from src import infrastructure
+    from src.tasks import provisioner_result_listener
 
     client = MagicMock()
     client.connect = AsyncMock()
@@ -234,14 +238,16 @@ async def test_provisioner_consumer_preserves_recovery_topology(monkeypatch):
             yield None
 
     client.consume = MagicMock(side_effect=entries)
-    monkeypatch.setattr(infrastructure, "RedisStreamClient", MagicMock(return_value=client))
+    monkeypatch.setattr(
+        provisioner_result_listener, "RedisStreamClient", MagicMock(return_value=client)
+    )
 
-    await infrastructure.provisioner_results_worker()
+    await provisioner_result_listener.provisioner_results_worker()
 
     client.consume.assert_called_once_with(
         PROVISIONER_RESULTS,
         SCHEDULER_CONSUMER_GROUP,
-        infrastructure.CONSUMER_NAME,
+        provisioner_result_listener.CONSUMER_NAME,
         auto_ack=False,
         claim_pending=True,
     )

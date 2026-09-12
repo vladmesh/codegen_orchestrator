@@ -56,17 +56,10 @@ def _pyprojects_referenced_by(dockerfile: Path) -> set[Path]:
 def _compose_consumers() -> set[Path]:
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
     consumers = set()
-    builds_by_image = {
-        service["image"]: service["build"]
-        for service in compose["services"].values()
-        if "image" in service and "build" in service
-    }
     for service in compose["services"].values():
         if not any(SHARED_MOUNT in str(volume) for volume in service.get("volumes", [])):
             continue
-        build = service.get("build") or builds_by_image.get(service.get("image"))
-        assert build is not None, "bind-mounted service has no build or shared built image"
-        pyproject = REPO_ROOT / Path(build["dockerfile"]).parent / "pyproject.toml"
+        pyproject = REPO_ROOT / Path(service["build"]["dockerfile"]).parent / "pyproject.toml"
         assert pyproject.is_file(), f"{pyproject} missing for a bind-mounted service"
         consumers.add(pyproject)
     return consumers
