@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
+
 __all__ = ["AttemptTurnMetadata", "WorkerActiveTurn", "active_turn_key"]
 
 
@@ -67,6 +69,7 @@ class AttemptTurnMetadata(BaseModel):
     worker_stop_next_retry_at: datetime | None = None
     stop_reason: str | None = None
     worker_state: str | None = None
+    execution: EngineeringExecutionEvidence | None = None
 
     def as_run_metadata(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude_none=True)

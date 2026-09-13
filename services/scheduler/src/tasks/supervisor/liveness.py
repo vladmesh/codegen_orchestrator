@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
 import structlog
 
 from shared.allocation_disposition import (
@@ -12,6 +13,12 @@ from shared.allocation_disposition import (
     RefusalRouting,
     attempt_disposition,
     refusal_routing,
+)
+from shared.contracts.dto.engineering_execution import (
+    ENGINEERING_INFRASTRUCTURE_KEY,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructurePark,
+    infrastructure_refusal_detail,
 )
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
@@ -260,9 +267,27 @@ async def supervise_failed_tasks(
         current_iter = task.current_iteration
         max_iter = task.max_iterations
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
+        engineering_runs = await api_client.list_runs(
+            task_id=task.id, run_type=RunType.ENGINEERING.value
+        )
+
+        (
+            infrastructure_handled,
+            infrastructure_parked,
+        ) = await _park_pre_agent_infrastructure_refusal(
+            api_client,
+            redis_client,
+            task,
+            engineering_runs,
+            log,
+            escalated_stories,
+        )
+        if infrastructure_handled:
+            escalated += int(infrastructure_parked)
+            continue
 
         if await _park_task_waiting_resources(
-            api_client, redis_client, task, log, escalated_stories
+            api_client, redis_client, task, engineering_runs, log, escalated_stories
         ):
             continue
 
@@ -306,10 +331,89 @@ async def supervise_failed_tasks(
     return {"retried": retried, "escalated": escalated}
 
 
+async def _park_pre_agent_infrastructure_refusal(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task: TaskDTO,
+    runs: list,
+    log: structlog.stdlib.BoundLogger,
+    escalated_stories: set[str],
+) -> tuple[bool, bool]:
+    """Route only validated pre-agent evidence before generic retry accounting.
+
+    Returns ``(handled, newly_parked)``. Unknown, legacy, or malformed evidence
+    returns ``(False, False)`` and therefore grants no free infrastructure path.
+    """
+    if not runs:
+        return False, False
+    run = runs[0]
+    try:
+        result = (
+            run.result
+            if isinstance(run.result, EngineeringRunResult)
+            else EngineeringRunResult.model_validate(run.result)
+        )
+    except (TypeError, ValidationError):
+        return False, False
+    execution = result.execution
+    if (
+        execution is None
+        or execution.execution_phase is not EngineeringExecutionPhase.PRE_AGENT_REFUSED
+    ):
+        return False, False
+    refusal = execution.infrastructure_refusal
+    if refusal is None:
+        return False, False
+    park = EngineeringInfrastructurePark(
+        task_id=task.id,
+        attempt_id=run.id,
+        refusal=refusal,
+        detail=infrastructure_refusal_detail(refusal),
+    )
+    metadata = park.as_metadata()
+    if (task.failure_metadata or {}).get(ENGINEERING_INFRASTRUCTURE_KEY) == metadata[
+        ENGINEERING_INFRASTRUCTURE_KEY
+    ]:
+        log.info("engineering_infrastructure_refusal_already_parked", run_id=run.id)
+        return True, False
+
+    owed = await owe_owner_notification(
+        api_client,
+        run,
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=park.detail,
+        story_id=task.story_id,
+        project_id=str(task.project_id),
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        task_id=task.id,
+        log=log,
+    )
+    await api_client.update_task(task.id, {"failure_metadata": metadata})
+    await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
+    await api_client.transition_task(
+        task.id,
+        TaskStatus.WAITING_HUMAN_REVIEW,
+        "supervisor",
+        details=metadata[ENGINEERING_INFRASTRUCTURE_KEY],
+    )
+    if task.story_id not in escalated_stories:
+        escalated_stories.add(task.story_id)
+        await api_client.transition_story(task.story_id, STORY_HUMAN_REVIEW_ACTION)
+    await _notify_admin_failure(task.id, str(task.project_id), park.detail)
+    await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+    log.warning(
+        "engineering_infrastructure_refusal_parked",
+        run_id=run.id,
+        refusal=refusal.value,
+    )
+    return True, True
+
+
 async def _park_task_waiting_resources(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     task,
+    runs: list,
     log: structlog.stdlib.BoundLogger,
     escalated_stories: set[str],
 ) -> bool:
@@ -326,7 +430,6 @@ async def _park_task_waiting_resources(
     Returns True when this function has routed the task, False when the caller's
     own failure routing applies.
     """
-    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     if not runs:
         return False
     run = runs[0]

@@ -344,6 +344,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "stop_reason": None,
             "agent_limit_seconds": None,
             "turn_result_consumed": False,
+            "execution": None,
             "errors": [],
         }
 
@@ -390,6 +391,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     deploy_fix_attempt=deploy_fix_attempt,
                     worker_observability=result.get("worker_observability"),
                     turn_result_consumed=result.get("turn_result_consumed", True),
+                    execution=result.get("execution"),
                 )
             )
 
@@ -405,6 +407,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 redis=redis,
                 worker_observability=result.get("worker_observability"),
                 turn_result_consumed=result.get("turn_result_consumed", True),
+                execution=result.get("execution"),
             )
         else:
             # FAILED (technical) or unexpected status — treat as technical failure
@@ -428,6 +431,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 stop_reason=result.get("stop_reason"),
                 agent_limit_seconds=result.get("agent_limit_seconds"),
                 redis=redis,
+                execution=result.get("execution"),
                 turn_result_consumed=result.get("turn_result_consumed", False),
                 story_id=story_id,
                 failure_reason=result.get("failure_reason"),

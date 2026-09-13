@@ -13,10 +13,19 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
+from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchOutcome,
     EngineeringDispatchRead,
 )
+from shared.contracts.dto.engineering_execution import (
+    ENGINEERING_INFRASTRUCTURE_KEY,
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructurePark,
+    EngineeringInfrastructureRefusal,
+)
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.work_admission import (
     PaidRunStartRead,
@@ -330,6 +339,151 @@ class TestSuperviseFailedTasks:
         assert calls[1].args == ("task-1", "todo", "supervisor")
         # Should increment current_iteration
         api_client.update_task.assert_called_once_with("task-1", {"current_iteration": 1})
+
+    @pytest.mark.parametrize("current_iteration,max_iterations", [(0, 3), (3, 3)])
+    @pytest.mark.asyncio
+    async def test_pre_agent_creation_refusal_parks_without_spending_iteration(
+        self, api_client, redis_client, current_iteration, max_iterations
+    ):
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        task = _make_task(
+            id="task-1",
+            story_id="story-1",
+            status="failed",
+            current_iteration=current_iteration,
+            max_iterations=max_iterations,
+        )
+        run = SimpleNamespace(
+            id="eng-1",
+            result=EngineeringRunResult(
+                engineering_status=EngineeringStatus.FAILED,
+                execution=EngineeringExecutionEvidence(
+                    execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                    infrastructure_refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                ),
+            ),
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [run]
+
+        with (
+            patch(
+                "src.tasks.supervisor.liveness.owe_owner_notification",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(),
+            ) as owe,
+            patch(
+                "src.tasks.supervisor.liveness.deliver_owed_notification",
+                new_callable=AsyncMock,
+            ) as deliver,
+        ):
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 0, "escalated": 1}
+        park = EngineeringInfrastructurePark(
+            task_id="task-1",
+            attempt_id="eng-1",
+            refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+            detail="Engineering worker creation was refused: project locked.",
+        ).as_metadata()
+        api_client.update_task.assert_awaited_once_with("task-1", {"failure_metadata": park})
+        api_client.update_story.assert_awaited_once_with("story-1", {"quarantine_reason": park})
+        api_client.transition_task.assert_awaited_once_with(
+            "task-1",
+            "waiting_human_review",
+            "supervisor",
+            details=park[ENGINEERING_INFRASTRUCTURE_KEY],
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        assert current_iteration == task.current_iteration
+        owe.assert_awaited_once()
+        deliver.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_after_agent_start_keeps_technical_retry(self, api_client, redis_client):
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed", current_iteration=1)
+        ]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                id="eng-1",
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+                    ),
+                ),
+            )
+        ]
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 1, "escalated": 0}
+        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            EngineeringRunResult(engineering_status=EngineeringStatus.FAILED),
+            {"engineering_status": "failed", "execution": {"execution_phase": "bogus"}},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_legacy_or_malformed_evidence_grants_no_free_retry(
+        self, api_client, redis_client, result
+    ):
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed", current_iteration=0)
+        ]
+        api_client.list_runs.return_value = [SimpleNamespace(id="eng-1", result=result)]
+
+        routed = await supervise_failed_tasks(api_client, redis_client)
+
+        assert routed == {"retried": 1, "escalated": 0}
+        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 1})
+
+    @pytest.mark.asyncio
+    async def test_repeated_refusal_reconciliation_is_a_noop(self, api_client, redis_client):
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        park = EngineeringInfrastructurePark(
+            task_id="task-1",
+            attempt_id="eng-1",
+            refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+            detail="Engineering worker creation was refused: project locked.",
+        ).as_metadata()
+        task = _make_task(
+            id="task-1",
+            story_id="story-1",
+            status="failed",
+            failure_metadata=park,
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                id="eng-1",
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                        infrastructure_refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    ),
+                ),
+            )
+        ]
+
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 0,
+            "escalated": 0,
+        }
+        api_client.transition_task.assert_not_awaited()
+        api_client.transition_story.assert_not_awaited()
+        api_client.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_escalates_to_whr_when_retries_exhausted(self, api_client, redis_client):

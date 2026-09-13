@@ -17,6 +17,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
+from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
@@ -456,6 +457,58 @@ class TestDispatchTodoTasks:
             "available_microusd": 90,
         }
         assert state["task"].status == "waiting_human_review"
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE,
+            EngineeringDispatchRefusal.EXECUTOR_CONFIRMATION_REQUIRED,
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_pre_agent_infrastructure_refusal_parks_with_recoverable_evidence(
+        self, api_client, redis_client, reason
+    ):
+        """Admission refusal is free and records the exact composite-retry key."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        task = _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.get_run.return_value = RunDTO.model_validate(
+            {
+                "id": "live-run-1",
+                "project_id": PROJ_ID,
+                "type": "engineering",
+                "status": "running",
+                "story_id": "story-1",
+                "created_at": _NOW,
+                "updated_at": _NOW,
+            }
+        )
+        api_client.get_story.return_value = _story(
+            id="story-1", project_id=PROJ_ID, status="waiting_human_review"
+        )
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            reason,
+            message="Repair the selected executor configuration, then retry this attempt.",
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        evidence = {
+            "execution_phase": "pre_agent_refused",
+            "refusal": reason.value,
+            "task_id": "task-1",
+            "attempt_id": "eng-test",
+            "detail": "Repair the selected executor configuration, then retry this attempt.",
+        }
+        api_client.update_task.assert_awaited_once_with(
+            "task-1", {"failure_metadata": {ENGINEERING_INFRASTRUCTURE_KEY: evidence}}
+        )
+        api_client.update_story.assert_any_await(
+            "story-1", {"quarantine_reason": {ENGINEERING_INFRASTRUCTURE_KEY: evidence}}
+        )
+        assert task.current_iteration == 0
 
     @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):

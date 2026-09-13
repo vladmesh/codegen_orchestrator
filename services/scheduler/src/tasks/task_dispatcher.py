@@ -25,6 +25,10 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
+from shared.contracts.dto.engineering_execution import (
+    EngineeringInfrastructurePark,
+    infrastructure_refusal_for_dispatch,
+)
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
@@ -201,6 +205,22 @@ async def _handle_refusal(
         log.info("task_dispatch_refused", reason=decision.reason.value)
         return
     admission = decision.paid_work.admission
+    infrastructure_refusal = infrastructure_refusal_for_dispatch(decision.reason)
+    infrastructure_park = None
+    if infrastructure_refusal is not None:
+        if not task.story_id or not admission.message or not decision.run_id:
+            raise RuntimeError(
+                "recoverable engineering infrastructure refusal omitted its park evidence"
+            )
+        infrastructure_park = EngineeringInfrastructurePark(
+            task_id=task.id,
+            attempt_id=decision.run_id,
+            refusal=infrastructure_refusal,
+            detail=admission.message,
+        )
+        metadata = infrastructure_park.as_metadata()
+        await api_client.update_task(task.id, {"failure_metadata": metadata})
+        await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
     if task.story_id and admission.message:
         await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget
@@ -213,6 +233,8 @@ async def _handle_refusal(
             "active_held_microusd": budget.active_held_microusd,
             "available_microusd": budget.available_microusd,
         }
+    elif infrastructure_park is not None:
+        details = infrastructure_park.model_dump(mode="json")
     else:
         details = {"reason": decision.reason.value, "attempt_id": decision.run_id}
     await api_client.transition_task(

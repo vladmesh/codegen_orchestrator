@@ -13,6 +13,11 @@ import structlog
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.constants import Timeouts
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.worker import WorkerStatus
@@ -46,6 +51,14 @@ _REJECTED_WORKER_OBSERVATION_SECONDS = 300
 # built from — which is exactly what is unrecoverable once the container and its
 # Redis metadata are gone.
 DEV_NETWORK_TYPE_LABEL = "worker-dev-network"
+
+
+class EngineeringWorkerCreationRefusal(RuntimeError):
+    """A worker-manager refusal classified where the failed operation is known."""
+
+    def __init__(self, reason: EngineeringInfrastructureRefusal, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 class WorkerManager:
@@ -258,8 +271,9 @@ class WorkerManager:
         acquired = await self.redis.set(lock_key, worker_id, nx=True)
         if not acquired:
             await self.redis.delete(f"worker:meta:{worker_id}")
-            raise RuntimeError(
-                f"Project {ownership.project_id} workspace lock was taken by a concurrent worker"
+            raise EngineeringWorkerCreationRefusal(
+                EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                f"Project {ownership.project_id} workspace lock was taken by a concurrent worker",
             )
         await self.redis.sadd("workspace:active_projects", ownership.project_id)
         return ownership.project_id
@@ -311,14 +325,39 @@ class WorkerManager:
         """
         logger.warning("worker_rejected", worker_id=worker_id, error=str(exc))
         await self.redis.set(f"worker:error:{worker_id}", str(exc))
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        reason = (
+            exc.reason
+            if isinstance(exc, EngineeringWorkerCreationRefusal)
+            else EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED
+        )
+        evidence = EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+            infrastructure_refusal=reason,
+        )
+        await self.redis.hset(
+            f"worker:status:{worker_id}",
+            mapping={
+                "status": WorkerStatus.FAILED,
+                **evidence.model_dump(mode="json", exclude_none=True),
+            },
+        )
         await self.redis.expire(f"worker:error:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
         await self.redis.expire(f"worker:status:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
 
     async def _fail_acquired_worker(self, worker_id: str, exc: Exception) -> None:
         """Publish terminal state and durable teardown intent for an acquired worker."""
         await self.redis.set(f"worker:error:{worker_id}", str(exc))
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        evidence = EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+            infrastructure_refusal=EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED,
+        )
+        await self.redis.hset(
+            f"worker:status:{worker_id}",
+            mapping={
+                "status": WorkerStatus.FAILED,
+                **evidence.model_dump(mode="json", exclude_none=True),
+            },
+        )
         await self.redis.xadd(
             WORKER_COMMANDS,
             {
@@ -445,7 +484,8 @@ class WorkerManager:
 
             if publish_ready:
                 await self.redis.hset(
-                    f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING}
+                    f"worker:status:{worker_id}",
+                    mapping={"status": WorkerStatus.RUNNING},
                 )
 
             return container.id
@@ -578,6 +618,50 @@ class WorkerManager:
             return ClaudeCodeAgent()
         raise ValueError(f"Unknown agent type: {agent_type}")
 
+    def _validate_worker_creation_request(
+        self,
+        *,
+        agent_type: AgentType,
+        auth_mode: str,
+        api_key: str | None,
+        env_vars: dict[str, str],
+        host_claude_dir: str | None,
+        host_codex_home: str | None,
+        is_qa_worker: bool,
+        instructions: str | None,
+        task_content: str | None,
+        repo_id: str | None,
+    ) -> tuple[str, bool, str | None]:
+        """Validate inputs that can refuse creation before worker ownership."""
+        try:
+            self._validate_stand_auth(agent_type, auth_mode, api_key, env_vars)
+            self._validate_host_session(agent_type, auth_mode, host_claude_dir, host_codex_home)
+        except Exception as exc:
+            raise EngineeringWorkerCreationRefusal(
+                EngineeringInfrastructureRefusal.WORKER_PROFILE_UNAVAILABLE,
+                str(exc),
+            ) from exc
+
+        network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
+        if is_qa_worker and (not instructions or not task_content):
+            raise RuntimeError(
+                "a QA executor requires instructions and task_content before it can become ready"
+            )
+        if not is_qa_worker and not repo_id:
+            raise RuntimeError(
+                "repo_id is required — all developer workers must use pre-scaffolded "
+                "workspaces. Ensure scaffolder has run before spawning workers."
+            )
+
+        factory_api_key = None
+        if agent_type == AgentType.FACTORY:
+            factory_api_key = (
+                env_vars.get("FACTORY_API_KEY") or api_key or os.getenv("FACTORY_API_KEY")
+            )
+            if not factory_api_key:
+                raise RuntimeError("FACTORY_API_KEY is not set")
+        return network_name, allow_host_network, factory_api_key
+
     # Statuses that indicate the worker is no longer alive and can be cleaned up
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
@@ -647,36 +731,25 @@ class WorkerManager:
         project_id = ownership.project_id
         env_vars = env_vars or {}
         workspace_path = None
-        factory_api_key = None
-        self._validate_stand_auth(agent_type, auth_mode, api_key, env_vars)
-
         # These checks can refuse a request before it owns metadata, a workspace
         # fence, or a cleanup command. A terminal status still tells the early-
         # ACKed caller to stop polling without manufacturing teardown state.
         held_project_id: str | None = None
         try:
-            network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
-
-            self._validate_host_session(agent_type, auth_mode, host_claude_dir, host_codex_home)
-
-            if is_qa_worker:
-                if not instructions or not task_content:
-                    raise RuntimeError(
-                        "a QA executor requires instructions and "
-                        "task_content before it can become ready"
-                    )
-            elif not repo_id:
-                raise RuntimeError(
-                    "repo_id is required — all developer workers must use pre-scaffolded "
-                    "workspaces. Ensure scaffolder has run before spawning workers."
+            network_name, allow_host_network, factory_api_key = (
+                self._validate_worker_creation_request(
+                    agent_type=agent_type,
+                    auth_mode=auth_mode,
+                    api_key=api_key,
+                    env_vars=env_vars,
+                    host_claude_dir=host_claude_dir,
+                    host_codex_home=host_codex_home,
+                    is_qa_worker=is_qa_worker,
+                    instructions=instructions,
+                    task_content=task_content,
+                    repo_id=repo_id,
                 )
-
-            if agent_type == AgentType.FACTORY:
-                factory_api_key = (
-                    env_vars.get("FACTORY_API_KEY") or api_key or os.getenv("FACTORY_API_KEY")
-                )
-                if not factory_api_key:
-                    raise RuntimeError("FACTORY_API_KEY is not set")
+            )
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project
@@ -827,7 +900,8 @@ class WorkerManager:
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id)
                 await self.redis.hset(
-                    f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING}
+                    f"worker:status:{worker_id}",
+                    mapping={"status": WorkerStatus.RUNNING},
                 )
                 logger.info("qa_executor_ready", worker_id=worker_id)
 
@@ -955,7 +1029,13 @@ class WorkerManager:
         """Check retry eligibility and scaffold existence before acquiring the fence."""
         existing_worker = await self._check_project_lock(project_id)
         if existing_worker:
-            await self._repair_or_refuse_project_conflict(project_id, existing_worker)
+            try:
+                await self._repair_or_refuse_project_conflict(project_id, existing_worker)
+            except RuntimeError as exc:
+                raise EngineeringWorkerCreationRefusal(
+                    EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    str(exc),
+                ) from exc
 
         failure_key = f"workspace:{project_id}:failure_count"
         failure_count = int(await self.redis.get(failure_key) or 0)

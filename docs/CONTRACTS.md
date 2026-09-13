@@ -133,6 +133,7 @@ becomes an immutable terminal fact.
 |---|---|---|
 | paid-run command and outcomes | `shared/contracts/dto/work_admission.py` | `services/api/src/routers/work_admission.py` |
 | engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `services/api/src/engineering_dispatch_admission.py` |
+| engineering execution boundary and infrastructure recovery | `shared/contracts/dto/engineering_execution.py` | worker-manager, engineering consumer, scheduler supervisor, `routers/_story_actions.py` |
 | Product Brief coverage admission | `shared/contracts/dto/product_brief.py` | `services/api/src/routers/product_briefs.py` |
 | per-user engineering budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `services/api/src/routers/engineering_budget_policies.py` |
 | executor decision snapshot | `shared/contracts/dto/executor_decision.py` | `services/api/src/work_admission.py` |
@@ -213,6 +214,22 @@ not select an executor from mutable project or process configuration. A malforme
 control or diagnostic is fail-closed. An administrator may confirm only a
 specific unexpired `unknown` diagnostics snapshot; an internal service cannot
 make that confirmation.
+
+`EngineeringExecutionEvidence` is the authoritative boundary for whether an
+engineering agent started. It is exactly either `agent_started` with no refusal,
+or `pre_agent_refused` with one `EngineeringInfrastructureRefusal`. The evidence
+travels in worker status, `AttemptTurnMetadata`, and `EngineeringRunResult` on
+the same Run. Missing, malformed, legacy, or contradictory evidence is not a
+free attempt and must follow the ordinary failure path; consumers never infer
+this fact from prose, tokens, elapsed time, or container presence.
+
+For a valid pre-agent refusal, the scheduler stores one exact
+`EngineeringInfrastructurePark` under `engineering_infrastructure` in both task
+`failure_metadata` and story `quarantine_reason`. Admission owns
+`executor_unavailable` and `executor_confirmation_required`; the liveness
+supervisor owns post-handoff worker creation refusals. Both preserve
+`current_iteration`, park task and story in `waiting_human_review`, and persist
+the existing owner/admin notification obligation once before delivery.
 
 ### The Product Brief coverage-to-dispatch boundary
 
@@ -717,6 +734,15 @@ one transaction rather than a client-side sequence a crash can leave halfway.
 walks a Story through more than one status. Every other caller reports the event
 that happened through a single-hop action; no path in `services/scheduler` or
 `services/langgraph` issues two Story transitions for one story.
+
+The narrow exception is the locked infrastructure recovery transaction,
+`POST /api/stories/{id}/retry-infrastructure-attempt`. It verifies the task and
+story still carry the same exact pre-agent park, settles its refused Run fence
+when one exists, records the legal task hops `waiting_human_review → backlog →
+todo`, clears only that matching park, and restarts the story at `in_progress`
+without changing the iteration. A matching completed audit returns the typed
+`already_retried` no-op; stale evidence, a changed status, a non-infrastructure
+park, or a mismatched Run returns a typed 409 and commits nothing.
 
 **`waiting_on` belongs to the transition, not to the caller.** `stories.waiting_on`
 is a non-nullable typed `StoryWaitingOn` column (migration `c3f7a91d2b48`)

@@ -138,3 +138,19 @@ increments `unknown_age_count`; no age is fabricated.
 
 Rejected pre-container creates retain their terminal status and error for five
 minutes so callers can observe the refusal, after which Redis expires both.
+
+## Recover a pre-agent infrastructure refusal
+
+On the admin story detail page, confirm the task and story show the same typed
+infrastructure reason, then click `Retry infrastructure attempt` once. The UI
+calls `POST /api/stories/{story_id}/retry-infrastructure-attempt` with the exact
+task, refused attempt, and reason. The response is `retried`, or
+`already_retried` when that audit was already applied. The transaction settles
+the refused Run fence, preserves `current_iteration`, records the legal task
+status hops, clears only the matching park evidence, and restarts the story; the
+scheduler creates the fresh attempt on its next tick.
+
+Do not PATCH `current_iteration`, sequence task transitions, or start the story
+manually. The action returns a typed 409 without partial changes when the reason
+is stale, either row left human review, the park is not infrastructure-owned, or
+the refused Run no longer matches. Resolve that discrepancy before retrying.
