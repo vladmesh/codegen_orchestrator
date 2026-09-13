@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 
 from shared.contracts.dto.temporary_access import (
+    TemporaryAccessDrainCommand,
+    TemporaryAccessDrainReason,
     TemporaryAccessGrantDTO,
     TemporaryAccessStatus,
 )
@@ -40,3 +42,9 @@ def test_durable_grant_has_identity_and_target_but_no_capability_or_environment_
     assert stored["external_id"] == "8202532144"
     assert stored["grant_attempts"] == 1
     assert {"env_key", "subject", "capability", "bot_token"}.isdisjoint(stored)
+
+
+def test_operator_drain_requires_the_typed_acceptance_reason() -> None:
+    command = TemporaryAccessDrainCommand(reason=TemporaryAccessDrainReason.OPERATOR_DRAIN)
+
+    assert command.model_dump(mode="json") == {"reason": "operator_drain"}

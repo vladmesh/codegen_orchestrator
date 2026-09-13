@@ -32,7 +32,8 @@ class TemporaryAccessGrant(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id"), index=True)
 
     # These legacy columns remain only so terminal slot history is readable.
-    # New records never populate them; a live row without a target is rejected.
+    # New records never populate them; a row without a target cannot be hydrated
+    # as a current capability record.
     legacy_env_key: Mapped[str | None] = mapped_column("env_key", String(255), nullable=True)
     legacy_subject: Mapped[str | None] = mapped_column("subject", String(255), nullable=True)
 

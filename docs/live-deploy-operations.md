@@ -139,6 +139,39 @@ increments `unknown_age_count`; no age is fabricated.
 Rejected pre-container creates retain their terminal status and error for five
 minutes so callers can observe the refusal, after which Redis expires both.
 
+## Drain unreconcilable temporary QA access
+
+Use the operator drain only for one of these records:
+
+- a non-revoked legacy record with no `target_base_url`, which the current
+  target-backed reconciler cannot operate; or
+- a complete target-backed record whose bounded reconciler has already persisted
+  `status=revoke_failed` and `escalated_at`.
+
+Ordinary current-format `granting`, `granted`, or `revoking` records are not
+eligible. Let the reconciler prove the remote revoke or exhaust its configured
+bound first. Then call the audited API as a resolved administrator:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header "X-Internal-Key: ${INTERNAL_API_KEY}" \
+  --header "X-Telegram-ID: ${ADMIN_TELEGRAM_ID}" \
+  --header 'Content-Type: application/json' \
+  --data '{"reason":"operator_drain"}' \
+  "${API_BASE_URL}/api/temporary-access-grants/${GRANT_ID}/drain"
+```
+
+The response is the settled record: `status=revoked`, a non-null `revoked_at`,
+and `revoke_reason=operator_drain`. The same command is idempotent. Its durable
+`WorkAdmissionAudit` has `subject=temporary_access_drain`, the grant id as
+`reference_id`, the resolved actor, and the before/after statuses.
+
+This command records the operator's acceptance of unproved remote cleanup. It
+does not establish that the QA identity is absent on the generated service.
+Investigate or clean the remote target separately when that fact is required.
+Never replace this action with a direct SQL status update.
+
 ## Recover a pre-agent infrastructure refusal
 
 A parked story is already complete when it appears in human review: the park
