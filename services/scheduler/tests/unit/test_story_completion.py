@@ -22,9 +22,10 @@ from src.tasks.story_completion import STORY_NO_COMMITS_REASON, complete_stories
 
 _NOW = datetime.now(UTC)
 _PROJ_ID = "00000000-0000-0000-0000-000000000001"
+_STORY_HEAD_SHA = "a" * 40
 
 
-def _story(story_id: str = "story-1") -> StoryDTO:
+def _story(story_id: str = "story-1", *, pr_number: int | None = None) -> StoryDTO:
     return StoryDTO(
         id=story_id,
         project_id=UUID(_PROJ_ID),
@@ -34,6 +35,7 @@ def _story(story_id: str = "story-1") -> StoryDTO:
         waiting_on=WAITING_ON_BY_STATUS[StoryStatus.IN_PROGRESS],
         priority=0,
         created_by="system",
+        pr_number=pr_number,
         created_at=_NOW,
     )
 
@@ -92,6 +94,7 @@ def redis_client():
 async def test_no_commits_between_takes_the_story_out_of_the_retry_set(api_client, redis_client):
     """A 422 no-commits refusal parks the story instead of asking again next tick."""
     github = AsyncMock()
+    github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.side_effect = NoCommitsBetweenError(
         "Cannot open PR story/story-1->main: No commits between main and story/story-1."
     )
@@ -122,6 +125,7 @@ async def test_a_parked_story_is_not_selected_by_the_next_completion_cycle(
 
     api_client.transition_story.side_effect = park
     github = AsyncMock()
+    github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.side_effect = NoCommitsBetweenError(
         "Cannot open PR story/story-1->main: No commits between main and story/story-1."
     )
@@ -138,6 +142,7 @@ async def test_a_parked_story_is_not_selected_by_the_next_completion_cycle(
 async def test_generic_pr_creation_error_keeps_the_story_in_progress(api_client, redis_client):
     """A transient GitHub error keeps its current behaviour: retry on the next tick."""
     github = AsyncMock()
+    github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.side_effect = RuntimeError("GitHub is having a bad day")
 
     with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
@@ -146,3 +151,54 @@ async def test_generic_pr_creation_error_keeps_the_story_in_progress(api_client,
     assert completed == 0
     api_client.transition_story.assert_not_awaited()
     api_client.update_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_commits_rejects_a_stale_merged_pr_with_an_earlier_head():
+    from src.tasks.story_completion import _resolve_current_cycle_pr
+
+    current_sha = "b" * 40
+    github = AsyncMock()
+    github.get_ref_sha.return_value = current_sha
+    github.create_pull_request.side_effect = NoCommitsBetweenError("No commits between")
+    github.get_pull_request.return_value = {
+        "number": 3,
+        "merged_at": "2026-09-13T15:00:00Z",
+        "head": {"ref": "story/story-1", "sha": "a" * 40},
+    }
+
+    with pytest.raises(NoCommitsBetweenError):
+        await _resolve_current_cycle_pr(
+            github,
+            story=_story(pr_number=3),
+            owner="org",
+            repo_name="repo",
+            branch="story/story-1",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pull_request",
+    [
+        {"node_id": "PR_missing_number", "head": {"sha": "a" * 40}},
+        {"number": "3", "head": {"sha": "a" * 40}},
+        {"number": 3, "head": {}},
+        {"number": 3, "head": {"sha": "b" * 40}},
+    ],
+)
+async def test_created_pr_requires_an_unambiguous_current_head_identity(pull_request):
+    from src.tasks.story_completion import _resolve_current_cycle_pr
+
+    github = AsyncMock()
+    github.get_ref_sha.return_value = "a" * 40
+    github.create_pull_request.return_value = pull_request
+
+    with pytest.raises(ValueError, match="current-cycle pull request"):
+        await _resolve_current_cycle_pr(
+            github,
+            story=_story(),
+            owner="org",
+            repo_name="repo",
+            branch="story/story-1",
+        )

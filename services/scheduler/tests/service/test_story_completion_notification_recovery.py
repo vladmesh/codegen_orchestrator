@@ -61,6 +61,7 @@ async def _record_running_acceptance_target(
             "run_metadata": {
                 QA_HANDOFF_KEY: QAHandoffPlan(
                     qa_message=QAMessage(
+                        story_id=story_id,
                         project_id=project_id,
                         initiating_run_id="test-run-1",
                         deployed_url="http://10.8.0.9:8000",

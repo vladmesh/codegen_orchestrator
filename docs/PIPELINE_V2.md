@@ -267,11 +267,17 @@ If the developer agent encounters an unsolvable problem:
 
 **Trigger**: All tasks in story `done`
 
-1. Task Dispatcher creates PR from `story/{story_id}` → `main`
-2. Enables auto-merge (merge commit — preserves individual commits)
-3. Transitions story to `pr_review`
-4. Cleans up worker container (no longer needed)
-5. Triggers next queued story for this project (doesn't wait for PR merge)
+1. Task Dispatcher reads the current `story/{story_id}` ref SHA, then resolves its
+   `main` PR through `create_pull_request`; an open PR is reused, while later fix commits get a successor
+2. Validates the returned PR against that exact head and persists its number for the poller
+3. Attempts auto-merge; a refusal leaves the open PR visible but does not retain the worker
+4. Finalizes worker teardown, including the unchanged story binding
+5. Transitions the story to `pr_review` and triggers the next queued story
+
+If an armed PR merges while teardown is pending, the next no-commits response
+recovers only the stored merged PR whose branch and head SHA still equal the
+current story ref. An earlier fix-cycle PR or ambiguous GitHub response cannot
+stand in for the current completion.
 
 **CI runs on the PR:**
 - **Green CI** → auto-merge → PR poller detects merged PR → deploy

@@ -11,8 +11,10 @@ import httpx
 from redis.asyncio import Redis
 import structlog
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.constants import Timeouts
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -31,6 +33,10 @@ from .worker_removal import QA_WORKER_TYPE, WorkerRemoval
 logger = structlog.get_logger()
 
 _MAX_WORKSPACE_FAILURES = 3
+_TERMINAL_STORY_STATUSES = frozenset(
+    {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
+)
+_REJECTED_WORKER_OBSERVATION_SECONDS = 300
 
 # What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
 # network is created and destroyed with its worker but is a separate Docker
@@ -209,6 +215,7 @@ class WorkerManager:
         cannot be half-written or disagree with the container's labels.
         """
         metadata = ownership.as_redis_meta()
+        metadata["owned_at"] = datetime.now(UTC).isoformat()
         if agent_type is not None and auth_mode is not None:
             metadata.update({"agent_type": agent_type.value, "auth_mode": auth_mode})
         if worker_type is not None:
@@ -305,6 +312,8 @@ class WorkerManager:
         logger.warning("worker_rejected", worker_id=worker_id, error=str(exc))
         await self.redis.set(f"worker:error:{worker_id}", str(exc))
         await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        await self.redis.expire(f"worker:error:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
+        await self.redis.expire(f"worker:status:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
 
     async def _fail_acquired_worker(self, worker_id: str, exc: Exception) -> None:
         """Publish terminal state and durable teardown intent for an acquired worker."""
@@ -946,7 +955,7 @@ class WorkerManager:
         """Check retry eligibility and scaffold existence before acquiring the fence."""
         existing_worker = await self._check_project_lock(project_id)
         if existing_worker:
-            raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
+            await self._repair_or_refuse_project_conflict(project_id, existing_worker)
 
         failure_key = f"workspace:{project_id}:failure_count"
         failure_count = int(await self.redis.get(failure_key) or 0)
@@ -968,6 +977,56 @@ class WorkerManager:
             )
 
         return workspace_path
+
+    async def _lookup_story_status(self, story_id: str) -> StoryStatus:
+        """Read the worker owner's current lifecycle through the authenticated API."""
+        client = InternalAPIClient(settings.API_BASE_URL, timeout=10)
+        try:
+            response = await client.request("GET", f"stories/{story_id}")
+            return StoryStatus(response.json()["status"])
+        finally:
+            await client.close()
+
+    async def _repair_or_refuse_project_conflict(self, project_id: str, worker_id: str) -> None:
+        """Repair only a project fence whose named worker has a terminal story."""
+        meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
+        story_id = meta.get("story_id")
+        if not story_id:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} "
+                "with unknown owning story; legacy ownership must be drained"
+            )
+        try:
+            status = StoryStatus(await self._lookup_story_status(story_id))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} owned by story "
+                f"{story_id}; owner status lookup failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if status not in _TERMINAL_STORY_STATUSES:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} owned by story "
+                f"{story_id} ({status.value})"
+            )
+
+        await self.delete_worker(worker_id, reason="completed")
+        replacement = decode_redis_value(await self.redis.get(f"workspace:lock:{project_id}"))
+        if replacement is not None:
+            replacement_meta = decode_redis_fields(
+                await self.redis.hgetall(f"worker:meta:{replacement}")
+            )
+            replacement_story = replacement_meta.get("story_id", "unknown owning story")
+            raise RuntimeError(
+                f"Project {project_id} remains locked by worker {replacement} owned by story "
+                f"{replacement_story} after terminal owner {worker_id} teardown"
+            )
+        logger.info(
+            "terminal_story_project_lock_repaired",
+            project_id=project_id,
+            worker_id=worker_id,
+            story_id=story_id,
+            story_status=status.value,
+        )
 
     async def _prepare_worker_env(
         self, config: WorkerContainerConfig, env_vars: dict[str, str], factory_api_key: str | None

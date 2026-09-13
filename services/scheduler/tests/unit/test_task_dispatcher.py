@@ -210,6 +210,7 @@ def _repair(repair: EngineeringDispatchRepair, run_id: str = "eng-abc") -> Engin
 # ---------------------------------------------------------------------------
 
 PROJ_ID = "00000000-0000-0000-0000-000000000001"
+STORY_HEAD_SHA = "a" * 40
 
 
 @pytest.fixture
@@ -579,8 +580,8 @@ class TestDispatchTodoTasks:
         assert eng_msg.story_id == "story-1"
 
     @pytest.mark.asyncio
-    async def test_story_id_none_for_standalone_task(self, api_client, redis_client):
-        """Task without story_id -> story_id=None in message."""
+    async def test_standalone_task_publishes_one_run_owned_worker(self, api_client, redis_client):
+        """A released storyless task dispatches without aborting its admitted run."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -597,10 +598,13 @@ class TestDispatchTodoTasks:
         ]
         api_client.transition_task.return_value = {}
 
-        await dispatch_todo_tasks(api_client, redis_client)
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
 
-        eng_msg = redis_client.publish_message.call_args[0][1]
-        assert eng_msg.story_id is None
+        message = redis_client.publish_message.await_args.args[1]
+        assert message.story_id is None
+        assert message.branch is None
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
+        api_client.transition_task.assert_awaited_once_with("task-1", "in_dev", "dispatcher")
 
     @pytest.mark.asyncio
     async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
@@ -665,8 +669,10 @@ class TestBranchInDispatch:
         assert eng_msg.branch == "story/story-abc"
 
     @pytest.mark.asyncio
-    async def test_dispatch_no_branch_for_standalone_task(self, api_client, redis_client):
-        """Task without story_id gets branch=None."""
+    async def test_standalone_task_has_a_branchless_engineering_handoff(
+        self, api_client, redis_client
+    ):
+        """Standalone work keeps run ownership and does not invent a story branch."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -683,11 +689,12 @@ class TestBranchInDispatch:
         ]
         api_client.transition_task.return_value = {}
 
-        await dispatch_todo_tasks(api_client, redis_client)
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
 
-        redis_client.publish_message.assert_called_once()
-        eng_msg = redis_client.publish_message.call_args[0][1]
-        assert eng_msg.branch is None
+        message = redis_client.publish_message.await_args.args[1]
+        assert message.story_id is None
+        assert message.branch is None
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
 
 
 class TestDispatchPartialFailure:
@@ -959,6 +966,268 @@ class TestCompleteStories:
     """Complete stories when all tasks are done."""
 
     @pytest.mark.asyncio
+    async def test_open_pr_is_resolved_again_over_multiple_teardown_ticks(
+        self, api_client, redis_client
+    ):
+        """The GitHub resolver returns the same open PR until teardown finishes."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Add weather API", pr_number=42)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [story] if status == StoryStatus.IN_PROGRESS else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        github = AsyncMock()
+        github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_existing",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.enable_auto_merge.return_value = True
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                side_effect=[False, True],
+            ),
+        ):
+            assert await complete_stories(api_client, redis_client) == 0
+            api_client.transition_story.assert_not_awaited()
+            assert await complete_stories(api_client, redis_client) == 1
+
+        assert github.create_pull_request.await_count == 2
+        github.get_pull_request.assert_not_awaited()
+        assert [call.args[1] for call in api_client.update_story.await_args_list] == [
+            {"pr_number": 42},
+            {"pr_number": 42},
+        ]
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+        redis_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pr_merged_during_teardown_resumes_on_the_second_tick(
+        self, api_client, redis_client
+    ):
+        """A same-head merged PR recovers no-commits instead of false quarantine."""
+        from unittest.mock import patch
+
+        from shared.clients.github import NoCommitsBetweenError
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [story] if status == StoryStatus.IN_PROGRESS else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+
+        async def persist_pr(_story_id, patch):
+            if "pr_number" in patch:
+                story.pr_number = patch["pr_number"]
+
+        api_client.update_story.side_effect = persist_pr
+        github = AsyncMock()
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.create_pull_request.side_effect = [
+            {
+                "number": 42,
+                "node_id": "PR_current",
+                "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+            },
+            NoCommitsBetweenError("No commits between main and story/story-1"),
+        ]
+        github.get_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_current",
+            "merged_at": "2026-09-13T15:00:00Z",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
+        github.enable_auto_merge.return_value = True
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                side_effect=[False, True],
+            ),
+        ):
+            assert await complete_stories(api_client, redis_client) == 0
+            assert await complete_stories(api_client, redis_client) == 1
+
+        github.get_pull_request.assert_awaited_once_with("my-org", "weather-bot", 42)
+        assert [call.args[1] for call in api_client.update_story.await_args_list] == [
+            {"pr_number": 42},
+            {"pr_number": 42},
+        ]
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+        assert not any(
+            "quarantine_reason" in call.args[1] for call in api_client.update_story.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fix_kind", ["qa_fix", "deploy_fix"])
+    async def test_fix_commits_resolve_and_persist_a_successor_to_the_stored_merged_pr(
+        self, api_client, redis_client, fix_kind
+    ):
+        """A merged PR number is poller output, never authority over new branch state."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Repair weather API", pr_number=3)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [story] if status == StoryStatus.IN_PROGRESS else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        api_client.list_runs.return_value = (
+            [
+                RunDTO(
+                    id="completed-deploy-fix",
+                    project_id=PROJ_ID,
+                    type=RunType.ENGINEERING,
+                    status=RunStatus.CANCELLED,
+                    story_id="story-1",
+                    run_metadata={"deploy_fix_attempt": 1},
+                    created_at=_NOW,
+                )
+            ]
+            if fix_kind == "deploy_fix"
+            else []
+        )
+        github = AsyncMock()
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.create_pull_request.return_value = {
+            "number": 5,
+            "node_id": "PR_fix",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
+        github.enable_auto_merge.return_value = True
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            assert await complete_stories(api_client, redis_client) == 1
+
+        github.create_pull_request.assert_awaited_once()
+        github.get_pull_request.assert_not_awaited()
+        api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 5})
+        github.enable_auto_merge.assert_awaited_once_with(
+            "my-org", "weather-bot", pr_node_id="PR_fix"
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure_stage", ["missing_branch", "resolve", "ambiguous_response", "teardown"]
+    )
+    async def test_completion_failure_never_transitions_or_triggers_later_work(
+        self, api_client, redis_client, failure_stage
+    ):
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [story] if status == StoryStatus.IN_PROGRESS else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        github = AsyncMock()
+        github.get_ref_sha.return_value = (
+            None if failure_stage == "missing_branch" else STORY_HEAD_SHA
+        )
+        if failure_stage == "resolve":
+            github.create_pull_request.side_effect = RuntimeError("GitHub unavailable")
+        elif failure_stage == "ambiguous_response":
+            github.create_pull_request.return_value = {
+                "node_id": "PR_without_number",
+                "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+            }
+        else:
+            github.create_pull_request.return_value = {
+                "number": 42,
+                "node_id": "PR_new",
+                "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+            }
+            github.enable_auto_merge.return_value = True
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                return_value=failure_stage != "teardown",
+            ) as finalize,
+        ):
+            assert await complete_stories(api_client, redis_client) == 0
+
+        api_client.transition_story.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+        if failure_stage in {"missing_branch", "resolve", "ambiguous_response"}:
+            finalize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_merge_refusal_still_finalizes_teardown_and_handoff(
+        self, api_client, redis_client
+    ):
+        """A visible open PR must not retain the story's project worker forever."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [story] if status == StoryStatus.IN_PROGRESS else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        github = AsyncMock()
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_new",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
+        github.enable_auto_merge.return_value = False
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as finalize,
+        ):
+            assert await complete_stories(api_client, redis_client) == 1
+
+        finalize.assert_awaited_once()
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("run_status", [RunStatus.QUEUED, RunStatus.RUNNING])
     async def test_does_not_complete_while_deploy_fix_engineering_run_is_live(
         self, api_client, redis_client, run_status
@@ -1048,7 +1317,12 @@ class TestCompleteStories:
         api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
 
         github = AsyncMock()
-        github.create_pull_request.return_value = {"number": 42, "node_id": "PR_abc"}
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_abc",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
         github.enable_auto_merge.return_value = True
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
             completed = await complete_stories(api_client, redis_client)
@@ -1083,7 +1357,16 @@ class TestCompleteStories:
             "number": 42,
             "node_id": "PR_abc",
             "html_url": "https://github.com/my-org/weather-bot/pull/42",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
+        mock_github.get_ref_sha.return_value = STORY_HEAD_SHA
+        redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.hget.side_effect = lambda key, *args: (
+            b"dev-story-worker" if key == "story:workers" else None
+        )
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.eval.return_value = 1
+        redis_client.redis.get.return_value = None
         mock_github.enable_auto_merge.return_value = True
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
@@ -1170,13 +1453,24 @@ class TestCompleteStories:
             "number": 42,
             "node_id": "PR_abc",
             "merged_at": "2026-03-19T01:00:00Z",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
+        mock_github.get_ref_sha.return_value = STORY_HEAD_SHA
+        redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.hget.side_effect = lambda key, *args: (
+            b"dev-story-worker" if key == "story:workers" else None
+        )
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.eval.return_value = 1
+        redis_client.redis.get.return_value = None
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             result = await complete_stories(api_client, redis_client)
 
         # Must transition to pr_review so poller picks up the merge
         api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+        assert redis_client.publish.await_args.args[1]["worker_id"] == "dev-story-worker"
+        redis_client.redis.hdel.assert_not_called()
         assert result == 1
 
 
@@ -1221,7 +1515,12 @@ class TestCompletionIgnoresCancelledTasks:
         )
 
         mock_github = AsyncMock()
-        mock_github.create_pull_request.return_value = {"number": 7, "node_id": "PR_x"}
+        mock_github.get_ref_sha.return_value = STORY_HEAD_SHA
+        mock_github.create_pull_request.return_value = {
+            "number": 7,
+            "node_id": "PR_x",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
         mock_github.enable_auto_merge.return_value = True
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):

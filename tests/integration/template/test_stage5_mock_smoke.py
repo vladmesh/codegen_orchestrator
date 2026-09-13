@@ -1,8 +1,14 @@
 """Stage 5 deterministic smoke for the pinned service-template."""
 
+from __future__ import annotations
+
+import json
 from pathlib import Path
 import stat
 import subprocess
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 from stage5_mock_smoke import (
@@ -208,10 +214,66 @@ def test_generated_access_lifecycle_uses_capability_and_bot_admission(
     assert "X-Grant-Capability" in backend_source
     assert '"/grant"' in backend_source
     assert '"/revoke"' in backend_source
-    assert backend_source.count('"/access?channel=telegram&external_id=8202532144"') == 2
+    assert backend_source.count('"/access?channel=telegram&external_id=8202532144"') == 1
+    assert 'wait_for_status("active")' in backend_source
+    assert 'wait_for_status("inactive")' in backend_source
     assert "USERS_GRANT_CAPABILITY" in backend_source
     assert "enforce_access" in calls[1][1]
     assert "ApplicationHandlerStop" in calls[1][1]
+
+
+def test_generated_access_lifecycle_waits_for_committed_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+    calls: list[tuple[str, str, str]] = []
+
+    def capture_worker(_self: Stage5Smoke, service: str, source: str, *, phase: str) -> None:
+        calls.append((service, source, phase))
+
+    class Response:
+        status = 200
+
+        def __init__(self, payload: dict[str, str]) -> None:
+            self.payload = payload
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _amount: int | None = None) -> bytes:
+            return json.dumps(self.payload).encode()
+
+    access_results: list[object] = [
+        urllib.error.HTTPError("/users/access", 404, "not committed", None, None),
+        Response({"status": "active"}),
+        Response({"status": "active"}),
+        Response({"status": "inactive"}),
+    ]
+
+    def request(url: urllib.request.Request, timeout: int) -> Response:
+        assert timeout == 10
+        if url.full_url.endswith("/grant"):
+            return Response({"status": "active"})
+        if url.full_url.endswith("/revoke"):
+            return Response({"status": "inactive"})
+        result = access_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        assert isinstance(result, Response)
+        return result
+
+    monkeypatch.setattr(Stage5Smoke, "_run_service_python", capture_worker)
+    smoke._exercise_generated_access_lifecycle()
+    monkeypatch.setattr(urllib.request, "urlopen", request)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("USERS_GRANT_CAPABILITY", "test-capability")
+
+    exec(calls[0][1], {"__builtins__": __builtins__})  # noqa: S102
+
+    assert access_results == []
 
 
 def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Path) -> None:

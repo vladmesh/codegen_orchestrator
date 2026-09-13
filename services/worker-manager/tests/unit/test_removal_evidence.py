@@ -34,7 +34,9 @@ from src.worker_removal import WorkerRemoval
 
 pytestmark = pytest.mark.asyncio
 
-OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1"
+)
 WORKER_ID = "dev-alpha-1"
 CONTAINER = f"{settings.WORKER_IMAGE_PREFIX}-{WORKER_ID}"
 
@@ -109,6 +111,21 @@ async def owned_worker(redis, *, worker_type: str = "developer", ownership=OWNER
     if ownership is not None:
         mapping.update(ownership.as_redis_meta())
     await redis.hset(f"worker:meta:{WORKER_ID}", mapping=mapping)
+
+
+async def test_standalone_worker_removal_keeps_run_scoped_evidence():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    order: list[str] = []
+    standalone = OWNERSHIP.model_copy(update={"story_id": None})
+    await owned_worker(redis, ownership=standalone)
+
+    await removal(redis, docker_double(order)).delete_worker(WORKER_ID, "completed")
+
+    record = await stored_record(redis)
+    assert record is not None
+    assert record.ownership.story_id is None
+    assert record.ownership.run_id == OWNERSHIP.run_id
+    assert not await redis.exists(f"worker:meta:{WORKER_ID}")
 
 
 async def stored_record(redis, run_id: str = OWNERSHIP.run_id) -> RemovedWorkerEvidence | None:

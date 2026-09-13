@@ -16,7 +16,9 @@ import redis.asyncio as redis
 
 from shared.contracts.queues.worker import WorkerOwnership
 
-_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
+_OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1"
+)
 
 
 class FakeStreams:

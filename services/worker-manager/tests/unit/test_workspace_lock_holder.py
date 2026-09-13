@@ -49,7 +49,9 @@ def _make_docker_mock():
 
 
 def _ownership(run_id: str, attempt_id: str) -> WorkerOwnership:
-    return WorkerOwnership(project_id=PROJECT, run_id=run_id, attempt_id=attempt_id)
+    return WorkerOwnership(
+        story_id="story-1", project_id=PROJECT, run_id=run_id, attempt_id=attempt_id
+    )
 
 
 async def _create(manager: WorkerManager, worker_id: str, run_id: str) -> str:

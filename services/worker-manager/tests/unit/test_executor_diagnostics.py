@@ -329,6 +329,7 @@ def _container(worker_id: str, agent_type: str, auth_mode: str, *, status: str =
     container = MagicMock()
     container.labels = {
         "com.codegen.worker.id": worker_id,
+        "com.codegen.story.id": "story",
         "com.codegen.project.id": "project",
         "com.codegen.run.id": "run",
         "com.codegen.attempt.id": "attempt",
@@ -351,6 +352,7 @@ def _inventory_redis(worker_ids, *, statuses=None, agent_types=None):
     async def hgetall(key):
         worker_id = str(key).rsplit(":", 1)[-1]
         return {
+            "story_id": "story",
             "project_id": "project",
             "run_id": "run",
             "attempt_id": "attempt",

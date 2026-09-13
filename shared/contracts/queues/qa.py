@@ -20,7 +20,9 @@ class QAOutcome(StrEnum):
 class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
 
-    story_id: str = ""
+    # Story transitions carry their owner; ad-hoc administrative E2E is
+    # deliberately run-owned and has no story to guess.
+    story_id: str | None = Field(default=None, min_length=1)
     project_id: str
     # The run that asked for this work, exactly as on `EngineeringMessage`: the
     # project's `initiating_run_id`, carried by the producer. A QA executor is

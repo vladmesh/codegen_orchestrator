@@ -42,6 +42,7 @@ class TestHarness:
         """Publishes to engineering:queue to trigger the flow."""
         task_id = f"task-{uuid.uuid4()}"
         message = EngineeringMessage(
+            story_id=f"story-{task_id}",
             task_id=task_id,
             project_id=project_id,
             initiating_run_id="live-run-1",

@@ -376,7 +376,7 @@ async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | No
     )
 
 
-async def _confirmed_initial_settings(story_id: str) -> list[InitialSetting]:
+async def _confirmed_initial_settings(story_id: str | None) -> list[InitialSetting]:
     """The typed settings the user confirmed for this story, or nothing.
 
     Read through the released brief endpoint, exactly as the deploy path reads

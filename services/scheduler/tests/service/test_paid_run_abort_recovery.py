@@ -82,3 +82,12 @@ async def test_real_pre_handoff_abort_is_readable_and_dispatches_a_new_attempt(a
     assert fresh[0].status is RunStatus.QUEUED
     assert fresh[0].run_metadata.get("pre_handoff_aborted") is None
     assert len(redis.messages) == 1
+    assert redis.messages[0][1].story_id is None
+
+    assert await dispatch_todo_tasks(api_client, redis) == 0
+    final_runs = await api_client.list_runs(
+        task_id=task.id,
+        run_type=RunType.ENGINEERING.value,
+    )
+    assert [run.id for run in final_runs] == [run.id for run in after_tick]
+    assert len(redis.messages) == 1

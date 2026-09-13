@@ -95,3 +95,46 @@ positive provider ID present in `PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS
 and skipped before SSH-key retrieval or SSH. Once a target is admitted, a missing key, malformed
 connection data, failed residue scan or failed teardown is an error; key absence is never treated as
 proof of cleanliness. An owned manifest with no admissible target is also an error.
+
+## Story-owned worker rollout precondition
+
+Deploy worker-manager before enabling the matching scheduler and engineering/QA
+consumers, then read `GET /api/introspect/worker-lifecycle`. The single rollout
+precondition is `ownerless_project_locks.count == 0`. Terminal legacy workers
+that still have a `story:workers` binding are drained automatically once the
+matching scheduler is enabled; active or ambiguous ownerless locks are not
+guessed or deleted and must be resolved before the rollout continues. The
+diagnostic reports identifiers, counts, oldest known age, and unknown-age counts
+only; it exposes no environment values or credentials.
+
+Released run-owned storyless workers intentionally appear in
+`ownerless_project_locks` while active. With consumers disabled, let that work
+finish through its normal delete-on-success path (or apply the normal operator
+cancellation decision) before requiring the rollout count to reach zero.
+
+Resolve an identifiable legacy lock with the canonical removal path, never by
+deleting Redis keys directly:
+
+1. Keep the new scheduler and engineering/QA consumers disabled. For each
+   project named by `ownerless_project_locks.identifiers`, read
+   `workspace:lock:<project>` and record its exact worker id.
+2. Read that worker through `GET /api/introspect/workers/<worker_id>`. Use only
+   the exact returned `container_id` for a read-only `docker inspect`, then read
+   its existing `com.codegen.worker.id` and `com.codegen.project.id` labels.
+   Continue only when the Redis holder, introspection result, and both labels
+   name that same worker and project. Do not select by a name prefix. Missing
+   metadata, a mismatched label, multiple candidates, or unavailable Docker
+   evidence is ambiguous and blocks the rollout.
+3. If the worker is still doing intended work, let it finish or use the normal
+   operator cancellation decision first. Once it is safe to stop, call
+   `DELETE /api/introspect/workers/<worker_id>`. This invokes worker-manager's
+   canonical deletion and owner-fenced lock release.
+4. Re-read the lock and lifecycle diagnostic. Continue the rollout only after
+   the exact lock is absent and `ownerless_project_locks.count` is zero.
+
+Legacy age is measured from existing worker metadata when present, otherwise
+from the Docker container's `Created` timestamp. A record with neither source
+increments `unknown_age_count`; no age is fabricated.
+
+Rejected pre-container creates retain their terminal status and error for five
+minutes so callers can observe the refusal, after which Redis expires both.

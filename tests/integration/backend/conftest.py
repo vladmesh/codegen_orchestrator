@@ -598,11 +598,14 @@ async def seed_task(api_client):
         title: str = "Test Task",
         task_type: str = "feature",
         project_id: str | None = None,
+        story_id: str | None = None,
         status: str = "backlog",
     ) -> dict:
         body = {"title": title, "type": task_type, "status": status}
         if project_id:
             body["project_id"] = project_id
+        if story_id:
+            body["story_id"] = story_id
         resp = await api_client.post("/api/tasks/", json=body)
         assert resp.status_code == 201, f"Failed to seed task: {resp.text}"
         return resp.json()

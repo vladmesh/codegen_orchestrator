@@ -17,6 +17,7 @@ from shared.contracts.vocab import AgentType
 from src.manager import WorkerManager
 
 _OWNERSHIP = WorkerOwnership(
+    story_id="story-1",
     project_id="proj-stand",
     run_id="eng-363cc7a2792f",
     attempt_id="attempt-eng-363cc7a2792f",

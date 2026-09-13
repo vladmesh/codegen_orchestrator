@@ -200,7 +200,7 @@ A Redis Stream for managing Workers.
 - `worker:responses:developer` — responses from worker-manager for Developer workers
 
 ### Story Worker Registry
-The Redis hash `story:workers` — a `story_id → worker_id` mapping. The engineering consumer writes to it after the first spawn and reads it for subsequent tasks in the story. The scheduler clears it when the story completes or fails.
+The Redis hash `story:workers` — a `story_id → worker_id` reuse mapping. The engineering consumer writes it after the first spawn. Terminal-story reconciliation retains it as legacy ownership evidence until canonical worker teardown is observed complete.
 
 ### Callback Stream
 A Redis Stream for the progress Events of a specific Run.

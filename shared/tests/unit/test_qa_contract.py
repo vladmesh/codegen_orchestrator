@@ -11,6 +11,26 @@ CRITERIA = "- GET /health returns 200"
 
 
 class TestQAMessage:
+    def test_story_is_optional_but_not_blank(self):
+        standalone = QAMessage(
+            project_id="proj-123",
+            initiating_run_id="live-run-1",
+            deployed_url="https://example.com",
+            application_id=17,
+            acceptance_criteria=CRITERIA,
+        )
+        assert standalone.story_id is None
+
+        with pytest.raises(ValidationError):
+            QAMessage(
+                story_id="",
+                project_id="proj-123",
+                initiating_run_id="live-run-1",
+                deployed_url="https://example.com",
+                application_id=17,
+                acceptance_criteria=CRITERIA,
+            )
+
     def test_minimal_construction(self):
         msg = QAMessage(
             story_id="story-abc",
@@ -176,19 +196,7 @@ class TestQAMessageRunId:
         assert restored.run_id == "qa-run-002"
 
 
-class TestQAMessageOptionalStoryId:
-    def test_story_id_defaults_to_empty(self):
-        """QAMessage story_id defaults to empty string for standalone triggers."""
-        msg = QAMessage(
-            project_id="proj-123",
-            initiating_run_id="live-run-1",
-            telegram_chat_id="user-1",
-            deployed_url="https://example.com",
-            application_id=17,
-            acceptance_criteria=CRITERIA,
-        )
-        assert msg.story_id == ""
-
+class TestQAMessageStoryOwnership:
     def test_story_id_explicit(self):
         msg = QAMessage(
             story_id="story-abc",
@@ -201,22 +209,8 @@ class TestQAMessageOptionalStoryId:
         )
         assert msg.story_id == "story-abc"
 
-    def test_standalone_roundtrip(self):
-        """QAMessage without story_id survives serialization."""
-        msg = QAMessage(
-            project_id="proj-123",
-            initiating_run_id="live-run-1",
-            telegram_chat_id="user-1",
-            deployed_url="https://example.com",
-            application_id=17,
-            acceptance_criteria=CRITERIA,
-        )
-        data = msg.model_dump()
-        restored = QAMessage.model_validate(data)
-        assert restored.story_id == ""
-
-    def test_backward_compat_no_story_id_in_dict(self):
-        """QAMessage works when story_id is missing from input dict."""
+    def test_released_ownerless_message_remains_run_owned(self):
+        """Ad-hoc E2E remains attributable to its run without inventing a story."""
         data = {
             "project_id": "proj-123",
             "initiating_run_id": "live-run-1",
@@ -225,8 +219,7 @@ class TestQAMessageOptionalStoryId:
             "application_id": 17,
             "acceptance_criteria": CRITERIA,
         }
-        msg = QAMessage.model_validate(data)
-        assert msg.story_id == ""
+        assert QAMessage.model_validate(data).story_id is None
 
 
 class TestQAQueueTopology:

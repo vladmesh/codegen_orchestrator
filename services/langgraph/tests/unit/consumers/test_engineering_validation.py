@@ -105,6 +105,7 @@ def test_unknown_extra_fields_are_ignored_and_defaults_apply():
     msg = EngineeringMessage.model_validate(
         {
             "task_id": "t",
+            "story_id": "story-1",
             "project_id": "p",
             "initiating_run_id": "live-1",
             "telegram_chat_id": "u",

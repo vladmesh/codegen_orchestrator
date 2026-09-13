@@ -19,6 +19,7 @@ from shared.contracts.queues.worker_result import WorkerStopReason
 
 ATTEMPT_ID = "eng-abcdef123456"
 OWNERSHIP = WorkerOwnership(
+    story_id="story-1",
     project_id="00000000-0000-0000-0000-000000000001",
     run_id="live-run-1",
     attempt_id=ATTEMPT_ID,

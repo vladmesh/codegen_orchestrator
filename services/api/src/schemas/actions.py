@@ -11,6 +11,10 @@ class AdminAction(BaseModel):
     actor: str = "admin"
 
 
+class E2ERunAction(AdminAction):
+    """An ad-hoc administrative QA run, owned by its Run rather than a story."""
+
+
 class SpawnWorkerRequest(BaseModel):
     """Request body for POST /tasks/{id}/spawn-worker."""
 

@@ -3,6 +3,15 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-13
+
+- Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
+- PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
+- Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.
+- Scheduler teardown now clears only a fully removed worker's unchanged story binding, so later QA and deploy fixes spawn fresh instead of waiting on a dead stream.
+- Story completion resolves the current branch PR on every retry, so teardown reuses an open PR while later fix commits receive a new deployable PR.
+- PR handoff verifies the current branch head and recovers a PR merged during worker teardown, avoiding false no-commit quarantine without trusting stale fix-cycle PRs.
+
 ## 2026-09-12
 
 - The bot mints an invite with the credits and attempt reservation from `admission.invite_*` system config

@@ -12,7 +12,7 @@ import structlog
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
-from shared.redis import decode_redis_fields
+from shared.redis import decode_redis_fields, decode_redis_value
 
 from . import qa_egress, workspace as workspace_mod
 from .config import settings
@@ -60,12 +60,14 @@ async def garbage_collect_orphaned_resources(
         containers = await docker.list_containers(
             filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True
         )
+        container_inventory_available = True
     except Exception as e:  # noqa: BLE001 — one unavailable Docker listing must not stop GC
         logger.error("orphan_gc_list_containers_failed", error=str(e))
         containers = []
+        container_inventory_available = False
 
     # Collect live container IDs for reverse check
-    live_container_ids: set[str] = set()
+    containers_by_worker: dict[str, object] = {}
     # Worker ids this sweep refuses to touch although Redis does not know them,
     # because something of theirs is still alive. Everything the sweep tears down
     # alongside a worker is keyed on the same id and is protected with it.
@@ -74,8 +76,8 @@ async def garbage_collect_orphaned_resources(
         worker_id = container.labels.get(WorkerLabel.ID.value)
         if not worker_id:
             continue
+        containers_by_worker[worker_id] = container
         if worker_id in known_ids:
-            live_container_ids.add(worker_id)
             continue
         if _is_live(container):
             protected_ids.add(worker_id)
@@ -91,24 +93,32 @@ async def garbage_collect_orphaned_resources(
         except Exception as e:  # noqa: BLE001 — one orphan must not stop the sweep
             logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
 
-    # --- Stale Redis entries (Redis says alive, but no container) ---
-    for worker_id in known_ids:
-        if worker_id not in live_container_ids:
-            status = await redis.hget(f"worker:status:{worker_id}", "status")
-            if status and status not in _TERMINAL_STATUSES:
-                logger.warning(
-                    "orphan_gc_stale_redis",
+    # --- Terminal Redis entries whose container is proven non-live or absent ---
+    # A failed Docker inventory is not absence. Keep every Redis record in that
+    # case so a daemon outage can never become permission to tear workers down.
+    if container_inventory_available:
+        for worker_id in known_ids:
+            raw_status = await redis.hget(f"worker:status:{worker_id}", "status")
+            status = decode_redis_value(raw_status)
+            if status not in _TERMINAL_STATUSES:
+                continue
+            container = containers_by_worker.get(worker_id)
+            if container is not None and _is_live(container):
+                continue
+            logger.warning(
+                "orphan_gc_terminal_worker",
+                worker_id=worker_id,
+                redis_status=status,
+                container_state=getattr(container, "status", "absent"),
+            )
+            try:
+                await delete_worker_fn(worker_id)
+            except Exception as e:  # noqa: BLE001 — one stale worker must not stop the sweep
+                logger.error(
+                    "orphan_gc_terminal_cleanup_failed",
                     worker_id=worker_id,
-                    redis_status=status,
+                    error=str(e),
                 )
-                try:
-                    await delete_worker_fn(worker_id)
-                except Exception as e:  # noqa: BLE001 — one stale worker must not stop the sweep
-                    logger.error(
-                        "orphan_gc_stale_cleanup_failed",
-                        worker_id=worker_id,
-                        error=str(e),
-                    )
 
     await _collect_orphaned_network_resources(docker, known_ids, protected_ids)
 

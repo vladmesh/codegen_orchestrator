@@ -9,7 +9,9 @@ import pytest
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 
-_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
+_OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1"
+)
 
 
 def _mock_settings():
@@ -587,7 +589,7 @@ class TestSpawnResultWorkerId:
             task_content="build it",
             timeout_seconds=5,
             ownership=WorkerOwnership(
-                project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                story_id="story-1", project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
             ),
         )
 
