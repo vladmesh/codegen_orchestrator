@@ -17,12 +17,12 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
-from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.worker_evidence import RemovedWorkerEvidence, removed_worker_evidence_key
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
-from shared.queues import WORKER_COMMANDS
 from shared.redis import RedisStreamClient, decode_redis_fields, decode_redis_value
+
+from .story_worker_teardown import finalize_story_worker_teardown
 
 logger = structlog.get_logger(__name__)
 
@@ -189,9 +189,14 @@ async def request_stuck_attempt_stop(
     )
     await api_client.update_run(run.id, {"run_metadata": patch.as_run_metadata()})
     if worker_id:
-        command = DeleteWorkerCommand(
-            request_id=f"stuck-{task.id}-{attempts}", worker_id=worker_id, reason="timeout"
+        await finalize_story_worker_teardown(
+            redis_client,
+            story_id=task.story_id,
+            project_id=str(task.project_id) if task.project_id else None,
+            request_id=f"stuck-{task.id}-{attempts}",
+            worker_id=worker_id,
+            reason="timeout",
+            observations=1,
         )
-        await redis_client.publish(WORKER_COMMANDS, command.model_dump(mode="json"))
         logger.warning("stuck_worker_stop_requested", worker_id=worker_id, attempts=attempts)
     return True

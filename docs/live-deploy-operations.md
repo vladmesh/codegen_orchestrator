@@ -107,6 +107,11 @@ guessed or deleted and must be resolved before the rollout continues. The
 diagnostic reports identifiers, counts, oldest known age, and unknown-age counts
 only; it exposes no environment values or credentials.
 
+Released run-owned storyless workers intentionally appear in
+`ownerless_project_locks` while active. With consumers disabled, let that work
+finish through its normal delete-on-success path (or apply the normal operator
+cancellation decision) before requiring the rollout count to reach zero.
+
 Resolve an identifiable legacy lock with the canonical removal path, never by
 deleting Redis keys directly:
 

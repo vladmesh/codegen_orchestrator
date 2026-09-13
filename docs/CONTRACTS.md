@@ -815,13 +815,13 @@ run-owned: their message and `WorkerOwnership.story_id` are `None`, and no story
 metadata or Docker label is invented.
 The scheduler reconciles `completed`, `failed`, and `archived` stories every
 supervision tick by rediscovering all matching metadata and publishing the
-canonical `DeleteWorkerCommand`. It retains metadata and the legacy
-`story:workers` binding until worker-manager confirms removal by deleting the
-worker status/metadata, so a failed publish or Docker call remains retryable.
-At both `complete_stories` PR-review handoffs it also publishes canonical
-teardown and observes the departing worker's project fence leave before it
-makes the next story eligible. It does not erase ownership evidence; terminal
-reconciliation remains the recovery backstop.
+canonical `DeleteWorkerCommand`. One scheduler finalizer retains the
+`story:workers` binding until worker-manager has deleted that exact worker's
+status and metadata and released its owner-fenced project lock, then
+compare-deletes only the unchanged binding. A failed publish, incomplete
+removal, or replacement owner remains retryable and blocks handoff. Both
+`complete_stories` PR-review routes and terminal reconciliation use this same
+order before transition or next-story eligibility.
 
 The owner-fenced `workspace:lock:<project>` is repaired during create only when
 its worker metadata names a story and an authenticated internal API read proves

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 import structlog
@@ -12,11 +11,11 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
-from shared.redis import RedisStreamClient, decode_redis_value
+from shared.queues import ARCHITECT_QUEUE
+from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
+from .story_worker_teardown import finalize_story_worker_teardown
 from .supervisor.common import STORY_HUMAN_REVIEW_ACTION
 
 if TYPE_CHECKING:
@@ -27,8 +26,6 @@ logger = structlog.get_logger(__name__)
 #: The classification a story carries when GitHub refused its pull request
 #: because the story branch holds no commit of its own.
 STORY_NO_COMMITS_REASON = "story_branch_has_no_commits"
-PR_REVIEW_TEARDOWN_OBSERVATIONS = 20
-PR_REVIEW_TEARDOWN_POLL_SECONDS = 0.25
 
 
 def _parse_owner_repo(git_url: str) -> tuple[str, str]:
@@ -45,52 +42,6 @@ def _parse_owner_repo(git_url: str) -> tuple[str, str]:
     # Take last two path segments
     parts = url.split("/")
     return parts[-2], parts[-1]
-
-
-async def _teardown_story_worker_before_handoff(
-    redis_client: RedisStreamClient,
-    story_id: str,
-    project_id: str,
-) -> bool:
-    """Request canonical removal and observe the departing project fence leave.
-
-    The story binding and metadata are evidence, so scheduler never deletes
-    them. Worker-manager removes metadata only after Docker removal succeeds;
-    terminal reconciliation can therefore retry any handoff that did not land.
-    The next story is not made eligible while the known departing worker still
-    holds the project's owner-fenced lock.
-    """
-    worker_id = decode_redis_value(await redis_client.redis.hget(STORY_WORKERS_KEY, story_id))
-    if not worker_id:
-        return True
-    command = DeleteWorkerCommand(
-        request_id=f"pr-review-story-{story_id}-{worker_id}",
-        worker_id=worker_id,
-        reason="completed",
-    )
-    try:
-        await redis_client.publish(WORKER_COMMANDS, command.model_dump(mode="json"))
-    except Exception:
-        logger.exception(
-            "pr_review_worker_teardown_publish_failed",
-            story_id=story_id,
-            worker_id=worker_id,
-        )
-        return False
-
-    lock_key = f"workspace:lock:{project_id}"
-    for _ in range(PR_REVIEW_TEARDOWN_OBSERVATIONS):
-        holder = decode_redis_value(await redis_client.redis.get(lock_key))
-        if holder != worker_id:
-            return True
-        await asyncio.sleep(PR_REVIEW_TEARDOWN_POLL_SECONDS)
-    logger.warning(
-        "pr_review_worker_teardown_not_observed",
-        story_id=story_id,
-        worker_id=worker_id,
-        project_id=project_id,
-    )
-    return False
 
 
 async def _trigger_next_story(
@@ -205,8 +156,8 @@ async def complete_stories(
     When all live tasks in a story are done:
     1. Create PR from story/{story_id} → main
     2. Enable auto-merge (merge commit, not squash — preserves individual commits)
-    3. Transition story to PR_REVIEW
-    4. Cleanup worker container, trigger next story
+    3. Finalize worker removal and its unchanged story binding
+    4. Transition story to PR_REVIEW, then trigger the next story
 
     Deploy is triggered later by poll_merged_prs() when PR is merged to main.
 
@@ -274,26 +225,29 @@ async def complete_stories(
 
         git_url = repo.git_url or ""
         owner, repo_name = _parse_owner_repo(git_url)
-        story_title = story.title
         branch = f"story/{story_id}"
 
         # Create PR from story branch to main
         try:
             github = GitHubAppClient()
-            pr = await github.create_pull_request(
-                owner,
-                repo_name,
-                head=branch,
-                base="main",
-                title=story_title,
-                body="All tasks completed. Auto-merge enabled.",
-            )
-            pr_number = pr["number"]
+            if story.pr_number is None:
+                pr = await github.create_pull_request(
+                    owner,
+                    repo_name,
+                    head=branch,
+                    base="main",
+                    title=story.title,
+                    body="All tasks completed. Auto-merge enabled.",
+                )
+                pr_number = pr["number"]
+                # Persist before teardown: a later scheduler pass reuses this PR
+                # while the worker-manager completes its longer removal bound.
+                await api_client.update_story(story_id, {"pr_number": pr_number})
+            else:
+                pr_number = story.pr_number
+                pr = await github.get_pull_request(owner, repo_name, pr_number)
             pr_node_id = pr.get("node_id", "")
             pr_merged = pr.get("merged_at") is not None
-
-            # Store PR number so poll_merged_prs can look up this exact PR
-            await api_client.update_story(story_id, {"pr_number": pr_number})
 
             if pr_merged:
                 # PR already merged (e.g. QA fix cycle — fix task pushed to
@@ -305,11 +259,15 @@ async def complete_stories(
                     pr_number=pr_number,
                     branch=branch,
                 )
-                if not await _teardown_story_worker_before_handoff(
-                    redis_client, story_id, project_id
+                if not await finalize_story_worker_teardown(
+                    redis_client,
+                    story_id=story_id,
+                    project_id=project_id,
+                    request_id=f"pr-review-story-{story_id}",
                 ):
                     continue
                 await api_client.transition_story(story_id, "pr_review")
+                await _trigger_next_story(api_client, redis_client, project_id)
                 completed += 1
                 continue
 
@@ -341,7 +299,12 @@ async def complete_stories(
             log.exception("story_pr_creation_failed", branch=branch)
             continue
 
-        if not await _teardown_story_worker_before_handoff(redis_client, story_id, project_id):
+        if not await finalize_story_worker_teardown(
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            request_id=f"pr-review-story-{story_id}",
+        ):
             continue
 
         # Transition story to pr_review (poll_merged_prs handles deploy after merge)

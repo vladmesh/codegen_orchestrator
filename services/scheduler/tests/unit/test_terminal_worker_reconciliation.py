@@ -1,10 +1,10 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from shared.contracts.dto.story import StoryStatus
-from shared.queues import STORY_WORKERS_KEY, WORKER_COMMANDS
+from shared.queues import STORY_WORKERS_KEY
 from src.tasks.terminal_worker_reconciliation import reconcile_terminal_story_workers
 
 
@@ -15,7 +15,7 @@ from src.tasks.terminal_worker_reconciliation import reconcile_terminal_story_wo
 async def test_terminal_story_reconciliation_requests_every_owned_worker_and_retries_until_gone(
     terminal_status,
 ):
-    story = SimpleNamespace(id="story-terminal", status=terminal_status)
+    story = SimpleNamespace(id="story-terminal", project_id="project-1", status=terminal_status)
     api = AsyncMock()
     api.get_stories_by_status.side_effect = lambda status: (
         [story] if status == terminal_status else []
@@ -33,19 +33,26 @@ async def test_terminal_story_reconciliation_requests_every_owned_worker_and_ret
     redis.hget.side_effect = lambda key, *args: "developer" if key == STORY_WORKERS_KEY else None
     client = SimpleNamespace(redis=redis, publish=AsyncMock())
 
-    assert await reconcile_terminal_story_workers(api, client) == 2
+    with patch(
+        "src.tasks.terminal_worker_reconciliation.finalize_story_worker_teardown",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as finalize:
+        assert await reconcile_terminal_story_workers(api, client) == 2
 
-    commands = [call.args[1] for call in client.publish.await_args_list]
-    assert [command["worker_id"] for command in commands] == ["developer", "qa-fix"]
-    assert all(call.args[0] == WORKER_COMMANDS for call in client.publish.await_args_list)
+    assert [call.kwargs["worker_id"] for call in finalize.await_args_list] == [
+        "developer",
+        "qa-fix",
+    ]
     redis.hdel.assert_not_awaited()
 
     metadata["worker:meta:developer"] = {}
     metadata["worker:meta:qa-fix"] = {}
     redis.scan_iter = lambda **_: _keys("worker:meta:other")
-    redis.hget.side_effect = lambda key, *args: "developer" if key == STORY_WORKERS_KEY else None
+    redis.hget.return_value = None
+    redis.hget.side_effect = None
     assert await reconcile_terminal_story_workers(api, client) == 0
-    redis.hdel.assert_awaited_once_with(STORY_WORKERS_KEY, "story-terminal")
+    redis.hdel.assert_not_awaited()
 
 
 async def _keys(*values):
@@ -57,7 +64,7 @@ async def _keys(*values):
 async def test_publish_failure_keeps_retryable_worker_ownership():
     api = AsyncMock()
     api.get_stories_by_status.side_effect = lambda status: (
-        [SimpleNamespace(id="story-terminal", status=status)]
+        [SimpleNamespace(id="story-terminal", project_id="project-1", status=status)]
         if status == StoryStatus.FAILED
         else []
     )

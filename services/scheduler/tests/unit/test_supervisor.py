@@ -929,10 +929,10 @@ class TestStoryWorkerCleanup:
     """Cleanup story workers on story complete/fail."""
 
     @pytest.mark.asyncio
-    async def test_pr_review_handoff_requests_teardown_without_erasing_ownership(
+    async def test_pr_review_handoff_finalizes_ownership_before_next_story(
         self, api_client, redis_client
     ):
-        """The departing worker releases the project before the next story is triggered."""
+        """The departing worker's lock and exact binding leave before later work starts."""
         from src.tasks.task_dispatcher import complete_stories
 
         proj_id = "00000000-0000-0000-0000-000000000001"
@@ -949,8 +949,20 @@ class TestStoryWorkerCleanup:
         )
 
         # Story has a worker registered
-        redis_client.redis.hget.return_value = b"dev-story-worker"
+        story_binding = {"worker": "dev-story-worker"}
         project_lock = {"holder": "dev-story-worker"}
+
+        async def read_hash(key, *_args):
+            return story_binding["worker"] if key == "story:workers" else None
+
+        async def compare_clear(_script, _keys, key, story_id, worker_id):
+            assert (key, story_id, worker_id) == (
+                "story:workers",
+                "story-1",
+                "dev-story-worker",
+            )
+            story_binding["worker"] = None
+            return 1
 
         async def read_lock(_key):
             return project_lock["holder"]
@@ -961,8 +973,12 @@ class TestStoryWorkerCleanup:
 
         async def start_next_story(_stream, _message):
             assert project_lock["holder"] is None
+            assert story_binding["worker"] is None
             project_lock["holder"] = "story-b-first-worker"
 
+        redis_client.redis.hget.side_effect = read_hash
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.eval.side_effect = compare_clear
         redis_client.redis.get.side_effect = read_lock
         redis_client.publish.side_effect = remove_departing_worker
         redis_client.publish_message.side_effect = start_next_story
@@ -980,11 +996,12 @@ class TestStoryWorkerCleanup:
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
-        redis_client.redis.hget.assert_awaited_once()
+        assert redis_client.redis.hget.await_count == 2
         command = redis_client.publish.await_args.args[1]
         assert command["command"] == "delete"
         assert command["worker_id"] == "dev-story-worker"
-        redis_client.redis.hdel.assert_not_called()
+        redis_client.redis.eval.assert_awaited_once()
+        assert story_binding["worker"] is None
         assert project_lock["holder"] == "story-b-first-worker"
 
     @pytest.mark.asyncio

@@ -965,6 +965,49 @@ class TestCompleteStories:
     """Complete stories when all tasks are done."""
 
     @pytest.mark.asyncio
+    async def test_teardown_retry_reuses_persisted_pr_instead_of_creating_another(
+        self, api_client, redis_client
+    ):
+        """A five-second observation slice may retry without another PR side effect."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _story(
+                id="story-1",
+                project_id=PROJ_ID,
+                title="Add weather API",
+                pr_number=42,
+            )
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        redis_client.redis.hget.side_effect = lambda key, *args: (
+            b"removed-worker" if key == "story:workers" else None
+        )
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.get.return_value = None
+        redis_client.redis.eval.return_value = 1
+        github = AsyncMock()
+        github.get_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_existing",
+            "merged_at": "2026-09-13T12:00:00Z",
+        }
+
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+            assert await complete_stories(api_client, redis_client) == 1
+
+        github.create_pull_request.assert_not_awaited()
+        github.get_pull_request.assert_awaited_once_with("my-org", "weather-bot", 42)
+        api_client.update_story.assert_not_awaited()
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+        redis_client.redis.eval.assert_awaited_once()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("run_status", [RunStatus.QUEUED, RunStatus.RUNNING])
     async def test_does_not_complete_while_deploy_fix_engineering_run_is_live(
         self, api_client, redis_client, run_status
@@ -1091,6 +1134,11 @@ class TestCompleteStories:
             "html_url": "https://github.com/my-org/weather-bot/pull/42",
         }
         redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.hget.side_effect = lambda key, *args: (
+            b"dev-story-worker" if key == "story:workers" else None
+        )
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
         mock_github.enable_auto_merge.return_value = True
 
@@ -1180,6 +1228,11 @@ class TestCompleteStories:
             "merged_at": "2026-03-19T01:00:00Z",
         }
         redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.hget.side_effect = lambda key, *args: (
+            b"dev-story-worker" if key == "story:workers" else None
+        )
+        redis_client.redis.hgetall.return_value = {}
+        redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):

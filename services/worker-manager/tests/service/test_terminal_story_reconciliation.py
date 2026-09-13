@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 import pytest
-from scheduler_terminal_worker_reconciliation import reconcile_terminal_story_workers
+from scheduler_tasks.terminal_worker_reconciliation import reconcile_terminal_story_workers
 
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerOwnership
@@ -17,11 +17,16 @@ from src.worker_removal import WorkerRemoval
 
 
 class _StoryAPI:
-    def __init__(self, status: StoryStatus):
+    def __init__(self, status: StoryStatus, project_id: str):
         self.status = status
+        self.project_id = project_id
 
     async def get_stories_by_status(self, status):
-        return [SimpleNamespace(id="terminal-story")] if status == self.status else []
+        return (
+            [SimpleNamespace(id="terminal-story", project_id=self.project_id)]
+            if status == self.status
+            else []
+        )
 
 
 def _container() -> dict:
@@ -110,7 +115,8 @@ async def test_one_terminal_window_uses_canonical_removal_for_every_story_worker
         await redis.hset(STORY_WORKERS_KEY, "terminal-story", worker_ids["developer"])
         await redis.set(f"workspace:lock:{project_id}", worker_ids["developer"])
 
-        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), boundary) == 2
+        story_api = _StoryAPI(terminal_status, project_id)
+        assert await reconcile_terminal_story_workers(story_api, boundary) == 2
 
         removed = {call.args[0] for call in docker.remove_container.await_args_list}
         assert removed == {
@@ -129,9 +135,9 @@ async def test_one_terminal_window_uses_canonical_removal_for_every_story_worker
         assert await redis.hget(f"worker:status:{worker_ids['other']}", "status") == "RUNNING"
         assert await redis.hget(f"worker:meta:{worker_ids['other']}", "story_id") == "live-story"
 
-        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), boundary) == 0
+        assert await reconcile_terminal_story_workers(story_api, boundary) == 0
         assert await redis.hget(STORY_WORKERS_KEY, "terminal-story") is None
-        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), boundary) == 0
+        assert await reconcile_terminal_story_workers(story_api, boundary) == 0
         assert docker.remove_container.await_count == 2
     finally:
         await redis.delete(
