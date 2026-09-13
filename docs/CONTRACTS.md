@@ -266,6 +266,18 @@ semantics are unchanged; no migration is needed because the record is JSON. The
 owner audience is voided when its terminal status is gone; the administrator
 audience describes a committed event and is delivered regardless.
 
+The administrator audience settles on `shared.notifications.deliver_to_admins`,
+whose `AdminDeliveryResult` carries the configured and successful recipient
+counts, never on `notify_admins` not raising (`send_telegram_message` returns
+`False` for rate limits, non-200 answers and timeouts; `notify_admins` keeps
+returning only the success count for best-effort alerts). No configured
+administrator settles `unaddressable` with the counts as `admin_detail`; all
+configured recipients accepted settles `delivered`; zero or partial success, or
+a raised users-API failure, spends one bounded attempt and stays `owed`, then
+`abandoned` with the detail. A settled audience is never sent again; before
+settlement delivery is at-least-once, because Telegram has no idempotency key,
+so a retry after partial success resends to administrators already reached.
+
 ### The Product Brief coverage-to-dispatch boundary
 
 A Story planned from a confirmed Product Brief is released as a whole, not task

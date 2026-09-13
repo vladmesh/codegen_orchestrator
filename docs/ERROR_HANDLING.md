@@ -131,7 +131,12 @@ audiences, or nothing; a repeat returns `already_parked` and re-owes nothing.
 Delivery happens afterwards in `supervise_owed_owner_notifications`. The owner
 and administrator audiences keep separate state and bounded attempts on the same
 record, so a crash, an ambiguous publish, one audience retrying or exhausting, or
-a restart never loses the other audience or resends a settled one. No delivery
+a restart never loses the other audience or resends a settled one. The
+administrator audience settles on per-recipient Telegram results: every
+configured administrator reached is `delivered`, none configured is
+`unaddressable`, and zero or partial success is a failed attempt retried until
+`abandoned` (at-least-once, so a partially reached administrator may be told
+again). No delivery
 outcome can roll back a park or leave the task dispatchable. `ineligible_story`
 (terminal or racing story) and typed 409s are contained per task without generic
 retry accounting.

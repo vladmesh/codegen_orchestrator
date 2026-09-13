@@ -29,6 +29,7 @@ from shared.contracts.dto.owner_notification import OwnerNotificationState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.user import UserDTO
 from shared.contracts.vocab import AgentType
 from src.tasks.owner_notifications import supervise_owed_owner_notifications
 from src.tasks.task_dispatcher import dispatch_todo_tasks
@@ -55,18 +56,27 @@ class _RecordingRedis:
 
 
 class _AdminChannel:
-    """Telegram for administrators, failing on demand."""
+    """Telegram for administrators, refusing on demand the way production does.
+
+    Only `send_telegram_message` and the administrator list are replaced; the
+    real `deliver_to_admins` aggregates them. A refused send returns `False`.
+    """
 
     def __init__(self) -> None:
         self.messages: list[str] = []
         self.failures = 0
 
-    async def notify_admins(self, message: str, level: str = "info") -> int:
+    async def admin_users(self) -> list[UserDTO]:
+        return [UserDTO(id=1, telegram_id=5001, is_admin=True, created_at=datetime.now(UTC))]
+
+    async def send_telegram_message(
+        self, telegram_id: int, text: str, parse_mode: str = "Markdown"
+    ) -> bool:
         if self.failures:
             self.failures -= 1
-            raise httpx.ConnectError("Telegram is unreachable")
-        self.messages.append(message)
-        return 1
+            return False
+        self.messages.append(text)
+        return True
 
 
 async def _publish_executors(availability: ExecutorAvailability, reason_code: str) -> None:
@@ -162,7 +172,8 @@ async def test_a_lost_refusal_answer_leaves_a_recoverable_park_and_both_notices(
         api_client, "admit_engineering_dispatch", admission_whose_first_answer_is_lost
     )
     admins = _AdminChannel()
-    monkeypatch.setattr("src.tasks.owner_notifications.notify_admins", admins.notify_admins)
+    monkeypatch.setattr("shared.notifications._list_admin_users", admins.admin_users)
+    monkeypatch.setattr("shared.notifications.send_telegram_message", admins.send_telegram_message)
     redis = _RecordingRedis()
 
     def published_for_task() -> list:

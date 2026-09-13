@@ -178,6 +178,82 @@ class TestNotifyAdmins:
             await notifications_mod.notify_admins("test")
 
 
+class TestDeliverToAdmins:
+    """The per-recipient result the durable administrator audience settles on."""
+
+    @staticmethod
+    def _users(*admin_ids: int, plain: int = 0) -> list[dict]:
+        users = [
+            {
+                "id": index,
+                "telegram_id": telegram_id,
+                "is_admin": True,
+                "created_at": "2026-09-13T00:00:00Z",
+            }
+            for index, telegram_id in enumerate(admin_ids, start=1)
+        ]
+        users += [
+            {"id": 100 + index, "telegram_id": 900 + index, "created_at": "2026-09-13T00:00:00Z"}
+            for index in range(plain)
+        ]
+        return users
+
+    async def _deliver(self, users: list[dict], accepted: set[int]):
+        _, transport = TestNotifyAdmins._recording_transport(users)
+        sent: list[int] = []
+
+        async def telegram(telegram_id: int, text: str, parse_mode: str = "Markdown") -> bool:
+            sent.append(telegram_id)
+            return telegram_id in accepted
+
+        with (
+            patch.dict(os.environ, TestNotifyAdmins._users_env(), clear=True),
+            transport,
+            patch.object(notifications_mod, "send_telegram_message", telegram),
+        ):
+            result = await notifications_mod.deliver_to_admins("parked", level="error")
+            count = await notifications_mod.notify_admins("parked", level="error")
+        return result, count, sent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("admins", "plain", "accepted", "status", "succeeded"),
+        [
+            ((), 0, set(), notifications_mod.AdminDeliveryStatus.UNADDRESSABLE, 0),
+            ((), 2, set(), notifications_mod.AdminDeliveryStatus.UNADDRESSABLE, 0),
+            ((11, 12), 1, {11, 12}, notifications_mod.AdminDeliveryStatus.DELIVERED, 2),
+            ((11, 12), 0, {12}, notifications_mod.AdminDeliveryStatus.PARTIAL, 1),
+            ((11, 12), 0, set(), notifications_mod.AdminDeliveryStatus.FAILED, 0),
+        ],
+    )
+    async def test_truth_table(self, admins, plain, accepted, status, succeeded):
+        result, count, sent = await self._deliver(self._users(*admins, plain=plain), accepted)
+
+        assert result.status is status
+        assert (result.configured, result.succeeded) == (len(admins), succeeded)
+        # The released aggregate promise is unchanged: the success count.
+        assert count == succeeded
+        assert sorted(set(sent)) == sorted(admins)
+
+    @pytest.mark.asyncio
+    async def test_a_raising_send_counts_as_a_failed_recipient(self):
+        _, transport = TestNotifyAdmins._recording_transport(self._users(11, 12))
+
+        async def telegram(telegram_id: int, text: str, parse_mode: str = "Markdown") -> bool:
+            if telegram_id == 11:
+                raise TimeoutError("telegram")
+            return True
+
+        with (
+            patch.dict(os.environ, TestNotifyAdmins._users_env(), clear=True),
+            transport,
+            patch.object(notifications_mod, "send_telegram_message", telegram),
+        ):
+            result = await notifications_mod.deliver_to_admins("parked")
+
+        assert result.status is notifications_mod.AdminDeliveryStatus.PARTIAL
+
+
 class TestBestEffortNotifications:
     @pytest.mark.asyncio
     async def test_zero_recipients_is_a_valid_best_effort_result(self):

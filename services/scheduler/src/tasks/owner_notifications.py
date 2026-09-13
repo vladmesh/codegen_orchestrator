@@ -59,7 +59,11 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent
-from shared.notifications import notify_admins, notify_admins_best_effort
+from shared.notifications import (
+    AdminDeliveryStatus,
+    deliver_to_admins,
+    notify_admins_best_effort,
+)
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -417,6 +421,42 @@ async def deliver_owed_notification(
     return outcome
 
 
+async def _spend_failed_admin_attempt(
+    api_client: SchedulerAPIClient,
+    source_id: str,
+    record: OwnerNotification,
+    *,
+    attempts: int,
+    error: str,
+    log: structlog.stdlib.BoundLogger,
+    story_record: bool,
+) -> tuple[OwnerNotificationOutcome, OwnerNotification]:
+    """Charge one failed administrator publication to the bound, or abandon it."""
+    exhausted = attempts >= OWNER_NOTIFICATION_MAX_ATTEMPTS
+    settled = record.model_copy(
+        update={
+            "admin_state": (
+                OwnerNotificationState.ABANDONED if exhausted else OwnerNotificationState.OWED
+            ),
+            "admin_attempts": attempts,
+            "admin_detail": error,
+        }
+    )
+    await _write(api_client, source_id, settled, story_record=story_record)
+    (log.error if exhausted else log.warning)(
+        "admin_notification_abandoned" if exhausted else "admin_notification_publish_failed",
+        po_event=record.event,
+        story_id=record.story_id,
+        project_id=record.project_id,
+        attempts=attempts,
+        max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
+        error=error,
+        **_source_log_fields(source_id, story_record=story_record),
+    )
+    outcome = OwnerNotificationOutcome.EXHAUSTED if exhausted else OwnerNotificationOutcome.RETRYING
+    return outcome, settled
+
+
 async def _deliver_to_administrators(
     api_client: SchedulerAPIClient,
     source_id: str,
@@ -430,39 +470,62 @@ async def _deliver_to_administrators(
     Unlike the owner's message, the administrators' notice describes an event
     that already committed with the record, so it is not voided by a story that
     has since moved on (an operator may recover the park before it is read).
-    Delivery is at-least-once: a notice that reached Telegram before its record
-    was written is sent again, never lost.
+
+    The settlement is read from the per-recipient result, never from the call
+    not raising, because Telegram failures come back as ``False``:
+
+    * no configured administrator — ``unaddressable``, settled with evidence;
+    * every configured administrator reached — ``delivered``;
+    * zero or partial success, or a raised users-API failure — a spent attempt
+      that stays ``owed``, and ``abandoned`` with the detail after the bound.
+
+    A settled audience is never sent again. Before settlement delivery is
+    at-least-once: Telegram has no idempotency key, so a retry after a partial
+    success, or after a crash before the record was written, resends to
+    administrators who already received it.
     """
     attempts = record.admin_attempts + 1
     source_fields = _source_log_fields(source_id, story_record=story_record)
     try:
-        await notify_admins(record.admin_text, level="error")
+        result = await deliver_to_admins(record.admin_text, level="error")
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        exhausted = attempts >= OWNER_NOTIFICATION_MAX_ATTEMPTS
+        return await _spend_failed_admin_attempt(
+            api_client,
+            source_id,
+            record,
+            attempts=attempts,
+            error=f"{type(exc).__name__}: {exc}",
+            log=log,
+            story_record=story_record,
+        )
+    if result.status is AdminDeliveryStatus.UNADDRESSABLE:
         settled = record.model_copy(
             update={
-                "admin_state": (
-                    OwnerNotificationState.ABANDONED if exhausted else OwnerNotificationState.OWED
-                ),
+                "admin_state": OwnerNotificationState.UNADDRESSABLE,
                 "admin_attempts": attempts,
-                "admin_detail": error,
+                "admin_detail": result.detail,
             }
         )
         await _write(api_client, source_id, settled, story_record=story_record)
-        (log.error if exhausted else log.warning)(
-            "admin_notification_abandoned" if exhausted else "admin_notification_publish_failed",
+        log.warning(
+            "admin_notification_unaddressable",
             po_event=record.event,
             story_id=record.story_id,
             project_id=record.project_id,
-            attempts=attempts,
-            max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
-            error=error,
+            detail=result.detail,
             **source_fields,
         )
-        return (
-            OwnerNotificationOutcome.EXHAUSTED if exhausted else OwnerNotificationOutcome.RETRYING
-        ), settled
+        return OwnerNotificationOutcome.UNADDRESSABLE, settled
+    if result.status is not AdminDeliveryStatus.DELIVERED:
+        return await _spend_failed_admin_attempt(
+            api_client,
+            source_id,
+            record,
+            attempts=attempts,
+            error=result.detail,
+            log=log,
+            story_record=story_record,
+        )
     settled = record.model_copy(
         update={
             "admin_state": OwnerNotificationState.DELIVERED,
