@@ -9,6 +9,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .engineering_execution import EngineeringInfrastructureParkDisposition
 from .work_admission import PaidRunStartRead, WorkAdmissionReason
 
 
@@ -93,6 +94,9 @@ class EngineeringDispatchRefusal(StrEnum):
     #: the tick rather than being taken out of ladder order. The next tick sees
     #: the roster that exists.
     STORY_ROSTER_CHANGED = "story_roster_changed"
+    #: The task or its story carries a typed pre-agent infrastructure park. Only
+    #: the operator's infrastructure retry clears it, so no attempt is minted.
+    INFRASTRUCTURE_PARKED = "infrastructure_parked"
     #: An attempt is still open on this task; the decision carries the repair.
     LIVE_ATTEMPT_IN_FLIGHT = "live_attempt_in_flight"
     #: The paid gate refused. One value per `WorkAdmissionReason` that reaches
@@ -216,3 +220,6 @@ class EngineeringDispatchRead(BaseModel):
     #: named them. Empty for every scheduled dispatch; the audit trail of an
     #: operator override, and written onto the attempt it created.
     overridden: list[EngineeringDispatchRefusal] = Field(default_factory=list)
+    #: For a typed pre-agent infrastructure refusal, what the same admission
+    #: transaction did to the task and story. `None` for every other decision.
+    infrastructure_park: EngineeringInfrastructureParkDisposition | None = None

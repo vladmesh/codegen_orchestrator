@@ -25,6 +25,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
+from shared.contracts.dto.engineering_execution import infrastructure_refusal_for_dispatch
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
@@ -201,6 +202,20 @@ async def _handle_refusal(
         log.info("task_dispatch_refused", reason=decision.reason.value)
         return
     admission = decision.paid_work.admission
+    if infrastructure_refusal_for_dispatch(decision.reason) is not None:
+        # Admission already parked this refusal, with its owed notices, in the
+        # transaction that decided it. There is nothing left to sequence here,
+        # and a second park call would only reopen the window that closed.
+        log.info(
+            "task_dispatch_infrastructure_refusal_parked_by_admission",
+            run_id=decision.run_id,
+            task_id=task.id,
+            reason=decision.reason.value,
+            disposition=(
+                decision.infrastructure_park.value if decision.infrastructure_park else None
+            ),
+        )
+        return
     if task.story_id and admission.message:
         await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget

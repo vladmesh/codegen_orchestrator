@@ -8,6 +8,10 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
 import type { Story, Task } from '@/types/api'
 import { requestStoryQaRecheck } from './storyRecheck'
+import {
+  infrastructureRetryTarget,
+  requestInfrastructureRetry,
+} from './storyInfrastructureRetry'
 
 const ARCHITECT_STATUSES = new Set(['created', 'reopened'])
 
@@ -52,8 +56,18 @@ export function StoryDetailPage() {
     },
   })
 
+  const retryInfrastructureMutation = useMutation({
+    mutationFn: (target: NonNullable<ReturnType<typeof infrastructureRetryTarget>>) =>
+      requestInfrastructureRetry(api, id!, target),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', id] })
+      queryClient.invalidateQueries({ queryKey: ['tasks', 'story', id] })
+    },
+  })
+
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>
   if (!story) return <p className="text-muted-foreground">Story not found</p>
+  const infrastructureRetry = infrastructureRetryTarget(story, tasks ?? [])
 
   return (
     <div className="space-y-6">
@@ -114,8 +128,32 @@ export function StoryDetailPage() {
               </div>
             </div>
           )}
+          {infrastructureRetry && (
+            <ConfirmButton
+              label="Retry infrastructure attempt"
+              confirmText="Retry this task after repairing the infrastructure refusal?"
+              pendingLabel="Retrying..."
+              onConfirm={() => retryInfrastructureMutation.mutate(infrastructureRetry)}
+              isPending={retryInfrastructureMutation.isPending}
+            />
+          )}
         </div>
       </div>
+
+      {infrastructureRetry && (
+        <Card className="border-orange-800">
+          <h2 className="mb-2 text-sm font-medium text-orange-300">Infrastructure refusal</h2>
+          <p className="text-sm text-foreground">{infrastructureRetry.detail}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {infrastructureRetry.refusal} · attempt {infrastructureRetry.attemptId}
+          </p>
+          {retryInfrastructureMutation.isError && (
+            <p className="mt-2 text-sm text-red-400">
+              Retry failed: {retryInfrastructureMutation.error.message}
+            </p>
+          )}
+        </Card>
+      )}
 
       {/* Metadata cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">

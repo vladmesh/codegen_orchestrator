@@ -195,6 +195,15 @@ decision has already created the queued Run and taken its budget hold, so what
 this loop still owes is the message and the transition out of `todo`. The
 operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
 
+Two admission refusals are terminal for this tick but free of engineering retry
+accounting: `executor_unavailable` and `executor_confirmation_required`. The
+admission point parks them itself, in the transaction that decides and audits
+the refusal: task and story reach human review with the exact typed evidence and
+both owed notice audiences, and `current_iteration` is unchanged. The dispatcher
+only logs the decision. A parked task is no longer `todo`, and admission refuses
+a parked story with `infrastructure_parked`, so later ticks neither admit, mint,
+nor publish for it, even when the refusal's answer never reached the scheduler.
+
 The Product Brief condition is the one that can hold a whole story's plan back:
 a task created under an active architect planning attempt is
 `dispatch_admitted=false` and is refused with `product_brief_not_admitted` until
@@ -228,6 +237,31 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 8. Summary → **TaskEvent** in DB
 9. Worker-manager reports task completion
 10. Dispatcher transitions task to `done`
+
+Before step 1 completes, worker-manager records explicit execution-phase
+evidence. Project lock, unusable worker profile, and other creation failures are
+`pre_agent_refused` with a typed infrastructure reason; successful container
+creation records `agent_started`. The engineering Run carries the evidence to
+the liveness supervisor. On a valid pre-agent refusal the first reconciliation
+tick parks task and story without incrementing the iteration. Evidence that is
+missing, malformed, legacy, or says `agent_started` stays on the ordinary
+engineering failure and retry path.
+
+The supervisor applies that park through the internal park endpoint, which uses
+the same park function as admission but accepts only evidence matching the locked
+refused Run, so the `failed` task moves to human review together with its story,
+evidence, and owed owner and administrator notices, never ahead of or behind them.
+Notification delivery is not part of the park. Terminal, transition-ineligible, and racing stories return
+`ineligible_story` and are contained per task, so one stale row cannot stop
+another task or any later supervisor in the tick.
+
+An administrator recovers only this park with one
+`POST /api/stories/{story_id}/retry-infrastructure-attempt` call, also exposed as
+`Retry infrastructure attempt` on the story detail page. The locked transaction
+verifies the exact refusal and Run fence, preserves the iteration, returns the
+task to `todo`, clears only the matching evidence, and restarts the story. The
+next dispatcher tick can create one fresh Run; repeated recovery calls are a
+typed no-op and never create an attempt themselves.
 
 **Next task in same story**:
 1. Same worker container and workspace

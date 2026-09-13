@@ -11,17 +11,42 @@ event that happened and never sequence lifecycle state themselves.
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.engineering_execution import (
+    ENGINEERING_INFRASTRUCTURE_KEY,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructurePark,
+    EngineeringInfrastructureParkCommand,
+    EngineeringInfrastructureParkDisposition,
+    EngineeringInfrastructureParkRead,
+    EngineeringInfrastructureRetryCommand,
+    EngineeringInfrastructureRetryOutcome,
+    EngineeringInfrastructureRetryRead,
+    infrastructure_refusal_detail,
+)
+from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.worker_turn import AttemptTurnMetadata
+from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.models.story import Story
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
+from ..infrastructure_park import apply_infrastructure_park, infrastructure_conflict
 from ..schemas.story import StoryRead, StoryTransition
+from ..work_admission import abort_paid_run_pre_handoff
 from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
+from ._task_helpers import create_status_event, get_task_for_update, validate_transition
 
 logger = structlog.get_logger()
+
+_LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
 
 action_router = APIRouter()
 
@@ -41,6 +66,295 @@ COMPOSITE_CHAINS: dict[str, tuple[StoryStatus, ...]] = {
         StoryStatus.IN_PROGRESS,
     ),
 }
+
+INFRASTRUCTURE_RETRY_ACTION = "retry_infrastructure_attempt"
+
+#: The paid gate's audit subject, and the outcomes it records for a refusal.
+PAID_WORK_AUDIT_SUBJECT = "paid_work"
+_REFUSED_AUDIT_OUTCOMES = frozenset(
+    {WorkAdmissionOutcome.DENIED.value, WorkAdmissionOutcome.DEFERRED.value}
+)
+
+_infrastructure_conflict = infrastructure_conflict
+
+
+def _park_from_metadata(metadata: dict | None) -> EngineeringInfrastructurePark | None:
+    if not isinstance(metadata, dict) or ENGINEERING_INFRASTRUCTURE_KEY not in metadata:
+        return None
+    try:
+        return EngineeringInfrastructurePark.model_validate(
+            metadata[ENGINEERING_INFRASTRUCTURE_KEY]
+        )
+    except ValueError:
+        return None
+
+
+async def _was_infrastructure_retry_recorded(
+    task_id: str, command: EngineeringInfrastructureRetryCommand, db: AsyncSession
+) -> bool:
+    events = (
+        await db.scalars(
+            select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.id.desc())
+        )
+    ).all()
+    expected = {
+        "action": INFRASTRUCTURE_RETRY_ACTION,
+        "attempt_id": command.attempt_id,
+        "refusal": command.refusal.value,
+    }
+    return any(
+        all((event.details or {}).get(key) == value for key, value in expected.items())
+        for event in events
+    )
+
+
+def _retry_read(
+    outcome: EngineeringInfrastructureRetryOutcome,
+    story_id: str,
+    command: EngineeringInfrastructureRetryCommand,
+    current_iteration: int,
+) -> EngineeringInfrastructureRetryRead:
+    return EngineeringInfrastructureRetryRead(
+        outcome=outcome,
+        story_id=story_id,
+        task_id=command.task_id,
+        attempt_id=command.attempt_id,
+        refusal=command.refusal,
+        current_iteration=current_iteration,
+    )
+
+
+async def _locked_refused_run(
+    story_id: str,
+    park: EngineeringInfrastructurePark,
+    db: AsyncSession,
+) -> Run | None:
+    """Lock the refused Run, when one exists, and fail closed unless it matches."""
+    run = await db.scalar(select(Run).where(Run.id == park.attempt_id).with_for_update())
+    if run is None:
+        # Admission-time executor refusals name the denied attempt but create no Run.
+        return None
+    if (
+        run.type != RunType.ENGINEERING.value
+        or run.task_id != park.task_id
+        or run.story_id != story_id
+    ):
+        _infrastructure_conflict(
+            "stale_attempt_fence", "The refused Run no longer matches this story and task."
+        )
+    try:
+        execution = (
+            EngineeringRunResult.model_validate(run.result).execution
+            if run.result is not None
+            else AttemptTurnMetadata.from_run_metadata(run.run_metadata).execution
+        )
+    except ValueError:
+        execution = None
+    if (
+        execution is None
+        or execution.execution_phase is not EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        or execution.infrastructure_refusal is not park.refusal
+    ):
+        _infrastructure_conflict(
+            "stale_attempt_fence", "The refused Run has no matching pre-agent evidence."
+        )
+    return run
+
+
+@action_router.post(
+    "/{story_id}/retry-infrastructure-attempt",
+    response_model=EngineeringInfrastructureRetryRead,
+)
+async def retry_infrastructure_attempt(
+    story_id: str,
+    command: EngineeringInfrastructureRetryCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringInfrastructureRetryRead:
+    """Reset exactly one typed pre-agent refusal and restart its story atomically."""
+    # Keep the repository's lock ladder: Task before Story before Run.
+    task = await get_task_for_update(command.task_id, db)
+    story = await _get_story_for_update(story_id, db)
+    if task.story_id != story.id:
+        _infrastructure_conflict("wrong_task", "The task does not belong to this story.")
+
+    if await _was_infrastructure_retry_recorded(task.id, command, db):
+        if task.status == TaskStatus.TODO.value and story.status == StoryStatus.IN_PROGRESS.value:
+            return _retry_read(
+                EngineeringInfrastructureRetryOutcome.ALREADY_RETRIED,
+                story_id,
+                command,
+                task.current_iteration,
+            )
+        _infrastructure_conflict(
+            "retry_state_changed", "The recorded retry no longer has its fresh-attempt state."
+        )
+
+    task_park = _park_from_metadata(task.failure_metadata)
+    story_park = _park_from_metadata(story.quarantine_reason)
+    if task_park is None or story_park is None:
+        _infrastructure_conflict(
+            "not_infrastructure_park", "Story and task are not parked by infrastructure."
+        )
+    if task_park != story_park or any(
+        (
+            task_park.task_id != command.task_id,
+            task_park.attempt_id != command.attempt_id,
+            task_park.refusal is not command.refusal,
+        )
+    ):
+        _infrastructure_conflict(
+            "stale_infrastructure_reason", "The recorded infrastructure refusal changed."
+        )
+    if (
+        task.status != TaskStatus.WAITING_HUMAN_REVIEW.value
+        or story.status != StoryStatus.WAITING_HUMAN_REVIEW.value
+    ):
+        _infrastructure_conflict(
+            "wrong_status", "Infrastructure retry requires story and task in human review."
+        )
+
+    validate_transition(task.status, TaskStatus.BACKLOG)
+    validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
+    _validate_transition(story.status, StoryStatus.IN_PROGRESS.value)
+    refused_run = await _locked_refused_run(story.id, task_park, db)
+    if refused_run is not None and refused_run.status in _LIVE_RUN_STATUSES:
+        await abort_paid_run_pre_handoff(
+            refused_run.id, "Recovered pre-agent infrastructure refusal", db
+        )
+
+    audit = {
+        "action": INFRASTRUCTURE_RETRY_ACTION,
+        "attempt_id": command.attempt_id,
+        "refusal": command.refusal.value,
+    }
+    task.status = TaskStatus.BACKLOG.value
+    await create_status_event(
+        task,
+        TaskStatus.WAITING_HUMAN_REVIEW,
+        TaskStatus.BACKLOG,
+        command.actor,
+        audit,
+        db,
+    )
+    task.status = TaskStatus.TODO.value
+    await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, command.actor, audit, db)
+    task_metadata = dict(task.failure_metadata or {})
+    task_metadata.pop(ENGINEERING_INFRASTRUCTURE_KEY)
+    task.failure_metadata = task_metadata or None
+
+    story_metadata = dict(story.quarantine_reason or {})
+    story_metadata.pop(ENGINEERING_INFRASTRUCTURE_KEY)
+    story.quarantine_reason = story_metadata or None
+    _land_on(story, StoryStatus.IN_PROGRESS)
+
+    await db.commit()
+    return _retry_read(
+        EngineeringInfrastructureRetryOutcome.RETRIED,
+        story.id,
+        command,
+        task.current_iteration,
+    )
+
+
+def _park_read(
+    disposition: EngineeringInfrastructureParkDisposition,
+    story: Story,
+    task: Task,
+    park: EngineeringInfrastructurePark,
+) -> EngineeringInfrastructureParkRead:
+    return EngineeringInfrastructureParkRead(
+        disposition=disposition,
+        story_id=story.id,
+        task_id=task.id,
+        attempt_id=park.attempt_id,
+        refusal=park.refusal,
+        task_status=task.status,
+        story_status=story.status,
+        current_iteration=task.current_iteration,
+    )
+
+
+async def _prove_refusal(
+    task: Task, story: Story, park: EngineeringInfrastructurePark, db: AsyncSession
+) -> None:
+    """Fail closed unless committed evidence proves exactly this park.
+
+    A refused Run is the proof for a post-handoff refusal: it must match the task,
+    story, typed refusal and the stable detail derived from it. Without a Run the
+    only proof is the unique committed paid-work admission audit for the same
+    task, story, current iteration, attempt id, typed reason and message. A
+    syntactically valid command alone never quarantines a story.
+    """
+    run = await _locked_refused_run(story.id, park, db)
+    if run is not None:
+        if park.detail != infrastructure_refusal_detail(park.refusal):
+            _infrastructure_conflict(
+                "stale_attempt_fence", "The park detail does not match the refused Run."
+            )
+        return
+    audits = (
+        await db.scalars(
+            select(WorkAdmissionAudit)
+            .where(
+                WorkAdmissionAudit.subject == PAID_WORK_AUDIT_SUBJECT,
+                WorkAdmissionAudit.reference_id == park.attempt_id,
+            )
+            .with_for_update()
+        )
+    ).all()
+    if not audits:
+        _infrastructure_conflict(
+            "refusal_evidence_missing", "No refused Run or admission audit proves this park."
+        )
+    if len(audits) > 1:
+        _infrastructure_conflict(
+            "refusal_evidence_ambiguous", "More than one admission audit names this attempt."
+        )
+    audit = audits[0]
+    payload = audit.command_payload or {}
+    if (
+        audit.outcome not in _REFUSED_AUDIT_OUTCOMES
+        or audit.reason != park.refusal.value
+        or audit.message != park.detail
+        or payload.get("type") != RunType.ENGINEERING.value
+        or payload.get("task_id") != task.id
+        or payload.get("story_id") != story.id
+        or (payload.get("run_metadata") or {}).get("iteration") != task.current_iteration
+    ):
+        _infrastructure_conflict(
+            "stale_attempt_fence", "The admission audit does not match this park."
+        )
+
+
+@action_router.post(
+    "/{story_id}/park-infrastructure-refusal",
+    response_model=EngineeringInfrastructureParkRead,
+)
+async def park_infrastructure_refusal(
+    story_id: str,
+    command: EngineeringInfrastructureParkCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringInfrastructureParkRead:
+    """Park one proven pre-agent refusal on its task and story in one transaction.
+
+    The liveness supervisor's path for a refused Run. Admission parks its own
+    refusals in the deciding transaction and never calls this. Evidence, legal
+    task hops with audit events, the story transition, and both notification
+    audiences commit together or not at all.
+    """
+    park = command.park
+    # Keep the repository's lock ladder: Task before Story before Run.
+    task = await get_task_for_update(park.task_id, db)
+    story = await _get_story_for_update(story_id, db)
+    if task.story_id != story.id:
+        _infrastructure_conflict("wrong_task", "The task does not belong to this story.")
+    await _prove_refusal(task, story, park, db)
+    disposition = await apply_infrastructure_park(task, story, park, actor=command.actor, db=db)
+    if disposition is EngineeringInfrastructureParkDisposition.PARKED:
+        await db.commit()
+    return _park_read(disposition, story, task, park)
 
 
 def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:

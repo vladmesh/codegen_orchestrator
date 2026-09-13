@@ -73,10 +73,12 @@ decision, and the caller reads it rather than an HTTP status:
 1. **`refused` with a typed `EngineeringDispatchRefusal`** — one value per
    distinct condition, so `story_busy`, `workspace_not_ready` and
    `engineering_budget_denied` are told apart without parsing a log line. The
-   dispatcher splits them on one line, in `_handle_refusal`: `paid_work` is
-   present exactly when the paid gate decided, and a refusal from an earlier
-   condition is a state this tick cannot dispatch in and a later tick may — it is
-   logged and left alone, with nothing spent and nothing owed. A paid denial has
+   dispatcher splits them in `_handle_refusal`. The pre-agent infrastructure
+   reasons `executor_unavailable` and `executor_confirmation_required` are
+   parked immediately with typed execution evidence and do not change
+   `current_iteration`; `infrastructure_parked` is the pre-gate fence for a task
+   or story that already carries such a park; other refusals from an earlier condition are logged and
+   left alone, with nothing spent and nothing owed. A paid denial has
    already spent the attempt, so it hands the task to `waiting_human_review`
    with the reason in the event details, and — for a story task whose denial
    carries a message for the owner — the story to `human-review`, with the owner
@@ -105,6 +107,53 @@ decision, and the caller reads it rather than an HTTP status:
    (`abort_paid_run_pre_handoff`); a lost publish *response* has an unknown
    broker outcome, so the Run is kept and the live-attempt repair owns it on the
    next tick.
+
+Worker creation has the same boundary after queue handoff. Worker-manager writes
+validated `agent_started` or `pre_agent_refused` evidence, and the engineering
+Run carries it into liveness reconciliation. A valid pre-agent infrastructure
+refusal parks the task and story on the first tick, preserves the iteration and
+retry bound, and durably owes the owner and administrator notices once. `agent_started`,
+missing, malformed, or legacy evidence follows the ordinary technical/product
+retry policy. Zero tokens, short duration, error text, and missing containers are
+never substitutes for the typed phase.
+
+A park is atomic, so there is no partial park to converge. An admission refusal
+is parked by admission itself, in the transaction that audits the refusal; the
+dispatcher makes no park call, so a lost HTTP answer or a stopped scheduler
+still leaves the complete park, and the next tick is refused as
+`task_not_dispatchable` before any attempt id is minted. A Run-backed refusal is
+parked by liveness through `POST /api/stories/{id}/park-infrastructure-refusal`,
+which proves the park against the locked refused Run (or the unique admission
+audit) and fails closed with no mutation otherwise. Either transaction commits
+the task hops, both evidence copies, the story transition, and both owed notice
+audiences, or nothing; a repeat returns `already_parked` and re-owes nothing.
+
+Delivery happens afterwards in `supervise_owed_owner_notifications`. The owner
+and administrator audiences keep separate state and bounded attempts on the same
+record, so a crash, an ambiguous publish, one audience retrying or exhausting, or
+a restart never loses the other audience or resends a settled one. The
+administrator audience settles on per-recipient Telegram results: every
+configured administrator reached is `delivered`, none configured is
+`unaddressable`, and zero or partial success is a failed attempt retried until
+`abandoned` (at-least-once, so a partially reached administrator may be told
+again). No delivery
+outcome can roll back a park or leave the task dispatchable. `ineligible_story`
+(terminal or racing story) and typed 409s are contained per task without generic
+retry accounting.
+
+A standalone task has no story lifecycle or owner-notification record to mutate;
+the same admission refusal stores the typed park on the task and moves that task
+to human review without spending an iteration. Absence of `story_id` is not
+missing refusal evidence and must not abort the dispatcher cycle.
+
+Recovery is one internal/admin action:
+`POST /api/stories/{story_id}/retry-infrastructure-attempt`. The command names
+the task, attempt, and typed refusal. Under task, story, and Run row locks it
+settles the refused fence, restores a fresh `todo` attempt without incrementing
+the iteration, clears only the matching infrastructure evidence, and restarts
+the story. Repeated success is `already_retried`; stale reason, wrong status,
+non-infrastructure review, or mismatched Run is a typed 409 with no partial
+change.
 
 An operator override is not an absence of admission: every condition is still
 evaluated, `spawn-worker` may name only `task_not_dispatchable` and

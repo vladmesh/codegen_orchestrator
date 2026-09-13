@@ -411,6 +411,7 @@ class DeveloperNode(FunctionalNode):
                         worker_result, state.get("project_spec") or {}, agent_type
                     ),
                     "turn_result_consumed": worker_result.turn_result_consumed,
+                    "execution": worker_result.execution,
                 }
 
             logger.info(
@@ -435,6 +436,7 @@ class DeveloperNode(FunctionalNode):
                     worker_result, state.get("project_spec") or {}, agent_type
                 ),
                 "turn_result_consumed": worker_result.turn_result_consumed,
+                "execution": worker_result.execution,
             }
 
         if worker_result.gave_up_reason:
@@ -455,6 +457,7 @@ class DeveloperNode(FunctionalNode):
                 "errors": state.get("errors", [])
                 + [f"Worker gave up: {worker_result.gave_up_reason}"],
                 "turn_result_consumed": worker_result.turn_result_consumed,
+                "execution": worker_result.execution,
             }
 
         error_msg = worker_result.error_message or worker_result.output or "Unknown error"
@@ -482,6 +485,7 @@ class DeveloperNode(FunctionalNode):
                 worker_result, state.get("project_spec") or {}, agent_type
             ),
             "turn_result_consumed": worker_result.turn_result_consumed,
+            "execution": worker_result.execution,
         }
 
     @staticmethod

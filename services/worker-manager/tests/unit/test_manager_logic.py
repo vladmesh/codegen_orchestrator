@@ -6,6 +6,10 @@ import uuid
 from fakeredis import aioredis
 import pytest
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -23,9 +27,8 @@ _OWNERSHIP = WorkerOwnership(
 
 
 @pytest.mark.asyncio
-async def test_claude_stand_token_refuses_api_key_before_any_worker_state_is_written():
-    redis = MagicMock()
-    redis.hset = AsyncMock()
+async def test_claude_stand_token_refusal_publishes_pre_agent_profile_evidence():
+    redis = aioredis.FakeRedis(decode_responses=True)
     manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
 
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
@@ -39,7 +42,13 @@ async def test_claude_stand_token_refuses_api_key_before_any_worker_state_is_wri
             env_vars={"ANTHROPIC_API_KEY": "test-api-key"},
         )
 
-    redis.hset.assert_not_awaited()
+    status = decode_redis_fields(await redis.hgetall("worker:status:stand-conflict"))
+    assert status == {
+        "status": WorkerStatus.FAILED,
+        "execution_phase": EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+        "infrastructure_refusal": EngineeringInfrastructureRefusal.WORKER_PROFILE_UNAVAILABLE,
+    }
+    assert decode_redis_fields(await redis.hgetall("worker:meta:stand-conflict")) == {}
 
 
 def _make_docker_mock():
@@ -145,6 +154,12 @@ async def test_instruction_injection_failure_aborts_worker_creation():
             )
 
     assert await redis.hget("worker:status:w-injection-failure", "status") == WorkerStatus.FAILED
+    assert await redis.hget("worker:status:w-injection-failure", "execution_phase") == (
+        EngineeringExecutionPhase.PRE_AGENT_REFUSED
+    )
+    assert await redis.hget("worker:status:w-injection-failure", "infrastructure_refusal") == (
+        EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED
+    )
     assert "could not inject" in await redis.get("worker:error:w-injection-failure")
     meta = decode_redis_fields(await redis.hgetall("worker:meta:w-injection-failure"))
     assert (meta["project_id"], meta["run_id"], meta["attempt_id"]) == (

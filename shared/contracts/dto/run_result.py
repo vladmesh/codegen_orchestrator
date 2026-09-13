@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.settings_seed import (
     SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingSeedOutcome,
@@ -76,6 +77,9 @@ class EngineeringRunResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     engineering_status: EngineeringStatus
+    #: Explicit startup evidence. Absent means legacy/unknown and grants no
+    #: infrastructure disposition; malformed pairs are rejected by the model.
+    execution: EngineeringExecutionEvidence | None = None
     #: Why a failed engineering run produced nothing usable, when the failure
     #: has a classification the pipeline routes or a person reads. ``None`` is
     #: the ordinary case: a technical failure whose message is the whole story.

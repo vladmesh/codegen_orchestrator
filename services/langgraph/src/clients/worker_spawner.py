@@ -14,6 +14,10 @@ import uuid
 from pydantic import ValidationError
 import redis.asyncio as redis
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+)
 from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
@@ -75,6 +79,7 @@ class SpawnResult:
     stop_reason: WorkerStopReason | None = None
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
+    execution: EngineeringExecutionEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,11 @@ def _invalid_worker_result(request_id: str, worker_id: str | None) -> SpawnResul
         output="",
         error_message="invalid_worker_result",
         worker_id=worker_id,
+        execution=(
+            EngineeringExecutionEvidence(execution_phase=EngineeringExecutionPhase.AGENT_STARTED)
+            if worker_id is not None
+            else None
+        ),
     )
 
 
@@ -152,6 +162,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
             turn_result_consumed=True,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
         )
     if isinstance(result, WorkerBlockedResult):
         return SpawnResult(
@@ -172,6 +185,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
             turn_result_consumed=True,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
         )
     # WorkerFailedResult
     return SpawnResult(
@@ -194,6 +210,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
         turn_result_consumed=True,
+        execution=EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+        ),
     )
 
 
@@ -210,14 +229,32 @@ async def _wait_until_ready(
     start = asyncio.get_running_loop().time()
     seen_status = False
     while (asyncio.get_running_loop().time() - start) < timeout:
-        status = await redis_client.hget(f"worker:status:{worker_id}", "status")
-        status_str = status.decode() if isinstance(status, bytes) else status
+        fields = decode_redis_fields(await redis_client.hgetall(f"worker:status:{worker_id}"))
+        status_str = fields.get("status")
         if status_str == WorkerStatus.RUNNING:
             return None
         if status_str == WorkerStatus.FAILED:
             error = await redis_client.get(f"worker:error:{worker_id}")
             error_msg = error.decode() if isinstance(error, bytes) else str(error)
-            return SpawnResult(request_id, False, -1, f"Creation failed: {error_msg}")
+            try:
+                execution = EngineeringExecutionEvidence.model_validate(
+                    {
+                        key: fields[key]
+                        for key in ("execution_phase", "infrastructure_refusal")
+                        if key in fields
+                    }
+                )
+            except ValidationError:
+                execution = None
+                logger.warning("worker_creation_execution_evidence_invalid", worker_id=worker_id)
+            return SpawnResult(
+                request_id,
+                False,
+                -1,
+                f"Creation failed: {error_msg}",
+                worker_id=worker_id,
+                execution=execution,
+            )
         if status_str is None:
             if seen_status:
                 return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
@@ -802,6 +839,10 @@ async def request_spawn(
                 f"Timeout after {timeout_seconds}s waiting for worker output. "
                 "Container teardown requested; its confirmation is reconciled separately.",
                 error_message="execution_timeout",
+                worker_id=worker_id,
+                execution=EngineeringExecutionEvidence(
+                    execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+                ),
             )
 
     except asyncio.CancelledError:
@@ -935,11 +976,23 @@ async def send_task_to_worker(
                 output=f"Timeout after {timeout_seconds}s waiting for worker output.",
                 error_message="execution_timeout",
                 worker_id=worker_id,
+                execution=EngineeringExecutionEvidence(
+                    execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+                ),
             )
 
     except Exception as e:
         logger.error("send_task_failed", error=str(e), worker_id=worker_id)
-        return SpawnResult(request_id, False, -1, str(e), worker_id=worker_id)
+        return SpawnResult(
+            request_id,
+            False,
+            -1,
+            str(e),
+            worker_id=worker_id,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
+        )
     finally:
         try:
             await redis_client.xgroup_destroy(output_stream, group_name)

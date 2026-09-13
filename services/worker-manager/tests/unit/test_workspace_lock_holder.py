@@ -19,6 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fakeredis import aioredis
 import pytest
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -139,6 +143,12 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
         await _create(manager, "worker-b", "run-b")
 
     assert await redis.hget("worker:status:worker-b", "status") == WorkerStatus.FAILED
+    assert await redis.hget("worker:status:worker-b", "execution_phase") == (
+        EngineeringExecutionPhase.PRE_AGENT_REFUSED
+    )
+    assert await redis.hget("worker:status:worker-b", "infrastructure_refusal") == (
+        EngineeringInfrastructureRefusal.PROJECT_LOCKED
+    )
     assert PROJECT in await redis.get("worker:error:worker-b")
     assert await redis.xlen(WORKER_COMMANDS) == 0
 

@@ -5,7 +5,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -205,9 +205,11 @@ async def list_stories_owing_owner_notification(
     """Completed stories whose durable completion message is still owed."""
     notification = Story.owner_notification
     state = Story.owner_notification[("state")].as_string()
+    admin_state = Story.owner_notification[("admin_state")].as_string()
+    owed = OwnerNotificationState.OWED.value
     query = (
         select(Story)
-        .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
+        .where(notification.is_not(None), or_(state == owed, admin_state == owed))
         .order_by(Story.created_at.asc(), Story.id.asc())
         .limit(limit)
     )

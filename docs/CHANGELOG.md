@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
+- Admission now parks pre-agent refusals in its deciding transaction and the Run-backed park needs matching
+  evidence, so a lost answer cannot mint another attempt; owner and admin notices are owed durably.
+- The durable admin park notice settles on per-recipient Telegram results, so a refused or partial send
+  stays owed and retries instead of being recorded delivered, and no configured admin is `unaddressable`.
 - Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
 - PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
 - Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.

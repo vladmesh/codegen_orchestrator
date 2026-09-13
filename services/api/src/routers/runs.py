@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -446,9 +446,11 @@ async def list_runs_owing_owner_notification(
     """
     notification = Run.run_metadata[OWNER_NOTIFICATION_KEY]
     state = Run.run_metadata[(OWNER_NOTIFICATION_KEY, "state")].as_string()
+    admin_state = Run.run_metadata[(OWNER_NOTIFICATION_KEY, "admin_state")].as_string()
+    owed = OwnerNotificationState.OWED.value
     query = (
         select(Run)
-        .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
+        .where(notification.is_not(None), or_(state == owed, admin_state == owed))
         .order_by(Run.created_at.asc(), Run.id.asc())
         .limit(limit)
     )

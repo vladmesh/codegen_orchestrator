@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
@@ -97,6 +98,7 @@ class EngineeringSuccessParams:
     deploy_fix_attempt: int = 0
     worker_observability: dict | None = None
     turn_result_consumed: bool = True
+    execution: EngineeringExecutionEvidence | None = None
 
 
 def _observability_patch(worker_observability: dict | None) -> dict:
@@ -185,18 +187,26 @@ async def _write_task_event(api, planning_task_id: str, event_type: str, details
         )
 
 
-def _stop_patch(stop_reason: WorkerStopReason | None, agent_limit_seconds: int | None) -> dict:
+def _attempt_execution_patch(
+    stop_reason: WorkerStopReason | None,
+    agent_limit_seconds: int | None,
+    execution: EngineeringExecutionEvidence | None,
+) -> dict:
     """`run_metadata` naming why a turn stopped, or nothing when it did not.
 
     The API merges `run_metadata`, so an absent stop reason leaves the attempt's
     existing metadata — including the worker and limit recorded at spawn —
     untouched instead of blanking it.
     """
-    if stop_reason is None:
+    if stop_reason is None and execution is None:
         return {}
-    metadata = {"stop_reason": stop_reason.value}
+    metadata = {}
+    if stop_reason is not None:
+        metadata["stop_reason"] = stop_reason.value
     if agent_limit_seconds is not None:
         metadata["agent_limit_seconds"] = agent_limit_seconds
+    if execution is not None:
+        metadata.update(AttemptTurnMetadata(execution=execution).as_run_metadata())
     return {"run_metadata": metadata}
 
 
@@ -206,6 +216,7 @@ async def _park_story_without_new_commit(
     error_msg: str,
     *,
     redis: RedisStreamClient,
+    execution: EngineeringExecutionEvidence | None = None,
     project_id: str,
     telegram_chat_id: str,
 ) -> None:
@@ -284,6 +295,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
     agent_limit_seconds: int | None = None,
     *,
     redis: RedisStreamClient,
+    execution: EngineeringExecutionEvidence | None = None,
     turn_result_consumed: bool = False,
     story_id: str | None = None,
     failure_reason: EngineeringFailureReason | None = None,
@@ -304,9 +316,10 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
             "result": EngineeringRunResult(
                 engineering_status=EngineeringStatus.FAILED,
                 failure_reason=failure_reason,
+                execution=execution,
             ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
-            **_stop_patch(stop_reason, agent_limit_seconds),
+            **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
         },
     )
     if planning_task_id:
@@ -333,6 +346,7 @@ async def handle_worker_gave_up(
     redis: RedisStreamClient,
     worker_observability: dict | None = None,
     turn_result_consumed: bool = True,
+    execution: EngineeringExecutionEvidence | None = None,
 ) -> dict:
     """Handle worker gave_up: task/story → WHR, admin notified, user informed.
 
@@ -356,14 +370,15 @@ async def handle_worker_gave_up(
         json={
             "status": RunStatus.FAILED.value,
             "error_message": f"Worker gave up: {reason[:500]}",
-            "result": EngineeringRunResult(engineering_status=EngineeringStatus.GAVE_UP).model_dump(
-                mode="json"
-            ),
+            "result": EngineeringRunResult(
+                engineering_status=EngineeringStatus.GAVE_UP,
+                execution=execution,
+            ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
             # A refusal is a stop with a reason, and it is the third one the
             # attempt can carry: the agent declined rather than ran out of time
             # or went quiet.
-            **_stop_patch(WorkerStopReason.AGENT_REFUSED, None),
+            **_attempt_execution_patch(WorkerStopReason.AGENT_REFUSED, None, execution),
         },
     )
 
@@ -513,6 +528,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     run_result = EngineeringRunResult(
         engineering_status=result["engineering_status"],
         commit_sha=result.get("commit_sha"),
+        execution=params.execution,
     )
     await prepare_terminal_settlement(
         task_id,
@@ -525,6 +541,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             "status": RunStatus.COMPLETED.value,
             "result": run_result.model_dump(mode="json"),
             **_observability_patch(params.worker_observability),
+            **_attempt_execution_patch(None, None, params.execution),
         },
     )
 

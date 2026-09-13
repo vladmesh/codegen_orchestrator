@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from shared.contracts.dto.engineering_budget_policy import (
@@ -16,6 +17,9 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRead,
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
+)
+from shared.contracts.dto.engineering_execution import (
+    EngineeringInfrastructureParkDisposition,
 )
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
@@ -190,6 +194,9 @@ def _paid_refusal(
     )
 
 
+_REFUSAL_DETAIL = "Repair the selected executor configuration, then retry this attempt."
+
+
 def _repair(repair: EngineeringDispatchRepair, run_id: str = "eng-abc") -> EngineeringDispatchRead:
     """A prior attempt this task still owes transition work for."""
     return EngineeringDispatchRead(
@@ -250,6 +257,92 @@ def redis_client():
     client.redis.hdel = AsyncMock()
     client.redis.xadd = AsyncMock()
     return client
+
+
+@pytest.mark.asyncio
+async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(monkeypatch):
+    """A contained task error still permits terminal worker reconciliation this tick."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import task_dispatcher
+
+    api_client = AsyncMock()
+    api_client.get_tasks_by_status.return_value = [
+        _task(
+            id="task-poison",
+            project_id=PROJ_ID,
+            story_id="story-poison",
+            status="failed",
+        )
+    ]
+    api_client.list_runs.return_value = [
+        RunDTO.model_validate(
+            {
+                "id": "eng-poison",
+                "project_id": PROJ_ID,
+                "type": "engineering",
+                "status": "failed",
+                "story_id": "story-poison",
+                "result": {
+                    "engineering_status": "failed",
+                    "execution": {
+                        "execution_phase": "pre_agent_refused",
+                        "infrastructure_refusal": "project_locked",
+                    },
+                },
+                "created_at": _NOW,
+                "updated_at": _NOW,
+            }
+        )
+    ]
+    api_client.park_infrastructure_refusal.side_effect = RuntimeError("poison park transaction")
+    monkeypatch.setattr(api_module, "api_client", api_client)
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+
+    checks = {
+        "trigger_scaffolds": 0,
+        "dispatch_todo_tasks": 0,
+        "complete_stories": 0,
+        "poll_merged_prs": 0,
+        "poll_ci_failures": None,
+        "supervise_stuck_stories": {"retried": 0, "failed": 0},
+        "supervise_stuck_tasks": {"timed_out": 0},
+        "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
+        "supervise_deploying_stories": {},
+        "supervise_waiting_user_secret_stories": {},
+        "supervise_owed_owner_notifications": {
+            "delivered": 0,
+            "retrying": 0,
+            "exhausted": 0,
+            "unaddressable": 0,
+            "voided": 0,
+        },
+        "supervise_testing_stories": {},
+        "supervise_temporary_access": {},
+    }
+    for name, result in checks.items():
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
+
+    terminal_workers = AsyncMock(return_value=1)
+    monkeypatch.setattr(task_dispatcher, "reconcile_terminal_story_workers", terminal_workers)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    terminal_workers.assert_awaited_once_with(api_client, redis)
+    redis.close.assert_awaited_once()
 
 
 class TestDispatchTodoTasks:
@@ -456,6 +549,70 @@ class TestDispatchTodoTasks:
             "available_microusd": 90,
         }
         assert state["task"].status == "waiting_human_review"
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE,
+            EngineeringDispatchRefusal.EXECUTOR_CONFIRMATION_REQUIRED,
+        ],
+    )
+    @pytest.mark.parametrize("story_id", ["story-1", None])
+    @pytest.mark.asyncio
+    async def test_infrastructure_refusal_parked_by_admission_sequences_nothing(
+        self, api_client, redis_client, reason, story_id
+    ):
+        """Admission parked the refusal in its own transaction; the tick adds no write."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        task = _task(id="task-1", project_id=PROJ_ID, story_id=story_id, status="todo")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            reason, message=_REFUSAL_DETAIL
+        ).model_copy(
+            update={"infrastructure_park": EngineeringInfrastructureParkDisposition.PARKED}
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        for call in (
+            api_client.park_infrastructure_refusal,
+            api_client.update_task,
+            api_client.update_story,
+            api_client.update_run,
+            api_client.update_story_owner_notification,
+            api_client.transition_task,
+            api_client.transition_story,
+            api_client.get_run,
+        ):
+            call.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+        redis_client.publish_flat.assert_not_awaited()
+        assert task.current_iteration == 0
+
+    @pytest.mark.asyncio
+    async def test_a_lost_refusal_response_is_contained_and_the_next_task_dispatches(
+        self, api_client, redis_client
+    ):
+        """The committed admission owns the park; an unanswered call routes nothing."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        refused = _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
+        healthy = _task(id="task-2", project_id=PROJ_ID, status="todo")
+        api_client.get_tasks_by_status.return_value = [refused, healthy]
+        api_client.admit_engineering_dispatch.side_effect = [
+            httpx.ReadTimeout("the refusal committed but its answer never arrived"),
+            _admitted("eng-healthy"),
+        ]
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
+
+        api_client.park_infrastructure_refusal.assert_not_awaited()
+        assert [call.args[0] for call in api_client.transition_task.await_args_list] == ["task-2"]
+        assert [
+            call.args[1].planning_task_id for call in redis_client.publish_message.await_args_list
+        ] == ["task-2"]
+        assert refused.current_iteration == 0
 
     @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
@@ -970,7 +1127,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """The GitHub resolver returns the same open PR until teardown finishes."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1017,7 +1173,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """A same-head merged PR recovers no-commits instead of false quarantine."""
-        from unittest.mock import patch
 
         from shared.clients.github import NoCommitsBetweenError
         from src.tasks.task_dispatcher import complete_stories
@@ -1081,7 +1236,6 @@ class TestCompleteStories:
         self, api_client, redis_client, fix_kind
     ):
         """A merged PR number is poller output, never authority over new branch state."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1142,7 +1296,6 @@ class TestCompleteStories:
     async def test_completion_failure_never_transitions_or_triggers_later_work(
         self, api_client, redis_client, failure_stage
     ):
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1193,7 +1346,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """A visible open PR must not retain the story's project worker forever."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1233,7 +1385,6 @@ class TestCompleteStories:
         self, api_client, redis_client, run_status
     ):
         """A taskless deploy-fix still owns the story branch and its worker."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1303,7 +1454,6 @@ class TestCompleteStories:
         self, api_client, redis_client, run
     ):
         """Historical fixes and ordinary engineering runs do not delay completion."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1333,7 +1483,6 @@ class TestCompleteStories:
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
         """Story with all tasks done -> creates PR, enables auto-merge, transitions to pr_review."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1431,7 +1580,6 @@ class TestCompleteStories:
         auto-merged while story was in_progress), complete_stories transitions
         to pr_review so poll_merged_prs() can detect the merge and trigger deploy.
         """
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1489,7 +1637,6 @@ class TestCompletionIgnoresCancelledTasks:
         could never hold, so a recovered story could never reach `pr_review`
         however well its new plan went.
         """
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1625,7 +1772,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_triggers_create_deploy_for_first_story(self, api_client, redis_client):
         """First story merge -> action='create'."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -1669,7 +1815,6 @@ class TestPollMergedPRs:
         self, api_client, redis_client
     ):
         """Project with a completed story -> action='feature'."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -1707,7 +1852,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
         """Story in pr_review with open (not merged) PR -> no action."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -1748,7 +1892,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_continues_on_github_error(self, api_client, redis_client):
         """GitHub API error for one story doesn't block others."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
