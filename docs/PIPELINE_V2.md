@@ -245,6 +245,11 @@ tick parks task and story without incrementing the iteration. Evidence that is
 missing, malformed, legacy, or says `agent_started` stays on the ordinary
 engineering failure and retry path.
 
+The `failed` task is the restart fence while that park is being applied. Its
+transition to human review happens only after matching task/story evidence, the
+story transition, and durable owner-notification delivery, so the next tick
+converges a partial park instead of treating metadata alone as completion.
+
 An administrator recovers only this park with one
 `POST /api/stories/{story_id}/retry-infrastructure-attempt` call, also exposed as
 `Retry infrastructure attempt` on the story detail page. The locked transaction

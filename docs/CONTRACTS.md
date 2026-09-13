@@ -229,7 +229,10 @@ For a valid pre-agent refusal, the scheduler stores one exact
 `executor_unavailable` and `executor_confirmation_required`; the liveness
 supervisor owns post-handoff worker creation refusals. Both preserve
 `current_iteration`, park task and story in `waiting_human_review`, and persist
-the existing owner/admin notification obligation once before delivery.
+the existing owner/admin notification obligation once before delivery. For
+post-handoff reconciliation, the task transition is the completion marker: the
+task remains `failed` until matching task/story evidence, the story transition,
+and owed notification delivery have finished, so a restart resumes partial work.
 
 ### The Product Brief coverage-to-dispatch boundary
 

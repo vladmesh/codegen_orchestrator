@@ -116,6 +116,12 @@ missing, malformed, or legacy evidence follows the ordinary technical/product
 retry policy. Zero tokens, short duration, error text, and missing containers are
 never substitutes for the typed phase.
 
+Parking is convergent across scheduler failure. Matching task metadata on a
+still-`failed` task records intent, not completion: reconciliation resumes the
+story evidence and transition, delivers the durable notification obligation,
+and moves the task to human review last. Only matching evidence plus both task
+and story in human review is a completed no-op.
+
 A standalone task has no story lifecycle or owner-notification record to mutate;
 the same admission refusal stores the typed park on the task and moves that task
 to human review without spending an iteration. Absence of `story_id` is not

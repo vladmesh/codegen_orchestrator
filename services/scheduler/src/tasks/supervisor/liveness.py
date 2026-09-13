@@ -371,9 +371,17 @@ async def _park_pre_agent_infrastructure_refusal(
         detail=infrastructure_refusal_detail(refusal),
     )
     metadata = park.as_metadata()
-    if (task.failure_metadata or {}).get(ENGINEERING_INFRASTRUCTURE_KEY) == metadata[
+    evidence = metadata[ENGINEERING_INFRASTRUCTURE_KEY]
+    story = await api_client.get_story(task.story_id)
+    task_evidence_matches = (task.failure_metadata or {}).get(
         ENGINEERING_INFRASTRUCTURE_KEY
-    ]:
+    ) == evidence
+    story_evidence_matches = (story.quarantine_reason or {}).get(
+        ENGINEERING_INFRASTRUCTURE_KEY
+    ) == evidence
+    task_parked = task.status == TaskStatus.WAITING_HUMAN_REVIEW and task_evidence_matches
+    story_parked = story.status == StoryStatus.WAITING_HUMAN_REVIEW and story_evidence_matches
+    if task_parked and story_parked:
         log.info("engineering_infrastructure_refusal_already_parked", run_id=run.id)
         return True, False
 
@@ -388,19 +396,25 @@ async def _park_pre_agent_infrastructure_refusal(
         task_id=task.id,
         log=log,
     )
-    await api_client.update_task(task.id, {"failure_metadata": metadata})
-    await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
-    await api_client.transition_task(
-        task.id,
-        TaskStatus.WAITING_HUMAN_REVIEW,
-        "supervisor",
-        details=metadata[ENGINEERING_INFRASTRUCTURE_KEY],
-    )
-    if task.story_id not in escalated_stories:
+    if not task_evidence_matches:
+        await api_client.update_task(task.id, {"failure_metadata": metadata})
+    if not story_evidence_matches:
+        await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW and task.story_id not in escalated_stories:
         escalated_stories.add(task.story_id)
         await api_client.transition_story(task.story_id, STORY_HUMAN_REVIEW_ACTION)
-    await _notify_admin_failure(task.id, str(task.project_id), park.detail)
     await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+    await _notify_admin_failure(task.id, str(task.project_id), park.detail)
+    if task.status != TaskStatus.WAITING_HUMAN_REVIEW:
+        # This is the convergence marker. Until every story-side write and the
+        # owed notification finish, the task remains FAILED and another tick
+        # can resume the same idempotent park after a process restart.
+        await api_client.transition_task(
+            task.id,
+            TaskStatus.WAITING_HUMAN_REVIEW,
+            "supervisor",
+            details=evidence,
+        )
     log.warning(
         "engineering_infrastructure_refusal_parked",
         run_id=run.id,
