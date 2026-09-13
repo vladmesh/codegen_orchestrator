@@ -42,6 +42,7 @@ from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from src.agents.qa.tools import build_qa_callables
 from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
@@ -321,6 +322,14 @@ class _FakeTargetConn:
 
     async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
         self.commands.append(command)
+        # The live wrapper is the current QA target profile on this target.
+        if command.endswith("qa-docker version"):
+            verbs = " ".join(sorted(QA_DOCKER_REQUIRED_VERBS))
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=f"qa-docker profile={QA_TARGET_PROFILE_VERSION} verbs={verbs}\n",
+                stderr="",
+            )
         # The revoke script's last line is the count of the run's lines still in
         # the file; a target that answers nothing is residue, not a clean revoke.
         if "grep -c -F" in command:

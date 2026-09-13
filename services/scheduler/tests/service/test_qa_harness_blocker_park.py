@@ -15,6 +15,7 @@ import uuid
 import httpx
 import pytest
 
+from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_KEY
 from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
 from shared.contracts.dto.story import StoryStatus
 from shared.redis import RedisStreamClient
@@ -174,7 +175,7 @@ async def _testing_story_with_blocked_qa(
         },
     )
     assert settled.status_code == httpx.codes.OK, settled.text
-    return story_id, project_id
+    return story_id, qa_run_id
 
 
 def test_every_blocker_driven_here_is_a_harness_blocker():
@@ -188,7 +189,7 @@ async def test_a_harness_blocker_parks_once_for_operator_recovery(
 ):
     admins = _Admins()
     monkeypatch.setattr("src.tasks.supervisor.qa.notify_admins_best_effort", admins)
-    story_id, project_id = await _testing_story_with_blocked_qa(async_client, category)
+    story_id, qa_run_id = await _testing_story_with_blocked_qa(async_client, category)
     redis_client = RedisStreamClient(os.environ["REDIS_URL"])
     await redis_client.connect()
     try:
@@ -214,7 +215,11 @@ async def test_a_harness_blocker_parks_once_for_operator_recovery(
     assert category.value in admins.messages[0]
     assert f"/api/stories/{story_id}/recheck-qa" in admins.messages[0]
 
-    owed = (await async_client.get(f"/api/stories/{story_id}/owner-notification")).json()
+    # A quarantine's owner notice is owed on the QA run that ended the story.
+    qa_run = await async_client.get(f"/api/runs/{qa_run_id}")
+    assert qa_run.status_code == httpx.codes.OK, qa_run.text
+    owed = qa_run.json()["run_metadata"][OWNER_NOTIFICATION_KEY]
+    assert owed["event"] == "story_quarantined"
     assert "not in the product" in owed["text"]
     assert "fix" not in owed["text"].lower()
 
