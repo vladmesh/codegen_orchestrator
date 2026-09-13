@@ -21,6 +21,7 @@ from shared.analytics_health import (
     decode_heartbeat,
 )
 from shared.clients.loki import LokiClient
+from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.tasks import analytics_aggregator
 
 LOKI_URL = os.environ["LOKI_URL"]
@@ -100,7 +101,12 @@ async def running_application(api_client):
 
         resp = await client.post(
             "/api/servers/",
-            json={"handle": handle, "host": f"{handle}.example.com", "public_ip": "10.9.9.9"},
+            json={
+                "handle": handle,
+                "host": f"{handle}.example.com",
+                "public_ip": "10.9.9.9",
+                "ssh_key": fleet_private_key(),
+            },
         )
         assert resp.status_code == httpx.codes.CREATED, resp.text
 

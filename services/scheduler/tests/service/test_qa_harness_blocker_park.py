@@ -19,6 +19,7 @@ from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_KEY
 from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
 from shared.contracts.dto.story import StoryStatus
 from shared.redis import RedisStreamClient
+from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.tasks.supervisor import supervise_testing_stories
 
 HARNESS_BLOCKERS = {
@@ -104,6 +105,7 @@ async def _testing_story_with_blocked_qa(
             "handle": f"harness-{uuid.uuid4().hex[:8]}",
             "host": "h.test",
             "public_ip": "10.9.0.9",
+            "ssh_key": fleet_private_key(),
         },
     )
     assert server.status_code == httpx.codes.CREATED, server.text

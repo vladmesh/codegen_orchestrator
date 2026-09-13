@@ -18,6 +18,7 @@ import pytest
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.telegram import TokenVerdictStatus
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 OWNER_ID = "100713"
 TOKEN = "987654321:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
@@ -145,6 +146,7 @@ async def _server_handle(client: AsyncClient) -> str:
                 "handle": handle,
                 "host": "release.example.com",
                 "public_ip": "10.0.0.2",
+                "ssh_key": fleet_private_key(),
                 "ssh_user": "root",
             },
         )

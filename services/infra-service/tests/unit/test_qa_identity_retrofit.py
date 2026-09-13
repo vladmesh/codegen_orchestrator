@@ -3,53 +3,54 @@
 Hosts provisioned before the QA account existed, or before the wrapper learned a
 verb, are recorded complete and still cannot serve QA. This is the repair, and
 what these tests hold it to is its order: the stored key is parsed, the
-administrative login and privilege path are proved, the role is applied and
-proved, and only then is a receipt written. Every earlier failure is one typed
-verdict with its exact phase, and none of them writes a label or a receipt.
+administrative login and the privilege path are each proved by their own run,
+the role is applied and proved, and only then is a receipt written. Every
+earlier failure is one typed verdict with its exact phase, carrying the
+connection identity it was found over, and none of them writes a label or a
+receipt.
 """
 
 from datetime import UTC, datetime
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
 import pytest
 
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-from shared.contracts.dto.server import ServerDTO, TargetReadinessPhase
+from shared.contracts.dto.server import ServerDTO, TargetIdentity, TargetReadinessPhase
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
+from shared.ssh_keys import normalize_admin_private_key
+from shared.tests.ssh_key_fixtures import fleet_private_key
+from src.provisioner.api_client import TargetReadinessSupersededError
 from src.provisioner.operations import (
+    NOT_RECONCILABLE,
     QA_IDENTITY_RETROFIT_PLAYBOOK,
-    TARGET_READINESS_PREFLIGHT_PLAYBOOK,
+    TARGET_READINESS_LOGIN_PLAYBOOK,
+    TARGET_READINESS_PRIVILEGE_PLAYBOOK,
     retrofit_qa_identity,
 )
 
-FLEET_KEY = (
-    ed25519.Ed25519PrivateKey.generate()
-    .private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.OpenSSH,
-        serialization.NoEncryption(),
-    )
-    .decode()
-)
+FLEET_KEY = fleet_private_key()
+FLEET_FINGERPRINT = normalize_admin_private_key(FLEET_KEY).fingerprint
 PROOF_OUTPUT = (
     'ok: [203.0.113.10] => {"msg": {"qa_identity_proof": "qa-identity-proof: qa-observer '
     f'uid=1001 login=ok qa_target_version={QA_TARGET_PROFILE_VERSION}"}}}}\nPLAY RECAP ok=14'
 )
 REVISION = "a" * 40
+# What `AnsibleRunner` returns when a run is killed at its timeout: no recap, no
+# task line, nothing that says how far the play got.
+TIMED_OUT = "Timeout after 180s"
 
 
 def _server(**overrides) -> ServerDTO:
     """A host provisioned by the Ansible that predates the current QA profile."""
     base = {
         "handle": "vps-1001",
-        "host": "203.0.113.10",
+        "host": "vps-1001.example.test",
         "public_ip": "203.0.113.10",
         "ssh_user": "root",
         "status": "active",
@@ -63,13 +64,22 @@ def _server(**overrides) -> ServerDTO:
     return ServerDTO(**base)
 
 
+PROVED_IDENTITY = TargetIdentity(
+    ssh_user="root",
+    host="vps-1001.example.test",
+    public_ip="203.0.113.10",
+    ssh_key_fingerprint=FLEET_FINGERPRINT,
+)
+
+
 class Target:
     """The reconciliation's world: one server, one key, a playbook runner and the API."""
 
     def __init__(self) -> None:
         self.runner = MagicMock()
         self.answers = {
-            TARGET_READINESS_PREFLIGHT_PLAYBOOK: (True, "PLAY RECAP ok=3"),
+            TARGET_READINESS_LOGIN_PLAYBOOK: (True, "PLAY RECAP ok=1"),
+            TARGET_READINESS_PRIVILEGE_PLAYBOOK: (True, "PLAY RECAP ok=2"),
             QA_IDENTITY_RETROFIT_PLAYBOOK: (True, PROOF_OUTPUT),
         }
         self.runner.run_playbook.side_effect = lambda **call: self.answers[call["playbook_name"]]
@@ -117,15 +127,16 @@ class TestTheRepair:
         assert not call.get("extra_vars")
         target.label.assert_awaited_once_with("vps-1001")
 
-    async def test_login_and_privilege_are_proved_before_anything_changes(self, target):
+    async def test_login_then_privilege_are_each_proved_before_anything_changes(self, target):
         await retrofit_qa_identity("vps-1001", target.runner)
 
         assert target.playbooks == [
-            TARGET_READINESS_PREFLIGHT_PLAYBOOK,
+            TARGET_READINESS_LOGIN_PLAYBOOK,
+            TARGET_READINESS_PRIVILEGE_PLAYBOOK,
             QA_IDENTITY_RETROFIT_PLAYBOOK,
         ]
 
-    async def test_success_records_the_exact_proved_profile_and_the_revision(self, target):
+    async def test_success_records_the_exact_proved_profile_revision_and_identity(self, target):
         await retrofit_qa_identity("vps-1001", target.runner, revision=REVISION)
 
         handle, verdict = target.report.await_args.args
@@ -134,6 +145,7 @@ class TestTheRepair:
         assert verdict.profile_version == QA_TARGET_PROFILE_VERSION
         assert verdict.proved_at is not None
         assert verdict.revision == REVISION
+        assert verdict.identity == PROVED_IDENTITY
 
     async def test_a_failed_playbook_leaves_the_row_saying_the_host_has_no_identity(self, target):
         target.answers[QA_IDENTITY_RETROFIT_PLAYBOOK] = (
@@ -148,13 +160,10 @@ class TestTheRepair:
         target.label.assert_not_awaited()
         assert target.verdict.ready is False
         assert target.verdict.profile_version is None
+        assert target.verdict.identity == PROVED_IDENTITY
 
     async def test_a_host_the_role_refuses_is_journalled_against_its_handle(self, target):
-        """The role stops at an account of that name it did not create.
-
-        The refusal is the verdict for this handle, carrying the playbook's own
-        words about what it found, with the phase it failed at — and no receipt.
-        """
+        """The role stops at an account of that name it did not create."""
         target.answers[QA_IDENTITY_RETROFIT_PLAYBOOK] = (
             False,
             "fatal: qa-observer already exists on this host and was not created by this role",
@@ -215,6 +224,13 @@ class TestTheRepair:
         assert success is True
         assert [call.args[1].ready for call in target.report.await_args_list] == [False, True]
 
+    async def test_a_verdict_the_api_refuses_as_superseded_is_not_a_result(self, target):
+        """The row's identity changed while the probes ran: nothing may be claimed for it."""
+        target.report.side_effect = TargetReadinessSupersededError("vps-1001: identity changed")
+
+        with pytest.raises(TargetReadinessSupersededError):
+            await retrofit_qa_identity("vps-1001", target.runner)
+
     async def test_the_label_it_writes_is_the_one_the_runtime_reads(self):
         """The row must end up saying exactly what the QA runtime looks for."""
         from src.provisioner.api_client import record_qa_identity
@@ -225,7 +241,7 @@ class TestTheRepair:
         assert labels.await_args.args[1] == {QA_SSH_USER_LABEL: QA_SSH_USER}
 
 
-class TestTheKeyAndTheLoginAreEvidence:
+class TestTheKeyTheLoginAndThePrivilegePathAreSeparateEvidence:
     async def test_a_host_with_no_stored_key_is_journalled_and_not_touched(self, target):
         with patch(
             "src.provisioner.operations.get_server_ssh_key", new=AsyncMock(return_value=None)
@@ -236,6 +252,7 @@ class TestTheKeyAndTheLoginAreEvidence:
         assert message == "Server has no stored SSH key"
         target.runner.run_playbook.assert_not_called()
         assert target.verdict.phase is TargetReadinessPhase.SSH_KEY_MISSING
+        assert target.verdict.identity.ssh_key_fingerprint is None
 
     async def test_a_stored_key_that_does_not_parse_is_journalled_without_its_material(
         self, target
@@ -254,69 +271,100 @@ class TestTheKeyAndTheLoginAreEvidence:
         assert lines[1][:24] not in target.verdict.detail
         assert lines[1][:24] not in message
 
-    async def test_an_administrative_account_that_cannot_log_in_is_admin_login(self, target):
-        target.answers[TARGET_READINESS_PREFLIGHT_PLAYBOOK] = (
-            False,
-            "STDERR: \n\nSTDOUT TAIL:\nfatal: [203.0.113.10]: UNREACHABLE! => "
-            '{"msg": "Permission denied (publickey)."}\nPLAY RECAP unreachable=1',
-        )
+    @pytest.mark.parametrize(
+        "output",
+        [
+            'fatal: [203.0.113.10]: UNREACHABLE! => {"msg": "Permission denied (publickey)."}',
+            TIMED_OUT,
+            "an ansible failure with no recognisable words at all",
+        ],
+        ids=["refused", "timed_out", "unrecognised"],
+    )
+    async def test_any_failure_of_the_login_run_is_admin_login(self, target, output):
+        target.answers[TARGET_READINESS_LOGIN_PLAYBOOK] = (False, output)
 
         success, _ = await retrofit_qa_identity("vps-1001", target.runner)
 
         assert success is False
-        assert target.playbooks == [TARGET_READINESS_PREFLIGHT_PLAYBOOK]
+        assert target.playbooks == [TARGET_READINESS_LOGIN_PLAYBOOK]
         assert target.verdict.phase is TargetReadinessPhase.ADMIN_LOGIN
         target.label.assert_not_awaited()
 
-    async def test_a_privilege_path_that_needs_a_password_changes_nothing(self, target):
-        target.answers[TARGET_READINESS_PREFLIGHT_PLAYBOOK] = (
-            False,
-            'fatal: [203.0.113.10]: FAILED! => {"msg": "Missing sudo password"}\n'
-            "PLAY RECAP ok=1 failed=1 unreachable=0",
-        )
+    @pytest.mark.parametrize(
+        "output",
+        [
+            'fatal: [203.0.113.10]: FAILED! => {"msg": "Missing sudo password"}',
+            TIMED_OUT,
+        ],
+        ids=["password_prompt", "timed_out"],
+    )
+    async def test_any_failure_of_the_privilege_run_is_privilege_preflight(self, target, output):
+        """The login already succeeded in its own run, so this failure cannot be the login."""
+        target.answers[TARGET_READINESS_PRIVILEGE_PLAYBOOK] = (False, output)
 
         success, _ = await retrofit_qa_identity("vps-1001", target.runner)
 
         assert success is False
-        assert target.playbooks == [TARGET_READINESS_PREFLIGHT_PLAYBOOK]
+        assert target.playbooks == [
+            TARGET_READINESS_LOGIN_PLAYBOOK,
+            TARGET_READINESS_PRIVILEGE_PLAYBOOK,
+        ]
         assert target.verdict.phase is TargetReadinessPhase.PRIVILEGE_PREFLIGHT
 
 
 class TestTheFreshPathRecordsTheIdentityWithThePhase:
-    async def test_completion_writes_the_phase_and_the_identity_in_one_call(self):
+    @pytest.fixture
+    def fresh(self):
+        with (
+            patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()) as labels,
+            patch(
+                "src.provisioner.api_client.get_server_info",
+                new=AsyncMock(return_value=_server()),
+            ),
+            patch(
+                "src.provisioner.api_client.get_server_ssh_key",
+                new=AsyncMock(return_value=FLEET_KEY),
+            ) as key,
+            patch("src.provisioner.api_client.report_target_readiness", new=AsyncMock()) as report,
+        ):
+            yield labels, key, report
+
+    async def test_completion_writes_the_phase_and_the_identity_in_one_call(self, fresh):
         """One write, so a host cannot read as provisioned and lend no identity."""
         from src.provisioner.api_client import mark_provisioning_complete
 
-        with (
-            patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()) as labels,
-            patch("src.provisioner.api_client.report_target_readiness", new=AsyncMock()),
-        ):
-            await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
+        labels, _, _ = fresh
+        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
 
         assert labels.await_args.args[1] == {
             PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE,
             QA_SSH_USER_LABEL: QA_SSH_USER,
         }
 
-    async def test_completion_records_the_receipt_the_software_play_proved(self):
+    async def test_completion_records_the_receipt_the_software_play_proved(self, fresh):
         from src.provisioner.api_client import mark_provisioning_complete
 
-        with (
-            patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()),
-            patch("src.provisioner.api_client.report_target_readiness", new=AsyncMock()) as report,
-        ):
-            await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
+        _, _, report = fresh
+        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
 
-        assert report.await_args.args[1].profile_version == QA_TARGET_PROFILE_VERSION
+        verdict = report.await_args.args[1]
+        assert verdict.profile_version == QA_TARGET_PROFILE_VERSION
+        assert verdict.identity == PROVED_IDENTITY
 
-    async def test_a_software_play_without_a_current_proof_leaves_no_receipt(self):
+    async def test_a_software_play_without_a_current_proof_leaves_no_receipt(self, fresh):
         from src.provisioner.api_client import mark_provisioning_complete
 
-        with (
-            patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()),
-            patch("src.provisioner.api_client.report_target_readiness", new=AsyncMock()) as report,
-        ):
-            await mark_provisioning_complete("vps-1001", "PLAY RECAP ok=40")
+        _, _, report = fresh
+        await mark_provisioning_complete("vps-1001", "PLAY RECAP ok=40")
+
+        report.assert_not_awaited()
+
+    async def test_a_row_whose_key_is_not_stored_yet_is_left_unproved(self, fresh):
+        from src.provisioner.api_client import mark_provisioning_complete
+
+        _, key, report = fresh
+        key.return_value = None
+        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
 
         report.assert_not_awaited()
 
@@ -334,7 +382,7 @@ class TestItRefusesAHostItCannotRepair:
             success, message = await retrofit_qa_identity("vps-1001", runner)
 
         assert success is False
-        assert message == "Server is not authorized for provisioning"
+        assert message == NOT_RECONCILABLE
         runner.run_playbook.assert_not_called()
         report.assert_not_awaited()
 
@@ -349,6 +397,20 @@ class TestItRefusesAHostItCannotRepair:
         target.runner.run_playbook.assert_not_called()
         target.report.assert_not_awaited()
 
+    @pytest.mark.parametrize("status", ["error", "unreachable", "reserved"])
+    async def test_a_phase_complete_row_in_a_non_admitting_status_is_reconciled(
+        self, target, status
+    ):
+        """Its lifecycle status is the API's to preserve; the proof still runs."""
+        with patch(
+            "src.provisioner.operations.get_server_info",
+            new=AsyncMock(return_value=_server(status=status)),
+        ):
+            success, _ = await retrofit_qa_identity("vps-1001", target.runner)
+
+        assert success is True
+        assert target.verdict.ready is True
+
     async def test_a_prepared_manual_target_needs_no_provider_authority(self, target, monkeypatch):
         """No provider id, no allowlist entry: explicit management is the authority."""
         monkeypatch.delenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", raising=False)
@@ -356,9 +418,7 @@ class TestItRefusesAHostItCannotRepair:
             handle="prod-target-5wwb",
             provider=None,
             provider_id=None,
-            labels={
-                PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE,
-            },
+            labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
         )
         with patch(
             "src.provisioner.operations.get_server_info", new=AsyncMock(return_value=manual)

@@ -13,6 +13,7 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 
 async def _project_with_repo(client: AsyncClient) -> str:
@@ -57,6 +58,7 @@ async def _server(client: AsyncClient) -> str:
             "handle": handle,
             "host": f"{handle}.example.com",
             "public_ip": "10.0.0.21",
+            "ssh_key": fleet_private_key(),
             "ssh_user": "root",
         },
     )

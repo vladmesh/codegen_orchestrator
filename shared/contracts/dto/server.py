@@ -39,6 +39,38 @@ class ServerStatus(StrEnum):
     MISSING = "missing"  # Пропал из Time4VPS API
 
 
+class TargetReadinessPhase(StrEnum):
+    """The step of managed-target reconciliation that failed, in execution order.
+
+    Each is its own executed step: a failure — a timeout included — is the step
+    that was running, never a phase read back out of another step's output.
+    """
+
+    SSH_KEY_MISSING = "ssh_key_missing"
+    SSH_KEY_INVALID = "ssh_key_invalid"
+    ADMIN_LOGIN = "admin_login"
+    PRIVILEGE_PREFLIGHT = "privilege_preflight"
+    QA_IDENTITY_ROLE = "qa_identity_role"
+    QA_IDENTITY_PROOF = "qa_identity_proof"
+
+
+class TargetIdentity(BaseModel):
+    """The connection a readiness verdict was proved over.
+
+    A verdict is applied only while the row still has exactly this identity, so
+    a key, account or address change that lands during a reconciliation never
+    receives the old identity's receipt or park. The fingerprint is `None` when
+    the stored key is missing or does not parse.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ssh_user: SSHUser
+    host: str
+    public_ip: str
+    ssh_key_fingerprint: str | None
+
+
 class ServerCreate(BaseModel):
     """Create server request.
 
@@ -166,17 +198,20 @@ class ServerDTO(TimestampedDTO):
     # successful role proof — never by a label and never by PATCH.
     qa_target_version: str | None = None
     qa_target_proved_at: datetime | None = None
+    # The phase of the last readiness failure while it is unrepaired. Set and
+    # cleared only by the readiness endpoint; admission refuses the row while it
+    # is set, whatever its status says.
+    target_readiness_failure_phase: TargetReadinessPhase | None = None
 
 
-class TargetReadinessPhase(StrEnum):
-    """The step of managed-target reconciliation that failed, in execution order."""
-
-    SSH_KEY_MISSING = "ssh_key_missing"
-    SSH_KEY_INVALID = "ssh_key_invalid"
-    ADMIN_LOGIN = "admin_login"
-    PRIVILEGE_PREFLIGHT = "privilege_preflight"
-    QA_IDENTITY_ROLE = "qa_identity_role"
-    QA_IDENTITY_PROOF = "qa_identity_proof"
+def target_identity(server: ServerDTO, ssh_key_fingerprint: str | None) -> TargetIdentity:
+    """The connection identity of this row, with the fingerprint of its stored key."""
+    return TargetIdentity(
+        ssh_user=server.ssh_user,
+        host=server.host,
+        public_ip=server.public_ip,
+        ssh_key_fingerprint=ssh_key_fingerprint,
+    )
 
 
 class TargetReadinessReport(BaseModel):
@@ -196,6 +231,7 @@ class TargetReadinessReport(BaseModel):
     phase: TargetReadinessPhase | None = None
     detail: str = Field(default="", max_length=TARGET_READINESS_DETAIL_MAX)
     revision: DeployedRevision | None = None
+    identity: TargetIdentity
 
     @model_validator(mode="after")
     def _one_verdict(self) -> "TargetReadinessReport":
@@ -215,6 +251,7 @@ class TargetReadinessRead(BaseModel):
     status: ServerStatus
     qa_target_version: str | None = None
     qa_target_proved_at: datetime | None = None
+    target_readiness_failure_phase: TargetReadinessPhase | None = None
     incident_id: int | None = None
 
 

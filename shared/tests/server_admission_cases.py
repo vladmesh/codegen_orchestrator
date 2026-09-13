@@ -20,7 +20,7 @@ from datetime import datetime
 
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
 from shared.contracts.dto.run_result import AllocationFailureReason
-from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.contracts.dto.server import ServerDTO, ServerStatus, TargetReadinessPhase
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.server_admission import (
     PROVISIONING_PHASE_COMPLETE,
@@ -47,6 +47,8 @@ class AdmissionCase:
     admitted: bool = False
     # The QA target readiness receipt on the row; `None` is a row with none.
     qa_target_version: str | None = QA_TARGET_PROFILE_VERSION
+    # An unrepaired readiness failure recorded on the row.
+    target_readiness_failure_phase: TargetReadinessPhase | None = None
 
 
 ADMISSION_CASES: tuple[AdmissionCase, ...] = (
@@ -124,13 +126,29 @@ ADMISSION_CASES: tuple[AdmissionCase, ...] = (
         qa_target_version=STALE_QA_TARGET_VERSION,
     ),
     # The state vps-275301 is put in: a key that does not parse or a login that
-    # fails, with the receipt it once had cleared by reconciliation.
+    # fails, parked out of its admitting status with its receipt cleared.
     AdmissionCase(
         name="reconciliation_found_target_not_ready",
         status=ServerStatus.ERROR,
         labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
-        provisioning_failed=True,
         qa_target_version=None,
+        target_readiness_failure_phase=TargetReadinessPhase.SSH_KEY_INVALID,
+    ),
+    # A readiness failure found on a row whose status was not admitting: its
+    # status is left alone, and the recorded failure alone keeps it refused.
+    AdmissionCase(
+        name="readiness_failure_on_a_row_left_in_its_status",
+        status=ServerStatus.READY,
+        labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        qa_target_version=None,
+        target_readiness_failure_phase=TargetReadinessPhase.ADMIN_LOGIN,
+    ),
+    # An ordinary provisioning or recovery error carries no readiness failure.
+    AdmissionCase(
+        name="generic_error_status",
+        status=ServerStatus.ERROR,
+        labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        provisioning_failed=True,
     ),
 )
 
@@ -169,6 +187,7 @@ def admission_case_server(case: AdmissionCase, *, last_health_check: datetime) -
         used_ram_mb=0,
         qa_target_version=case.qa_target_version,
         qa_target_proved_at=last_health_check if case.qa_target_version else None,
+        target_readiness_failure_phase=case.target_readiness_failure_phase,
         last_health_check=last_health_check,
         created_at=last_health_check,
         updated_at=last_health_check,

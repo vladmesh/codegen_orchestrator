@@ -1,24 +1,14 @@
 ---
-# Managed-target readiness preflight: can the stored administrative key log in,
-# and does the documented privilege path reach root without a prompt. Asked
-# before anything on the target changes, so a target that fails either is
-# recorded with that exact phase instead of receiving half of the QA role.
+# Managed-target readiness, phase `privilege_preflight`: does the documented safe
+# privilege path reach root without a prompt. Run by itself, with its own
+# timeout, only after `target_readiness_login.yml` succeeded — so any failure of
+# this run, a timeout included, is the privilege phase.
 #
 # The documented safe privilege path is the one every managed row uses:
 # `servers.ssh_user` is the administrative account the fleet key opens (`root`
 # on rows the platform registers), and Ansible escalates with `become` through
 # non-interactive sudo. A password prompt, a sudo that needs a terminal, or an
-# account that cannot become root fails the second play. Nothing here writes to
-# the target, reinstalls it or touches its firewall.
-
-- name: Prove the administrative account logs in with the stored key
-  hosts: "{{ target_host | default('all') }}"
-  gather_facts: false
-  become: false
-  tasks:
-    - name: Log in as the administrative account
-      ansible.builtin.raw: id -un
-      changed_when: false
+# account that cannot become root fails here. Nothing is written to the target.
 
 - name: Prove the privilege path reaches root without a prompt
   hosts: "{{ target_host | default('all') }}"

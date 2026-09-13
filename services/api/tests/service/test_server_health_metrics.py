@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.dependencies import get_redis_client
 from src.main import app
 
@@ -20,6 +21,7 @@ async def test_server(async_client):
             "handle": handle,
             "host": "test.example.com",
             "public_ip": "10.0.0.99",
+            "ssh_key": fleet_private_key(),
             "status": "active",
             "is_managed": True,
         },

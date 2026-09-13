@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from shared.redis.client import decode_redis_fields
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 BUILT_SHA = "e" * 40
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -58,6 +59,7 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
             "handle": f"recheck-{uuid.uuid4().hex[:8]}",
             "host": "recheck.example.test",
             "public_ip": "10.0.0.9",
+            "ssh_key": fleet_private_key(),
             "ssh_user": "root",
         },
     )

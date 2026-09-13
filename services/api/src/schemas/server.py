@@ -70,6 +70,8 @@ class ServerRead(ServerBase, TimestampedDTO):
     # QA target readiness receipt (see `shared/qa_target_profile.py`).
     qa_target_version: str | None = None
     qa_target_proved_at: datetime | None = None
+    # An unrepaired readiness failure, while admission refuses the row for it.
+    target_readiness_failure_phase: str | None = None
 
 
 class MetricsHistoryCreate(BaseModel):

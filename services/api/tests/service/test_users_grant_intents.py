@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from shared.contracts.dto.users_grant import GrantIntentStatus
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 BUILT_SHA = "e" * 40
 REBOUND_BUILT_SHA = "f" * 40
@@ -54,6 +55,7 @@ async def _target(client):
             "handle": f"grant-{suffix}",
             "host": f"grant-{suffix}.test",
             "public_ip": "10.0.0.1",
+            "ssh_key": fleet_private_key(),
             "status": "active",
             "is_managed": True,
         },

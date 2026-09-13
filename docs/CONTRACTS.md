@@ -1463,29 +1463,51 @@ seat that answers anything else, then prints `qa_target_version=<version>`.
 The receipt is `servers.qa_target_version` and `servers.qa_target_proved_at`.
 Only `POST /api/servers/{handle}/target-readiness` (`TargetReadinessReport` →
 `TargetReadinessRead`) writes it; `qa_ssh_user`, `provisioning_phase` and PATCH
-never do, and the endpoint refuses a receipt for any other profile with 409. A
-not-ready verdict, in one transaction, clears the receipt, moves the row to
-`error` (`TARGET_NOT_READY_STATUS`) and upserts the active `provisioning_failed`
-episode with `step=target_readiness`, the `TargetReadinessPhase`, bounded detail
-and the deployed revision; `ssh_key_enc` is never touched. A ready verdict writes
-the receipt, returns an `error` row to `ready` and resolves the active episode.
+never do, and the endpoint refuses a receipt for any other profile with 409.
+Every report carries the `TargetIdentity` it was proved over (`ssh_user`,
+`host`, `public_ip`, stored-key fingerprint); under the server row lock the
+endpoint refuses, with 409 and no change, a verdict whose identity is not the
+row's current one. `PATCH /api/servers/{handle}` locks the row too and clears the
+receipt in the same transaction whenever that identity changes, server-sync
+address updates included.
 
-`shared/server_admission.py` refuses a managed row with `target_not_ready`,
-`qa_target_receipt_missing` or `qa_target_receipt_stale`; each is reported as
-`server_not_provisioned`, never capacity, and allocation, the scheduler's
-resource wait and QA read the same predicate and receipt. Server create and SSH
-key update accept only an unencrypted OpenSSH private key with a terminal
-newline (`shared/ssh_keys.py`), parse it before commit, keep the encrypted
-canonical text and `ssh_key_fingerprint`, and refuse with
-`ssh_key rejected: <reason>` without changing the row or echoing key material.
+Readiness owns its own evidence. A not-ready verdict clears the receipt, sets
+`target_readiness_failure_phase`, and creates or updates the one active
+`target_not_ready` incident (its own unique active index); it moves the row to
+`error` only out of an admitting status, recording that status in
+`target_readiness_parked_status`, and leaves any other status as it was.
+`ssh_key_enc` is never touched. A ready verdict writes the receipt, resolves the
+active `target_not_ready` incident and the QA runtime's `step=qa_identity`
+refusals, clears the failure phase, and restores the parked status only while
+the park still owns the row's `error`: any status write — PATCH, attempt reset,
+force rebuild — clears the park's ownership. Other `provisioning_failed`
+episodes and statuses are never overwritten or resolved by readiness.
 
-`retrofit_qa_identity` reconciles any explicitly managed, provisioned row without
-provider authority: stored key parse → `target_readiness_preflight.yml` (login,
-then non-interactive `become` to uid 0) → `qa_identity_retrofit.yml` with no
-`qa_ssh_user` or profile variable → proof version check → receipt. The first
-failing step is the verdict. `python -m src.provisioner.target_readiness
---revision <sha>` runs it over every reconcilable managed row after a production
-deploy and exits non-zero only when a verdict could not be recorded.
+`shared/server_admission.py` refuses a managed row with `target_not_ready` while
+a readiness failure phase is recorded, and with `qa_target_receipt_missing` or
+`qa_target_receipt_stale`; each is reported as `server_not_provisioned`, never
+capacity, and allocation, the scheduler's resource wait and QA read the same
+predicate and receipt. Server create and SSH key update accept only an
+unencrypted OpenSSH private key with a terminal newline (`shared/ssh_keys.py`),
+parse it before commit, keep the encrypted canonical text and
+`ssh_key_fingerprint`, and refuse with `ssh_key rejected: <reason>` without
+changing the row or echoing key material. A managed row may not be created,
+promoted or have its key cleared into a keyless state
+(`managed_row_requires_admin_key`), except while provisioning owns it and will
+mint the key: `pending_setup`, `provisioning`, `force_rebuild` or `reserved`
+with no complete software phase — the rows provider discovery and allowlist
+adoption create.
+
+`retrofit_qa_identity` reconciles any explicitly managed, phase-complete row
+provisioning does not own, without provider authority: stored key parse →
+`target_readiness_login.yml` (`admin_login`) → `target_readiness_privilege.yml`
+(`privilege_preflight`, non-interactive `become` to uid 0) →
+`qa_identity_retrofit.yml` with no `qa_ssh_user` or profile variable → proof
+version check → receipt. Each step is its own run with its own timeout and the
+first failing run is the phase. `python -m src.provisioner.target_readiness
+--revision <sha>` gives every managed row one outcome after a production deploy
+and exits zero only when every outcome is a recorded `ready` or `not_ready`;
+`in_progress`, `unhandled`, `superseded` and `unrecorded` rows fail it.
 
 A QA harness failure is a typed `QABlocker`, never a product check. A receipt
 rejection refuses before any grant; the runner checks the live wrapper right

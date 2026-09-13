@@ -2,12 +2,16 @@
 
 import asyncio
 from datetime import UTC, datetime
-import re
 
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
-from shared.contracts.dto.server import TargetReadinessPhase, TargetReadinessReport
+from shared.contracts.dto.server import (
+    TargetIdentity,
+    TargetReadinessPhase,
+    TargetReadinessReport,
+    target_identity,
+)
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     provider_ip_matches,
@@ -31,15 +35,22 @@ from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
 
-TARGET_READINESS_PREFLIGHT_PLAYBOOK = "target_readiness_preflight.yml"
+TARGET_READINESS_LOGIN_PLAYBOOK = "target_readiness_login.yml"
+TARGET_READINESS_PRIVILEGE_PLAYBOOK = "target_readiness_privilege.yml"
 QA_IDENTITY_RETROFIT_PLAYBOOK = "qa_identity_retrofit.yml"
-# Ansible's own words for a host it could not log in to, in the task line and
-# in the recap. Anything else that fails the preflight is the privilege path.
-_UNREACHABLE = re.compile(r"UNREACHABLE!|unreachable=[1-9]")
+# The two preflight probes, each executed as its own run with its own timeout,
+# in this order. A failed run is its phase; nothing is read back out of output.
+TARGET_READINESS_PREFLIGHT = (
+    (TARGET_READINESS_LOGIN_PLAYBOOK, TargetReadinessPhase.ADMIN_LOGIN),
+    (TARGET_READINESS_PRIVILEGE_PLAYBOOK, TargetReadinessPhase.PRIVILEGE_PREFLIGHT),
+)
 # The proof task names its script; a failure inside it is the proof's verdict,
 # any other failure of the retrofit play is the role not being applied.
 QA_IDENTITY_PROOF_MARKER = "qa-identity-proof"
 READINESS_DETAIL_LENGTH = 500
+# Refusals that record no verdict, because reconciliation does not own the row.
+NOT_RECONCILABLE = "Server is not authorized for provisioning"
+NO_PUBLIC_ADDRESS = "Server has no public IP address"
 
 # Configuration from centralized constants
 PASSWORD_RESET_TIMEOUT = Timeouts.PASSWORD_RESET
@@ -102,33 +113,39 @@ async def retrofit_qa_identity(
 ) -> tuple[bool, str]:
     """Reconcile one managed target to the current QA target profile, non-destructively.
 
-    The steps run in a fixed order and the first that fails is the verdict:
+    The steps run in a fixed order, each executed on its own, and the first that
+    fails is the verdict:
 
     1. the stored administrative key is decrypted by the API and parsed here;
-    2. the preflight playbook logs in with it and proves the privilege path —
-       before anything on the target changes;
-    3. `qa_identity_retrofit.yml` applies the current `qa_identity` role, whose
+    2. `target_readiness_login.yml` logs in with it — `admin_login`;
+    3. `target_readiness_privilege.yml` proves the privilege path —
+       `privilege_preflight` — before anything on the target changes;
+    4. `qa_identity_retrofit.yml` applies the current `qa_identity` role, whose
        last task is the runtime-compatible `qa-identity-proof`;
-    4. the proof's reported profile must be the one this repository defines.
+    5. the proof's reported profile must be the one this repository defines.
 
-    Only then is the receipt written and the matching incident resolved, in one
-    API transaction. A failure at any step is one typed report instead: the
-    exact phase, bounded redacted output, the receipt cleared, the row moved to
-    a non-admitting status with its encrypted key untouched, and the active
-    provisioning-failure episode updated rather than duplicated. Repeating the
-    call re-runs states, so a partial failure resumes on the next run.
+    Every verdict carries the connection identity it was proved over, and the API
+    applies it only while the row still has that identity. A success writes the
+    receipt and resolves this operation's own evidence in one transaction; a
+    failure records its exact phase, bounded redacted output and the readiness
+    park, with the encrypted key untouched. Repeating the call re-runs states, so
+    a partial failure resumes on the next run.
 
     Authority is explicit management of a provisioned row, not the destructive
     provider allowlist: nothing here reinstalls, replaces a firewall or needs a
     provider id, so a prepared manual target is reconciled like any other.
+
+    Raises:
+        TargetReadinessSupersededError: the row's identity changed while this ran,
+            so no verdict was recorded.
     """
     server = await get_server_info(server_handle)
     if not target_readiness_reconcilable(server):
-        return False, "Server is not authorized for provisioning"
+        return False, NOT_RECONCILABLE
 
     server_ip = server.public_ip or server.host
     if not server_ip:
-        return False, "Server has no public IP address"
+        return False, NO_PUBLIC_ADDRESS
 
     stored = await get_server_ssh_key(server_handle)
     if not stored:
@@ -136,6 +153,7 @@ async def retrofit_qa_identity(
             server_handle,
             TargetReadinessPhase.SSH_KEY_MISSING,
             "Server has no stored SSH key",
+            identity=target_identity(server, None),
             revision=revision,
         )
     try:
@@ -145,8 +163,10 @@ async def retrofit_qa_identity(
             server_handle,
             TargetReadinessPhase.SSH_KEY_INVALID,
             f"the stored administrative key is not usable: {exc.rejection.value}",
+            identity=target_identity(server, None),
             revision=revision,
         )
+    identity = target_identity(server, admin_key.fingerprint)
 
     connection = {
         "server_ip": server_ip,
@@ -155,18 +175,16 @@ async def retrofit_qa_identity(
         "ssh_user": server.ssh_user,
         "ssh_private_key": admin_key.text,
     }
-    success, output = ansible_runner.run_playbook(
-        **connection,
-        playbook_name=TARGET_READINESS_PREFLIGHT_PLAYBOOK,
-        timeout=Timeouts.ACCESS_PHASE,
-    )
-    if not success:
-        phase = (
-            TargetReadinessPhase.ADMIN_LOGIN
-            if _UNREACHABLE.search(output)
-            else TargetReadinessPhase.PRIVILEGE_PREFLIGHT
+    for preflight_playbook, preflight_phase in TARGET_READINESS_PREFLIGHT:
+        success, output = ansible_runner.run_playbook(
+            **connection,
+            playbook_name=preflight_playbook,
+            timeout=Timeouts.ACCESS_PHASE,
         )
-        return await _target_not_ready(server_handle, phase, output, revision=revision)
+        if not success:
+            return await _target_not_ready(
+                server_handle, preflight_phase, output, identity=identity, revision=revision
+            )
 
     # No `qa_ssh_user` or profile variable is passed: the account and the
     # version the proof requires are the role's own defaults, so what is proved
@@ -182,7 +200,9 @@ async def retrofit_qa_identity(
             if QA_IDENTITY_PROOF_MARKER in output
             else TargetReadinessPhase.QA_IDENTITY_ROLE
         )
-        return await _target_not_ready(server_handle, phase, output, revision=revision)
+        return await _target_not_ready(
+            server_handle, phase, output, identity=identity, revision=revision
+        )
 
     proved = proved_profile_version(output)
     if proved != QA_TARGET_PROFILE_VERSION:
@@ -191,6 +211,7 @@ async def retrofit_qa_identity(
             TargetReadinessPhase.QA_IDENTITY_PROOF,
             f"the role proof reported QA target profile {proved or '(none)'}, "
             f"expected {QA_TARGET_PROFILE_VERSION}",
+            identity=identity,
             revision=revision,
         )
 
@@ -198,7 +219,11 @@ async def retrofit_qa_identity(
     await report_target_readiness(
         server_handle,
         TargetReadinessReport(
-            ready=True, profile_version=proved, proved_at=datetime.now(UTC), revision=revision
+            ready=True,
+            profile_version=proved,
+            proved_at=datetime.now(UTC),
+            revision=revision,
+            identity=identity,
         ),
     )
     logger.info("qa_identity_retrofit_complete", server_handle=server_handle, profile=proved)
@@ -210,14 +235,17 @@ async def _target_not_ready(
     phase: TargetReadinessPhase,
     detail: str,
     *,
+    identity: TargetIdentity,
     revision: str | None,
 ) -> tuple[bool, str]:
-    """Journal one failed phase and take the target out of admission."""
+    """Journal one failed phase against the identity it was found over."""
     bounded = detail[-READINESS_DETAIL_LENGTH:]
     logger.error("qa_identity_retrofit_failed", server_handle=server_handle, phase=phase.value)
     await report_target_readiness(
         server_handle,
-        TargetReadinessReport(ready=False, phase=phase, detail=bounded, revision=revision),
+        TargetReadinessReport(
+            ready=False, phase=phase, detail=bounded, revision=revision, identity=identity
+        ),
     )
     if phase is TargetReadinessPhase.SSH_KEY_MISSING:
         return False, detail

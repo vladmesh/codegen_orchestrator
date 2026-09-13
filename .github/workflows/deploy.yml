@@ -438,10 +438,11 @@ jobs:
       # before the deploy reports success. The command parses each stored key,
       # proves the administrative login and privilege path, applies and proves the
       # role, and records a receipt or a typed not-ready incident per target. It
-      # runs only the preflight and retrofit playbooks: no provider reinstall, no
-      # firewall change, no QA or stand run. It exits non-zero only when a verdict
-      # could not be recorded; a target found not ready is recorded and refused by
-      # admission, and is listed in this step's output.
+      # runs only the login, privilege and retrofit playbooks: no provider
+      # reinstall, no firewall change, no QA or stand run. It exits zero only when
+      # every managed row has a recorded ready or not-ready verdict; a row still
+      # being provisioned, one it cannot handle, or a verdict superseded or not
+      # recorded fails the step, and every row's outcome is listed in its output.
       - name: Reconcile managed deploy targets
         if: ${{ inputs.environment == 'production' }}
         uses: appleboy/ssh-action@v1

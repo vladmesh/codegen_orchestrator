@@ -434,6 +434,7 @@ export interface Server {
   ssh_key_fingerprint?: string | null
   qa_target_version?: string | null
   qa_target_proved_at?: string | null
+  target_readiness_failure_phase?: string | null
 }
 
 export interface ContainerMetrics {

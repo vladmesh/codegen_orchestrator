@@ -27,6 +27,12 @@ class Server(Base):
     # QA target readiness receipt, written only by the target-readiness endpoint.
     qa_target_version: Mapped[str | None] = mapped_column(String(64))
     qa_target_proved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Readiness failure evidence and park ownership, written only by the
+    # target-readiness endpoint. `target_readiness_parked_status` is the status a
+    # readiness failure moved the row out of; any other status write clears it,
+    # so a later success restores only a park that still owns the row.
+    target_readiness_failure_phase: Mapped[str | None] = mapped_column(String(50))
+    target_readiness_parked_status: Mapped[str | None] = mapped_column(String(50))
 
     # Capacity metrics (from Time4VPS API)
     capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)

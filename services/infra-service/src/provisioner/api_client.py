@@ -1,15 +1,32 @@
 """API client for provisioner - communicates with the API service."""
 
 from datetime import UTC, datetime
+from http import HTTPStatus
 
-from shared.contracts.dto.server import ServerDTO, TargetReadinessRead, TargetReadinessReport
+import httpx
+
+from shared.contracts.dto.server import (
+    ServerDTO,
+    TargetReadinessRead,
+    TargetReadinessReport,
+    target_identity,
+)
 from shared.log_config import get_logger
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL, provisioning_complete_labels
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, proved_profile_version
+from shared.ssh_keys import AdminKeyRejectedError, validate_stored_admin_private_key
 
 from ..clients.api import DeploymentRecord, api_client
 
 logger = get_logger(__name__)
+
+
+class TargetReadinessSupersededError(RuntimeError):
+    """The API refused a verdict: the row's identity or the profile changed meanwhile.
+
+    Nothing was recorded. It is neither a ready nor a not-ready fact about the
+    target as it is now, so it is never reported as one.
+    """
 
 
 async def get_server_info(server_handle: str) -> ServerDTO:
@@ -68,10 +85,30 @@ async def mark_provisioning_complete(server_handle: str, software_output: str) -
             expected=QA_TARGET_PROFILE_VERSION,
         )
         return
-    await report_target_readiness(
-        server_handle,
-        TargetReadinessReport(ready=True, profile_version=proved, proved_at=datetime.now(UTC)),
-    )
+    # The receipt is bound to the identity the play ran over. A row whose key is
+    # saved only after this point is left unproved; reconciliation proves it.
+    server = await get_server_info(server_handle)
+    try:
+        fingerprint = validate_stored_admin_private_key(
+            await get_server_ssh_key(server_handle)
+        ).fingerprint
+    except AdminKeyRejectedError:
+        logger.error(
+            "provisioning_proved_profile_without_a_usable_key", server_handle=server_handle
+        )
+        return
+    try:
+        await report_target_readiness(
+            server_handle,
+            TargetReadinessReport(
+                ready=True,
+                profile_version=proved,
+                proved_at=datetime.now(UTC),
+                identity=target_identity(server, fingerprint),
+            ),
+        )
+    except TargetReadinessSupersededError:
+        logger.warning("provisioning_receipt_superseded", server_handle=server_handle)
 
 
 async def list_managed_servers() -> list[ServerDTO]:
@@ -82,8 +119,18 @@ async def list_managed_servers() -> list[ServerDTO]:
 async def report_target_readiness(
     server_handle: str, report: TargetReadinessReport
 ) -> TargetReadinessRead:
-    """Apply one readiness verdict: receipt and repair, or incident and non-admitting status."""
-    applied = await api_client.report_target_readiness(server_handle, report)
+    """Apply one readiness verdict: receipt and repair, or incident and park.
+
+    Raises:
+        TargetReadinessSupersededError: the API refused the verdict because the
+            row's connection identity or the current profile changed meanwhile.
+    """
+    try:
+        applied = await api_client.report_target_readiness(server_handle, report)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != HTTPStatus.CONFLICT:
+            raise
+        raise TargetReadinessSupersededError(f"{server_handle}: {exc.response.text[:300]}") from exc
     logger.info(
         "api_target_readiness_reported",
         server_handle=server_handle,

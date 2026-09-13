@@ -209,23 +209,38 @@ docker compose exec -T infra-service \
   python -m src.provisioner.target_readiness --revision "$DEPLOYED_SHA"
 ```
 
-It prints one JSON line per managed server: `ready` (receipt written for the
-current QA target profile), `not_ready` (typed incident recorded, row moved to
-`error`, admission refuses it), `skipped` (not provisioned or still being
-provisioned), or `unrecorded` (the verdict could not be written — the step then
-fails the deploy). It runs only the preflight and retrofit playbooks: no
-reinstall, no firewall change, no QA or stand run.
+It prints one JSON line per managed server, whatever its status:
 
-A `not_ready` target's active `provisioning_failed` incident carries
-`step=target_readiness` and the failed `phase`:
+- `ready` — receipt written for the current QA target profile.
+- `not_ready` — readiness failure recorded; admission refuses the row. An
+  admitting row is parked as `error` and gets its status back when proved; any
+  other status (`unreachable`, `reserved`, a provisioning `error`) is left alone.
+- `in_progress` — provisioning owns the row (`pending_setup`, `provisioning`,
+  `force_rebuild`); it was not reconciled.
+- `unhandled` — a managed row whose software phase is not complete, or one that
+  changed or cannot be addressed; it was not reconciled.
+- `superseded` — the row's key, user or address changed while it was being
+  proved, so no verdict was recorded.
+- `unrecorded` — the verdict could not be written.
+
+Only `ready` and `not_ready` are successes; any other outcome fails the deploy
+step. Finish or repair provisioning for an `in_progress` or `unhandled` row, and
+re-run the single-target command below for a `superseded` one. The command runs
+only the login, privilege and retrofit playbooks: no reinstall, no firewall
+change, no QA or stand run.
+
+A `not_ready` target has one active `target_not_ready` incident, separate from
+any `provisioning_failed` episode, whose details carry the failed `phase`, and
+the row's `target_readiness_failure_phase` names it too:
 
 - `ssh_key_missing` / `ssh_key_invalid` — the stored administrative key is
   absent or does not parse. Supply valid operator material with
   `PATCH /api/servers/{handle}` `{"ssh_key": "<unencrypted OpenSSH private key with final newline>"}`;
   a refused key returns `ssh_key rejected: <reason>` and changes nothing.
-- `admin_login` — the key does not log in as `servers.ssh_user`.
-- `privilege_preflight` — that account cannot reach root through non-interactive
-  `sudo`/`become`. Nothing on the target was changed.
+- `admin_login` — the login run failed or timed out as `servers.ssh_user`.
+- `privilege_preflight` — the login succeeded, and the separate privilege run
+  failed or timed out reaching root through non-interactive `sudo`/`become`.
+  Nothing on the target was changed.
 - `qa_identity_role` / `qa_identity_proof` — the role could not be applied, or
   its proof refused the seat (the incident detail names what it found).
 

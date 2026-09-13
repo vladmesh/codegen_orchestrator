@@ -205,7 +205,11 @@ async def test_create_server_encrypts_ssh_key():
 
 @pytest.mark.asyncio
 async def test_create_server_without_ssh_key():
-    """POST /servers/ without ssh_key stores None."""
+    """POST /servers/ without ssh_key stores None for a row whose key is not owed yet.
+
+    A managed row needs a key unless provisioning still owns it and will mint
+    one, so the keyless row here is one provider discovery creates.
+    """
     session = _mock_db_session()
     _override_session(session)
 
@@ -218,6 +222,7 @@ async def test_create_server_without_ssh_key():
                 "handle": "srv-2",
                 "host": "srv-2.example.com",
                 "public_ip": "5.6.7.8",
+                "status": "pending_setup",
             },
         )
 

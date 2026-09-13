@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 
+from shared.tests.ssh_key_fixtures import fleet_private_key
+
 
 @pytest.mark.asyncio
 async def test_provisioning_failure_reuses_active_incident_and_starts_new_resolved_episode(
@@ -17,6 +19,7 @@ async def test_provisioning_failure_reuses_active_incident_and_starts_new_resolv
             "handle": handle,
             "host": "test.example.com",
             "public_ip": "10.0.0.99",
+            "ssh_key": fleet_private_key(),
             "status": "active",
             "is_managed": True,
         },

@@ -6,9 +6,9 @@ from shared.models.incident import IncidentType
 class TestIncidentType:
     """Verify IncidentType enum values."""
 
-    def test_has_six_values(self):
-        """IncidentType should have exactly 6 values."""
-        assert len(IncidentType) == 6
+    def test_has_seven_values(self):
+        """IncidentType should have exactly 7 values."""
+        assert len(IncidentType) == 7
 
     def test_ssl_expiring_exists(self):
         """IncidentType should include SSL_EXPIRING."""
@@ -23,6 +23,7 @@ class TestIncidentType:
             "resource_exhausted",
             "ssl_expiring",
             "provider_api_unavailable",
+            "target_not_ready",
         }
         actual = {member.value for member in IncidentType}
         assert actual == expected

@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
-- Managed targets are admitted only with a parsed admin key and a receipt for the current `qa_identity`
-  profile, which production deploys now reconcile; missing or failed evidence parks the target as `error`.
+- Managed targets are admitted only with a parsed admin key and an identity-bound receipt for the current
+  `qa_identity` profile, which every production deploy reconciles under its own `target_not_ready` park.
 - QA harness failures — stale `qa-docker`, refused verbs, unreadable probes, unreached executors — are typed
   blockers that park the story for `recheck-qa` with an admin notice, never a product fix task.
 - Temporary QA admission now scopes legacy contention to an exact known target, and an audited admin drain
