@@ -151,13 +151,9 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
     )
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     labels = AsyncMock()
-    complete = AsyncMock()
+    success = AsyncMock(return_value={"provisioning_result": {"status": "success"}})
     monkeypatch.setattr("src.provisioner.node.update_server_labels", labels)
-    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
-    monkeypatch.setattr(
-        "src.provisioner.node.handle_provisioning_success",
-        AsyncMock(return_value={"provisioning_result": {"status": "success"}}),
-    )
+    monkeypatch.setattr("src.provisioner.node.handle_provisioning_success", success)
 
     result = await node.run(
         {"server_to_provision": "bitlaunch-6a920e74c9c98a452507b09b", "errors": []}
@@ -174,9 +170,10 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
     labels.assert_awaited_once_with(
         "bitlaunch-6a920e74c9c98a452507b09b", {"provisioning_phase": "software_installation"}
     )
-    # The software play's own output travels with it: the readiness receipt is
-    # written from the proof it reported, never assumed from a green play.
-    complete.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b", "ok")
+    # The software play's proof travels to the success handler, which records it
+    # with READY once the generated key is stored. "ok" proved no profile, so the
+    # handler receives no proof and will fail the success closed.
+    assert success.await_args.kwargs["qa_target_proof"] is None
 
 
 @pytest.mark.asyncio
@@ -198,7 +195,6 @@ async def test_bitlaunch_stand_profile_reaches_software_playbook_as_an_explicit_
     )
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
-    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", AsyncMock())
     monkeypatch.setattr(
         "src.provisioner.node.handle_provisioning_success",
         AsyncMock(return_value={"provisioning_result": {"status": "success"}}),
@@ -249,17 +245,17 @@ async def test_a_software_phase_that_failed_records_no_completion_and_no_qa_acco
     )
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     labels = AsyncMock()
-    complete = AsyncMock()
     incident = AsyncMock()
+    success = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.update_server_labels", labels)
-    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
     monkeypatch.setattr("src.provisioner.node.create_incident", incident)
+    monkeypatch.setattr("src.provisioner.node.handle_provisioning_success", success)
 
     result = await node.run(
         {"server_to_provision": "bitlaunch-6a9905aed77393390012fc3e", "errors": []}
     )
 
-    complete.assert_not_awaited()
+    success.assert_not_awaited()
     written = [call.args[1] for call in labels.await_args_list]
     assert written == [{"provisioning_phase": "software_installation"}]
     assert not any(QA_SSH_USER_LABEL in labels_written for labels_written in written)

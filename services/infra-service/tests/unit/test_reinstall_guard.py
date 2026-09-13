@@ -18,7 +18,7 @@ async def test_reinstall_refuses_server_outside_allowlist(monkeypatch):
     client = MagicMock()
     client.reinstall_server = AsyncMock()
 
-    success, message = await reinstall_and_provision(
+    success, message, _proof = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
         provider="time4vps",
@@ -42,7 +42,7 @@ async def test_reinstall_refuses_provider_id_with_changed_ip(monkeypatch):
     client.get_server_details = AsyncMock(return_value=MagicMock(ip="203.0.113.99"))
     client.reinstall_server = AsyncMock()
 
-    success, message = await reinstall_and_provision(
+    success, message, _proof = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
         provider="time4vps",
@@ -67,7 +67,7 @@ async def test_reinstall_refuses_missing_provider_ip(monkeypatch, provider_ip):
     client.get_server_details = AsyncMock(return_value=MagicMock(ip=provider_ip))
     client.reinstall_server = AsyncMock()
 
-    success, message = await reinstall_and_provision(
+    success, message, _proof = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
         provider="time4vps",
@@ -145,9 +145,6 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
     monkeypatch.setattr(operations_module, "asyncio", clock)
     monkeypatch.setattr(operations_module, "notify_admins_best_effort", AsyncMock())
     monkeypatch.setattr(operations_module, "update_server_labels", AsyncMock())
-    # The completion write is its own call now: the phase and the QA identity it
-    # created are recorded together, by one function.
-    monkeypatch.setattr(operations_module, "mark_provisioning_complete", AsyncMock())
 
     transport = _ScriptedTransport(
         [
@@ -170,7 +167,7 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
     ansible.run_playbook.return_value = (True, "ok")
 
     with patch("shared.clients.time4vps.httpx.AsyncClient", transport):
-        success, message = await reinstall_and_provision(
+        success, message, _proof = await reinstall_and_provision(
             time4vps_client=Time4VPSClient("user", "secret"),
             server_handle="vps-275301",
             provider="time4vps",

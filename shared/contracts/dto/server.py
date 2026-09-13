@@ -71,6 +71,20 @@ class TargetIdentity(BaseModel):
     ssh_key_fingerprint: str | None
 
 
+class QATargetReceipt(BaseModel):
+    """A readiness receipt a provisioning success records together with READY.
+
+    The proof comes from the software play; the identity is the row's connection
+    identity with the fingerprint of the key the success handler just persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_version: str
+    proved_at: datetime
+    identity: TargetIdentity
+
+
 class ServerCreate(BaseModel):
     """Create server request.
 
@@ -140,10 +154,15 @@ class ProvisioningAttemptReservationResult(BaseModel):
 
 
 class ProvisioningAttemptReset(BaseModel):
-    """Request to close an episode only when its attempt is still current."""
+    """Request to close an episode only when its attempt is still current.
+
+    READY is never written without the readiness receipt of the provisioning that
+    earned it: both are applied in one transaction, or neither is.
+    """
 
     attempt_number: int = Field(gt=0)
     episode_id: str = Field(min_length=1)
+    qa_target_receipt: QATargetReceipt
 
 
 class ProvisioningAttemptResetResult(BaseModel):

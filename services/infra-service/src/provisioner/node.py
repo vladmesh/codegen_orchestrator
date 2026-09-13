@@ -28,13 +28,14 @@ from shared.provisioning_policy import (
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
 
+from shared.qa_target_profile import current_profile_proof
+
 from ..config.constants import Provisioning, Timeouts
 from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
     get_server_ssh_key,
-    mark_provisioning_complete,
     reserve_provisioning_attempt,
     update_server_labels,
     update_server_status,
@@ -240,7 +241,7 @@ class ProvisionerNode(FunctionalNode):
         """Execute reinstall provisioning path."""
         ssh_public_key = self.ssh_manager.get_public_key()
 
-        success, message = await reinstall_and_provision(
+        outcome = await reinstall_and_provision(
             time4vps_client=time4vps_client,
             server_handle=server_handle,
             provider=provider,
@@ -256,7 +257,7 @@ class ProvisionerNode(FunctionalNode):
             orchestrator_hostname=self.orchestrator_hostname,
         )
 
-        if success:
+        if outcome.success:
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,
@@ -265,8 +266,10 @@ class ProvisionerNode(FunctionalNode):
                 is_recovery,
                 " (Reinstalled)",
                 ssh_manager=self.ssh_manager,
+                qa_target_proof=outcome.qa_target_proof,
             )
 
+        message = outcome.message
         await update_server_status(server_handle, "error")
         await create_incident(
             server_handle,
@@ -350,7 +353,8 @@ class ProvisionerNode(FunctionalNode):
         )
 
         if success_soft:
-            await mark_provisioning_complete(server_handle, output_soft)
+            # The proof is carried, not recorded: the generated key is not stored
+            # yet, and the success handler binds the proof to it before READY.
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,
@@ -359,6 +363,7 @@ class ProvisionerNode(FunctionalNode):
                 is_recovery,
                 " (Retried)",
                 ssh_manager=self.ssh_manager,
+                qa_target_proof=current_profile_proof(output_soft),
             )
 
         await update_server_status(server_handle, "error")

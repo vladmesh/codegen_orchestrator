@@ -26,6 +26,7 @@ from shared.contracts.dto.incident import (
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservationResult,
     ProvisioningAttemptResetResult,
+    QATargetReceipt,
     ServerDTO,
     TargetReadinessRead,
     TargetReadinessReport,
@@ -106,13 +107,21 @@ class InfrastructureAPIClient(InternalAPIClient):
         return ProvisioningAttemptReservationResult.model_validate(resp.json())
 
     async def reset_provisioning_attempts(
-        self, server_handle: str, attempt_number: int, episode_id: str
+        self,
+        server_handle: str,
+        attempt_number: int,
+        episode_id: str,
+        qa_target_receipt: QATargetReceipt,
     ) -> ProvisioningAttemptResetResult:
-        """Close an episode only if another attempt has not started."""
+        """Close an episode as READY with its receipt, only if no other attempt started."""
         resp = await self.request(
             "POST",
             f"servers/{server_handle}/provisioning-attempts/reset",
-            json={"attempt_number": attempt_number, "episode_id": episode_id},
+            json={
+                "attempt_number": attempt_number,
+                "episode_id": episode_id,
+                "qa_target_receipt": qa_target_receipt.model_dump(mode="json"),
+            },
         )
         return ProvisioningAttemptResetResult.model_validate(resp.json())
 

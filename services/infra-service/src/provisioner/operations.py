@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 import structlog
 
@@ -17,7 +18,12 @@ from shared.provisioning_policy import (
     provider_ip_matches,
     provider_operation_is_authorized,
 )
-from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, proved_profile_version
+from shared.qa_target_profile import (
+    QA_TARGET_PROFILE_VERSION,
+    QATargetProof,
+    current_profile_proof,
+    proved_profile_version,
+)
 from shared.server_admission import target_readiness_reconcilable
 from shared.ssh_keys import AdminKeyRejectedError, validate_stored_admin_private_key
 
@@ -26,7 +32,6 @@ from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
     get_server_ssh_key,
-    mark_provisioning_complete,
     record_qa_identity,
     report_target_readiness,
     update_server_labels,
@@ -252,6 +257,14 @@ async def _target_not_ready(
     return False, f"QA identity retrofit failed at {phase.value}: {bounded}"
 
 
+class ReinstallOutcome(NamedTuple):
+    """What a reinstall-and-provision run produced, and the proof its software play made."""
+
+    success: bool
+    message: str
+    qa_target_proof: QATargetProof | None = None
+
+
 async def reset_server_password(
     time4vps_client: Time4VPSClient,
     server_handle: str,
@@ -310,7 +323,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
     deploy_user: str | None = None,
     orchestrator_ip: str | None = None,
     orchestrator_hostname: str | None = None,
-) -> tuple[bool, str]:
+) -> ReinstallOutcome:
     """Reinstall OS and provision server.
 
     Used when password reset is not sufficient (SSH password auth disabled).
@@ -329,7 +342,9 @@ async def reinstall_and_provision(  # noqa: PLR0913
         orchestrator_hostname: Optional orchestrator hostname for Loki push URL
 
     Returns:
-        Tuple of (success: bool, message: str)
+        The outcome, carrying the software play's QA target proof on success. The
+        phase and the receipt are not written here: the provisioning-success
+        handler records them once the generated key is stored.
     """
     if not provider_operation_is_authorized(
         provider=provider, provider_id=server_id, is_managed=is_managed
@@ -340,7 +355,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
             server_handle=server_handle,
             server_id=server_id,
         )
-        return False, message
+        return ReinstallOutcome(False, message)
 
     # Close the time-of-check/time-of-use gap immediately before the destructive call.
     # Provider ID is authoritative, while the IP proves it is still the DB target.
@@ -357,7 +372,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
             database_ip=server_ip,
             provider_ip=details.ip,
         )
-        return False, message
+        return ReinstallOutcome(False, message)
 
     logger.info("os_reinstall_start", server_handle=server_handle, server_id=server_id)
 
@@ -394,7 +409,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
             password = await reset_server_password(time4vps_client, server_handle, server_id)
 
         if not password:
-            return False, "Could not obtain root password after reinstall"
+            return ReinstallOutcome(False, "Could not obtain root password after reinstall")
 
         # Step 3: Wait for server to boot
         boot_wait = Provisioning.POST_REINSTALL_BOOT_WAIT
@@ -416,7 +431,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
         )
 
         if not success_access:
-            return False, f"Phase 1 (Access) failed: {output_access[:500]}"
+            return ReinstallOutcome(False, f"Phase 1 (Access) failed: {output_access[:500]}")
 
         logger.info("Phase 1 complete. SSH Access established.")
 
@@ -444,16 +459,18 @@ async def reinstall_and_provision(  # noqa: PLR0913
         )
 
         if success_soft:
-            await mark_provisioning_complete(server_handle, output_soft)
-            return True, "Provisioning (Access + Software) completed successfully"
-        else:
-            return False, f"Phase 2 (Software) failed: {output_soft[:500]}"
+            return ReinstallOutcome(
+                True,
+                "Provisioning (Access + Software) completed successfully",
+                current_profile_proof(output_soft),
+            )
+        return ReinstallOutcome(False, f"Phase 2 (Software) failed: {output_soft[:500]}")
 
     except TimeoutError as e:
         logger.error("reinstall_timeout", error=str(e))
-        return False, f"Reinstall timeout: {e}"
+        return ReinstallOutcome(False, f"Reinstall timeout: {e}")
     except Exception as e:
         logger.error(
             "reinstall_operation_error", error=str(e), error_type=type(e).__name__, exc_info=True
         )
-        return False, f"Reinstall failed: {e}"
+        return ReinstallOutcome(False, f"Reinstall failed: {e}")

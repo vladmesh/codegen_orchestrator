@@ -313,60 +313,22 @@ class TestTheKeyTheLoginAndThePrivilegePathAreSeparateEvidence:
 
 
 class TestTheFreshPathRecordsTheIdentityWithThePhase:
-    @pytest.fixture
-    def fresh(self):
-        with (
-            patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()) as labels,
-            patch(
-                "src.provisioner.api_client.get_server_info",
-                new=AsyncMock(return_value=_server()),
-            ),
-            patch(
-                "src.provisioner.api_client.get_server_ssh_key",
-                new=AsyncMock(return_value=FLEET_KEY),
-            ) as key,
-            patch("src.provisioner.api_client.report_target_readiness", new=AsyncMock()) as report,
-        ):
-            yield labels, key, report
+    async def test_completion_writes_the_phase_and_the_identity_in_one_call(self):
+        """One write, so a host cannot read as provisioned and lend no identity.
 
-    async def test_completion_writes_the_phase_and_the_identity_in_one_call(self, fresh):
-        """One write, so a host cannot read as provisioned and lend no identity."""
+        The receipt is not written here any more: the success handler records it
+        with READY once the generated key is stored (see
+        `test_provisioning_success_receipt.py`).
+        """
         from src.provisioner.api_client import mark_provisioning_complete
 
-        labels, _, _ = fresh
-        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
+        with patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()) as labels:
+            await mark_provisioning_complete("vps-1001")
 
         assert labels.await_args.args[1] == {
             PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE,
             QA_SSH_USER_LABEL: QA_SSH_USER,
         }
-
-    async def test_completion_records_the_receipt_the_software_play_proved(self, fresh):
-        from src.provisioner.api_client import mark_provisioning_complete
-
-        _, _, report = fresh
-        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
-
-        verdict = report.await_args.args[1]
-        assert verdict.profile_version == QA_TARGET_PROFILE_VERSION
-        assert verdict.identity == PROVED_IDENTITY
-
-    async def test_a_software_play_without_a_current_proof_leaves_no_receipt(self, fresh):
-        from src.provisioner.api_client import mark_provisioning_complete
-
-        _, _, report = fresh
-        await mark_provisioning_complete("vps-1001", "PLAY RECAP ok=40")
-
-        report.assert_not_awaited()
-
-    async def test_a_row_whose_key_is_not_stored_yet_is_left_unproved(self, fresh):
-        from src.provisioner.api_client import mark_provisioning_complete
-
-        _, key, report = fresh
-        key.return_value = None
-        await mark_provisioning_complete("vps-1001", PROOF_OUTPUT)
-
-        report.assert_not_awaited()
 
 
 class TestItRefusesAHostItCannotRepair:

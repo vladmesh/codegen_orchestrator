@@ -24,6 +24,8 @@ So readiness is a version, not a presence claim:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 import hashlib
 from pathlib import Path
@@ -112,3 +114,23 @@ def proved_profile_version(playbook_output: str) -> str | None:
     """The profile the role's proof reported in a playbook's output, if any."""
     matches = _PROOF_VERSION.findall(playbook_output)
     return matches[-1] if matches else None
+
+
+@dataclass(frozen=True)
+class QATargetProof:
+    """A successful role proof of the current profile, held until it can be recorded.
+
+    Fresh provisioning proves the profile before the key it generated is stored,
+    so the proof travels as this typed value to the provisioning-success handler,
+    which binds it to the just-persisted connection identity.
+    """
+
+    profile_version: str
+    proved_at: datetime
+
+
+def current_profile_proof(playbook_output: str) -> QATargetProof | None:
+    """The proof a play reported, if it proved the profile this repository defines."""
+    if proved_profile_version(playbook_output) != QA_TARGET_PROFILE_VERSION:
+        return None
+    return QATargetProof(profile_version=QA_TARGET_PROFILE_VERSION, proved_at=datetime.now(UTC))

@@ -423,6 +423,61 @@ class TestTheManagedKeyRule:
         assert resp.status_code == 200, resp.text  # noqa: PLR2004
         assert server.is_managed is True
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["pending_setup", "provisioning", "reserved"])
+    async def test_an_already_managed_keyless_row_cannot_reach_a_complete_phase(
+        self, client_for, status
+    ):
+        """The fresh-provisioning hole: labels saying `complete` on a row with no key."""
+        server = _mock_server(status=status, ssh_key_enc=None, labels={})
+        session, session_gen = _mock_session(server=server)
+
+        async with client_for(session_gen) as client:
+            resp = await client.patch(
+                "/api/servers/srv-1",
+                headers=HEADERS,
+                json={"labels": {"provisioning_phase": "complete"}, "notes": "done"},
+            )
+
+        assert resp.status_code == 422  # noqa: PLR2004
+        assert resp.json()["detail"] == "ssh_key rejected: empty"
+        assert server.labels == {}
+        assert server.notes is None
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_complete_phase_is_accepted_together_with_its_key(self, client_for):
+        key = _fleet_key()
+        server = _mock_server(status="provisioning", ssh_key_enc=None, labels={})
+        session, session_gen = _mock_session(server=server)
+
+        async with client_for(session_gen) as client:
+            resp = await client.patch(
+                "/api/servers/srv-1",
+                headers=HEADERS,
+                json={"ssh_key": key, "labels": {"provisioning_phase": "complete"}},
+            )
+
+        assert resp.status_code == 200, resp.text  # noqa: PLR2004
+        assert server.labels == {"provisioning_phase": "complete"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["error", "unreachable"])
+    async def test_a_failure_status_on_a_keyless_provisioning_row_is_still_recorded(
+        self, client_for, status
+    ):
+        """Provisioning failures and sync must keep recording what happened to such a row."""
+        server = _mock_server(status="provisioning", ssh_key_enc=None, labels={})
+        session, session_gen = _mock_session(server=server)
+
+        async with client_for(session_gen) as client:
+            resp = await client.patch(
+                "/api/servers/srv-1", headers=HEADERS, json={"status": status}
+            )
+
+        assert resp.status_code == 200, resp.text  # noqa: PLR2004
+        assert server.status == status
+
 
 RECEIPT_AT = datetime(2026, 9, 13, 21, 0)
 

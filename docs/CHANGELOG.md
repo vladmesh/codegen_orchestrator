@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
+- Fresh provisioning stores its generated key first and records the play's QA target proof with READY in one
+  episode-fenced reset, so a newly provisioned target is admissible instead of permanently unproved.
 - Managed targets are admitted only with a parsed admin key and an identity-bound receipt for the current
   `qa_identity` profile, which every production deploy reconciles under its own `target_not_ready` park.
 - QA harness failures — stale `qa-docker`, refused verbs, unreadable probes, unreached executors — are typed

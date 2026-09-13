@@ -1,13 +1,27 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
 from shared.contracts.dto.incident import IncidentType
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, QATargetProof
+from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.provisioner.node import ProvisionerNode
 
+# The success handler validates the key it stores, so the container-local key is
+# real key material, and a success carries the software play's profile proof.
+GENERATED_KEY = fleet_private_key()
+PROOF = QATargetProof(
+    profile_version=QA_TARGET_PROFILE_VERSION, proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+)
+PROOF_OUTPUT = (
+    '"qa_identity_proof": "qa-identity-proof: qa-observer login=ok '
+    f'qa_target_version={QA_TARGET_PROFILE_VERSION}"'
+)
 
-def _ssh_manager(private_key: str | None = "PRIVATE-KEY"):
+
+def _ssh_manager(private_key: str | None = GENERATED_KEY):
     """SSHManager stub holding the container-local private key."""
     manager = MagicMock()
     manager.get_private_key.return_value = private_key
@@ -26,6 +40,15 @@ def _server(attempts: int = 0, status: str = "pending_setup"):
         provider="time4vps",
         provider_id="1001",
         labels={"provider": "time4vps", "provider_id": "1001"},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _completion_boundary(monkeypatch):
+    """The two API calls the success handler makes between storing the key and READY."""
+    monkeypatch.setattr("src.provisioner.handlers.mark_provisioning_complete", AsyncMock())
+    monkeypatch.setattr(
+        "src.provisioner.handlers.get_server_info", AsyncMock(return_value=_server())
     )
 
 
@@ -244,6 +267,9 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
     terminal *failure* status of the key-persistence branch — so the proxy is
     replaced by the behaviour it stood for: on the success path the handler writes
     no status at all.
+
+    The episode close now also carries the readiness receipt of the software
+    play's proof, so READY and that receipt land together.
     """
     from src.provisioner.handlers import handle_provisioning_success
 
@@ -252,8 +278,8 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
     async def _save_key(server_handle, key):
         calls.append(("save_key", server_handle, key))
 
-    async def _reset(server_handle, attempt_number, episode_id):
-        calls.append(("reset", server_handle, attempt_number, episode_id))
+    async def _reset(server_handle, attempt_number, episode_id, receipt):
+        calls.append(("reset", server_handle, attempt_number, episode_id, receipt.profile_version))
         return True
 
     async def _resolve(server_handle):
@@ -272,12 +298,13 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
         1,
         "episode-1",
         False,
-        ssh_manager=_ssh_manager("PRIVATE-KEY"),
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
     assert calls == [
-        ("save_key", "srv-1", "PRIVATE-KEY"),
-        ("reset", "srv-1", 1, "episode-1"),
+        ("save_key", "srv-1", GENERATED_KEY),
+        ("reset", "srv-1", 1, "episode-1", QA_TARGET_PROFILE_VERSION),
         ("resolve", "srv-1"),
     ]
     assert result["provisioning_result"]["status"] == "success"
@@ -301,11 +328,17 @@ async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(m
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=_ssh_manager()
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-1",
+        False,
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
-    # The episode close is what marks the server READY.
-    reset.assert_awaited_once_with("srv-1", 1, "episode-1")
+    # The episode close is what marks the server READY, with its receipt.
+    reset.assert_awaited_once_with("srv-1", 1, "episode-1", ANY)
     assert result["provisioning_result"]["status"] == "success"
     assert result["provisioning_result"]["incident_journal_status"] == "pending_reconciliation"
     assert "incident journal could not be closed" in result["messages"][0]["message"]
@@ -328,7 +361,13 @@ async def test_success_result_survives_notification_api_failure(monkeypatch):
     )
 
     result = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=_ssh_manager()
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-1",
+        False,
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
     assert result["provisioning_result"]["status"] == "success"
@@ -367,7 +406,7 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     """
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     ansible = MagicMock()
-    ansible.run_playbook.return_value = (True, "ok")
+    ansible.run_playbook.return_value = (True, PROOF_OUTPUT)
     node = ProvisionerNode(ssh_manager=_ssh_manager(), ansible_runner=ansible)
     node.ssh_manager.get_public_key.return_value = "PUBLIC-KEY"
 
@@ -379,20 +418,24 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     )
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
-    complete = AsyncMock()
-    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
     monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
 
     # The DB stand-in the API endpoints write through.
-    db = {"ssh_key": None, "attempts": 1, "episode_id": "episode-1", "status": "provisioning"}
+    db = {
+        "ssh_key": None,
+        "attempts": 1,
+        "episode_id": "episode-1",
+        "status": "provisioning",
+        "receipt": None,
+    }
 
     async def _save_key(server_handle, key):
         db["ssh_key"] = key
 
-    async def _reset(server_handle, attempt_number, episode_id):
+    async def _reset(server_handle, attempt_number, episode_id, receipt):
         if (db["attempts"], db["episode_id"]) != (attempt_number, episode_id):
             return False
-        db.update(attempts=0, episode_id=None, status="ready")
+        db.update(attempts=0, episode_id=None, status="ready", receipt=receipt.profile_version)
         return True
 
     monkeypatch.setattr("src.provisioner.handlers.save_server_ssh_key", _save_key)
@@ -403,11 +446,14 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     result = await node.run({"server_to_provision": "srv-1", "errors": []})
 
     assert result["provisioning_result"]["status"] == "success"
-    assert db == {"ssh_key": "PRIVATE-KEY", "attempts": 0, "episode_id": None, "status": "ready"}
-    # A green software phase records itself complete, and with it the QA identity
-    # that phase created — one write, so the two facts cannot come apart. The
-    # play's output travels with it, so the receipt is written from its proof.
-    complete.assert_awaited_once_with("srv-1", "ok")
+    # The software play's proof reaches READY as its receipt, after the key.
+    assert db == {
+        "ssh_key": GENERATED_KEY,
+        "attempts": 0,
+        "episode_id": None,
+        "status": "ready",
+        "receipt": QA_TARGET_PROFILE_VERSION,
+    }
 
 
 @pytest.mark.asyncio
@@ -433,8 +479,6 @@ async def test_key_persistence_failure_never_leaves_an_active_server_without_an_
         AsyncMock(return_value=(1, "episode-1")),
     )
     monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
-    complete = AsyncMock()
-    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
     monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
 
     db = {"ssh_key": None, "attempts": 1, "status": "pending_setup", "incidents": []}
@@ -497,7 +541,13 @@ async def test_ssh_key_save_failure_is_not_a_success_and_leaves_the_episode_open
     monkeypatch.setattr("src.provisioner.handlers.create_incident", incident)
 
     result = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=_ssh_manager()
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-1",
+        False,
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
     assert result["provisioning_result"]["status"] == "failed"
@@ -536,7 +586,13 @@ async def test_unusable_ssh_manager_is_not_a_success(monkeypatch, ssh_manager, r
     monkeypatch.setattr("src.provisioner.handlers.create_incident", incident)
 
     result = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=ssh_manager
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-1",
+        False,
+        ssh_manager=ssh_manager,
+        qa_target_proof=PROOF,
     )
 
     assert result["provisioning_result"] == {
@@ -580,11 +636,17 @@ async def test_stale_success_keeps_the_key_but_skips_all_other_success_side_effe
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-1", True, ssh_manager=_ssh_manager()
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-1",
+        True,
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
     assert result["provisioning_result"]["status"] == "superseded"
-    save_key.assert_awaited_once_with("srv-1", "PRIVATE-KEY")
+    save_key.assert_awaited_once_with("srv-1", GENERATED_KEY)
     resolve_incidents.assert_not_awaited()
     redeploy.assert_not_awaited()
     notify.assert_not_awaited()
@@ -612,7 +674,13 @@ async def test_stale_success_maps_to_superseded_result_not_failure(monkeypatch):
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
 
     stale_state = await handle_provisioning_success(
-        "srv-1", "203.0.113.10", 1, "episode-old", False, ssh_manager=_ssh_manager()
+        "srv-1",
+        "203.0.113.10",
+        1,
+        "episode-old",
+        False,
+        ssh_manager=_ssh_manager(),
+        qa_target_proof=PROOF,
     )
 
     async def _run(self, state):

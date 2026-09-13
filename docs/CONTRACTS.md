@@ -1483,6 +1483,18 @@ the park still owns the row's `error`: any status write — PATCH, attempt reset
 force rebuild — clears the park's ownership. Other `provisioning_failed`
 episodes and statuses are never overwritten or resolved by readiness.
 
+Fresh provisioning records its receipt at the provisioning-success boundary. The
+software play's proof travels as a typed `QATargetProof` to
+`handle_provisioning_success`, which validates and persists the generated key,
+writes the complete phase, and sends `POST
+/api/servers/{handle}/provisioning-attempts/reset` a required `QATargetReceipt`
+bound to the just-persisted identity. Under the row lock, only for the current
+episode, the endpoint records the receipt as a ready verdict and closes the
+episode as READY in one transaction; another identity or profile is 409 and
+leaves the episode open, and a superseded attempt records neither. A missing
+proof, a failed completion write, a changed identity or a failed receipt write
+marks the server `error` with a `provisioning_failed` incident instead.
+
 `shared/server_admission.py` refuses a managed row with `target_not_ready` while
 a readiness failure phase is recorded, and with `qa_target_receipt_missing` or
 `qa_target_receipt_stale`; each is reported as `server_not_provisioned`, never
@@ -1492,7 +1504,8 @@ unencrypted OpenSSH private key with a terminal newline (`shared/ssh_keys.py`),
 parse it before commit, keep the encrypted canonical text and
 `ssh_key_fingerprint`, and refuse with `ssh_key rejected: <reason>` without
 changing the row or echoing key material. A managed row may not be created,
-promoted or have its key cleared into a keyless state
+promoted, moved to a complete software phase or have its key cleared into a
+keyless state
 (`managed_row_requires_admin_key`), except while provisioning owns it and will
 mint the key: `pending_setup`, `provisioning`, `force_rebuild` or `reserved`
 with no complete software phase — the rows provider discovery and allowlist
