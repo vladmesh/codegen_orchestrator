@@ -326,6 +326,8 @@ class Stage5Smoke:
             """
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 
 identity = {"channel": "telegram", "external_id": "8202532144"}
@@ -343,10 +345,30 @@ def request(path, *, method="GET", payload=None, privileged=False):
         assert response.status == 200
         return json.load(response)
 
+def wait_for_status(expected):
+    deadline = time.monotonic() + 10
+    last_status = None
+    while True:
+        try:
+            last_status = request(
+                "/access?channel=telegram&external_id=8202532144"
+            )["status"]
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+        else:
+            if last_status == expected:
+                return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"user access did not become {expected!r}; last status was {last_status!r}"
+            )
+        time.sleep(0.1)
+
 assert request("/grant", method="POST", payload=identity, privileged=True)["status"] == "active"
-assert request("/access?channel=telegram&external_id=8202532144")["status"] == "active"
+wait_for_status("active")
 assert request("/revoke", method="POST", payload=identity, privileged=True)["status"] == "inactive"
-assert request("/access?channel=telegram&external_id=8202532144")["status"] == "inactive"
+wait_for_status("inactive")
 """,
             phase="generated access grant and revoke",
         )
