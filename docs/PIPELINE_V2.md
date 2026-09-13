@@ -246,9 +246,10 @@ missing, malformed, legacy, or says `agent_started` stays on the ordinary
 engineering failure and retry path.
 
 The `failed` task is the restart fence while that park is being applied. Its
-transition to human review happens only after matching task/story evidence, the
-story transition, and durable owner-notification delivery, so the next tick
-converges a partial park instead of treating metadata alone as completion.
+transition to human review happens only after matching task/story evidence, a
+legal story transition observed in human review, and notification settlement.
+Terminal, transition-ineligible, and racing stories are contained per task, so
+one stale row cannot stop another task or any later supervisor in the tick.
 
 An administrator recovers only this park with one
 `POST /api/stories/{story_id}/retry-infrastructure-attempt` call, also exposed as

@@ -253,6 +253,92 @@ def redis_client():
     return client
 
 
+@pytest.mark.asyncio
+async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(monkeypatch):
+    """A contained task error still permits terminal worker reconciliation this tick."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import task_dispatcher
+
+    api_client = AsyncMock()
+    api_client.get_tasks_by_status.return_value = [
+        _task(
+            id="task-poison",
+            project_id=PROJ_ID,
+            story_id="story-poison",
+            status="failed",
+        )
+    ]
+    api_client.list_runs.return_value = [
+        RunDTO.model_validate(
+            {
+                "id": "eng-poison",
+                "project_id": PROJ_ID,
+                "type": "engineering",
+                "status": "failed",
+                "story_id": "story-poison",
+                "result": {
+                    "engineering_status": "failed",
+                    "execution": {
+                        "execution_phase": "pre_agent_refused",
+                        "infrastructure_refusal": "project_locked",
+                    },
+                },
+                "created_at": _NOW,
+                "updated_at": _NOW,
+            }
+        )
+    ]
+    api_client.get_story.side_effect = RuntimeError("poison story read")
+    monkeypatch.setattr(api_module, "api_client", api_client)
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+
+    checks = {
+        "trigger_scaffolds": 0,
+        "dispatch_todo_tasks": 0,
+        "complete_stories": 0,
+        "poll_merged_prs": 0,
+        "poll_ci_failures": None,
+        "supervise_stuck_stories": {"retried": 0, "failed": 0},
+        "supervise_stuck_tasks": {"timed_out": 0},
+        "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
+        "supervise_deploying_stories": {},
+        "supervise_waiting_user_secret_stories": {},
+        "supervise_owed_owner_notifications": {
+            "delivered": 0,
+            "retrying": 0,
+            "exhausted": 0,
+            "unaddressable": 0,
+            "voided": 0,
+        },
+        "supervise_testing_stories": {},
+        "supervise_temporary_access": {},
+    }
+    for name, result in checks.items():
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
+
+    terminal_workers = AsyncMock(return_value=1)
+    monkeypatch.setattr(task_dispatcher, "reconcile_terminal_story_workers", terminal_workers)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    terminal_workers.assert_awaited_once_with(api_client, redis)
+    redis.close.assert_awaited_once()
+
+
 class TestDispatchTodoTasks:
     """Dispatch unblocked todo tasks to engineering queue."""
 
@@ -485,9 +571,17 @@ class TestDispatchTodoTasks:
                 "updated_at": _NOW,
             }
         )
-        api_client.get_story.return_value = _story(
-            id="story-1", project_id=PROJ_ID, status="waiting_human_review"
-        )
+        story = _story(id="story-1", project_id=PROJ_ID, status="in_progress")
+        api_client.get_story.return_value = story
+
+        async def persist_story(_story_id, payload):
+            story.quarantine_reason = payload["quarantine_reason"]
+
+        async def park_story(*_args, **_kwargs):
+            story.status = StoryStatus.WAITING_HUMAN_REVIEW
+
+        api_client.update_story.side_effect = persist_story
+        api_client.transition_story.side_effect = park_story
         api_client.admit_engineering_dispatch.return_value = _paid_refusal(
             reason,
             message="Repair the selected executor configuration, then retry this attempt.",

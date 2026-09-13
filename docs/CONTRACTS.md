@@ -231,8 +231,10 @@ supervisor owns post-handoff worker creation refusals. Both preserve
 `current_iteration`, park task and story in `waiting_human_review`, and persist
 the existing owner/admin notification obligation once before delivery. For
 post-handoff reconciliation, the task transition is the completion marker: the
-task remains `failed` until matching task/story evidence, the story transition,
-and owed notification delivery have finished, so a restart resumes partial work.
+task remains `failed` until matching task/story evidence, an observed legal
+story transition, and owed notification delivery have finished, so a restart
+resumes partial work. A terminal or otherwise transition-ineligible story wins:
+the refusal is contained without reopening the story or entering generic retry.
 
 ### The Product Brief coverage-to-dispatch boundary
 

@@ -634,8 +634,7 @@ class TestTheImpossibleEngineeringPlacementTakesTheSameSeam:
         self._engineering_refusal(world, api_client)
         world.transition_failures = 1
 
-        with pytest.raises(ConnectionError):
-            await supervise_failed_tasks(api_client, redis_client)
+        await supervise_failed_tasks(api_client, redis_client)
 
         counts = await supervise_owed_owner_notifications(api_client, redis_client)
 

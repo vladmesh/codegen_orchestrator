@@ -47,6 +47,9 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     _load_service_package("worker_manager_src", root / "services/worker-manager/src")
     _load_service_package("scheduler_src", root / "services/scheduler/src")
 
+    from scheduler_src.tasks.owner_notifications import (  # noqa: PLC0415
+        OwnerNotificationOutcome,
+    )
     from scheduler_src.tasks.supervisor import liveness  # noqa: PLC0415
     from worker_manager_src.manager import (  # noqa: PLC0415
         EngineeringWorkerCreationRefusal,
@@ -153,20 +156,34 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     scheduler_api.list_runs.return_value = [
         SimpleNamespace(id="eng-1", result=terminal_patch["result"])
     ]
-    scheduler_api.get_story.return_value = SimpleNamespace(
+    scheduler_story = SimpleNamespace(
         status=StoryStatus.IN_PROGRESS,
         quarantine_reason=None,
+        owner_notification=None,
     )
+    scheduler_api.get_story.return_value = scheduler_story
+
+    async def persist_story(_story_id, payload):
+        scheduler_story.quarantine_reason = payload["quarantine_reason"]
+
+    async def park_story(*_args, **_kwargs):
+        scheduler_story.status = StoryStatus.WAITING_HUMAN_REVIEW
+
+    scheduler_api.update_story.side_effect = persist_story
+    scheduler_api.transition_story.side_effect = park_story
     scheduler_redis = AsyncMock()
 
     with (
-        patch.object(
-            liveness,
-            "owe_owner_notification",
+        patch(
+            "scheduler_src.tasks.infrastructure_park.owe_owner_notification",
             new_callable=AsyncMock,
             return_value=SimpleNamespace(),
         ),
-        patch.object(liveness, "deliver_owed_notification", new_callable=AsyncMock),
+        patch(
+            "scheduler_src.tasks.infrastructure_park.deliver_owed_notification",
+            new_callable=AsyncMock,
+            return_value=OwnerNotificationOutcome.DELIVERED,
+        ),
         patch.object(liveness, "_notify_admin_failure", new_callable=AsyncMock),
     ):
         result = await liveness.supervise_failed_tasks(scheduler_api, scheduler_redis)

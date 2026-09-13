@@ -15,7 +15,6 @@ from shared.allocation_disposition import (
     refusal_routing,
 )
 from shared.contracts.dto.engineering_execution import (
-    ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
     EngineeringInfrastructurePark,
     infrastructure_refusal_detail,
@@ -45,10 +44,11 @@ if TYPE_CHECKING:
 
 from ... import startup
 from .._recipients import resolve_project_recipient
-from ..owner_notifications import (
-    deliver_owed_notification,
-    owe_owner_notification,
+from ..infrastructure_park import (
+    InfrastructureParkDisposition,
+    reconcile_pre_agent_infrastructure_park,
 )
+from ..owner_notifications import deliver_owed_notification, owe_owner_notification
 from ..worker_liveness import (
     WorkerAttemptState,
     attempt_state,
@@ -265,70 +265,83 @@ async def supervise_failed_tasks(
             continue
 
         current_iter = task.current_iteration
-        max_iter = task.max_iterations
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
-        engineering_runs = await api_client.list_runs(
-            task_id=task.id, run_type=RunType.ENGINEERING.value
-        )
-
-        (
-            infrastructure_handled,
-            infrastructure_parked,
-        ) = await _park_pre_agent_infrastructure_refusal(
-            api_client,
-            redis_client,
-            task,
-            engineering_runs,
-            log,
-            escalated_stories,
-        )
-        if infrastructure_handled:
-            escalated += int(infrastructure_parked)
-            continue
-
-        if await _park_task_waiting_resources(
-            api_client, redis_client, task, engineering_runs, log, escalated_stories
-        ):
-            continue
-
-        if current_iter < max_iter:
-            # Retry: failed → backlog → todo, bump iteration
-            await api_client.transition_task(task_id, TaskStatus.BACKLOG, "supervisor")
-            await api_client.transition_task(task_id, TaskStatus.TODO, "supervisor")
-            await api_client.update_task(task_id, {"current_iteration": current_iter + 1})
-            log.warning(
-                "task_retry",
-                new_iteration=current_iter + 1,
-                max_iterations=max_iter,
+        try:
+            task_retried, task_escalated = await _supervise_failed_task(
+                api_client, redis_client, task, log, escalated_stories
             )
-            retried += 1
-        else:
-            # Retries exhausted → escalate to human (same as gave_up)
-            log.warning(
-                "task_retries_exhausted",
-                reason="escalating_to_human",
-            )
-            try:
-                await api_client.transition_task(
-                    task_id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor"
-                )
-            except Exception:
-                log.warning("task_whr_transition_failed", task_id=task_id, exc_info=True)
-
-            if story_id not in escalated_stories:
-                escalated_stories.add(story_id)
-                try:
-                    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
-                except Exception:
-                    log.warning(
-                        "story_whr_on_retries_exhausted_failed",
-                        story_id=story_id,
-                        exc_info=True,
-                    )
-
-            escalated += 1
+        except Exception:
+            log.exception("failed_task_supervision_contained")
+            continue
+        retried += task_retried
+        escalated += task_escalated
 
     return {"retried": retried, "escalated": escalated}
+
+
+async def _supervise_failed_task(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task: TaskDTO,
+    log: structlog.stdlib.BoundLogger,
+    escalated_stories: set[str],
+) -> tuple[int, int]:
+    """Supervise one row so every read and write has one containment boundary."""
+    engineering_runs = await api_client.list_runs(
+        task_id=task.id, run_type=RunType.ENGINEERING.value
+    )
+    infrastructure = await _park_pre_agent_infrastructure_refusal(
+        api_client,
+        redis_client,
+        task,
+        engineering_runs,
+        log,
+        escalated_stories,
+    )
+    if infrastructure is not None:
+        return 0, int(infrastructure is InfrastructureParkDisposition.PARKED)
+
+    if await _park_task_waiting_resources(
+        api_client, redis_client, task, engineering_runs, log, escalated_stories
+    ):
+        return 0, 0
+
+    current_iter = task.current_iteration
+    max_iter = task.max_iterations
+    story_id = task.story_id
+    if current_iter < max_iter:
+        # Retry: failed → backlog → todo, bump iteration
+        await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
+        await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
+        await api_client.update_task(task.id, {"current_iteration": current_iter + 1})
+        log.warning(
+            "task_retry",
+            new_iteration=current_iter + 1,
+            max_iterations=max_iter,
+        )
+        return 1, 0
+    else:
+        # Retries exhausted → escalate to human (same as gave_up)
+        log.warning(
+            "task_retries_exhausted",
+            reason="escalating_to_human",
+        )
+        try:
+            await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+        except Exception:
+            log.warning("task_whr_transition_failed", task_id=task.id, exc_info=True)
+
+        if story_id not in escalated_stories:
+            escalated_stories.add(story_id)
+            try:
+                await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+            except Exception:
+                log.warning(
+                    "story_whr_on_retries_exhausted_failed",
+                    story_id=story_id,
+                    exc_info=True,
+                )
+        return 0, 1
 
 
 async def _park_pre_agent_infrastructure_refusal(
@@ -338,14 +351,15 @@ async def _park_pre_agent_infrastructure_refusal(
     runs: list,
     log: structlog.stdlib.BoundLogger,
     escalated_stories: set[str],
-) -> tuple[bool, bool]:
+) -> InfrastructureParkDisposition | None:
     """Route only validated pre-agent evidence before generic retry accounting.
 
-    Returns ``(handled, newly_parked)``. Unknown, legacy, or malformed evidence
-    returns ``(False, False)`` and therefore grants no free infrastructure path.
+    Unknown, legacy, or malformed evidence returns ``None`` and therefore grants
+    no free infrastructure path. Every valid refusal returns a contained,
+    explicit disposition and cannot fall through to generic retry accounting.
     """
     if not runs:
-        return False, False
+        return None
     run = runs[0]
     try:
         result = (
@@ -354,73 +368,41 @@ async def _park_pre_agent_infrastructure_refusal(
             else EngineeringRunResult.model_validate(run.result)
         )
     except (TypeError, ValidationError):
-        return False, False
+        return None
     execution = result.execution
     if (
         execution is None
         or execution.execution_phase is not EngineeringExecutionPhase.PRE_AGENT_REFUSED
     ):
-        return False, False
+        return None
     refusal = execution.infrastructure_refusal
     if refusal is None:
-        return False, False
+        return None
     park = EngineeringInfrastructurePark(
         task_id=task.id,
         attempt_id=run.id,
         refusal=refusal,
         detail=infrastructure_refusal_detail(refusal),
     )
-    metadata = park.as_metadata()
-    evidence = metadata[ENGINEERING_INFRASTRUCTURE_KEY]
-    story = await api_client.get_story(task.story_id)
-    task_evidence_matches = (task.failure_metadata or {}).get(
-        ENGINEERING_INFRASTRUCTURE_KEY
-    ) == evidence
-    story_evidence_matches = (story.quarantine_reason or {}).get(
-        ENGINEERING_INFRASTRUCTURE_KEY
-    ) == evidence
-    task_parked = task.status == TaskStatus.WAITING_HUMAN_REVIEW and task_evidence_matches
-    story_parked = story.status == StoryStatus.WAITING_HUMAN_REVIEW and story_evidence_matches
-    if task_parked and story_parked:
-        log.info("engineering_infrastructure_refusal_already_parked", run_id=run.id)
-        return True, False
-
-    owed = await owe_owner_notification(
+    disposition = await reconcile_pre_agent_infrastructure_park(
         api_client,
-        run,
-        event=OwnerNotificationEvent.STORY_BLOCKED,
-        text=park.detail,
-        story_id=task.story_id,
-        project_id=str(task.project_id),
-        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-        task_id=task.id,
+        redis_client,
+        task,
+        park,
+        notification_run=run,
+        notification_event=OwnerNotificationEvent.STORY_BLOCKED,
+        actor="supervisor",
+        notify_admin=_notify_admin_failure,
         log=log,
     )
-    if not task_evidence_matches:
-        await api_client.update_task(task.id, {"failure_metadata": metadata})
-    if not story_evidence_matches:
-        await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
-    if story.status != StoryStatus.WAITING_HUMAN_REVIEW and task.story_id not in escalated_stories:
+    if disposition is InfrastructureParkDisposition.PARKED:
         escalated_stories.add(task.story_id)
-        await api_client.transition_story(task.story_id, STORY_HUMAN_REVIEW_ACTION)
-    await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
-    await _notify_admin_failure(task.id, str(task.project_id), park.detail)
-    if task.status != TaskStatus.WAITING_HUMAN_REVIEW:
-        # This is the convergence marker. Until every story-side write and the
-        # owed notification finish, the task remains FAILED and another tick
-        # can resume the same idempotent park after a process restart.
-        await api_client.transition_task(
-            task.id,
-            TaskStatus.WAITING_HUMAN_REVIEW,
-            "supervisor",
-            details=evidence,
+        log.warning(
+            "engineering_infrastructure_refusal_parked",
+            run_id=run.id,
+            refusal=refusal.value,
         )
-    log.warning(
-        "engineering_infrastructure_refusal_parked",
-        run_id=run.id,
-        refusal=refusal.value,
-    )
-    return True, True
+    return disposition
 
 
 async def _park_task_waiting_resources(

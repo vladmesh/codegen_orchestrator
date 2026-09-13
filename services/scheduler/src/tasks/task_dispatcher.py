@@ -38,6 +38,7 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
+from .infrastructure_park import reconcile_pre_agent_infrastructure_park
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -60,6 +61,7 @@ from .supervisor import (
     supervise_waiting_resource_tasks,
     supervise_waiting_user_secret_stories,
 )
+from .supervisor.common import _notify_admin_failure
 from .temporary_access import supervise_temporary_access
 from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 from .worker_liveness import terminal_task_statuses
@@ -206,7 +208,6 @@ async def _handle_refusal(
         return
     admission = decision.paid_work.admission
     infrastructure_refusal = infrastructure_refusal_for_dispatch(decision.reason)
-    infrastructure_park = None
     if infrastructure_refusal is not None:
         if not admission.message or not decision.run_id:
             raise RuntimeError(
@@ -218,10 +219,35 @@ async def _handle_refusal(
             refusal=infrastructure_refusal,
             detail=admission.message,
         )
-        metadata = infrastructure_park.as_metadata()
-        await api_client.update_task(task.id, {"failure_metadata": metadata})
-        if task.story_id:
-            await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
+        notification_run = (
+            await _initiating_run(api_client, decision.initiating_run_id, log)
+            if task.story_id
+            else None
+        )
+        notification_event = (
+            OwnerNotificationEvent.STORY_BLOCKED
+            if notification_run is None
+            else OwnerNotificationEvent.STORY_QUARANTINED
+        )
+        disposition = await reconcile_pre_agent_infrastructure_park(
+            api_client,
+            redis_client,
+            task,
+            infrastructure_park,
+            notification_run=notification_run,
+            notification_event=notification_event,
+            actor="dispatcher",
+            notify_admin=_notify_admin_failure,
+            log=log,
+        )
+        log.info(
+            "task_dispatch_infrastructure_refusal_reconciled",
+            run_id=decision.run_id,
+            task_id=task.id,
+            reason=decision.reason.value,
+            disposition=disposition.value,
+        )
+        return
     if task.story_id and admission.message:
         await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget
@@ -234,8 +260,6 @@ async def _handle_refusal(
             "active_held_microusd": budget.active_held_microusd,
             "available_microusd": budget.available_microusd,
         }
-    elif infrastructure_park is not None:
-        details = infrastructure_park.model_dump(mode="json")
     else:
         details = {"reason": decision.reason.value, "attempt_id": decision.run_id}
     await api_client.transition_task(

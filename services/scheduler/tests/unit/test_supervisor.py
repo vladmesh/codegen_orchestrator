@@ -27,6 +27,7 @@ from shared.contracts.dto.engineering_execution import (
 )
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.work_admission import (
     PaidRunStartRead,
     WorkAdmissionOutcome,
@@ -42,6 +43,7 @@ from shared.tests.server_admission_cases import (
     admission_case_incidents,
     admission_case_server,
 )
+from src.tasks.owner_notifications import OwnerNotificationOutcome
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -366,17 +368,28 @@ class TestSuperviseFailedTasks:
         )
         api_client.get_tasks_by_status.return_value = [task]
         api_client.list_runs.return_value = [run]
-        api_client.get_story.return_value = _make_story(id="story-1", status="in_progress")
+        story = _make_story(id="story-1", status="in_progress")
+        api_client.get_story.return_value = story
+
+        async def persist_story(_story_id, payload):
+            story.quarantine_reason = payload["quarantine_reason"]
+
+        async def park_story(*_args, **_kwargs):
+            story.status = StoryStatus.WAITING_HUMAN_REVIEW
+
+        api_client.update_story.side_effect = persist_story
+        api_client.transition_story.side_effect = park_story
 
         with (
             patch(
-                "src.tasks.supervisor.liveness.owe_owner_notification",
+                "src.tasks.infrastructure_park.owe_owner_notification",
                 new_callable=AsyncMock,
                 return_value=SimpleNamespace(),
             ) as owe,
             patch(
-                "src.tasks.supervisor.liveness.deliver_owed_notification",
+                "src.tasks.infrastructure_park.deliver_owed_notification",
                 new_callable=AsyncMock,
+                return_value=OwnerNotificationOutcome.DELIVERED,
             ) as deliver,
         ):
             result = await supervise_failed_tasks(api_client, redis_client)
@@ -468,7 +481,10 @@ class TestSuperviseFailedTasks:
         )
         story = _make_story(id="story-1", status="in_progress")
         api_client.get_tasks_by_status.return_value = [task]
-        api_client.get_story.return_value = story
+        parked_story = _make_story(
+            id="story-1", status="waiting_human_review", quarantine_reason=park
+        )
+        api_client.get_story.side_effect = [story, story, parked_story]
         api_client.list_runs.return_value = [
             SimpleNamespace(
                 id="eng-1",
@@ -508,14 +524,16 @@ class TestSuperviseFailedTasks:
 
         with (
             patch(
-                "src.tasks.supervisor.liveness.owe_owner_notification",
+                "src.tasks.infrastructure_park.owe_owner_notification",
                 new_callable=AsyncMock,
                 return_value=SimpleNamespace(),
             ) as owe,
             patch(
-                "src.tasks.supervisor.liveness.deliver_owed_notification",
+                "src.tasks.infrastructure_park.deliver_owed_notification",
                 new_callable=AsyncMock,
-                side_effect=lambda *_args, **_kwargs: order.append("owner_notification"),
+                side_effect=lambda *_args, **_kwargs: (
+                    order.append("owner_notification") or OwnerNotificationOutcome.DELIVERED
+                ),
             ) as deliver,
             patch(
                 "src.tasks.supervisor.liveness._notify_admin_failure",
@@ -523,8 +541,10 @@ class TestSuperviseFailedTasks:
                 side_effect=lambda *_args, **_kwargs: order.append("admin_notification"),
             ),
         ):
-            with pytest.raises(RuntimeError, match="scheduler stopped"):
-                await supervise_failed_tasks(api_client, redis_client)
+            assert await supervise_failed_tasks(api_client, redis_client) == {
+                "retried": 0,
+                "escalated": 0,
+            }
 
             assert task.failure_metadata == park
             assert story.quarantine_reason == park
@@ -551,7 +571,7 @@ class TestSuperviseFailedTasks:
             "supervisor",
             details=park[ENGINEERING_INFRASTRUCTURE_KEY],
         )
-        assert owe.await_count == 2
+        owe.assert_awaited_once()
         deliver.assert_awaited_once()
         assert order == [
             "task_evidence",
@@ -597,21 +617,23 @@ class TestSuperviseFailedTasks:
 
         with (
             patch(
-                "src.tasks.supervisor.liveness.owe_owner_notification", new_callable=AsyncMock
+                "src.tasks.infrastructure_park.owe_owner_notification", new_callable=AsyncMock
             ) as owe,
             patch(
-                "src.tasks.supervisor.liveness.deliver_owed_notification",
+                "src.tasks.infrastructure_park.deliver_owed_notification",
                 new_callable=AsyncMock,
             ) as deliver,
         ):
-            assert await _park_pre_agent_infrastructure_refusal(
-                api_client,
-                redis_client,
-                task,
-                [run],
-                SimpleNamespace(info=lambda *_args, **_kwargs: None),
-                set(),
-            ) == (True, False)
+            assert (
+                await _park_pre_agent_infrastructure_refusal(
+                    api_client,
+                    redis_client,
+                    task,
+                    [run],
+                    SimpleNamespace(info=lambda *_args, **_kwargs: None),
+                    set(),
+                )
+            ).value == "already_parked"
 
         api_client.update_task.assert_not_awaited()
         api_client.update_story.assert_not_awaited()
@@ -619,6 +641,274 @@ class TestSuperviseFailedTasks:
         api_client.transition_story.assert_not_awaited()
         owe.assert_not_awaited()
         deliver.assert_not_awaited()
+
+    @pytest.mark.parametrize("story_status", [StoryStatus.FAILED, StoryStatus.ARCHIVED])
+    @pytest.mark.asyncio
+    async def test_terminal_story_contains_pre_agent_park(
+        self, api_client, redis_client, story_status
+    ):
+        """A terminal story outranks valid refusal evidence and cannot poison later ticks."""
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        task = _make_task(
+            id="task-terminal",
+            story_id="story-terminal",
+            status="failed",
+            current_iteration=3,
+            max_iterations=3,
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.get_story.return_value = _make_story(id="story-terminal", status=story_status)
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                id="eng-terminal",
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                        infrastructure_refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    ),
+                ),
+            )
+        ]
+
+        with (
+            patch(
+                "src.tasks.infrastructure_park.owe_owner_notification", new_callable=AsyncMock
+            ) as owe,
+            patch(
+                "src.tasks.infrastructure_park.deliver_owed_notification",
+                new_callable=AsyncMock,
+            ) as deliver,
+            patch(
+                "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
+            ) as notify_admin,
+        ):
+            assert await supervise_failed_tasks(api_client, redis_client) == {
+                "retried": 0,
+                "escalated": 0,
+            }
+
+        assert task.current_iteration == 3
+        api_client.update_task.assert_not_awaited()
+        api_client.update_story.assert_not_awaited()
+        api_client.transition_task.assert_not_awaited()
+        api_client.transition_story.assert_not_awaited()
+        owe.assert_not_awaited()
+        deliver.assert_not_awaited()
+        notify_admin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_story_state_race_does_not_complete_or_notify_task(
+        self, api_client, redis_client
+    ):
+        """A legal transition response is not proof when the observed story raced terminal."""
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        task = _make_task(id="task-race", story_id="story-race", status="failed")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                id="eng-race",
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                        infrastructure_refusal=(
+                            EngineeringInfrastructureRefusal.WORKER_PROFILE_UNAVAILABLE
+                        ),
+                    ),
+                ),
+            )
+        ]
+        api_client.get_story.side_effect = [
+            _make_story(id="story-race", status="in_progress"),
+            _make_story(id="story-race", status="failed"),
+        ]
+
+        with (
+            patch(
+                "src.tasks.infrastructure_park.owe_owner_notification", new_callable=AsyncMock
+            ) as owe,
+            patch(
+                "src.tasks.infrastructure_park.deliver_owed_notification",
+                new_callable=AsyncMock,
+            ) as deliver,
+            patch(
+                "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
+            ) as notify_admin,
+        ):
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 0, "escalated": 0}
+        api_client.transition_story.assert_awaited_once_with("story-race", "human-review")
+        api_client.transition_task.assert_not_awaited()
+        owe.assert_not_awaited()
+        deliver.assert_not_awaited()
+        notify_admin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_same_story_second_task_retries_failed_story_transition(
+        self, api_client, redis_client
+    ):
+        """An in-tick set cannot turn the first task's failed transition into proof."""
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        tasks = [
+            _make_task(id="task-1", story_id="story-1", status="failed", current_iteration=3),
+            _make_task(id="task-2", story_id="story-1", status="failed", current_iteration=3),
+        ]
+        runs = [
+            SimpleNamespace(
+                id=f"eng-{index}",
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    execution=EngineeringExecutionEvidence(
+                        execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                        infrastructure_refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    ),
+                ),
+            )
+            for index in (1, 2)
+        ]
+        api_client.get_tasks_by_status.return_value = tasks
+        api_client.list_runs.side_effect = [[runs[0]], [runs[1]]]
+        api_client.get_story.side_effect = [
+            _make_story(id="story-1", status="in_progress"),
+            _make_story(id="story-1", status="in_progress"),
+            _make_story(
+                id="story-1",
+                status="waiting_human_review",
+                quarantine_reason=EngineeringInfrastructurePark(
+                    task_id="task-2",
+                    attempt_id="eng-2",
+                    refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    detail="Engineering worker creation was refused: project locked.",
+                ).as_metadata(),
+            ),
+        ]
+        api_client.transition_story.side_effect = [RuntimeError("transient refusal"), None]
+
+        with (
+            patch(
+                "src.tasks.infrastructure_park.owe_owner_notification",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(),
+            ) as owe,
+            patch(
+                "src.tasks.infrastructure_park.deliver_owed_notification",
+                new_callable=AsyncMock,
+                return_value=OwnerNotificationOutcome.DELIVERED,
+            ) as deliver,
+            patch(
+                "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
+            ) as notify_admin,
+        ):
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 0, "escalated": 1}
+        assert [task.current_iteration for task in tasks] == [3, 3]
+        assert api_client.transition_story.await_count == 2
+        api_client.transition_task.assert_awaited_once()
+        assert api_client.transition_task.await_args.args[0] == "task-2"
+        owe.assert_awaited_once()
+        deliver.assert_awaited_once()
+        notify_admin.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_task_error_does_not_skip_independent_task(self, api_client, redis_client):
+        """Every task owns its failure boundary; the next project still reconciles."""
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        poison = _make_task(id="task-poison", story_id="story-poison", status="failed")
+        healthy = _make_task(id="task-healthy", story_id="story-healthy", status="failed")
+        api_client.get_tasks_by_status.return_value = [poison, healthy]
+        api_client.list_runs.side_effect = [
+            [
+                SimpleNamespace(
+                    id="eng-poison",
+                    result=EngineeringRunResult(
+                        engineering_status=EngineeringStatus.FAILED,
+                        execution=EngineeringExecutionEvidence(
+                            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                            infrastructure_refusal=(
+                                EngineeringInfrastructureRefusal.PROJECT_LOCKED
+                            ),
+                        ),
+                    ),
+                )
+            ],
+            [],
+        ]
+        api_client.get_story.side_effect = RuntimeError("story API unavailable")
+
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 1,
+            "escalated": 0,
+        }
+        api_client.update_task.assert_awaited_once_with("task-healthy", {"current_iteration": 1})
+        assert [call.args[0] for call in api_client.transition_task.await_args_list] == [
+            "task-healthy",
+            "task-healthy",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_notification_error_does_not_skip_independent_task(
+        self, api_client, redis_client
+    ):
+        """A notification write belongs to its task and cannot abort the failed-task pass."""
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        poison = _make_task(id="task-notify", story_id="story-notify", status="failed")
+        healthy = _make_task(id="task-next", story_id="story-next", status="failed")
+        park = EngineeringInfrastructurePark(
+            task_id="task-notify",
+            attempt_id="eng-notify",
+            refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+            detail="Engineering worker creation was refused: project locked.",
+        ).as_metadata()
+        api_client.get_tasks_by_status.return_value = [poison, healthy]
+        api_client.list_runs.side_effect = [
+            [
+                SimpleNamespace(
+                    id="eng-notify",
+                    result=EngineeringRunResult(
+                        engineering_status=EngineeringStatus.FAILED,
+                        execution=EngineeringExecutionEvidence(
+                            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+                            infrastructure_refusal=(
+                                EngineeringInfrastructureRefusal.PROJECT_LOCKED
+                            ),
+                        ),
+                    ),
+                )
+            ],
+            [],
+        ]
+        api_client.get_story.side_effect = [
+            _make_story(id="story-notify", status="in_progress"),
+            _make_story(
+                id="story-notify",
+                status="waiting_human_review",
+                quarantine_reason=park,
+            ),
+        ]
+
+        with patch(
+            "src.tasks.infrastructure_park.owe_owner_notification",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("notification API unavailable"),
+        ):
+            assert await supervise_failed_tasks(api_client, redis_client) == {
+                "retried": 1,
+                "escalated": 0,
+            }
+
+        assert poison.current_iteration == 0
+        api_client.update_task.assert_any_await("task-next", {"current_iteration": 1})
+        assert all(
+            call.args[0] != "task-notify" for call in api_client.transition_task.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_escalates_to_whr_when_retries_exhausted(self, api_client, redis_client):
