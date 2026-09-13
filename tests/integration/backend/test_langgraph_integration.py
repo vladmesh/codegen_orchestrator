@@ -60,6 +60,14 @@ async def _get_run(api_client, run_id: str) -> dict:
     return resp.json()
 
 
+async def _create_story(api_client, project_id: str, title: str) -> str:
+    response = await api_client.post(
+        "/api/stories/", json={"project_id": project_id, "title": title}
+    )
+    assert response.status_code == 201, f"Failed to create story: {response.text}"
+    return response.json()["id"]
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestLangGraphIntegration:
@@ -87,9 +95,11 @@ class TestLangGraphIntegration:
             },
         )
         project_id = project["id"]
+        story_id = await _create_story(api_client, project_id, f"Engineering story {suffix}")
         task = await seed_task(
             title=f"Engineering task {suffix}",
             project_id=project_id,
+            story_id=story_id,
         )
         await seed_server(server_handle, status="ready", capacity_ram_mb=8192)
 
@@ -106,6 +116,7 @@ class TestLangGraphIntegration:
             description="Build a sample microservice",
             skip_deploy=True,
             planning_task_id=task["id"],
+            story_id=story_id,
         )
         await redis_client.xadd("engineering:queue", {"data": msg.model_dump_json()})
 
@@ -149,9 +160,11 @@ class TestLangGraphIntegration:
 
         # Seed a project to own the task (FK constraint)
         project = await seed_project(name=f"Owner project {suffix}")
+        story_id = await _create_story(api_client, project["id"], f"Missing project story {suffix}")
         task = await seed_task(
             title=f"Missing project task {suffix}",
             project_id=project["id"],
+            story_id=story_id,
         )
 
         # The canonical start command needs a real owning project. The worker
@@ -167,6 +180,7 @@ class TestLangGraphIntegration:
             telegram_chat_id="test-user-2",
             action="create",
             planning_task_id=task["id"],
+            story_id=story_id,
         )
         await redis_client.xadd("engineering:queue", {"data": msg.model_dump_json()})
 
@@ -203,9 +217,11 @@ class TestLangGraphIntegration:
             config={"description": "Already scaffolded"},
         )
         project_id = project["id"]
+        story_id = await _create_story(api_client, project_id, f"Non-draft story {suffix}")
         task = await seed_task(
             title=f"Scaffold failed task {suffix}",
             project_id=project_id,
+            story_id=story_id,
         )
 
         # Create run
@@ -219,6 +235,7 @@ class TestLangGraphIntegration:
             telegram_chat_id="test-user-3",
             action="create",
             planning_task_id=task["id"],
+            story_id=story_id,
         )
         await redis_client.xadd("engineering:queue", {"data": msg.model_dump_json()})
 

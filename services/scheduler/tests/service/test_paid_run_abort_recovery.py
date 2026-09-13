@@ -47,9 +47,17 @@ async def test_real_pre_handoff_abort_is_readable_and_dispatches_a_new_attempt(a
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert created_project.is_success, created_project.text
+    created_story = await api_client.request(
+        "POST",
+        "stories/",
+        json={"project_id": project_id, "title": "Abort recovery story"},
+    )
+    assert created_story.is_success, created_story.text
+    story_id = created_story.json()["id"]
     task = await api_client.create_task(
         {
             "project_id": project_id,
+            "story_id": story_id,
             "type": "feature",
             "title": "Dispatch after abort",
             "status": "todo",
@@ -82,3 +90,4 @@ async def test_real_pre_handoff_abort_is_readable_and_dispatches_a_new_attempt(a
     assert fresh[0].status is RunStatus.QUEUED
     assert fresh[0].run_metadata.get("pre_handoff_aborted") is None
     assert len(redis.messages) == 1
+    assert redis.messages[0][1].story_id == story_id

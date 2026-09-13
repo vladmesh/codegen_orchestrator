@@ -194,7 +194,10 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  #
     assert accepted_while_stopped.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "application to be running" in accepted_while_stopped.text
 
-    sideways_e2e = await async_client.post(f"/api/applications/{application_id}/run-e2e")
+    sideways_e2e = await async_client.post(
+        f"/api/applications/{application_id}/run-e2e",
+        json={"story_id": story_id},
+    )
     assert sideways_e2e.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "quarantined story" in sideways_e2e.text
 

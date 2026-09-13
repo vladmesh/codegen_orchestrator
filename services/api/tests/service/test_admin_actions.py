@@ -188,11 +188,12 @@ class TestSendToArchitect:
 class TestSpawnWorker:
     @pytest.mark.asyncio
     async def test_spawn_from_backlog(self, client, redis, _ensure_project):
-        # Create a task
+        story_id = await _create_story(client, "Spawn worker story")
         resp = await client.post(
             "/api/tasks/",
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
+                "story_id": story_id,
                 "title": "Spawn worker test",
                 "type": "feature",
             },
@@ -214,6 +215,7 @@ class TestSpawnWorker:
         # Verify message in engineering:queue
         msg = await _read_last_message(redis, "engineering:queue")
         assert msg["planning_task_id"] == task_id
+        assert msg["story_id"] == story_id
         assert msg["description"] == "custom description"
 
     @pytest.mark.asyncio
@@ -265,10 +267,12 @@ class TestSpawnWorker:
         walk past the dispatchability status. That authority is audited: the run
         it creates says which condition it overrode and who asked.
         """
+        story_id = await _create_story(client, "Overridden spawn story")
         created = await client.post(
             "/api/tasks/",
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
+                "story_id": story_id,
                 "title": "Overridden spawn",
                 "type": "feature",
             },

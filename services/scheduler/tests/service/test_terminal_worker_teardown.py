@@ -1,11 +1,12 @@
+import os
 from types import SimpleNamespace
 
-from fakeredis import aioredis
 import pytest
 
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerOwnership
 from shared.queues import STORY_WORKERS_KEY, WORKER_COMMANDS
+from shared.redis.client import RedisStreamClient
 from src.tasks.terminal_worker_reconciliation import reconcile_terminal_story_workers
 
 
@@ -47,7 +48,9 @@ class _InProcessWorkerManager:
     "terminal_status", [StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED]
 )
 async def test_one_terminal_reconciliation_window_tears_down_every_story_worker(terminal_status):
-    redis = aioredis.FakeRedis(decode_responses=True)
+    redis_client = RedisStreamClient(os.environ["REDIS_URL"])
+    await redis_client.connect()
+    redis = redis_client.redis
     terminal = WorkerOwnership(
         story_id="terminal-story",
         project_id="project-1",
@@ -67,19 +70,33 @@ async def test_one_terminal_reconciliation_window_tears_down_every_story_worker(
     await redis.hset(STORY_WORKERS_KEY, "terminal-story", "developer")
     await redis.set("workspace:lock:project-1", "developer")
     client = _InProcessWorkerManager(redis)
-    client.redis = redis
+    try:
+        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 2
 
-    assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 2
+        assert client.deleted == ["developer", "qa-fix"]
+        assert not await redis.exists("worker:status:developer", "worker:status:qa-fix")
+        assert not await redis.exists("worker:meta:developer", "worker:meta:qa-fix")
+        assert await redis.get("workspace:lock:project-1") is None
+        assert await redis.hget("worker:status:other-story-worker", "status") == "RUNNING"
+        assert await redis.hget("worker:meta:other-story-worker", "story_id") == "live-story"
 
-    assert client.deleted == ["developer", "qa-fix"]
-    assert not await redis.exists("worker:status:developer", "worker:status:qa-fix")
-    assert not await redis.exists("worker:meta:developer", "worker:meta:qa-fix")
-    assert await redis.get("workspace:lock:project-1") is None
-    assert await redis.hget("worker:status:other-story-worker", "status") == "RUNNING"
-    assert await redis.hget("worker:meta:other-story-worker", "story_id") == "live-story"
-
-    # The observation pass clears the legacy binding; further passes do nothing.
-    assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 0
-    assert await redis.hget(STORY_WORKERS_KEY, "terminal-story") is None
-    assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 0
-    assert client.deleted == ["developer", "qa-fix"]
+        # The observation pass clears the legacy binding; further passes do nothing.
+        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 0
+        assert await redis.hget(STORY_WORKERS_KEY, "terminal-story") is None
+        assert await reconcile_terminal_story_workers(_StoryAPI(terminal_status), client) == 0
+        assert client.deleted == ["developer", "qa-fix"]
+    finally:
+        await redis.delete(
+            STORY_WORKERS_KEY,
+            "workspace:lock:project-1",
+            "worker:status:developer",
+            "worker:status:qa-fix",
+            "worker:status:other-story-worker",
+            "worker:error:developer",
+            "worker:error:qa-fix",
+            "worker:error:other-story-worker",
+            "worker:meta:developer",
+            "worker:meta:qa-fix",
+            "worker:meta:other-story-worker",
+        )
+        await redis_client.close()
