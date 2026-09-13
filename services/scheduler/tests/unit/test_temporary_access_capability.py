@@ -487,13 +487,19 @@ async def test_revoke_marks_the_record_closed_only_after_a_proved_operation() ->
 
 @pytest.mark.asyncio
 async def test_exhausted_revoke_escalates_once_and_never_republishes_access() -> None:
-    from src.tasks.temporary_access import _settle_revoke, _settle_revoke_failed
+    from src.tasks.temporary_access import (
+        _max_revoke_attempts,
+        _settle_revoke,
+        _settle_revoke_failed,
+    )
+
+    configured_attempt_limit = _max_revoke_attempts()
 
     grant = _grant(
         status=TemporaryAccessStatus.REVOKING,
         revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
         revoke_run_id="temporary-access-revoke-last",
-        revoke_attempts=3,
+        revoke_attempts=configured_attempt_limit,
     )
     api = AsyncMock()
     # The target names the commit it is running, which is what a capability
@@ -515,7 +521,7 @@ async def test_exhausted_revoke_escalates_once_and_never_republishes_access() ->
         settled = _grant(
             status=TemporaryAccessStatus.REVOKE_FAILED,
             revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
-            revoke_attempts=3,
+            revoke_attempts=configured_attempt_limit,
             escalated_at=datetime.now(UTC),
         )
         await _settle_revoke_failed(api, AsyncMock(), settled, counts, AsyncMock())

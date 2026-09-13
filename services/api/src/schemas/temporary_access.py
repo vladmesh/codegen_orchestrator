@@ -11,6 +11,8 @@ from shared.contracts.dto.run_result import QARunResult
 # The request schemas are the contract every client already imports; the API
 # validates against those same objects rather than look-alikes of its own.
 from shared.contracts.dto.temporary_access import (
+    TemporaryAccessDrainCommand,
+    TemporaryAccessDrainReason,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantUpdate,
     TemporaryAccessRevokeReason,
@@ -19,6 +21,7 @@ from shared.contracts.dto.temporary_access import (
 from shared.contracts.queues.qa import QAMessage
 
 __all__ = [
+    "TemporaryAccessDrainCommand",
     "TemporaryAccessEscalation",
     "TemporaryAccessGrantCreate",
     "TemporaryAccessGrantRead",
@@ -63,7 +66,7 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     granted_at: datetime
     qa_dispatched_at: datetime | None = None
     revoked_at: datetime | None = None
-    revoke_reason: TemporaryAccessRevokeReason | None = None
+    revoke_reason: TemporaryAccessRevokeReason | TemporaryAccessDrainReason | None = None
     revoke_run_id: str | None = None
     revoke_attempts: int = 0
     escalated_at: datetime | None = None

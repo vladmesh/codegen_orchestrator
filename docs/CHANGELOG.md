@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
+- Temporary QA admission now scopes legacy contention to an exact known target, and an audited admin drain
+  closes unreconcilable legacy or escalated revokes without a manual SQL update.
 - Admission now parks pre-agent refusals in its deciding transaction and the Run-backed park needs matching
   evidence, so a lost answer cannot mint another attempt; owner and admin notices are owed durably.
 - The durable admin park notice settles on per-recipient Telegram results, so a refused or partial send
