@@ -118,7 +118,9 @@ async def test_a_receipt_for_another_key_leaves_the_episode_open_and_the_row_unp
 
     assert racing.status_code == httpx.codes.CONFLICT
     row = (await async_client.get(f"/api/servers/{handle}")).json()
-    assert row["status"] == "provisioning"
+    # Reserving an attempt does not move the row's status, and a refused receipt
+    # closes nothing: the discovered row is exactly as it was.
+    assert row["status"] == "pending_setup"
     assert row["provisioning_attempts"] == attempt["provisioning_attempts"]
     assert row["qa_target_version"] is None
 
