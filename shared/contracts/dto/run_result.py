@@ -306,12 +306,35 @@ class QABlockerCategory(StrEnum):
     # which account the server row names as administrative. Nothing here says
     # the QA seat is missing — the run never got to see it.
     QA_IDENTITY_UNREADABLE = "qa_identity_unreadable"
+    # The target's QA harness is not the profile this runtime speaks to: the
+    # server row's readiness receipt is missing or stale, the live `qa-docker`
+    # answers another profile or lacks a verb, or the wrapper refused a verb the
+    # runner sent. Repaired by managed-target reconciliation, never by changing
+    # the product.
+    QA_TARGET_PROFILE_STALE = "qa_target_profile_stale"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"
     # The temporary identity QA tests private bots with: never handed over, or
     # taken back while the run was still using it.
     QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
     QA_ACCESS_EXPIRED = "qa_access_expired"
     UNKNOWN = "unknown"
+
+
+#: Blockers that say the platform's QA harness or its reach into the target
+#: failed — an executor that never reached the capability endpoint, a probe the
+#: target could not perform, a harness that is not the current profile, a host
+#: the run could not take its seat on. The supervisor parks every one of them
+#: for operator recovery with an administrator notice, and never words any of
+#: them to the owner as something wrong with the product.
+QA_HARNESS_BLOCKERS: frozenset[QABlockerCategory] = frozenset(
+    {
+        QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+        QABlockerCategory.QA_PROBE_UNAVAILABLE,
+        QABlockerCategory.QA_TARGET_PROFILE_STALE,
+        QABlockerCategory.SERVER_UNAVAILABLE,
+        QABlockerCategory.QA_IDENTITY_UNREADABLE,
+    }
+)
 
 
 class QABlocker(BaseModel):

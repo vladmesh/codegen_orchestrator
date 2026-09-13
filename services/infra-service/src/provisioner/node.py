@@ -350,7 +350,7 @@ class ProvisionerNode(FunctionalNode):
         )
 
         if success_soft:
-            await mark_provisioning_complete(server_handle)
+            await mark_provisioning_complete(server_handle, output_soft)
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,

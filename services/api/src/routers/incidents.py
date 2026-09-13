@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import ReturningInsert
 
 from shared.contracts.dto.incident import IncidentType
 from shared.models import Incident, IncidentStatus
@@ -39,6 +40,35 @@ async def create_incident(
     return incident
 
 
+def provisioning_failure_upsert(
+    *, server_handle: str, details: dict, affected_services: list[str]
+) -> ReturningInsert:
+    """The one statement that creates or updates a server's active provisioning-failure episode.
+
+    It does not commit, so a caller can record the episode in the same
+    transaction as the server-row change it explains.
+    """
+    return (
+        insert(Incident)
+        .values(
+            server_handle=server_handle,
+            incident_type=IncidentType.PROVISIONING_FAILED.value,
+            details=details,
+            affected_services=affected_services,
+        )
+        .on_conflict_do_update(
+            index_elements=[Incident.server_handle, Incident.incident_type],
+            index_where=text(_ACTIVE_PROVISIONING_FAILURE),
+            set_={
+                "details": details,
+                "affected_services": affected_services,
+                "recovery_attempts": Incident.recovery_attempts + 1,
+            },
+        )
+        .returning(Incident)
+    )
+
+
 @router.post("/provisioning-failure", response_model=IncidentRead)
 async def record_provisioning_failure(
     incident_in: IncidentCreate,
@@ -52,24 +82,10 @@ async def record_provisioning_failure(
             detail="Only provisioning_failed incidents can be recorded here",
         )
 
-    statement = (
-        insert(Incident)
-        .values(
-            server_handle=incident_in.server_handle,
-            incident_type=incident_in.incident_type.value,
-            details=incident_in.details,
-            affected_services=incident_in.affected_services,
-        )
-        .on_conflict_do_update(
-            index_elements=[Incident.server_handle, Incident.incident_type],
-            index_where=text(_ACTIVE_PROVISIONING_FAILURE),
-            set_={
-                "details": incident_in.details,
-                "affected_services": incident_in.affected_services,
-                "recovery_attempts": Incident.recovery_attempts + 1,
-            },
-        )
-        .returning(Incident)
+    statement = provisioning_failure_upsert(
+        server_handle=incident_in.server_handle,
+        details=incident_in.details,
+        affected_services=incident_in.affected_services,
     )
     result = await db.execute(statement)
     incident = result.scalar_one()

@@ -1,6 +1,6 @@
 """Servers router."""
 
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +9,7 @@ from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservation,
     ProvisioningAttemptReservationResult,
@@ -16,13 +17,18 @@ from shared.contracts.dto.server import (
     ProvisioningAttemptResetResult,
     ServerStatus,
     SSHUser,
+    TargetReadinessRead,
+    TargetReadinessReport,
 )
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisioningProfile
 from shared.crypto import SecretsCipher
-from shared.models import Application, PortAllocation, Server
+from shared.models import Application, Incident, PortAllocation, Server
 from shared.provisioning_policy import provider_operation_is_authorized
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.queues import PROVISIONER_QUEUE
 from shared.redis.client import RedisStreamClient
+from shared.server_admission import TARGET_NOT_READY_STATUS
+from shared.ssh_keys import AdminKeyRejectedError, AdminPrivateKey, normalize_admin_private_key
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client, require_internal_or_admin
@@ -36,6 +42,7 @@ from ..schemas import (
     ServerCreate,
     ServerRead,
 )
+from .incidents import provisioning_failure_upsert
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -46,27 +53,42 @@ class ProvisioningRequest(BaseModel):
     profile: ProvisioningProfile | None = None
 
 
+def _admin_key_or_422(raw: str | None) -> AdminPrivateKey:
+    """Parse a submitted administrative key, refusing it by reason and never by content."""
+    try:
+        return normalize_admin_private_key(raw)
+    except AdminKeyRejectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"ssh_key rejected: {exc.rejection.value}",
+        ) from None
+
+
 @router.post("/", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
 async def create_server(
     server_in: ServerCreate,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> Server:
-    """Create a new server (admin only)."""
+    """Create a new server (admin only).
+
+    A submitted key is parsed before anything is added, and only its encrypted
+    canonical text and public fingerprint are kept.
+    """
+    admin_key = _admin_key_or_422(server_in.ssh_key) if server_in.ssh_key is not None else None
     if await db.get(Server, server_in.handle):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Server with this handle already exists",
         )
 
-    ssh_key_encrypted = SecretsCipher().encrypt(server_in.ssh_key) if server_in.ssh_key else None
-
     server = Server(
         handle=server_in.handle,
         host=server_in.host,
         public_ip=server_in.public_ip,
         ssh_user=server_in.ssh_user,
-        ssh_key_enc=ssh_key_encrypted,
+        ssh_key_enc=SecretsCipher().encrypt(admin_key.text) if admin_key else None,
+        ssh_key_fingerprint=admin_key.fingerprint if admin_key else None,
         capacity_cpu=server_in.capacity_cpu,
         capacity_ram_mb=server_in.capacity_ram_mb,
         labels=server_in.labels,
@@ -342,13 +364,17 @@ async def update_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    # Handle ssh_key specially — encrypt before storing
+    # The key is validated before any field of this request is applied, so a
+    # refused key leaves the whole row as it was. A managed row cannot have its
+    # key emptied; an unmanaged row may drop one it no longer needs.
+    replacement_key: AdminPrivateKey | None = None
+    clear_key = False
     if "ssh_key" in updates:
         raw_key = updates.pop("ssh_key")
-        if raw_key:
-            server.ssh_key_enc = SecretsCipher().encrypt(raw_key)
+        if not server.is_managed and not raw_key:
+            clear_key = True
         else:
-            server.ssh_key_enc = None
+            replacement_key = _admin_key_or_422(raw_key)
 
     # Update allowed fields
     if "ssh_user" in updates:
@@ -356,6 +382,13 @@ async def update_server(
             updates["ssh_user"] = TypeAdapter(SSHUser).validate_python(updates["ssh_user"])
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+
+    if replacement_key is not None:
+        server.ssh_key_enc = SecretsCipher().encrypt(replacement_key.text)
+        server.ssh_key_fingerprint = replacement_key.fingerprint
+    elif clear_key:
+        server.ssh_key_enc = None
+        server.ssh_key_fingerprint = None
 
     # Provider identity and ID are computed properties backed by labels, not database columns.
     if "provider" in updates or "provider_id" in updates:
@@ -416,6 +449,91 @@ async def update_server(
     await db.commit()
     await db.refresh(server)
     return server
+
+
+@router.post("/{handle}/target-readiness", response_model=TargetReadinessRead)
+async def record_target_readiness(
+    handle: str,
+    report: TargetReadinessReport,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> TargetReadinessRead:
+    """Apply one managed-target readiness verdict in a single transaction.
+
+    Ready: the receipt is written — only for the QA target profile this build
+    defines — a row reconciliation had parked returns to `ready`, and the
+    server's active provisioning-failure episode is resolved.
+
+    Not ready: the receipt is cleared, the row moves to the non-admitting
+    status, and the active provisioning-failure episode is created or updated
+    with the exact phase. The encrypted key is never touched, so the evidence an
+    operator repairs from stays on the row. Repeating a verdict updates the same
+    episode instead of opening another.
+    """
+    server = await db.get(Server, handle, with_for_update=True)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not server.is_managed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Target readiness is recorded only for managed servers",
+        )
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    incident_id: int | None = None
+    if report.ready:
+        if report.profile_version != QA_TARGET_PROFILE_VERSION:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"QA target profile {report.profile_version} is not the current profile "
+                    f"{QA_TARGET_PROFILE_VERSION}"
+                ),
+            )
+        server.qa_target_version = report.profile_version
+        server.qa_target_proved_at = report.proved_at.astimezone(UTC).replace(tzinfo=None)
+        if server.status == TARGET_NOT_READY_STATUS.value:
+            server.status = ServerStatus.READY.value
+        await db.execute(
+            update(Incident)
+            .where(
+                Incident.server_handle == handle,
+                Incident.incident_type == IncidentType.PROVISIONING_FAILED.value,
+                Incident.status.in_(
+                    [IncidentStatus.DETECTED.value, IncidentStatus.RECOVERING.value]
+                ),
+            )
+            .values(status=IncidentStatus.RESOLVED.value, resolved_at=now)
+        )
+    else:
+        server.qa_target_version = None
+        server.qa_target_proved_at = None
+        server.status = TARGET_NOT_READY_STATUS.value
+        recorded = await db.execute(
+            provisioning_failure_upsert(
+                server_handle=handle,
+                details={
+                    "step": "target_readiness",
+                    "phase": report.phase.value,
+                    "detail": report.detail,
+                    "revision": report.revision,
+                    "server_handle": handle,
+                    "repair": f"python -m src.provisioner.qa_identity_retrofit {handle}",
+                },
+                affected_services=[],
+            )
+        )
+        incident_id = recorded.scalar_one().id
+
+    await db.commit()
+    return TargetReadinessRead(
+        server_handle=handle,
+        ready=report.ready,
+        status=ServerStatus(server.status),
+        qa_target_version=server.qa_target_version,
+        qa_target_proved_at=server.qa_target_proved_at,
+        incident_id=incident_id,
+    )
 
 
 @router.post("/{handle}/force-rebuild", response_model=ServerRead)

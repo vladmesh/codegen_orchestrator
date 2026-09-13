@@ -1450,6 +1450,52 @@ carried through the queue, and consumed by infra-service for the disposable
 Stand target. It is not inferred from mutable server labels; a replay retains
 the profile that was originally queued.
 
+### Managed target readiness
+
+`shared/qa_target_profile.py` owns the one QA target profile.
+`QA_TARGET_PROFILE_VERSION` is derived from every file of the `qa_identity` role
+with the wrapper's and the defaults' version lines blanked, and a unit test holds
+the constant, both lines and the files together, so any artefact change changes
+the version. `qa-docker version` answers `qa-docker profile=<version> verbs=<...>`;
+`qa-identity-proof` asks it through the QA account's own sudo rule and fails a
+seat that answers anything else, then prints `qa_target_version=<version>`.
+
+The receipt is `servers.qa_target_version` and `servers.qa_target_proved_at`.
+Only `POST /api/servers/{handle}/target-readiness` (`TargetReadinessReport` →
+`TargetReadinessRead`) writes it; `qa_ssh_user`, `provisioning_phase` and PATCH
+never do, and the endpoint refuses a receipt for any other profile with 409. A
+not-ready verdict, in one transaction, clears the receipt, moves the row to
+`error` (`TARGET_NOT_READY_STATUS`) and upserts the active `provisioning_failed`
+episode with `step=target_readiness`, the `TargetReadinessPhase`, bounded detail
+and the deployed revision; `ssh_key_enc` is never touched. A ready verdict writes
+the receipt, returns an `error` row to `ready` and resolves the active episode.
+
+`shared/server_admission.py` refuses a managed row with `target_not_ready`,
+`qa_target_receipt_missing` or `qa_target_receipt_stale`; each is reported as
+`server_not_provisioned`, never capacity, and allocation, the scheduler's
+resource wait and QA read the same predicate and receipt. Server create and SSH
+key update accept only an unencrypted OpenSSH private key with a terminal
+newline (`shared/ssh_keys.py`), parse it before commit, keep the encrypted
+canonical text and `ssh_key_fingerprint`, and refuse with
+`ssh_key rejected: <reason>` without changing the row or echoing key material.
+
+`retrofit_qa_identity` reconciles any explicitly managed, provisioned row without
+provider authority: stored key parse → `target_readiness_preflight.yml` (login,
+then non-interactive `become` to uid 0) → `qa_identity_retrofit.yml` with no
+`qa_ssh_user` or profile variable → proof version check → receipt. The first
+failing step is the verdict. `python -m src.provisioner.target_readiness
+--revision <sha>` runs it over every reconcilable managed row after a production
+deploy and exits non-zero only when a verdict could not be recorded.
+
+A QA harness failure is a typed `QABlocker`, never a product check. A receipt
+rejection refuses before any grant; the runner checks the live wrapper right
+after the one-shot identity connects; a wrapper refusal is
+`qa_target_profile_stale`, and a contract read that ends other than read, absent,
+outside `/app` or over the limit is `qa_target_profile_stale` or
+`qa_probe_unavailable`. `QA_HARNESS_BLOCKERS` park the story in human review with
+an administrator notice naming `recheck-qa` and owner wording that blames no
+product; `qa_target_profile_stale` is operator-recheckable.
+
 ## Source map
 
 | Area | Source of truth |

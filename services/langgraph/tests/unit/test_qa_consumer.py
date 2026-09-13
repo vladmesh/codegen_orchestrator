@@ -35,6 +35,7 @@ from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.vocab import AgentType
 from shared.crypto import encrypt_dict
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
     MAX_QA_LOOPS,
@@ -76,6 +77,9 @@ def _server(**overrides) -> ServerDTO:
         "status": "active",
         "is_managed": True,
         "labels": {QA_SSH_USER_LABEL: QA_SSH_USER},
+        # Reconciliation proved the current QA target profile on it.
+        "qa_target_version": QA_TARGET_PROFILE_VERSION,
+        "qa_target_proved_at": datetime.now(UTC),
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
     }

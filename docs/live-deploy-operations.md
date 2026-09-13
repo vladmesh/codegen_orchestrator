@@ -198,3 +198,46 @@ Do not PATCH `current_iteration`, sequence task transitions, or start the story
 manually. The action returns a typed 409 without partial changes when the reason
 is stale, either row left human review, the park is not infrastructure-owned, or
 the refused Run no longer matches. Resolve that discrepancy before retrying.
+
+## Reconcile managed deploy targets
+
+The production deploy's `Reconcile managed deploy targets` step runs, after the
+services are healthy and against the exact deployed SHA:
+
+```bash
+docker compose exec -T infra-service \
+  python -m src.provisioner.target_readiness --revision "$DEPLOYED_SHA"
+```
+
+It prints one JSON line per managed server: `ready` (receipt written for the
+current QA target profile), `not_ready` (typed incident recorded, row moved to
+`error`, admission refuses it), `skipped` (not provisioned or still being
+provisioned), or `unrecorded` (the verdict could not be written — the step then
+fails the deploy). It runs only the preflight and retrofit playbooks: no
+reinstall, no firewall change, no QA or stand run.
+
+A `not_ready` target's active `provisioning_failed` incident carries
+`step=target_readiness` and the failed `phase`:
+
+- `ssh_key_missing` / `ssh_key_invalid` — the stored administrative key is
+  absent or does not parse. Supply valid operator material with
+  `PATCH /api/servers/{handle}` `{"ssh_key": "<unencrypted OpenSSH private key with final newline>"}`;
+  a refused key returns `ssh_key rejected: <reason>` and changes nothing.
+- `admin_login` — the key does not log in as `servers.ssh_user`.
+- `privilege_preflight` — that account cannot reach root through non-interactive
+  `sudo`/`become`. Nothing on the target was changed.
+- `qa_identity_role` / `qa_identity_proof` — the role could not be applied, or
+  its proof refused the seat (the incident detail names what it found).
+
+After repairing, reconcile that one target, which records the verdict the same
+way and is safe to repeat:
+
+```bash
+docker compose exec -T infra-service python -m src.provisioner.qa_identity_retrofit "$HANDLE"
+```
+
+Never write `qa_target_version` or labels by hand: only the readiness endpoint
+records a receipt, and only for the current profile. A story parked with a QA
+harness blocker (`qa_target_profile_stale`, `qa_probe_unavailable`,
+`server_unavailable`, `qa_executor_unavailable`, `qa_identity_unreadable`) is
+recovered after reconciliation with `POST /api/stories/{story_id}/recheck-qa`.

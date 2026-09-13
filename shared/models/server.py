@@ -21,6 +21,12 @@ class Server(Base):
     ssh_user: Mapped[str] = mapped_column(String(50), default="root")
     # Store encrypted keys
     ssh_key_enc: Mapped[str | None] = mapped_column(String)
+    # Public fingerprint of the parsed key in ssh_key_enc; not a secret.
+    ssh_key_fingerprint: Mapped[str | None] = mapped_column(String(100))
+
+    # QA target readiness receipt, written only by the target-readiness endpoint.
+    qa_target_version: Mapped[str | None] = mapped_column(String(64))
+    qa_target_proved_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Capacity metrics (from Time4VPS API)
     capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)

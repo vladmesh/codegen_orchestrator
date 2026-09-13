@@ -206,5 +206,6 @@
       {{ qa_docker_wrapper | quote }}
       {{ qa_docker_socket | quote }}
       {{ qa_authorized_keys_sentinel | quote }}
+      {{ qa_target_profile_version | quote }}
   changed_when: false
   register: qa_identity_proof

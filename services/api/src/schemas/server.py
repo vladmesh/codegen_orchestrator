@@ -65,6 +65,12 @@ class ServerRead(ServerBase, TimestampedDTO):
     uptime_seconds: float | None = None
     last_health_check: datetime | None = None
 
+    # The stored administrative key is never returned; its public fingerprint is.
+    ssh_key_fingerprint: str | None = None
+    # QA target readiness receipt (see `shared/qa_target_profile.py`).
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+
 
 class MetricsHistoryCreate(BaseModel):
     """Schema for creating a metrics history snapshot."""

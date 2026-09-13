@@ -405,8 +405,9 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     assert result["provisioning_result"]["status"] == "success"
     assert db == {"ssh_key": "PRIVATE-KEY", "attempts": 0, "episode_id": None, "status": "ready"}
     # A green software phase records itself complete, and with it the QA identity
-    # that phase created — one write, so the two facts cannot come apart.
-    complete.assert_awaited_once_with("srv-1")
+    # that phase created — one write, so the two facts cannot come apart. The
+    # play's output travels with it, so the receipt is written from its proof.
+    complete.assert_awaited_once_with("srv-1", "ok")
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,7 @@ from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
+from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
@@ -83,6 +84,10 @@ PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 RUNNING_STATE = (
     '{"Status":"running","Running":true,"Restarting":false,"ExitCode":0,'
     '"Health":{"Status":"healthy"}}'
+)
+CURRENT_WRAPPER_ANSWER = (
+    f"qa-docker profile={QA_TARGET_PROFILE_VERSION} "
+    f"verbs={' '.join(sorted(QA_DOCKER_REQUIRED_VERBS))}\n"
 )
 
 # Claude Code on the host's subscription session, addressing the runtime over
@@ -155,8 +160,14 @@ class FakeConn:
         provisioned: bool = True,
         container_states: dict[str, str] | None = None,
         files: dict[str, str] | None = None,
+        wrapper_answer: SimpleNamespace | None = None,
     ) -> None:
         self.commands: list[str] = []
+        # What `qa-docker version` answers: the current profile unless a test
+        # stands in an older wrapper.
+        self.wrapper_answer = wrapper_answer or SimpleNamespace(
+            exit_status=0, stdout=CURRENT_WRAPPER_ANSWER, stderr=""
+        )
         # The files this deployment has. Anything else answers the way the
         # target's contained read answers a path that is not a regular file.
         self.files = files or {}
@@ -222,6 +233,8 @@ class FakeConn:
                 return self._read(args[1])
         if command.startswith("readlink -f --"):
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
+        if QA_DOCKER_WRAPPER in command and command.endswith(" version"):
+            return self.wrapper_answer
         if QA_DOCKER_WRAPPER in command and " ps " in command:
             return SimpleNamespace(
                 exit_status=0, stdout="".join(f"{name}\n" for name in self.containers), stderr=""
@@ -371,6 +384,141 @@ def central_run(tmp_path):
         return result, connection, factory, record
 
     return _run
+
+
+async def _no_executor(harness):
+    raise AssertionError("a harness blocker must be decided before any executor starts")
+
+
+class _HarnessConn(FakeConn):
+    """A target whose QA harness answers one command the way a broken host does."""
+
+    def __init__(self, marker: str, answer: SimpleNamespace | Exception) -> None:
+        super().__init__()
+        self.marker = marker
+        self.answer = answer
+
+    async def run(self, command, *, check=False, timeout=None):
+        if QA_DOCKER_WRAPPER in command and self.marker in command:
+            self.commands.append(command)
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+        return await super().run(command, check=check, timeout=timeout)
+
+
+def _refusal(verb: str) -> SimpleNamespace:
+    """What the wrapper production target 5wwb carried answers for a verb it predates."""
+    return SimpleNamespace(
+        exit_status=2,
+        stdout="",
+        stderr=(
+            f"qa-docker: docker {verb} is refused on this host; "
+            "allowed: diff inspect logs port ps stats top"
+        ),
+    )
+
+
+class TestAHarnessFailureIsABlockerNeverAVerdict:
+    """Every way the target's QA harness can fail ends as typed evidence, not a product check."""
+
+    async def test_an_old_wrapper_stops_the_run_before_capabilities_or_an_executor(
+        self, central_run
+    ):
+        conn = _HarnessConn(" version", _refusal("version"))
+
+        result, connection, factory, _ = await central_run(behaviour=_no_executor, conn=conn)
+
+        assert result.blocker.category is QABlockerCategory.QA_TARGET_PROFILE_STALE
+        assert result.blocker.sent.endswith(f"{QA_DOCKER_WRAPPER} version")
+        assert "is refused on this host" in result.blocker.received
+        assert result.checks == []
+        # Checked right after the one-shot identity connected, before anything else.
+        assert not any(" ps " in command for command in connection.commands)
+        assert not hasattr(factory, "prompt")
+        assert connection.run_keys == []
+
+    async def test_a_wrapper_of_another_profile_is_stale(self, central_run):
+        answer = SimpleNamespace(
+            exit_status=0,
+            stdout=CURRENT_WRAPPER_ANSWER.replace(QA_TARGET_PROFILE_VERSION, "0123456789abcdef"),
+            stderr="",
+        )
+
+        result, _, factory, _ = await central_run(
+            behaviour=_no_executor, conn=_HarnessConn(" version", answer)
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_TARGET_PROFILE_STALE
+        assert "0123456789abcdef" in result.blocker.received
+        assert not hasattr(factory, "prompt")
+
+    async def test_a_wrapper_that_does_not_answer_is_an_unavailable_probe(self, central_run):
+        conn = _HarnessConn(" version", OSError("Connection reset by peer"))
+
+        result, _, factory, _ = await central_run(behaviour=_no_executor, conn=conn)
+
+        assert result.blocker.category is QABlockerCategory.QA_PROBE_UNAVAILABLE
+        assert "Connection reset by peer" in result.blocker.received
+        assert not hasattr(factory, "prompt")
+
+    async def test_a_refused_contract_verb_is_stale_and_never_a_failed_check(self, central_run):
+        """The canary's defect: `read-contract` refused, reported as a product failure."""
+        conn = _HarnessConn(" read-contract ", _refusal("read-contract"))
+
+        result, _, factory, _ = await central_run(behaviour=_no_executor, conn=conn)
+
+        assert result.passed is False
+        assert result.blocker.category is QABlockerCategory.QA_TARGET_PROFILE_STALE
+        assert "read-contract" in result.blocker.sent
+        assert result.checks == []
+        assert not hasattr(factory, "prompt")
+
+    async def test_an_unreadable_contract_response_is_an_unavailable_probe(self, central_run):
+        unreadable = SimpleNamespace(
+            exit_status=7, stdout="", stderr="contract is not a readable regular file"
+        )
+
+        result, _, factory, _ = await central_run(
+            behaviour=_no_executor, conn=_HarnessConn(" read-contract ", unreadable)
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_PROBE_UNAVAILABLE
+        assert "exit 7" in result.blocker.received
+        assert not hasattr(factory, "prompt")
+
+    async def test_a_contract_that_resolves_outside_the_app_is_still_the_products_answer(
+        self, central_run
+    ):
+        outside = SimpleNamespace(
+            exit_status=4, stdout="", stderr="contract path resolves outside /app"
+        )
+
+        result, _, _, _ = await central_run(
+            behaviour=_no_executor, conn=_HarnessConn(" read-contract ", outside)
+        )
+
+        assert result.blocker is None
+        assert result.passed is False
+        assert "outside /app" in result.checks[0]["detail"]
+
+    async def test_an_executor_that_never_reached_the_endpoint_is_an_executor_blocker(
+        self, central_run
+    ):
+        result, _, _, _ = await central_run(
+            behaviour=_no_executor,
+            unavailable=QAExecutorUnavailable(
+                "the QA executor container ran but never reached the capability endpoint: "
+                "no output",
+                transient=False,
+                transcript="",
+            ),
+        )
+
+        assert result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+        assert result.blocker.attempted
+        assert result.blocker.sent
+        assert "never reached the capability endpoint" in result.blocker.received
 
 
 class TestCleanTargetPassesExploratoryQA:

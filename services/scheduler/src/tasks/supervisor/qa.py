@@ -17,6 +17,8 @@ from shared.contracts.dto.qa_handoff import (
 )
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import (
+    QA_HARNESS_BLOCKERS,
+    QABlockerCategory,
     QARunResult,
 )
 from shared.contracts.dto.story import StoryStatus
@@ -264,12 +266,49 @@ async def _quarantine_unverified_application(
     )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
     await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+    harness = _harness_blocker(run.result)
+    if harness is not None:
+        # Parked once: the story has left TESTING, so no later tick reaches here
+        # for this run. The operator's route back is a recheck, after the target
+        # has been reconciled.
+        await notify_admins_best_effort(
+            f"QA harness blocker parked story {story_id} (project {project_id}) — "
+            f"{harness.category.value}.\n"
+            f"run: {run.id}\n"
+            f"attempted: {harness.attempted}\n"
+            f"sent: {harness.sent}\n"
+            f"received: {harness.received}\n"
+            "No fix task was created. Repair the target (managed-target reconciliation), "
+            f"then POST /api/stories/{story_id}/recheck-qa.",
+            level="error",
+            component="supervisor",
+            story_id=story_id,
+            project_id=project_id,
+            run_id=run.id,
+        )
+        log.warning("qa_supervisor_harness_blocker_parked", category=harness.category.value)
+
+
+def _harness_blocker(result: QARunResult):
+    """The run's blocker when it is a QA harness failure, else ``None``."""
+    blocker = result.blocker
+    if blocker is None or blocker.category not in QA_HARNESS_BLOCKERS:
+        return None
+    return blocker
 
 
 def _quarantine_text(reason: dict) -> str:
     """Ask the project owner to decide what to do with a stopped bot."""
     outcome = reason["qa_outcome"]
     blocker = reason.get("blocker")
+    if blocker and QABlockerCategory(blocker["category"]) in QA_HARNESS_BLOCKERS:
+        # Nothing here is about the product, so nothing asks the owner to fix it.
+        return (
+            "QA could not check the bot this time because of a problem in the platform's "
+            "test environment, not in the product. The bot has been stopped while an "
+            "administrator repairs the environment and runs the check again; its Telegram "
+            "token remains assigned to this project, and nothing needs to be changed in it."
+        )
     if blocker:
         detail = f"{blocker['category']}: {blocker['received']}"
     else:

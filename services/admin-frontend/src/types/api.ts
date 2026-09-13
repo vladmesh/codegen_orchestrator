@@ -431,6 +431,9 @@ export interface Server {
   container_count_total?: number | null
   uptime_seconds?: number | null
   last_health_check?: string | null
+  ssh_key_fingerprint?: string | null
+  qa_target_version?: string | null
+  qa_target_proved_at?: string | null
 }
 
 export interface ContainerMetrics {

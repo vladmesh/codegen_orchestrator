@@ -21,6 +21,7 @@ from datetime import datetime
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.server_admission import (
     PROVISIONING_PHASE_COMPLETE,
     PROVISIONING_PHASE_LABEL,
@@ -30,6 +31,8 @@ from shared.server_admission import (
 ADMISSION_CASE_HANDLE = "srv-admission"
 ADMISSION_CASE_CAPACITY_RAM_MB = 4096
 ADMISSION_CASE_CAPACITY_DISK_MB = 50000
+#: A profile this repository's role does not define.
+STALE_QA_TARGET_VERSION = "0" * len(QA_TARGET_PROFILE_VERSION)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class AdmissionCase:
     provisioning_failed: bool = False
     is_managed: bool = True
     admitted: bool = False
+    # The QA target readiness receipt on the row; `None` is a row with none.
+    qa_target_version: str | None = QA_TARGET_PROFILE_VERSION
 
 
 ADMISSION_CASES: tuple[AdmissionCase, ...] = (
@@ -103,6 +108,30 @@ ADMISSION_CASES: tuple[AdmissionCase, ...] = (
         labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
         is_managed=False,
     ),
+    # Provisioned by labels, never proved: the state every row is in until the
+    # first managed-target reconciliation runs over it.
+    AdmissionCase(
+        name="complete_without_qa_target_receipt",
+        status=ServerStatus.READY,
+        labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        qa_target_version=None,
+    ),
+    # The state production target 5wwb was in: proved once, by an older role.
+    AdmissionCase(
+        name="complete_with_stale_qa_target_receipt",
+        status=ServerStatus.READY,
+        labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        qa_target_version=STALE_QA_TARGET_VERSION,
+    ),
+    # The state vps-275301 is put in: a key that does not parse or a login that
+    # fails, with the receipt it once had cleared by reconciliation.
+    AdmissionCase(
+        name="reconciliation_found_target_not_ready",
+        status=ServerStatus.ERROR,
+        labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        provisioning_failed=True,
+        qa_target_version=None,
+    ),
 )
 
 
@@ -138,6 +167,8 @@ def admission_case_server(case: AdmissionCase, *, last_health_check: datetime) -
         capacity_ram_mb=ADMISSION_CASE_CAPACITY_RAM_MB,
         capacity_disk_mb=ADMISSION_CASE_CAPACITY_DISK_MB,
         used_ram_mb=0,
+        qa_target_version=case.qa_target_version,
+        qa_target_proved_at=last_health_check if case.qa_target_version else None,
         last_health_check=last_health_check,
         created_at=last_health_check,
         updated_at=last_health_check,

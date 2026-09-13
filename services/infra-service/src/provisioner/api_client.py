@@ -1,8 +1,11 @@
 """API client for provisioner - communicates with the API service."""
 
-from shared.contracts.dto.server import ServerDTO
+from datetime import UTC, datetime
+
+from shared.contracts.dto.server import ServerDTO, TargetReadinessRead, TargetReadinessReport
 from shared.log_config import get_logger
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL, provisioning_complete_labels
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, proved_profile_version
 
 from ..clients.api import DeploymentRecord, api_client
 
@@ -39,18 +42,57 @@ async def update_server_labels(server_handle: str, labels: dict) -> None:
     logger.info("api_server_labels_updated", server_handle=server_handle, labels=final_labels)
 
 
-async def mark_provisioning_complete(server_handle: str) -> None:
-    """Record a finished software phase, and the QA identity that phase created.
+async def mark_provisioning_complete(server_handle: str, software_output: str) -> None:
+    """Record a finished software phase, the QA identity it created, and its proof.
 
-    One write, from one function, because the two facts are one fact. The
+    One label write, from one function, because the two facts are one fact. The
     software playbook is what creates the QA account; `provisioning_phase`
     reaching `complete` is what says that playbook succeeded. If the identity
     were recorded anywhere else — a later step, a second call site — there would
     be a window in which a host reads as fully provisioned and lends no identity
     to a QA run, and the QA runtime would have to guess which of the two it was
     looking at.
+
+    The readiness receipt is written only when the play's own proof named the
+    current QA target profile. A play that proved another one, or none, leaves
+    the row without a receipt: admission refuses it until reconciliation proves
+    the current profile, which is the honest state for an unproved host.
     """
     await update_server_labels(server_handle, provisioning_complete_labels())
+    proved = proved_profile_version(software_output)
+    if proved != QA_TARGET_PROFILE_VERSION:
+        logger.error(
+            "provisioning_proved_no_current_qa_target_profile",
+            server_handle=server_handle,
+            proved=proved,
+            expected=QA_TARGET_PROFILE_VERSION,
+        )
+        return
+    await report_target_readiness(
+        server_handle,
+        TargetReadinessReport(ready=True, profile_version=proved, proved_at=datetime.now(UTC)),
+    )
+
+
+async def list_managed_servers() -> list[ServerDTO]:
+    """Every server row the platform manages."""
+    return await api_client.list_servers(is_managed=True)
+
+
+async def report_target_readiness(
+    server_handle: str, report: TargetReadinessReport
+) -> TargetReadinessRead:
+    """Apply one readiness verdict: receipt and repair, or incident and non-admitting status."""
+    applied = await api_client.report_target_readiness(server_handle, report)
+    logger.info(
+        "api_target_readiness_reported",
+        server_handle=server_handle,
+        ready=applied.ready,
+        status=applied.status.value,
+        phase=report.phase.value if report.phase else None,
+        incident_id=applied.incident_id,
+    )
+    return applied
 
 
 async def record_qa_identity(server_handle: str) -> None:

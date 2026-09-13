@@ -2,12 +2,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.provisioning_policy import ADMIN_SSH_USER
 
 SSHUser = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]*$")]
+# The exact deployed commit a reconciliation ran from.
+DeployedRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+TARGET_READINESS_DETAIL_MAX = 500
 
 
 class ServerStatus(StrEnum):
@@ -154,6 +157,65 @@ class ServerDTO(TimestampedDTO):
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
     provisioning_episode_id: str | None = None
+
+    # Public fingerprint of the stored administrative key; the key itself is
+    # never part of a server response.
+    ssh_key_fingerprint: str | None = None
+    # The QA target readiness receipt: the profile the target last proved, and
+    # when. Written only by `POST /api/servers/{handle}/target-readiness` after a
+    # successful role proof — never by a label and never by PATCH.
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+
+
+class TargetReadinessPhase(StrEnum):
+    """The step of managed-target reconciliation that failed, in execution order."""
+
+    SSH_KEY_MISSING = "ssh_key_missing"
+    SSH_KEY_INVALID = "ssh_key_invalid"
+    ADMIN_LOGIN = "admin_login"
+    PRIVILEGE_PREFLIGHT = "privilege_preflight"
+    QA_IDENTITY_ROLE = "qa_identity_role"
+    QA_IDENTITY_PROOF = "qa_identity_proof"
+
+
+class TargetReadinessReport(BaseModel):
+    """One reconciliation verdict for one managed target.
+
+    Exactly one shape each way: a ready target carries the profile it proved and
+    when, and names no failed phase; a target that is not ready names the phase
+    that failed and carries no profile, so a failure can never be read as a
+    receipt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+    profile_version: str | None = None
+    proved_at: datetime | None = None
+    phase: TargetReadinessPhase | None = None
+    detail: str = Field(default="", max_length=TARGET_READINESS_DETAIL_MAX)
+    revision: DeployedRevision | None = None
+
+    @model_validator(mode="after")
+    def _one_verdict(self) -> "TargetReadinessReport":
+        if self.ready:
+            if self.profile_version is None or self.proved_at is None or self.phase is not None:
+                raise ValueError("a ready target carries profile_version and proved_at, no phase")
+        elif self.phase is None or self.profile_version is not None or self.proved_at is not None:
+            raise ValueError("a target that is not ready carries a phase and no receipt")
+        return self
+
+
+class TargetReadinessRead(BaseModel):
+    """What the server row says after a readiness verdict was applied."""
+
+    server_handle: str
+    ready: bool
+    status: ServerStatus
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+    incident_id: int | None = None
 
 
 class ServerMetricsHistoryDTO(BaseModel):

@@ -83,10 +83,31 @@ def test_every_rejection_reports_one_reason_and_it_is_not_a_capacity_reason():
     assert ADMISSION_FAILURE_REASON is AllocationFailureReason.SERVER_NOT_PROVISIONED
     assert set(ServerAdmissionRejection) == {
         ServerAdmissionRejection.NOT_MANAGED,
+        ServerAdmissionRejection.TARGET_NOT_READY,
         ServerAdmissionRejection.STATUS_NOT_ADMITTING,
         ServerAdmissionRejection.PROVISIONING_INCOMPLETE,
         ServerAdmissionRejection.PROVISIONING_FAILED,
+        ServerAdmissionRejection.QA_TARGET_RECEIPT_MISSING,
+        ServerAdmissionRejection.QA_TARGET_RECEIPT_STALE,
     }
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        ("complete_without_qa_target_receipt", ServerAdmissionRejection.QA_TARGET_RECEIPT_MISSING),
+        ("complete_with_stale_qa_target_receipt", ServerAdmissionRejection.QA_TARGET_RECEIPT_STALE),
+        ("reconciliation_found_target_not_ready", ServerAdmissionRejection.TARGET_NOT_READY),
+    ],
+)
+def test_readiness_evidence_is_a_typed_infrastructure_rejection(case_name, expected):
+    """A missing, stale or failed readiness proof is named as such, never as capacity."""
+    case = next(c for c in ADMISSION_CASES if c.name == case_name)
+    server = admission_case_server(case, last_health_check=_NOW)
+    failed = provisioning_failed_server_handles(admission_case_incidents(case, detected_at=_NOW))
+
+    assert server_admission_rejection(server, failed) is expected
+    assert ADMISSION_FAILURE_REASON not in CAPACITY_REASONS
 
 
 def test_an_admission_refusal_is_a_bounded_wait_not_an_owner_verdict():

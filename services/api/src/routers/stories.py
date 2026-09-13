@@ -83,6 +83,9 @@ _RECHECKABLE_BLOCKERS = frozenset(
         # recheck — naming the problem better must not take the operator's
         # route out of `waiting_human_review` away with it.
         QABlockerCategory.QA_IDENTITY_UNREADABLE,
+        # The target's QA harness was not the current profile. Its repair is
+        # managed-target reconciliation, after which exactly this recheck runs.
+        QABlockerCategory.QA_TARGET_PROFILE_STALE,
         QABlockerCategory.QA_ACCESS_GRANT_FAILED,
         QABlockerCategory.QA_ACCESS_EXPIRED,
     }

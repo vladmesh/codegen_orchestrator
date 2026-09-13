@@ -452,11 +452,20 @@ pass as an ordinary schema error.
 - FAILED → create fix task, dispatch to `engineering:queue`, story → `in_progress`
 - EXHAUSTED → story `failed` (max QA→Engineering loops reached)
 - ERROR → story `failed`
+- BLOCKED → application stopped, story `waiting_human_review`, no fix task and no engineering
+  iteration. A QA harness blocker (`QA_HARNESS_BLOCKERS`: stale `qa-docker`, refused verb,
+  unavailable probe, SSH/runtime failure, an executor that never reached the capability endpoint)
+  also notifies administrators with the `recheck-qa` route, and the owner is told the platform's
+  test environment failed, not the product
 
 **Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
-**Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
-nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon session there.
+**Target prerequisites**: a managed target whose readiness receipt names the current QA target
+profile (`servers.qa_target_version`), written by managed-target reconciliation after the
+`qa_identity` role and its proof succeeded; a missing or stale receipt refuses the run before any
+access is issued. Before an executor starts, the runner also asks the live `qa-docker version`
+as the run's own identity and refuses an older wrapper. QA installs nothing on the target and
+needs no coding-agent CLI, LLM credentials or Telethon session there.
 
 **QA runtime prerequisites** (orchestrator `.env`):
 - `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly.

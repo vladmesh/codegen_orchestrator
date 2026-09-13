@@ -40,6 +40,7 @@ from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from src.agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
     BACKEND_MANIFEST,
@@ -118,6 +119,14 @@ class FakeConn:
 
     async def run(self, command, *, check=False, timeout=None):
         self.commands.append(command)
+        if command.endswith("qa-docker version"):
+            # The live wrapper is the current QA target profile on this target.
+            verbs = " ".join(sorted(QA_DOCKER_REQUIRED_VERBS))
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=f"qa-docker profile={QA_TARGET_PROFILE_VERSION} verbs={verbs}\n",
+                stderr="",
+            )
         if command.startswith("readlink -f --"):
             if self.readlink_exit:
                 return SimpleNamespace(

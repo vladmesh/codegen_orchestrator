@@ -174,7 +174,9 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
     labels.assert_awaited_once_with(
         "bitlaunch-6a920e74c9c98a452507b09b", {"provisioning_phase": "software_installation"}
     )
-    complete.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b")
+    # The software play's own output travels with it: the readiness receipt is
+    # written from the proof it reported, never assumed from a green play.
+    complete.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b", "ok")
 
 
 @pytest.mark.asyncio

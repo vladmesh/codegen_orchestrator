@@ -27,6 +27,8 @@ from shared.contracts.dto.server import (
     ProvisioningAttemptReservationResult,
     ProvisioningAttemptResetResult,
     ServerDTO,
+    TargetReadinessRead,
+    TargetReadinessReport,
 )
 
 logger = structlog.get_logger(__name__)
@@ -58,6 +60,24 @@ class InfrastructureAPIClient(InternalAPIClient):
         """Get server info by handle."""
         resp = await self.request("GET", f"servers/{server_handle}")
         return ServerDTO.model_validate(resp.json())
+
+    async def list_servers(self, *, is_managed: bool) -> list[ServerDTO]:
+        """List servers by management flag."""
+        resp = await self.request(
+            "GET", "servers/", params={"is_managed": "true" if is_managed else "false"}
+        )
+        return [ServerDTO.model_validate(item) for item in resp.json()]
+
+    async def report_target_readiness(
+        self, server_handle: str, report: TargetReadinessReport
+    ) -> TargetReadinessRead:
+        """Apply one managed-target readiness verdict atomically on the API side."""
+        resp = await self.request(
+            "POST",
+            f"servers/{server_handle}/target-readiness",
+            json=report.model_dump(mode="json"),
+        )
+        return TargetReadinessRead.model_validate(resp.json())
 
     async def get_server_ssh_key(self, server_handle: str) -> str | None:
         """Get a server's decrypted SSH private key, if one is stored."""
