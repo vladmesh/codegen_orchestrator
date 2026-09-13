@@ -64,6 +64,41 @@ class EngineeringInfrastructurePark(BaseModel):
         return {ENGINEERING_INFRASTRUCTURE_KEY: self.model_dump(mode="json")}
 
 
+class EngineeringInfrastructureParkCommand(BaseModel):
+    """One exact story-backed park the API applies to task and story atomically."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    park: EngineeringInfrastructurePark
+    actor: str = Field(min_length=1)
+
+
+class EngineeringInfrastructureParkDisposition(StrEnum):
+    """Committed result of one infrastructure park command."""
+
+    #: This call moved task and story to human review and owed the owner notice.
+    PARKED = "parked"
+    #: Task and story already carry this exact park; nothing was written.
+    ALREADY_PARKED = "already_parked"
+    #: The story cannot legally reach human review; neither row was changed.
+    INELIGIBLE_STORY = "ineligible_story"
+
+
+class EngineeringInfrastructureParkRead(BaseModel):
+    """Typed result of the atomic infrastructure park transaction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    disposition: EngineeringInfrastructureParkDisposition
+    story_id: str
+    task_id: str
+    attempt_id: str
+    refusal: EngineeringInfrastructureRefusal
+    task_status: str
+    story_status: str
+    current_iteration: int
+
+
 class EngineeringInfrastructureRetryCommand(BaseModel):
     """Exact park identity an operator asks the composite action to recover."""
 

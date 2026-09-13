@@ -93,6 +93,9 @@ class EngineeringDispatchRefusal(StrEnum):
     #: the tick rather than being taken out of ladder order. The next tick sees
     #: the roster that exists.
     STORY_ROSTER_CHANGED = "story_roster_changed"
+    #: The task or its story carries a typed pre-agent infrastructure park. Only
+    #: the operator's infrastructure retry clears it, so no attempt is minted.
+    INFRASTRUCTURE_PARKED = "infrastructure_parked"
     #: An attempt is still open on this task; the decision carries the repair.
     LIVE_ATTEMPT_IN_FLIGHT = "live_attempt_in_flight"
     #: The paid gate refused. One value per `WorkAdmissionReason` that reaches

@@ -40,6 +40,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
+from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
     ProjectStatus,
@@ -215,7 +216,11 @@ async def _take_story_roster(
         # decision holds is not the roster that exists. Same answer as a
         # rewritten blocker edge: refuse, and let the next tick peek again.
         return set(), EngineeringDispatchRefusal.STORY_ROSTER_CHANGED
-    await _get_story_for_update(task.story_id, db)
+    story = await _get_story_for_update(task.story_id, db)
+    if ENGINEERING_INFRASTRUCTURE_KEY in (story.quarantine_reason or {}):
+        # A story parked by an infrastructure refusal takes no engineering
+        # message until the operator's retry clears that exact park.
+        return set(), EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED
     roster = set((await db.scalars(select(Task.id).where(Task.story_id == task.story_id))).all())
     if roster - set(locked):
         return set(), EngineeringDispatchRefusal.STORY_ROSTER_CHANGED
@@ -253,6 +258,21 @@ def _story_fence(
         sibling.status == TaskStatus.WAITING_HUMAN_REVIEW.value for sibling in siblings
     ) and not overrides.clears(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW):
         return _refused(EngineeringDispatchRefusal.STORY_WAITING_HUMAN_REVIEW, overrides)
+    return None
+
+
+def _task_row_refusal(task: Task) -> EngineeringDispatchRefusal | None:
+    """Rung 1 conditions read from the candidate's own locked row, never overridable.
+
+    A brief-backed task is not dispatch authority until its plan is admitted. A
+    task carrying a typed pre-agent infrastructure park is owned by the
+    operator's infrastructure retry, which clears that evidence; this is defense
+    in depth around the atomic park, and refusing here mints no attempt id.
+    """
+    if not task.dispatch_admitted:
+        return EngineeringDispatchRefusal.PRODUCT_BRIEF_NOT_ADMITTED
+    if ENGINEERING_INFRASTRUCTURE_KEY in (task.failure_metadata or {}):
+        return EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED
     return None
 
 
@@ -363,8 +383,9 @@ async def admit_engineering_dispatch(
     # walking past it would buy a worker for a plan the architect has not
     # finished, and the release is a property of the whole plan rather than of
     # this one task.
-    if not task.dispatch_admitted:
-        return _refused(EngineeringDispatchRefusal.PRODUCT_BRIEF_NOT_ADMITTED, overrides)
+    row_refusal = _task_row_refusal(task)
+    if row_refusal is not None:
+        return _refused(row_refusal, overrides)
 
     if task.blocked_by_task_id:
         blocker = locked.get(task.blocked_by_task_id)

@@ -15,9 +15,10 @@ import pytest
 from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringExecutionPhase,
+    EngineeringInfrastructureParkDisposition,
+    EngineeringInfrastructureParkRead,
     EngineeringInfrastructureRefusal,
 )
-from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import _wait_until_ready
@@ -47,9 +48,6 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     _load_service_package("worker_manager_src", root / "services/worker-manager/src")
     _load_service_package("scheduler_src", root / "services/scheduler/src")
 
-    from scheduler_src.tasks.owner_notifications import (  # noqa: PLC0415
-        OwnerNotificationOutcome,
-    )
     from scheduler_src.tasks.supervisor import liveness  # noqa: PLC0415
     from worker_manager_src.manager import (  # noqa: PLC0415
         EngineeringWorkerCreationRefusal,
@@ -156,47 +154,40 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     scheduler_api.list_runs.return_value = [
         SimpleNamespace(id="eng-1", result=terminal_patch["result"])
     ]
-    scheduler_story = SimpleNamespace(
-        status=StoryStatus.IN_PROGRESS,
-        quarantine_reason=None,
-        owner_notification=None,
+    scheduler_api.park_infrastructure_refusal.return_value = EngineeringInfrastructureParkRead(
+        disposition=EngineeringInfrastructureParkDisposition.PARKED,
+        story_id="story-1",
+        task_id="task-1",
+        attempt_id="eng-1",
+        refusal=EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+        task_status="waiting_human_review",
+        story_status="waiting_human_review",
+        current_iteration=3,
     )
-    scheduler_api.get_story.return_value = scheduler_story
-
-    async def persist_story(_story_id, payload):
-        scheduler_story.quarantine_reason = payload["quarantine_reason"]
-
-    async def park_story(*_args, **_kwargs):
-        scheduler_story.status = StoryStatus.WAITING_HUMAN_REVIEW
-
-    scheduler_api.update_story.side_effect = persist_story
-    scheduler_api.transition_story.side_effect = park_story
     scheduler_redis = AsyncMock()
 
-    with (
-        patch(
-            "scheduler_src.tasks.infrastructure_park.owe_owner_notification",
-            new_callable=AsyncMock,
-            return_value=SimpleNamespace(),
-        ),
-        patch(
-            "scheduler_src.tasks.infrastructure_park.deliver_owed_notification",
-            new_callable=AsyncMock,
-            return_value=OwnerNotificationOutcome.DELIVERED,
-        ),
-        patch.object(liveness, "_notify_admin_failure", new_callable=AsyncMock),
-    ):
+    with patch.object(liveness, "_notify_admin_failure", new_callable=AsyncMock) as notify_admin:
         result = await liveness.supervise_failed_tasks(scheduler_api, scheduler_redis)
 
     assert result == {"retried": 0, "escalated": 1}
     assert task.current_iteration == 3
     evidence = terminal_patch["result"]["execution"]
-    scheduler_api.update_task.assert_awaited_once()
-    assert (
-        scheduler_api.update_task.await_args.args[1]["failure_metadata"][
-            ENGINEERING_INFRASTRUCTURE_KEY
-        ]["refusal"]
-        == evidence["infrastructure_refusal"]
+    scheduler_api.park_infrastructure_refusal.assert_awaited_once()
+    story_id, command = scheduler_api.park_infrastructure_refusal.await_args.args
+    assert story_id == "story-1"
+    assert (command.park.task_id, command.park.attempt_id, command.actor) == (
+        "task-1",
+        "eng-1",
+        "supervisor",
     )
-    scheduler_api.transition_task.assert_awaited_once()
-    scheduler_api.transition_story.assert_awaited_once()
+    assert command.park.refusal.value == evidence["infrastructure_refusal"]
+    assert (
+        command.park.as_metadata()[ENGINEERING_INFRASTRUCTURE_KEY]["refusal"]
+        == (evidence["infrastructure_refusal"])
+    )
+    # The atomic API transaction owns every park write; the supervisor sequences none.
+    scheduler_api.update_task.assert_not_awaited()
+    scheduler_api.update_story.assert_not_awaited()
+    scheduler_api.transition_task.assert_not_awaited()
+    scheduler_api.transition_story.assert_not_awaited()
+    notify_admin.assert_awaited_once()

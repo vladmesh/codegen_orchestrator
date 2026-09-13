@@ -141,6 +141,10 @@ minutes so callers can observe the refusal, after which Redis expires both.
 
 ## Recover a pre-agent infrastructure refusal
 
+A parked story is already complete when it appears in human review: the park
+transaction wrote both evidence copies and the owed owner notice together, and the
+owner's message may still be in delivery. Do not wait for it before recovering.
+
 On the admin story detail page, confirm the task and story show the same typed
 infrastructure reason, then click `Retry infrastructure attempt` once. The UI
 calls `POST /api/stories/{story_id}/retry-infrastructure-attempt` with the exact

@@ -5,7 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
-- Pre-agent refusal parking now contains terminal/racing stories per task and completes only after observing legal story review and settling notifications.
+- Story-backed pre-agent refusals now park task, story, evidence and owner notice in one API transaction,
+  so no delivery outcome or restart can leave a half-parked task that admission would spend again.
 - Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
 - PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
 - Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.

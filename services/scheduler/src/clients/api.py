@@ -21,6 +21,10 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
+from shared.contracts.dto.engineering_execution import (
+    EngineeringInfrastructureParkCommand,
+    EngineeringInfrastructureParkRead,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.product_brief import ProductBriefRead
@@ -490,6 +494,21 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": "scheduler"},
         )
         return StoryDTO.model_validate(resp.json())
+
+    async def park_infrastructure_refusal(
+        self, story_id: str, command: EngineeringInfrastructureParkCommand
+    ) -> EngineeringInfrastructureParkRead:
+        """Park one exact pre-agent refusal on its task and story in one transaction.
+
+        The API owns completion: evidence, both transitions and the owner's
+        durable notice commit together, and a repeat returns `already_parked`.
+        """
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/park-infrastructure-refusal",
+            json=command.model_dump(mode="json"),
+        )
+        return EngineeringInfrastructureParkRead.model_validate(resp.json())
 
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:
         """Apply one Story transition. action: 'start', 'complete', 'archive'.

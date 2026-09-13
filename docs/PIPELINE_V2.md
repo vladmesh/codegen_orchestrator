@@ -197,10 +197,12 @@ operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
 
 Two admission refusals are terminal for this tick but free of engineering retry
 accounting: `executor_unavailable` and `executor_confirmation_required`. The
-dispatcher records an exact typed pre-agent infrastructure park, leaves
-`current_iteration` unchanged, and sends task and story to human review through
-the durable notification path. Duplicate ticks observe the parked state and do
-nothing.
+dispatcher sends the exact typed pre-agent infrastructure park to the atomic
+`park-infrastructure-refusal` transaction, which leaves `current_iteration`
+unchanged and commits task and story human review with the owed owner notice.
+Delivery follows later from the owner-notification supervisor. A parked task is
+no longer `todo`, and admission refuses a parked story with
+`infrastructure_parked`, so later ticks neither admit nor publish for it.
 
 The Product Brief condition is the one that can hold a whole story's plan back:
 a task created under an active architect planning attempt is
@@ -245,11 +247,12 @@ tick parks task and story without incrementing the iteration. Evidence that is
 missing, malformed, legacy, or says `agent_started` stays on the ordinary
 engineering failure and retry path.
 
-The `failed` task is the restart fence while that park is being applied. Its
-transition to human review happens only after matching task/story evidence, a
-legal story transition observed in human review, and notification settlement.
-Terminal, transition-ineligible, and racing stories are contained per task, so
-one stale row cannot stop another task or any later supervisor in the tick.
+The supervisor applies that park through the same atomic API transaction as
+admission, so the `failed` task moves to human review together with its story and
+evidence, never ahead of or behind them. Notification delivery is not part of the
+park. Terminal, transition-ineligible, and racing stories return
+`ineligible_story` and are contained per task, so one stale row cannot stop
+another task or any later supervisor in the tick.
 
 An administrator recovers only this park with one
 `POST /api/stories/{story_id}/retry-infrastructure-attempt` call, also exposed as

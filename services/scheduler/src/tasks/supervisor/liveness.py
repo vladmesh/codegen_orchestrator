@@ -17,6 +17,7 @@ from shared.allocation_disposition import (
 from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionPhase,
     EngineeringInfrastructurePark,
+    EngineeringInfrastructureParkDisposition,
     infrastructure_refusal_detail,
 )
 from shared.contracts.dto.product_brief import (
@@ -45,8 +46,8 @@ if TYPE_CHECKING:
 from ... import startup
 from .._recipients import resolve_project_recipient
 from ..infrastructure_park import (
-    InfrastructureParkDisposition,
-    reconcile_pre_agent_infrastructure_park,
+    park_standalone_infrastructure_refusal,
+    park_story_infrastructure_refusal,
 )
 from ..owner_notifications import deliver_owed_notification, owe_owner_notification
 from ..worker_liveness import (
@@ -292,14 +293,13 @@ async def _supervise_failed_task(
     )
     infrastructure = await _park_pre_agent_infrastructure_refusal(
         api_client,
-        redis_client,
         task,
         engineering_runs,
         log,
         escalated_stories,
     )
     if infrastructure is not None:
-        return 0, int(infrastructure is InfrastructureParkDisposition.PARKED)
+        return 0, int(infrastructure is EngineeringInfrastructureParkDisposition.PARKED)
 
     if await _park_task_waiting_resources(
         api_client, redis_client, task, engineering_runs, log, escalated_stories
@@ -346,12 +346,11 @@ async def _supervise_failed_task(
 
 async def _park_pre_agent_infrastructure_refusal(
     api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
     task: TaskDTO,
     runs: list,
     log: structlog.stdlib.BoundLogger,
     escalated_stories: set[str],
-) -> InfrastructureParkDisposition | None:
+) -> EngineeringInfrastructureParkDisposition | None:
     """Route only validated pre-agent evidence before generic retry accounting.
 
     Unknown, legacy, or malformed evidence returns ``None`` and therefore grants
@@ -384,18 +383,20 @@ async def _park_pre_agent_infrastructure_refusal(
         refusal=refusal,
         detail=infrastructure_refusal_detail(refusal),
     )
-    disposition = await reconcile_pre_agent_infrastructure_park(
-        api_client,
-        redis_client,
-        task,
-        park,
-        notification_run=run,
-        notification_event=OwnerNotificationEvent.STORY_BLOCKED,
-        actor="supervisor",
-        notify_admin=_notify_admin_failure,
-        log=log,
-    )
-    if disposition is InfrastructureParkDisposition.PARKED:
+    if task.story_id:
+        disposition = await park_story_infrastructure_refusal(
+            api_client,
+            task,
+            park,
+            actor="supervisor",
+            notify_admin=_notify_admin_failure,
+            log=log,
+        )
+    else:
+        disposition = await park_standalone_infrastructure_refusal(
+            api_client, task, park, actor="supervisor"
+        )
+    if disposition is EngineeringInfrastructureParkDisposition.PARKED:
         escalated_stories.add(task.story_id)
         log.warning(
             "engineering_infrastructure_refusal_parked",

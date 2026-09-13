@@ -76,7 +76,8 @@ decision, and the caller reads it rather than an HTTP status:
    dispatcher splits them in `_handle_refusal`. The pre-agent infrastructure
    reasons `executor_unavailable` and `executor_confirmation_required` are
    parked immediately with typed execution evidence and do not change
-   `current_iteration`; other refusals from an earlier condition are logged and
+   `current_iteration`; `infrastructure_parked` is the pre-gate fence for a task
+   or story that already carries such a park; other refusals from an earlier condition are logged and
    left alone, with nothing spent and nothing owed. A paid denial has
    already spent the attempt, so it hands the task to `waiting_human_review`
    with the reason in the event details, and — for a story task whose denial
@@ -116,12 +117,18 @@ missing, malformed, or legacy evidence follows the ordinary technical/product
 retry policy. Zero tokens, short duration, error text, and missing containers are
 never substitutes for the typed phase.
 
-Parking is convergent across scheduler failure. Matching task metadata on a
-still-`failed` task records intent, not completion: reconciliation resumes the
-story evidence and legal transition, re-reads the story in human review, settles
-notifications, and moves the task last. A terminal, ineligible, or racing story
-is contained without an illegal transition, generic retry, or exception escaping
-the task boundary. Only matching evidence plus both rows in human review is a no-op.
+A story-backed park is atomic, so there is no partial park to converge. Both
+callers send the exact park to `POST /api/stories/{id}/park-infrastructure-refusal`;
+one transaction commits the task hops, both evidence copies, the story transition,
+and the owed owner notice, or nothing. A lost response, an administrator alert
+failure, or a restart after the call leaves either the untouched source state or
+the complete park, and a repeat returns `already_parked` without a second alert.
+Notification delivery happens afterwards in the owner-notification supervisor, so
+`retrying` or any other delivery outcome cannot roll back the park or leave the
+task dispatchable. `ineligible_story` (terminal or racing story) and typed 409s
+are contained per task without generic retry accounting. As defense in depth,
+admission refuses a parked task or story with `infrastructure_parked` before an
+attempt id is minted.
 
 A standalone task has no story lifecycle or owner-notification record to mutate;
 the same admission refusal stores the typed park on the task and moves that task

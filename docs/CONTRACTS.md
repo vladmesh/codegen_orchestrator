@@ -223,18 +223,30 @@ the same Run. Missing, malformed, legacy, or contradictory evidence is not a
 free attempt and must follow the ordinary failure path; consumers never infer
 this fact from prose, tokens, elapsed time, or container presence.
 
-For a valid pre-agent refusal, the scheduler stores one exact
-`EngineeringInfrastructurePark` under `engineering_infrastructure` in task
-`failure_metadata` and, for a story-bound task, story `quarantine_reason`. Admission owns
+For a valid pre-agent refusal, one exact `EngineeringInfrastructurePark` is
+stored under `engineering_infrastructure` in task `failure_metadata` and, for a
+story-bound task, story `quarantine_reason`. Admission owns
 `executor_unavailable` and `executor_confirmation_required`; the liveness
 supervisor owns post-handoff worker creation refusals. Both preserve
-`current_iteration`, park task and story in `waiting_human_review`, and persist
-the existing owner/admin notification obligation once before delivery. For
-post-handoff reconciliation, the task transition is the completion marker: the
-task remains `failed` until matching task/story evidence, an observed legal
-story transition, and owed notification delivery have finished, so a restart
-resumes partial work. A terminal or otherwise transition-ineligible story wins:
-the refusal is contained without reopening the story or entering generic retry.
+`current_iteration` and retry accounting.
+
+A story-bound park is one internal/admin API transaction,
+`POST /api/stories/{id}/park-infrastructure-refusal`, taking
+`EngineeringInfrastructureParkCommand` (the exact park plus actor) and returning
+`EngineeringInfrastructureParkRead`. Under task then story locks, and the refused
+Run lock when a Run exists, it validates the park, applies the legal task hops
+from `todo`, `in_dev`, or `failed` with audit events, writes both evidence
+copies, moves the story to `waiting_human_review`, and owes the owner's
+`story_blocked` notice on the story, all in one commit. Its dispositions are
+`parked`, the repeat no-op `already_parked`, and `ineligible_story` for a
+terminal or otherwise transition-ineligible story, which changes neither row.
+Different evidence, a task of another story, a half-parked row, a story or task
+already in human review, a non-parkable task status, or a mismatched Run is a
+typed 409. Callers sequence no park state; the owed notice is delivered later by
+the owner-notification supervisor, and administrators are alerted once by the
+caller whose call returned `parked`. Admission refuses a task or story that
+carries a park with `infrastructure_parked` before any attempt id is minted.
+Standalone tasks have no story transaction and keep their explicit task-only park.
 
 ### The Product Brief coverage-to-dispatch boundary
 
@@ -739,6 +751,11 @@ one transaction rather than a client-side sequence a crash can leave halfway.
 walks a Story through more than one status. Every other caller reports the event
 that happened through a single-hop action; no path in `services/scheduler` or
 `services/langgraph` issues two Story transitions for one story.
+
+The locked infrastructure park,
+`POST /api/stories/{id}/park-infrastructure-refusal`, moves a Story one hop but
+its Task up to two (`todo → in_dev → waiting_human_review`) in the same
+transaction, so no caller sequences task and story status for that park.
 
 The narrow exception is the locked infrastructure recovery transaction,
 `POST /api/stories/{id}/retry-infrastructure-attempt`. It verifies the task and

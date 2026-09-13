@@ -38,7 +38,10 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
-from .infrastructure_park import reconcile_pre_agent_infrastructure_park
+from .infrastructure_park import (
+    park_standalone_infrastructure_refusal,
+    park_story_infrastructure_refusal,
+)
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -219,27 +222,19 @@ async def _handle_refusal(
             refusal=infrastructure_refusal,
             detail=admission.message,
         )
-        notification_run = (
-            await _initiating_run(api_client, decision.initiating_run_id, log)
-            if task.story_id
-            else None
-        )
-        notification_event = (
-            OwnerNotificationEvent.STORY_BLOCKED
-            if notification_run is None
-            else OwnerNotificationEvent.STORY_QUARANTINED
-        )
-        disposition = await reconcile_pre_agent_infrastructure_park(
-            api_client,
-            redis_client,
-            task,
-            infrastructure_park,
-            notification_run=notification_run,
-            notification_event=notification_event,
-            actor="dispatcher",
-            notify_admin=_notify_admin_failure,
-            log=log,
-        )
+        if task.story_id:
+            disposition = await park_story_infrastructure_refusal(
+                api_client,
+                task,
+                infrastructure_park,
+                actor="dispatcher",
+                notify_admin=_notify_admin_failure,
+                log=log,
+            )
+        else:
+            disposition = await park_standalone_infrastructure_refusal(
+                api_client, task, infrastructure_park, actor="dispatcher"
+            )
         log.info(
             "task_dispatch_infrastructure_refusal_reconciled",
             run_id=decision.run_id,
