@@ -224,8 +224,8 @@ free attempt and must follow the ordinary failure path; consumers never infer
 this fact from prose, tokens, elapsed time, or container presence.
 
 For a valid pre-agent refusal, the scheduler stores one exact
-`EngineeringInfrastructurePark` under `engineering_infrastructure` in both task
-`failure_metadata` and story `quarantine_reason`. Admission owns
+`EngineeringInfrastructurePark` under `engineering_infrastructure` in task
+`failure_metadata` and, for a story-bound task, story `quarantine_reason`. Admission owns
 `executor_unavailable` and `executor_confirmation_required`; the liveness
 supervisor owns post-handoff worker creation refusals. Both preserve
 `current_iteration`, park task and story in `waiting_human_review`, and persist

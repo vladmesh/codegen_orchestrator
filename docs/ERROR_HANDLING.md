@@ -116,6 +116,11 @@ missing, malformed, or legacy evidence follows the ordinary technical/product
 retry policy. Zero tokens, short duration, error text, and missing containers are
 never substitutes for the typed phase.
 
+A standalone task has no story lifecycle or owner-notification record to mutate;
+the same admission refusal stores the typed park on the task and moves that task
+to human review without spending an iteration. Absence of `story_id` is not
+missing refusal evidence and must not abort the dispatcher cycle.
+
 Recovery is one internal/admin action:
 `POST /api/stories/{story_id}/retry-infrastructure-attempt`. The command names
 the task, attempt, and typed refusal. Under task, story, and Run row locks it

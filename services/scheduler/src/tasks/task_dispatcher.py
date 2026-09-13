@@ -208,7 +208,7 @@ async def _handle_refusal(
     infrastructure_refusal = infrastructure_refusal_for_dispatch(decision.reason)
     infrastructure_park = None
     if infrastructure_refusal is not None:
-        if not task.story_id or not admission.message or not decision.run_id:
+        if not admission.message or not decision.run_id:
             raise RuntimeError(
                 "recoverable engineering infrastructure refusal omitted its park evidence"
             )
@@ -220,7 +220,8 @@ async def _handle_refusal(
         )
         metadata = infrastructure_park.as_metadata()
         await api_client.update_task(task.id, {"failure_metadata": metadata})
-        await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
+        if task.story_id:
+            await api_client.update_story(task.story_id, {"quarantine_reason": metadata})
     if task.story_id and admission.message:
         await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget

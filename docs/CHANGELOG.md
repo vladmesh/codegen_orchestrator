@@ -5,7 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-13
 
-- Pre-agent engineering infrastructure refusals now park without spending an iteration and recover through one exact, locked admin action.
+- Pre-agent engineering infrastructure refusals now park story or standalone tasks without spending an iteration; story recovery is one exact, locked admin action.
 - Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
 - PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
 - Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.

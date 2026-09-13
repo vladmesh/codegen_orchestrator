@@ -511,6 +511,39 @@ class TestDispatchTodoTasks:
         assert task.current_iteration == 0
 
     @pytest.mark.asyncio
+    async def test_standalone_pre_agent_refusal_parks_the_task_without_story_evidence(
+        self, api_client, redis_client
+    ):
+        """A standalone task has no story record, but its refusal remains typed and free."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        task = _task(id="task-1", project_id=PROJ_ID, story_id=None, status="todo")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
+            EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE,
+            message="Restore an engineering executor, then retry this attempt.",
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        evidence = {
+            "execution_phase": "pre_agent_refused",
+            "refusal": "executor_unavailable",
+            "task_id": "task-1",
+            "attempt_id": "eng-test",
+            "detail": "Restore an engineering executor, then retry this attempt.",
+        }
+        api_client.update_task.assert_awaited_once_with(
+            "task-1", {"failure_metadata": {ENGINEERING_INFRASTRUCTURE_KEY: evidence}}
+        )
+        api_client.update_story.assert_not_awaited()
+        assert [call.args[1] for call in api_client.transition_task.await_args_list] == [
+            "in_dev",
+            "waiting_human_review",
+        ]
+        assert task.current_iteration == 0
+
+    @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
         """Planning refactors use the engineering feature action."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
