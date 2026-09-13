@@ -96,7 +96,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
@@ -139,7 +139,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
@@ -179,7 +179,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "errors": [],
@@ -329,7 +329,7 @@ class TestEngineeringConsumerStoryWorker:
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.api_client")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
-    async def test_no_worker_lookup_for_standalone_task(
+    async def test_worker_lookup_uses_required_story_owner(
         self,
         mock_publish,
         mock_api,
@@ -338,7 +338,8 @@ class TestEngineeringConsumerStoryWorker:
         mock_handle_success,
         mock_get_worker,
     ):
-        """Task without story_id: no worker lookup."""
+        """Every engineering task resolves its story-owned reusable worker."""
+        mock_get_worker.return_value = None
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
@@ -366,6 +367,7 @@ class TestEngineeringConsumerStoryWorker:
         await process_engineering_job(
             {
                 "task_id": "eng-789",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
@@ -377,11 +379,9 @@ class TestEngineeringConsumerStoryWorker:
             redis_mock,
         )
 
-        # No story → no worker lookup
-        mock_get_worker.assert_not_called()
-        # story_id should be None in handle_success via params
+        mock_get_worker.assert_awaited_once_with(redis_mock.redis, "story-1")
         params = mock_handle_success.call_args[0][0]
-        assert params.story_id is None
+        assert params.story_id == "story-1"
 
 
 class TestHandleSuccessWorkerLifecycle:

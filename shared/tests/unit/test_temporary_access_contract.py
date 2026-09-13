@@ -22,6 +22,7 @@ def test_durable_grant_has_identity_and_target_but_no_capability_or_environment_
         grant_run_id="temporary-access-grant-1",
         grant_attempts=1,
         qa_message=QAMessage(
+            story_id="story-1",
             project_id="00000000-0000-0000-0000-000000000001",
             initiating_run_id="live-1",
             telegram_chat_id="",

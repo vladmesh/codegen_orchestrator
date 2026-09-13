@@ -18,7 +18,7 @@ from src.manager import WorkerManager
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
 _OWNERSHIP = WorkerOwnership(
-    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+    story_id="story-1", project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
 )
 
 
@@ -769,6 +769,51 @@ async def test_gc_keeps_running_orphan_and_reclaims_exited_one():
         await manager.garbage_collect_orphaned_resources()
 
     assert [call.args[0] for call in manager.delete_worker.await_args_list] == ["exited-orphan"]
+
+
+@pytest.mark.asyncio
+async def test_gc_reclaims_terminal_workers_only_after_docker_says_not_live():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    for worker_id, status in (
+        ("dead-exited", WorkerStatus.DEAD),
+        ("failed-absent", WorkerStatus.FAILED),
+        ("stopped-live", WorkerStatus.STOPPED),
+        ("running-exited", WorkerStatus.RUNNING),
+    ):
+        await redis.hset(f"worker:status:{worker_id}", mapping={"status": status})
+    wrapper = _make_docker_mock()
+    wrapper.list_containers = AsyncMock(
+        return_value=[
+            _labelled_container("dead-exited", "exited"),
+            _labelled_container("stopped-live", "paused"),
+            _labelled_container("running-exited", "exited"),
+        ]
+    )
+    wrapper.list_networks = AsyncMock(return_value=[])
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    manager.delete_worker = AsyncMock()
+
+    await manager.garbage_collect_orphaned_resources()
+
+    assert {call.args[0] for call in manager.delete_worker.await_args_list} == {
+        "dead-exited",
+        "failed-absent",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gc_does_not_treat_failed_docker_inventory_as_container_absence():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    await redis.hset("worker:status:failed-worker", mapping={"status": WorkerStatus.FAILED})
+    wrapper = _make_docker_mock()
+    wrapper.list_containers = AsyncMock(side_effect=RuntimeError("daemon unavailable"))
+    wrapper.list_networks = AsyncMock(return_value=[])
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    manager.delete_worker = AsyncMock()
+
+    await manager.garbage_collect_orphaned_resources()
+
+    manager.delete_worker.assert_not_awaited()
 
 
 @pytest.mark.asyncio

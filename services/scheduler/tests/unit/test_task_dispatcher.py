@@ -579,8 +579,8 @@ class TestDispatchTodoTasks:
         assert eng_msg.story_id == "story-1"
 
     @pytest.mark.asyncio
-    async def test_story_id_none_for_standalone_task(self, api_client, redis_client):
-        """Task without story_id -> story_id=None in message."""
+    async def test_standalone_task_cannot_publish_an_unowned_worker(self, api_client, redis_client):
+        """Task without story ownership fails before the queue handoff."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -599,8 +599,8 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        eng_msg = redis_client.publish_message.call_args[0][1]
-        assert eng_msg.story_id is None
+        redis_client.publish_message.assert_not_called()
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
@@ -665,8 +665,8 @@ class TestBranchInDispatch:
         assert eng_msg.branch == "story/story-abc"
 
     @pytest.mark.asyncio
-    async def test_dispatch_no_branch_for_standalone_task(self, api_client, redis_client):
-        """Task without story_id gets branch=None."""
+    async def test_standalone_task_has_no_engineering_handoff(self, api_client, redis_client):
+        """A branchless task cannot create a worker outside story teardown."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -685,9 +685,8 @@ class TestBranchInDispatch:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        redis_client.publish_message.assert_called_once()
-        eng_msg = redis_client.publish_message.call_args[0][1]
-        assert eng_msg.branch is None
+        redis_client.publish_message.assert_not_called()
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
 
 
 class TestDispatchPartialFailure:

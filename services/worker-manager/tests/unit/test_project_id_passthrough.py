@@ -37,7 +37,9 @@ def _make_create_command(
         instructions="test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT],
-        ownership=WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id),
+        ownership=WorkerOwnership(
+            story_id="story-1", project_id=project_id, run_id=run_id, attempt_id=attempt_id
+        ),
         repo_id=repo_id,
     )
     return CreateWorkerCommand(
@@ -102,7 +104,7 @@ async def test_consumer_passes_ownership_to_manager(consumer):
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
     call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
     assert call_kwargs["ownership"] == WorkerOwnership(
-        project_id="proj-123", run_id="live-777", attempt_id="eng-777"
+        story_id="story-1", project_id="proj-123", run_id="live-777", attempt_id="eng-777"
     )
 
 
@@ -147,7 +149,9 @@ def test_a_create_command_without_ownership_is_refused():
 def test_ownership_rejects_an_empty_part(project_id, run_id, attempt_id):
     """An empty label attributes nothing, so an empty part is not ownership."""
     with pytest.raises(ValidationError):
-        WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id)
+        WorkerOwnership(
+            story_id="story-1", project_id=project_id, run_id=run_id, attempt_id=attempt_id
+        )
 
 
 # --- Phase 2: Workspace by repo_id ---
@@ -184,6 +188,7 @@ class TestWorkspaceByRepoId:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
@@ -210,7 +215,10 @@ class TestWorkspaceByRepoId:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -228,7 +236,10 @@ class TestWorkspaceByRepoId:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id=None,
             )
@@ -256,7 +267,10 @@ class TestWorkspaceByRepoId:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-missing",
             )
@@ -286,7 +300,10 @@ class TestWorkspaceByRepoId:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
@@ -318,7 +335,10 @@ class TestRepoIdRedisMeta:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -342,7 +362,10 @@ class TestRepoIdRedisMeta:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -366,7 +389,10 @@ class TestRepoIdRedisMeta:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -706,7 +732,10 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -724,7 +753,10 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -745,7 +777,10 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -767,7 +802,10 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -997,6 +1035,7 @@ class TestForceCleanAndReject:
         redis = MagicMock()
         redis.set = AsyncMock()
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
@@ -1019,7 +1058,10 @@ class TestForceCleanAndReject:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -1041,7 +1083,10 @@ class TestForceCleanAndReject:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )
@@ -1064,7 +1109,10 @@ class TestForceCleanAndReject:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
                 ),
                 repo_id="repo-1",
             )

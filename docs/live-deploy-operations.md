@@ -95,3 +95,17 @@ positive provider ID present in `PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS
 and skipped before SSH-key retrieval or SSH. Once a target is admitted, a missing key, malformed
 connection data, failed residue scan or failed teardown is an error; key absence is never treated as
 proof of cleanliness. An owned manifest with no admissible target is also an error.
+
+## Story-owned worker rollout precondition
+
+Deploy worker-manager before enabling the matching scheduler and engineering/QA
+consumers, then read `GET /api/introspect/worker-lifecycle`. The single rollout
+precondition is `ownerless_project_locks.count == 0`. Terminal legacy workers
+that still have a `story:workers` binding are drained automatically once the
+matching scheduler is enabled; active or ambiguous ownerless locks are not
+guessed or deleted and must be resolved before the rollout continues. The
+diagnostic reports identifiers, counts, oldest known age, and unknown-age counts
+only; it exposes no environment values or credentials.
+
+Rejected pre-container creates retain their terminal status and error for five
+minutes so callers can observe the refusal, after which Redis expires both.

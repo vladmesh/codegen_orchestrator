@@ -102,7 +102,9 @@ async def test_request_spawn_includes_ownership_in_command(
         repo="org/repo",
         github_token="ghs_test",  # noqa: S106
         task_content="build it",
-        ownership=WorkerOwnership(project_id="proj-456", run_id="live-456", attempt_id="eng-789"),
+        ownership=WorkerOwnership(
+            story_id="story-1", project_id="proj-456", run_id="live-456", attempt_id="eng-789"
+        ),
         timeout_seconds=5,
     )
 
@@ -113,6 +115,7 @@ async def test_request_spawn_includes_ownership_in_command(
 
     payload = json.loads(data["data"])
     assert payload["config"]["ownership"] == {
+        "story_id": "story-1",
         "project_id": "proj-456",
         "run_id": "live-456",
         "attempt_id": "eng-789",

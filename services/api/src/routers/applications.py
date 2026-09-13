@@ -43,7 +43,7 @@ from ..schemas import (
     ApplicationUpdate,
     FromRepoRequest,
 )
-from ..schemas.actions import AdminAction
+from ..schemas.actions import AdminAction, E2ERunAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
@@ -584,7 +584,7 @@ async def redeploy_application(
 @router.post("/{application_id}/run-e2e")
 async def run_e2e(
     application_id: int,
-    body: AdminAction | None = None,
+    body: E2ERunAction,
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _: None = Depends(require_internal_or_admin),
@@ -593,7 +593,6 @@ async def run_e2e(
 
     Creates a Run and publishes QAMessage to qa:queue.
     """
-    body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
     await _refuse_quarantined_story_sideways_run(app.id, repo.project_id, db)
 
@@ -623,6 +622,18 @@ async def run_e2e(
             detail=f"Repository {repo.id} has no acceptance_criteria. Cannot run QA.",
         )
 
+    story = await db.get(Story, body.story_id)
+    if story is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Story {body.story_id} not found",
+        )
+    if story.project_id != repo.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Story {body.story_id} does not belong to project {repo.project_id}",
+        )
+
     # The QA executor this leads to belongs to the run the project was created
     # for, exactly as a developer worker does. Resolved before the Run row for
     # the same reason as the criteria above: a project that cannot own a worker
@@ -641,6 +652,7 @@ async def run_e2e(
             id=run_id,
             type=RunType.QA,
             project_id=repo.project_id,
+            story_id=story.id,
             run_metadata={"triggered_by": "admin", "application_id": application_id},
         ),
         db,
@@ -656,6 +668,7 @@ async def run_e2e(
         await db.refresh(run)
         await db.refresh(app)
         msg = QAMessage(
+            story_id=story.id,
             project_id=str(repo.project_id),
             initiating_run_id=initiating_run_id,
             telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),

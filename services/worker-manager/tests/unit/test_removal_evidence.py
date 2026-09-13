@@ -34,7 +34,9 @@ from src.worker_removal import WorkerRemoval
 
 pytestmark = pytest.mark.asyncio
 
-OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1"
+)
 WORKER_ID = "dev-alpha-1"
 CONTAINER = f"{settings.WORKER_IMAGE_PREFIX}-{WORKER_ID}"
 

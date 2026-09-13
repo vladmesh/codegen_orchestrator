@@ -10,6 +10,7 @@ class TestEngineeringMessage:
     def test_branch_field_default_none(self):
         msg = EngineeringMessage(
             task_id="eng-123",
+            story_id="story-abc",
             project_id="proj-456",
             initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
@@ -19,6 +20,7 @@ class TestEngineeringMessage:
     def test_branch_field_set(self):
         msg = EngineeringMessage(
             task_id="eng-123",
+            story_id="story-abc",
             project_id="proj-456",
             initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
@@ -29,6 +31,7 @@ class TestEngineeringMessage:
     def test_branch_serialization_roundtrip(self):
         msg = EngineeringMessage(
             task_id="eng-123",
+            story_id="story-abc",
             project_id="proj-456",
             initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
@@ -42,6 +45,7 @@ class TestEngineeringMessage:
         """Backward compat: old messages without branch field still parse."""
         data = {
             "task_id": "eng-123",
+            "story_id": "story-abc",
             "project_id": "proj-456",
             "initiating_run_id": "live-run-1",
             "telegram_chat_id": "user-1",
@@ -60,7 +64,19 @@ class TestEngineeringMessage:
             with pytest.raises(ValidationError):
                 EngineeringMessage(
                     task_id="eng-123",
+                    story_id="story-abc",
                     project_id="proj-456",
+                    telegram_chat_id="user-1",
+                    **missing,
+                )
+
+    def test_a_message_without_a_story_is_refused(self):
+        for missing in ({}, {"story_id": ""}):
+            with pytest.raises(ValidationError):
+                EngineeringMessage(
+                    task_id="eng-123",
+                    project_id="proj-456",
+                    initiating_run_id="live-run-1",
                     telegram_chat_id="user-1",
                     **missing,
                 )

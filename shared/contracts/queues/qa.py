@@ -20,7 +20,7 @@ class QAOutcome(StrEnum):
 class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
 
-    story_id: str = ""
+    story_id: str = Field(min_length=1)
     project_id: str
     # The run that asked for this work, exactly as on `EngineeringMessage`: the
     # project's `initiating_run_id`, carried by the producer. A QA executor is

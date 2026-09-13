@@ -57,15 +57,16 @@ class WorkerLabel(StrEnum):
     ID = "com.codegen.worker.id"
     TYPE = "com.codegen.type"
     PROJECT = "com.codegen.project.id"
+    STORY = "com.codegen.story.id"
     RUN = "com.codegen.run.id"
     ATTEMPT = "com.codegen.attempt.id"
 
 
 class WorkerOwnership(BaseModel):
-    """Who a dynamic worker belongs to: one project, one run, one attempt.
+    """Who a dynamic worker belongs to: one story, project, run, and attempt.
 
     Ownership is a required fact of a create request, not something observed
-    afterwards. Whoever asks for a worker knows all three, so the answer is
+    afterwards. Whoever asks for a worker knows all four, so the answer is
     written down when the worker is made and never inferred by scanning Docker
     or Redis later.
 
@@ -89,6 +90,7 @@ class WorkerOwnership(BaseModel):
     instead of becoming an untraceable container.
     """
 
+    story_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
@@ -102,6 +104,7 @@ class WorkerOwnership(BaseModel):
         can quietly substitute a different identity along the way.
         """
         return cls(
+            story_id=msg.story_id,
             project_id=msg.project_id,
             run_id=msg.initiating_run_id,
             attempt_id=msg.task_id,
@@ -116,6 +119,7 @@ class WorkerOwnership(BaseModel):
         row, which is this attempt.
         """
         return cls(
+            story_id=msg.story_id,
             project_id=msg.project_id,
             run_id=msg.initiating_run_id,
             attempt_id=msg.run_id,
@@ -124,6 +128,7 @@ class WorkerOwnership(BaseModel):
     def as_labels(self) -> dict[str, str]:
         """The ownership half of a worker container's Docker labels."""
         return {
+            WorkerLabel.STORY.value: self.story_id,
             WorkerLabel.PROJECT.value: self.project_id,
             WorkerLabel.RUN.value: self.run_id,
             WorkerLabel.ATTEMPT.value: self.attempt_id,
@@ -132,6 +137,7 @@ class WorkerOwnership(BaseModel):
     def as_redis_meta(self) -> dict[str, str]:
         """The same facts, as `worker:meta:<worker_id>` fields."""
         return {
+            "story_id": self.story_id,
             "project_id": self.project_id,
             "run_id": self.run_id,
             "attempt_id": self.attempt_id,

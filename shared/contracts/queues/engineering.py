@@ -35,7 +35,7 @@ class EngineeringMessage(BaseMessage):
     description: str | None = None
     skip_deploy: bool = False
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
-    story_id: str | None = None  # story ID for worker reuse across tasks
+    story_id: str = Field(min_length=1)  # story ID and worker lifecycle owner
     deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
     branch: str | None = None  # story branch name (e.g. "story/{story_id}")
 

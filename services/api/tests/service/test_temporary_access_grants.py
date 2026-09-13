@@ -51,6 +51,7 @@ def _payload(project_id: str, run_id: str, **overrides) -> dict:
         "qa_run_id": run_id,
         "grant_run_id": f"temporary-access-grant-{uuid.uuid4().hex[:8]}",
         "qa_message": {
+            "story_id": "story-1",
             "project_id": project_id,
             "initiating_run_id": "live-1",
             "telegram_chat_id": "",

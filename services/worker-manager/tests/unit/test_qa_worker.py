@@ -28,7 +28,7 @@ from src.manager import QA_WORKER_TYPE, WorkerManager
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
 _OWNERSHIP = WorkerOwnership(
-    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+    story_id="story-1", project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
 )
 
 
@@ -121,7 +121,10 @@ def qa_worker(tmp_path):
                 # A QA executor is owned like any other worker: a project under
                 # test and the QA run that made it.
                 "ownership": WorkerOwnership(
-                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                    story_id="story-1",
+                    project_id="proj-qa",
+                    run_id="qa-run-1",
+                    attempt_id="attempt-qa-run-1",
                 ),
                 "agent_type": agent_type,
                 "worker_type": QA_WORKER_TYPE,
@@ -557,7 +560,10 @@ class TestTheContract:
             allowed_commands=["*"],
             capabilities=[],
             ownership=WorkerOwnership(
-                project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                story_id="story-1",
+                project_id="proj-qa",
+                run_id="qa-run-1",
+                attempt_id="attempt-qa-run-1",
             ),
         )
 

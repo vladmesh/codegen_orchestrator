@@ -24,6 +24,7 @@ PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 def _message() -> QAMessage:
     return QAMessage(
+        story_id="story-1",
         project_id=PROJECT_ID,
         initiating_run_id="live-1",
         telegram_chat_id="",

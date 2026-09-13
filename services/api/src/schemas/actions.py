@@ -2,13 +2,19 @@
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AdminAction(BaseModel):
     """Minimal body for admin-triggered actions."""
 
     actor: str = "admin"
+
+
+class E2ERunAction(AdminAction):
+    """Story owner required by an administrative QA executor run."""
+
+    story_id: str = Field(min_length=1)
 
 
 class SpawnWorkerRequest(BaseModel):

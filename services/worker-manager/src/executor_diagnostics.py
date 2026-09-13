@@ -141,6 +141,7 @@ class ExecutorDiagnostics:
     def _worker_inventory_labels_match(meta: dict[str, str], labels: dict[str, str]) -> bool:
         """Require the complete credential-safe identity on both inventory sides."""
         expected = {
+            WorkerLabel.STORY.value: meta.get("story_id"),
             WorkerLabel.PROJECT.value: meta.get("project_id"),
             WorkerLabel.RUN.value: meta.get("run_id"),
             WorkerLabel.ATTEMPT.value: meta.get("attempt_id"),

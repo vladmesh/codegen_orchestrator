@@ -225,7 +225,10 @@ async def _run_qa(  # noqa: PLR0913 — one run's context, each part named
         return await run_qa_centrally(
             target=target,
             ownership=WorkerOwnership(
-                project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                story_id="story-1",
+                project_id="proj-qa",
+                run_id="qa-run-1",
+                attempt_id="attempt-qa-run-1",
             ),
             fleet_ssh_key="fleet-key",
             acceptance_criteria=acceptance_criteria,

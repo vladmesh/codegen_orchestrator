@@ -1030,16 +1030,14 @@ class TestProcessQAJobEdgeCases:
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    async def test_inflight_dedup_uses_application_id_when_no_story(
-        self, mock_api_client, mock_redis
-    ):
-        """Standalone QA (no story_id) uses application_id for inflight dedup."""
+    async def test_inflight_dedup_uses_story_owner(self, mock_api_client, mock_redis):
+        """A story-owned QA run uses that owner for inflight dedup."""
         from src.consumers._qa_runner import QAResult
 
         mock_api_client.get_application.return_value = _application(id=42)
 
         data = {
-            "story_id": "",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",
@@ -1054,11 +1052,9 @@ class TestProcessQAJobEdgeCases:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
             await process_qa_job(data, mock_redis)
 
-        # Inflight key should use application_id, not empty story_id
         set_call = mock_redis.redis.set.call_args
         inflight_key = set_call[0][0]
-        assert "42" in inflight_key
-        assert inflight_key != "qa:inflight:"  # not empty
+        assert "story-1" in inflight_key
 
     @pytest.mark.asyncio
     async def test_qa_runs_the_criteria_from_the_message(self, mock_api_client, mock_redis):
@@ -1070,7 +1066,7 @@ class TestProcessQAJobEdgeCases:
         from src.consumers._qa_runner import QAResult
 
         data = {
-            "story_id": "",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",

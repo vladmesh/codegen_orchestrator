@@ -47,6 +47,7 @@ def _temporary_grant(**overrides) -> TemporaryAccessGrantDTO:
         "qa_run_id": "qa-1",
         "grant_run_id": "temporary-access-grant-1",
         "qa_message": {
+            "story_id": "story-1",
             "project_id": "proj-1",
             "initiating_run_id": "deploy-1",
             "telegram_chat_id": "",

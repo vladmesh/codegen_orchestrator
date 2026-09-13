@@ -61,7 +61,9 @@ from src.consumers.qa import process_qa_job
 # runtime over loopback because in a test the "container" is this process.
 _RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
 
-OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+)
 ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
 OWN_CONTAINER = "app-backend-1"

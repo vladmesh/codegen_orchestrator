@@ -19,6 +19,10 @@ from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
 
 from ..config import settings
+from ..lifecycle_diagnostics import (
+    WorkerLifecycleDiagnostics,
+    collect_worker_lifecycle_diagnostics,
+)
 from ._shared import FileTreeEntry, read_file, walk_workspace
 
 logger = structlog.get_logger()
@@ -35,6 +39,7 @@ DEFAULT_LOG_TAIL = 100
 class WorkerSummary(BaseModel):
     id: str
     status: str
+    story_id: str | None = None
     project_id: str | None = None
     repo_id: str | None = None
     workspace_path: str | None = None
@@ -272,6 +277,12 @@ async def _inventory_fields(
 # --- Endpoints ---
 
 
+@router.get("/worker-lifecycle", response_model=WorkerLifecycleDiagnostics)
+async def worker_lifecycle_diagnostics(request: Request):
+    """Expose credential-free rollout and teardown remains for operators."""
+    return await collect_worker_lifecycle_diagnostics(request.app.state.redis)
+
+
 @router.get("/workers/", response_model=list[WorkerSummary])
 async def list_workers(request: Request):
     """List all known workers with their status and metadata."""
@@ -317,6 +328,7 @@ async def list_workers(request: Request):
             WorkerSummary(
                 id=worker_id,
                 status=redis_status,
+                story_id=meta.get("story_id"),
                 project_id=meta.get("project_id"),
                 repo_id=meta.get("repo_id"),
                 workspace_path=meta.get("workspace_path"),
@@ -374,6 +386,7 @@ async def get_worker(worker_id: str, request: Request):
     return WorkerDetail(
         id=worker_id,
         status=redis_status,
+        story_id=meta.get("story_id"),
         project_id=meta.get("project_id"),
         repo_id=meta.get("repo_id"),
         workspace_path=meta.get("workspace_path"),

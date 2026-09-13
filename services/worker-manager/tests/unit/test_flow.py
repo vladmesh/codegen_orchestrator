@@ -56,7 +56,10 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
         worker_id,
         image,
         ownership=WorkerOwnership(
-            project_id="proj-flow", run_id="eng-flow", attempt_id="attempt-eng-flow"
+            story_id="story-1",
+            project_id="proj-flow",
+            run_id="eng-flow",
+            attempt_id="attempt-eng-flow",
         ),
     )
 

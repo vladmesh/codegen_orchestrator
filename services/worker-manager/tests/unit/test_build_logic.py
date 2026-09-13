@@ -19,7 +19,7 @@ from src.manager import WorkerManager
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
 _OWNERSHIP = WorkerOwnership(
-    project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
+    story_id="story-1", project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test"
 )
 
 
@@ -83,6 +83,7 @@ class TestWorkerManagerBuildLogic:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sismember = AsyncMock(return_value=False)
@@ -258,6 +259,7 @@ class TestWorkerManagerCreateWithCapabilities:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sismember = AsyncMock(return_value=False)

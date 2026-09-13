@@ -57,6 +57,7 @@ class TestEngineeringWorkerPassesTelegramId:
 
         job_data = {
             "task_id": "eng-test",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "initiating_run_id": "live-1",
             "telegram_chat_id": "12345",
@@ -77,6 +78,7 @@ class TestEngineeringWorkerPassesTelegramId:
 
         job_data = {
             "task_id": "eng-test",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "initiating_run_id": "live-1",
             "telegram_chat_id": "",

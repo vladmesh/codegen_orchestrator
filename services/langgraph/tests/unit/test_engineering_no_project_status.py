@@ -16,6 +16,7 @@ _PROJECT_ID = uuid.uuid4()
 def _make_job_data(**overrides):
     base = {
         "task_id": "eng-test-1",
+        "story_id": "story-1",
         "project_id": "proj-1",
         "initiating_run_id": "live-1",
         "telegram_chat_id": "123",

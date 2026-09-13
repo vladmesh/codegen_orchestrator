@@ -74,6 +74,7 @@ def _isolated_suite_outcome():
 
 REPO = "live-test-llm-1a2b3c4d"
 RUN_ID = "live-1a2b3c4d5e6f"
+STORY_ID = "story-live-1a2b3c4d5e6f"
 PROJECT_ID = "11111111-2222-3333-4444-555555555555"
 DEV_WORKER_ID = f"dev-{REPO[:20]}-9f8e7d6c"
 DEV_CONTAINER = f"worker-{DEV_WORKER_ID}"
@@ -178,7 +179,12 @@ def removal_record(
         worker_id=worker_id,
         container=container,
         ownership=ownership
-        or WorkerOwnership(project_id=PROJECT_ID, run_id=RUN_ID, attempt_id="task-1"),
+        or WorkerOwnership(
+            story_id=STORY_ID,
+            project_id=PROJECT_ID,
+            run_id=RUN_ID,
+            attempt_id="task-1",
+        ),
         removed_at=REMOVED_AT,
         delete_reason=delete_reason,
         worker_type=RemovalFact.read(worker_type),

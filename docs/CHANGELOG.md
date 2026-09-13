@@ -3,6 +3,10 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-13
+
+- Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
+
 ## 2026-09-12
 
 - The bot mints an invite with the credits and attempt reservation from `admission.invite_*` system config

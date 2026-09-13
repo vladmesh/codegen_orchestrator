@@ -420,7 +420,9 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
-            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
+            "ownership": WorkerOwnership(
+                story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+            ),
             "description": "Add endpoint",
             "story_context": "- ~~Create model~~ — done (see .story/old_tasks/)",
             "repo_id": None,
@@ -464,7 +466,9 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
-            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
+            "ownership": WorkerOwnership(
+                story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+            ),
             "description": "Add endpoint",
             "story_context": None,
             "story_md": story_md_content,

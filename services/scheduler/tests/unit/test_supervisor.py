@@ -929,9 +929,8 @@ class TestStoryWorkerCleanup:
     """Cleanup story workers on story complete/fail."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_story_complete(self, api_client, redis_client):
-        """Story completed -> worker container deleted, registry cleared."""
-        from shared.queues import STORY_WORKERS_KEY
+    async def test_worker_is_retained_during_pr_review(self, api_client, redis_client):
+        """PR review is not terminal, so terminal reconciliation does not run yet."""
         from src.tasks.task_dispatcher import complete_stories
 
         proj_id = "00000000-0000-0000-0000-000000000001"
@@ -958,12 +957,9 @@ class TestStoryWorkerCleanup:
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
-        # Should lookup worker
-        redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
-        # Should send delete command
-        redis_client.publish.assert_called_once()
-        # Should clear registry
-        redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")
+        redis_client.redis.hget.assert_not_called()
+        redis_client.publish.assert_not_called()
+        redis_client.redis.hdel.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_cleanup_when_no_worker(self, api_client, redis_client):

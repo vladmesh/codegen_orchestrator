@@ -106,6 +106,14 @@ async def _read_last_message(redis: Redis, stream: str) -> dict:
     return json.loads(fields["data"])
 
 
+async def _create_story(client: AsyncClient, title: str) -> str:
+    response = await client.post(
+        "/api/stories/", json={"project_id": TASK_TEST_PROJECT_ID, "title": title}
+    )
+    assert response.status_code == HTTPStatus.CREATED
+    return response.json()["id"]
+
+
 @pytest.fixture
 def admin_deploy_head_sha(monkeypatch):
     class FakeGitHubClient:
@@ -543,8 +551,12 @@ class TestRunE2E:
     @pytest.mark.asyncio
     async def test_run_e2e_on_running_app(self, client, redis, server_handle):
         app_id = await _create_running_app(client, server_handle)
+        story_id = await _create_story(client, "Administrative QA")
 
-        resp = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        resp = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test", "story_id": story_id},
+        )
         assert resp.status_code == HTTPStatus.OK
         data = resp.json()
         assert data["run"]["type"] == "qa"
@@ -569,11 +581,15 @@ class TestRunE2E:
         """Criteria cleared → rejected before a Run exists, not a run that can only error."""
         rid = await _create_repo(client)
         app_id = await _create_running_app(client, server_handle, repo_id=rid)
+        story_id = await _create_story(client, "QA without criteria")
 
         resp = await client.patch(f"/api/repositories/{rid}", json={"acceptance_criteria": ""})
         assert resp.status_code == HTTPStatus.OK
 
-        resp = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        resp = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test", "story_id": story_id},
+        )
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
         assert "acceptance_criteria" in resp.text
 
@@ -590,6 +606,7 @@ class TestRunE2E:
         from src.routers import applications
 
         app_id = await _create_running_app(client, server_handle)
+        story_id = await _create_story(client, "QA recipient failure")
         before_messages = await redis.xlen("qa:queue")
         monkeypatch.setattr(
             applications,
@@ -597,7 +614,10 @@ class TestRunE2E:
             AsyncMock(side_effect=RuntimeError("chat resolver unavailable")),
         )
 
-        response = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        response = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test", "story_id": story_id},
+        )
 
         assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
         runs = (await db_session.scalars(select(Run).where(Run.type == "qa"))).all()

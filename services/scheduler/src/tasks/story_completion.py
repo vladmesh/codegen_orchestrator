@@ -11,8 +11,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
+from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
@@ -42,37 +41,6 @@ def _parse_owner_repo(git_url: str) -> tuple[str, str]:
     # Take last two path segments
     parts = url.split("/")
     return parts[-2], parts[-1]
-
-
-async def _cleanup_story_worker(
-    redis_client: RedisStreamClient,
-    story_id: str,
-) -> None:
-    """Clean up the worker container associated with a story.
-
-    Reads worker_id from Redis registry, sends DeleteWorkerCommand,
-    then clears the registry entry.
-    """
-    redis = redis_client.redis
-    worker_id = await redis.hget(STORY_WORKERS_KEY, story_id)
-    if not worker_id:
-        return
-
-    if isinstance(worker_id, bytes):
-        worker_id = worker_id.decode()
-
-    # Send delete command to worker-manager
-    delete_cmd = DeleteWorkerCommand(
-        request_id=f"cleanup-story-{story_id}",
-        worker_id=worker_id,
-        reason="completed",
-    )
-    await redis_client.publish(WORKER_COMMANDS, delete_cmd.model_dump(mode="json"))
-
-    # Clear registry entry
-    await redis.hdel(STORY_WORKERS_KEY, story_id)
-
-    logger.info("story_worker_cleaned_up", story_id=story_id, worker_id=worker_id)
 
 
 async def _trigger_next_story(
@@ -288,7 +256,6 @@ async def complete_stories(
                     branch=branch,
                 )
                 await api_client.transition_story(story_id, "pr_review")
-                await _cleanup_story_worker(redis_client, story_id)
                 completed += 1
                 continue
 
@@ -323,9 +290,6 @@ async def complete_stories(
         # Transition story to pr_review (poll_merged_prs handles deploy after merge)
         await api_client.transition_story(story_id, "pr_review")
         log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
-
-        # Cleanup story worker container (no longer needed)
-        await _cleanup_story_worker(redis_client, story_id)
 
         # Trigger next queued story for this project (doesn't need PR to merge)
         await _trigger_next_story(api_client, redis_client, project_id)

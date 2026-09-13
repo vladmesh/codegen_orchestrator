@@ -127,6 +127,7 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
                 "application_id": application_id,
                 QA_HANDOFF_KEY: QAHandoffPlan(
                     qa_message=QAMessage(
+                        story_id=story_id,
                         project_id=project_id,
                         initiating_run_id="recheck-init-run",
                         deployed_url="http://10.0.0.9:8000",

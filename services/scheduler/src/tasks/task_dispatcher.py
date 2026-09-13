@@ -43,7 +43,6 @@ from .owner_notifications import (
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
-    _cleanup_story_worker,
     _parse_owner_repo,
     _trigger_next_story,
     complete_stories,
@@ -58,6 +57,7 @@ from .supervisor import (
     supervise_waiting_user_secret_stories,
 )
 from .temporary_access import supervise_temporary_access
+from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
@@ -65,7 +65,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "_build_cumulative_context",
-    "_cleanup_story_worker",
     "_parse_owner_repo",
     "_trigger_next_story",
     "complete_stories",
@@ -464,6 +463,7 @@ async def task_dispatcher_loop() -> None:
                 # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
+                terminal_workers = await reconcile_terminal_story_workers(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -472,6 +472,7 @@ async def task_dispatcher_loop() -> None:
                     stories_completed=completed,
                     scaffolds_triggered=scaffolds,
                     prs_merged=merged,
+                    terminal_workers_requested=terminal_workers,
                 )
                 supervisor_active = (
                     stuck_stories.get("retried", 0)

@@ -806,6 +806,22 @@ above names a shared contract import.
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
+Every developer and QA executor has one required `WorkerOwnership.story_id`.
+The engineering or QA message supplies it; worker-manager writes the same value
+to `worker:meta:<id>` and `com.codegen.story.id` before the container exists.
+The scheduler reconciles `completed`, `failed`, and `archived` stories every
+supervision tick by rediscovering all matching metadata and publishing the
+canonical `DeleteWorkerCommand`. It retains metadata and the legacy
+`story:workers` binding until worker-manager confirms removal by deleting the
+worker status/metadata, so a failed publish or Docker call remains retryable.
+
+The owner-fenced `workspace:lock:<project>` is repaired during create only when
+its worker metadata names a story and an authenticated internal API read proves
+that story terminal. Missing ownership, lookup failure, a live story, or a
+replacement lock fails closed and the refusal names both known identities.
+Worker GC likewise requires a terminal worker status plus a container proven
+non-live or absent; a failed Docker inventory is not absence.
+
 For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
 boundary. It first resolves the reported commit, including an unambiguous
 abbreviation, and requires it to equal local `HEAD`; it then non-force pushes

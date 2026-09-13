@@ -500,6 +500,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-run-34160792874",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-34160792874",
                 "planning_task_id": "fix-attempt-1",
@@ -580,6 +581,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-1",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -660,6 +662,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-feat-2",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -739,6 +742,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-3",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -808,6 +812,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-4",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -969,6 +974,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-feat-5",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",

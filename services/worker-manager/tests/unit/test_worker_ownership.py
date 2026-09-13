@@ -32,8 +32,12 @@ pytestmark = pytest.mark.asyncio
 # The run that initiated the work, and the attempt inside it. They are
 # deliberately unalike here: a test that used one value for both could not see
 # the two being swapped.
-OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1")
-OTHER_RUN = WorkerOwnership(project_id="proj-alpha", run_id="live-beta", attempt_id="eng-alpha-2")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1"
+)
+OTHER_RUN = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-beta", attempt_id="eng-alpha-2"
+)
 
 
 def _docker_mock():
@@ -235,7 +239,7 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
     docker.inspect_network = AsyncMock(return_value={"Internal": True})
     manager = WorkerManager(redis=redis, docker_client=docker)
     qa_ownership = WorkerOwnership(
-        project_id="proj-alpha", run_id="live-alpha", attempt_id="qa-alpha-9"
+        story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="qa-alpha-9"
     )
 
     with (

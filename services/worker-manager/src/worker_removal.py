@@ -55,7 +55,7 @@ class WorkerRemoval:
     def _ownership_from_meta(meta: dict[str, str] | None) -> WorkerOwnership | None:
         """The worker's own ownership, or None if its record does not carry one.
 
-        Every worker is stamped with all three facts before its container can
+        Every worker is stamped with all four facts before its container can
         exist, so the None case is a worker whose metadata is already gone —
         a second delete, or a container the garbage collector adopted. There is
         nothing to key a run-scoped record by then, and inventing a run to file
@@ -63,9 +63,10 @@ class WorkerRemoval:
         """
         if not meta:
             return None
-        if not all(meta.get(field) for field in ("project_id", "run_id", "attempt_id")):
+        if not all(meta.get(field) for field in ("story_id", "project_id", "run_id", "attempt_id")):
             return None
         return WorkerOwnership(
+            story_id=meta["story_id"],
             project_id=meta["project_id"],
             run_id=meta["run_id"],
             attempt_id=meta["attempt_id"],
