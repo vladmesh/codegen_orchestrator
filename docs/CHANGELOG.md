@@ -9,6 +9,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
 - Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.
 - Scheduler teardown now clears only a fully removed worker's unchanged story binding, so later QA and deploy fixes spawn fresh instead of waiting on a dead stream.
+- Story completion resolves the current branch PR on every retry, so teardown reuses an open PR while later fix commits receive a new deployable PR.
 
 ## 2026-09-12
 

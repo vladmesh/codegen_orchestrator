@@ -230,22 +230,20 @@ async def complete_stories(
         # Create PR from story branch to main
         try:
             github = GitHubAppClient()
-            if story.pr_number is None:
-                pr = await github.create_pull_request(
-                    owner,
-                    repo_name,
-                    head=branch,
-                    base="main",
-                    title=story.title,
-                    body="All tasks completed. Auto-merge enabled.",
-                )
-                pr_number = pr["number"]
-                # Persist before teardown: a later scheduler pass reuses this PR
-                # while the worker-manager completes its longer removal bound.
-                await api_client.update_story(story_id, {"pr_number": pr_number})
-            else:
-                pr_number = story.pr_number
-                pr = await github.get_pull_request(owner, repo_name, pr_number)
+            # This operation owns branch-state resolution. It returns the same
+            # open head-to-base PR on a teardown retry, but creates a successor
+            # when new fix commits follow an earlier merged PR. The stored
+            # number is output for the poller, never authority to bypass this.
+            pr = await github.create_pull_request(
+                owner,
+                repo_name,
+                head=branch,
+                base="main",
+                title=story.title,
+                body="All tasks completed. Auto-merge enabled.",
+            )
+            pr_number = pr["number"]
+            await api_client.update_story(story_id, {"pr_number": pr_number})
             pr_node_id = pr.get("node_id", "")
             pr_merged = pr.get("merged_at") is not None
 
@@ -287,6 +285,7 @@ async def complete_stories(
                 log=log,
             ):
                 log.warning("story_auto_merge_failed", pr_number=pr_number)
+                continue
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets
