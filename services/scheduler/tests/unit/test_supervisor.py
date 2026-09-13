@@ -246,7 +246,9 @@ class TestCompleteStoriesTriggersNext:
         mock_github.create_pull_request.return_value = {
             "number": 1,
             "node_id": "PR_node1",
+            "head": {"ref": "story/story-done", "sha": "a" * 40},
         }
+        mock_github.get_ref_sha.return_value = "a" * 40
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             completed = await complete_stories(api_client, redis_client)
 
@@ -284,7 +286,9 @@ class TestCompleteStoriesTriggersNext:
         mock_github.create_pull_request.return_value = {
             "number": 1,
             "node_id": "PR_node1",
+            "head": {"ref": "story/story-done", "sha": "a" * 40},
         }
+        mock_github.get_ref_sha.return_value = "a" * 40
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
@@ -929,8 +933,9 @@ class TestStoryWorkerCleanup:
     """Cleanup story workers on story complete/fail."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("auto_merge_enabled", [True, False])
     async def test_pr_review_handoff_finalizes_ownership_before_next_story(
-        self, api_client, redis_client
+        self, api_client, redis_client, auto_merge_enabled
     ):
         """The departing worker's lock and exact binding leave before later work starts."""
         from src.tasks.task_dispatcher import complete_stories
@@ -992,7 +997,10 @@ class TestStoryWorkerCleanup:
         mock_github.create_pull_request.return_value = {
             "number": 1,
             "node_id": "PR_node1",
+            "head": {"ref": "story/story-1", "sha": "a" * 40},
         }
+        mock_github.get_ref_sha.return_value = "a" * 40
+        mock_github.enable_auto_merge.return_value = auto_merge_enabled
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
@@ -1029,7 +1037,9 @@ class TestStoryWorkerCleanup:
         mock_github.create_pull_request.return_value = {
             "number": 1,
             "node_id": "PR_node1",
+            "head": {"ref": "story/story-1", "sha": "a" * 40},
         }
+        mock_github.get_ref_sha.return_value = "a" * 40
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 

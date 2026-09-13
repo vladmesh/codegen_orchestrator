@@ -10,6 +10,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.
 - Scheduler teardown now clears only a fully removed worker's unchanged story binding, so later QA and deploy fixes spawn fresh instead of waiting on a dead stream.
 - Story completion resolves the current branch PR on every retry, so teardown reuses an open PR while later fix commits receive a new deployable PR.
+- PR handoff verifies the current branch head and recovers a PR merged during worker teardown, avoiding false no-commit quarantine without trusting stale fix-cycle PRs.
 
 ## 2026-09-12
 

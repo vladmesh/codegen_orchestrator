@@ -8,7 +8,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
@@ -42,6 +42,61 @@ def _parse_owner_repo(git_url: str) -> tuple[str, str]:
     # Take last two path segments
     parts = url.split("/")
     return parts[-2], parts[-1]
+
+
+def _validate_current_cycle_pr(pr: object, *, branch: str, branch_sha: str) -> dict:
+    """Require an exact, unambiguous identity for the current branch state."""
+    if not isinstance(pr, dict):
+        raise ValueError("current-cycle pull request response is not an object")
+    number = pr.get("number")
+    head = pr.get("head")
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise ValueError("current-cycle pull request has no valid number")
+    if not isinstance(head, dict):
+        raise ValueError("current-cycle pull request has no head identity")
+    if head.get("ref") != branch or head.get("sha") != branch_sha:
+        raise ValueError("current-cycle pull request does not match the current branch head")
+    return pr
+
+
+async def _resolve_current_cycle_pr(
+    github: GitHubAppClient,
+    *,
+    story: StoryDTO,
+    owner: str,
+    repo_name: str,
+    branch: str,
+) -> dict:
+    """Resolve the PR representing the exact current story-branch state."""
+    branch_sha = await github.get_ref_sha(owner, repo_name, f"heads/{branch}")
+    if not isinstance(branch_sha, str) or not branch_sha:
+        raise ValueError(f"current story branch {branch} has no commit SHA")
+
+    try:
+        pr = await github.create_pull_request(
+            owner,
+            repo_name,
+            head=branch,
+            base="main",
+            title=story.title,
+            body="All tasks completed. Auto-merge enabled.",
+        )
+    except NoCommitsBetweenError as no_commits:
+        if not story.pr_number:
+            raise
+        try:
+            stored_pr = await github.get_pull_request(owner, repo_name, story.pr_number)
+        except Exception as exc:
+            raise RuntimeError("could not verify stored PR after no-commits response") from exc
+        try:
+            _validate_current_cycle_pr(stored_pr, branch=branch, branch_sha=branch_sha)
+        except ValueError:
+            raise no_commits from None
+        if stored_pr["number"] != story.pr_number or not stored_pr.get("merged_at"):
+            raise no_commits
+        return stored_pr
+
+    return _validate_current_cycle_pr(pr, branch=branch, branch_sha=branch_sha)
 
 
 async def _trigger_next_story(
@@ -154,8 +209,8 @@ async def complete_stories(
     left where it is.
 
     When all live tasks in a story are done:
-    1. Create PR from story/{story_id} → main
-    2. Enable auto-merge (merge commit, not squash — preserves individual commits)
+    1. Read story/{story_id} HEAD and resolve its exact current-cycle PR
+    2. Persist that PR number and attempt auto-merge
     3. Finalize worker removal and its unchanged story binding
     4. Transition story to PR_REVIEW, then trigger the next story
 
@@ -230,17 +285,12 @@ async def complete_stories(
         # Create PR from story branch to main
         try:
             github = GitHubAppClient()
-            # This operation owns branch-state resolution. It returns the same
-            # open head-to-base PR on a teardown retry, but creates a successor
-            # when new fix commits follow an earlier merged PR. The stored
-            # number is output for the poller, never authority to bypass this.
-            pr = await github.create_pull_request(
-                owner,
-                repo_name,
-                head=branch,
-                base="main",
-                title=story.title,
-                body="All tasks completed. Auto-merge enabled.",
+            pr = await _resolve_current_cycle_pr(
+                github,
+                story=story,
+                owner=owner,
+                repo_name=repo_name,
+                branch=branch,
             )
             pr_number = pr["number"]
             await api_client.update_story(story_id, {"pr_number": pr_number})
@@ -285,7 +335,6 @@ async def complete_stories(
                 log=log,
             ):
                 log.warning("story_auto_merge_failed", pr_number=pr_number)
-                continue
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets
