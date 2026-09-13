@@ -37,7 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -94,8 +94,27 @@ class OwnerNotification(BaseModel):
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.
     detail: str | None = None
+    #: The administrator audience of the same ending, settled independently of
+    #: the owner. Absent (`None`) on every record written before this audience
+    #: existed and on endings that owe administrators nothing, so a released
+    #: record keeps exactly its owner meaning and never gains an obligation.
+    admin_text: str | None = None
+    admin_state: OwnerNotificationState | None = None
+    admin_attempts: int = Field(default=0, ge=0)
+    admin_detail: str | None = None
+
+    @model_validator(mode="after")
+    def _admin_audience_is_whole(self) -> OwnerNotification:
+        if (self.admin_text is None) != (self.admin_state is None):
+            raise ValueError("admin_text and admin_state are present together or not at all")
+        return self
 
     @property
     def owed(self) -> bool:
-        """True while somebody still has to publish this message."""
+        """True while somebody still has to publish this message to the owner."""
         return self.state is OwnerNotificationState.OWED
+
+    @property
+    def admin_owed(self) -> bool:
+        """True while administrators still have to be told about this ending."""
+        return self.admin_state is OwnerNotificationState.OWED

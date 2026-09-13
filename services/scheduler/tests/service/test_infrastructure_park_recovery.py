@@ -1,15 +1,18 @@
-"""Real API proof that an admission refusal parks once and one retry recovers it.
+"""Real API proof that an admission refusal is a park even when its answer is lost.
 
 The governing reproduction: the first dispatcher tick is refused with
-`executor_unavailable` and the owner's notice cannot be published. The park must
-still be complete after that tick, the next tick must neither admit nor publish
-anything for the task, and one operator call must return it to one fresh attempt.
+`executor_unavailable` and the HTTP answer never reaches the scheduler. The park,
+its evidence and both notice audiences must already be committed; the next tick
+must neither admit, mint, nor publish anything for the task; owner and
+administrator delivery must retry independently and settle once across a
+restarted sweep; and one operator call must return the task to one fresh attempt.
 """
 
 from datetime import UTC, datetime, timedelta
 import os
 import uuid
 
+import httpx
 import pytest
 from redis.asyncio import Redis
 
@@ -32,17 +35,38 @@ from src.tasks.task_dispatcher import dispatch_todo_tasks
 
 
 class _RecordingRedis:
-    """The engineering queue accepts messages; the owner's queue is unreachable."""
+    """The engineering queue accepts messages; the owner's queue fails on demand."""
 
     def __init__(self) -> None:
         self.messages: list[tuple[str, object]] = []
+        self.owner_events: list[dict] = []
+        self.owner_failures = 0
 
     async def publish_message(self, queue: str, message: object) -> str:
         self.messages.append((queue, message))
         return "1-1"
 
     async def publish_flat(self, queue: str, fields: dict) -> str:
-        raise ConnectionError("po:input is unreachable")
+        if self.owner_failures:
+            self.owner_failures -= 1
+            raise ConnectionError("po:input is unreachable")
+        self.owner_events.append(fields)
+        return "1-1"
+
+
+class _AdminChannel:
+    """Telegram for administrators, failing on demand."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.failures = 0
+
+    async def notify_admins(self, message: str, level: str = "info") -> int:
+        if self.failures:
+            self.failures -= 1
+            raise httpx.ConnectError("Telegram is unreachable")
+        self.messages.append(message)
+        return 1
 
 
 async def _publish_executors(availability: ExecutorAvailability, reason_code: str) -> None:
@@ -119,28 +143,41 @@ async def _story_task(api_client) -> tuple[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_refused_admission_parks_once_and_one_retry_restores_one_attempt(
+async def test_a_lost_refusal_answer_leaves_a_recoverable_park_and_both_notices(  # noqa: PLR0915
     api_client, monkeypatch
 ):
     story_id, task_id = await _story_task(api_client)
-    admitted_task_ids: list[str] = []
+    asked_for_task: list[str] = []
     admit = api_client.admit_engineering_dispatch
 
-    async def recording_admission(command):
-        admitted_task_ids.append(command.task_id)
-        return await admit(command)
+    async def admission_whose_first_answer_is_lost(command):
+        decision = await admit(command)
+        if command.task_id == task_id:
+            asked_for_task.append(command.task_id)
+            if len(asked_for_task) == 1:
+                raise httpx.ReadTimeout("the refusal committed but its answer never arrived")
+        return decision
 
-    monkeypatch.setattr(api_client, "admit_engineering_dispatch", recording_admission)
+    monkeypatch.setattr(
+        api_client, "admit_engineering_dispatch", admission_whose_first_answer_is_lost
+    )
+    admins = _AdminChannel()
+    monkeypatch.setattr("src.tasks.owner_notifications.notify_admins", admins.notify_admins)
     redis = _RecordingRedis()
 
     def published_for_task() -> list:
         return [message for _, message in redis.messages if message.planning_task_id == task_id]
 
+    def owner_events(stream: _RecordingRedis) -> list[dict]:
+        return [event for event in stream.owner_events if event.get("story_id") == story_id]
+
+    def admin_messages() -> list[str]:
+        return [message for message in admins.messages if story_id in message]
+
     await _publish_executors(ExecutorAvailability.UNAVAILABLE, "local_auth_invalid")
     try:
-        # Tick one: admission refuses, the park commits, the owner publish fails.
+        # Tick one: admission refuses and parks; the scheduler never hears back.
         await dispatch_todo_tasks(api_client, redis)
-        await supervise_owed_owner_notifications(api_client, redis)
 
         task = await api_client.get_task(task_id)
         story = await api_client.get_story(story_id)
@@ -150,17 +187,34 @@ async def test_refused_admission_parks_once_and_one_retry_restores_one_attempt(
         assert story.status is StoryStatus.WAITING_HUMAN_REVIEW
         assert story.quarantine_reason == {ENGINEERING_INFRASTRUCTURE_KEY: evidence}
         assert (evidence["task_id"], evidence["refusal"]) == (task_id, "executor_unavailable")
-        notice = await api_client.get_story_owner_notification(story_id)
-        assert (notice.state, notice.attempts) == (OwnerNotificationState.OWED, 1)
 
         # Tick two: nothing admits, mints, or publishes for the parked task.
         await dispatch_todo_tasks(api_client, redis)
-        assert admitted_task_ids.count(task_id) == 1
+        assert asked_for_task == [task_id]
         assert published_for_task() == []
         assert await api_client.list_runs(task_id=task_id, run_type=RunType.ENGINEERING.value) == []
         assert (await api_client.get_task(task_id)).status == TaskStatus.WAITING_HUMAN_REVIEW
     finally:
         await _publish_executors(ExecutorAvailability.AVAILABLE, "ready")
+
+    # Both audiences fail once; a restarted sweep then settles each exactly once.
+    redis.owner_failures = 1
+    admins.failures = 1
+    await supervise_owed_owner_notifications(api_client, redis)
+    notice = await api_client.get_story_owner_notification(story_id)
+    assert (notice.state, notice.attempts) == (OwnerNotificationState.OWED, 1)
+    assert (notice.admin_state, notice.admin_attempts) == (OwnerNotificationState.OWED, 1)
+    assert owner_events(redis) == []
+    assert admin_messages() == []
+
+    restarted = _RecordingRedis()
+    await supervise_owed_owner_notifications(api_client, restarted)
+    await supervise_owed_owner_notifications(api_client, restarted)
+    notice = await api_client.get_story_owner_notification(story_id)
+    assert notice.state is OwnerNotificationState.DELIVERED
+    assert notice.admin_state is OwnerNotificationState.DELIVERED
+    assert len(owner_events(restarted)) == 1
+    assert len(admin_messages()) == 1
 
     retried = await api_client.request(
         "POST",
@@ -189,3 +243,7 @@ async def test_refused_admission_parks_once_and_one_retry_restores_one_attempt(
     assert runs[0].id != evidence["attempt_id"]
     assert len(published_for_task()) == 1
     assert (await api_client.get_task(task_id)).status == TaskStatus.IN_DEV
+    # Recovery neither re-owes nor resends a settled audience.
+    await supervise_owed_owner_notifications(api_client, restarted)
+    assert len(owner_events(restarted)) == 1
+    assert len(admin_messages()) == 1

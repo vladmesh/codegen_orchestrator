@@ -230,23 +230,41 @@ story-bound task, story `quarantine_reason`. Admission owns
 supervisor owns post-handoff worker creation refusals. Both preserve
 `current_iteration` and retry accounting.
 
-A story-bound park is one internal/admin API transaction,
-`POST /api/stories/{id}/park-infrastructure-refusal`, taking
-`EngineeringInfrastructureParkCommand` (the exact park plus actor) and returning
-`EngineeringInfrastructureParkRead`. Under task then story locks, and the refused
-Run lock when a Run exists, it validates the park, applies the legal task hops
-from `todo`, `in_dev`, or `failed` with audit events, writes both evidence
-copies, moves the story to `waiting_human_review`, and owes the owner's
-`story_blocked` notice on the story, all in one commit. Its dispositions are
-`parked`, the repeat no-op `already_parked`, and `ineligible_story` for a
-terminal or otherwise transition-ineligible story, which changes neither row.
-Different evidence, a task of another story, a half-parked row, a story or task
-already in human review, a non-parkable task status, or a mismatched Run is a
-typed 409. Callers sequence no park state; the owed notice is delivered later by
-the owner-notification supervisor, and administrators are alerted once by the
-caller whose call returned `parked`. Admission refuses a task or story that
-carries a park with `infrastructure_parked` before any attempt id is minted.
-Standalone tasks have no story transaction and keep their explicit task-only park.
+One API function, `apply_infrastructure_park` (`services/api/src/infrastructure_park.py`),
+writes every park on rows its caller already holds locked (Task, then Story), and
+never commits. It applies the legal audited task hops from `todo`, `in_dev`, or
+`failed`, writes both evidence copies, moves the story to `waiting_human_review`,
+and owes both notice audiences on the story's terminal-notification record. Its
+dispositions are `parked`, the repeat no-op `already_parked`, and
+`ineligible_story` for a terminal or otherwise transition-ineligible story, which
+changes neither row. Different evidence, a half-parked row, a row already in
+human review, or a non-parkable task status is a typed 409.
+
+Admission is the sole linearization point for a paid pre-agent refusal: in the
+same transaction that writes the paid-work `WorkAdmissionAudit`, and under the
+task and story admission locks, it parks with that audit's attempt id, reason and
+message and returns the result as `EngineeringDispatchRead.infrastructure_park`.
+A lost answer therefore leaves a task that is no longer `todo`, and the scheduler
+never parks this refusal again. A standalone task is parked on the task alone.
+
+The liveness supervisor parks a Run-backed refusal through the internal/admin
+`POST /api/stories/{id}/park-infrastructure-refusal`
+(`EngineeringInfrastructureParkCommand` → `EngineeringInfrastructureParkRead`).
+The command is never authority by itself: the locked refused Run must match task,
+story, typed refusal and the detail derived from it; without a Run, the unique
+committed paid-work audit must match task, story, current iteration, attempt id,
+typed reason and message. A missing proof is `refusal_evidence_missing`, more than
+one audit is `refusal_evidence_ambiguous`, any mismatch is `stale_attempt_fence`,
+and none of them mutates anything. Admission also refuses a task or story that
+already carries a park with `infrastructure_parked` before any attempt id is minted.
+
+`OwnerNotification` carries an optional administrator audience (`admin_text`,
+`admin_state`, `admin_attempts`, `admin_detail`) settled independently of the
+owner through the same record, selection and bounded retries. Released records
+have no such fields and are read as owing administrators nothing, so their owner
+semantics are unchanged; no migration is needed because the record is JSON. The
+owner audience is voided when its terminal status is gone; the administrator
+audience describes a committed event and is delivered regardless.
 
 ### The Product Brief coverage-to-dispatch boundary
 

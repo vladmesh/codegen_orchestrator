@@ -10,7 +10,7 @@ event that happened and never sequence lifecycle state themselves.
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -25,22 +25,23 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRetryCommand,
     EngineeringInfrastructureRetryOutcome,
     EngineeringInfrastructureRetryRead,
+    infrastructure_refusal_detail,
 )
-from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
-from shared.contracts.dto.story import VALID_TRANSITIONS as STORY_TRANSITIONS, StoryStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.vocab import OwnerNotificationEvent
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Run, Task, TaskEvent
+from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
+from ..infrastructure_park import apply_infrastructure_park, infrastructure_conflict
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
-from ._story_helpers import _do_transition, _get_story_for_update, _land_on, _validate_transition
+from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
 
 logger = structlog.get_logger()
@@ -67,23 +68,14 @@ COMPOSITE_CHAINS: dict[str, tuple[StoryStatus, ...]] = {
 }
 
 INFRASTRUCTURE_RETRY_ACTION = "retry_infrastructure_attempt"
-INFRASTRUCTURE_PARK_ACTION = "park_infrastructure_refusal"
 
-#: Task statuses a real pre-agent refusal is observed in: an admission refusal
-#: (`todo`), a no-Run refusal whose task already left todo (`in_dev`), and a
-#: post-handoff refusal the result handler already failed (`failed`).
-_PARKABLE_TASK_HOPS: dict[str, tuple[TaskStatus, ...]] = {
-    TaskStatus.TODO.value: (TaskStatus.IN_DEV, TaskStatus.WAITING_HUMAN_REVIEW),
-    TaskStatus.IN_DEV.value: (TaskStatus.WAITING_HUMAN_REVIEW,),
-    TaskStatus.FAILED.value: (TaskStatus.WAITING_HUMAN_REVIEW,),
-}
+#: The paid gate's audit subject, and the outcomes it records for a refusal.
+PAID_WORK_AUDIT_SUBJECT = "paid_work"
+_REFUSED_AUDIT_OUTCOMES = frozenset(
+    {WorkAdmissionOutcome.DENIED.value, WorkAdmissionOutcome.DEFERRED.value}
+)
 
-
-def _infrastructure_conflict(code: str, message: str) -> None:
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={"code": code, "message": message},
-    )
+_infrastructure_conflict = infrastructure_conflict
 
 
 def _park_from_metadata(metadata: dict | None) -> EngineeringInfrastructurePark | None:
@@ -283,6 +275,58 @@ def _park_read(
     )
 
 
+async def _prove_refusal(
+    task: Task, story: Story, park: EngineeringInfrastructurePark, db: AsyncSession
+) -> None:
+    """Fail closed unless committed evidence proves exactly this park.
+
+    A refused Run is the proof for a post-handoff refusal: it must match the task,
+    story, typed refusal and the stable detail derived from it. Without a Run the
+    only proof is the unique committed paid-work admission audit for the same
+    task, story, current iteration, attempt id, typed reason and message. A
+    syntactically valid command alone never quarantines a story.
+    """
+    run = await _locked_refused_run(story.id, park, db)
+    if run is not None:
+        if park.detail != infrastructure_refusal_detail(park.refusal):
+            _infrastructure_conflict(
+                "stale_attempt_fence", "The park detail does not match the refused Run."
+            )
+        return
+    audits = (
+        await db.scalars(
+            select(WorkAdmissionAudit)
+            .where(
+                WorkAdmissionAudit.subject == PAID_WORK_AUDIT_SUBJECT,
+                WorkAdmissionAudit.reference_id == park.attempt_id,
+            )
+            .with_for_update()
+        )
+    ).all()
+    if not audits:
+        _infrastructure_conflict(
+            "refusal_evidence_missing", "No refused Run or admission audit proves this park."
+        )
+    if len(audits) > 1:
+        _infrastructure_conflict(
+            "refusal_evidence_ambiguous", "More than one admission audit names this attempt."
+        )
+    audit = audits[0]
+    payload = audit.command_payload or {}
+    if (
+        audit.outcome not in _REFUSED_AUDIT_OUTCOMES
+        or audit.reason != park.refusal.value
+        or audit.message != park.detail
+        or payload.get("type") != RunType.ENGINEERING.value
+        or payload.get("task_id") != task.id
+        or payload.get("story_id") != story.id
+        or (payload.get("run_metadata") or {}).get("iteration") != task.current_iteration
+    ):
+        _infrastructure_conflict(
+            "stale_attempt_fence", "The admission audit does not match this park."
+        )
+
+
 @action_router.post(
     "/{story_id}/park-infrastructure-refusal",
     response_model=EngineeringInfrastructureParkRead,
@@ -293,12 +337,12 @@ async def park_infrastructure_refusal(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> EngineeringInfrastructureParkRead:
-    """Park one exact pre-agent refusal on its task and story in one transaction.
+    """Park one proven pre-agent refusal on its task and story in one transaction.
 
-    The sole owner of story-backed infrastructure park completion. Evidence,
-    legal task hops with their audit events, the story transition, and the
-    owner's durable notice commit together or not at all, so no caller can
-    observe a half-parked task that admission or liveness would spend again.
+    The liveness supervisor's path for a refused Run. Admission parks its own
+    refusals in the deciding transaction and never calls this. Evidence, legal
+    task hops with audit events, the story transition, and both notification
+    audiences commit together or not at all.
     """
     park = command.park
     # Keep the repository's lock ladder: Task before Story before Run.
@@ -306,81 +350,11 @@ async def park_infrastructure_refusal(
     story = await _get_story_for_update(story_id, db)
     if task.story_id != story.id:
         _infrastructure_conflict("wrong_task", "The task does not belong to this story.")
-
-    evidence = park.model_dump(mode="json")
-    task_evidence = (task.failure_metadata or {}).get(ENGINEERING_INFRASTRUCTURE_KEY)
-    story_evidence = (story.quarantine_reason or {}).get(ENGINEERING_INFRASTRUCTURE_KEY)
-    if any(found not in (None, evidence) for found in (task_evidence, story_evidence)):
-        _infrastructure_conflict(
-            "stale_infrastructure_reason", "A different infrastructure park is recorded."
-        )
-    task_parked = task.status == TaskStatus.WAITING_HUMAN_REVIEW.value and task_evidence == evidence
-    story_parked = (
-        story.status == StoryStatus.WAITING_HUMAN_REVIEW.value and story_evidence == evidence
-    )
-    if task_parked and story_parked:
-        return _park_read(
-            EngineeringInfrastructureParkDisposition.ALREADY_PARKED, story, task, park
-        )
-    if task_evidence is not None or story_evidence is not None:
-        _infrastructure_conflict(
-            "park_state_changed", "The recorded park no longer has its parked state."
-        )
-    if (
-        story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
-        or task.status == TaskStatus.WAITING_HUMAN_REVIEW.value
-    ):
-        _infrastructure_conflict(
-            "already_in_human_review", "Story or task is already in human review."
-        )
-    if StoryStatus.WAITING_HUMAN_REVIEW not in STORY_TRANSITIONS[StoryStatus(story.status)]:
-        # A terminal or otherwise ineligible story wins: nothing is reopened,
-        # no evidence is written, and the task is left exactly as it was.
-        logger.warning(
-            "engineering_infrastructure_story_ineligible",
-            story_id=story.id,
-            task_id=task.id,
-            story_status=story.status,
-        )
-        return _park_read(
-            EngineeringInfrastructureParkDisposition.INELIGIBLE_STORY, story, task, park
-        )
-    hops = _PARKABLE_TASK_HOPS.get(task.status)
-    if hops is None:
-        _infrastructure_conflict(
-            "wrong_status", "Infrastructure park requires a todo, in_dev, or failed task."
-        )
-    await _locked_refused_run(story.id, park, db)
-
-    audit = {"action": INFRASTRUCTURE_PARK_ACTION, **evidence}
-    for hop in hops:
-        validate_transition(task.status, hop)
-        from_status = task.status
-        task.status = hop.value
-        await create_status_event(task, from_status, hop, command.actor, audit, db)
-    task.failure_metadata = {**(task.failure_metadata or {}), **park.as_metadata()}
-    story.quarantine_reason = {**(story.quarantine_reason or {}), **park.as_metadata()}
-    _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
-    story.owner_notification = OwnerNotification(
-        event=OwnerNotificationEvent.STORY_BLOCKED,
-        text=park.detail,
-        story_id=story.id,
-        project_id=str(story.project_id),
-        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
-    ).model_dump(mode="json")
-
-    await db.commit()
-    logger.info(
-        "engineering_infrastructure_refusal_parked",
-        story_id=story.id,
-        task_id=task.id,
-        attempt_id=park.attempt_id,
-        refusal=park.refusal.value,
-        actor=command.actor,
-    )
-    return _park_read(EngineeringInfrastructureParkDisposition.PARKED, story, task, park)
+    await _prove_refusal(task, story, park, db)
+    disposition = await apply_infrastructure_park(task, story, park, actor=command.actor, db=db)
+    if disposition is EngineeringInfrastructureParkDisposition.PARKED:
+        await db.commit()
+    return _park_read(disposition, story, task, park)
 
 
 def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:

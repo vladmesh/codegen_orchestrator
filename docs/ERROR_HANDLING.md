@@ -112,23 +112,29 @@ Worker creation has the same boundary after queue handoff. Worker-manager writes
 validated `agent_started` or `pre_agent_refused` evidence, and the engineering
 Run carries it into liveness reconciliation. A valid pre-agent infrastructure
 refusal parks the task and story on the first tick, preserves the iteration and
-retry bound, and owes the existing owner/admin notice once. `agent_started`,
+retry bound, and durably owes the owner and administrator notices once. `agent_started`,
 missing, malformed, or legacy evidence follows the ordinary technical/product
 retry policy. Zero tokens, short duration, error text, and missing containers are
 never substitutes for the typed phase.
 
-A story-backed park is atomic, so there is no partial park to converge. Both
-callers send the exact park to `POST /api/stories/{id}/park-infrastructure-refusal`;
-one transaction commits the task hops, both evidence copies, the story transition,
-and the owed owner notice, or nothing. A lost response, an administrator alert
-failure, or a restart after the call leaves either the untouched source state or
-the complete park, and a repeat returns `already_parked` without a second alert.
-Notification delivery happens afterwards in the owner-notification supervisor, so
-`retrying` or any other delivery outcome cannot roll back the park or leave the
-task dispatchable. `ineligible_story` (terminal or racing story) and typed 409s
-are contained per task without generic retry accounting. As defense in depth,
-admission refuses a parked task or story with `infrastructure_parked` before an
-attempt id is minted.
+A park is atomic, so there is no partial park to converge. An admission refusal
+is parked by admission itself, in the transaction that audits the refusal; the
+dispatcher makes no park call, so a lost HTTP answer or a stopped scheduler
+still leaves the complete park, and the next tick is refused as
+`task_not_dispatchable` before any attempt id is minted. A Run-backed refusal is
+parked by liveness through `POST /api/stories/{id}/park-infrastructure-refusal`,
+which proves the park against the locked refused Run (or the unique admission
+audit) and fails closed with no mutation otherwise. Either transaction commits
+the task hops, both evidence copies, the story transition, and both owed notice
+audiences, or nothing; a repeat returns `already_parked` and re-owes nothing.
+
+Delivery happens afterwards in `supervise_owed_owner_notifications`. The owner
+and administrator audiences keep separate state and bounded attempts on the same
+record, so a crash, an ambiguous publish, one audience retrying or exhausting, or
+a restart never loses the other audience or resends a settled one. No delivery
+outcome can roll back a park or leave the task dispatchable. `ineligible_story`
+(terminal or racing story) and typed 409s are contained per task without generic
+retry accounting.
 
 A standalone task has no story lifecycle or owner-notification record to mutate;
 the same admission refusal stores the typed park on the task and moves that task

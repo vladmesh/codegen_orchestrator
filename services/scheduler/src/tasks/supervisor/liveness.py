@@ -45,10 +45,7 @@ if TYPE_CHECKING:
 
 from ... import startup
 from .._recipients import resolve_project_recipient
-from ..infrastructure_park import (
-    park_standalone_infrastructure_refusal,
-    park_story_infrastructure_refusal,
-)
+from ..infrastructure_park import park_story_infrastructure_refusal
 from ..owner_notifications import deliver_owed_notification, owe_owner_notification
 from ..worker_liveness import (
     WorkerAttemptState,
@@ -383,19 +380,10 @@ async def _park_pre_agent_infrastructure_refusal(
         refusal=refusal,
         detail=infrastructure_refusal_detail(refusal),
     )
-    if task.story_id:
-        disposition = await park_story_infrastructure_refusal(
-            api_client,
-            task,
-            park,
-            actor="supervisor",
-            notify_admin=_notify_admin_failure,
-            log=log,
-        )
-    else:
-        disposition = await park_standalone_infrastructure_refusal(
-            api_client, task, park, actor="supervisor"
-        )
+    # Only story tasks reach here: the failed-task pass skips standalone tasks.
+    disposition = await park_story_infrastructure_refusal(
+        api_client, task, park, actor="supervisor", log=log
+    )
     if disposition is EngineeringInfrastructureParkDisposition.PARKED:
         escalated_stories.add(task.story_id)
         log.warning(

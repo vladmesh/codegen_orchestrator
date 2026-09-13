@@ -197,12 +197,12 @@ operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
 
 Two admission refusals are terminal for this tick but free of engineering retry
 accounting: `executor_unavailable` and `executor_confirmation_required`. The
-dispatcher sends the exact typed pre-agent infrastructure park to the atomic
-`park-infrastructure-refusal` transaction, which leaves `current_iteration`
-unchanged and commits task and story human review with the owed owner notice.
-Delivery follows later from the owner-notification supervisor. A parked task is
-no longer `todo`, and admission refuses a parked story with
-`infrastructure_parked`, so later ticks neither admit nor publish for it.
+admission point parks them itself, in the transaction that decides and audits
+the refusal: task and story reach human review with the exact typed evidence and
+both owed notice audiences, and `current_iteration` is unchanged. The dispatcher
+only logs the decision. A parked task is no longer `todo`, and admission refuses
+a parked story with `infrastructure_parked`, so later ticks neither admit, mint,
+nor publish for it, even when the refusal's answer never reached the scheduler.
 
 The Product Brief condition is the one that can hold a whole story's plan back:
 a task created under an active architect planning attempt is
@@ -247,10 +247,11 @@ tick parks task and story without incrementing the iteration. Evidence that is
 missing, malformed, legacy, or says `agent_started` stays on the ordinary
 engineering failure and retry path.
 
-The supervisor applies that park through the same atomic API transaction as
-admission, so the `failed` task moves to human review together with its story and
-evidence, never ahead of or behind them. Notification delivery is not part of the
-park. Terminal, transition-ineligible, and racing stories return
+The supervisor applies that park through the internal park endpoint, which uses
+the same park function as admission but accepts only evidence matching the locked
+refused Run, so the `failed` task moves to human review together with its story,
+evidence, and owed owner and administrator notices, never ahead of or behind them.
+Notification delivery is not part of the park. Terminal, transition-ineligible, and racing stories return
 `ineligible_story` and are contained per task, so one stale row cannot stop
 another task or any later supervisor in the tick.
 

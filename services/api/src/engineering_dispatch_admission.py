@@ -40,7 +40,12 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
-from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
+from shared.contracts.dto.engineering_execution import (
+    ENGINEERING_INFRASTRUCTURE_KEY,
+    EngineeringInfrastructurePark,
+    EngineeringInfrastructureParkDisposition,
+    infrastructure_refusal_for_dispatch,
+)
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
     ProjectStatus,
@@ -48,10 +53,15 @@ from shared.contracts.dto.project import (
 )
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
+from shared.contracts.dto.work_admission import (
+    PaidRunStartCommand,
+    PaidRunStartRead,
+    WorkAdmissionOutcome,
+)
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import Run, Task
 
+from .infrastructure_park import PARKABLE_TASK_HOPS, apply_infrastructure_park
 from .work_admission import start_paid_run
 
 #: The orchestrator's own project. Its tasks are implemented by hand, so the
@@ -276,6 +286,44 @@ def _task_row_refusal(task: Task) -> EngineeringDispatchRefusal | None:
     return None
 
 
+async def _park_infrastructure_refusal(
+    task: Task,
+    run_id: str,
+    started: PaidRunStartRead,
+    command: EngineeringDispatchCommand,
+    db: AsyncSession,
+) -> EngineeringInfrastructureParkDisposition | None:
+    """Rung 5's own park of a typed pre-agent refusal, in the deciding transaction.
+
+    The paid gate has just written the refusal's audit under the rows this
+    decision holds. Parking task and story here, with that audit's attempt id,
+    reason and message, and owing both notification audiences before the one
+    commit, is what makes the refusal durable as a park: a lost response or a
+    stopped scheduler leaves a task that is no longer `todo`, so the next tick
+    is refused before any id is minted. No caller parks this refusal again.
+    """
+    from .routers._story_helpers import _get_story_for_update
+
+    refusal = infrastructure_refusal_for_dispatch(started.admission.reason)
+    if refusal is None or task.status not in PARKABLE_TASK_HOPS:
+        return None
+    if not started.admission.message:
+        raise RuntimeError(f"Infrastructure refusal {run_id} carried no message to park")
+    story = await _get_story_for_update(task.story_id, db) if task.story_id else None
+    return await apply_infrastructure_park(
+        task,
+        story,
+        EngineeringInfrastructurePark(
+            task_id=task.id,
+            attempt_id=run_id,
+            refusal=refusal,
+            detail=started.admission.message,
+        ),
+        actor=command.origin.value,
+        db=db,
+    )
+
+
 def _prior_attempt(
     task: Task, attempts: list[Run], initiating_run_id: str
 ) -> EngineeringDispatchRead | None:
@@ -485,6 +533,9 @@ async def admit_engineering_dispatch(
             initiating_run_id=initiating_run_id,
             paid_work=started,
             overridden=list(overrides.applied),
+            infrastructure_park=await _park_infrastructure_refusal(
+                task, run_id, started, command, db
+            ),
         )
     return EngineeringDispatchRead(
         outcome=EngineeringDispatchOutcome.ADMITTED,

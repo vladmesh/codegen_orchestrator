@@ -19,12 +19,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRepair,
 )
 from shared.contracts.dto.engineering_execution import (
-    ENGINEERING_INFRASTRUCTURE_KEY,
-    EngineeringInfrastructurePark,
-    EngineeringInfrastructureParkCommand,
     EngineeringInfrastructureParkDisposition,
-    EngineeringInfrastructureParkRead,
-    EngineeringInfrastructureRefusal,
 )
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
@@ -200,26 +195,6 @@ def _paid_refusal(
 
 
 _REFUSAL_DETAIL = "Repair the selected executor configuration, then retry this attempt."
-
-
-def _park_read(
-    disposition: EngineeringInfrastructureParkDisposition,
-    *,
-    refusal: EngineeringDispatchRefusal = EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE,
-    task_status: str = "waiting_human_review",
-    story_status: str = "waiting_human_review",
-) -> EngineeringInfrastructureParkRead:
-    """The API's typed answer to the atomic story-backed park."""
-    return EngineeringInfrastructureParkRead(
-        disposition=disposition,
-        story_id="story-1",
-        task_id="task-1",
-        attempt_id="eng-test",
-        refusal=EngineeringInfrastructureRefusal(refusal.value),
-        task_status=task_status,
-        story_status=story_status,
-        current_iteration=0,
-    )
 
 
 def _repair(repair: EngineeringDispatchRepair, run_id: str = "eng-abc") -> EngineeringDispatchRead:
@@ -582,38 +557,26 @@ class TestDispatchTodoTasks:
             EngineeringDispatchRefusal.EXECUTOR_CONFIRMATION_REQUIRED,
         ],
     )
+    @pytest.mark.parametrize("story_id", ["story-1", None])
     @pytest.mark.asyncio
-    async def test_story_pre_agent_refusal_parks_through_one_atomic_command(
-        self, api_client, redis_client, reason
+    async def test_infrastructure_refusal_parked_by_admission_sequences_nothing(
+        self, api_client, redis_client, reason, story_id
     ):
-        """Admission refusal is free and exact, and the dispatcher sequences no state."""
-        from src.tasks import task_dispatcher
+        """Admission parked the refusal in its own transaction; the tick adds no write."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
-        task = _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
+        task = _task(id="task-1", project_id=PROJ_ID, story_id=story_id, status="todo")
         api_client.get_tasks_by_status.return_value = [task]
         api_client.admit_engineering_dispatch.return_value = _paid_refusal(
             reason, message=_REFUSAL_DETAIL
-        )
-        api_client.park_infrastructure_refusal.return_value = _park_read(
-            EngineeringInfrastructureParkDisposition.PARKED, refusal=reason
+        ).model_copy(
+            update={"infrastructure_park": EngineeringInfrastructureParkDisposition.PARKED}
         )
 
-        with patch.object(
-            task_dispatcher, "_notify_admin_failure", new_callable=AsyncMock
-        ) as notify_admin:
-            assert await dispatch_todo_tasks(api_client, redis_client) == 0
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
 
-        park = EngineeringInfrastructurePark(
-            task_id="task-1",
-            attempt_id="eng-test",
-            refusal=EngineeringInfrastructureRefusal(reason.value),
-            detail=_REFUSAL_DETAIL,
-        )
-        api_client.park_infrastructure_refusal.assert_awaited_once_with(
-            "story-1", EngineeringInfrastructureParkCommand(park=park, actor="dispatcher")
-        )
-        for write in (
+        for call in (
+            api_client.park_infrastructure_refusal,
             api_client.update_task,
             api_client.update_story,
             api_client.update_run,
@@ -622,116 +585,34 @@ class TestDispatchTodoTasks:
             api_client.transition_story,
             api_client.get_run,
         ):
-            write.assert_not_awaited()
+            call.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
         redis_client.publish_flat.assert_not_awaited()
-        notify_admin.assert_awaited_once_with("task-1", PROJ_ID, _REFUSAL_DETAIL)
         assert task.current_iteration == 0
 
-    @pytest.mark.parametrize("failing_step", ["park_response_lost", "admin_alert"])
     @pytest.mark.asyncio
-    async def test_failure_around_the_park_response_is_contained_per_task(
-        self, api_client, redis_client, failing_step
+    async def test_a_lost_refusal_response_is_contained_and_the_next_task_dispatches(
+        self, api_client, redis_client
     ):
-        """A failed park step neither aborts the tick nor reaches paid or publishing state."""
-        from src.tasks import task_dispatcher
+        """The committed admission owns the park; an unanswered call routes nothing."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         refused = _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
         healthy = _task(id="task-2", project_id=PROJ_ID, status="todo")
         api_client.get_tasks_by_status.return_value = [refused, healthy]
         api_client.admit_engineering_dispatch.side_effect = [
-            _paid_refusal(EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE, message=_REFUSAL_DETAIL),
+            httpx.ReadTimeout("the refusal committed but its answer never arrived"),
             _admitted("eng-healthy"),
         ]
-        if failing_step == "park_response_lost":
-            api_client.park_infrastructure_refusal.side_effect = httpx.ReadTimeout(
-                "the park committed but its answer never arrived"
-            )
-        else:
-            api_client.park_infrastructure_refusal.return_value = _park_read(
-                EngineeringInfrastructureParkDisposition.PARKED
-            )
 
-        with patch.object(
-            task_dispatcher,
-            "_notify_admin_failure",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("admin channel unavailable")
-            if failing_step == "admin_alert"
-            else None,
-        ) as notify_admin:
-            assert await dispatch_todo_tasks(api_client, redis_client) == 1
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
 
-        api_client.park_infrastructure_refusal.assert_awaited_once()
+        api_client.park_infrastructure_refusal.assert_not_awaited()
         assert [call.args[0] for call in api_client.transition_task.await_args_list] == ["task-2"]
         assert [
             call.args[1].planning_task_id for call in redis_client.publish_message.await_args_list
         ] == ["task-2"]
-        assert notify_admin.await_count == (1 if failing_step == "admin_alert" else 0)
         assert refused.current_iteration == 0
-
-    @pytest.mark.asyncio
-    async def test_ineligible_story_refusal_changes_no_task_state(self, api_client, redis_client):
-        """A terminal or racing story is the API's typed containment, not a scheduler write."""
-        from src.tasks import task_dispatcher
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _task(id="task-1", project_id=PROJ_ID, story_id="story-1", status="todo")
-        ]
-        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
-            EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE, message=_REFUSAL_DETAIL
-        )
-        api_client.park_infrastructure_refusal.return_value = _park_read(
-            EngineeringInfrastructureParkDisposition.INELIGIBLE_STORY,
-            task_status="todo",
-            story_status="archived",
-        )
-
-        with patch.object(
-            task_dispatcher, "_notify_admin_failure", new_callable=AsyncMock
-        ) as notify_admin:
-            assert await dispatch_todo_tasks(api_client, redis_client) == 0
-
-        api_client.transition_task.assert_not_awaited()
-        api_client.update_task.assert_not_awaited()
-        api_client.transition_story.assert_not_awaited()
-        notify_admin.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_standalone_pre_agent_refusal_parks_the_task_without_story_evidence(
-        self, api_client, redis_client
-    ):
-        """A standalone task has no story record, but its refusal remains typed and free."""
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        task = _task(id="task-1", project_id=PROJ_ID, story_id=None, status="todo")
-        api_client.get_tasks_by_status.return_value = [task]
-        api_client.admit_engineering_dispatch.return_value = _paid_refusal(
-            EngineeringDispatchRefusal.EXECUTOR_UNAVAILABLE,
-            message="Restore an engineering executor, then retry this attempt.",
-        )
-
-        assert await dispatch_todo_tasks(api_client, redis_client) == 0
-
-        evidence = {
-            "execution_phase": "pre_agent_refused",
-            "refusal": "executor_unavailable",
-            "task_id": "task-1",
-            "attempt_id": "eng-test",
-            "detail": "Restore an engineering executor, then retry this attempt.",
-        }
-        api_client.update_task.assert_awaited_once_with(
-            "task-1", {"failure_metadata": {ENGINEERING_INFRASTRUCTURE_KEY: evidence}}
-        )
-        api_client.update_story.assert_not_awaited()
-        api_client.park_infrastructure_refusal.assert_not_awaited()
-        assert [call.args[1] for call in api_client.transition_task.await_args_list] == [
-            "in_dev",
-            "waiting_human_review",
-        ]
-        assert task.current_iteration == 0
 
     @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
@@ -1246,7 +1127,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """The GitHub resolver returns the same open PR until teardown finishes."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1293,7 +1173,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """A same-head merged PR recovers no-commits instead of false quarantine."""
-        from unittest.mock import patch
 
         from shared.clients.github import NoCommitsBetweenError
         from src.tasks.task_dispatcher import complete_stories
@@ -1357,7 +1236,6 @@ class TestCompleteStories:
         self, api_client, redis_client, fix_kind
     ):
         """A merged PR number is poller output, never authority over new branch state."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1418,7 +1296,6 @@ class TestCompleteStories:
     async def test_completion_failure_never_transitions_or_triggers_later_work(
         self, api_client, redis_client, failure_stage
     ):
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1469,7 +1346,6 @@ class TestCompleteStories:
         self, api_client, redis_client
     ):
         """A visible open PR must not retain the story's project worker forever."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1509,7 +1385,6 @@ class TestCompleteStories:
         self, api_client, redis_client, run_status
     ):
         """A taskless deploy-fix still owns the story branch and its worker."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1579,7 +1454,6 @@ class TestCompleteStories:
         self, api_client, redis_client, run
     ):
         """Historical fixes and ordinary engineering runs do not delay completion."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1609,7 +1483,6 @@ class TestCompleteStories:
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
         """Story with all tasks done -> creates PR, enables auto-merge, transitions to pr_review."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1707,7 +1580,6 @@ class TestCompleteStories:
         auto-merged while story was in_progress), complete_stories transitions
         to pr_review so poll_merged_prs() can detect the merge and trigger deploy.
         """
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1765,7 +1637,6 @@ class TestCompletionIgnoresCancelledTasks:
         could never hold, so a recovered story could never reach `pr_review`
         however well its new plan went.
         """
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -1901,7 +1772,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_triggers_create_deploy_for_first_story(self, api_client, redis_client):
         """First story merge -> action='create'."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -1945,7 +1815,6 @@ class TestPollMergedPRs:
         self, api_client, redis_client
     ):
         """Project with a completed story -> action='feature'."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -1983,7 +1852,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
         """Story in pr_review with open (not merged) PR -> no action."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
@@ -2024,7 +1892,6 @@ class TestPollMergedPRs:
     @pytest.mark.asyncio
     async def test_continues_on_github_error(self, api_client, redis_client):
         """GitHub API error for one story doesn't block others."""
-        from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 

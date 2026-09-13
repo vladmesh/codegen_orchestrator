@@ -166,7 +166,9 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     )
     scheduler_redis = AsyncMock()
 
-    with patch.object(liveness, "_notify_admin_failure", new_callable=AsyncMock) as notify_admin:
+    with patch.object(
+        liveness, "_notify_admin_failure", new_callable=AsyncMock
+    ) as best_effort_alert:
         result = await liveness.supervise_failed_tasks(scheduler_api, scheduler_redis)
 
     assert result == {"retried": 0, "escalated": 1}
@@ -190,4 +192,5 @@ async def test_worker_manager_refusal_reaches_one_tick_supervisor_park(monkeypat
     scheduler_api.update_story.assert_not_awaited()
     scheduler_api.transition_task.assert_not_awaited()
     scheduler_api.transition_story.assert_not_awaited()
-    notify_admin.assert_awaited_once()
+    # Both notice audiences are owed by the park transaction, not alerted here.
+    best_effort_alert.assert_not_awaited()

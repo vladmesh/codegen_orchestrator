@@ -9,6 +9,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .engineering_execution import EngineeringInfrastructureParkDisposition
 from .work_admission import PaidRunStartRead, WorkAdmissionReason
 
 
@@ -219,3 +220,6 @@ class EngineeringDispatchRead(BaseModel):
     #: named them. Empty for every scheduled dispatch; the audit trail of an
     #: operator override, and written onto the attempt it created.
     overridden: list[EngineeringDispatchRefusal] = Field(default_factory=list)
+    #: For a typed pre-agent infrastructure refusal, what the same admission
+    #: transaction did to the task and story. `None` for every other decision.
+    infrastructure_park: EngineeringInfrastructureParkDisposition | None = None

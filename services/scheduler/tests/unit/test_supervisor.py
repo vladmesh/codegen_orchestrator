@@ -388,7 +388,7 @@ class TestSuperviseFailedTasks:
     async def test_pre_agent_creation_refusal_parks_through_one_atomic_command(
         self, api_client, redis_client, current_iteration, max_iterations
     ):
-        """The supervisor sends the exact park and sequences no task or story state."""
+        """The supervisor sends the exact park and sequences no state or notice itself."""
         from src.tasks.supervisor import supervise_failed_tasks
 
         task = _make_task(
@@ -407,7 +407,7 @@ class TestSuperviseFailedTasks:
 
         with patch(
             "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
-        ) as notify_admin:
+        ) as best_effort_alert:
             result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 0, "escalated": 1}
@@ -422,7 +422,8 @@ class TestSuperviseFailedTasks:
         api_client.transition_task.assert_not_awaited()
         api_client.transition_story.assert_not_awaited()
         redis_client.publish_flat.assert_not_awaited()
-        notify_admin.assert_awaited_once_with("task-1", str(task.project_id), self._PARK.detail)
+        # Both audiences were owed inside the park transaction; nothing best-effort here.
+        best_effort_alert.assert_not_awaited()
         assert task.current_iteration == current_iteration
 
     @pytest.mark.asyncio
@@ -475,7 +476,7 @@ class TestSuperviseFailedTasks:
         api_client.park_infrastructure_refusal.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_lost_park_response_is_contained_and_the_repeat_alerts_nobody_twice(
+    async def test_lost_park_response_is_contained_and_the_repeat_is_a_noop(
         self, api_client, redis_client
     ):
         """A park whose answer was lost never falls into generic retry accounting."""
@@ -497,21 +498,18 @@ class TestSuperviseFailedTasks:
             ),
         ]
 
-        with patch(
-            "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
-        ) as notify_admin:
-            assert await supervise_failed_tasks(api_client, redis_client) == {
-                "retried": 0,
-                "escalated": 0,
-            }
-            assert await supervise_failed_tasks(api_client, redis_client) == {
-                "retried": 0,
-                "escalated": 0,
-            }
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 0,
+            "escalated": 0,
+        }
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 0,
+            "escalated": 0,
+        }
 
         assert api_client.park_infrastructure_refusal.await_count == 2
-        notify_admin.assert_not_awaited()
         api_client.update_task.assert_not_awaited()
+        api_client.update_story_owner_notification.assert_not_awaited()
         api_client.transition_task.assert_not_awaited()
         api_client.transition_story.assert_not_awaited()
         assert task.current_iteration == 3
@@ -533,19 +531,15 @@ class TestSuperviseFailedTasks:
             story_status=story_status.value,
         )
 
-        with patch(
-            "src.tasks.supervisor.liveness._notify_admin_failure", new_callable=AsyncMock
-        ) as notify_admin:
-            assert await supervise_failed_tasks(api_client, redis_client) == {
-                "retried": 0,
-                "escalated": 0,
-            }
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 0,
+            "escalated": 0,
+        }
 
         assert task.current_iteration == 0
         api_client.update_task.assert_not_awaited()
         api_client.transition_task.assert_not_awaited()
         api_client.transition_story.assert_not_awaited()
-        notify_admin.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mismatched_park_fails_closed_without_retry_accounting(
@@ -560,7 +554,7 @@ class TestSuperviseFailedTasks:
         api_client.list_runs.return_value = [self._refused_run()]
         request = httpx.Request("POST", "http://api/stories/story-1/park-infrastructure-refusal")
         response = httpx.Response(
-            409, request=request, json={"detail": {"code": "stale_infrastructure_reason"}}
+            409, request=request, json={"detail": {"code": "stale_attempt_fence"}}
         )
         api_client.park_infrastructure_refusal.side_effect = httpx.HTTPStatusError(
             "conflict", request=request, response=response
@@ -573,36 +567,21 @@ class TestSuperviseFailedTasks:
         api_client.update_task.assert_not_awaited()
         api_client.transition_task.assert_not_awaited()
 
-    @pytest.mark.parametrize("failing_step", ["park_call", "admin_alert"])
     @pytest.mark.asyncio
-    async def test_park_step_failure_does_not_skip_independent_task(
-        self, api_client, redis_client, failing_step
-    ):
-        """The park call and every step after its response are contained per task."""
+    async def test_park_call_failure_does_not_skip_independent_task(self, api_client, redis_client):
+        """The park call is contained per task, so the next failed task is still routed."""
         from src.tasks.supervisor import supervise_failed_tasks
 
         parked = _make_task(id="task-1", story_id="story-1", status="failed")
         healthy = _make_task(id="task-next", story_id="story-next", status="failed")
         api_client.get_tasks_by_status.return_value = [parked, healthy]
         api_client.list_runs.side_effect = [[self._refused_run()], []]
-        if failing_step == "park_call":
-            api_client.park_infrastructure_refusal.side_effect = RuntimeError("API unavailable")
-        else:
-            api_client.park_infrastructure_refusal.return_value = self._park_read(
-                EngineeringInfrastructureParkDisposition.PARKED
-            )
+        api_client.park_infrastructure_refusal.side_effect = RuntimeError("API unavailable")
 
-        with patch(
-            "src.tasks.supervisor.liveness._notify_admin_failure",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("admin channel unavailable")
-            if failing_step == "admin_alert"
-            else None,
-        ):
-            assert await supervise_failed_tasks(api_client, redis_client) == {
-                "retried": 1,
-                "escalated": 0,
-            }
+        assert await supervise_failed_tasks(api_client, redis_client) == {
+            "retried": 1,
+            "escalated": 0,
+        }
 
         assert parked.current_iteration == 0
         api_client.park_infrastructure_refusal.assert_awaited_once()

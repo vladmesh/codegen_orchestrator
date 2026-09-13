@@ -25,10 +25,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
-from shared.contracts.dto.engineering_execution import (
-    EngineeringInfrastructurePark,
-    infrastructure_refusal_for_dispatch,
-)
+from shared.contracts.dto.engineering_execution import infrastructure_refusal_for_dispatch
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
@@ -38,10 +35,6 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
-from .infrastructure_park import (
-    park_standalone_infrastructure_refusal,
-    park_story_infrastructure_refusal,
-)
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -64,7 +57,6 @@ from .supervisor import (
     supervise_waiting_resource_tasks,
     supervise_waiting_user_secret_stories,
 )
-from .supervisor.common import _notify_admin_failure
 from .temporary_access import supervise_temporary_access
 from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 from .worker_liveness import terminal_task_statuses
@@ -210,37 +202,18 @@ async def _handle_refusal(
         log.info("task_dispatch_refused", reason=decision.reason.value)
         return
     admission = decision.paid_work.admission
-    infrastructure_refusal = infrastructure_refusal_for_dispatch(decision.reason)
-    if infrastructure_refusal is not None:
-        if not admission.message or not decision.run_id:
-            raise RuntimeError(
-                "recoverable engineering infrastructure refusal omitted its park evidence"
-            )
-        infrastructure_park = EngineeringInfrastructurePark(
-            task_id=task.id,
-            attempt_id=decision.run_id,
-            refusal=infrastructure_refusal,
-            detail=admission.message,
-        )
-        if task.story_id:
-            disposition = await park_story_infrastructure_refusal(
-                api_client,
-                task,
-                infrastructure_park,
-                actor="dispatcher",
-                notify_admin=_notify_admin_failure,
-                log=log,
-            )
-        else:
-            disposition = await park_standalone_infrastructure_refusal(
-                api_client, task, infrastructure_park, actor="dispatcher"
-            )
+    if infrastructure_refusal_for_dispatch(decision.reason) is not None:
+        # Admission already parked this refusal, with its owed notices, in the
+        # transaction that decided it. There is nothing left to sequence here,
+        # and a second park call would only reopen the window that closed.
         log.info(
-            "task_dispatch_infrastructure_refusal_reconciled",
+            "task_dispatch_infrastructure_refusal_parked_by_admission",
             run_id=decision.run_id,
             task_id=task.id,
             reason=decision.reason.value,
-            disposition=disposition.value,
+            disposition=(
+                decision.infrastructure_park.value if decision.infrastructure_park else None
+            ),
         )
         return
     if task.story_id and admission.message:
