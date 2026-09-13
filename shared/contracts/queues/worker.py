@@ -63,12 +63,12 @@ class WorkerLabel(StrEnum):
 
 
 class WorkerOwnership(BaseModel):
-    """Who a dynamic worker belongs to: one story, project, run, and attempt.
+    """Who a dynamic worker belongs to: one project, run, and attempt.
 
     Ownership is a required fact of a create request, not something observed
-    afterwards. Whoever asks for a worker knows all four, so the answer is
-    written down when the worker is made and never inferred by scanning Docker
-    or Redis later.
+    afterwards. Whoever asks for a worker knows the three run-scoped facts and,
+    for story work, the story too. Those facts are written down when the worker
+    is made and never inferred by scanning Docker or Redis later.
 
     The two run-shaped fields are different identities and are not
     interchangeable:
@@ -85,12 +85,12 @@ class WorkerOwnership(BaseModel):
       to "which run owns this", which is why it has a label of its own instead
       of overloading `com.codegen.run.id`.
 
-    Every field is non-empty by contract: an "unowned" worker is exactly the
-    thing that cannot be attributed after it dies, so it is refused on arrival
-    instead of becoming an untraceable container.
+    Story-scoped work additionally carries ``story_id``. Explicit standalone
+    engineering and ad-hoc E2E work has no story to invent; its run and attempt
+    remain the durable cleanup owner. Every present field is non-empty.
     """
 
-    story_id: str = Field(min_length=1)
+    story_id: str | None = Field(default=None, min_length=1)
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
@@ -127,21 +127,25 @@ class WorkerOwnership(BaseModel):
 
     def as_labels(self) -> dict[str, str]:
         """The ownership half of a worker container's Docker labels."""
-        return {
-            WorkerLabel.STORY.value: self.story_id,
+        labels = {
             WorkerLabel.PROJECT.value: self.project_id,
             WorkerLabel.RUN.value: self.run_id,
             WorkerLabel.ATTEMPT.value: self.attempt_id,
         }
+        if self.story_id is not None:
+            labels[WorkerLabel.STORY.value] = self.story_id
+        return labels
 
     def as_redis_meta(self) -> dict[str, str]:
         """The same facts, as `worker:meta:<worker_id>` fields."""
-        return {
-            "story_id": self.story_id,
+        meta = {
             "project_id": self.project_id,
             "run_id": self.run_id,
             "attempt_id": self.attempt_id,
         }
+        if self.story_id is not None:
+            meta["story_id"] = self.story_id
+        return meta
 
 
 class WorkerConfig(BaseModel):

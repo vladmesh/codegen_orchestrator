@@ -6,6 +6,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-13
 
 - Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
+- PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
 
 ## 2026-09-12
 

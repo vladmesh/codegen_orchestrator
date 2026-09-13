@@ -188,12 +188,10 @@ class TestSendToArchitect:
 class TestSpawnWorker:
     @pytest.mark.asyncio
     async def test_spawn_from_backlog(self, client, redis, _ensure_project):
-        story_id = await _create_story(client, "Spawn worker story")
         resp = await client.post(
             "/api/tasks/",
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
-                "story_id": story_id,
                 "title": "Spawn worker test",
                 "type": "feature",
             },
@@ -211,11 +209,12 @@ class TestSpawnWorker:
         assert data["task"]["status"] == "in_dev"
         assert data["run"]["type"] == "engineering"
         assert data["run"]["id"].startswith("eng-")
+        assert data["run"]["status"] == "queued"
 
         # Verify message in engineering:queue
         msg = await _read_last_message(redis, "engineering:queue")
         assert msg["planning_task_id"] == task_id
-        assert msg["story_id"] == story_id
+        assert msg["story_id"] is None
         assert msg["description"] == "custom description"
 
     @pytest.mark.asyncio
@@ -555,11 +554,10 @@ class TestRunE2E:
     @pytest.mark.asyncio
     async def test_run_e2e_on_running_app(self, client, redis, server_handle):
         app_id = await _create_running_app(client, server_handle)
-        story_id = await _create_story(client, "Administrative QA")
 
         resp = await client.post(
             f"/api/applications/{app_id}/run-e2e",
-            json={"actor": "test", "story_id": story_id},
+            json={"actor": "test"},
         )
         assert resp.status_code == HTTPStatus.OK
         data = resp.json()
@@ -567,6 +565,7 @@ class TestRunE2E:
         assert data["run"]["id"].startswith("qa-")
 
         msg = await _read_last_message(redis, "qa:queue")
+        assert msg["story_id"] is None
         assert msg["application_id"] == app_id
         assert "10.0.0.1" in msg["deployed_url"]
         # A repository is seeded with criteria at creation, so QA gets something

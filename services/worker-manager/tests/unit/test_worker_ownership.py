@@ -80,6 +80,29 @@ async def test_the_container_is_labelled_with_its_project_and_run():
     assert labels[WorkerLabel.TYPE.value] == "worker"
 
 
+async def test_a_standalone_worker_keeps_run_ownership_without_a_story_label():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    docker = _docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    standalone = OWNERSHIP.model_copy(update={"story_id": None})
+
+    await manager.create_worker(
+        "w-standalone",
+        "worker:latest",
+        ownership=standalone,
+        network_name="codegen_worker",
+        create_dev_network=False,
+    )
+
+    labels = docker.run_container.await_args.kwargs["labels"]
+    assert WorkerLabel.STORY.value not in labels
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    meta = decode_redis_fields(await redis.hgetall("worker:meta:w-standalone"))
+    assert "story_id" not in meta
+    assert meta["run_id"] == "live-alpha"
+    assert meta["attempt_id"] == "eng-alpha-1"
+
+
 async def test_the_dev_network_carries_the_same_ownership_as_its_worker():
     """A network is a separate object and has to name its owner itself.
 

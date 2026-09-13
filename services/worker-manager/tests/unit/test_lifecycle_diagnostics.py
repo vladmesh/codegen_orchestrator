@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 from fakeredis import aioredis
 import pytest
@@ -27,7 +28,9 @@ async def test_rollout_diagnostic_counts_remains_and_reports_oldest_known_age():
         mapping={"story_id": "story-live", "owned_at": observed.isoformat()},
     )
 
-    diagnostic = await collect_worker_lifecycle_diagnostics(redis, observed_at=observed)
+    docker = AsyncMock()
+    docker.inspect_container.side_effect = RuntimeError("docker unavailable")
+    diagnostic = await collect_worker_lifecycle_diagnostics(redis, docker, observed_at=observed)
 
     assert diagnostic.terminal_worker_remains.count == 2
     assert diagnostic.terminal_worker_remains.oldest_age_seconds == 720
@@ -46,13 +49,18 @@ async def test_ownerless_lock_uses_legacy_worker_age_when_available():
         "worker:meta:terminal",
         mapping={
             "project_id": "project-old",
-            "owned_at": (observed - timedelta(hours=2)).isoformat(),
         },
     )
     await redis.set("workspace:lock:project-old", "terminal")
     await redis.set("workspace:lock:project-unknown", "missing-worker")
 
-    diagnostic = await collect_worker_lifecycle_diagnostics(redis, observed_at=observed)
+    docker = AsyncMock()
+    docker.inspect_container.side_effect = lambda name: (
+        {"Created": (observed - timedelta(hours=2)).isoformat()}
+        if name == "worker-terminal"
+        else (_ for _ in ()).throw(RuntimeError("container unavailable"))
+    )
+    diagnostic = await collect_worker_lifecycle_diagnostics(redis, docker, observed_at=observed)
 
     assert diagnostic.terminal_worker_remains.count == 1
     assert diagnostic.terminal_worker_remains.oldest_age_seconds == 7200
@@ -64,3 +72,4 @@ async def test_ownerless_lock_uses_legacy_worker_age_when_available():
         "project-old",
         "project-unknown",
     ]
+    docker.inspect_container.assert_any_await("worker-terminal")

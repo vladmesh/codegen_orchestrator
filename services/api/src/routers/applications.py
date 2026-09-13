@@ -622,18 +622,6 @@ async def run_e2e(
             detail=f"Repository {repo.id} has no acceptance_criteria. Cannot run QA.",
         )
 
-    story = await db.get(Story, body.story_id)
-    if story is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Story {body.story_id} not found",
-        )
-    if story.project_id != repo.project_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Story {body.story_id} does not belong to project {repo.project_id}",
-        )
-
     # The QA executor this leads to belongs to the run the project was created
     # for, exactly as a developer worker does. Resolved before the Run row for
     # the same reason as the criteria above: a project that cannot own a worker
@@ -652,7 +640,7 @@ async def run_e2e(
             id=run_id,
             type=RunType.QA,
             project_id=repo.project_id,
-            story_id=story.id,
+            story_id=None,
             run_metadata={"triggered_by": "admin", "application_id": application_id},
         ),
         db,
@@ -668,7 +656,7 @@ async def run_e2e(
         await db.refresh(run)
         await db.refresh(app)
         msg = QAMessage(
-            story_id=story.id,
+            story_id=None,
             project_id=str(repo.project_id),
             initiating_run_id=initiating_run_id,
             telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),

@@ -806,14 +806,22 @@ above names a shared contract import.
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
-Every developer and QA executor has one required `WorkerOwnership.story_id`.
-The engineering or QA message supplies it; worker-manager writes the same value
-to `worker:meta:<id>` and `com.codegen.story.id` before the container exists.
+Every developer and QA executor is owned by a project, initiating Run, and
+attempt. Story-scoped engineering and QA producers additionally require and
+carry their real `story_id`; worker-manager writes that value to
+`worker:meta:<id>` and `com.codegen.story.id` before the container exists.
+Released storyless tasks and ad-hoc administrative E2E runs remain explicitly
+run-owned: their message and `WorkerOwnership.story_id` are `None`, and no story
+metadata or Docker label is invented.
 The scheduler reconciles `completed`, `failed`, and `archived` stories every
 supervision tick by rediscovering all matching metadata and publishing the
 canonical `DeleteWorkerCommand`. It retains metadata and the legacy
 `story:workers` binding until worker-manager confirms removal by deleting the
 worker status/metadata, so a failed publish or Docker call remains retryable.
+At both `complete_stories` PR-review handoffs it also publishes canonical
+teardown and observes the departing worker's project fence leave before it
+makes the next story eligible. It does not erase ownership evidence; terminal
+reconciliation remains the recovery backstop.
 
 The owner-fenced `workspace:lock:<project>` is repaired during create only when
 its worker metadata names a story and an authenticated internal API read proves

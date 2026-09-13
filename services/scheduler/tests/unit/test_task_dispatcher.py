@@ -579,8 +579,8 @@ class TestDispatchTodoTasks:
         assert eng_msg.story_id == "story-1"
 
     @pytest.mark.asyncio
-    async def test_standalone_task_cannot_publish_an_unowned_worker(self, api_client, redis_client):
-        """Task without story ownership fails before the queue handoff."""
+    async def test_standalone_task_publishes_one_run_owned_worker(self, api_client, redis_client):
+        """A released storyless task dispatches without aborting its admitted run."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -597,10 +597,13 @@ class TestDispatchTodoTasks:
         ]
         api_client.transition_task.return_value = {}
 
-        await dispatch_todo_tasks(api_client, redis_client)
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
 
-        redis_client.publish_message.assert_not_called()
-        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
+        message = redis_client.publish_message.await_args.args[1]
+        assert message.story_id is None
+        assert message.branch is None
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
+        api_client.transition_task.assert_awaited_once_with("task-1", "in_dev", "dispatcher")
 
     @pytest.mark.asyncio
     async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
@@ -665,8 +668,10 @@ class TestBranchInDispatch:
         assert eng_msg.branch == "story/story-abc"
 
     @pytest.mark.asyncio
-    async def test_standalone_task_has_no_engineering_handoff(self, api_client, redis_client):
-        """A branchless task cannot create a worker outside story teardown."""
+    async def test_standalone_task_has_a_branchless_engineering_handoff(
+        self, api_client, redis_client
+    ):
+        """Standalone work keeps run ownership and does not invent a story branch."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -683,10 +688,12 @@ class TestBranchInDispatch:
         ]
         api_client.transition_task.return_value = {}
 
-        await dispatch_todo_tasks(api_client, redis_client)
+        assert await dispatch_todo_tasks(api_client, redis_client) == 1
 
-        redis_client.publish_message.assert_not_called()
-        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
+        message = redis_client.publish_message.await_args.args[1]
+        assert message.story_id is None
+        assert message.branch is None
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
 
 
 class TestDispatchPartialFailure:
@@ -1083,6 +1090,8 @@ class TestCompleteStories:
             "node_id": "PR_abc",
             "html_url": "https://github.com/my-org/weather-bot/pull/42",
         }
+        redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.get.return_value = None
         mock_github.enable_auto_merge.return_value = True
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
@@ -1170,12 +1179,16 @@ class TestCompleteStories:
             "node_id": "PR_abc",
             "merged_at": "2026-03-19T01:00:00Z",
         }
+        redis_client.redis.hget.return_value = b"dev-story-worker"
+        redis_client.redis.get.return_value = None
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             result = await complete_stories(api_client, redis_client)
 
         # Must transition to pr_review so poller picks up the merge
         api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+        assert redis_client.publish.await_args.args[1]["worker_id"] == "dev-story-worker"
+        redis_client.redis.hdel.assert_not_called()
         assert result == 1
 
 

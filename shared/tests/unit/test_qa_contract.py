@@ -11,17 +11,25 @@ CRITERIA = "- GET /health returns 200"
 
 
 class TestQAMessage:
-    def test_story_is_required_and_non_empty(self):
-        for missing in ({}, {"story_id": ""}):
-            with pytest.raises(ValidationError):
-                QAMessage(
-                    project_id="proj-123",
-                    initiating_run_id="live-run-1",
-                    deployed_url="https://example.com",
-                    application_id=17,
-                    acceptance_criteria=CRITERIA,
-                    **missing,
-                )
+    def test_story_is_optional_but_not_blank(self):
+        standalone = QAMessage(
+            project_id="proj-123",
+            initiating_run_id="live-run-1",
+            deployed_url="https://example.com",
+            application_id=17,
+            acceptance_criteria=CRITERIA,
+        )
+        assert standalone.story_id is None
+
+        with pytest.raises(ValidationError):
+            QAMessage(
+                story_id="",
+                project_id="proj-123",
+                initiating_run_id="live-run-1",
+                deployed_url="https://example.com",
+                application_id=17,
+                acceptance_criteria=CRITERIA,
+            )
 
     def test_minimal_construction(self):
         msg = QAMessage(
@@ -201,8 +209,8 @@ class TestQAMessageStoryOwnership:
         )
         assert msg.story_id == "story-abc"
 
-    def test_released_ownerless_message_is_refused(self):
-        """Pre-story messages fail closed instead of creating an unowned executor."""
+    def test_released_ownerless_message_remains_run_owned(self):
+        """Ad-hoc E2E remains attributable to its run without inventing a story."""
         data = {
             "project_id": "proj-123",
             "initiating_run_id": "live-run-1",
@@ -211,8 +219,7 @@ class TestQAMessageStoryOwnership:
             "application_id": 17,
             "acceptance_criteria": CRITERIA,
         }
-        with pytest.raises(ValidationError):
-            QAMessage.model_validate(data)
+        assert QAMessage.model_validate(data).story_id is None
 
 
 class TestQAQueueTopology:

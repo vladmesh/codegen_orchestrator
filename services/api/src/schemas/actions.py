@@ -2,7 +2,7 @@
 
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class AdminAction(BaseModel):
@@ -12,9 +12,7 @@ class AdminAction(BaseModel):
 
 
 class E2ERunAction(AdminAction):
-    """Story owner required by an administrative QA executor run."""
-
-    story_id: str = Field(min_length=1)
+    """An ad-hoc administrative QA run, owned by its Run rather than a story."""
 
 
 class SpawnWorkerRequest(BaseModel):

@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES
 from shared.redis import decode_redis_fields, decode_redis_value
 
+from .config import settings
+
 
 class LifecycleRemainSummary(BaseModel):
     count: int
@@ -50,8 +52,21 @@ def _owned_at(meta: dict[str, str]) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+async def _observed_creation(docker, worker_id: str) -> datetime | None:
+    """Read a legacy worker's pre-existing Docker creation time when available."""
+    try:
+        inspected = await docker.inspect_container(f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}")
+        value = inspected.get("Created")
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:  # noqa: BLE001 - unavailable Docker evidence means unknown age
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 async def collect_worker_lifecycle_diagnostics(
-    redis, *, observed_at: datetime | None = None
+    redis, docker, *, observed_at: datetime | None = None
 ) -> WorkerLifecycleDiagnostics:
     """Count terminal remains and locks without a complete story owner."""
     observed_at = observed_at or datetime.now(UTC)
@@ -63,7 +78,8 @@ async def collect_worker_lifecycle_diagnostics(
         if status not in WORKER_TERMINAL_STATUSES:
             continue
         meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
-        terminal.append((worker_id, _owned_at(meta)))
+        created_at = _owned_at(meta) or await _observed_creation(docker, worker_id)
+        terminal.append((worker_id, created_at))
 
     ownerless: list[tuple[str, datetime | None]] = []
     async for raw_key in redis.scan_iter(match="workspace:lock:*"):
@@ -76,7 +92,10 @@ async def collect_worker_lifecycle_diagnostics(
             else {}
         )
         if not meta.get("story_id"):
-            ownerless.append((project_id, _owned_at(meta)))
+            created_at = _owned_at(meta)
+            if created_at is None and worker_id:
+                created_at = await _observed_creation(docker, worker_id)
+            ownerless.append((project_id, created_at))
 
     return WorkerLifecycleDiagnostics(
         observed_at=observed_at,

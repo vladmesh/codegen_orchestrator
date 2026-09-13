@@ -70,16 +70,25 @@ class TestEngineeringMessage:
                     **missing,
                 )
 
-    def test_a_message_without_a_story_is_refused(self):
-        for missing in ({}, {"story_id": ""}):
-            with pytest.raises(ValidationError):
-                EngineeringMessage(
-                    task_id="eng-123",
-                    project_id="proj-456",
-                    initiating_run_id="live-run-1",
-                    telegram_chat_id="user-1",
-                    **missing,
-                )
+    def test_a_standalone_message_has_no_story_owner(self):
+        msg = EngineeringMessage(
+            task_id="eng-123",
+            project_id="proj-456",
+            initiating_run_id="live-run-1",
+            telegram_chat_id="user-1",
+        )
+
+        assert msg.story_id is None
+
+    def test_an_empty_story_id_is_refused(self):
+        with pytest.raises(ValidationError):
+            EngineeringMessage(
+                task_id="eng-123",
+                project_id="proj-456",
+                initiating_run_id="live-run-1",
+                telegram_chat_id="user-1",
+                story_id="",
+            )
 
 
 class TestEngineeringResult:

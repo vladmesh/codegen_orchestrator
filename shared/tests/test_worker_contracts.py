@@ -74,6 +74,13 @@ class TestOwnershipIsDerivedFromTheMessageThatAskedForTheWork:
         assert labels[WorkerLabel.PROJECT.value] == "proj-1"
         assert labels[WorkerLabel.STORY.value] == "story-9"
 
+    def test_a_standalone_worker_omits_story_from_durable_ownership(self):
+        ownership = WorkerOwnership(project_id="proj-1", run_id="live-42", attempt_id="eng-777")
+
+        assert ownership.story_id is None
+        assert WorkerLabel.STORY.value not in ownership.as_labels()
+        assert "story_id" not in ownership.as_redis_meta()
+
     @pytest.mark.parametrize(
         "story_id, project_id, run_id, attempt_id",
         [
@@ -84,7 +91,7 @@ class TestOwnershipIsDerivedFromTheMessageThatAskedForTheWork:
         ],
     )
     def test_no_part_of_ownership_may_be_empty(self, story_id, project_id, run_id, attempt_id):
-        """An empty label attributes a dead worker to nothing at all."""
+        """A present story and every run-owned field must be non-empty."""
         with pytest.raises(ValidationError):
             WorkerOwnership(
                 story_id=story_id,

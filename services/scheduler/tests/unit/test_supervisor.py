@@ -929,8 +929,10 @@ class TestStoryWorkerCleanup:
     """Cleanup story workers on story complete/fail."""
 
     @pytest.mark.asyncio
-    async def test_worker_is_retained_during_pr_review(self, api_client, redis_client):
-        """PR review is not terminal, so terminal reconciliation does not run yet."""
+    async def test_pr_review_handoff_requests_teardown_without_erasing_ownership(
+        self, api_client, redis_client
+    ):
+        """The departing worker releases the project before the next story is triggered."""
         from src.tasks.task_dispatcher import complete_stories
 
         proj_id = "00000000-0000-0000-0000-000000000001"
@@ -948,6 +950,27 @@ class TestStoryWorkerCleanup:
 
         # Story has a worker registered
         redis_client.redis.hget.return_value = b"dev-story-worker"
+        project_lock = {"holder": "dev-story-worker"}
+
+        async def read_lock(_key):
+            return project_lock["holder"]
+
+        async def remove_departing_worker(_stream, payload):
+            assert payload["worker_id"] == "dev-story-worker"
+            project_lock["holder"] = None
+
+        async def start_next_story(_stream, _message):
+            assert project_lock["holder"] is None
+            project_lock["holder"] = "story-b-first-worker"
+
+        redis_client.redis.get.side_effect = read_lock
+        redis_client.publish.side_effect = remove_departing_worker
+        redis_client.publish_message.side_effect = start_next_story
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [_make_story(id="story-b", project_id=proj_id, status="created")]
+            if status == "created"
+            else [_make_story(id="story-1", project_id=proj_id, status="in_progress")]
+        )
 
         mock_github = AsyncMock()
         mock_github.create_pull_request.return_value = {
@@ -957,9 +980,12 @@ class TestStoryWorkerCleanup:
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
-        redis_client.redis.hget.assert_not_called()
-        redis_client.publish.assert_not_called()
+        redis_client.redis.hget.assert_awaited_once()
+        command = redis_client.publish.await_args.args[1]
+        assert command["command"] == "delete"
+        assert command["worker_id"] == "dev-story-worker"
         redis_client.redis.hdel.assert_not_called()
+        assert project_lock["holder"] == "story-b-first-worker"
 
     @pytest.mark.asyncio
     async def test_no_cleanup_when_no_worker(self, api_client, redis_client):

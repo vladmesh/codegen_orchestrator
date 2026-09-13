@@ -280,7 +280,9 @@ async def _inventory_fields(
 @router.get("/worker-lifecycle", response_model=WorkerLifecycleDiagnostics)
 async def worker_lifecycle_diagnostics(request: Request):
     """Expose credential-free rollout and teardown remains for operators."""
-    return await collect_worker_lifecycle_diagnostics(request.app.state.redis)
+    return await collect_worker_lifecycle_diagnostics(
+        request.app.state.redis, request.app.state.docker
+    )
 
 
 @router.get("/workers/", response_model=list[WorkerSummary])
