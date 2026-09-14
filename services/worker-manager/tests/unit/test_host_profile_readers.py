@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -225,6 +226,10 @@ def _codex_profile(
         config if config is not None else 'cli_auth_credentials_store = "file"\n'
     )
     config_path.chmod(0o600)
+    # A bootstrapped profile: the login recipe and every Codex worker create it.
+    lock_path = profile / ".codegen-codex.lock"
+    lock_path.touch()
+    lock_path.chmod(0o600)
     return profile
 
 
@@ -331,8 +336,8 @@ def test_codex_jwt_refresh_expiry_uses_the_24_hour_boundary(tmp_path, offset, co
         (None, ""),
         ({}, None),
         ({"OPENAI_API_KEY": None}, None),
-        ({"tokens": {}}, None),
-        ({"tokens": {"access_token": "", "refresh_token": ""}}, None),
+        ({"auth_mode": "chatgpt", "tokens": None}, None),
+        ({"tokens": {"id_token": _jwt(), "access_token": "", "refresh_token": ""}}, None),
     ],
 )
 def test_codex_logged_out_profiles(tmp_path, auth, raw):
@@ -342,12 +347,21 @@ def test_codex_logged_out_profiles(tmp_path, auth, raw):
     assert inspection.refusal is not None
 
 
-def test_codex_missing_refresh_token_is_unavailable(tmp_path):
-    auth = _codex_auth(refresh=None)
+def test_codex_empty_refresh_token_is_unavailable(tmp_path):
+    auth = _codex_auth(refresh="")
 
     inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
 
     assert inspection.observation.condition is ExecutorProfileCondition.REFRESH_MISSING
+    assert "refresh-capable" in inspection.refusal
+
+
+def test_codex_absent_refresh_token_field_is_a_file_the_cli_cannot_load(tmp_path):
+    auth = _codex_auth(refresh=None)
+
+    inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
     assert "refresh-capable" in inspection.refusal
 
 
@@ -359,6 +373,9 @@ def test_codex_missing_refresh_token_is_unavailable(tmp_path):
         ({"tokens": "token"}, None, None),
         ({"tokens": {"access_token": 1, "refresh_token": "x"}}, None, None),
         ({"tokens": {"refresh_token": OPAQUE_CODEX_REFRESH}}, None, None),
+        # Required TokenData fields are missing, so the pinned CLI cannot load these.
+        ({"tokens": {}}, None, None),
+        ({"tokens": {"access_token": "", "refresh_token": ""}}, None, None),
         (..., None, 'cli_auth_credentials_store = "keyring"\n'),
         (..., None, "not = [valid"),
     ],
@@ -393,9 +410,6 @@ def test_codex_unreadable_profile_is_unusable(tmp_path, monkeypatch):
         {"access": _jwt(exp=True)},
         {"access": _jwt(iat=_epoch(NOW), exp=_epoch(NOW - timedelta(days=1)))},
         {"refresh": _jwt(exp=[1])},
-        {"last_refresh": "2026-09-13T08:30:00"},  # naive
-        {"last_refresh": "yesterday"},
-        {"last_refresh": 1757750000},
         {"last_refresh": (NOW + timedelta(hours=1)).isoformat()},  # ahead of the clock
     ],
 )
@@ -539,11 +553,7 @@ def test_reader_sources_use_no_process_copy_network_or_write_primitives():
     root = Path(__file__).resolve().parents[2] / "src"
     for name in ("claude_auth.py", "codex_auth.py", "host_profile.py"):
         # The one descriptor a reader opens: the worker lock, read-only, to join it.
-        source = (
-            (root / name)
-            .read_text()
-            .replace("os.open(profile / CODEX_PROFILE_LOCK_NAME, os.O_RDONLY)", "")
-        )
+        source = (root / name).read_text().replace("os.open(lock_path, os.O_RDONLY)", "")
         for forbidden in (
             "O_WRONLY",
             "O_RDWR",
@@ -587,14 +597,18 @@ def test_diagnostics_map_each_profile_condition_to_the_admission_outcome(tmp_pat
             ExecutorAvailability.UNAVAILABLE,
             "profile_refresh_expired",
         ),
-        "logged_out": ({"tokens": {}}, ExecutorAvailability.UNAVAILABLE, "profile_logged_out"),
+        "logged_out": (
+            {"auth_mode": "chatgpt"},
+            ExecutorAvailability.UNAVAILABLE,
+            "profile_logged_out",
+        ),
         "refresh_missing": (
-            _codex_auth(refresh=None),
+            _codex_auth(refresh=""),
             ExecutorAvailability.UNAVAILABLE,
             "profile_refresh_missing",
         ),
         "unverifiable": (
-            _codex_auth(last_refresh="bad"),
+            _codex_auth(last_refresh=(now + timedelta(hours=1)).isoformat()),
             ExecutorAvailability.UNKNOWN,
             "profile_metadata_unverifiable",
         ),
@@ -682,7 +696,7 @@ def test_the_reader_joins_the_lock_the_worker_wrapper_takes():
     from src.codex_auth import CODEX_PROFILE_LOCK_NAME
 
     wrapper = ROOT_DIR / "packages/worker-wrapper/src/worker_wrapper/wrapper.py"
-    assert f'profile / "{CODEX_PROFILE_LOCK_NAME}"' in wrapper.read_text()
+    assert f'CODEX_PROFILE_LOCK_NAME = "{CODEX_PROFILE_LOCK_NAME}"' in wrapper.read_text()
 
 
 def test_a_torn_read_while_a_cli_holds_the_lock_is_contended_not_logged_out(tmp_path, monkeypatch):
@@ -792,6 +806,8 @@ def test_the_reader_releases_its_shared_lock(tmp_path):
 
 
 API_KEY_SECRET = "sk-proj-SYNTHETIC-API-KEY"  # noqa: S105 - synthetic fixture
+SUBSCRIPTION_REFUSAL = "Codex auth.json is not in the ChatGPT subscription auth_mode"
+FORMAT_REFUSAL = "Codex auth.json does not match the pinned Codex CLI auth format"
 
 
 @pytest.mark.parametrize(
@@ -805,12 +821,16 @@ API_KEY_SECRET = "sk-proj-SYNTHETIC-API-KEY"  # noqa: S105 - synthetic fixture
         ({"auth_mode": "apikey"}, False),
         ({"auth_mode": ..., "OPENAI_API_KEY": API_KEY_SECRET}, False),
         ({"auth_mode": ..., "personal_access_token": "pat-SYNTHETIC"}, False),
-        ({"auth_mode": ..., "bedrock_api_key": {"api_key": "SYNTHETIC"}}, False),
+        (
+            {"auth_mode": ..., "bedrock_api_key": {"api_key": "SYNTHETIC", "region": "us-east-1"}},
+            False,
+        ),
         ({"auth_mode": "chatgptAuthTokens"}, False),
         ({"auth_mode": "headers"}, False),
         ({"auth_mode": "agentIdentity"}, False),
-        ({"auth_mode": "ChatGPT"}, False),
-        ({"auth_mode": 1}, False),
+        # Not a pinned AuthMode value: the CLI cannot load the file at all.
+        ({"auth_mode": "ChatGPT"}, "format"),
+        ({"auth_mode": 1}, "format"),
     ],
 )
 def test_codex_auth_mode_is_checked_before_retained_chatgpt_tokens(
@@ -829,15 +849,16 @@ def test_codex_auth_mode_is_checked_before_retained_chatgpt_tokens(
 
     inspection = inspect_codex_host_session(str(profile), now=NOW)
 
-    if subscription:
+    if subscription is True:
         assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
         assert inspection.refusal is None
         return
+    expected = FORMAT_REFUSAL if subscription == "format" else SUBSCRIPTION_REFUSAL
     assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
-    assert inspection.refusal == "Codex auth.json is not in the ChatGPT subscription auth_mode"
+    assert inspection.refusal == expected
     assert API_KEY_SECRET not in inspection.refusal
     monkeypatch.setattr(manager_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
-    with pytest.raises(RuntimeError, match="auth_mode"):
+    with pytest.raises(RuntimeError, match=re.escape(expected)):
         manager_module.WorkerManager._validate_host_session(
             AgentType.CODEX, "host_session", None, "/docker-host/.codex"
         )
@@ -856,7 +877,10 @@ def test_codex_auth_mode_is_checked_before_retained_chatgpt_tokens(
 
 @pytest.mark.parametrize(
     "tokens",
-    [{}, {"access_token": _jwt(exp=_epoch(NOW + timedelta(days=1)))}],
+    [
+        {"id_token": _jwt(), "access_token": "", "refresh_token": ""},
+        {"id_token": _jwt(), "access_token": _jwt(exp=_epoch(NOW)), "refresh_token": ""},
+    ],
 )
 def test_a_non_subscription_mode_wins_over_logged_out_or_missing_refresh_tokens(tmp_path, tokens):
     auth = {"auth_mode": "apikey", "OPENAI_API_KEY": API_KEY_SECRET, "tokens": tokens}
@@ -878,3 +902,254 @@ def test_joining_the_lock_is_passive_and_never_opens_for_writing(tmp_path, monke
 
     assert _tree_state(tmp_path) == before
     assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+
+
+# --- a missing lock never proves the read is uncontended ------------------------------
+
+
+def _writer_after_the_reader_misses_the_lock(monkeypatch, profile: Path, writer):
+    """Reviewer schedule: the reader gets ENOENT, then a wrapper creates and takes the lock."""
+    import src.codex_auth as codex_module
+
+    real_acquire = codex_module._acquire_shared_lock
+    held: list[object] = []
+
+    def acquire_then_writer_starts(lock_path):
+        descriptor = real_acquire(lock_path)
+        if held:
+            # The writer already runs; later reads (worker creation) see its held lock.
+            return descriptor
+        assert descriptor is None  # the lock file did not exist yet
+        lock_file = lock_path.open("a", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        held.append(lock_file)
+        writer()
+        return descriptor
+
+    monkeypatch.setattr(codex_module, "_acquire_shared_lock", acquire_then_writer_starts)
+    return held
+
+
+@pytest.mark.parametrize(
+    "writer_state",
+    ["truncated", "partial", "removed"],
+)
+def test_a_missing_lock_then_a_writer_is_contended_not_logged_out(
+    tmp_path, monkeypatch, writer_state
+):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    profile = _codex_profile(tmp_path, _codex_auth())
+    (profile / ".codegen-codex.lock").unlink()  # a profile logged in before this rule
+    auth_path = profile / "auth.json"
+
+    def writer():
+        if writer_state == "truncated":
+            _truncate_in_place(auth_path)
+        elif writer_state == "partial":
+            auth_path.write_text('{"auth_mode": "chatgpt", "tokens": {"id_')
+        else:
+            auth_path.unlink()
+
+    held = _writer_after_the_reader_misses_the_lock(monkeypatch, profile, writer)
+    try:
+        inspection = inspect_codex_host_session(str(profile), now=NOW)
+        validate_codex_host_session(str(profile))  # worker creation does not refuse
+    finally:
+        for lock_file in held:
+            lock_file.close()
+
+    assert held, "the synthetic writer took the lock"
+    assert inspection.observation.condition is ExecutorProfileCondition.READ_CONTENDED
+    assert inspection.refusal is None
+
+
+def test_a_missing_lock_with_a_stable_valid_file_still_reads_the_session(tmp_path):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    (profile / ".codegen-codex.lock").unlink()
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+
+
+def test_a_missing_lock_and_missing_auth_is_never_logged_out(tmp_path, monkeypatch):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    profile = _codex_profile(tmp_path)  # no auth.json
+    (profile / ".codegen-codex.lock").unlink()
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.READ_CONTENDED
+    # Once the lock inode exists and nothing holds it, the same profile is logged out.
+    (profile / ".codegen-codex.lock").touch()
+    assert (
+        inspect_codex_host_session(str(profile), now=NOW).observation.condition
+        is ExecutorProfileCondition.LOGGED_OUT
+    )
+
+
+def test_a_lock_inode_replaced_after_joining_is_not_authoritative(tmp_path, monkeypatch):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    profile = _codex_profile(tmp_path, _codex_auth())
+    lock_path = profile / ".codegen-codex.lock"
+    real_flock = fcntl.flock
+
+    def flock_then_replace(descriptor, operation):
+        real_flock(descriptor, operation)
+        if operation == fcntl.LOCK_SH | fcntl.LOCK_NB and lock_path.exists():
+            replacement = profile / "lock.new"
+            replacement.touch()
+            os.replace(replacement, lock_path)  # the joined inode no longer names the lock
+            _truncate_in_place(profile / "auth.json")
+
+    monkeypatch.setattr(codex_module.fcntl, "flock", flock_then_replace)
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.READ_CONTENDED
+
+
+def test_a_missing_lock_then_a_completed_refresh_reads_the_new_session(tmp_path, monkeypatch):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    profile = _codex_profile(tmp_path, _codex_auth())
+    (profile / ".codegen-codex.lock").unlink()
+    refreshed_exp = NOW + timedelta(days=10)
+    refreshed = json.dumps(_codex_auth(access=_jwt(exp=_epoch(refreshed_exp))))
+
+    def writer():
+        with (profile / "auth.json").open("r+", encoding="utf-8") as handle:
+            handle.truncate(0)
+            handle.write(refreshed)
+
+    held = _writer_after_the_reader_misses_the_lock(monkeypatch, profile, writer)
+    try:
+        inspection = inspect_codex_host_session(str(profile), now=NOW)
+    finally:
+        for lock_file in held:
+            lock_file.close()
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+    assert inspection.observation.session_expires_at == refreshed_exp
+
+
+# --- the file must load as pinned Codex AuthDotJson / TokenData -----------------------
+
+
+def _id_token_segments(payload: str) -> str:
+    return f"{_b64({'alg': 'RS256'})}.{payload}.c2ln"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # Reviewer reproduction: numeric API key and no id_token, otherwise ChatGPT-shaped.
+        lambda auth: (auth.update(OPENAI_API_KEY=12345), auth["tokens"].pop("id_token")),
+        lambda auth: auth.update(OPENAI_API_KEY=12345),
+        lambda auth: auth["tokens"].pop("id_token"),
+        lambda auth: auth["tokens"].update(id_token=None),
+        lambda auth: auth["tokens"].update(id_token="opaque-id-token"),  # noqa: S106 - synthetic
+        lambda auth: auth["tokens"].update(id_token=_id_token_segments("bm90LWpzb24")),
+        lambda auth: auth["tokens"].update(
+            id_token=_id_token_segments(_b64({"sub": "x"}) + "==")  # padding is not NO_PAD
+        ),
+        lambda auth: auth["tokens"].update(id_token=f"{_b64({'alg': 'RS256'})}.{_b64({})}."),
+        lambda auth: auth["tokens"].update(
+            id_token=_jwt(**{"https://api.openai.com/auth": {"chatgpt_account_is_fedramp": "no"}})
+        ),
+        lambda auth: auth["tokens"].update(
+            id_token=_jwt(**{"https://api.openai.com/auth": {"chatgpt_plan_type": 7}})
+        ),
+        lambda auth: auth["tokens"].update(id_token=_jwt(email=["x"])),
+        lambda auth: auth["tokens"].update(access_token=7),
+        lambda auth: auth["tokens"].update(account_id=42),
+        lambda auth: auth.update(tokens=["id", "access", "refresh"]),
+        lambda auth: auth.update(personal_access_token=1),
+        lambda auth: auth.update(agent_identity=1),
+        lambda auth: auth.update(bedrock_api_key={"api_key": "SYNTHETIC"}),
+        lambda auth: auth.update(bedrock_api_key="SYNTHETIC"),
+        lambda auth: auth.update(auth_mode="chatgpt_tokens"),
+        lambda auth: auth.update(last_refresh="2026-09-13T08:30:00"),  # naive
+        lambda auth: auth.update(last_refresh="yesterday"),
+        lambda auth: auth.update(last_refresh=1757750000),
+    ],
+)
+def test_a_file_the_pinned_cli_cannot_load_is_refused_by_admission_and_diagnostics(
+    tmp_path, monkeypatch, mutate
+):
+    import src.executor_diagnostics as diagnostics_module
+    import src.manager as manager_module
+
+    auth = _codex_auth()
+    mutate(auth)
+    profile = _codex_profile(tmp_path, auth)
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+    assert inspection.refusal == FORMAT_REFUSAL
+    monkeypatch.setattr(manager_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
+    with pytest.raises(RuntimeError, match=re.escape(FORMAT_REFUSAL)):
+        manager_module.WorkerManager._validate_host_session(
+            AgentType.CODEX, "host_session", None, "/docker-host/.codex"
+        )
+    monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", None, raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/docker-host/.codex")
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
+    now = datetime.now(UTC)
+    diagnostic = diagnostics_module.ExecutorDiagnostics(
+        redis=None, docker=None, alerts=object()
+    )._executor_diagnostic(
+        AgentType.CODEX, now, now + timedelta(seconds=90), {AgentType.CLAUDE: 0, AgentType.CODEX: 0}
+    )
+    assert (diagnostic.availability, diagnostic.reason_code) == (
+        ExecutorAvailability.UNAVAILABLE,
+        "local_auth_invalid",
+    )
+    serialized = diagnostic.model_dump_json()
+    assert OPAQUE_CODEX_REFRESH not in serialized and "eyJ" not in serialized
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # Fields and claims the pinned CLI ignores, and nulls its Option fields accept.
+        lambda auth: auth.update(future_field={"nested": [1, 2]}),
+        lambda auth: auth["tokens"].update(future_token_field=3),
+        lambda auth: auth.update(OPENAI_API_KEY=None, personal_access_token=None),
+        lambda auth: auth.update(agent_identity=None, bedrock_api_key=None, auth_mode=None),
+        lambda auth: auth["tokens"].update(account_id=None),
+        lambda auth: auth.update(last_refresh=None),
+        lambda auth: auth.update(last_refresh="2026-09-13T10:30:00+02:00"),
+        lambda auth: auth["tokens"].update(
+            id_token=_jwt(
+                email=None,
+                unknown_claim={"x": 1},
+                **{
+                    "https://api.openai.com/profile": {"email": "person@example.com"},
+                    "https://api.openai.com/auth": {
+                        "chatgpt_plan_type": "mystery-tier",
+                        "chatgpt_account_id": "acct",
+                        "chatgpt_account_is_fedramp": False,
+                    },
+                },
+            )
+        ),
+        lambda auth: auth["tokens"].update(id_token=_jwt() + ".extra-segment"),
+    ],
+)
+def test_fields_the_pinned_cli_ignores_do_not_make_a_session_unusable(tmp_path, mutate):
+    auth = _codex_auth()
+    mutate(auth)
+
+    inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+    assert inspection.refusal is None

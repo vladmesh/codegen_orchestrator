@@ -27,14 +27,30 @@ from .observability import extract_effort_metrics, save_transcript
 logger = structlog.get_logger(__name__)
 
 
+#: Worker-manager's passive profile reader joins this same lock inode.
+CODEX_PROFILE_LOCK_NAME = ".codegen-codex.lock"
+
+
+def ensure_codex_profile_lock(profile: Path) -> Path:
+    """Create the profile's lock inode, keeping an existing one, before Codex can run.
+
+    Worker-manager never treats a missing lock as proof that no CLI is writing
+    `auth.json`; a profile only reads authoritatively once this inode exists.
+    """
+    if not profile.is_dir():
+        raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
+    lock_path = profile / CODEX_PROFILE_LOCK_NAME
+    with lock_path.open("a", encoding="utf-8"):
+        pass
+    lock_path.chmod(0o600)
+    return lock_path
+
+
 @contextmanager
 def codex_profile_lock(profile: Path):
     """Serialize a full Codex turn sharing one mounted ChatGPT profile."""
-    if not profile.is_dir():
-        raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
-    lock_path = profile / ".codegen-codex.lock"
+    lock_path = ensure_codex_profile_lock(profile)
     with lock_path.open("a", encoding="utf-8") as lock_file:
-        lock_path.chmod(0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -209,6 +225,19 @@ class WorkerWrapper:
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
 
+    def _prepare_codex_profile_lock(self) -> None:
+        """Establish the shared profile lock at startup, before any Codex turn runs.
+
+        A missing or unmounted profile is not refused here: each Codex turn's
+        `codex_profile_lock` creates the same lock before the CLI starts and
+        refuses that profile at the point it is needed.
+        """
+        if self.config.agent_type != AgentType.CODEX or self.config.auth_mode != "host_session":
+            return
+        codex_home = os.environ.get("CODEX_HOME")
+        if codex_home and Path(codex_home).is_dir():
+            ensure_codex_profile_lock(Path(codex_home))
+
     @property
     def is_qa_executor(self) -> bool:
         """Whether this container is the central QA executor rather than a developer."""
@@ -224,6 +253,7 @@ class WorkerWrapper:
         )
 
         try:
+            self._prepare_codex_profile_lock()
             if self.is_qa_executor:
                 await self._await_qa_materials()
             while self._running:

@@ -103,9 +103,11 @@ delivered through `deliver_to_admins`, retried with backoff from 60 seconds to
 one hour until every administrator received it, and closed only by a later
 healthy observation. A change such as expiring to expired updates the episode's
 facts without another alert. The Codex reader joins the workers'
-`.codegen-codex.lock` read-only and requires the ChatGPT `auth_mode`: an
-API-key or other auth mode is unavailable even with retained ChatGPT tokens,
-and a read torn by a concurrent refresh is `unknown`, never logged out. Worker-manager reads
+`.codegen-codex.lock` read-only, requires an `auth.json` the pinned CLI can load
+and the ChatGPT `auth_mode`: an API-key or other auth mode is unavailable even
+with retained ChatGPT tokens, and a read that a concurrent refresh could have torn
+is `unknown`, never logged out. A missing lock never counts as uncontended: Codex
+workers create it at startup and the login recipe creates it before logging in. Worker-manager reads
 `TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` for that delivery.
 
 For non-stand recovery follow the login recipes in

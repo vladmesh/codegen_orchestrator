@@ -6,14 +6,20 @@ contacts a provider, refreshes, copies or writes the profile.
 One observation order serves worker creation and diagnostics alike:
 
 1. Read `auth.json` stably. Join the worker wrapper's `.codegen-codex.lock`
-   with a shared, non-blocking flock; while a CLI holds it, accept only a read
-   whose file identity did not change and whose JSON is a non-empty object,
-   retrying within a short bound and otherwise reporting `read_contended`.
-2. Require the CLI's authoritative ChatGPT `auth_mode`.
-3. Only then interpret ChatGPT access/refresh material, time metadata and
+   with a shared, non-blocking flock on a stable lock inode. Unless that lock is
+   held, a writer may be active: a missing lock file never proves otherwise,
+   because a wrapper can create and take it the next instant. Then accept only
+   a read whose file identity did not change and whose JSON is a non-empty
+   object, retrying within a short bound and otherwise reporting the
+   non-alerting, non-refusing `read_contended`.
+2. Require the file to deserialize as pinned Codex `AuthDotJson`/`TokenData`.
+3. Require the CLI's authoritative ChatGPT `auth_mode`.
+4. Only then interpret ChatGPT access/refresh material, time metadata and
    `config.toml`.
 """
 
+import base64
+import binascii
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -21,6 +27,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import time
 import tomllib
@@ -50,6 +57,23 @@ _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 _NOT_REFRESHABLE = "Codex auth.json does not contain a refresh-capable ChatGPT session"
 _NOT_SUBSCRIPTION = "Codex auth.json is not in the ChatGPT subscription auth_mode"
+_FORMAT_MISMATCH = "Codex auth.json does not match the pinned Codex CLI auth format"
+#: Pinned Codex (rust-v0.144.6) `AuthMode` wire values; any other value fails to load.
+_CLI_AUTH_MODES = frozenset(
+    {
+        "apikey",
+        "chatgpt",
+        "chatgptAuthTokens",
+        "headers",
+        "agentIdentity",
+        "personalAccessToken",
+        "bedrockApiKey",
+    }
+)
+_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$")
+_BASE64URL_NO_PAD = re.compile(r"^[A-Za-z0-9_-]+$")
+#: `header.payload.signature`; the pinned parser ignores any further segments.
+_JWT_PARTS = 3
 #: The advisory lock `worker_wrapper.wrapper.codex_profile_lock` holds exclusively
 #: for each whole Codex process sharing this profile.
 CODEX_PROFILE_LOCK_NAME = ".codegen-codex.lock"
@@ -82,6 +106,9 @@ def inspect_codex_host_session(profile_path: str | None, *, now: datetime) -> Pr
     auth_data = _read_auth(profile)
     if isinstance(auth_data, ProfileInspection):
         return auth_data
+    format_refusal = _format_refusal(auth_data)
+    if format_refusal is not None:
+        return unusable(format_refusal)
     mode_refusal = _auth_mode_refusal(auth_data)
     if mode_refusal is not None:
         return unusable(mode_refusal)
@@ -143,8 +170,8 @@ def _read_auth(profile: Path) -> dict | ProfileInspection:
             outcome = _read_auth_once(profile / "auth.json")
             if isinstance(outcome, dict):
                 return outcome
-            # Without a writer, an empty or broken file is the real state. While
-            # a CLI holds the lock it may be the truncate-then-write window.
+            # Under a held shared lock an empty or broken file is the real state.
+            # Otherwise it may be the truncate-then-write window of a writer.
             if outcome is not None and uncontended:
                 return outcome
     return read_contended()
@@ -155,30 +182,39 @@ def _joined_profile_lock(profile: Path) -> Iterator[bool]:
     """Join the wrapper's profile lock read-only; yield whether no CLI can be writing.
 
     The pinned CLI rewrites `auth.json` in place (truncate, then write) and the
-    wrapper holds this flock exclusively for the whole CLI process. A shared
-    non-blocking lock therefore proves no writer during the read; it is never
-    waited for. A missing lock file means no wrapper has run Codex on the profile.
+    wrapper holds this flock exclusively for the whole CLI process. Only a
+    shared non-blocking lock on the inode the lock path still names proves no
+    writer during the read; it is never waited for. A missing, unreadable, held
+    or replaced lock proves nothing, so the read must be stable on its own.
     """
-    descriptor: int | None = None
+    descriptor = _acquire_shared_lock(profile / CODEX_PROFILE_LOCK_NAME)
     try:
-        descriptor = os.open(profile / CODEX_PROFILE_LOCK_NAME, os.O_RDONLY)
-    except FileNotFoundError:
-        uncontended = True
-    except OSError:
-        uncontended = False
-    else:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            uncontended = True
-        except OSError:
-            os.close(descriptor)
-            descriptor, uncontended = None, False
-    try:
-        yield uncontended
+        yield descriptor is not None
     finally:
         if descriptor is not None:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
+
+
+def _acquire_shared_lock(lock_path: Path) -> int | None:
+    try:
+        descriptor = os.open(lock_path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        os.close(descriptor)
+        return None
+    try:
+        stable = os.fstat(descriptor).st_ino == lock_path.stat().st_ino
+    except OSError:
+        stable = False
+    if not stable:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        return None
+    return descriptor
 
 
 def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
@@ -212,8 +248,109 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
     return auth_data
 
 
+def _format_refusal(auth_data: dict) -> str | None:
+    """Step 2: the file loads as pinned Codex `AuthDotJson`, as the CLI would load it.
+
+    Fields the CLI ignores stay ignored. Optional fields may be absent or null
+    but must otherwise have their real types; present `tokens` must be a
+    complete `TokenData` whose `id_token` the CLI can parse.
+    """
+    if not (
+        _optional(auth_data, "auth_mode", lambda value: value in _CLI_AUTH_MODES)
+        and _optional(auth_data, "OPENAI_API_KEY", _is_str)
+        and _optional(auth_data, "personal_access_token", _is_str)
+        and _optional(auth_data, "last_refresh", _is_rfc3339)
+        # `AgentIdentityStorage` is a JWT string or a stored record object.
+        and _optional(auth_data, "agent_identity", lambda value: isinstance(value, str | dict))
+        and _optional(auth_data, "bedrock_api_key", _is_bedrock_api_key)
+    ):
+        return _FORMAT_MISMATCH
+    tokens = auth_data.get("tokens")
+    if tokens is None:
+        return None
+    if not isinstance(tokens, dict):
+        return _FORMAT_MISMATCH
+    if not isinstance(tokens.get("refresh_token"), str):
+        return _NOT_REFRESHABLE
+    if not (
+        isinstance(tokens.get("access_token"), str)
+        and _is_cli_id_token(tokens.get("id_token"))
+        and _optional(tokens, "account_id", _is_str)
+    ):
+        return _FORMAT_MISMATCH
+    return None
+
+
+def _optional(data: dict, name: str, valid) -> bool:
+    return data.get(name) is None or bool(valid(data[name]))
+
+
+def _is_str(value: object) -> bool:
+    return isinstance(value, str)
+
+
+def _is_rfc3339(value: object) -> bool:
+    if not isinstance(value, str) or not _RFC3339.match(value):
+        return False
+    try:
+        iso_instant(value)
+    except MetadataError:
+        return False
+    return True
+
+
+def _is_bedrock_api_key(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("api_key"), str)
+        and isinstance(value.get("region"), str)
+    )
+
+
+def _is_cli_id_token(value: object) -> bool:
+    """Mirror pinned `parse_chatgpt_jwt_claims`; only the claim types are checked."""
+    if not isinstance(value, str):
+        return False
+    parts = value.split(".")
+    if (
+        len(parts) < _JWT_PARTS
+        or not all(parts[:_JWT_PARTS])
+        or not _BASE64URL_NO_PAD.match(parts[1])
+    ):
+        return False
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (binascii.Error, ValueError):
+        return False
+    if not isinstance(claims, dict):
+        return False
+    profile = claims.get("https://api.openai.com/profile")
+    auth = claims.get("https://api.openai.com/auth")
+    return (
+        _optional(claims, "email", _is_str)
+        and (
+            profile is None or (isinstance(profile, dict) and _optional(profile, "email", _is_str))
+        )
+        and (auth is None or _is_auth_claims(auth))
+    )
+
+
+def _is_auth_claims(auth: object) -> bool:
+    return (
+        isinstance(auth, dict)
+        and all(
+            _optional(auth, name, _is_str)
+            for name in ("chatgpt_plan_type", "chatgpt_user_id", "user_id", "chatgpt_account_id")
+        )
+        and (
+            "chatgpt_account_is_fedramp" not in auth
+            or isinstance(auth["chatgpt_account_is_fedramp"], bool)
+        )
+    )
+
+
 def _auth_mode_refusal(auth_data: dict) -> str | None:
-    """Step 2: the CLI's authoritative mode must be the file-backed ChatGPT session.
+    """Step 3: the CLI's authoritative mode must be the file-backed ChatGPT session.
 
     An explicit `auth_mode` wins; when absent the CLI resolves a stored personal
     access token, Bedrock key or OpenAI API key before ChatGPT. Any other mode
@@ -229,18 +366,13 @@ def _auth_mode_refusal(auth_data: dict) -> str | None:
 
 
 def _session_tokens(auth_data: dict) -> tuple[str | None, str | None] | ProfileInspection:
-    """Step 3: the stored ChatGPT access and refresh tokens, or the end state."""
+    """Step 4: the stored ChatGPT access and refresh tokens, or the end state."""
     tokens = auth_data.get("tokens")
-    if tokens is None or tokens == {}:
+    if tokens is None:
         return logged_out(_NOT_REFRESHABLE)
-    if not isinstance(tokens, dict):
-        return unusable(_NOT_REFRESHABLE)
-    access_token = tokens.get("access_token")
-    refresh_token = tokens.get("refresh_token")
-    if any(
-        value is not None and not isinstance(value, str) for value in (access_token, refresh_token)
-    ):
-        return unusable(_NOT_REFRESHABLE)
+    # Step 2 proved both are strings.
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
     if not access_token and not refresh_token:
         return logged_out(_NOT_REFRESHABLE)
     return access_token, refresh_token

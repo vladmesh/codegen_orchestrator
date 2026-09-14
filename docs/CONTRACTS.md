@@ -230,10 +230,14 @@ defers to `inventory_unreconciled`. Access/session expiry is reported but stays
 renewable while refresh material exists; only a locally proved refresh-credential
 expiry drives `refresh_expiring` (24 hours) and `refresh_expired`. The Codex
 reader, shared by worker creation and diagnostics, observes in a fixed order: a
-stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (a torn
-read while a CLI holds it is `read_contended`, never logged out), then the
-authoritative `auth_mode` (anything but the ChatGPT subscription mode is
-`unusable`), and only then ChatGPT token material. Timestamps are timezone-aware, each time fact names its
+stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (only a
+held shared lock on the stable lock inode is authoritative; a missing lock never
+proves no writer, and a torn read otherwise is `read_contended`, never logged
+out), then the pinned `AuthDotJson`/`TokenData` shape (a file the CLI cannot load
+is `unusable`), then the authoritative `auth_mode` (anything but the ChatGPT
+subscription mode is `unusable`), and only then ChatGPT token material. The
+worker wrapper creates the lock inode at startup and the login recipe creates it
+before logging in. Timestamps are timezone-aware, each time fact names its
 executor-specific source, and an access-token expiry can never be stored as a
 refresh expiry. Worker-manager's `ExecutorDiagnostics` publisher alone writes the
 snapshot and reconciles `ExecutorProfileAlertEpisode` records, whose delivery

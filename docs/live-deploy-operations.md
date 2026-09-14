@@ -315,30 +315,37 @@ the access/session expiry row is renewable while a refresh credential is present
 `HOST_CLAUDE_DIR` is the dedicated profile (production: `/home/deploy/.claude-worker`),
 never the operator's own `~/.claude`. The login prints an authorization URL and
 then reads the pasted code from standard input; a FIFO lets the code arrive from a
-second shell while the CLI keeps running. Run as the user that owns the profile:
+second shell while the CLI keeps running. Both shells must be logged in as the
+same user, the one that owns the profile, because both use the one fixed FIFO path
+`$HOME/.claude-login.fifo`, which only that user can write.
+
+**Shell 1**, from the deployment directory. The block refuses to start if the FIFO
+path already exists, blocks while the CLI waits for the code, and cleans up and
+fixes permissions itself when the CLI exits:
 
 ```bash
 set -a; . ./.env; set +a                        # HOST_CLAUDE_DIR
 install -d -m 0700 "$HOST_CLAUDE_DIR"
-FIFO="$(mktemp -u /tmp/claude-login.XXXXXX)"
-mkfifo -m 0600 "$FIFO"
-sleep 900 > "$FIFO" &                           # keep a writer open so the CLI starts
-HOLD=$!
-docker run --rm -i --user "$(id -u):$(id -g)" \
-  -e CLAUDE_CONFIG_DIR=/home/worker/.claude \
-  -v "$HOST_CLAUDE_DIR":/home/worker/.claude \
-  --entrypoint claude worker-base-claude:latest auth login < "$FIFO"
+test ! -e "$HOME/.claude-login.fifo" && mkfifo -m 0600 "$HOME/.claude-login.fifo" \
+  && { sleep 900 > "$HOME/.claude-login.fifo" & HOLD=$!; } \
+  && docker run --rm -i --user "$(id -u):$(id -g)" \
+       -e CLAUDE_CONFIG_DIR=/home/worker/.claude \
+       -v "$HOST_CLAUDE_DIR":/home/worker/.claude \
+       --entrypoint claude worker-base-claude:latest auth login < "$HOME/.claude-login.fifo"
+kill "$HOLD" 2>/dev/null
+test -p "$HOME/.claude-login.fifo" && rm -f -- "$HOME/.claude-login.fifo"
+chmod 0700 "$HOST_CLAUDE_DIR" && chmod 0600 "$HOST_CLAUDE_DIR/.credentials.json"
 ```
 
-Open the printed URL, approve the login, and paste the code from a second shell:
+If `test ! -e` stops the block, a previous attempt left the FIFO behind: confirm no
+login is running, remove it with `rm -f -- "$HOME/.claude-login.fifo"`, and rerun.
+
+Open the URL shell 1 printed and approve the login. **Shell 2**, as the same user,
+delivers the code shown by the browser (nothing from shell 1 is needed):
 
 ```bash
-printf '%s\n' '<code shown by the browser>' > "$FIFO"
+printf '%s\n' '<code shown by the browser>' > "$HOME/.claude-login.fifo"
 ```
-
-When the CLI reports success, stop the holder and remove the FIFO, then fix the
-permissions: `kill "$HOLD"; rm -f "$FIFO"; chmod 0700 "$HOST_CLAUDE_DIR";
-chmod 0600 "$HOST_CLAUDE_DIR/.credentials.json"`.
 
 ### Codex: device-code login
 
@@ -351,16 +358,28 @@ set -a; . ./.env; set +a                        # HOST_CODEX_HOME
 install -d -m 0700 "$HOST_CODEX_HOME"
 printf 'cli_auth_credentials_store = "file"\n' > "$HOST_CODEX_HOME/config.toml"
 chmod 0600 "$HOST_CODEX_HOME/config.toml"
-docker run --rm -it --user "$(id -u):$(id -g)" \
-  -e CODEX_HOME=/home/worker/.codex \
-  -v "$HOST_CODEX_HOME":/home/worker/.codex \
-  --entrypoint codex worker-base-codex:latest login --device-auth
+touch "$HOST_CODEX_HOME/.codegen-codex.lock"    # keeps an existing lock inode
+chmod 0600 "$HOST_CODEX_HOME/.codegen-codex.lock"
+flock "$HOST_CODEX_HOME/.codegen-codex.lock" \
+  docker run --rm -it --user "$(id -u):$(id -g)" \
+    -e CODEX_HOME=/home/worker/.codex \
+    -v "$HOST_CODEX_HOME":/home/worker/.codex \
+    --entrypoint codex worker-base-codex:latest login --device-auth
 chmod 0600 "$HOST_CODEX_HOME/auth.json"
 ```
 
+The login runs under the same `.codegen-codex.lock` that every Codex worker holds
+for its whole CLI process (`flock` waits for a running worker to finish). Never
+recreate that file with `install`, `cp` or `rm`: worker-manager joins the existing
+inode, and until it can, it reports `Host-session profile was being refreshed`
+(unknown, no alert, no refusal) instead of trusting a read that a worker could be
+rewriting. Creating the lock in the login step is what lets the next diagnostics
+tick report the new login as healthy.
+
 Worker-manager refuses a Codex profile whose directory is not `0700`, whose
-`auth.json` or `config.toml` is not `0600`, or whose credential store is not
-`file`.
+`auth.json` or `config.toml` is not `0600`, whose credential store is not
+`file`, whose `auth.json` does not load as the pinned CLI's auth format, or whose
+`auth_mode` is not the ChatGPT subscription mode.
 
 ### Restart and recheck
 

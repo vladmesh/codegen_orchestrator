@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
-from worker_wrapper.wrapper import WorkerWrapper, codex_profile_lock
+from worker_wrapper.wrapper import (
+    CODEX_PROFILE_LOCK_NAME,
+    WorkerWrapper,
+    codex_profile_lock,
+    ensure_codex_profile_lock,
+)
 
 
 def _make_config(**overrides) -> WorkerWrapperConfig:
@@ -268,3 +273,36 @@ class TestAgentSubprocessEnv:
         ):
             with pytest.raises(RuntimeError, match="auth failed"):
                 await wrapper.execute_agent({"prompt": "test"})
+
+
+def test_the_profile_lock_inode_is_created_once_and_kept(tmp_path):
+    lock_path = ensure_codex_profile_lock(tmp_path)
+    inode = lock_path.stat().st_ino
+
+    with codex_profile_lock(tmp_path):
+        assert (tmp_path / CODEX_PROFILE_LOCK_NAME).stat().st_ino == inode
+    ensure_codex_profile_lock(tmp_path)
+
+    assert lock_path.name == ".codegen-codex.lock"
+    assert lock_path.stat().st_ino == inode
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_a_codex_host_session_worker_creates_the_lock_before_leasing_work(
+    tmp_path, monkeypatch
+):
+    """The manager's reader can join the lock before this worker's first Codex turn."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    wrapper = _make_wrapper(agent_type="codex", auth_mode="host_session")
+    observed: list[bool] = []
+
+    async def lease_input():
+        observed.append((tmp_path / CODEX_PROFILE_LOCK_NAME).exists())
+        wrapper._running = False
+
+    wrapper.broker.lease_input = lease_input
+
+    await wrapper.run()
+
+    assert observed == [True]

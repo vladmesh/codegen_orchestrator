@@ -22,14 +22,19 @@ def _write_profile(path, *, auth_mode=0o600, config_mode=0o600):
     auth_path.write_text(
         json.dumps(
             {
+                "auth_mode": "chatgpt",
                 "tokens": {
+                    # A synthetic unsigned JWT: header {"alg":"none"}, payload {}.
+                    "id_token": "eyJhbGciOiJub25lIn0.e30.c2ln",
                     "access_token": "test-access",
                     "refresh_token": "test-refresh",
-                }
+                },
             }
         )
     )
     auth_path.chmod(auth_mode)
+    # A bootstrapped profile: the login recipe and every Codex worker create it.
+    (path / ".codegen-codex.lock").touch()
     config_path = path / "config.toml"
     config_path.write_text('cli_auth_credentials_store = "file"\n')
     config_path.chmod(config_mode)

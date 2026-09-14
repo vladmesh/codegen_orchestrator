@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   one retried admin Telegram alert per unhealthy stretch of a logged-out, expired or 24-hour-expiring profile.
 - The Codex profile reader joins the worker profile lock and requires the ChatGPT `auth_mode`, so a concurrent refresh
   never reads as logged out and an API-key profile is never admitted as a subscription session.
+- A missing Codex profile lock no longer counts as uncontended, workers create it at startup, and `auth.json` must load
+  as the pinned CLI format; the Claude FIFO login recipe now works across two shells.
 
 - Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
   and READY behind episode and identity fences, so operator edits win without partial state.

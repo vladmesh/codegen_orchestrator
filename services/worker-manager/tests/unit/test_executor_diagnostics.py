@@ -404,9 +404,20 @@ def _synthetic_profiles(tmp_path, monkeypatch, *, claude_credentials: dict):
     codex.mkdir(mode=0o700)
     codex.chmod(0o700)
     (codex / "auth.json").write_text(
-        json.dumps({"tokens": {"access_token": "opaque-access", "refresh_token": "opaque-refresh"}})
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    # A synthetic unsigned JWT: header {"alg":"none"}, payload {}.
+                    "id_token": "eyJhbGciOiJub25lIn0.e30.c2ln",
+                    "access_token": "opaque-access",
+                    "refresh_token": "opaque-refresh",
+                },
+            }
+        )
     )
     (codex / "auth.json").chmod(0o600)
+    (codex / ".codegen-codex.lock").touch()
     (codex / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
     (codex / "config.toml").chmod(0o600)
     settings = diagnostics_module.settings
