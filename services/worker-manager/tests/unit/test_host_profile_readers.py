@@ -1041,62 +1041,200 @@ def test_a_missing_lock_then_a_completed_refresh_reads_the_new_session(tmp_path,
 
 
 # --- the file must load as pinned Codex AuthDotJson / TokenData -----------------------
+#
+# Field by field against rust-v0.144.6 `login/src/auth/storage.rs` (AuthDotJson,
+# AgentIdentityStorage, AgentIdentityAuthRecord), `login/src/token_data.rs` (TokenData,
+# IdClaims), `login/src/auth/bedrock_api_key.rs` and `protocol/src/{auth,account}.rs`.
+# Every malformed case runs through worker admission and the published diagnostic.
+
+AGENT_PRIVATE_KEY = "SYNTHETIC-AGENT-PRIVATE-KEY"  # noqa: S105 - synthetic fixture
+NOT_REFRESHABLE_REFUSAL = "Codex auth.json does not contain a refresh-capable ChatGPT session"
+_RECORD_REQUIRED_STRINGS = (
+    "agent_runtime_id",
+    "agent_private_key",
+    "account_id",
+    "chatgpt_user_id",
+)
+_RECORD_REQUIRED = (*_RECORD_REQUIRED_STRINGS, "plan_type", "chatgpt_account_is_fedramp")
+_ID_AUTH = "https://api.openai.com/auth"
+_ID_PROFILE = "https://api.openai.com/profile"
+_AUTH_CLAIM_STRINGS = ("chatgpt_plan_type", "chatgpt_user_id", "user_id", "chatgpt_account_id")
+
+
+def _record(**overrides) -> dict:
+    record = {
+        "agent_runtime_id": "runtime-synthetic",
+        "agent_private_key": AGENT_PRIVATE_KEY,
+        "account_id": "account-synthetic",
+        "chatgpt_user_id": "user-synthetic",
+        "email": "person@example.com",
+        "plan_type": "plus",
+        "chatgpt_account_is_fedramp": False,
+        "task_id": "task-synthetic",
+    }
+    record.update(overrides)
+    return {key: value for key, value in record.items() if value is not ...}
+
+
+def _at(*path, value):
+    """A mutation setting one nested field of `auth`; `...` removes it."""
+
+    def mutate(auth):
+        target = auth
+        for key in path[:-1]:
+            target = target[key]
+        if value is ...:
+            target.pop(path[-1], None)
+        else:
+            target[path[-1]] = value
+
+    return mutate
+
+
+def _id_token(**claims):
+    return _at("tokens", "id_token", value=_jwt(**claims))
 
 
 def _id_token_segments(payload: str) -> str:
     return f"{_b64({'alg': 'RS256'})}.{payload}.c2ln"
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        # Reviewer reproduction: numeric API key and no id_token, otherwise ChatGPT-shaped.
-        lambda auth: (auth.update(OPENAI_API_KEY=12345), auth["tokens"].pop("id_token")),
-        lambda auth: auth.update(OPENAI_API_KEY=12345),
-        lambda auth: auth["tokens"].pop("id_token"),
-        lambda auth: auth["tokens"].update(id_token=None),
-        lambda auth: auth["tokens"].update(id_token="opaque-id-token"),  # noqa: S106 - synthetic
-        lambda auth: auth["tokens"].update(id_token=_id_token_segments("bm90LWpzb24")),
-        lambda auth: auth["tokens"].update(
-            id_token=_id_token_segments(_b64({"sub": "x"}) + "==")  # padding is not NO_PAD
+def _raw_b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _malformed_cases():
+    cases = [
+        # AuthDotJson.auth_mode: Option<AuthMode>, a string enum.
+        ("auth_mode-unknown-string", _at("auth_mode", value="chatgpt_tokens")),
+        ("auth_mode-case-mismatch", _at("auth_mode", value="ChatGPT")),
+        ("auth_mode-int", _at("auth_mode", value=1)),
+        ("auth_mode-object", _at("auth_mode", value={"chatgpt": None})),
+        ("auth_mode-list", _at("auth_mode", value=["chatgpt"])),
+        # AuthDotJson.OPENAI_API_KEY and personal_access_token: Option<String>.
+        ("OPENAI_API_KEY-int", _at("OPENAI_API_KEY", value=12345)),
+        ("OPENAI_API_KEY-bool", _at("OPENAI_API_KEY", value=True)),
+        ("OPENAI_API_KEY-object", _at("OPENAI_API_KEY", value={"key": "x"})),
+        ("personal_access_token-int", _at("personal_access_token", value=1)),
+        ("personal_access_token-list", _at("personal_access_token", value=["x"])),
+        # AuthDotJson.last_refresh: Option<DateTime<Utc>>.
+        ("last_refresh-int", _at("last_refresh", value=1757750000)),
+        ("last_refresh-object", _at("last_refresh", value={})),
+        ("last_refresh-naive", _at("last_refresh", value="2026-09-13T08:30:00")),
+        ("last_refresh-prose", _at("last_refresh", value="yesterday")),
+        # AuthDotJson.bedrock_api_key: Option<BedrockApiKeyAuth>.
+        ("bedrock-missing-api_key", _at("bedrock_api_key", value={"region": "us-east-1"})),
+        ("bedrock-missing-region", _at("bedrock_api_key", value={"api_key": "SYNTHETIC"})),
+        ("bedrock-api_key-int", _at("bedrock_api_key", value={"api_key": 1, "region": "r"})),
+        ("bedrock-region-null", _at("bedrock_api_key", value={"api_key": "k", "region": None})),
+        ("bedrock-string", _at("bedrock_api_key", value="SYNTHETIC")),
+        ("bedrock-sequence", _at("bedrock_api_key", value=["SYNTHETIC", "us-east-1"])),
+        # AuthDotJson.agent_identity: Option<AgentIdentityStorage>, Jwt(String) | Record.
+        ("agent_identity-empty-object", _at("agent_identity", value={})),  # reviewer
+        ("agent_identity-int", _at("agent_identity", value=1)),
+        ("agent_identity-bool", _at("agent_identity", value=True)),
+        ("agent_identity-sequence", _at("agent_identity", value=list(_record().values()))),
+        # AgentIdentityAuthRecord optional and enum fields.
+        ("record-email-int", _at("agent_identity", value=_record(email=7))),
+        ("record-task_id-int", _at("agent_identity", value=_record(task_id=7))),
+        ("record-plan_type-int", _at("agent_identity", value=_record(plan_type=7))),
+        ("record-plan_type-object", _at("agent_identity", value=_record(plan_type={"plus": None}))),
+        (
+            "record-chatgpt_account_is_fedramp-string",
+            _at("agent_identity", value=_record(chatgpt_account_is_fedramp="false")),
         ),
-        lambda auth: auth["tokens"].update(id_token=f"{_b64({'alg': 'RS256'})}.{_b64({})}."),
-        lambda auth: auth["tokens"].update(
-            id_token=_jwt(**{"https://api.openai.com/auth": {"chatgpt_account_is_fedramp": "no"}})
+        (
+            "record-chatgpt_account_is_fedramp-int",
+            _at("agent_identity", value=_record(chatgpt_account_is_fedramp=0)),
         ),
-        lambda auth: auth["tokens"].update(
-            id_token=_jwt(**{"https://api.openai.com/auth": {"chatgpt_plan_type": 7}})
+        # AuthDotJson.tokens: Option<TokenData>.
+        ("tokens-string", _at("tokens", value="tokens")),
+        ("tokens-int", _at("tokens", value=1)),
+        ("tokens-sequence", _at("tokens", value=["id", "access", "refresh"])),
+        ("tokens-missing-id_token", _at("tokens", "id_token", value=...)),
+        ("tokens-missing-access_token", _at("tokens", "access_token", value=...)),
+        ("tokens-access_token-int", _at("tokens", "access_token", value=7)),
+        ("tokens-access_token-null", _at("tokens", "access_token", value=None)),
+        ("tokens-account_id-int", _at("tokens", "account_id", value=42)),
+        # TokenData.id_token: String parsed by parse_chatgpt_jwt_claims into IdClaims.
+        ("id_token-null", _at("tokens", "id_token", value=None)),
+        ("id_token-int", _at("tokens", "id_token", value=7)),
+        ("id_token-opaque", _at("tokens", "id_token", value="opaque-id-token")),
+        ("id_token-two-segments", _at("tokens", "id_token", value="aGVhZGVy.e30")),
+        (
+            "id_token-empty-signature",
+            _at("tokens", "id_token", value=f"{_b64({'alg': 'RS256'})}.{_b64({})}."),
         ),
-        lambda auth: auth["tokens"].update(id_token=_jwt(email=["x"])),
-        lambda auth: auth["tokens"].update(access_token=7),
-        lambda auth: auth["tokens"].update(account_id=42),
-        lambda auth: auth.update(tokens=["id", "access", "refresh"]),
-        lambda auth: auth.update(personal_access_token=1),
-        lambda auth: auth.update(agent_identity=1),
-        lambda auth: auth.update(bedrock_api_key={"api_key": "SYNTHETIC"}),
-        lambda auth: auth.update(bedrock_api_key="SYNTHETIC"),
-        lambda auth: auth.update(auth_mode="chatgpt_tokens"),
-        lambda auth: auth.update(last_refresh="2026-09-13T08:30:00"),  # naive
-        lambda auth: auth.update(last_refresh="yesterday"),
-        lambda auth: auth.update(last_refresh=1757750000),
-    ],
-)
-def test_a_file_the_pinned_cli_cannot_load_is_refused_by_admission_and_diagnostics(
-    tmp_path, monkeypatch, mutate
-):
+        (
+            "id_token-payload-not-json",
+            _at("tokens", "id_token", value=_id_token_segments("bm90LWpzb24")),
+        ),
+        (
+            "id_token-payload-padded",
+            _at("tokens", "id_token", value=_id_token_segments(_b64({"sub": "x"}) + "==")),
+        ),
+        (
+            "id_token-payload-non-canonical",
+            _at("tokens", "id_token", value=_id_token_segments("e31")),
+        ),
+        (
+            "id_token-payload-sequence",
+            _at("tokens", "id_token", value=_id_token_segments(_raw_b64(b'["x"]'))),
+        ),
+        (
+            "id_token-payload-duplicate-claim",
+            _at(
+                "tokens",
+                "id_token",
+                value=_id_token_segments(_raw_b64(b'{"email": "a", "email": "b"}')),
+            ),
+        ),
+        (
+            "id_token-payload-invalid-utf8",
+            _at("tokens", "id_token", value=_id_token_segments(_raw_b64(b'{"email": "\xff"}'))),
+        ),
+        ("id_token-email-list", _id_token(email=["x"])),
+        ("id_token-profile-string", _id_token(**{_ID_PROFILE: "person"})),
+        ("id_token-profile-email-int", _id_token(**{_ID_PROFILE: {"email": 7}})),
+        ("id_token-auth-list", _id_token(**{_ID_AUTH: ["x"]})),
+        (
+            "id_token-auth-fedramp-string",
+            _id_token(**{_ID_AUTH: {"chatgpt_account_is_fedramp": "no"}}),
+        ),
+        (
+            "id_token-auth-fedramp-null",
+            _id_token(**{_ID_AUTH: {"chatgpt_account_is_fedramp": None}}),
+        ),
+        # Reviewer reproduction from the previous round.
+        (
+            "OPENAI_API_KEY-int-and-no-id_token",
+            lambda auth: (auth.update(OPENAI_API_KEY=12345), auth["tokens"].pop("id_token")),
+        ),
+    ]
+    for field in _RECORD_REQUIRED:
+        cases.append(
+            (f"record-missing-{field}", _at("agent_identity", value=_record(**{field: ...})))
+        )
+        cases.append(
+            (f"record-null-{field}", _at("agent_identity", value=_record(**{field: None})))
+        )
+    for field in _RECORD_REQUIRED_STRINGS:
+        cases.append((f"record-{field}-int", _at("agent_identity", value=_record(**{field: 7}))))
+    for claim in _AUTH_CLAIM_STRINGS:
+        cases.append((f"id_token-auth-{claim}-int", _id_token(**{_ID_AUTH: {claim: 7}})))
+    return [pytest.param(mutate, id=case_id) for case_id, mutate in cases]
+
+
+def _assert_refused_by_admission_and_diagnostics(monkeypatch, profile: Path, refusal: str):
     import src.executor_diagnostics as diagnostics_module
     import src.manager as manager_module
-
-    auth = _codex_auth()
-    mutate(auth)
-    profile = _codex_profile(tmp_path, auth)
 
     inspection = inspect_codex_host_session(str(profile), now=NOW)
 
     assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
-    assert inspection.refusal == FORMAT_REFUSAL
+    assert inspection.refusal == refusal
     monkeypatch.setattr(manager_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
-    with pytest.raises(RuntimeError, match=re.escape(FORMAT_REFUSAL)):
+    with pytest.raises(RuntimeError, match=re.escape(refusal)):
         manager_module.WorkerManager._validate_host_session(
             AgentType.CODEX, "host_session", None, "/docker-host/.codex"
         )
@@ -1114,36 +1252,140 @@ def test_a_file_the_pinned_cli_cannot_load_is_refused_by_admission_and_diagnosti
         "local_auth_invalid",
     )
     serialized = diagnostic.model_dump_json()
-    assert OPAQUE_CODEX_REFRESH not in serialized and "eyJ" not in serialized
+    for fragment in (OPAQUE_CODEX_REFRESH, AGENT_PRIVATE_KEY, "eyJ"):
+        assert fragment not in serialized
+
+
+@pytest.mark.parametrize("mutate", _malformed_cases())
+def test_a_file_the_pinned_cli_cannot_load_is_refused_by_admission_and_diagnostics(
+    tmp_path, monkeypatch, mutate
+):
+    auth = _codex_auth()
+    mutate(auth)
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, _codex_profile(tmp_path, auth), FORMAT_REFUSAL
+    )
 
 
 @pytest.mark.parametrize(
     "mutate",
     [
-        # Fields and claims the pinned CLI ignores, and nulls its Option fields accept.
-        lambda auth: auth.update(future_field={"nested": [1, 2]}),
-        lambda auth: auth["tokens"].update(future_token_field=3),
-        lambda auth: auth.update(OPENAI_API_KEY=None, personal_access_token=None),
-        lambda auth: auth.update(agent_identity=None, bedrock_api_key=None, auth_mode=None),
-        lambda auth: auth["tokens"].update(account_id=None),
-        lambda auth: auth.update(last_refresh=None),
-        lambda auth: auth.update(last_refresh="2026-09-13T10:30:00+02:00"),
-        lambda auth: auth["tokens"].update(
-            id_token=_jwt(
-                email=None,
-                unknown_claim={"x": 1},
-                **{
-                    "https://api.openai.com/profile": {"email": "person@example.com"},
-                    "https://api.openai.com/auth": {
-                        "chatgpt_plan_type": "mystery-tier",
-                        "chatgpt_account_id": "acct",
-                        "chatgpt_account_is_fedramp": False,
-                    },
-                },
-            )
-        ),
-        lambda auth: auth["tokens"].update(id_token=_jwt() + ".extra-segment"),
+        pytest.param(_at("tokens", "refresh_token", value=...), id="tokens-missing-refresh_token"),
+        pytest.param(_at("tokens", "refresh_token", value=7), id="tokens-refresh_token-int"),
+        pytest.param(_at("tokens", "refresh_token", value=None), id="tokens-refresh_token-null"),
     ],
+)
+def test_a_refresh_token_the_cli_cannot_load_is_refused_everywhere(tmp_path, monkeypatch, mutate):
+    auth = _codex_auth()
+    mutate(auth)
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, _codex_profile(tmp_path, auth), NOT_REFRESHABLE_REFUSAL
+    )
+
+
+def _raw_auth_cases():
+    valid = json.dumps(_codex_auth())
+    return [
+        pytest.param(
+            ('{"auth_mode": "apikey", ' + valid[1:]).encode(), id="duplicate-top-level-key"
+        ),
+        pytest.param(
+            valid.replace('"tokens": {', '"tokens": {"access_token": "x", ', 1).encode(),
+            id="duplicate-token-field",
+        ),
+        pytest.param((valid[:-1] + ', "future": NaN}').encode(), id="nan-constant"),
+        pytest.param((valid[:-1] + ', "future": Infinity}').encode(), id="infinity-constant"),
+        pytest.param((valid[:-1] + ', "future": "\\ud800"}').encode(), id="lone-surrogate"),
+        pytest.param((valid[:-1] + ', "future": "\xff"}').encode("latin-1"), id="invalid-utf8"),
+    ]
+
+
+@pytest.mark.parametrize("raw", _raw_auth_cases())
+def test_json_serde_json_rejects_is_refused_by_admission_and_diagnostics(
+    tmp_path, monkeypatch, raw
+):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    (profile / "auth.json").write_bytes(raw)
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, profile, "Codex auth.json is unreadable or invalid JSON"
+    )
+
+
+_ACCEPTED_CASES = [
+    # Unknown fields at every struct level are ignored (no deny_unknown_fields).
+    ("unknown-top-level-field", _at("future_field", value={"nested": [1, 2]})),
+    ("unknown-token-field", _at("tokens", "future_token_field", value=3)),
+    ("unknown-record-field", _at("agent_identity", value=_record(future=1))),
+    (
+        "unknown-bedrock-field",
+        _at("bedrock_api_key", value={"api_key": "k", "region": "r", "future": 1}),
+    ),
+    ("unknown-id-token-claims", _id_token(unknown_claim={"x": 1})),
+    ("unknown-profile-claim", _id_token(**{_ID_PROFILE: {"future": 1}})),
+    ("unknown-auth-claim", _id_token(**{_ID_AUTH: {"future": 1}})),
+    # Option fields: null and absent both load as None.
+    ("auth_mode-null", _at("auth_mode", value=None)),
+    ("OPENAI_API_KEY-null", _at("OPENAI_API_KEY", value=None)),
+    ("OPENAI_API_KEY-absent", _at("OPENAI_API_KEY", value=...)),
+    ("personal_access_token-null", _at("personal_access_token", value=None)),
+    ("agent_identity-null", _at("agent_identity", value=None)),
+    ("bedrock_api_key-null", _at("bedrock_api_key", value=None)),
+    ("last_refresh-null", _at("last_refresh", value=None)),
+    ("last_refresh-absent", _at("last_refresh", value=...)),
+    ("account_id-null", _at("tokens", "account_id", value=None)),
+    ("account_id-absent", _at("tokens", "account_id", value=...)),
+    ("record-email-null", _at("agent_identity", value=_record(email=None))),
+    ("record-email-empty", _at("agent_identity", value=_record(email=""))),
+    ("record-email-absent", _at("agent_identity", value=_record(email=...))),
+    ("record-task_id-null", _at("agent_identity", value=_record(task_id=None))),
+    ("record-task_id-absent", _at("agent_identity", value=_record(task_id=...))),
+    ("id_token-email-null", _id_token(email=None)),
+    ("id_token-profile-null", _id_token(**{_ID_PROFILE: None})),
+    ("id_token-profile-email-null", _id_token(**{_ID_PROFILE: {"email": None}})),
+    ("id_token-auth-null", _id_token(**{_ID_AUTH: None})),
+    ("id_token-auth-claims-null", _id_token(**{_ID_AUTH: dict.fromkeys(_AUTH_CLAIM_STRINGS)})),
+    ("id_token-auth-fedramp-absent", _id_token(**{_ID_AUTH: {"chatgpt_account_id": "acct"}})),
+    # Variants and string enums.
+    ("agent_identity-jwt-string", _at("agent_identity", value=_jwt())),
+    ("agent_identity-empty-string", _at("agent_identity", value="")),
+    ("agent_identity-record", _at("agent_identity", value=_record())),
+    ("record-plan_type-known", _at("agent_identity", value=_record(plan_type="prolite"))),
+    (
+        "record-plan_type-renamed",
+        _at("agent_identity", value=_record(plan_type="enterprise_cbp_usage_based")),
+    ),
+    ("record-plan_type-unknown", _at("agent_identity", value=_record(plan_type="mystery-tier"))),
+    ("record-fedramp-true", _at("agent_identity", value=_record(chatgpt_account_is_fedramp=True))),
+    ("bedrock-complete", _at("bedrock_api_key", value={"api_key": "k", "region": "us-east-1"})),
+    ("last_refresh-offset", _at("last_refresh", value="2026-09-13T10:30:00+02:00")),
+    ("id_token-plan-known", _id_token(**{_ID_AUTH: {"chatgpt_plan_type": "plus"}})),
+    ("id_token-plan-alias", _id_token(**{_ID_AUTH: {"chatgpt_plan_type": "hc"}})),
+    ("id_token-plan-unknown", _id_token(**{_ID_AUTH: {"chatgpt_plan_type": "mystery-tier"}})),
+    (
+        "id_token-full-claims",
+        _id_token(
+            email="person@example.com",
+            **{
+                _ID_PROFILE: {"email": "person@example.com"},
+                _ID_AUTH: {
+                    "chatgpt_plan_type": "pro",
+                    "chatgpt_user_id": "user",
+                    "user_id": "user",
+                    "chatgpt_account_id": "acct",
+                    "chatgpt_account_is_fedramp": False,
+                },
+            },
+        ),
+    ),
+    ("id_token-extra-segment", _at("tokens", "id_token", value=_jwt() + ".extra-segment")),
+]
+
+
+@pytest.mark.parametrize(
+    "mutate", [pytest.param(mutate, id=case_id) for case_id, mutate in _ACCEPTED_CASES]
 )
 def test_fields_the_pinned_cli_ignores_do_not_make_a_session_unusable(tmp_path, mutate):
     auth = _codex_auth()
@@ -1153,3 +1395,23 @@ def test_fields_the_pinned_cli_ignores_do_not_make_a_session_unusable(tmp_path, 
 
     assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
     assert inspection.refusal is None
+
+
+@pytest.mark.parametrize(
+    ("auth_mode", "refusal"),
+    [
+        ("chatgpt", None),
+        ("apikey", SUBSCRIPTION_REFUSAL),
+        ("chatgptAuthTokens", SUBSCRIPTION_REFUSAL),
+        ("headers", SUBSCRIPTION_REFUSAL),
+        ("agentIdentity", SUBSCRIPTION_REFUSAL),
+        ("personalAccessToken", SUBSCRIPTION_REFUSAL),
+        ("bedrockApiKey", SUBSCRIPTION_REFUSAL),
+    ],
+)
+def test_every_pinned_auth_mode_value_loads_before_mode_precedence(tmp_path, auth_mode, refusal):
+    auth = {**_codex_auth(), "auth_mode": auth_mode}
+
+    inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
+
+    assert inspection.refusal == refusal

@@ -233,8 +233,9 @@ reader, shared by worker creation and diagnostics, observes in a fixed order: a
 stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (only a
 held shared lock on the stable lock inode is authoritative; a missing lock never
 proves no writer, and a torn read otherwise is `read_contended`, never logged
-out), then the pinned `AuthDotJson`/`TokenData` shape (a file the CLI cannot load
-is `unusable`), then the authoritative `auth_mode` (anything but the ChatGPT
+out), then the pinned `AuthDotJson`/`TokenData` shape, including both
+`AgentIdentityStorage` variants, parsed no more permissively than `serde_json`
+(a file the CLI cannot load, or a struct stored as an array, is `unusable`), then the authoritative `auth_mode` (anything but the ChatGPT
 subscription mode is `unusable`), and only then ChatGPT token material. The
 worker wrapper creates the lock inode at startup and the login recipe creates it
 before logging in. Timestamps are timezone-aware, each time fact names its

@@ -227,9 +227,10 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
             return logged_out("Codex host session is missing a non-empty auth.json")
         if stat.S_IMODE(before.st_mode) != _PRIVATE_FILE_MODE:
             return unusable("Codex auth.json must have mode 0600")
-        raw_auth = auth_path.read_text()
+        # The CLI reads auth.json as a UTF-8 `String`; an undecodable file never loads.
+        raw_auth = auth_path.read_text(encoding="utf-8")
         after = auth_path.stat()
-    except OSError:
+    except (OSError, ValueError):
         return unusable("Codex auth.json is unreadable or invalid JSON")
     if (before.st_ino, before.st_size, before.st_mtime_ns) != (
         after.st_ino,
@@ -238,7 +239,7 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
     ):
         return None
     try:
-        auth_data = json.loads(raw_auth)
+        auth_data = _strict_json_loads(raw_auth)
     except ValueError:
         return unusable("Codex auth.json is unreadable or invalid JSON")
     if not isinstance(auth_data, dict):
@@ -251,21 +252,31 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
 def _format_refusal(auth_data: dict) -> str | None:
     """Step 2: the file loads as pinned Codex `AuthDotJson`, as the CLI would load it.
 
-    Fields the CLI ignores stay ignored. Optional fields may be absent or null
-    but must otherwise have their real types; present `tokens` must be a
-    complete `TokenData` whose `id_token` the CLI can parse.
+    Mirrors rust-v0.144.6 `login/src/auth/storage.rs`, `login/src/token_data.rs`,
+    `protocol/src/auth.rs` and `protocol/src/account.rs`. Unknown fields stay
+    ignored (no `deny_unknown_fields`); `Option` fields may be absent or null;
+    required fields must be present with their real JSON types; enums are
+    strings. A malformed optional credential makes the whole file unusable,
+    because the CLI rejects the file before it resolves the auth mode.
+    Sequence (array) encodings of structs, which serde also accepts but Codex
+    never writes, are refused: the only divergence, and it fails closed.
     """
     if not (
-        _optional(auth_data, "auth_mode", lambda value: value in _CLI_AUTH_MODES)
+        # auth_mode: Option<AuthMode>, one of the pinned wire strings.
+        _optional(auth_data, "auth_mode", lambda value: _is_str(value) and value in _CLI_AUTH_MODES)
+        # OPENAI_API_KEY, personal_access_token: Option<String>.
         and _optional(auth_data, "OPENAI_API_KEY", _is_str)
         and _optional(auth_data, "personal_access_token", _is_str)
+        # last_refresh: Option<DateTime<Utc>> from an RFC 3339 string with an offset.
         and _optional(auth_data, "last_refresh", _is_rfc3339)
-        # `AgentIdentityStorage` is a JWT string or a stored record object.
-        and _optional(auth_data, "agent_identity", lambda value: isinstance(value, str | dict))
+        # agent_identity: Option<AgentIdentityStorage>, untagged Jwt(String) | Record.
+        and _optional(auth_data, "agent_identity", _is_agent_identity)
+        # bedrock_api_key: Option<BedrockApiKeyAuth { api_key: String, region: String }>.
         and _optional(auth_data, "bedrock_api_key", _is_bedrock_api_key)
     ):
         return _FORMAT_MISMATCH
     tokens = auth_data.get("tokens")
+    # tokens: Option<TokenData>.
     if tokens is None:
         return None
     if not isinstance(tokens, dict):
@@ -279,6 +290,53 @@ def _format_refusal(auth_data: dict) -> str | None:
     ):
         return _FORMAT_MISMATCH
     return None
+
+
+def _is_agent_identity(value: object) -> bool:
+    """`AgentIdentityStorage`: any JWT string, or a complete `AgentIdentityAuthRecord`."""
+    if isinstance(value, str):
+        return True
+    return isinstance(value, dict) and _is_agent_identity_record(value)
+
+
+def _is_agent_identity_record(record: dict) -> bool:
+    return (
+        all(
+            isinstance(record.get(name), str)
+            for name in ("agent_runtime_id", "agent_private_key", "account_id", "chatgpt_user_id")
+        )
+        # plan_type: account `PlanType`, lowercase names with `#[serde(other)] Unknown`,
+        # so any string loads and nothing else does.
+        and isinstance(record.get("plan_type"), str)
+        and isinstance(record.get("chatgpt_account_is_fedramp"), bool)
+        # email: Option<String> (empty becomes None); task_id: Option<String>.
+        and _optional(record, "email", _is_str)
+        and _optional(record, "task_id", _is_str)
+    )
+
+
+def _reject_json_constant(name: str) -> object:
+    raise ValueError(f"serde_json does not accept {name}")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    if len({key for key, _value in pairs}) != len(pairs):
+        raise ValueError("duplicate JSON object key")
+    return dict(pairs)
+
+
+def _strict_json_loads(raw: str | bytes) -> object:
+    """Parse JSON no more permissively than serde_json.
+
+    Python also accepts NaN/Infinity, duplicate keys and lone surrogate escapes;
+    serde_json rejects the first and last, and derived structs reject duplicate
+    fields. Any duplicate key is refused here, which fails closed.
+    """
+    value = json.loads(
+        raw, object_pairs_hook=_unique_json_object, parse_constant=_reject_json_constant
+    )
+    json.dumps(value, ensure_ascii=False).encode("utf-8")  # UnicodeEncodeError on a lone surrogate
+    return value
 
 
 def _optional(data: dict, name: str, valid) -> bool:
@@ -308,7 +366,14 @@ def _is_bedrock_api_key(value: object) -> bool:
 
 
 def _is_cli_id_token(value: object) -> bool:
-    """Mirror pinned `parse_chatgpt_jwt_claims`; only the claim types are checked."""
+    """Mirror pinned `TokenData.id_token` / `parse_chatgpt_jwt_claims` / `IdClaims`.
+
+    Three non-empty dot segments (more are ignored); a canonical base64url
+    no-pad payload holding a JSON object; optional string `email`; optional
+    profile object with optional string `email`; optional auth object with
+    optional string claims and an optional, non-null bool fedramp flag. The
+    header and signature are not interpreted, exactly as in the CLI.
+    """
     if not isinstance(value, str):
         return False
     parts = value.split(".")
@@ -318,9 +383,17 @@ def _is_cli_id_token(value: object) -> bool:
         or not _BASE64URL_NO_PAD.match(parts[1])
     ):
         return False
+    payload = parts[1]
     try:
-        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
     except (binascii.Error, ValueError):
+        return False
+    # URL_SAFE_NO_PAD also rejects non-canonical trailing bits, which Python ignores.
+    if base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != payload:
+        return False
+    try:
+        claims = _strict_json_loads(decoded)
+    except ValueError:
         return False
     if not isinstance(claims, dict):
         return False
