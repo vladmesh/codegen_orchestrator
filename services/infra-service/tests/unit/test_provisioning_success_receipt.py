@@ -13,6 +13,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
@@ -21,6 +22,7 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import (
     ProvisioningFinalizationDisposition,
+    ProvisioningFinalizationResult,
     ServerDTO,
     target_identity,
 )
@@ -47,6 +49,7 @@ PROOF_OUTPUT = (
     '"qa_identity_proof": "qa-identity-proof: qa-observer uid=1001 login=ok '
     f'qa_target_version={QA_TARGET_PROFILE_VERSION}"\nPLAY RECAP ok=40'
 )
+DEFAULT_RETAIN = object()
 
 
 def _manager(private_key: str | None = GENERATED_KEY) -> MagicMock:
@@ -123,7 +126,16 @@ class Provisioner:
         }.items():
             monkeypatch.setattr(handlers, name, fake)
 
-    async def succeed(self, *, proof=PROOF, manager=None, episode="episode-1"):
+    async def succeed(
+        self,
+        *,
+        proof=PROOF,
+        manager=None,
+        episode="episode-1",
+        retain_finalization=DEFAULT_RETAIN,
+    ):
+        if retain_finalization is DEFAULT_RETAIN:
+            retain_finalization = AsyncMock()
         return await handlers.handle_provisioning_success(
             "vps-9",
             "203.0.113.9",
@@ -133,6 +145,7 @@ class Provisioner:
             ssh_manager=manager or _manager(),
             qa_target_proof=proof,
             expected_identity=target_identity(_row(), None),
+            retain_finalization=retain_finalization,
         )
 
     def failure(self) -> tuple:
@@ -165,6 +178,19 @@ class TestTheSuccessOrder:
             "qa_ssh_user": "qa-observer",
         }
 
+    async def test_replay_is_retained_before_transport(self, api):
+        retained = []
+
+        async def retain(command):
+            api.calls.append("retain")
+            retained.append(command)
+
+        result = await api.succeed(retain_finalization=retain)
+
+        assert result["provisioning_result"]["status"] == "success"
+        assert api.calls == ["retain", "finalize"]
+        assert retained == api.finalizations
+
     async def test_an_exact_duplicate_is_idempotent_and_publishes_nothing_new(self, api):
         first = await api.succeed()
         api.disposition = ProvisioningFinalizationDisposition.IDEMPOTENT
@@ -192,7 +218,12 @@ class TestEveryOtherOutcomeFailsClosed:
         assert api.row["status"] == "error"
         assert api.failure() == (
             IncidentType.PROVISIONING_FAILED,
-            {"step": "qa_target_receipt", "reason": "qa_target_profile_not_proved"},
+            {
+                "step": "qa_target_receipt",
+                "reason": "qa_target_profile_not_proved",
+                "episode_id": "episode-1",
+                "identity": target_identity(_row(), None).model_dump(mode="json"),
+            },
         )
 
     async def test_an_identity_that_changed_before_the_receipt_landed_is_not_ready(self, api):
@@ -203,19 +234,75 @@ class TestEveryOtherOutcomeFailsClosed:
         assert result["provisioning_result"]["status"] == "superseded"
         assert api.row["receipt"] is None
         assert api.row["status"] == "provisioning"
-        assert not api.row["incidents"]
+        assert api.failure() == (
+            IncidentType.PROVISIONING_FAILED,
+            {
+                "step": "qa_target_receipt",
+                "reason": "finalization_conflict",
+                "episode_id": "episode-1",
+                "identity": target_identity(_row(), None).model_dump(mode="json"),
+            },
+        )
 
     async def test_an_unknown_finalizer_outcome_does_not_write_a_failure(self, api):
         from src.provisioner.handlers import FinalizationOutcomeUnknown
 
-        api.finalize_error = RuntimeError("API unavailable")
+        api.finalize_error = httpx.ReadTimeout("API unavailable")
 
         with pytest.raises(FinalizationOutcomeUnknown):
-            await api.succeed()
+            await api.succeed(retain_finalization=AsyncMock())
 
         assert api.row["receipt"] is None
         assert api.row["status"] == "provisioning"
         assert not api.row["incidents"]
+
+    async def test_an_invalid_transport_response_keeps_the_saved_command_retryable(self, api):
+        from pydantic import ValidationError
+
+        from src.provisioner.handlers import FinalizationOutcomeUnknown
+
+        with pytest.raises(ValidationError) as malformed:
+            ProvisioningFinalizationResult.model_validate({})
+        api.finalize_error = malformed.value
+
+        with pytest.raises(FinalizationOutcomeUnknown):
+            await api.succeed(retain_finalization=AsyncMock())
+
+        assert api.row["status"] == "provisioning"
+        assert not api.row["incidents"]
+
+    async def test_local_command_validation_fails_closed_without_logging_the_key(self, api, capsys):
+        invalid = QATargetProof(
+            profile_version=QA_TARGET_PROFILE_VERSION,
+            proved_at=PROOF.proved_at,
+            ssh_user="INVALID USER",
+            ssh_key_fingerprint=GENERATED_FINGERPRINT,
+        )
+
+        result = await api.succeed(proof=invalid)
+
+        assert result["provisioning_result"]["status"] == "failed"
+        assert "finalize" not in api.calls
+        assert api.failure()[1]["reason"] == "finalization_command_invalid"
+        captured = capsys.readouterr()
+        assert GENERATED_KEY not in captured.out + captured.err
+
+    async def test_replay_persistence_failure_never_calls_the_finalizer(self, api):
+        async def unavailable(_command):
+            raise RuntimeError("redis unavailable")
+
+        result = await api.succeed(retain_finalization=unavailable)
+
+        assert result["provisioning_result"]["status"] == "failed"
+        assert "finalize" not in api.calls
+        assert api.failure()[1]["reason"] == "finalization_replay_unavailable"
+
+    async def test_missing_replay_persistence_never_calls_the_finalizer(self, api):
+        result = await api.succeed(retain_finalization=None)
+
+        assert result["provisioning_result"]["status"] == "failed"
+        assert "finalize" not in api.calls
+        assert api.failure()[1]["reason"] == "finalization_replay_unavailable"
 
     async def test_a_generated_key_that_does_not_parse_is_never_stored(self, api):
         api.disposition = ProvisioningFinalizationDisposition.CONTAINED
@@ -226,6 +313,8 @@ class TestEveryOtherOutcomeFailsClosed:
         assert api.failure()[1] == {
             "step": "qa_target_receipt",
             "reason": "finalization_contained",
+            "episode_id": "episode-1",
+            "identity": target_identity(_row(), None).model_dump(mode="json"),
         }
 
     async def test_a_retry_after_a_contained_finalization_can_still_succeed(self, api):
@@ -261,6 +350,8 @@ class TestOnlyTheProvedIdentityIsRecorded:
         assert api.failure()[1] == {
             "step": "qa_target_receipt",
             "reason": "finalization_contained",
+            "episode_id": "episode-1",
+            "identity": target_identity(_row(), None).model_dump(mode="json"),
         }
 
     async def test_a_proof_for_an_account_the_row_does_not_administer_is_not_recorded(self, api):
@@ -277,7 +368,7 @@ class TestOnlyTheProvedIdentityIsRecorded:
         assert api.calls == ["finalize"]
         assert api.row["receipt"] is None
         assert result["provisioning_result"]["status"] == "superseded"
-        assert not api.row["incidents"]
+        assert api.failure()[1]["reason"] == "finalization_conflict"
 
 
 class TestTheProvisioningPathsCarryTheProof:

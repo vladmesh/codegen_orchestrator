@@ -1,5 +1,8 @@
 """Provisioner handlers - success/failure handling and notification logic."""
 
+from collections.abc import Awaitable, Callable
+
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
@@ -9,6 +12,7 @@ from shared.contracts.dto.server import (
     QATargetReceipt,
     TargetIdentity,
 )
+from shared.diagnostics import safe_validation_errors
 from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import provisioning_complete_labels
 from shared.qa_target_profile import QATargetProof
@@ -29,7 +33,14 @@ class FinalizationOutcomeUnknown(RuntimeError):
 
 
 async def _fail_provisioning_success(
-    server_handle: str, server_ip: str, *, step: str, reason: str, what_failed: str
+    server_handle: str,
+    server_ip: str,
+    *,
+    step: str,
+    reason: str,
+    what_failed: str,
+    episode_id: str | None = None,
+    identity: TargetIdentity | None = None,
 ) -> dict:
     """A green play whose success could not be committed is a provisioning failure.
 
@@ -39,9 +50,12 @@ async def _fail_provisioning_success(
     ACTIVE with nothing in the journal to make it retryable.
     """
     await update_server_status(server_handle, "error")
-    await create_incident(
-        server_handle, IncidentType.PROVISIONING_FAILED, {"step": step, "reason": reason}
-    )
+    details = {"step": step, "reason": reason}
+    if episode_id is not None:
+        details["episode_id"] = episode_id
+    if identity is not None:
+        details["identity"] = identity.model_dump(mode="json")
+    await create_incident(server_handle, IncidentType.PROVISIONING_FAILED, details)
     await notify_admins_best_effort(
         f"❌ Server *{server_handle}* provisioned, but {what_failed} ({reason}). "
         "The server is NOT ready.",
@@ -74,6 +88,7 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
     ssh_manager: SSHManager | None,
     qa_target_proof: QATargetProof | None,
     expected_identity: TargetIdentity,
+    retain_finalization: Callable[[ProvisioningFinalization], Awaitable[None]] | None = None,
 ) -> dict:
     """Submit key, completion facts, receipt and READY to the one API finalizer.
 
@@ -106,6 +121,8 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             step=RECEIPT_STEP,
             reason="ssh_private_key_missing",
             what_failed="its SSH key could not be stored",
+            episode_id=provisioning_episode_id,
+            identity=expected_identity,
         )
 
     if qa_target_proof is None:
@@ -115,6 +132,8 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             step=RECEIPT_STEP,
             reason="qa_target_profile_not_proved",
             what_failed="its software play proved no current QA target profile",
+            episode_id=provisioning_episode_id,
+            identity=expected_identity,
         )
 
     try:
@@ -129,35 +148,80 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             proved_at=qa_target_proof.proved_at,
             identity=proved_identity,
         )
-        disposition = await finalize_provisioning(
-            server_handle,
-            ProvisioningFinalization(
-                attempt_number=provisioning_attempts,
-                episode_id=provisioning_episode_id,
-                expected_identity=expected_identity,
-                proved_identity=proved_identity,
-                generated_key_fingerprint=qa_target_proof.ssh_key_fingerprint,
-                generated_private_key=private_key,
-                complete_labels=provisioning_complete_labels(),
-                qa_target_receipt=receipt,
-            ),
+        finalization = ProvisioningFinalization(
+            attempt_number=provisioning_attempts,
+            episode_id=provisioning_episode_id,
+            expected_identity=expected_identity,
+            proved_identity=proved_identity,
+            generated_key_fingerprint=qa_target_proof.ssh_key_fingerprint,
+            generated_private_key=private_key,
+            complete_labels=provisioning_complete_labels(),
+            qa_target_receipt=receipt,
         )
+    except ValidationError as exc:
+        logger.error(
+            "provisioning_finalization_command_invalid",
+            server_handle=server_handle,
+            validation_errors=safe_validation_errors(exc),
+        )
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="finalization_command_invalid",
+            what_failed="its finalization command was invalid",
+            episode_id=provisioning_episode_id,
+            identity=expected_identity,
+        )
+
+    try:
+        if retain_finalization is None:
+            raise RuntimeError("finalization replay persistence is not configured")
+        await retain_finalization(finalization)
+    except Exception as exc:
+        logger.error(
+            "provisioning_finalization_replay_unavailable",
+            server_handle=server_handle,
+            error_type=type(exc).__name__,
+        )
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="finalization_replay_unavailable",
+            what_failed="its finalization replay could not be retained",
+            episode_id=provisioning_episode_id,
+            identity=expected_identity,
+        )
+
+    try:
+        disposition = await finalize_provisioning(server_handle, finalization)
     except Exception as exc:
         logger.error(
             "provisioning_finalization_outcome_unknown",
             server_handle=server_handle,
             error_type=type(exc).__name__,
-            exc_info=True,
         )
         raise FinalizationOutcomeUnknown(
             f"Provisioning finalization outcome unknown for {server_handle}"
         ) from exc
+
     if disposition is ProvisioningFinalizationDisposition.CONFLICT:
         logger.info(
             "provisioning_attempt_reset_skipped",
             server_handle=server_handle,
             attempt=provisioning_attempts,
             ssh_key_persisted=False,
+        )
+        await create_incident(
+            server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {
+                "step": RECEIPT_STEP,
+                "reason": "finalization_conflict",
+                "episode_id": provisioning_episode_id,
+                "identity": expected_identity.model_dump(mode="json"),
+            },
         )
         return {
             "messages": [
@@ -183,6 +247,8 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             step=RECEIPT_STEP,
             reason="finalization_contained",
             what_failed="its atomic success finalization was refused",
+            episode_id=provisioning_episode_id,
+            identity=expected_identity,
         )
 
     recovery_text = "recovered and " if is_recovery else ""

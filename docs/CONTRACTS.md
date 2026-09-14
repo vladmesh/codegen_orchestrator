@@ -1513,7 +1513,20 @@ fence remains on the row solely to make an exact redelivery `idempotent`; a
 redelivery with different key identity, labels, proof or receipt conflicts.
 There is no worker-side key PATCH, completion-label PATCH, read-back or reset.
 An unknown HTTP outcome leaves the provisioner stream entry unacknowledged;
-redelivery asks the same idempotent finalizer instead of writing a failure.
+before that HTTP call, infra-service stores a delivery-bound copy of the exact
+command under a bounded 24-hour TTL, with the whole envelope encrypted by
+`SecretsCipher`. PEL reclaim checks this record before constructing a
+`ProvisionerNode` and calls only the finalizer with the same attempt, episode,
+identity, key, labels and receipt. A typed definitive result clears the record
+only after its broker result is published and acknowledged; another unknown
+outcome leaves both it and the stream entry pending. Missing,
+expired, unavailable, corrupt or delivery-mismatched replay state records a
+`provisioning_failed` incident and keeps the target non-admitting instead of
+reserving an attempt or rerunning a playbook. Finalizer conflicts after key
+cutover also record that incident without reverting the operator's identity
+edit. Provisioning-failure settlement requires both the finalized episode and
+its pre-proof identity, so success never resolves unrelated or earlier-identity
+evidence.
 
 `shared/server_admission.py` refuses a managed row with `target_not_ready` while
 a readiness failure phase is recorded, and with `qa_target_receipt_missing` or

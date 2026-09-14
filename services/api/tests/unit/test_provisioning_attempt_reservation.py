@@ -176,9 +176,25 @@ async def test_the_episode_closes_as_ready_together_with_its_receipt():
         incident_type="provisioning_failed",
         status="detected",
         resolved_at=None,
-        details={"step": "software_setup"},
+        details={
+            "step": "software_setup",
+            "episode_id": "episode-1",
+            "identity": EXPECTED_IDENTITY.model_dump(mode="json"),
+        },
     )
-    db.incidents = [readiness, software]
+    earlier = SimpleNamespace(
+        incident_type="provisioning_failed",
+        status="detected",
+        resolved_at=None,
+        details={
+            "step": "software_setup",
+            "episode_id": "episode-earlier",
+            "identity": EXPECTED_IDENTITY.model_copy(
+                update={"public_ip": "198.51.100.2"}
+            ).model_dump(mode="json"),
+        },
+    )
+    db.incidents = [readiness, software, earlier]
     db.server.target_readiness_failure_phase = "admin_login"
 
     reset = await finalize_provisioning("srv-1", _finalization(1, "episode-1"), db, None)
@@ -192,6 +208,7 @@ async def test_the_episode_closes_as_ready_together_with_its_receipt():
     # The current successful episode settles its active provisioning failure in
     # the same commit rather than through a later worker-side call.
     assert software.status == "resolved"
+    assert earlier.status == "detected"
     assert db.commits == 1
 
 

@@ -211,6 +211,17 @@ episode reset and READY together. Do not repair a partial success with key,
 label, status or receipt PATCHes; a conflict means an operator edit or newer
 episode won and must be observed as current state.
 
+Infra-service retains the exact finalization command as one encrypted,
+delivery-bound Redis value for 24 hours before sending it. A connection reset,
+timeout or unknown 5xx leaves the stream entry pending. Reclaim retries only
+that command; it does not rerun provisioning or rotate the key. The encrypted
+command is removed after the definitive result is published and acknowledged.
+A missing, expired or corrupt replay value is a `provisioning_failed` incident
+and leaves the target non-admitting. Do not delete
+`provisioner:finalization-replay:*` values to retry provisioning; repair the
+incident and submit a new explicit provisioning request only after observing
+the current server row and host credential.
+
 The production deploy's `Reconcile managed deploy targets` step runs, after the
 services are healthy and against the exact deployed SHA:
 

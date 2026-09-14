@@ -167,7 +167,9 @@ async def test_every_provisioning_route_receives_the_reserved_fence_and_identity
 
 
 @pytest.mark.asyncio
-async def test_finalizer_conflict_is_superseded_without_failure_writes(monkeypatch):
+async def test_finalizer_conflict_is_superseded_with_incident_but_no_operator_row_write(
+    monkeypatch,
+):
     from shared.contracts.dto.server import ProvisioningFinalizationDisposition
     from src.provisioner.handlers import handle_provisioning_success
 
@@ -196,8 +198,10 @@ async def test_finalizer_conflict_is_superseded_without_failure_writes(monkeypat
             public_ip="203.0.113.10",
             ssh_key_fingerprint=None,
         ),
+        retain_finalization=AsyncMock(),
     )
 
     assert result["provisioning_result"]["status"] == "superseded"
     status.assert_not_awaited()
-    incident.assert_not_awaited()
+    incident.assert_awaited_once()
+    assert incident.await_args.args[2]["reason"] == "finalization_conflict"

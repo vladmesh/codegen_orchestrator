@@ -273,6 +273,7 @@ class ProvisionerNode(FunctionalNode):
                 ssh_manager=self.ssh_manager,
                 qa_target_proof=outcome.qa_target_proof,
                 expected_identity=expected_identity,
+                retain_finalization=state.get("retain_finalization"),
             )
 
         message = outcome.message
@@ -280,7 +281,12 @@ class ProvisionerNode(FunctionalNode):
         await create_incident(
             server_handle,
             IncidentType.PROVISIONING_FAILED,
-            {"step": "reinstall", "message": message},
+            {
+                "step": "reinstall",
+                "message": message,
+                "episode_id": provisioning_episode_id,
+                "identity": expected_identity.model_dump(mode="json"),
+            },
         )
         await notify_admins_best_effort(
             f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
@@ -330,7 +336,12 @@ class ProvisionerNode(FunctionalNode):
             await create_incident(
                 server_handle,
                 IncidentType.PROVISIONING_FAILED,
-                {"step": "access_setup", "output": output_access[:500]},
+                {
+                    "step": "access_setup",
+                    "output": output_access[:500],
+                    "episode_id": provisioning_episode_id,
+                    "identity": expected_identity.model_dump(mode="json"),
+                },
             )
             return {
                 "messages": [{"message": f"❌ Phase 1 (Access) failed for {server_handle}"}],
@@ -353,7 +364,13 @@ class ProvisionerNode(FunctionalNode):
             await create_incident(
                 server_handle,
                 IncidentType.PROVISIONING_FAILED,
-                {"step": "credential_cutover", "reason": exc.reason, "detail": exc.detail[:500]},
+                {
+                    "step": "credential_cutover",
+                    "reason": exc.reason,
+                    "detail": exc.detail[:500],
+                    "episode_id": provisioning_episode_id,
+                    "identity": expected_identity.model_dump(mode="json"),
+                },
             )
             return {
                 "messages": [
@@ -402,13 +419,19 @@ class ProvisionerNode(FunctionalNode):
                     ssh_key_fingerprint=identity.fingerprint,
                 ),
                 expected_identity=expected_identity,
+                retain_finalization=state.get("retain_finalization"),
             )
 
         await update_server_status(server_handle, "error")
         await create_incident(
             server_handle,
             IncidentType.PROVISIONING_FAILED,
-            {"step": "software_setup", "output": output_soft[:500]},
+            {
+                "step": "software_setup",
+                "output": output_soft[:500],
+                "episode_id": provisioning_episode_id,
+                "identity": expected_identity.model_dump(mode="json"),
+            },
         )
         return {
             "messages": [{"message": f"❌ Phase 2 (Software) failed for {server_handle}"}],

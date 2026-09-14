@@ -9,6 +9,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   and READY behind episode and identity fences, so operator edits win without partial state.
 - Server reads expose the active provisioning fence, and finalization replays require the exact canonical labels and
   stored key, so altered deliveries cannot pass as idempotent.
+- Unknown finalizer outcomes retain one encrypted command for stream reclaim, preventing a second attempt, playbook
+  run or generated-key rotation while failures remain incident-backed and non-admitting.
 - Provisioning uses a bootstrap credential only for the access play, then proves the generated key by login and
   runs the proof through it, so a READY receipt never names a key that has not connected.
 

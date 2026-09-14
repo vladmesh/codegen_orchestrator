@@ -114,7 +114,13 @@ the server row and atomically commits the normalized encrypted key, exact
 completion labels, identity-bound QA receipt, matching incident settlement,
 episode reset and READY. An operator identity edit or newer attempt wins as a
 typed conflict with no partial state; exact redelivery of the same finalized
-episode is idempotent.
+episode is idempotent. Infra-service encrypts that exact command under the
+stream entry before the POST. If the HTTP outcome is unknown, PEL reclaim calls
+only the saved finalizer command; it never reserves another attempt, rebuilds a
+node, reruns Ansible or rotates another key. The saved command has a 24-hour TTL
+and is deleted only after a typed finalizer result is published and acknowledged.
+Missing, corrupt, expired or unavailable replay state fails closed through the
+provisioning incident path.
 
 ---
 

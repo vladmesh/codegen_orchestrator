@@ -322,7 +322,7 @@ async def finalize_provisioning(
         profile_version=receipt.profile_version,
         proved_at=receipt.proved_at,
         repaired_identity=request.expected_identity,
-        settle_provisioning_episode=True,
+        provisioning_episode_id=request.episode_id,
     )
     server.finalized_provisioning_attempt = request.attempt_number
     server.finalized_provisioning_episode_id = request.episode_id
@@ -539,7 +539,7 @@ async def _record_ready_verdict(
     profile_version: str,
     proved_at: datetime,
     repaired_identity: TargetIdentity,
-    settle_provisioning_episode: bool = False,
+    provisioning_episode_id: str | None = None,
 ) -> None:
     """Write the receipt and resolve exactly the evidence a proof of this profile repairs.
 
@@ -556,9 +556,15 @@ async def _record_ready_verdict(
             incident.status = IncidentStatus.RESOLVED.value
             incident.resolved_at = now
     for incident in await _active_incidents(db, server.handle, IncidentType.PROVISIONING_FAILED):
-        if settle_provisioning_episode or (
-            (incident.details or {}).get("step") == _QA_IDENTITY_REFUSAL_STEP
-            and (incident.details or {}).get("server_ip") == repaired_identity.public_ip
+        details = incident.details or {}
+        same_provisioning_episode = (
+            provisioning_episode_id is not None
+            and details.get("episode_id") == provisioning_episode_id
+            and details.get("identity") == repaired
+        )
+        if same_provisioning_episode or (
+            details.get("step") == _QA_IDENTITY_REFUSAL_STEP
+            and details.get("server_ip") == repaired_identity.public_ip
         ):
             incident.status = IncidentStatus.RESOLVED.value
             incident.resolved_at = now

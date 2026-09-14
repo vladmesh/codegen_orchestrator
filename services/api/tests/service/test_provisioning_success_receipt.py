@@ -130,6 +130,10 @@ async def test_operator_identity_edit_races_as_one_serial_transaction(
 
     assert edited.status_code == httpx.codes.OK, edited.text
     row = (await async_client.get(f"/api/servers/{handle}")).json()
+    if field == "ssh_key":
+        assert row["ssh_key_fingerprint"] == normalize_admin_private_key(replacement).fingerprint
+    else:
+        assert row[field] == replacement
     if finalized.json()["disposition"] == "finalized":
         assert row["status"] == "ready"
         assert row["qa_target_version"] is None
