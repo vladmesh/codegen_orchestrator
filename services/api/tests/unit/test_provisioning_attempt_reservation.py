@@ -304,7 +304,13 @@ async def test_exact_redelivery_is_idempotent_and_an_altered_redelivery_conflict
     duplicate = await finalize_provisioning("srv-1", command, db, None)
     altered = await finalize_provisioning(
         "srv-1",
-        command.model_copy(update={"complete_labels": {"provisioning_phase": "different"}}),
+        command.model_copy(update={"complete_labels": {"provisioning_phase": "complete"}}),
+        db,
+        None,
+    )
+    different_key = await finalize_provisioning(
+        "srv-1",
+        command.model_copy(update={"generated_private_key": fleet_private_key()}),
         db,
         None,
     )
@@ -313,5 +319,7 @@ async def test_exact_redelivery_is_idempotent_and_an_altered_redelivery_conflict
     assert duplicate.disposition is ProvisioningFinalizationDisposition.IDEMPOTENT
     assert altered.disposition is ProvisioningFinalizationDisposition.CONFLICT
     assert altered.reason == "finalized_delivery_mismatch"
+    assert different_key.disposition is ProvisioningFinalizationDisposition.CONFLICT
+    assert different_key.reason == "finalized_delivery_mismatch"
     assert db.commits == 1
     assert SecretsCipher().decrypt(db.server.ssh_key_enc) == GENERATED_KEY

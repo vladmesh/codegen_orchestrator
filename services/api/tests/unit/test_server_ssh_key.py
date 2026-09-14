@@ -74,6 +74,7 @@ def _mock_server(handle="srv-1", ssh_key_enc=None, **overrides):
     server.last_health_check = None
     server.provisioning_started_at = None
     server.provisioning_attempts = 0
+    server.provisioning_episode_id = None
     server.notes = None
     server.provider = None
     server.provider_id = None

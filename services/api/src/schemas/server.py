@@ -52,6 +52,8 @@ class ServerRead(ServerBase, TimestampedDTO):
     used_disk_mb: int = 0
     os_template: str | None = None
     provisioning_started_at: datetime | None = None
+    provisioning_attempts: int = 0
+    provisioning_episode_id: str | None = None
 
     # Health metrics (from node_exporter + cadvisor)
     cpu_usage_pct: float | None = None

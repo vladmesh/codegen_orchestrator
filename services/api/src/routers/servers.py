@@ -82,16 +82,20 @@ def _admin_key_or_422(raw: str | None) -> AdminPrivateKey:
         ) from None
 
 
-def _stored_key_fingerprint(server: Server) -> str | None:
-    """The public fingerprint of the key this row stores, or None if it has no usable one."""
+def _stored_admin_key(server: Server) -> AdminPrivateKey | None:
+    """The parsed key this row stores, or None if it has no usable one."""
     if not server.ssh_key_enc:
         return None
     try:
-        return validate_stored_admin_private_key(
-            SecretsCipher().decrypt(server.ssh_key_enc)
-        ).fingerprint
+        return validate_stored_admin_private_key(SecretsCipher().decrypt(server.ssh_key_enc))
     except AdminKeyRejectedError:
         return None
+
+
+def _stored_key_fingerprint(server: Server) -> str | None:
+    """The public fingerprint of the key this row stores, or None if it has no usable one."""
+    key = _stored_admin_key(server)
+    return key.fingerprint if key else None
 
 
 @router.post("/", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
@@ -247,11 +251,12 @@ async def finalize_provisioning(
             episode_id=server.provisioning_episode_id,
         )
 
+    stored_key = _stored_admin_key(server)
     current_identity = TargetIdentity(
         ssh_user=server.ssh_user,
         host=server.host,
         public_ip=server.public_ip,
-        ssh_key_fingerprint=_stored_key_fingerprint(server),
+        ssh_key_fingerprint=stored_key.fingerprint if stored_key else None,
     )
     same_finalized_fence = (
         server.finalized_provisioning_attempt == request.attempt_number
@@ -259,11 +264,17 @@ async def finalize_provisioning(
     )
     if same_finalized_fence:
         proved_at = request.qa_target_receipt.proved_at.astimezone(UTC).replace(tzinfo=None)
+        try:
+            delivered_key = normalize_admin_private_key(request.generated_private_key)
+        except AdminKeyRejectedError:
+            delivered_key = None
         exact_duplicate = (
             current_identity == request.proved_identity
             and request.generated_key_fingerprint == current_identity.ssh_key_fingerprint
+            and delivered_key == stored_key
             and server.qa_target_version == request.qa_target_receipt.profile_version
             and server.qa_target_proved_at == proved_at
+            and request.complete_labels == provisioning_complete_labels()
             and all((server.labels or {}).get(k) == v for k, v in request.complete_labels.items())
         )
         return answer(

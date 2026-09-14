@@ -421,6 +421,8 @@ export interface Server {
   provider_id?: string | null
   notes?: string | null
   provisioning_started_at?: string | null
+  provisioning_attempts?: number
+  provisioning_episode_id?: string | null
   cpu_usage_pct?: number | null
   load_avg_1m?: number | null
   load_avg_5m?: number | null
