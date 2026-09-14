@@ -23,6 +23,13 @@ from ..lifecycle_diagnostics import (
     WorkerLifecycleDiagnostics,
     collect_worker_lifecycle_diagnostics,
 )
+from ..transcript_storage import (
+    TranscriptExpired,
+    TranscriptMalformed,
+    TranscriptNotFound,
+    TranscriptUnsafe,
+    read_transcript,
+)
 from ._shared import FileTreeEntry, read_file, walk_workspace
 
 logger = structlog.get_logger()
@@ -63,6 +70,11 @@ class ContainerFact(BaseModel):
     id: str
     image: str | None = None
     state: str | None = None
+
+
+class TranscriptContent(BaseModel):
+    locator: str
+    content: str
 
 
 class ActiveTurnLease(BaseModel):
@@ -449,6 +461,26 @@ async def get_worker_file(worker_id: str, file_path: str, request: Request):
         content=content,
         size=size,
     )
+
+
+@router.get("/transcripts/{locator:path}", response_model=TranscriptContent)
+async def get_transcript(locator: str) -> TranscriptContent:
+    """Read one opaque retained transcript without exposing filesystem paths."""
+    try:
+        content = read_transcript(
+            locator,
+            storage_root=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
+            retention_days=settings.WORKER_TRANSCRIPT_RETENTION_DAYS,
+        )
+    except TranscriptMalformed as exc:
+        raise HTTPException(status_code=HTTPStatus.UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except TranscriptUnsafe as exc:
+        raise HTTPException(status_code=HTTPStatus.FORBIDDEN, detail=str(exc)) from exc
+    except TranscriptExpired as exc:
+        raise HTTPException(status_code=HTTPStatus.GONE, detail=str(exc)) from exc
+    except TranscriptNotFound as exc:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=str(exc)) from exc
+    return TranscriptContent(locator=locator, content=content)
 
 
 @router.delete("/workers/{worker_id}", status_code=HTTPStatus.NO_CONTENT)

@@ -10,7 +10,11 @@ import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import AgentTurnLimitExceeded, WorkerWrapper
 
-from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerStopReason
+from shared.contracts.queues.worker_result import (
+    TranscriptUnavailableReason,
+    WorkerFailedResult,
+    WorkerStopReason,
+)
 
 
 def _make_wrapper(**overrides) -> tuple[WorkerWrapper, MagicMock]:
@@ -183,7 +187,7 @@ class TestTheLimitKeepsTheWork:
         initial_transcript = tmp_path / "dev-liveness-1" / "resume-1.log"
         initial_transcript.parent.mkdir()
         initial_transcript.write_text("initial transcript", encoding="utf-8")
-        wrapper._transcript_path = str(initial_transcript)
+        wrapper._transcript_path = "v1/dev-liveness-1/resume-1.log"
         killed = asyncio.Event()
 
         async def communicate():
@@ -313,6 +317,32 @@ class TestTheLimitKeepsTheWork:
 
         submitted = broker.submit_output.await_args[0][1]
         assert submitted.stop_reason is None
+
+    @pytest.mark.asyncio
+    async def test_a_save_failure_is_published_as_typed_missing_evidence(self, tmp_path):
+        wrapper, broker = _make_wrapper(transcript_dir=str(tmp_path))
+        wrapper._result_event = asyncio.Event()
+        wrapper._buffered_result = None
+        wrapper._transcript_unavailable_reason = TranscriptUnavailableReason.SAVE_FAILED
+
+        await wrapper._publish_result("1-0", {}, "Agent process failed", "failed", None)
+
+        submitted = broker.submit_output.await_args[0][1]
+        assert submitted.transcript_path is None
+        assert submitted.transcript_unavailable_reason is TranscriptUnavailableReason.SAVE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_a_new_turn_cannot_reuse_its_neighbours_locator(self, tmp_path):
+        wrapper, _ = _make_wrapper(transcript_dir=str(tmp_path))
+        wrapper._transcript_path = "v1/dev-liveness-1/old-request.log"
+        wrapper._transcript_truncated = False
+
+        with patch.object(wrapper, "_run_turn", new_callable=AsyncMock) as run_turn:
+            await wrapper.process_message("2-0", {"request_id": "new-request"})
+
+        run_turn.assert_awaited_once()
+        assert wrapper._transcript_path is None
+        assert wrapper._transcript_truncated is None
 
 
 class TestTheLimitIsConfigurable:

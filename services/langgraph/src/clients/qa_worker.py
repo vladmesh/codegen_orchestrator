@@ -35,6 +35,12 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
     WorkerOwnership,
 )
+from shared.contracts.queues.worker_result import (
+    TranscriptUnavailableReason,
+    WorkerResult,
+    WorkerResultAdapter,
+)
+from shared.contracts.transcript import validate_transcript_locator
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 from shared.redis.client import DEFAULT_STREAM_MAXLEN
@@ -63,16 +69,28 @@ class QAExecutorUnavailable(Exception):
     got nowhere". ``None`` is the first: nothing ever started, so there is
     nothing to carry. A string — empty included — is the second, and it must
     reach the Run this failure settles: the container is deleted in this
-    function's own `finally` and worker-wrapper retains no transcript for a QA
-    executor, so a failure that dropped the payload it is quoting in its own
-    detail would be the last chance anybody had to read it.
+    function's own `finally`. The durable wrapper transcript is separate raw
+    process evidence; this field preserves the runner's three-state observation
+    and multi-attempt presentation semantics.
     """
 
-    def __init__(self, detail: str, *, transient: bool, transcript: str | None = None) -> None:
+    def __init__(
+        self,
+        detail: str,
+        *,
+        transient: bool,
+        transcript: str | None = None,
+        transcript_path: str | None = None,
+        transcript_truncated: bool | None = None,
+        transcript_unavailable_reason: TranscriptUnavailableReason | None = None,
+    ) -> None:
         super().__init__(detail)
         self.detail = detail
         self.transient = transient
         self.transcript = transcript
+        self.transcript_path = transcript_path
+        self.transcript_truncated = transcript_truncated
+        self.transcript_unavailable_reason = transcript_unavailable_reason
 
 
 @dataclass(frozen=True)
@@ -83,6 +101,9 @@ class QAExecutorRun:
     calls_served: int
     detail: str
     transcript: str = ""
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
 
 # Substrings in a worker-manager failure that mean "this host's agent session is
@@ -140,7 +161,8 @@ async def run_qa_executor(
         timeout: seconds the executor is given to reach a verdict.
 
     Raises:
-        QAExecutorUnavailable: no executor ran at all.
+        QAExecutorUnavailable: no executor ran, or its terminal transcript
+            evidence was unavailable.
     """
     settings = get_settings()
     request_id = str(uuid.uuid4())
@@ -225,15 +247,33 @@ async def run_qa_executor(
         )
         logger.info("qa_executor_started", worker_id=worker_id, timeout=timeout)
 
-        transcript = await _await_verdict_or_exit(
+        terminal_result = await _await_verdict_or_exit(
             redis_client=redis_client,
             group_name=group_name,
             consumer_id=consumer_id,
             output_stream=output_stream,
             worker_id=worker_id,
+            request_id=request_id,
             verdict_received=verdict_received,
             timeout=timeout,
         )
+        transcript = _transcript_of(terminal_result)
+        transcript_path = terminal_result.transcript_path if terminal_result else None
+        transcript_truncated = terminal_result.transcript_truncated if terminal_result else None
+        unavailable = terminal_result.transcript_unavailable_reason if terminal_result else None
+        if terminal_result is None:
+            raise QAExecutorUnavailable(
+                "the QA executor did not publish terminal transcript evidence",
+                transient=True,
+                transcript="",
+            )
+        if unavailable is not None:
+            raise QAExecutorUnavailable(
+                f"the QA executor transcript is unavailable: {unavailable.value}",
+                transient=True,
+                transcript=transcript,
+                transcript_unavailable_reason=unavailable,
+            )
         served = calls_served()
         if not verdict_received.is_set() and served == 0:
             # The container ran. Whatever it said is the only evidence of what
@@ -244,12 +284,18 @@ async def run_qa_executor(
                 f"{transcript[:1000] or 'no output'}",
                 transient=True,
                 transcript=transcript,
+                transcript_path=transcript_path,
+                transcript_truncated=transcript_truncated,
+                transcript_unavailable_reason=unavailable,
             )
         return QAExecutorRun(
             verdict_submitted=verdict_received.is_set(),
             calls_served=served,
             detail=f"{agent_type.value} executor {worker_id}",
             transcript=transcript,
+            transcript_path=transcript_path,
+            transcript_truncated=transcript_truncated,
+            transcript_unavailable_reason=unavailable,
         )
     finally:
         if created:
@@ -279,9 +325,10 @@ async def _await_verdict_or_exit(
     consumer_id: str,
     output_stream: str,
     worker_id: str,
+    request_id: str,
     verdict_received: asyncio.Event,
     timeout: int,
-) -> str:
+) -> WorkerResult | None:
     """Wait for the run's answer, or for the container to stop having one.
 
     Two things end a run and they arrive over different channels: the verdict on
@@ -317,20 +364,41 @@ async def _await_verdict_or_exit(
             await asyncio.wait({output_task}, timeout=VERDICT_GRACE_S)
         elif output_task in done and not verdict_task.done():
             await asyncio.wait({verdict_task}, timeout=VERDICT_GRACE_S)
-        return _transcript_of(output_task)
+        return _terminal_result_of(output_task, worker_id=worker_id, request_id=request_id)
     finally:
         for task in (verdict_task, output_task):
             task.cancel()
 
 
-def _transcript_of(output_task: asyncio.Task) -> str:
-    """The container's own account of the run, if it produced one."""
+def _terminal_result_of(
+    output_task: asyncio.Task, *, worker_id: str, request_id: str
+) -> WorkerResult | None:
+    """Validate the QA executor's terminal worker result and locator ownership."""
     if not output_task.done() or output_task.cancelled():
-        return ""
+        return None
     try:
         payload = output_task.result()
-    except Exception as exc:  # noqa: BLE001 — a poison payload is still evidence
-        return f"worker output could not be read: {exc}"
-    if not payload:
+        if not payload:
+            return None
+        result = WorkerResultAdapter.validate_python(payload)
+        if result.transcript_path is not None:
+            validate_transcript_locator(
+                result.transcript_path,
+                expected_worker_id=worker_id,
+                expected_request_id=request_id,
+            )
+        elif result.transcript_unavailable_reason is None:
+            raise ValueError("agent-started terminal result has no transcript evidence")
+        return result
+    except Exception as exc:  # noqa: BLE001 — poison output is typed unavailable evidence
+        raise QAExecutorUnavailable(
+            f"QA executor published unavailable transcript evidence: {type(exc).__name__}",
+            transient=True,
+        ) from exc
+
+
+def _transcript_of(result: WorkerResult | None) -> str:
+    """The typed container account retained for the three-state QA evidence field."""
+    if result is None:
         return ""
-    return json.dumps(payload)[:20000]
+    return json.dumps(result.model_dump(mode="json"), sort_keys=True)[:20000]

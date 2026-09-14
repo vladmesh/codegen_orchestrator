@@ -40,7 +40,7 @@ class WorkerWrapperConfig(BaseSettings):
     subprocess_timeout_seconds: int = Timeouts.AGENT_TURN
     http_server_port: int = 9090
     transcript_dir: str = "/artifacts/worker-transcripts"
-    transcript_max_bytes: int = 5 * 1024 * 1024
+    transcript_max_bytes: int = Field(default=5 * 1024 * 1024, gt=0)
 
     # Not WORKER_-prefixed: this is the Claude CLI's own variable, set by
     # worker-manager to the mounted host session directory.

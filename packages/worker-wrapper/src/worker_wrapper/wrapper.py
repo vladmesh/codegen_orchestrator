@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from shared.contracts.queues.worker_result import (
+    TranscriptUnavailableReason,
     WorkerCompletedResult,
     WorkerFailedResult,
     WorkerResult,
@@ -22,7 +23,7 @@ from shared.contracts.vocab import AgentType
 from .broker import WorkerBrokerClient
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
-from .observability import extract_effort_metrics, save_transcript
+from .observability import extract_effort_metrics, read_transcript_artifact, save_transcript
 
 logger = structlog.get_logger(__name__)
 
@@ -222,6 +223,7 @@ class WorkerWrapper:
         self._effort_metrics: dict[str, Any] = {}
         self._transcript_path: str | None = None
         self._transcript_truncated: bool | None = None
+        self._transcript_unavailable_reason: TranscriptUnavailableReason | None = None
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
 
@@ -315,6 +317,13 @@ class WorkerWrapper:
         logger.info("processing_task", msg_id=msg_id)
         self._stop_reason = None
         self._agent_limit_seconds = None
+        # A reused worker handles several request ids. Evidence from one turn
+        # must never be published as the next turn's locator.
+        self._agent_stdout_tail = None
+        self._effort_metrics = {}
+        self._transcript_path = None
+        self._transcript_truncated = None
+        self._transcript_unavailable_reason = None
         await self._run_turn(msg_id, data)
 
     async def _run_turn(self, msg_id: str, data: dict):
@@ -637,6 +646,8 @@ class WorkerWrapper:
         if self._transcript_path:
             metadata["transcript_path"] = self._transcript_path
             metadata["transcript_truncated"] = self._transcript_truncated
+        elif self._transcript_unavailable_reason is not None:
+            metadata["transcript_unavailable_reason"] = self._transcript_unavailable_reason
         return metadata
 
     async def _prepare_workspace(self, data: dict) -> None:
@@ -1225,6 +1236,9 @@ class WorkerWrapper:
             self.config.transcript_max_bytes,
             wrapper_env,
         )
+        if self._transcript_path is None:
+            self._transcript_truncated = None
+            self._transcript_unavailable_reason = TranscriptUnavailableReason.SAVE_FAILED
 
         # Codex stdout/stderr are transport diagnostics, never business output.
         # Do not persist or log them because CLI diagnostics can include data
@@ -1310,7 +1324,9 @@ class WorkerWrapper:
             stderr = stderr_bytes.decode().strip()
             if self._transcript_path:
                 try:
-                    prior_transcript = Path(self._transcript_path).read_text(encoding="utf-8")
+                    prior_transcript = read_transcript_artifact(
+                        self.config.transcript_dir, self._transcript_path
+                    )
                 except OSError:
                     prior_transcript = ""
                 transcript, truncated = save_transcript(
@@ -1323,7 +1339,11 @@ class WorkerWrapper:
                     dict(os.environ),
                 )
                 self._transcript_path = transcript
-                self._transcript_truncated = self._transcript_truncated or truncated
+                if transcript is None:
+                    self._transcript_truncated = None
+                    self._transcript_unavailable_reason = TranscriptUnavailableReason.SAVE_FAILED
+                else:
+                    self._transcript_truncated = self._transcript_truncated or truncated
             max_tail = 10_000
             combined = stdout
             if stderr:

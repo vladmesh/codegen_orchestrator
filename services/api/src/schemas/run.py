@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
@@ -12,6 +12,7 @@ from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInp
 # The create schema is the contract; the API validates against that same object
 # rather than a look-alike of its own.
 from shared.contracts.dto.run import RunCreate
+from shared.contracts.transcript import TranscriptLocator
 
 __all__ = [
     "RunBase",
@@ -63,8 +64,17 @@ class RunUpdate(BaseModel):
     completed_at: datetime | None = None
     iteration: int | None = None
     agent_profile: dict[str, Any] | None = None
-    transcript_path: str | None = None
+    transcript_path: TranscriptLocator | None = None
     transcript_truncated: bool | None = None
     # Only terminal engineering updates may supply this. The API persists it in
     # the same locked transaction as the terminal Run transition.
     engineering_attempt: EngineeringAttemptLedgerInput | None = None
+
+    @model_validator(mode="after")
+    def _transcript_fields_are_atomic(self):
+        supplied = self.model_fields_set
+        if ("transcript_path" in supplied) != ("transcript_truncated" in supplied):
+            raise ValueError("transcript_path and transcript_truncated must be supplied together")
+        if self.transcript_path is None and self.transcript_truncated is not None:
+            raise ValueError("transcript_truncated requires transcript_path")
+        return self

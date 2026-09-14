@@ -297,10 +297,9 @@ class TestAnExecutorThatCannotStart:
     async def test_an_executor_that_ran_and_said_nothing_useful_keeps_what_it_said(self, tmp_path):
         """It started, it emitted output, it never called the endpoint.
 
-        Its container is deleted by the time this returns and worker-wrapper
-        retains no transcript for a QA executor, so this result is the last
-        place that account exists. Both attempts ran here, and both are kept
-        under their own header.
+        Its container is deleted by the time this returns. The runner's
+        multi-attempt account remains distinct from the durable raw transcript,
+        and both attempts are kept under their own header.
         """
         transcript = '{"output": "I could not reach the capability endpoint"}'
         result = await _run(
@@ -348,6 +347,24 @@ class TestAnExecutorThatCannotStart:
         assert result.executor_evidence == (
             f"== QA executor attempt 1 of {QA_EXECUTOR_ATTEMPTS} ==\n{spoke}"
         )
+
+    async def test_a_started_executor_carries_its_durable_locator_to_the_result(self, tmp_path):
+        locator = "v1/qa-worker-1/request-1.log"
+        result = await _run(
+            executor=_failing_executor(
+                QAExecutorUnavailable(
+                    "executor exited before verdict",
+                    transient=False,
+                    transcript="typed output",
+                    transcript_path=locator,
+                    transcript_truncated=True,
+                )
+            ),
+            tmp_path=tmp_path,
+        )
+
+        assert result.transcript_path == locator
+        assert result.transcript_truncated is True
 
     async def test_an_executor_that_never_started_records_no_transcript(self, tmp_path):
         """No attempt ran, so this record holds none — which claims nothing further."""

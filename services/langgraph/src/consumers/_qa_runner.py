@@ -25,6 +25,7 @@ from shared.contracts.dto.run_result import (
     QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.transcript import TranscriptUnavailableReason
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
@@ -132,11 +133,26 @@ class QAExecutorAttempts:
 
     attempts: int
     said: tuple[tuple[int, str], ...] = ()
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
-    def with_attempt(self, attempt: int, transcript: str | None) -> QAExecutorAttempts:
-        if transcript is None:
-            return self
-        return QAExecutorAttempts(self.attempts, (*self.said, (attempt, transcript)))
+    def with_attempt(
+        self,
+        attempt: int,
+        transcript: str | None,
+        transcript_path: str | None = None,
+        transcript_truncated: bool | None = None,
+        transcript_unavailable_reason: TranscriptUnavailableReason | None = None,
+    ) -> QAExecutorAttempts:
+        said = self.said if transcript is None else (*self.said, (attempt, transcript))
+        return QAExecutorAttempts(
+            self.attempts,
+            said,
+            transcript_path or self.transcript_path,
+            transcript_truncated if transcript_path is not None else self.transcript_truncated,
+            transcript_unavailable_reason or self.transcript_unavailable_reason,
+        )
 
     @property
     def evidence(self) -> str | None:
@@ -167,11 +183,17 @@ class QAInfrastructureFailure(Exception):
         summary: str,
         blocker: QABlocker,
         executor_transcript: str | None = None,
+        transcript_path: str | None = None,
+        transcript_truncated: bool | None = None,
+        transcript_unavailable_reason: TranscriptUnavailableReason | None = None,
     ) -> None:
         super().__init__(blocker.received)
         self.summary = summary
         self.blocker = blocker
         self.executor_transcript = executor_transcript
+        self.transcript_path = transcript_path
+        self.transcript_truncated = transcript_truncated
+        self.transcript_unavailable_reason = transcript_unavailable_reason
 
 
 @dataclass
@@ -188,12 +210,16 @@ class QAResult:
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
-    # (`QARunResult.executor_transcript`) because it exists nowhere else once the
-    # stand is gone. ``None`` is "no executor ran at all" — deterministic health
-    # checks, or a container-state failure that never started one — and an empty
+    # (`QARunResult.executor_transcript`) because the durable raw transcript does
+    # not encode these runner-owned multi-attempt semantics. ``None`` is "no
+    # executor ran at all" — deterministic health checks, or a container-state
+    # failure that never started one — and an empty
     # string is an executor that ran and said nothing. A red run's artifact
     # reports those as different findings, so they are kept apart here.
     executor_evidence: str | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -1228,11 +1254,14 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     raise QAInfrastructureFailure(
         summary="QA could not be performed: the assigned executor did not run",
         # An executor that started, said something and never called the endpoint
-        # leaves that account here and nowhere else: its container is already
-        # deleted, and worker-wrapper retains no transcript for a QA executor.
+        # leaves the runner's three-state account here after its container is
+        # deleted; wrapper storage separately retains the raw process transcript.
         # Every attempt that ran, not only the last: the last one may be an
         # attempt that never started a container and has nothing to say.
         executor_transcript=said.evidence,
+        transcript_path=said.transcript_path,
+        transcript_truncated=said.transcript_truncated,
+        transcript_unavailable_reason=said.transcript_unavailable_reason,
         blocker=QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted=f"run exploratory QA on the assigned executor ({executor})",
@@ -1297,7 +1326,13 @@ async def _run_central_executor(
             )
         except QAExecutorUnavailable as exc:
             last = exc
-            said = said.with_attempt(attempt, exc.transcript)
+            said = said.with_attempt(
+                attempt,
+                exc.transcript,
+                exc.transcript_path,
+                exc.transcript_truncated,
+                exc.transcript_unavailable_reason,
+            )
             logger.warning(
                 "qa_executor_unavailable",
                 executor=runtime.executor_agent_type.value,
@@ -1315,7 +1350,17 @@ async def _run_central_executor(
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None, said.with_attempt(attempt, run.transcript)
+        return (
+            run,
+            None,
+            said.with_attempt(
+                attempt,
+                run.transcript,
+                run.transcript_path,
+                run.transcript_truncated,
+                run.transcript_unavailable_reason,
+            ),
+        )
     return None, last, said
 
 
@@ -1337,6 +1382,9 @@ def _verdict_of(
             summary=f"the QA executor did not submit a result within {timeout}s",
             report=workspace.read_report(),
             executor_evidence=said.evidence,
+            transcript_path=said.transcript_path,
+            transcript_truncated=said.transcript_truncated,
+            transcript_unavailable_reason=said.transcript_unavailable_reason,
             blocker=_unknown_result_blocker(
                 attempted="run the central QA executor",
                 sent=f"{service.calls_served} capability call(s)",
@@ -1346,6 +1394,9 @@ def _verdict_of(
     qa_result = parse_qa_result(workspace.verdict)
     qa_result.report = workspace.read_report()
     qa_result.executor_evidence = said.evidence
+    qa_result.transcript_path = said.transcript_path
+    qa_result.transcript_truncated = said.transcript_truncated
+    qa_result.transcript_unavailable_reason = said.transcript_unavailable_reason
     return qa_result
 
 
@@ -1485,6 +1536,9 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
+                transcript_path=failure.transcript_path,
+                transcript_truncated=failure.transcript_truncated,
+                transcript_unavailable_reason=failure.transcript_unavailable_reason,
             ),
             _residues(grant, workspace),
         )

@@ -7,6 +7,7 @@ import pytest
 
 from shared.contracts.queues.worker_result import (
     ClaudeResultEvidence,
+    TranscriptUnavailableReason,
     WorkerBlockedResult,
     WorkerCompletedResult,
     WorkerFailedResult,
@@ -119,4 +120,31 @@ class TestWorkerResultValidation:
                     "claude_evidence": {"cost_microusd": 40_001},
                     "input_tokens": 12,
                 }
+            )
+
+    def test_transcript_locator_and_truncation_are_atomic(self):
+        with pytest.raises(ValidationError, match="transcript_truncated"):
+            WorkerFailedResult(error="crashed", transcript_path="v1/worker/request.log")
+
+    def test_transcript_locator_is_strict(self):
+        with pytest.raises(ValidationError):
+            WorkerFailedResult(
+                error="crashed",
+                transcript_path="/artifacts/worker-transcripts/worker/request.log",
+                transcript_truncated=False,
+            )
+
+    def test_save_failure_is_typed_and_exclusive_with_locator(self):
+        result = WorkerFailedResult(
+            error="crashed",
+            transcript_unavailable_reason=TranscriptUnavailableReason.SAVE_FAILED,
+        )
+        assert result.transcript_path is None
+
+        with pytest.raises(ValidationError, match="exclusive"):
+            WorkerFailedResult(
+                error="crashed",
+                transcript_path="v1/worker/request.log",
+                transcript_truncated=False,
+                transcript_unavailable_reason=TranscriptUnavailableReason.SAVE_FAILED,
             )

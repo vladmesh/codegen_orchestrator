@@ -29,6 +29,7 @@ from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFail
 from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.transcript import TranscriptUnavailableReason
 from shared.contracts.vocab import AgentType
 from shared.crypto import decrypt_dict
 from shared.notifications import notify_admins_best_effort
@@ -768,6 +769,9 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
                 executor_transcript=qa_result.executor_evidence,
+                transcript_path=qa_result.transcript_path,
+                transcript_truncated=qa_result.transcript_truncated,
+                transcript_unavailable_reason=qa_result.transcript_unavailable_reason,
             )
         if qa_result.passed:
             return await _handle_qa_pass(
@@ -777,6 +781,9 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
                 executor_transcript=qa_result.executor_evidence,
+                transcript_path=qa_result.transcript_path,
+                transcript_truncated=qa_result.transcript_truncated,
+                transcript_unavailable_reason=qa_result.transcript_unavailable_reason,
             )
         else:
             return await _handle_qa_fail(
@@ -803,6 +810,11 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             # a 409 arrives, and QA may already have run: the fallback settles
             # the Run, so it settles it with the evidence the run produced.
             executor_transcript=qa_result.executor_evidence if qa_result else None,
+            transcript_path=qa_result.transcript_path if qa_result else None,
+            transcript_truncated=qa_result.transcript_truncated if qa_result else None,
+            transcript_unavailable_reason=(
+                qa_result.transcript_unavailable_reason if qa_result else None
+            ),
         )
     finally:
         # Always release inflight marker
@@ -817,6 +829,9 @@ async def _handle_qa_pass(
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
     executor_transcript: str | None = None,
+    transcript_path: str | None = None,
+    transcript_truncated: bool | None = None,
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None,
 ) -> dict:
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
@@ -828,6 +843,9 @@ async def _handle_qa_pass(
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
         executor_transcript=executor_transcript,
+        transcript_path=transcript_path,
+        transcript_truncated=transcript_truncated,
+        transcript_unavailable_reason=transcript_unavailable_reason,
     )
     logger.info("qa_passed", run_id=run_id)
     return live_work_settled({"status": "passed"})
@@ -840,6 +858,9 @@ async def _handle_qa_blocked(
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
     executor_transcript: str | None = None,
+    transcript_path: str | None = None,
+    transcript_truncated: bool | None = None,
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None,
 ) -> dict:
     """Persist a non-product QA blocker for human review."""
     await _update_run(
@@ -851,6 +872,9 @@ async def _handle_qa_blocked(
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
         executor_transcript=executor_transcript,
+        transcript_path=transcript_path,
+        transcript_truncated=transcript_truncated,
+        transcript_unavailable_reason=transcript_unavailable_reason,
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
@@ -887,6 +911,9 @@ async def _handle_qa_fail(
             state_changes=qa_result.state_changes,
             telegram_probe_evidence=qa_result.telegram_probe_evidence,
             executor_transcript=qa_result.executor_evidence,
+            transcript_path=qa_result.transcript_path,
+            transcript_truncated=qa_result.transcript_truncated,
+            transcript_unavailable_reason=qa_result.transcript_unavailable_reason,
         )
         return live_work_settled({"status": "qa_exhausted"})
 
@@ -901,6 +928,9 @@ async def _handle_qa_fail(
         state_changes=qa_result.state_changes,
         telegram_probe_evidence=qa_result.telegram_probe_evidence,
         executor_transcript=qa_result.executor_evidence,
+        transcript_path=qa_result.transcript_path,
+        transcript_truncated=qa_result.transcript_truncated,
+        transcript_unavailable_reason=qa_result.transcript_unavailable_reason,
     )
 
     logger.info(
@@ -915,6 +945,8 @@ async def _update_run(
     run_id: str,
     status: RunStatus,
     qa_outcome: QAOutcome,
+    transcript_path: str | None = None,
+    transcript_truncated: bool | None = None,
     **extra_result: object,
 ) -> None:
     """Update run status and result with QA outcome.
@@ -936,6 +968,14 @@ async def _update_run(
             json={
                 "status": status.value,
                 "result": run_result.model_dump(mode="json"),
+                **(
+                    {
+                        "transcript_path": transcript_path,
+                        "transcript_truncated": transcript_truncated,
+                    }
+                    if transcript_path is not None
+                    else {}
+                ),
             },
         )
     except httpx.HTTPStatusError as error:

@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
+from src.routers import introspect
 from src.routers._shared import safe_resolve
 from src.routers.introspect import router as introspect_router
 
@@ -202,6 +203,36 @@ class TestListWorkers:
         assert worker["attempt_run"] == {"id": "running-attempt", "status": "running"}
         assert worker["waiting_attempt"] is None
 
+
+class TestTranscriptRead:
+    def test_reads_one_locator_without_returning_a_host_path(self, tmp_path, monkeypatch):
+        artifact = tmp_path / "worker-1" / "request-1.log"
+        artifact.parent.mkdir()
+        artifact.write_text("retained", encoding="utf-8")
+        monkeypatch.setattr(introspect.settings, "WORKER_TRANSCRIPT_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(introspect.settings, "WORKER_TRANSCRIPT_RETENTION_DAYS", 7)
+
+        with TestClient(_make_app()) as client:
+            response = client.get("/api/introspect/transcripts/v1/worker-1/request-1.log")
+
+        assert response.status_code == HTTPStatus.OK
+        assert response.json() == {
+            "locator": "v1/worker-1/request-1.log",
+            "content": "retained",
+        }
+        assert str(tmp_path) not in response.text
+
+    def test_rejects_traversal_without_reading_a_neighbour(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(introspect.settings, "WORKER_TRANSCRIPT_STORAGE_PATH", str(tmp_path))
+        monkeypatch.setattr(introspect.settings, "WORKER_TRANSCRIPT_RETENTION_DAYS", 7)
+
+        with TestClient(_make_app()) as client:
+            response = client.get("/api/introspect/transcripts/v1/worker-1/%2E%2E.log")
+
+        assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+class TestListWorkersUnreadableEvidence:
     def test_inventory_never_reports_unreadable_facts_as_absent(self, redis, docker):
         redis.keys = AsyncMock(return_value=["worker:status:w1"])
 

@@ -14,7 +14,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringFailureReason, EngineeringRunResult
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.contracts.queues.worker_result import WorkerStopReason
+from shared.contracts.queues.worker_result import TranscriptUnavailableReason, WorkerStopReason
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.notifications import notify_admins_best_effort
@@ -134,6 +134,13 @@ def _observability_patch(worker_observability: dict | None) -> dict:
             if observability.get(field) is not None
         },
     }
+
+
+def _transcript_unavailable_reason(
+    worker_observability: dict | None,
+) -> TranscriptUnavailableReason | None:
+    """Return the wrapper's typed missing-evidence reason for the Run result."""
+    return (worker_observability or {}).get("transcript_unavailable_reason")
 
 
 async def _update_task_status(
@@ -317,6 +324,7 @@ async def fail_job(  # noqa: PLR0913 — one attempt's whole context, each part 
                 engineering_status=EngineeringStatus.FAILED,
                 failure_reason=failure_reason,
                 execution=execution,
+                transcript_unavailable_reason=_transcript_unavailable_reason(worker_observability),
             ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
             **_attempt_execution_patch(stop_reason, agent_limit_seconds, execution),
@@ -373,6 +381,7 @@ async def handle_worker_gave_up(
             "result": EngineeringRunResult(
                 engineering_status=EngineeringStatus.GAVE_UP,
                 execution=execution,
+                transcript_unavailable_reason=_transcript_unavailable_reason(worker_observability),
             ).model_dump(mode="json"),
             **_observability_patch(worker_observability),
             # A refusal is a stop with a reason, and it is the third one the
@@ -482,7 +491,10 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 "status": RunStatus.FAILED.value,
                 "error_message": "Developer completed but no commit was made",
                 "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
+                    engineering_status=EngineeringStatus.FAILED,
+                    transcript_unavailable_reason=_transcript_unavailable_reason(
+                        params.worker_observability
+                    ),
                 ).model_dump(mode="json"),
                 **_observability_patch(params.worker_observability),
             },
@@ -529,6 +541,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
         engineering_status=result["engineering_status"],
         commit_sha=result.get("commit_sha"),
         execution=params.execution,
+        transcript_unavailable_reason=_transcript_unavailable_reason(params.worker_observability),
     )
     await prepare_terminal_settlement(
         task_id,

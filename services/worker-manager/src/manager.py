@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import stat
 import time
 
 import httpx
@@ -1234,8 +1235,17 @@ class WorkerManager:
             root = Path(settings.WORKER_TRANSCRIPT_STORAGE_PATH)
             root.mkdir(parents=True, exist_ok=True)
             cutoff = time.time() - settings.WORKER_TRANSCRIPT_RETENTION_DAYS * 86400
-            for artifact in root.rglob("*.log"):
-                if artifact.stat().st_mtime < cutoff:
-                    artifact.unlink()
+            for directory, child_dirs, filenames in os.walk(root, followlinks=False):
+                # Never descend through a link placed in the retention root.
+                child_dirs[:] = [
+                    name for name in child_dirs if not (Path(directory) / name).is_symlink()
+                ]
+                for filename in filenames:
+                    if not filename.endswith(".log"):
+                        continue
+                    artifact = Path(directory) / filename
+                    metadata = artifact.lstat()
+                    if stat.S_ISREG(metadata.st_mode) and metadata.st_mtime < cutoff:
+                        artifact.unlink()
         except OSError as exc:
             logger.warning("transcript_retention_cleanup_failed", error=str(exc))

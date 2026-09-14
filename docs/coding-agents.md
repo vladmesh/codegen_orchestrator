@@ -147,6 +147,22 @@ arbitrary task command environment variables. Saved transcripts still redact
 secrets from the full wrapper environment rather than the reduced child
 environment.
 
+### Durable transcripts
+
+Worker-wrapper writes one redacted transcript beneath its fixed
+`/artifacts/worker-transcripts` mount after each started agent process and before
+terminal output publication. It publishes only the relative locator
+`v1/<worker_id>/<request_id>.log` and its truncation flag. It never publishes
+the mount path or worker-manager's host path. A failed save is represented by
+`transcript_unavailable_reason=save_failed`, not a locator to a missing file.
+
+Engineering and QA consumers validate the locator against the worker and broker
+request they are consuming. Worker-manager is the only component that maps it
+to `WORKER_TRANSCRIPT_STORAGE_PATH`; `GET
+/api/introspect/transcripts/<locator>` is the single-file diagnostic read
+boundary and distinguishes malformed, unsafe, expired and absent evidence.
+There is no listing or generated-project download surface.
+
 ---
 
 ## Mapping onto the graph nodes

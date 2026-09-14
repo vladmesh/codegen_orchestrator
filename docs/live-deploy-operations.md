@@ -57,6 +57,14 @@ dotenv assembly (mixed only in the deployer).
 
 ## Deploy and QA gotchas
 
+- **Worker transcript storage is independent of worker cleanup.** Keep
+  `WORKER_TRANSCRIPT_STORAGE_PATH` on the existing durable bind/volume and mount
+  it at `/artifacts/worker-transcripts` in workers. Runs store only
+  `v1/<worker>/<request>.log`; diagnose it through worker-manager's single-file
+  introspection boundary. Do not resolve it relative to a container or copy it
+  into a QA scratch workspace. Retention pruning is the only expiry owner and
+  skips symlinks.
+
 - **Prod compose must publish the web port**, not just expose it. A container that is
   healthy on `localhost:8000/health` inside is unreachable from the host when the
   compose service has no `ports:` section — `docker ps` shows `8000/tcp` (expose
@@ -399,4 +407,3 @@ Continue only when the repaired executor shows `availability: "available"` and
 `profile.condition: "healthy"` (or the Settings card shows `Logged in` with a
 `Present` refresh credential). The response and card carry no token, claim or
 path; do not paste profile file contents anywhere to debug.
-

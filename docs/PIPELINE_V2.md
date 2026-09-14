@@ -255,6 +255,15 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 9. Worker-manager reports task completion
 10. Dispatcher transitions task to `done`
 
+Once the coding-agent process starts, worker-wrapper writes its bounded,
+redacted stdout/stderr before publishing any terminal result. The result and
+terminal engineering Run carry `v1/<worker>/<request>.log` plus the exact
+truncation flag. This is a locator under worker-manager's transcript store, not
+a container path; worker reuse validates the request component and resets the
+previous turn's evidence before launch. A write failure is a typed unavailable
+evidence state. Run outcome locking makes exact redelivery idempotent and
+refuses a neighbouring or later turn's locator.
+
 Before step 1 completes, worker-manager records explicit execution-phase
 evidence. Project lock, unusable worker profile, and other creation failures are
 `pre_agent_refused` with a typed infrastructure reason; successful container
@@ -458,9 +467,9 @@ pass as an ordinary schema error.
 7. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
 7a. A checklist line of the form `- FIRE JOB <name> [WITH {json}] THEN <observable>` names a scheduled behaviour of the product. The runner parses those lines itself, before any executor exists, resolves this deployment's `JOBS_FIRE_CAPABILITY` from the project's own encrypted secrets on the management host, and offers two extra calls bound to that closed set of names: `fire_job(name)` invokes the behaviour through the product's released `POST /jobs/fire`, and `job_evidence(name)` reads the record back through `POST /jobs/evidence`. The executor supplies the name and nothing else — the arguments come off the criterion, the command identity is `qa-<qa run id>-<name>` and the provenance is this QA run, so a retry of the call re-reads one execution rather than causing a second. The capability travels as the `X-Jobs-Capability` header from the management host and never enters the executor container, its environment, the `qa` CLI's arguments, the trace or a verdict. A `dispatched` command records only that the product's core published `job_fired`; the prompt, the answer and the run's facts all say that this is not evidence the behaviour ran, and the check passes on the observable the criterion states
 7b. For a brief-backed story the run is also given the confirmed `initial_settings` — key, scope and value — read through `GET /api/product-briefs/by-story/{story_id}`. An acceptance step about a configured behaviour asserts against those typed values instead of reconstructing them from the story's prose. A story with no confirmed brief adds nothing and the run is exactly as it was
-8. The agent submits a structured terminal verdict through the capability endpoint.
-9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep
-10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
+8. The agent submits a structured terminal verdict through the capability endpoint. Independently, the QA runner validates the wrapper's typed terminal `WorkerResult` and carries its transcript locator/truncation through every consumer terminal path. Exit before a verdict still records the locator; refusal before agent launch records none.
+9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep. QA workspace, egress and container cleanup never delete the worker-manager transcript.
+10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR) and, when an executor ran, write its validated transcript locator in the same terminal Run update.
 11. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
 
 **Supervisor routing** (`supervise_testing_stories()` in scheduler, 30s poll):
@@ -491,7 +500,8 @@ needs no coding-agent CLI, LLM credentials or Telethon session there.
   change therefore takes effect only once the `api` container has been recreated with it.
 - `TELETHON_API_ID` / `TELETHON_API_HASH` / `TELETHON_SESSION` — only for projects with a bot
 
-**Outputs**: `QAOutcome` in run.result for supervisor
+**Outputs**: `QAOutcome` in run.result for supervisor; retained executor
+transcript locator/truncation in the terminal Run observability fields
 
 ---
 

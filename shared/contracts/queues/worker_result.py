@@ -24,9 +24,11 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
+from shared.contracts.transcript import TranscriptLocator, TranscriptUnavailableReason
 
 __all__ = [
     "WorkerResultStatus",
+    "TranscriptUnavailableReason",
     "WorkerStopReason",
     "ClaudeResultEvidence",
     "FactoryResultEvidence",
@@ -68,8 +70,9 @@ class _WorkerResultBase(BaseModel):
     cost_usd: float | None = None
     claude_evidence: ClaudeResultEvidence | None = None
     factory_evidence: FactoryResultEvidence | None = None
-    transcript_path: str | None = None
+    transcript_path: TranscriptLocator | None = None
     transcript_truncated: bool | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +97,14 @@ class _WorkerResultBase(BaseModel):
                     f"{evidence_fields[0]} cannot be combined with flat effort metrics"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _validate_transcript_evidence(self):
+        if (self.transcript_path is None) != (self.transcript_truncated is None):
+            raise ValueError("transcript_path and transcript_truncated must be supplied together")
+        if self.transcript_path is not None and self.transcript_unavailable_reason is not None:
+            raise ValueError("transcript locator and unavailable reason are exclusive")
+        return self
 
 
 class WorkerCompletedResult(_WorkerResultBase):

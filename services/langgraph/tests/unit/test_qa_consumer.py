@@ -445,6 +445,8 @@ class TestProcessQAJobPass:
                 summary="All good",
                 raw="",
                 executor_evidence="executor: GET /health -> 200\n",
+                transcript_path="v1/qa-worker-1/request-1.log",
+                transcript_truncated=False,
             )
             result = await process_qa_job(qa_message_data, mock_redis)
 
@@ -453,6 +455,9 @@ class TestProcessQAJobPass:
         fallback = mock_api_client.patch.call_args[1]["json"]["result"]
         assert fallback["qa_outcome"] == QAOutcome.BLOCKED.value
         assert fallback["executor_transcript"] == "executor: GET /health -> 200\n"
+        fallback_patch = mock_api_client.patch.call_args[1]["json"]
+        assert fallback_patch["transcript_path"] == "v1/qa-worker-1/request-1.log"
+        assert fallback_patch["transcript_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_the_fallback_records_no_transcript_when_it_holds_none(
@@ -618,9 +623,8 @@ class TestProcessQAJobFail:
     ):
         """The executor's account of the run exists nowhere else once the stand is gone.
 
-        worker-wrapper retains no transcript for a QA executor, so the Run the
-        consumer settles is the only durable copy — and a red paid run's
-        acceptance artifact reads it from there.
+        the Run retains the runner-owned presentation separately from the raw
+        wrapper transcript, and a red paid run's acceptance artifact reads both.
         """
         from src.consumers._qa_runner import QAResult
 
@@ -631,11 +635,15 @@ class TestProcessQAJobFail:
                 summary="Weather endpoint broken",
                 raw="",
                 executor_evidence="executor: GET /weather -> 404\n",
+                transcript_path="v1/qa-worker-1/request-1.log",
+                transcript_truncated=True,
             )
             await process_qa_job(qa_message_data, mock_redis)
 
         run_data = mock_api_client.patch.call_args[1]["json"]
         assert run_data["result"]["executor_transcript"] == "executor: GET /weather -> 404\n"
+        assert run_data["transcript_path"] == "v1/qa-worker-1/request-1.log"
+        assert run_data["transcript_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_a_run_with_no_executor_records_no_transcript_rather_than_an_empty_one(
@@ -650,6 +658,26 @@ class TestProcessQAJobFail:
 
         run_data = mock_api_client.patch.call_args[1]["json"]
         assert run_data["result"]["executor_transcript"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_transcript_save_failure_is_durable_in_the_qa_result(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                checks=[],
+                summary="Transcript evidence unavailable",
+                raw="",
+                transcript_unavailable_reason="save_failed",
+            )
+            await process_qa_job(qa_message_data, mock_redis)
+
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert "transcript_path" not in run_data
+        assert run_data["result"]["transcript_unavailable_reason"] == "save_failed"
 
     @pytest.mark.asyncio
     async def test_qa_fail_does_not_transition_story(

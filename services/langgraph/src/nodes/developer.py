@@ -502,6 +502,7 @@ class DeveloperNode(FunctionalNode):
                     "claude_evidence": claude_evidence.model_dump(mode="json"),
                     "transcript_path": worker_result.transcript_path,
                     "transcript_truncated": worker_result.transcript_truncated,
+                    "transcript_unavailable_reason": worker_result.transcript_unavailable_reason,
                     "agent_profile": {
                         "agent_type": agent_type_value,
                         "provider": claude_evidence.provider,
@@ -527,6 +528,7 @@ class DeveloperNode(FunctionalNode):
                     "factory_evidence": factory_evidence.model_dump(mode="json"),
                     "transcript_path": worker_result.transcript_path,
                     "transcript_truncated": worker_result.transcript_truncated,
+                    "transcript_unavailable_reason": worker_result.transcript_unavailable_reason,
                     "agent_profile": {
                         "agent_type": agent_type_value,
                         "provider": factory_evidence.provider,
@@ -544,6 +546,7 @@ class DeveloperNode(FunctionalNode):
                 "total_tokens": worker_result.total_tokens,
                 "transcript_path": worker_result.transcript_path,
                 "transcript_truncated": worker_result.transcript_truncated,
+                "transcript_unavailable_reason": worker_result.transcript_unavailable_reason,
                 "agent_profile": {
                     "agent_type": agent_type_value,
                     "provider": config.get("llm_provider")

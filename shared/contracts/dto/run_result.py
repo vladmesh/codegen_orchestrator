@@ -26,6 +26,7 @@ from shared.contracts.dto.settings_seed import (
 )
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.transcript import TranscriptUnavailableReason
 
 
 class AllocationFailureReason(StrEnum):
@@ -90,6 +91,7 @@ class EngineeringRunResult(BaseModel):
     allocation_failure_reason: AllocationFailureReason | None = None
     allocation_required_ram_mb: int | None = None
     allocation_min_disk_mb: int | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
 
 class MissingUserSecret(BaseModel):
@@ -484,6 +486,8 @@ class QARunResult(BaseModel):
     #: Readers state which writer settled the Run without one; they do not
     #: conclude silence from it.
     executor_transcript: str | None = None
+    #: Typed reason the wrapper could not retain the durable executor transcript.
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
 
     @model_validator(mode="after")
     def _outcome_matches_state_traces(self) -> QARunResult:

@@ -1,6 +1,7 @@
 import json
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from shared.contracts.queues.worker import (
@@ -16,6 +17,7 @@ from shared.contracts.queues.worker_result import WorkerResultStatus
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
+    delete_test_worker,
     wait_for_create_response,
     wait_for_stream_message,
 )
@@ -233,7 +235,8 @@ class TestWorkerExecution:
 
         # 4. Send Input
         # Factory runner expects 'content' in data
-        task_data = {"content": "Hello World"}
+        turn_request_id = f"turn-{uuid4().hex[:8]}"
+        task_data = {"request_id": turn_request_id, "content": "Hello World"}
         await redis_client.xadd(input_stream, {"data": json.dumps(task_data)})
 
         # 5. Wait for the typed worker result on the output stream.
@@ -244,3 +247,19 @@ class TestWorkerExecution:
         output_msg = await wait_for_stream_message(redis_client, output_stream, timeout=60)
         output_data = json.loads(output_msg["data"])
         assert output_data["status"] in {s.value for s in WorkerResultStatus}
+        assert output_data["transcript_path"] == f"v1/{worker_id}/{turn_request_id}.log"
+        assert isinstance(output_data["transcript_truncated"], bool)
+
+        # Normal worker teardown removes the container and its workspace, not
+        # the worker-manager-owned transcript volume. Read it only through the
+        # locator boundary after cleanup, exactly as diagnostics do.
+        await delete_test_worker(redis_client, docker_client, worker_id)
+        async with httpx.AsyncClient(base_url="http://worker-manager:8000") as client:
+            retained = await client.get(
+                f"/api/introspect/transcripts/{output_data['transcript_path']}"
+            )
+        assert retained.status_code == 200, retained.text
+        transcript = retained.json()
+        assert transcript["locator"] == output_data["transcript_path"]
+        assert len(transcript["content"].encode()) <= 5 * 1024 * 1024
+        assert "sk-test-factory-key" not in transcript["content"]

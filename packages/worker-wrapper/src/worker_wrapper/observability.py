@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -11,6 +12,11 @@ from typing import Any
 import structlog
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
+from shared.contracts.transcript import (
+    TranscriptLocatorError,
+    make_transcript_locator,
+    transcript_locator_parts,
+)
 from shared.diagnostics import redact_diagnostic
 
 _SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
@@ -158,22 +164,66 @@ def save_transcript(
     max_bytes: int,
     environment: dict[str, str],
 ) -> tuple[str | None, bool]:
-    """Persist a bounded redacted artifact. Artifact failures are non-fatal."""
+    """Persist a bounded redacted artifact and return its host-independent locator."""
     try:
+        locator = make_transcript_locator(worker_id, request_id)
         encoded = redact_transcript(content, environment).encode("utf-8", errors="replace")
         truncated = len(encoded) > max_bytes
         if truncated:
             marker = b"\n\n[transcript truncated at configured limit]\n"
             prefix_limit = max(0, max_bytes - len(marker))
             # Do not split a UTF-8 code point when retaining the prefix.
-            encoded = (
-                encoded[:prefix_limit].decode("utf-8", errors="ignore").encode("utf-8") + marker
-            )
-        path = Path(directory) / worker_id
-        path.mkdir(parents=True, exist_ok=True)
-        artifact = path / f"{request_id}.log"
-        artifact.write_bytes(encoded)
-        return str(artifact), truncated
-    except OSError as exc:
+            prefix = encoded[:prefix_limit].decode("utf-8", errors="ignore").encode("utf-8")
+            encoded = (prefix + marker)[:max_bytes]
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        root_fd = os.open(root, directory_flags)
+        try:
+            try:
+                os.mkdir(worker_id, mode=0o700, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            worker_fd = os.open(worker_id, directory_flags, dir_fd=root_fd)
+            try:
+                fd = os.open(
+                    f"{request_id}.log",
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=worker_fd,
+                )
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(encoded)
+            finally:
+                os.close(worker_fd)
+        finally:
+            os.close(root_fd)
+        return locator, truncated
+    except (OSError, TranscriptLocatorError) as exc:
         logger.warning("transcript_save_failed", error_type=type(exc).__name__)
         return None, False
+
+
+def transcript_artifact_path(directory: str, locator: str) -> Path:
+    """Translate a validated locator only inside the wrapper's fixed mount."""
+    worker_id, request_id = transcript_locator_parts(locator)
+    return Path(directory) / worker_id / f"{request_id}.log"
+
+
+def read_transcript_artifact(directory: str, locator: str) -> str:
+    """Read a wrapper-owned artifact without following replaced path components."""
+    worker_id, request_id = transcript_locator_parts(locator)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = os.open(directory, flags)
+    try:
+        worker_fd = os.open(worker_id, flags, dir_fd=root_fd)
+        try:
+            artifact_fd = os.open(
+                f"{request_id}.log", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=worker_fd
+            )
+            with os.fdopen(artifact_fd, encoding="utf-8") as stream:
+                return stream.read()
+        finally:
+            os.close(worker_fd)
+    finally:
+        os.close(root_fd)

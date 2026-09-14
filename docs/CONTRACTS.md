@@ -956,6 +956,31 @@ and retains the agent's final `content` as `worker_report` when no fuller report
 already occupies that diagnostic surface. Credentials and Git stderr never enter
 the result.
 
+Every terminal `WorkerResult` produced after an agent process starts carries
+exactly one transcript evidence state: `transcript_path` plus the required
+`transcript_truncated` boolean, or the typed
+`transcript_unavailable_reason=save_failed`. The path is the opaque locator
+`v1/<worker_id>/<request_id>.log`, never a container or deployment-host path.
+Both components use the contract's restricted path-component alphabet. A
+consumer validates them against the worker and broker request it is consuming;
+an absolute path, empty component, traversal, unsupported suffix/version, or a
+neighbouring worker/request poisons the result instead of becoming Run evidence.
+The missing-evidence reason is also retained in the typed engineering or QA Run
+result, so cleanup of the output stream cannot turn a known save failure into an
+unexplained null locator.
+
+Worker-wrapper is the single transcript writer. Before terminal publication it
+redacts the complete wrapper environment, UTF-8 encodes and bounds the file,
+then writes beneath its fixed `/artifacts/worker-transcripts` mount without
+following a symlink. Worker-manager alone translates the locator beneath
+`WORKER_TRANSCRIPT_STORAGE_PATH`. Its read boundary reports malformed, unsafe,
+not-found, and expired evidence separately. Terminal Run settlement persists
+the locator and truncation flag atomically with the outcome; replay of the same
+terminal payload is a no-op, while another locator or truncation claim is an
+outcome rewrite and receives 409. Worker/container, QA egress, and QA scratch
+cleanup do not own this storage. Only retention pruning expires files, and it
+does not traverse or unlink through symlinks.
+
 ### The template a project is scaffolded from
 
 `shared/contracts/template.py` owns the pair `ScaffoldMessage` carries.
@@ -1254,14 +1279,13 @@ repair budget on a result that cannot change.
 
 ### A QA run keeps the executor's own transcript
 
-`QARunResult.executor_transcript` carries what the QA executor said, as the QA
-runner saw it over the worker's output stream (`QAExecutorRun.transcript`,
-bounded there). It is on the Run because nowhere else survives: a QA executor
-container writes no transcript under the worker-transcript mount, so once the
-stand is destroyed the paid run's acceptance artifact could only report the
-absence — which is what run 34055029359 did. `tests/live/run_evidence.py`
-retains the value as the QA worker's `transcript.content`, redacted and bounded
-through the one retention funnel.
+`QARunResult.executor_transcript` preserves what the QA runner observed on the
+worker output stream, including its writer/race semantics below. Separately,
+the runner validates that stream as the strict terminal `WorkerResult` and
+carries its durable locator and truncation flag through `QAExecutorRun` to the
+terminal Run update. Thus cleanup can remove the QA container and scratch
+workspace without removing the wrapper-written transcript. A refusal before an
+agent starts has neither locator nor a claim that transcript evidence existed.
 
 **Every attempt that ran is kept.** QA retries a transient failure to start its
 executor, and an attempt that ran and said something must not be erased by a

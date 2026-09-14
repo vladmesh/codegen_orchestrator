@@ -1,7 +1,12 @@
 import json
 
 import pytest
-from worker_wrapper.observability import extract_effort_metrics, redact_transcript, save_transcript
+from worker_wrapper.observability import (
+    extract_effort_metrics,
+    redact_transcript,
+    save_transcript,
+    transcript_artifact_path,
+)
 
 from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
 
@@ -164,8 +169,32 @@ def test_transcript_redacts_environment_secret_values() -> None:
 
 
 def test_truncated_transcript_remains_valid_utf8(tmp_path) -> None:
-    path, truncated = save_transcript(str(tmp_path), "worker", "request", "🙂" * 20, 50, {})
+    locator, truncated = save_transcript(str(tmp_path), "worker", "request", "🙂" * 20, 50, {})
 
     assert truncated is True
-    assert path is not None
-    assert "[transcript truncated" in open(path, encoding="utf-8").read()
+    assert locator == "v1/worker/request.log"
+    assert "[transcript truncated" in transcript_artifact_path(str(tmp_path), locator).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_transcript_refuses_path_components(tmp_path) -> None:
+    locator, truncated = save_transcript(
+        str(tmp_path), "../neighbour", "request", "content", 100, {}
+    )
+
+    assert locator is None
+    assert truncated is False
+    assert not list(tmp_path.rglob("*.log"))
+
+
+def test_transcript_does_not_follow_a_worker_directory_symlink(tmp_path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "worker").symlink_to(outside, target_is_directory=True)
+
+    locator, truncated = save_transcript(str(tmp_path), "worker", "request", "content", 100, {})
+
+    assert locator is None
+    assert truncated is False
+    assert not (outside / "request.log").exists()

@@ -50,6 +50,21 @@ class TestSpawnResultFromOutput:
         assert result.logs_tail == "tail"
         assert result.gave_up_reason is None
 
+    def test_locator_must_belong_to_expected_worker_and_request(self):
+        result = spawn_result_from_output(
+            {
+                "status": "failed",
+                "error": "crashed",
+                "transcript_path": "v1/dev-neighbour/req-1.log",
+                "transcript_truncated": False,
+            },
+            request_id="req-1",
+            worker_id="dev-1",
+        )
+
+        assert result.error_message == "invalid_worker_result"
+        assert result.transcript_path is None
+
     def test_claude_evidence_maps_as_one_typed_payload(self):
         result = spawn_result_from_output(
             {

@@ -171,6 +171,52 @@ async def test_repeating_an_outcome_after_a_lost_response_is_not_a_conflict(
 
 
 @pytest.mark.asyncio
+async def test_terminal_transcript_locator_is_idempotent_and_cannot_be_replaced(
+    async_client: AsyncClient,
+):
+    run_id = await _run(async_client)
+    payload = {
+        "status": "completed",
+        "result": {"qa_outcome": "passed"},
+        "transcript_path": "v1/qa-worker-1/request-1.log",
+        "transcript_truncated": False,
+    }
+
+    first = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+    duplicate = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+    neighbour = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            **payload,
+            "transcript_path": "v1/qa-worker-2/request-2.log",
+        },
+    )
+
+    assert first.status_code == status.HTTP_200_OK
+    assert duplicate.status_code == status.HTTP_200_OK
+    assert neighbour.status_code == status.HTTP_409_CONFLICT
+    retained = await async_client.get(f"/api/runs/{run_id}")
+    assert retained.json()["transcript_path"] == "v1/qa-worker-1/request-1.log"
+
+
+@pytest.mark.asyncio
+async def test_run_update_rejects_a_container_or_host_path(async_client: AsyncClient):
+    run_id = await _run(async_client)
+
+    response = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "completed",
+            "result": {"qa_outcome": "passed"},
+            "transcript_path": "/artifacts/worker-transcripts/qa-worker/request.log",
+            "transcript_truncated": False,
+        },
+    )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "expected_status", "expected_outcome"),
     [
@@ -286,7 +332,7 @@ async def test_a_pass_decided_before_the_failure_landed_cannot_overwrite_it(
 async def test_a_settled_run_still_accepts_notes_that_are_not_its_outcome(
     async_client: AsyncClient,
 ):
-    """Metadata and accounting are not the answer; only status/result/error are."""
+    """Metadata and accounting are not immutable terminal outcome evidence."""
     run_id = await _run(async_client)
     await async_client.patch(
         f"/api/runs/{run_id}",

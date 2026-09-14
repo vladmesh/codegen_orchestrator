@@ -30,12 +30,14 @@ from shared.contracts.queues.worker import (
 from shared.contracts.queues.worker_result import (
     ClaudeResultEvidence,
     FactoryResultEvidence,
+    TranscriptUnavailableReason,
     WorkerBlockedResult,
     WorkerCompletedResult,
     WorkerResult,
     WorkerResultAdapter,
     WorkerStopReason,
 )
+from shared.contracts.transcript import TranscriptLocatorError, validate_transcript_locator
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
@@ -76,6 +78,7 @@ class SpawnResult:
     factory_evidence: FactoryResultEvidence | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
+    transcript_unavailable_reason: TranscriptUnavailableReason | None = None
     stop_reason: WorkerStopReason | None = None
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
@@ -130,12 +133,23 @@ def spawn_result_from_output(
     """
     try:
         result = WorkerResultAdapter.validate_python(output_resp)
-    except ValidationError as e:
+        if result.transcript_path is not None:
+            validate_transcript_locator(
+                result.transcript_path,
+                expected_worker_id=worker_id,
+                expected_request_id=request_id,
+            )
+    except (ValidationError, TranscriptLocatorError) as e:
+        errors = (
+            safe_validation_errors(e)
+            if isinstance(e, ValidationError)
+            else [{"type": "transcript_locator_owner_mismatch"}]
+        )
         logger.error(
             "worker_result_invalid",
             worker_id=worker_id,
             request_id=request_id,
-            errors=safe_validation_errors(e),
+            errors=errors,
         )
         return _invalid_worker_result(request_id, worker_id)
     return _map_worker_result(result, request_id, worker_id)
@@ -161,6 +175,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            transcript_unavailable_reason=result.transcript_unavailable_reason,
             turn_result_consumed=True,
             execution=EngineeringExecutionEvidence(
                 execution_phase=EngineeringExecutionPhase.AGENT_STARTED
@@ -184,6 +199,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            transcript_unavailable_reason=result.transcript_unavailable_reason,
             turn_result_consumed=True,
             execution=EngineeringExecutionEvidence(
                 execution_phase=EngineeringExecutionPhase.AGENT_STARTED
@@ -209,6 +225,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         factory_evidence=result.factory_evidence,
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
+        transcript_unavailable_reason=result.transcript_unavailable_reason,
         turn_result_consumed=True,
         execution=EngineeringExecutionEvidence(
             execution_phase=EngineeringExecutionPhase.AGENT_STARTED

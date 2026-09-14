@@ -53,7 +53,14 @@ _TERMINAL_RUN_STATUSES = frozenset(
 
 # What a run says happened. The first recorded outcome owns these fields; QA
 # cancellation is an outcome even without a typed result.
-_OUTCOME_FIELDS = ("status", "result", "error_message")
+_OUTCOME_FIELDS = (
+    "status",
+    "result",
+    "error_message",
+    "agent_profile",
+    "transcript_path",
+    "transcript_truncated",
+)
 
 # Largest page the QA grant selection will hand out at once. The page bounds one
 # response, never the coverage: the caller walks pages from a cursor until one

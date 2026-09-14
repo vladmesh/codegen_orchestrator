@@ -94,7 +94,7 @@ class TestHandleEngineeringSuccess:
             worker_observability={
                 "input_tokens": 12,
                 "total_tokens": 17,
-                "transcript_path": "/artifacts/worker-transcripts/worker/req.log",
+                "transcript_path": "v1/worker/req.log",
                 "agent_profile": {"model": "claude-sonnet"},
             },
             redis=mock_redis,
@@ -106,6 +106,21 @@ class TestHandleEngineeringSuccess:
         assert patch["engineering_attempt"]["cost_source"] == "unknown"
         assert patch["transcript_path"].endswith("req.log")
         assert patch["agent_profile"]["model"] == "claude-sonnet"
+
+    @pytest.mark.asyncio
+    async def test_failed_run_keeps_typed_transcript_save_failure(self, mock_redis, mock_api):
+        from src.consumers.engineering import _fail_job
+
+        await _fail_job(
+            "eng-failed-transcript-save",
+            "agent failed",
+            worker_observability={"transcript_unavailable_reason": "save_failed"},
+            redis=mock_redis,
+        )
+
+        patch_body = mock_api.patch.call_args.kwargs["json"]
+        assert "transcript_path" not in patch_body
+        assert patch_body["result"]["transcript_unavailable_reason"] == "save_failed"
 
     @pytest.mark.asyncio
     async def test_claude_evidence_is_preserved_as_micro_usd(self, mock_redis, mock_api):
