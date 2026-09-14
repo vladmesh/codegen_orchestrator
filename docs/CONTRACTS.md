@@ -219,6 +219,40 @@ control or diagnostic is fail-closed. An administrator may confirm only a
 specific unexpired `unknown` diagnostics snapshot; an internal service cannot
 make that confirmation.
 
+The diagnostics snapshot is schema `v2` under `executor:diagnostics:v2` with a
+90-second TTL; a v1 or otherwise invalid value is typed `unknown`. An enabled
+host-session diagnostic requires exactly one `ExecutorProfileObservation`, and
+its reason code and availability are derived from the observation's closed
+`condition` (`healthy` → `ready`/available, `refresh_expiring` → degraded,
+`refresh_expired`/`refresh_missing`/`logged_out`/`unusable` → unavailable,
+`unverifiable`/`read_contended` → unknown); only a healthy or expiring profile
+defers to `inventory_unreconciled`. Access/session expiry is reported but stays
+renewable while refresh material exists; only a locally proved refresh-credential
+expiry drives `refresh_expiring` (24 hours) and `refresh_expired`. The Codex
+reader, shared by worker creation and diagnostics, observes in a fixed order: a
+stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (only a
+held shared lock on the stable lock inode is authoritative; a missing lock never
+proves no writer, and a torn read otherwise is `read_contended`, never logged
+out), then the pinned `AuthDotJson`/`TokenData` shape, including both
+`AgentIdentityStorage` variants, parsed no more permissively than `serde_json`
+(a file the CLI cannot load, or a struct stored as an array, is `unusable`).
+Every reader parses JSON through one total boundary, `host_profile.load_json`:
+standard JSON only (never `NaN`, `Infinity` or `-Infinity`), at most 1 MiB of
+strict UTF-8 and nesting at most 127 for every reader, plus, for Codex auth.json
+and JWT claims only, no duplicate keys, lone surrogates or number the pinned
+serde_json 1.0.149 reports as `NumberOutOfRange`; it returns one failure result
+instead of raising. Then comes the authoritative `auth_mode` (anything but the ChatGPT
+subscription mode is `unusable`), and only then ChatGPT token material. The
+worker wrapper creates the lock inode at startup and the login recipe creates it
+before logging in. Timestamps are timezone-aware, each time fact names its
+executor-specific source, and an access-token expiry can never be stored as a
+refresh expiry. Worker-manager's `ExecutorDiagnostics` publisher alone writes the
+snapshot and reconciles `ExecutorProfileAlertEpisode` records, whose delivery
+outcomes are the `AdminDeliveryStatus` values. One episode spans an executor's
+whole unhealthy stretch: later alertable observations update its condition and
+refresh expiry without reopening delivery, `read_contended` neither opens nor
+resolves it, and only a healthy observation deletes it.
+
 `EngineeringExecutionEvidence` is the authoritative boundary for whether an
 engineering agent started. It is exactly either `agent_started` with no refusal,
 or `pre_agent_refused` with one `EngineeringInfrastructureRefusal`. The evidence

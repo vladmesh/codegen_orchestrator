@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router'
 import { ChevronDown, ChevronRight, Save, X, Pencil, Check } from 'lucide-react'
@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
 import type { AgentConfig, AgentConfigUpdate, ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand, ExecutorDiagnosticSnapshot, ExecutorOverride, PaidWorkControls, SystemConfig, SystemConfigUpdate } from '@/types/api'
 import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
+import { executorProfileAttention, executorProfileFacts } from './executorProfileHealth'
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -214,7 +215,15 @@ function ExecutorDiagnosticsCard() {
             <dt>Observed</dt><dd>{relativeTime(item.observed_at)}</dd>
             <dt>Expires</dt><dd>{relativeTime(item.expires_at)}</dd>
             <dt>Reason</dt><dd>{item.reason}</dd>
+            {item.profile && executorProfileFacts(item.profile, new Date()).map((fact) => (
+              <Fragment key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></Fragment>
+            ))}
           </dl>
+          {executorProfileAttention(item) && (
+            <p role="alert" className={cn('mt-2 text-xs', item.availability === 'degraded' ? 'text-amber-400' : 'text-red-400')}>
+              {executorProfileAttention(item)}
+            </p>
+          )}
           {item.availability === 'unknown' && !stale && (
             <button
               type="button"

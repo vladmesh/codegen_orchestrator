@@ -29,6 +29,7 @@ from shared.contracts.queues.worker import (
 )
 from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_MANAGER_GROUP
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from shared.tests.ssh_key_fixtures import fleet_private_key
 
 # Configure pytest-asyncio
@@ -467,7 +468,7 @@ async def api_client():
         await redis_client.set(
             EXECUTOR_DIAGNOSTICS_REDIS_KEY,
             ExecutorDiagnosticSnapshot(
-                schema_version="v1",
+                schema_version="v2",
                 version="backend-integration-test-diagnostics",
                 observed_at=now,
                 expires_at=expiry,
@@ -482,6 +483,7 @@ async def api_client():
                         active_lease_count=0,
                         reason_code="ready",
                         reason="Local authentication and worker inventory are ready.",
+                        profile=host_profile_for_reason("ready"),
                     )
                     for executor in (AgentType.CLAUDE, AgentType.CODEX)
                 ],

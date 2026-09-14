@@ -42,7 +42,7 @@ from ..engineering_dispatch_admission import admit_engineering_dispatch
 from ..executor_diagnostics import (
     current_executor_diagnostic,
     current_executor_snapshot,
-    unknown_diagnostic,
+    unknown_snapshot,
 )
 from ..work_admission import (
     EMERGENCY_STOP_KEY,
@@ -176,20 +176,7 @@ async def get_executor_diagnostics(
     snapshot = await current_executor_snapshot()
     if snapshot is not None:
         return snapshot
-    # A typed failure response has no trusted version and cannot be confirmed.
-    from datetime import UTC, datetime, timedelta
-
-    now = datetime.now(UTC)
-    return ExecutorDiagnosticSnapshot(
-        schema_version="v1",
-        version="unknown",
-        observed_at=now,
-        expires_at=now + timedelta(seconds=1),
-        diagnostics=[
-            unknown_diagnostic(AgentType.CLAUDE, "snapshot_unavailable"),
-            unknown_diagnostic(AgentType.CODEX, "snapshot_unavailable"),
-        ],
-    )
+    return unknown_snapshot()
 
 
 @router.post(

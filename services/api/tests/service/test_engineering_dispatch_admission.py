@@ -42,6 +42,7 @@ from shared.models import (
     TaskEvent,
     User,
 )
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.engineering_dispatch_admission import INTERNAL_PROJECT_ID
 
 ADMISSION_URL = "/api/work-admission/engineering-dispatches"
@@ -473,7 +474,7 @@ async def _publish_diagnostics(redis_client: Redis, reason_code: str, *, version
     await redis_client.set(
         EXECUTOR_DIAGNOSTICS_REDIS_KEY,
         ExecutorDiagnosticSnapshot(
-            schema_version="v1",
+            schema_version="v2",
             version=version,
             observed_at=now,
             expires_at=expiry,
@@ -488,6 +489,7 @@ async def _publish_diagnostics(redis_client: Redis, reason_code: str, *, version
                     active_lease_count=lease_count,
                     reason_code=reason_code,
                     reason=safe_executor_diagnostic_reason(reason_code),
+                    profile=host_profile_for_reason(reason_code),
                 )
                 for executor in (AgentType.CLAUDE, AgentType.CODEX)
             ],

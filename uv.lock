@@ -3370,6 +3370,7 @@ name = "worker-manager"
 version = "0.1.0"
 source = { editable = "services/worker-manager" }
 dependencies = [
+    { name = "aiohttp" },
     { name = "cryptography" },
     { name = "docker" },
     { name = "fastapi" },
@@ -3387,6 +3388,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "docker" },
     { name = "fastapi" },

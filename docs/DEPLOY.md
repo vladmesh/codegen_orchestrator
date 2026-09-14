@@ -65,7 +65,9 @@ contact a provider, check quota or make a billable model request. `available`
 therefore means the configured local session and Docker/Redis inventory
 reconciled, not that a provider account has capacity. `unavailable` means a
 local configuration/authentication failure; `unknown` means the service cannot
-prove the state. The Settings card never displays paths or credential detail.
+prove the state. `degraded` means a locally stored refresh-credential expiry is
+at or inside 24 hours; new starts are still admitted until it expires. The
+Settings card never displays paths or credential detail.
 Outside the stand contour, paid engineering and QA producers use `host_session`;
 their diagnostics validate the manager-visible read-only mounts
 `/host-claude` and `/host-codex`, while `HOST_CLAUDE_DIR` and
@@ -84,10 +86,37 @@ LK bearer for an administrator and do not supply a conflicting
 `X-Telegram-ID`. An internal key, even with an administrator's Telegram id,
 cannot confirm an unknown snapshot.
 
-For non-stand local recovery, use `claude auth login` to repair the dedicated
-`HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated
-`HOST_CODEX_HOME` profile. Do not point either setting at an operator's ordinary
-home profile. Those profiles are not part of ephemeral stand authentication.
+Snapshot schema `v2` (Redis key `executor:diagnostics:v2`) replaced `v1`
+without a compatibility reader. Deploy API and worker-manager together: a new API
+reads only the v2 key and reports `unknown` until the new worker-manager's
+startup publication, and a stale v1 value expires within its 90-second TTL. No
+manual Redis cleanup is needed.
+
+Each enabled host-session diagnostic carries a credential-free `profile`
+observation: login state, refresh-material state, stored access/session expiry,
+refresh-credential expiry only when the refresh token itself is a JWT, and the
+Codex `last_refresh` stamp. Worker creation refuses exactly the profiles the
+diagnostic marks as lacking usable refresh material. The same diagnostics tick
+owns administrator alerts: one Redis episode per executor
+(`executor:profile-alert:v1:<executor>`) for its whole unhealthy stretch,
+delivered through `deliver_to_admins`, retried with backoff from 60 seconds to
+one hour until every administrator received it, and closed only by a later
+healthy observation. A change such as expiring to expired updates the episode's
+facts without another alert. The Codex reader joins the workers'
+`.codegen-codex.lock` read-only, requires an `auth.json` the pinned CLI can load
+and the ChatGPT `auth_mode`: an API-key or other auth mode is unavailable even
+with retained ChatGPT tokens, and a read that a concurrent refresh could have torn
+is `unknown`, never logged out. A missing lock never counts as uncontended: Codex
+workers create it at startup and the login recipe creates it before logging in. Worker-manager reads
+`TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` for that delivery.
+
+For non-stand recovery follow the login recipes in
+[live-deploy-operations.md](live-deploy-operations.md#log-in-the-production-subscription-executor-profiles):
+Claude paste-code login into the dedicated `HOST_CLAUDE_DIR` profile and
+`codex login --device-auth` into the dedicated `HOST_CODEX_HOME` profile. Never
+run either CLI against a copied profile. Do not point either setting at an
+operator's ordinary home profile. Those profiles are not part of ephemeral stand
+authentication.
 
 ### Ephemeral stand authentication
 

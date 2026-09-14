@@ -17,6 +17,7 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 from shared.contracts.vocab import AgentType
 from shared.models import User
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.database import get_async_session
 from src.dependencies import create_lk_jwt, require_internal_or_admin
 from src.main import app
@@ -97,9 +98,10 @@ def _unknown_codex_snapshot() -> tuple[ExecutorDiagnostic, ExecutorDiagnosticSna
         active_lease_count=None,
         reason_code="inventory_unreconciled",
         reason="Worker inventory could not be reconciled.",
+        profile=host_profile_for_reason("inventory_unreconciled"),
     )
     snapshot = ExecutorDiagnosticSnapshot(
-        schema_version="v1",
+        schema_version="v2",
         version="unknown-snapshot",
         observed_at=now,
         expires_at=now + timedelta(seconds=60),

@@ -5,6 +5,19 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- Executor diagnostics v2 report credential-free Claude/Codex login, refresh and expiry facts, and the publisher sends
+  one retried admin Telegram alert per unhealthy stretch of a logged-out, expired or 24-hour-expiring profile.
+- The Codex profile reader joins the worker profile lock and requires the ChatGPT `auth_mode`, so a concurrent refresh
+  never reads as logged out and an API-key profile is never admitted as a subscription session.
+- A missing Codex profile lock no longer counts as uncontended, workers create it at startup, and `auth.json` must load
+  as the pinned CLI format; the Claude FIFO login recipe now works across two shells.
+- The Codex format check also validates the complete agent-identity record and serde_json's strict JSON rules, so a
+  profile the CLI would reject before choosing its auth mode is never reported healthy or admitted.
+- Profile JSON now parses through one total, bounded boundary that mirrors pinned serde_json number range and depth,
+  so `1e400` or deep nesting maps to `unusable` instead of healthy or an uncaught exception.
+- Claude credentials containing the non-standard `NaN`, `Infinity` or `-Infinity` literals are now unusable, as the
+  standard JSON parser Claude Code uses rejects them, instead of being admitted as healthy.
+
 - Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
   and READY behind episode and identity fences, so operator edits win without partial state.
 - Server reads expose the active provisioning fence, and finalization replays require the exact canonical labels and

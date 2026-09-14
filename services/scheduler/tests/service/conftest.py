@@ -14,6 +14,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.vocab import AgentType
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from shared.tests.mocks.github import MockGitHubClient
 
 
@@ -47,7 +48,7 @@ async def api_client():
         await redis.set(
             EXECUTOR_DIAGNOSTICS_REDIS_KEY,
             ExecutorDiagnosticSnapshot(
-                schema_version="v1",
+                schema_version="v2",
                 version="scheduler-service-test-diagnostics",
                 observed_at=now,
                 expires_at=expiry,
@@ -62,6 +63,7 @@ async def api_client():
                         active_lease_count=0,
                         reason_code="ready",
                         reason="Local authentication and worker inventory are ready.",
+                        profile=host_profile_for_reason("ready"),
                     )
                     for executor in (AgentType.CLAUDE, AgentType.CODEX)
                 ],
