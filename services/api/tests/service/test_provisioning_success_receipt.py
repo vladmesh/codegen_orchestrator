@@ -121,8 +121,23 @@ async def test_a_receipt_for_another_key_leaves_the_episode_open_and_the_row_unp
     # Reserving an attempt does not move the row's status, and a refused receipt
     # closes nothing: the discovered row is exactly as it was.
     assert row["status"] == "pending_setup"
-    assert row["provisioning_attempts"] == attempt["provisioning_attempts"]
     assert row["qa_target_version"] is None
+
+    # The episode stayed open: the receipt for the key actually stored still
+    # closes this same attempt, as READY with its receipt.
+    closed = await async_client.post(
+        f"/api/servers/{handle}/provisioning-attempts/reset",
+        json={
+            "attempt_number": attempt["provisioning_attempts"],
+            "episode_id": attempt["episode_id"],
+            "qa_target_receipt": await _receipt(async_client, handle, key),
+        },
+    )
+    assert closed.status_code == httpx.codes.OK, closed.text
+    assert closed.json()["reset"] is True
+    row = (await async_client.get(f"/api/servers/{handle}")).json()
+    assert row["status"] == "ready"
+    assert row["qa_target_version"] == QA_TARGET_PROFILE_VERSION
 
 
 @pytest.mark.asyncio
