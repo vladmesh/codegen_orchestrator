@@ -101,7 +101,9 @@ class _Pipeline:
         monkeypatch.setattr(
             scaffold_trigger,
             "_template_config",
-            lambda: ("gh:vladmesh/codegen-product-kit", "0.6.2"),
+            # Any ref: the ensure message is only recorded, never rendered, and the
+            # production pin is a literal in exactly one file.
+            lambda: ("gh:vladmesh/codegen-product-kit", "test-template-ref"),
         )
         monkeypatch.setattr("shared.notifications._list_admin_users", self.admins.admin_users)
         monkeypatch.setattr(
