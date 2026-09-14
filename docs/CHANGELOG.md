@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- The QA identity retrofit includes its role publicly and reads the wrapper's own line out of sudo's output, so
+  the host report stops failing on an undefined `qa_ssh_user` and a host that cannot resolve its name still proves.
+
 - Executor diagnostics v2 report credential-free Claude/Codex login, refresh and expiry facts, and the publisher sends
   one retried admin Telegram alert per unhealthy stretch of a logged-out, expired or 24-hour-expiring profile.
 - The Codex profile reader joins the worker profile lock and requires the ChatGPT `auth_mode`, so a concurrent refresh

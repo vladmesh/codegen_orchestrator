@@ -94,9 +94,19 @@ expected="(root) NOPASSWD: $wrapper"
 # copy passes every check above — same path, same rule — and refuses a verb QA
 # needs halfway through a paid run. So the account asks the wrapper itself,
 # through the same sudo rule a run uses, which profile it is.
+#
+# stderr is kept, because a wrapper that fails has nothing else to say — and
+# that stream is also where sudo prints its own warnings, `unable to resolve
+# host` on a target whose name does not resolve among them. So the wrapper's
+# answer is the line that answers, not everything that was written: the last
+# line the wrapper's own reply shape matches. A host that says nothing of that
+# shape still fails, and so does one whose wrapper names another profile.
 answer=$(runuser -u "$user" -- sudo -n "$wrapper" version 2>&1) ||
     fail "cannot ask $wrapper for its profile through sudo: [$answer]"
-case "$answer" in
+# The pipeline ends in `tail`, so "no such line" arrives as an empty reply and
+# is refused below rather than as a failure of the grep.
+reply=$(printf '%s\n' "$answer" | grep '^qa-docker profile=' | tail -n 1)
+case "$reply" in
     "qa-docker profile=$profile verbs="*) ;;
     *) fail "reaches a $wrapper that is not QA target profile $profile: [$answer]" ;;
 esac

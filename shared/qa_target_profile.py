@@ -35,7 +35,7 @@ from shared.contracts.dto.server import ServerDTO
 
 #: The profile the repository's `qa_identity` role installs and proves. Derived
 #: from the role files; see :func:`qa_target_artefact_digest`.
-QA_TARGET_PROFILE_VERSION = "064dbee1a73dada3"
+QA_TARGET_PROFILE_VERSION = "ea1e7c6796f087e1"
 QA_TARGET_PROFILE_VERSION_LENGTH = 16
 
 #: What the runtime needs the wrapper to answer. `version` itself is one of them:
@@ -96,9 +96,17 @@ def wrapper_answer_problem(answer: str) -> str | None:
 
     The answer is compared whole — profile and verbs — because a wrapper that
     names the right profile and lacks a verb is not one this runtime can use.
+    It is read out of the output rather than assumed to be all of it: the
+    wrapper is reached through sudo, which writes warnings of its own around the
+    command it runs, and a target that cannot resolve its own name answered for
+    its wrapper just the same.
     """
-    lines = [line for line in answer.strip().splitlines() if line.strip()]
-    match = _WRAPPER_ANSWER.match(lines[-1].strip()) if lines else None
+    answers = [
+        match
+        for match in (_WRAPPER_ANSWER.match(line.strip()) for line in answer.splitlines())
+        if match is not None
+    ]
+    match = answers[-1] if answers else None
     if match is None:
         return f"the wrapper gave no profile answer: [{answer.strip()[:300]}]"
     version = match.group("version")
