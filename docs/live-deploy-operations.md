@@ -199,6 +199,27 @@ manually. The action returns a typed 409 without partial changes when the reason
 is stale, either row left human review, the park is not infrastructure-owned, or
 the refused Run no longer matches. Resolve that discrepancy before retrying.
 
+### Failed workspace ensure (`workspace_ensure_failed`)
+
+When ensure-workspace fails for an ACTIVE project (for example after story
+teardown cleared `workspace_ready` and the clone failed), the scaffolder records
+`scaffold_error` on the project and the scheduler stops re-running ensure. On its
+next tick dispatch admission parks every story that has a todo task: the story
+and task show the reason `workspace_ensure_failed`, the detail is
+`Workspace ensure failed, so engineering cannot start: <recorded error>`, the
+attempt id starts with `ws-`, and the owner and administrators each get one
+notice. The task is not refused again while it is parked.
+
+Fix the cause the detail names (repository access, name, disk), then click
+`Retry infrastructure attempt` on the story, which is the same
+`POST /api/stories/{story_id}/retry-infrastructure-attempt`. For this reason it
+also removes `scaffold_error`, and only that key, from `project.config` in the same
+transaction. The scheduler's next tick runs ensure again and dispatches the task
+once `workspace_ready` is set. If ensure fails again, the story parks again with a
+new attempt id and one new notice; retry again after fixing the cause. Never edit
+`project.config` by hand to clear `scaffold_error`. When several stories of the
+project were parked, each keeps its own park and needs its own retry.
+
 ## Reconcile managed deploy targets
 
 Provisioning success has one internal commit point:

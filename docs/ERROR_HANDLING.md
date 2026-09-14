@@ -76,7 +76,9 @@ decision, and the caller reads it rather than an HTTP status:
    dispatcher splits them in `_handle_refusal`. The pre-agent infrastructure
    reasons `executor_unavailable` and `executor_confirmation_required` are
    parked immediately with typed execution evidence and do not change
-   `current_iteration`; `infrastructure_parked` is the pre-gate fence for a task
+   `current_iteration`; so is `workspace_ensure_failed`, decided on the project
+   row when `scaffold_error` is set without `workspace_ready`;
+   `infrastructure_parked` is the pre-gate fence for a task
    or story that already carries such a park; other refusals from an earlier condition are logged and
    left alone, with nothing spent and nothing owed. A paid denial has
    already spent the attempt, so it hands the task to `waiting_human_review`

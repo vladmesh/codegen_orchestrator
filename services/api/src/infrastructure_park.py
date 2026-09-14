@@ -28,12 +28,32 @@ from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNoti
 from shared.contracts.dto.story import VALID_TRANSITIONS as STORY_TRANSITIONS, StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.diagnostics import redact_diagnostic
 from shared.models import Task
 from shared.models.story import Story
 
 logger = structlog.get_logger()
 
 INFRASTRUCTURE_PARK_ACTION = "park_infrastructure_refusal"
+
+#: The `WorkAdmissionAudit.subject` admission writes when it parks a failed
+#: ensure-workspace. No Run exists for that refusal, so this audit row is the
+#: committed fact its attempt id names and the park endpoint proves against.
+WORKSPACE_ENSURE_AUDIT_SUBJECT = "workspace_ensure"
+
+#: The project config key the scaffolder records a failed scaffold/ensure under.
+SCAFFOLD_ERROR_KEY = "scaffold_error"
+
+_SCAFFOLD_ERROR_DETAIL_LIMIT = 500
+
+
+def workspace_ensure_failure_detail(scaffold_error: object) -> str:
+    """The owner- and operator-facing detail of one recorded ensure failure."""
+    error = redact_diagnostic(scaffold_error)
+    if len(error) > _SCAFFOLD_ERROR_DETAIL_LIMIT:
+        error = error[:_SCAFFOLD_ERROR_DETAIL_LIMIT] + "..."
+    return f"Workspace ensure failed, so engineering cannot start: {error}"
+
 
 #: Task statuses a real pre-agent refusal is observed in: an admission refusal
 #: (`todo`), an operator respawn or no-Run refusal that already left todo

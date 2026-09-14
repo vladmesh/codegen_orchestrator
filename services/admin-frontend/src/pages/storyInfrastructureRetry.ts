@@ -6,6 +6,7 @@ export const INFRASTRUCTURE_REFUSALS = new Set([
   'project_locked',
   'worker_profile_unavailable',
   'worker_creation_failed',
+  'workspace_ensure_failed',
 ])
 
 export interface InfrastructureRetryTarget {

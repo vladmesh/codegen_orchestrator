@@ -607,7 +607,7 @@ async def executors_down(redis_client: Redis):
     await _publish_executors(redis_client, ExecutorAvailability.AVAILABLE, "ready")
 
 
-async def _dispatchable_project(client: AsyncClient) -> str:
+async def _dispatchable_project(client: AsyncClient, config: dict | None = None) -> str:
     telegram_id = uuid.uuid4().int % 1_000_000_000
     created_user = await client.post(
         "/api/users/", json={"telegram_id": telegram_id, "username": f"infra-{telegram_id}"}
@@ -622,7 +622,7 @@ async def _dispatchable_project(client: AsyncClient) -> str:
             "title": "Infrastructure park admission",
             "initiating_run_id": f"init-{uuid.uuid4().hex}",
             "status": "active",
-            "config": {"workspace_ready": True},
+            "config": {"workspace_ready": True} if config is None else config,
         },
     )
     assert created.status_code == 201, created.text
@@ -771,6 +771,171 @@ async def test_admission_fences_a_parked_story_and_a_parked_task_without_an_atte
         assert decision.json()["reason"] == EngineeringDispatchRefusal.INFRASTRUCTURE_PARKED
         assert decision.json()["run_id"] is None
         assert await _task_audits(db_session, fenced_id) == []
+
+
+# --- a failed ensure-workspace is parked by admission, proved by its own audit -------
+
+SCAFFOLD_ERROR = "Git clone failed: repository not found"
+WORKSPACE_REFUSAL = "workspace_ensure_failed"
+
+
+async def _workspace_audits(db_session: AsyncSession, task_id: str) -> list[WorkAdmissionAudit]:
+    db_session.expire_all()
+    audits = (
+        await db_session.scalars(
+            select(WorkAdmissionAudit).where(WorkAdmissionAudit.subject == "workspace_ensure")
+        )
+    ).all()
+    return [audit for audit in audits if (audit.command_payload or {}).get("task_id") == task_id]
+
+
+async def _failed_workspace_story(client: AsyncClient) -> tuple[str, str, str]:
+    project_id = await _dispatchable_project(
+        client, config={"modules": ["backend"], "scaffold_error": SCAFFOLD_ERROR}
+    )
+    story_id, task_id = await _story_task(client, project_id=project_id)
+    return project_id, story_id, task_id
+
+
+@pytest.mark.asyncio
+async def test_admission_parks_a_failed_workspace_ensure_once_with_its_audit(
+    async_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    project_id, story_id, task_id = await _failed_workspace_story(async_client)
+
+    first = await async_client.post(ADMISSION_URL, json={"task_id": task_id})
+
+    assert first.status_code == 200, first.text
+    decision = first.json()
+    assert (decision["reason"], decision["infrastructure_park"], decision["run_id"]) == (
+        WORKSPACE_REFUSAL,
+        "parked",
+        None,
+    )
+    task_status, task_evidence, iteration, story_status, story_evidence = await _state(
+        async_client, story_id, task_id
+    )
+    park = task_evidence[KEY]
+    assert (task_status, iteration, story_status) == (
+        "waiting_human_review",
+        0,
+        "waiting_human_review",
+    )
+    assert story_evidence == task_evidence
+    assert (park["refusal"], park["task_id"]) == (WORKSPACE_REFUSAL, task_id)
+    assert SCAFFOLD_ERROR in park["detail"]
+    assert await _park_hops(async_client, task_id) == ["in_dev", "waiting_human_review"]
+    _assert_both_audiences_owed(await _notice(async_client, story_id), story_id, park["detail"])
+    [audit] = await _workspace_audits(db_session, task_id)
+    assert (audit.reference_id, audit.outcome, audit.reason, audit.message) == (
+        park["attempt_id"],
+        "denied",
+        WORKSPACE_REFUSAL,
+        park["detail"],
+    )
+    notice = await _notice(async_client, story_id)
+
+    # Later ticks neither re-decide the parked task nor write another audit or notice.
+    second = await async_client.post(ADMISSION_URL, json={"task_id": task_id})
+    assert second.json()["reason"] == EngineeringDispatchRefusal.TASK_NOT_DISPATCHABLE
+    assert len(await _workspace_audits(db_session, task_id)) == 1
+    assert await _notice(async_client, story_id) == notice
+    assert (await db_session.scalars(select(Run.id).where(Run.task_id == task_id))).all() == []
+
+    # The park endpoint proves the same park by that audit and nothing else.
+    assert (await _park_call(async_client, story_id, park)).json()["disposition"] == (
+        "already_parked"
+    )
+    project = (await async_client.get(f"/api/projects/{project_id}")).json()
+    assert project["config"]["scaffold_error"] == SCAFFOLD_ERROR
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_ensure_park_is_proved_only_by_its_own_audit(
+    async_client: AsyncClient, db_session: AsyncSession, _tasks_project
+) -> None:
+    story_id, task_id = await _story_task(async_client)
+    attempt_id = f"ws-{uuid.uuid4().hex[:10]}"
+    detail = f"Workspace ensure failed, so engineering cannot start: {SCAFFOLD_ERROR}"
+    # A paid-work audit with the same attempt, reason and message proves nothing here.
+    await _admission_audit(
+        db_session,
+        attempt_id=attempt_id,
+        task_id=task_id,
+        story_id=story_id,
+        reason=WORKSPACE_REFUSAL,
+        message=detail,
+    )
+    park = _run_park(task_id, attempt_id, refusal=WORKSPACE_REFUSAL, detail=detail)
+
+    response = await _park_call(async_client, story_id, park)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "refusal_evidence_missing"
+    assert await _state(async_client, story_id, task_id) == ("todo", None, 0, "in_progress", None)
+    assert await _notice(async_client, story_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_story_already_with_a_human_is_refused_without_a_workspace_park(
+    async_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _, story_id, task_id = await _failed_workspace_story(async_client)
+    reviewed = await async_client.post(f"/api/stories/{story_id}/human-review", json={"actor": "t"})
+    assert reviewed.status_code == 200, reviewed.text
+
+    decision = (await async_client.post(ADMISSION_URL, json={"task_id": task_id})).json()
+
+    assert (decision["reason"], decision["infrastructure_park"]) == (WORKSPACE_REFUSAL, None)
+    assert await _state(async_client, story_id, task_id) == (
+        "todo",
+        None,
+        0,
+        "waiting_human_review",
+        None,
+    )
+    assert await _workspace_audits(db_session, task_id) == []
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_workspace_park_clears_only_scaffold_error_once(
+    async_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    project_id, story_id, task_id = await _failed_workspace_story(async_client)
+    decision = (await async_client.post(ADMISSION_URL, json={"task_id": task_id})).json()
+    assert decision["infrastructure_park"] == "parked"
+    park = (await async_client.get(f"/api/tasks/{task_id}")).json()["failure_metadata"][KEY]
+    path = f"/api/stories/{story_id}/retry-infrastructure-attempt"
+    command = {
+        "task_id": task_id,
+        "attempt_id": park["attempt_id"],
+        "refusal": WORKSPACE_REFUSAL,
+        "actor": "admin",
+    }
+    config = (await async_client.get(f"/api/projects/{project_id}")).json()["config"]
+    assert config["scaffold_error"] == SCAFFOLD_ERROR
+    expected_config = {key: value for key, value in config.items() if key != "scaffold_error"}
+
+    retried = await async_client.post(path, json=command)
+
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["outcome"] == "retried"
+    assert await _state(async_client, story_id, task_id) == ("todo", None, 0, "in_progress", None)
+    project = (await async_client.get(f"/api/projects/{project_id}")).json()
+    assert project["config"] == expected_config
+    # Ensure has not run yet: admission waits on the workspace without parking again.
+    waiting = (await async_client.post(ADMISSION_URL, json={"task_id": task_id})).json()
+    assert (waiting["reason"], waiting["infrastructure_park"]) == ("workspace_not_ready", None)
+    events = (await async_client.get(f"/api/tasks/{task_id}/events")).json()
+
+    repeated = await async_client.post(path, json=command)
+
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["outcome"] == "already_retried"
+    assert (await async_client.get(f"/api/tasks/{task_id}/events")).json() == events
+    assert (await async_client.get(f"/api/projects/{project_id}")).json()["config"] == (
+        expected_config
+    )
 
 
 # --- the owed-notification selection serves each audience ---------------------------

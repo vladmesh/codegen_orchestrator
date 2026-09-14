@@ -152,6 +152,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
+        if msg.mode == "ensure":
+            # An exception is an ensure failure like any other: recorded, so the
+            # API parks the project's stories instead of refusing them silently.
+            await _record_scaffold_error(msg, error, api, log)
         return {"status": "failed", "error": error}
     finally:
         lease_refresh.cancel()
@@ -329,17 +333,24 @@ async def _process_ensure_mode(
         return {"status": "success"}
 
     log.error("ensure_workspace_failed", error=result.error)
+    await _record_scaffold_error(msg, result.error or "unknown error", api, log)
+    return {"status": "failed", "error": result.error or "unknown error"}
 
-    # Mark project so scaffold_trigger stops retrying every cycle
+
+async def _record_scaffold_error(msg, error: str, api, log) -> None:
+    """Record a failed ensure on the project.
+
+    `scaffold_error` stops scaffold_trigger re-running ensure every cycle, and
+    the API's dispatch admission parks each story with a todo task on it. The
+    operator's infrastructure retry is what removes it.
+    """
     try:
         project = await api.get_project(msg.project_id)
         config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = result.error or "unknown error"
+        config["scaffold_error"] = error
         await api.update_project_config(msg.project_id, config)
     except Exception:
-        log.warning("failed_to_mark_scaffold_error")
-
-    return {"status": "failed", "error": result.error or "unknown error"}
+        log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
 
 async def _update_project_on_success(msg, result, api, settings, log) -> None:

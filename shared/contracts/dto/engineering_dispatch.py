@@ -83,6 +83,10 @@ class EngineeringDispatchRefusal(StrEnum):
     #: Still a draft — the scaffold has not run.
     PROJECT_NOT_SCAFFOLDED = "project_not_scaffolded"
     WORKSPACE_NOT_READY = "workspace_not_ready"
+    #: Not ready because ensure-workspace failed and recorded `scaffold_error`.
+    #: The same decision parks task and story as `workspace_ensure_failed`
+    #: (see `infrastructure_park`), so the refusal is not repeated every tick.
+    WORKSPACE_ENSURE_FAILED = "workspace_ensure_failed"
     #: A sibling task of this story is in_dev: one worker per story branch.
     STORY_BUSY = "story_busy"
     #: A sibling was handed to a human, so the story takes no new work at all.

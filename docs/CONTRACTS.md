@@ -285,6 +285,18 @@ message and returns the result as `EngineeringDispatchRead.infrastructure_park`.
 A lost answer therefore leaves a task that is no longer `todo`, and the scheduler
 never parks this refusal again. A standalone task is parked on the task alone.
 
+Admission is also the one place a failed ensure-workspace becomes a park. When the
+locked project row carries `scaffold_error` without `workspace_ready` (the
+scaffolder records it for a failed clone/setup and for an exception in the ensure
+job), rung 3 refuses with `EngineeringDispatchRefusal.WORKSPACE_ENSURE_FAILED` and,
+for a parkable task whose story is not already in human review, parks it as
+`workspace_ensure_failed` with a fresh `ws-` attempt id, a detail naming the
+redacted error, and a `WorkAdmissionAudit` of subject `workspace_ensure` in the same
+transaction. That audit is the only proof the park endpoint accepts for this
+refusal; it proves no other refusal. `retry-infrastructure-attempt` for this
+refusal also removes `scaffold_error`, and nothing else, from `project.config`
+under the project lock, so ensure runs again; a new failure parks again.
+
 The liveness supervisor parks a Run-backed refusal through the internal/admin
 `POST /api/stories/{id}/park-infrastructure-refusal`
 (`EngineeringInfrastructureParkCommand` → `EngineeringInfrastructureParkRead`).
