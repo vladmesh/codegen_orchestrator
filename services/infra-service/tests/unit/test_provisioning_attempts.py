@@ -6,6 +6,7 @@ import pytest
 
 from shared.contracts.dto.incident import IncidentType
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, QATargetProof
+from shared.ssh_keys import normalize_admin_private_key
 from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.provisioner.node import ProvisionerNode
 
@@ -13,7 +14,10 @@ from src.provisioner.node import ProvisionerNode
 # real key material, and a success carries the software play's profile proof.
 GENERATED_KEY = fleet_private_key()
 PROOF = QATargetProof(
-    profile_version=QA_TARGET_PROFILE_VERSION, proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    profile_version=QA_TARGET_PROFILE_VERSION,
+    proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+    ssh_user="dev",
+    ssh_key_fingerprint=normalize_admin_private_key(GENERATED_KEY).fingerprint,
 )
 PROOF_OUTPUT = (
     '"qa_identity_proof": "qa-identity-proof: qa-observer login=ok '

@@ -1483,6 +1483,17 @@ the park still owns the row's `error`: any status write — PATCH, attempt reset
 force rebuild — clears the park's ownership. Other `provisioning_failed`
 episodes and statuses are never overwritten or resolved by readiness.
 
+Every provisioning route cuts over credentials before anything is proved. A
+bootstrap credential — the BitLaunch creation key, existing host access, a
+reinstall's root password — runs only `provision_access.yml`, which installs the
+provisioner's public key. `cut_over_to_generated_key` then runs
+`target_readiness_login.yml` with the generated private key as the row's
+administrative account; the software play runs through that identity, and its
+`QATargetProof` carries that account and key fingerprint. A login that fails is a
+`credential_cutover` provisioning failure that never reaches the success handler,
+and the handler refuses a proof whose fingerprint or account is not the one it
+persists and the row administers.
+
 Fresh provisioning records its receipt at the provisioning-success boundary. The
 software play's proof travels as a typed `QATargetProof` to
 `handle_provisioning_success`, which validates and persists the generated key,

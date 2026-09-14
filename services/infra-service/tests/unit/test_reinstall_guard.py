@@ -6,6 +6,16 @@ import pytest
 from shared.clients.time4vps import Time4VPSClient
 from src.provisioner.operations import reinstall_and_provision
 
+
+def _generated_key_manager() -> MagicMock:
+    """The provisioner's generated key, which the post-access login has to prove."""
+    from shared.tests.ssh_key_fixtures import fleet_private_key
+
+    manager = MagicMock()
+    manager.get_private_key.return_value = fleet_private_key()
+    return manager
+
+
 # The live 2026-08-06 refusal: a rate limit, not a lost authorization.
 _RATE_LIMITED = '{"error":[["wait_x_between_action",24],"unauthorized"]}'
 _NEW_PASSWORD = "Xk9mP3qR7"  # noqa: S105 — fixture value, not a credential
@@ -175,8 +185,9 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
             server_id=275301,
             server_ip="203.0.113.10",
             os_template="kvm-ubuntu-24.04-gpt-x86_64",
-            ssh_manager=MagicMock(),
+            ssh_manager=_generated_key_manager(),
             ansible_runner=ansible,
+            deploy_user="root",
         )
 
     assert success is True, message

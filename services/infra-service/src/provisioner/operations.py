@@ -25,7 +25,11 @@ from shared.qa_target_profile import (
     proved_profile_version,
 )
 from shared.server_admission import target_readiness_reconcilable
-from shared.ssh_keys import AdminKeyRejectedError, validate_stored_admin_private_key
+from shared.ssh_keys import (
+    AdminKeyRejectedError,
+    normalize_admin_private_key,
+    validate_stored_admin_private_key,
+)
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
@@ -308,6 +312,74 @@ async def reset_server_password(
         return None
 
 
+class CredentialCutoverError(RuntimeError):
+    """The generated administrative key did not take over from the bootstrap credential."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+
+
+class GeneratedAdminIdentity(NamedTuple):
+    """The administrative identity a fresh login proved, and the key it proved."""
+
+    ssh_user: str
+    private_key: str
+    fingerprint: str
+
+
+def cut_over_to_generated_key(
+    *,
+    ansible_runner: AnsibleRunner,
+    ssh_manager: SSHManager,
+    server_ip: str,
+    server_handle: str,
+    admin_ssh_user: str | None,
+) -> GeneratedAdminIdentity:
+    """Prove the generated key logs in as the administrative account, after access setup.
+
+    A bootstrap credential — a provider creation key, a root password, whatever
+    opened the host first — runs only the access play that installs the
+    provisioner's public key. Everything after it, the proof-bearing software
+    play above all, runs through the identity this returns, so the key the
+    success handler persists and the receipt it records are the ones a login
+    actually used. The login is the readiness `admin_login` probe, run on its own
+    with its own timeout.
+
+    Raises:
+        CredentialCutoverError: no administrative account, no usable generated
+            key, or a login with it that did not succeed.
+    """
+    if not admin_ssh_user:
+        raise CredentialCutoverError(
+            "admin_ssh_user_missing", "the server row names no administrative account"
+        )
+    private_key = ssh_manager.get_private_key()
+    if not private_key:
+        raise CredentialCutoverError(
+            "ssh_private_key_missing", "the provisioner holds no generated private key"
+        )
+    try:
+        fingerprint = normalize_admin_private_key(private_key).fingerprint
+    except AdminKeyRejectedError as exc:
+        raise CredentialCutoverError("ssh_private_key_invalid", exc.rejection.value) from None
+    success, output = ansible_runner.run_playbook(
+        server_ip=server_ip,
+        server_handle=server_handle,
+        playbook_name=TARGET_READINESS_LOGIN_PLAYBOOK,
+        deploy_user=admin_ssh_user,
+        ssh_user=admin_ssh_user,
+        ssh_private_key=private_key,
+        timeout=Timeouts.ACCESS_PHASE,
+    )
+    if not success:
+        raise CredentialCutoverError(
+            TargetReadinessPhase.ADMIN_LOGIN.value, output[-READINESS_DETAIL_LENGTH:]
+        )
+    return GeneratedAdminIdentity(admin_ssh_user, private_key, fingerprint)
+
+
 async def reinstall_and_provision(  # noqa: PLR0913
     *,
     time4vps_client: Time4VPSClient,
@@ -435,6 +507,21 @@ async def reinstall_and_provision(  # noqa: PLR0913
 
         logger.info("Phase 1 complete. SSH Access established.")
 
+        # The root password has done its only job. From here on the host is
+        # reached through the generated key, proved by a fresh login first.
+        try:
+            identity = cut_over_to_generated_key(
+                ansible_runner=ansible_runner,
+                ssh_manager=ssh_manager,
+                server_ip=server_ip,
+                server_handle=server_handle,
+                admin_ssh_user=deploy_user,
+            )
+        except CredentialCutoverError as exc:
+            return ReinstallOutcome(
+                False, f"Credential cutover failed ({exc.reason}): {exc.detail[:500]}"
+            )
+
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         await notify_admins_best_effort(
@@ -450,9 +537,11 @@ async def reinstall_and_provision(  # noqa: PLR0913
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",
-            root_password=None,  # Use keys now
+            root_password=None,
             ssh_public_key=ssh_public_key,
             deploy_user=deploy_user,
+            ssh_user=identity.ssh_user,
+            ssh_private_key=identity.private_key,
             orchestrator_ip=orchestrator_ip,
             orchestrator_hostname=orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
@@ -462,7 +551,11 @@ async def reinstall_and_provision(  # noqa: PLR0913
             return ReinstallOutcome(
                 True,
                 "Provisioning (Access + Software) completed successfully",
-                current_profile_proof(output_soft),
+                current_profile_proof(
+                    output_soft,
+                    ssh_user=identity.ssh_user,
+                    ssh_key_fingerprint=identity.fingerprint,
+                ),
             )
         return ReinstallOutcome(False, f"Phase 2 (Software) failed: {output_soft[:500]}")
 

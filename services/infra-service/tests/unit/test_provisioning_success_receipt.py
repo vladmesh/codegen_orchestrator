@@ -35,7 +35,10 @@ from src.provisioner.operations import ReinstallOutcome
 GENERATED_KEY = fleet_private_key()
 GENERATED_FINGERPRINT = normalize_admin_private_key(GENERATED_KEY).fingerprint
 PROOF = QATargetProof(
-    profile_version=QA_TARGET_PROFILE_VERSION, proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    profile_version=QA_TARGET_PROFILE_VERSION,
+    proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+    ssh_user="root",
+    ssh_key_fingerprint=GENERATED_FINGERPRINT,
 )
 PROOF_OUTPUT = (
     '"qa_identity_proof": "qa-identity-proof: qa-observer uid=1001 login=ok '
@@ -244,12 +247,61 @@ class TestEveryOtherOutcomeFailsClosed:
         assert len(api.receipts) == 2
 
 
+class TestOnlyTheProvedIdentityIsRecorded:
+    async def test_a_proof_made_through_another_key_is_never_recorded(self, api):
+        """The BitLaunch false positive: proved with one key, about to store another."""
+        other = QATargetProof(
+            profile_version=QA_TARGET_PROFILE_VERSION,
+            proved_at=PROOF.proved_at,
+            ssh_user="root",
+            ssh_key_fingerprint="SHA256:the-provider-creation-key",
+        )
+
+        result = await api.succeed(proof=other)
+
+        assert result["provisioning_result"]["status"] == "failed"
+        assert "complete_phase" not in api.calls
+        assert "reset_with_receipt" not in api.calls
+        assert api.row["receipt"] is None
+        assert api.row["status"] == "error"
+        assert api.failure()[1] == {
+            "step": "qa_target_receipt",
+            "reason": "proved_key_not_persisted",
+        }
+
+    async def test_a_proof_for_an_account_the_row_does_not_administer_is_not_recorded(self, api):
+        other = QATargetProof(
+            profile_version=QA_TARGET_PROFILE_VERSION,
+            proved_at=PROOF.proved_at,
+            ssh_user="deploy",
+            ssh_key_fingerprint=GENERATED_FINGERPRINT,
+        )
+
+        result = await api.succeed(proof=other)
+
+        assert result["provisioning_result"]["status"] == "failed"
+        assert "reset_with_receipt" not in api.calls
+        assert api.row["receipt"] is None
+        assert api.failure()[1] == {
+            "step": "qa_target_receipt",
+            "reason": "proved_user_not_administrative",
+        }
+
+
 class TestTheProvisioningPathsCarryTheProof:
     def test_only_a_proof_of_the_current_profile_is_carried(self):
-        assert current_profile_proof(PROOF_OUTPUT).profile_version == QA_TARGET_PROFILE_VERSION
-        assert current_profile_proof("PLAY RECAP ok=40") is None
+        identity = {"ssh_user": "root", "ssh_key_fingerprint": GENERATED_FINGERPRINT}
+
+        proof = current_profile_proof(PROOF_OUTPUT, **identity)
+
+        assert proof.profile_version == QA_TARGET_PROFILE_VERSION
+        assert (proof.ssh_user, proof.ssh_key_fingerprint) == ("root", GENERATED_FINGERPRINT)
+        assert current_profile_proof("PLAY RECAP ok=40", **identity) is None
         assert (
-            current_profile_proof(PROOF_OUTPUT.replace(QA_TARGET_PROFILE_VERSION, "0" * 16)) is None
+            current_profile_proof(
+                PROOF_OUTPUT.replace(QA_TARGET_PROFILE_VERSION, "0" * 16), **identity
+            )
+            is None
         )
 
     async def test_fresh_provisioning_hands_the_software_proof_to_the_success_handler(
@@ -268,6 +320,9 @@ class TestTheProvisioningPathsCarryTheProof:
 
         proof = success.await_args.kwargs["qa_target_proof"]
         assert proof.profile_version == QA_TARGET_PROFILE_VERSION
+        # Proved through the generated key, as the row's administrative account.
+        assert proof.ssh_key_fingerprint == GENERATED_FINGERPRINT
+        assert proof.ssh_user == "deploy"
 
     async def test_reinstall_hands_its_proof_to_the_success_handler(self, monkeypatch):
         node = ProvisionerNode(ssh_manager=_manager(), ansible_runner=MagicMock())

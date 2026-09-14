@@ -43,7 +43,11 @@ from .api_client import (
 from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient
 from .handlers import handle_provisioning_success
 from .incidents import create_incident
-from .operations import reinstall_and_provision
+from .operations import (
+    CredentialCutoverError,
+    cut_over_to_generated_key,
+    reinstall_and_provision,
+)
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -330,6 +334,32 @@ class ProvisionerNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["Phase 1 failed"],
             }
 
+        # The bootstrap credential has done its only job. A fresh login proves the
+        # generated key as the administrative account, and everything after it
+        # runs through that identity.
+        try:
+            identity = cut_over_to_generated_key(
+                ansible_runner=self.ansible_runner,
+                ssh_manager=self.ssh_manager,
+                server_ip=server_ip,
+                server_handle=server_handle,
+                admin_ssh_user=deploy_user,
+            )
+        except CredentialCutoverError as exc:
+            await update_server_status(server_handle, "error")
+            await create_incident(
+                server_handle,
+                IncidentType.PROVISIONING_FAILED,
+                {"step": "credential_cutover", "reason": exc.reason, "detail": exc.detail[:500]},
+            )
+            return {
+                "messages": [
+                    {"message": f"❌ Credential cutover ({exc.reason}) failed for {server_handle}"}
+                ],
+                "errors": state.get("errors", []) + ["Credential cutover failed"],
+                "provisioning_result": {"status": "failed", "server_ip": server_ip},
+            }
+
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         # Phase 2: Software
@@ -340,8 +370,8 @@ class ProvisionerNode(FunctionalNode):
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
             deploy_user=deploy_user,
-            ssh_user=ssh_user,
-            ssh_private_key=ssh_private_key,
+            ssh_user=identity.ssh_user,
+            ssh_private_key=identity.private_key,
             orchestrator_ip=self.orchestrator_ip,
             orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
@@ -363,7 +393,11 @@ class ProvisionerNode(FunctionalNode):
                 is_recovery,
                 " (Retried)",
                 ssh_manager=self.ssh_manager,
-                qa_target_proof=current_profile_proof(output_soft),
+                qa_target_proof=current_profile_proof(
+                    output_soft,
+                    ssh_user=identity.ssh_user,
+                    ssh_key_fingerprint=identity.fingerprint,
+                ),
             )
 
         await update_server_status(server_handle, "error")

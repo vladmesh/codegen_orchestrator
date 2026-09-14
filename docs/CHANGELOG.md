@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-14
+
+- Provisioning uses a bootstrap credential only for the access play, then proves the generated key by login and
+  runs the proof through it, so a READY receipt never names a key that has not connected.
+
 ## 2026-09-13
 
 - Fresh provisioning stores its generated key first and records the play's QA target proof with READY in one

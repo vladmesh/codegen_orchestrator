@@ -171,6 +171,16 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             what_failed="its SSH key could not be stored",
         )
 
+    # Only a proof made through the key being persisted is evidence for it.
+    if qa_target_proof is not None and qa_target_proof.ssh_key_fingerprint != fingerprint:
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="proved_key_not_persisted",
+            what_failed="the key it stored is not the key its software play proved",
+        )
+
     try:
         await mark_provisioning_complete(server_handle)
     except Exception as exc:
@@ -199,6 +209,29 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
 
     try:
         server = await get_server_info(server_handle)
+    except Exception as exc:
+        logger.error(
+            "provisioning_server_read_failed",
+            server_handle=server_handle,
+            error_type=type(exc).__name__,
+        )
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="receipt_write_failed",
+            what_failed="its readiness receipt and READY status could not be recorded",
+        )
+    if server.ssh_user != qa_target_proof.ssh_user:
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="proved_user_not_administrative",
+            what_failed="its software play proved an account the server row does not administer",
+        )
+
+    try:
         receipt = QATargetReceipt(
             profile_version=qa_target_proof.profile_version,
             proved_at=qa_target_proof.proved_at,

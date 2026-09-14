@@ -127,10 +127,22 @@ class QATargetProof:
 
     profile_version: str
     proved_at: datetime
+    # The administrative identity the proving play actually connected with: the
+    # account and the fingerprint of the generated key. A proof obtained through
+    # any other credential is not evidence that this identity works.
+    ssh_user: str
+    ssh_key_fingerprint: str
 
 
-def current_profile_proof(playbook_output: str) -> QATargetProof | None:
-    """The proof a play reported, if it proved the profile this repository defines."""
+def current_profile_proof(
+    playbook_output: str, *, ssh_user: str, ssh_key_fingerprint: str
+) -> QATargetProof | None:
+    """The proof a play run as this identity reported, if it proved the current profile."""
     if proved_profile_version(playbook_output) != QA_TARGET_PROFILE_VERSION:
         return None
-    return QATargetProof(profile_version=QA_TARGET_PROFILE_VERSION, proved_at=datetime.now(UTC))
+    return QATargetProof(
+        profile_version=QA_TARGET_PROFILE_VERSION,
+        proved_at=datetime.now(UTC),
+        ssh_user=ssh_user,
+        ssh_key_fingerprint=ssh_key_fingerprint,
+    )
