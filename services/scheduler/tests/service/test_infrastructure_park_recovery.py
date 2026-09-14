@@ -31,6 +31,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.vocab import AgentType
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.tasks.owner_notifications import supervise_owed_owner_notifications
 from src.tasks.task_dispatcher import dispatch_todo_tasks
 
@@ -87,7 +88,7 @@ async def _publish_executors(availability: ExecutorAvailability, reason_code: st
         await redis.set(
             EXECUTOR_DIAGNOSTICS_REDIS_KEY,
             ExecutorDiagnosticSnapshot(
-                schema_version="v1",
+                schema_version="v2",
                 version=f"infrastructure-park-{reason_code}-{uuid.uuid4().hex[:8]}",
                 observed_at=now,
                 expires_at=expiry,
@@ -102,6 +103,7 @@ async def _publish_executors(availability: ExecutorAvailability, reason_code: st
                         active_lease_count=0,
                         reason_code=reason_code,
                         reason=safe_executor_diagnostic_reason(reason_code),
+                        profile=host_profile_for_reason(reason_code),
                     )
                     for executor in (AgentType.CLAUDE, AgentType.CODEX)
                 ],

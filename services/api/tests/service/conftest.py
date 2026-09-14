@@ -20,6 +20,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.vocab import AgentType
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 
 # Use env vars or defaults matching docker-compose
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@db:5432/postgres")
@@ -139,13 +140,14 @@ async def _known_executor_diagnostic_snapshot(redis_client: Redis):
             active_lease_count=0,
             reason_code="ready",
             reason="Local authentication and worker inventory are ready.",
+            profile=host_profile_for_reason("ready"),
         )
         for executor in (AgentType.CLAUDE, AgentType.CODEX)
     ]
     await redis_client.set(
         EXECUTOR_DIAGNOSTICS_REDIS_KEY,
         ExecutorDiagnosticSnapshot(
-            schema_version="v1",
+            schema_version="v2",
             version="service-test-diagnostics",
             observed_at=now,
             expires_at=expiry,

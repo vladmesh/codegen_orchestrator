@@ -277,3 +277,100 @@ records a receipt, and only for the current profile. A story parked with a QA
 harness blocker (`qa_target_profile_stale`, `qa_probe_unavailable`,
 `server_unavailable`, `qa_executor_unavailable`, `qa_identity_unreadable`) is
 recovered after reconciliation with `POST /api/stories/{story_id}/recheck-qa`.
+
+## Log in the production subscription executor profiles
+
+Worker-manager reads the dedicated Claude and Codex host-session profiles in place
+every 30 seconds through its read-only mounts (`/host-claude`, `/host-codex`) and
+publishes their login state, refresh-material state and stored expiry facts in
+`GET /api/work-admission/executor-diagnostics` and the admin Settings
+`Executor diagnostics` card. It never runs a CLI, contacts a provider or refreshes
+a token. A logged-out, missing-refresh, unusable or expired profile is
+`unavailable` and refuses new starts; a refresh credential whose stored expiry is
+at or inside 24 hours is `degraded` and still admits starts until it expires;
+malformed or contradictory metadata is `unknown`. Each of those states sends one
+Telegram alert to every administrator, retried with backoff until every
+administrator received it; a healthy observation closes that executor's episode.
+Worker-manager needs `TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` to
+deliver it.
+
+Refresh tokens rotate: the CLI that refreshes receives a new refresh token and
+the old one stops working at the provider. **Never run `claude` or `codex`
+against a copy of either profile** — not to test it, not to probe quota. The copy
+wins the rotation and the real profile, which workers use, is dead. Check a
+profile only through the diagnostics endpoint or UI; repair it only by logging in
+again into the real dedicated directory below. Neither CLI stores a refresh-token
+expiry for an opaque refresh token, so the card shows `Not exposed by CLI` there;
+the access/session expiry row is renewable while a refresh credential is present.
+
+### Claude: paste-code login through a FIFO
+
+`HOST_CLAUDE_DIR` is the dedicated profile (production: `/home/deploy/.claude-worker`),
+never the operator's own `~/.claude`. The login prints an authorization URL and
+then reads the pasted code from standard input; a FIFO lets the code arrive from a
+second shell while the CLI keeps running. Run as the user that owns the profile:
+
+```bash
+set -a; . ./.env; set +a                        # HOST_CLAUDE_DIR
+install -d -m 0700 "$HOST_CLAUDE_DIR"
+FIFO="$(mktemp -u /tmp/claude-login.XXXXXX)"
+mkfifo -m 0600 "$FIFO"
+sleep 900 > "$FIFO" &                           # keep a writer open so the CLI starts
+HOLD=$!
+docker run --rm -i --user "$(id -u):$(id -g)" \
+  -e CLAUDE_CONFIG_DIR=/home/worker/.claude \
+  -v "$HOST_CLAUDE_DIR":/home/worker/.claude \
+  --entrypoint claude worker-base-claude:latest auth login < "$FIFO"
+```
+
+Open the printed URL, approve the login, and paste the code from a second shell:
+
+```bash
+printf '%s\n' '<code shown by the browser>' > "$FIFO"
+```
+
+When the CLI reports success, stop the holder and remove the FIFO, then fix the
+permissions: `kill "$HOLD"; rm -f "$FIFO"; chmod 0700 "$HOST_CLAUDE_DIR";
+chmod 0600 "$HOST_CLAUDE_DIR/.credentials.json"`.
+
+### Codex: device-code login
+
+`HOST_CODEX_HOME` is the dedicated file-backed profile (production:
+`/home/deploy/.codex-worker`), never the operator's live `~/.codex`. Device
+authentication prints a URL and a one-time code and needs no standard input:
+
+```bash
+set -a; . ./.env; set +a                        # HOST_CODEX_HOME
+install -d -m 0700 "$HOST_CODEX_HOME"
+printf 'cli_auth_credentials_store = "file"\n' > "$HOST_CODEX_HOME/config.toml"
+chmod 0600 "$HOST_CODEX_HOME/config.toml"
+docker run --rm -it --user "$(id -u):$(id -g)" \
+  -e CODEX_HOME=/home/worker/.codex \
+  -v "$HOST_CODEX_HOME":/home/worker/.codex \
+  --entrypoint codex worker-base-codex:latest login --device-auth
+chmod 0600 "$HOST_CODEX_HOME/auth.json"
+```
+
+Worker-manager refuses a Codex profile whose directory is not `0700`, whose
+`auth.json` or `config.toml` is not `0600`, or whose credential store is not
+`file`.
+
+### Restart and recheck
+
+A login is observed on the next 30-second diagnostics tick. Restarting
+worker-manager publishes immediately at startup:
+
+```bash
+docker compose restart worker-manager
+sleep 5
+docker compose exec -T api sh -c \
+  'curl -fsS -H "X-Internal-Key: $INTERNAL_API_KEY" \
+   http://127.0.0.1:8000/api/work-admission/executor-diagnostics' \
+  | jq '.diagnostics[] | {executor, availability, reason_code, profile}'
+```
+
+Continue only when the repaired executor shows `availability: "available"` and
+`profile.condition: "healthy"` (or the Settings card shows `Logged in` with a
+`Present` refresh credential). The response and card carry no token, claim or
+path; do not paste profile file contents anywhere to debug.
+

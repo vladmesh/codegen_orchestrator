@@ -219,6 +219,19 @@ control or diagnostic is fail-closed. An administrator may confirm only a
 specific unexpired `unknown` diagnostics snapshot; an internal service cannot
 make that confirmation.
 
+The diagnostics snapshot is schema `v2` under `executor:diagnostics:v2` with a
+90-second TTL; a v1 or otherwise invalid value is typed `unknown`. An enabled
+host-session diagnostic requires exactly one `ExecutorProfileObservation`, and
+its reason code and availability are derived from the observation's closed
+`condition` (`healthy` → `ready`/available, `refresh_expiring` → degraded,
+`refresh_expired`/`refresh_missing`/`logged_out`/`unusable` → unavailable,
+`unverifiable` → unknown); only a healthy or expiring profile defers to
+`inventory_unreconciled`. Timestamps are timezone-aware, each time fact names its
+executor-specific source, and an access-token expiry can never be stored as a
+refresh expiry. Worker-manager's `ExecutorDiagnostics` publisher alone writes the
+snapshot and reconciles `ExecutorProfileAlertEpisode` records, whose delivery
+outcomes are the `AdminDeliveryStatus` values.
+
 `EngineeringExecutionEvidence` is the authoritative boundary for whether an
 engineering agent started. It is exactly either `agent_started` with no refusal,
 or `pre_agent_refused` with one `EngineeringInfrastructureRefusal`. The evidence

@@ -29,6 +29,7 @@ from shared.contracts.dto.executor_diagnostics import (
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.vocab import AgentType
 from shared.models import Run, Story, WorkAdmissionAudit
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.routers._story_helpers import _land_on
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -575,7 +576,7 @@ async def _publish_executors(redis: Redis, availability: ExecutorAvailability, c
     await redis.set(
         EXECUTOR_DIAGNOSTICS_REDIS_KEY,
         ExecutorDiagnosticSnapshot(
-            schema_version="v1",
+            schema_version="v2",
             version=f"infra-park-{code}-{uuid.uuid4().hex[:8]}",
             observed_at=now,
             expires_at=expiry,
@@ -590,6 +591,7 @@ async def _publish_executors(redis: Redis, availability: ExecutorAvailability, c
                     active_lease_count=0,
                     reason_code=code,
                     reason=safe_executor_diagnostic_reason(code),
+                    profile=host_profile_for_reason(code),
                 )
                 for executor in (AgentType.CLAUDE, AgentType.CODEX)
             ],

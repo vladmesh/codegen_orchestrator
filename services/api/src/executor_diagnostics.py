@@ -5,6 +5,7 @@ import json
 
 from shared.contracts.dto.executor_diagnostics import (
     EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+    EXECUTOR_DIAGNOSTICS_SCHEMA_VERSION,
     ExecutorAuthMode,
     ExecutorAvailability,
     ExecutorDiagnostic,
@@ -14,8 +15,10 @@ from shared.contracts.dto.executor_diagnostics import (
 from shared.contracts.vocab import AgentType
 
 
-def unknown_diagnostic(executor: AgentType, reason_code: str) -> ExecutorDiagnostic:
-    now = datetime.now(UTC)
+def unknown_diagnostic(
+    executor: AgentType, reason_code: str, observed_at: datetime | None = None
+) -> ExecutorDiagnostic:
+    now = observed_at or datetime.now(UTC)
     return ExecutorDiagnostic(
         executor=executor,
         enabled=False,
@@ -26,6 +29,24 @@ def unknown_diagnostic(executor: AgentType, reason_code: str) -> ExecutorDiagnos
         active_lease_count=None,
         reason_code=reason_code,
         reason=safe_executor_diagnostic_reason(reason_code),
+    )
+
+
+def unknown_snapshot() -> ExecutorDiagnosticSnapshot:
+    """A typed fail-closed response with no trusted version; it cannot be confirmed.
+
+    Both entries share the snapshot window, which the snapshot contract requires.
+    """
+    now = datetime.now(UTC)
+    return ExecutorDiagnosticSnapshot(
+        schema_version=EXECUTOR_DIAGNOSTICS_SCHEMA_VERSION,
+        version="unknown",
+        observed_at=now,
+        expires_at=now + timedelta(seconds=1),
+        diagnostics=[
+            unknown_diagnostic(AgentType.CLAUDE, "snapshot_unavailable", now),
+            unknown_diagnostic(AgentType.CODEX, "snapshot_unavailable", now),
+        ],
     )
 
 

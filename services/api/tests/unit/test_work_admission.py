@@ -23,6 +23,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionReason,
 )
 from shared.contracts.vocab import AgentType
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.work_admission import (
     _executor_diagnostic_allows_admission,
     admit_project_creation,
@@ -118,6 +119,7 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
                 active_lease_count=0,
                 reason_code="ready",
                 reason="Local authentication and worker inventory are ready.",
+                profile=host_profile_for_reason("ready"),
             ),
             None,
         )
@@ -188,6 +190,7 @@ async def test_unknown_confirmation_cannot_admit_after_new_unavailable_snapshot(
         active_lease_count=None,
         reason_code="inventory_unreconciled",
         reason="Worker inventory could not be reconciled.",
+        profile=host_profile_for_reason("inventory_unreconciled"),
     )
     unavailable = unknown.model_copy(
         update={
@@ -195,10 +198,11 @@ async def test_unknown_confirmation_cannot_admit_after_new_unavailable_snapshot(
             "active_lease_count": 0,
             "reason_code": "local_auth_invalid",
             "reason": "Required local host-session material is unusable.",
+            "profile": host_profile_for_reason("local_auth_invalid"),
         }
     )
     first = ExecutorDiagnosticSnapshot(
-        schema_version="v1",
+        schema_version="v2",
         version="v1",
         observed_at=now,
         expires_at=now + timedelta(seconds=60),

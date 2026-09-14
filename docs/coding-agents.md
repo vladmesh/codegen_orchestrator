@@ -87,6 +87,13 @@ host-session command, intentionally serializing workers that share one profile
 so simultaneous refreshes cannot corrupt `auth.json`. Claude, Factory, and
 noop workers do not receive this mount.
 
+Worker-manager also reads this profile passively for executor diagnostics: token
+presence, the access token's `exp` claim, a refresh-token `exp` only when that
+token is a JWT, and `last_refresh`. It never runs Codex against the profile or a
+copy of it; a copied profile that refreshes rotates the refresh token and breaks
+the real one. Login state, expiry and the administrator alert are described in
+[live-deploy-operations.md](live-deploy-operations.md#log-in-the-production-subscription-executor-profiles).
+
 See the official [authentication](https://learn.chatgpt.com/docs/auth) and
 [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 documentation for the upstream behavior.

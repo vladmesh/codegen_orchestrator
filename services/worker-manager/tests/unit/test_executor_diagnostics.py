@@ -4,10 +4,21 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from shared.contracts.dto.executor_diagnostics import ExecutorAuthMode, ExecutorAvailability
+from shared.contracts.dto.executor_diagnostics import (
+    ExecutorAuthMode,
+    ExecutorAvailability,
+    ExecutorProfileCondition,
+)
 from shared.contracts.vocab import AgentType
+from shared.tests.executor_diagnostic_cases import host_profile
 from src.executor_diagnostics import ExecutorDiagnostics
+from src.host_profile import ProfileInspection
 from src.manager import WorkerManager
+
+
+def _inspection(condition: ExecutorProfileCondition) -> ProfileInspection:
+    refusal = None if condition is ExecutorProfileCondition.HEALTHY else "synthetic refusal"
+    return ProfileInspection(host_profile(condition), refusal)
 
 
 @pytest.mark.asyncio
@@ -20,7 +31,7 @@ async def test_publish_executor_diagnostics_writes_a_bounded_snapshot(monkeypatc
     await manager.publish_executor_diagnostics()
 
     redis.set.assert_awaited_once()
-    assert redis.set.await_args.args[0] == "executor:diagnostics:v1"
+    assert redis.set.await_args.args[0] == "executor:diagnostics:v2"
     assert redis.set.await_args.kwargs["ex"] > 0
 
 
@@ -37,9 +48,12 @@ def test_claude_diagnostic_uses_manager_visible_validation_path(monkeypatch):
         diagnostics_module.settings, "HOST_CLAUDE_VALIDATION_PATH", "/host-claude", raising=False
     )
     observed: list[str | None] = []
-    monkeypatch.setattr(
-        "src.claude_auth.validate_claude_host_session", lambda path: observed.append(path)
-    )
+
+    def inspect(path, *, now):
+        observed.append(path)
+        return _inspection(ExecutorProfileCondition.HEALTHY)
+
+    monkeypatch.setattr("src.claude_auth.inspect_claude_host_session", inspect)
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
 
     diagnostic = diagnostics._executor_diagnostic(
@@ -61,6 +75,11 @@ def test_unreconciled_inventory_does_not_claim_zero_leases(monkeypatch):
     now = datetime.now(UTC)
     monkeypatch.setattr(
         diagnostics_module.settings, "HOST_CODEX_HOME", "/host-source/.codex", raising=False
+    )
+    # A usable profile, so only the inventory decides the unknown state.
+    monkeypatch.setattr(
+        "src.codex_auth.inspect_codex_host_session",
+        lambda _path, *, now: _inspection(ExecutorProfileCondition.HEALTHY),
     )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
     diagnostic = diagnostics._executor_diagnostic(
@@ -118,8 +137,8 @@ def test_stand_codex_diagnostic_refuses_an_invalid_refreshable_profile(monkeypat
         diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", "/host-codex", raising=False
     )
     monkeypatch.setattr(
-        "src.codex_auth.validate_codex_host_session",
-        lambda _profile: (_ for _ in ()).throw(RuntimeError("invalid profile")),
+        "src.codex_auth.inspect_codex_host_session",
+        lambda _profile, *, now: _inspection(ExecutorProfileCondition.UNUSABLE),
     )
     diagnostics = ExecutorDiagnostics(redis=AsyncMock(), docker=MagicMock())
 
@@ -368,3 +387,167 @@ def _inventory_redis(worker_ids, *, statuses=None, agent_types=None):
     redis.hgetall.side_effect = hgetall
     redis.hget.side_effect = hget
     return redis
+
+
+# --- one tick: publication plus alert reconciliation ---------------------------------
+
+
+def _synthetic_profiles(tmp_path, monkeypatch, *, claude_credentials: dict):
+    import json
+
+    import src.executor_diagnostics as diagnostics_module
+
+    claude = tmp_path / "claude"
+    claude.mkdir()
+    (claude / ".credentials.json").write_text(json.dumps(claude_credentials))
+    codex = tmp_path / "codex"
+    codex.mkdir(mode=0o700)
+    codex.chmod(0o700)
+    (codex / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "opaque-access", "refresh_token": "opaque-refresh"}})
+    )
+    (codex / "auth.json").chmod(0o600)
+    (codex / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+    (codex / "config.toml").chmod(0o600)
+    settings = diagnostics_module.settings
+    monkeypatch.setattr(settings, "LIVE_CONTOUR", None, raising=False)
+    monkeypatch.setattr(settings, "HOST_CLAUDE_DIR", "/docker-host/.claude", raising=False)
+    monkeypatch.setattr(settings, "HOST_CLAUDE_VALIDATION_PATH", str(claude), raising=False)
+    monkeypatch.setattr(settings, "HOST_CODEX_HOME", "/docker-host/.codex", raising=False)
+    monkeypatch.setattr(settings, "HOST_CODEX_VALIDATION_PATH", str(codex), raising=False)
+
+
+class _Admins:
+    def __init__(self):
+        self.messages: list[str] = []
+
+    async def __call__(self, message, level="info"):
+        from shared.notifications import AdminDeliveryResult
+
+        self.messages.append(message)
+        return AdminDeliveryResult(configured=1, succeeded=1)
+
+
+def _empty_docker():
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[])
+    return docker
+
+
+@pytest.mark.asyncio
+async def test_each_tick_publishes_both_profiles_and_alerts_once(tmp_path, monkeypatch):
+    import json
+
+    from fakeredis import aioredis
+
+    from shared.contracts.dto.executor_diagnostics import (
+        EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+        ExecutorDiagnosticSnapshot,
+    )
+    from src.profile_alerts import ExecutorProfileAlerts
+
+    _synthetic_profiles(tmp_path, monkeypatch, claude_credentials={"claudeAiOauth": {}})
+    redis = aioredis.FakeRedis(decode_responses=True)
+    admins = _Admins()
+    diagnostics = ExecutorDiagnostics(
+        redis=redis, docker=_empty_docker(), alerts=ExecutorProfileAlerts(redis, admins)
+    )
+
+    # Startup publication, then the periodic ticks.
+    for _ in range(3):
+        await diagnostics.publish()
+
+    stored = ExecutorDiagnosticSnapshot.model_validate_json(
+        await redis.get(EXECUTOR_DIAGNOSTICS_REDIS_KEY)
+    )
+    assert 0 < await redis.ttl(EXECUTOR_DIAGNOSTICS_REDIS_KEY) <= 90
+    claude = stored.for_executor(AgentType.CLAUDE, stored.observed_at)
+    codex = stored.for_executor(AgentType.CODEX, stored.observed_at)
+    assert (claude.availability, claude.reason_code) == (
+        ExecutorAvailability.UNAVAILABLE,
+        "profile_logged_out",
+    )
+    assert claude.profile.condition is ExecutorProfileCondition.LOGGED_OUT
+    assert codex.availability is ExecutorAvailability.AVAILABLE
+    assert codex.profile.condition is ExecutorProfileCondition.HEALTHY
+    assert admins.messages == [
+        "Claude executor host-session profile needs attention: Host-session profile is logged out."
+    ]
+    raw = await redis.get(EXECUTOR_DIAGNOSTICS_REDIS_KEY)
+    assert "opaque-access" not in raw and str(tmp_path) not in raw and "docker-host" not in raw
+    assert json.loads(raw)["schema_version"] == "v2"
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_publication_still_reconciles_alerts_and_raises(tmp_path, monkeypatch):
+    _synthetic_profiles(tmp_path, monkeypatch, claude_credentials={"claudeAiOauth": {}})
+    redis = AsyncMock()
+    redis.scan_iter = MagicMock(return_value=_empty_scan())
+    redis.set.side_effect = ConnectionError("redis down")
+    alerts = MagicMock()
+    alerts.reconcile = AsyncMock()
+
+    with pytest.raises(ConnectionError):
+        await ExecutorDiagnostics(redis=redis, docker=_empty_docker(), alerts=alerts).publish()
+
+    snapshot = alerts.reconcile.await_args.args[0]
+    assert snapshot.for_executor(AgentType.CLAUDE, snapshot.observed_at).profile is not None
+
+
+@pytest.mark.asyncio
+async def test_alert_delivery_failure_never_suppresses_the_published_state(tmp_path, monkeypatch):
+    from fakeredis import aioredis
+
+    from shared.contracts.dto.executor_diagnostics import (
+        EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+        ExecutorDiagnosticSnapshot,
+    )
+    from src.profile_alerts import ExecutorProfileAlerts
+
+    _synthetic_profiles(tmp_path, monkeypatch, claude_credentials={"claudeAiOauth": {}})
+    redis = aioredis.FakeRedis(decode_responses=True)
+
+    async def broken_admins(message, level="info"):
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    await ExecutorDiagnostics(
+        redis=redis, docker=_empty_docker(), alerts=ExecutorProfileAlerts(redis, broken_admins)
+    ).publish()
+
+    stored = ExecutorDiagnosticSnapshot.model_validate_json(
+        await redis.get(EXECUTOR_DIAGNOSTICS_REDIS_KEY)
+    )
+    claude = stored.for_executor(AgentType.CLAUDE, stored.observed_at)
+    assert claude.availability is ExecutorAvailability.UNAVAILABLE
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_periodic_loop_keeps_publishing_after_a_failed_tick():
+    import asyncio
+
+    from src.main import run_periodic_task
+
+    calls = 0
+
+    async def tick():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionError("redis down")
+        if calls == 3:
+            raise asyncio.CancelledError
+
+    await asyncio.wait_for(run_periodic_task(tick, interval=0, name="executor_diagnostics"), 2)
+
+    assert calls == 3
+
+
+def test_startup_publishes_before_serving_and_schedules_the_configured_interval():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src" / "main.py").read_text()
+    startup = source.index("await worker_manager.publish_executor_diagnostics()")
+    assert startup < source.index("yield")
+    assert "interval=settings.EXECUTOR_DIAGNOSTICS_INTERVAL_SECONDS" in source

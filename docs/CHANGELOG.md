@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- Executor diagnostics v2 report credential-free Claude/Codex login, refresh and expiry facts, and the publisher sends
+  one deduplicated, retried admin Telegram alert per logged-out, expired or 24-hour-expiring profile.
+
 - Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
   and READY behind episode and identity fences, so operator edits win without partial state.
 - Server reads expose the active provisioning fence, and finalization replays require the exact canonical labels and
