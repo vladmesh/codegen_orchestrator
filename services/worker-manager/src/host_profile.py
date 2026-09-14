@@ -62,12 +62,13 @@ class _JsonRejected(ValueError):
 def load_json(raw: str | bytes, *, pinned_serde_json: bool) -> object:
     """The single total JSON trust boundary for every host-session profile reader.
 
-    Order: bound the input size; decode strict UTF-8 (a BOM is not skipped);
-    refuse nesting deeper than `MAX_JSON_NESTING`; parse. With
-    `pinned_serde_json` the parse also refuses duplicate object keys,
-    NaN/Infinity constants, every numeric token pinned serde_json 1.0.149
-    (no `float_roundtrip`) reports as `NumberOutOfRange`, and lone surrogates.
-    Without it (Claude), Python JSON semantics apply inside the same bounds.
+    Every reader gets standard JSON plus the shared bounds and totality: bound
+    the input size; decode strict UTF-8 (a BOM is not skipped); refuse nesting
+    deeper than `MAX_JSON_NESTING`; parse standard JSON only, so Python's
+    non-standard `NaN`, `Infinity` and `-Infinity` literals are always refused.
+    Only `pinned_serde_json` (Codex) adds the pinned serde_json 1.0.149
+    policies: duplicate object keys, lone surrogates and every numeric token
+    it reports as `NumberOutOfRange` (no `float_roundtrip`) are refused.
     Returns the parsed value or `JSON_PARSE_FAILURE`; it never raises.
     """
     try:
@@ -81,16 +82,13 @@ def load_json(raw: str | bytes, *, pinned_serde_json: bool) -> object:
             text = raw
         if _nesting_exceeds(text, MAX_JSON_NESTING):
             return JSON_PARSE_FAILURE
-        hooks = (
-            {
-                "object_pairs_hook": _unique_json_object,
-                "parse_constant": _reject_json_constant,
-                "parse_int": _serde_json_integer,
-                "parse_float": _serde_json_float,
-            }
-            if pinned_serde_json
-            else {}
-        )
+        hooks: dict = {"parse_constant": _reject_json_constant}
+        if pinned_serde_json:
+            hooks.update(
+                object_pairs_hook=_unique_json_object,
+                parse_int=_serde_json_integer,
+                parse_float=_serde_json_float,
+            )
         value = json.loads(text, **hooks)
         if pinned_serde_json and _contains_lone_surrogate(value):
             return JSON_PARSE_FAILURE
@@ -129,7 +127,7 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
 
 
 def _reject_json_constant(_name: str) -> object:
-    raise _JsonRejected("serde_json does not accept NaN or Infinity")
+    raise _JsonRejected("standard JSON has no NaN, Infinity or -Infinity literal")
 
 
 def _serde_json_integer(token: str) -> int:

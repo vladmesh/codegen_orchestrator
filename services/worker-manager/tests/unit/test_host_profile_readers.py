@@ -191,10 +191,10 @@ def test_claude_unreadable_profile_is_unusable(tmp_path, monkeypatch):
     assert str(profile) not in (inspection.refusal or "")
 
 
-@pytest.mark.parametrize("expires_at", ["tomorrow", True, -1, 10**30, float("nan")])
+@pytest.mark.parametrize("expires_at", ["tomorrow", True, -1, 10**30])
 def test_claude_malformed_expiry_metadata_is_unverifiable_not_healthy(tmp_path, expires_at):
+    # A NaN expiresAt is not JSON at all: see the non-standard constant tests.
     content = _claude_oauth(expiresAt=expires_at)
-    # json.dumps writes NaN literally, which json.loads reads back as a float.
     inspection = inspect_claude_host_session(str(_claude_profile(tmp_path, content)), now=NOW)
 
     assert inspection.observation.condition is ExecutorProfileCondition.UNVERIFIABLE
@@ -1582,8 +1582,9 @@ def test_the_json_boundary_returns_parsed_values_distinct_from_failure():
         "n": 1e308,
         "i": 18446744073709551616,
     }
-    # Claude's Python-JSON mode keeps its semantics but shares the bounds.
-    assert load_json('{"a": NaN}', pinned_serde_json=False) != JSON_PARSE_FAILURE
+    # Claude's standard-JSON mode shares the bounds and refuses non-standard constants.
+    for constant in ("NaN", "Infinity", "-Infinity"):
+        assert load_json('{"a": ' + constant + "}", pinned_serde_json=False) is JSON_PARSE_FAILURE
     assert load_json("[" * 200_000, pinned_serde_json=False) is JSON_PARSE_FAILURE
 
 
@@ -1612,3 +1613,116 @@ def test_every_reader_json_parse_goes_through_the_total_boundary():
     }
 
     assert parses == {"claude_auth.py": 0, "codex_auth.py": 0, "host_profile.py": 1}
+
+
+# --- Claude: standard JSON only, without Codex's pinned serde_json policies ------------
+
+
+def _stand_preflight():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "stand_preflight_under_test", ROOT_DIR / "scripts" / "stand_preflight.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _claude_credentials_with(position: str, raw_value: str) -> str:
+    valid = json.dumps(_claude_oauth())
+    if position == "top-level":
+        return valid[:-1] + ', "future": ' + raw_value + "}"
+    if position == "nested":
+        return valid[:-1] + ', "future": {"deeper": [1, {"value": ' + raw_value + "}]}}"
+    if position == "oauth-unknown":
+        return valid.replace(
+            '"claudeAiOauth": {', '"claudeAiOauth": {"future": ' + raw_value + ", ", 1
+        )
+    assert position == "oauth-expiresAt"
+    content = json.loads(valid)
+    marker = str(content["claudeAiOauth"]["expiresAt"])
+    return valid.replace('"expiresAt": ' + marker, '"expiresAt": ' + raw_value, 1)
+
+
+def _claude_diagnostic(monkeypatch, profile: Path):
+    import src.executor_diagnostics as diagnostics_module
+
+    monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", None, raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CLAUDE_DIR", "/docker-host/.claude")
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CLAUDE_VALIDATION_PATH", str(profile))
+    now = datetime.now(UTC)
+    return diagnostics_module.ExecutorDiagnostics(
+        redis=None, docker=None, alerts=object()
+    )._executor_diagnostic(
+        AgentType.CLAUDE,
+        now,
+        now + timedelta(seconds=90),
+        {AgentType.CLAUDE: 0, AgentType.CODEX: 0},
+    )
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("position", ["top-level", "nested", "oauth-unknown", "oauth-expiresAt"])
+def test_a_non_standard_json_constant_makes_claude_credentials_unusable_everywhere(
+    tmp_path, monkeypatch, position, constant
+):
+    import src.manager as manager_module
+
+    profile = _claude_profile(tmp_path, raw=_claude_credentials_with(position, constant))
+
+    inspection = inspect_claude_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+    assert inspection.refusal == "Claude host session credentials are unreadable"
+    with pytest.raises(RuntimeError, match="unreadable"):
+        validate_claude_host_session(str(profile))
+    monkeypatch.setattr(manager_module.settings, "HOST_CLAUDE_VALIDATION_PATH", str(profile))
+    with pytest.raises(RuntimeError, match="unreadable"):
+        manager_module.WorkerManager._validate_host_session(
+            AgentType.CLAUDE, "host_session", "/docker-host/.claude", None
+        )
+    name, passed, detail = _stand_preflight().check_claude_session(str(profile))
+    assert (passed, detail) == (False, "Claude host session credentials are unreadable")
+    diagnostic = _claude_diagnostic(monkeypatch, profile)
+    assert (diagnostic.availability, diagnostic.reason_code) == (
+        ExecutorAvailability.UNAVAILABLE,
+        "local_auth_invalid",
+    )
+    serialized = diagnostic.model_dump_json()
+    assert ACCESS_SECRET not in serialized and REFRESH_SECRET not in serialized
+
+
+@pytest.mark.parametrize(
+    ("position", "raw_value"),
+    [
+        pytest.param("top-level", "1e308", id="top-level-large-finite"),
+        pytest.param("top-level", "-12345678901234567890123.5e-300", id="top-level-long-decimal"),
+        pytest.param("nested", "18446744073709551616", id="nested-beyond-u64"),
+        pytest.param("oauth-unknown", "0.5", id="oauth-unknown-fraction"),
+        # Codex-only policies do not leak into Claude's standard-JSON reader.
+        pytest.param("top-level", "1e400", id="codex-number-range-not-applied"),
+        pytest.param("nested", '"\\ud800"', id="codex-surrogate-rule-not-applied"),
+    ],
+)
+def test_finite_and_codex_only_cases_keep_claude_credentials_healthy_everywhere(
+    tmp_path, monkeypatch, position, raw_value
+):
+    profile = _claude_profile(tmp_path, raw=_claude_credentials_with(position, raw_value))
+
+    inspection = inspect_claude_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+    validate_claude_host_session(str(profile))
+    assert _stand_preflight().check_claude_session(str(profile))[1] is True
+    assert _claude_diagnostic(monkeypatch, profile).availability is ExecutorAvailability.AVAILABLE
+
+
+def test_a_duplicate_key_is_not_a_claude_refusal(tmp_path):
+    """Codex's fail-closed duplicate-key rule stays Codex-only; standard parsers keep the last."""
+    valid = json.dumps(_claude_oauth())
+    profile = _claude_profile(tmp_path, raw=valid[:-1] + ', "future": 1, "future": 2}')
+
+    inspection = inspect_claude_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY

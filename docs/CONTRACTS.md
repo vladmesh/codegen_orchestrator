@@ -237,8 +237,9 @@ out), then the pinned `AuthDotJson`/`TokenData` shape, including both
 `AgentIdentityStorage` variants, parsed no more permissively than `serde_json`
 (a file the CLI cannot load, or a struct stored as an array, is `unusable`).
 Every reader parses JSON through one total boundary, `host_profile.load_json`:
-at most 1 MiB of strict UTF-8, nesting at most 127, and for Codex auth.json and
-JWT claims no duplicate keys, NaN/Infinity, lone surrogates or number the pinned
+standard JSON only (never `NaN`, `Infinity` or `-Infinity`), at most 1 MiB of
+strict UTF-8 and nesting at most 127 for every reader, plus, for Codex auth.json
+and JWT claims only, no duplicate keys, lone surrogates or number the pinned
 serde_json 1.0.149 reports as `NumberOutOfRange`; it returns one failure result
 instead of raising. Then comes the authoritative `auth_mode` (anything but the ChatGPT
 subscription mode is `unusable`), and only then ChatGPT token material. The

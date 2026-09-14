@@ -15,6 +15,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   profile the CLI would reject before choosing its auth mode is never reported healthy or admitted.
 - Profile JSON now parses through one total, bounded boundary that mirrors pinned serde_json number range and depth,
   so `1e400` or deep nesting maps to `unusable` instead of healthy or an uncaught exception.
+- Claude credentials containing the non-standard `NaN`, `Infinity` or `-Infinity` literals are now unusable, as the
+  standard JSON parser Claude Code uses rejects them, instead of being admitted as healthy.
 
 - Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
   and READY behind episode and identity fences, so operator edits win without partial state.
