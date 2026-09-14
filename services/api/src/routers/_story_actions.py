@@ -22,6 +22,7 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkCommand,
     EngineeringInfrastructureParkDisposition,
     EngineeringInfrastructureParkRead,
+    EngineeringInfrastructureRefusal,
     EngineeringInfrastructureRetryCommand,
     EngineeringInfrastructureRetryOutcome,
     EngineeringInfrastructureRetryRead,
@@ -38,11 +39,17 @@ from shared.models.story import Story
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
-from ..infrastructure_park import apply_infrastructure_park, infrastructure_conflict
+from ..infrastructure_park import (
+    SCAFFOLD_ERROR_KEY,
+    WORKSPACE_ENSURE_AUDIT_SUBJECT,
+    apply_infrastructure_park,
+    infrastructure_conflict,
+)
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
 from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
+from .projects_guards import load_locked_project
 
 logger = structlog.get_logger()
 
@@ -217,6 +224,13 @@ async def retry_infrastructure_attempt(
     validate_transition(task.status, TaskStatus.BACKLOG)
     validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
     _validate_transition(story.status, StoryStatus.IN_PROGRESS.value)
+    # Ladder: Task, Story, then Project, then Run. A failed ensure-workspace is
+    # recovered by letting ensure run again, which needs its recorded error gone.
+    project = (
+        await load_locked_project(db, task.project_id)
+        if task_park.refusal is EngineeringInfrastructureRefusal.WORKSPACE_ENSURE_FAILED
+        else None
+    )
     refused_run = await _locked_refused_run(story.id, task_park, db)
     if refused_run is not None and refused_run.status in _LIVE_RUN_STATUSES:
         await abort_paid_run_pre_handoff(
@@ -247,6 +261,13 @@ async def retry_infrastructure_attempt(
     story_metadata.pop(ENGINEERING_INFRASTRUCTURE_KEY)
     story.quarantine_reason = story_metadata or None
     _land_on(story, StoryStatus.IN_PROGRESS)
+
+    if project is not None and SCAFFOLD_ERROR_KEY in (project.config or {}):
+        # Only the recorded failure goes; the scheduler's next tick runs ensure
+        # again, and the task dispatches once `workspace_ready` is set.
+        project_config = dict(project.config)
+        project_config.pop(SCAFFOLD_ERROR_KEY)
+        project.config = project_config
 
     await db.commit()
     return _retry_read(
@@ -286,6 +307,9 @@ async def _prove_refusal(
     task, story, current iteration, attempt id, typed reason and message. A
     syntactically valid command alone never quarantines a story.
     """
+    if park.refusal is EngineeringInfrastructureRefusal.WORKSPACE_ENSURE_FAILED:
+        await _prove_workspace_ensure_failure(task, story, park, db)
+        return
     run = await _locked_refused_run(story.id, park, db)
     if run is not None:
         if park.detail != infrastructure_refusal_detail(park.refusal):
@@ -293,11 +317,33 @@ async def _prove_refusal(
                 "stale_attempt_fence", "The park detail does not match the refused Run."
             )
         return
+    await _prove_by_admission_audit(task, story, park, PAID_WORK_AUDIT_SUBJECT, db)
+
+
+async def _prove_workspace_ensure_failure(
+    task: Task, story: Story, park: EngineeringInfrastructurePark, db: AsyncSession
+) -> None:
+    """A failed ensure-workspace never has a Run: only admission's audit proves it.
+
+    The audit subject is its own, so neither a paid-work audit nor a refused Run
+    can prove this park, and this audit can prove no other refusal.
+    """
+    await _prove_by_admission_audit(task, story, park, WORKSPACE_ENSURE_AUDIT_SUBJECT, db)
+
+
+async def _prove_by_admission_audit(
+    task: Task,
+    story: Story,
+    park: EngineeringInfrastructurePark,
+    subject: str,
+    db: AsyncSession,
+) -> None:
+    """The unique committed admission audit of `subject` must match this park exactly."""
     audits = (
         await db.scalars(
             select(WorkAdmissionAudit)
             .where(
-                WorkAdmissionAudit.subject == PAID_WORK_AUDIT_SUBJECT,
+                WorkAdmissionAudit.subject == subject,
                 WorkAdmissionAudit.reference_id == park.attempt_id,
             )
             .with_for_update()

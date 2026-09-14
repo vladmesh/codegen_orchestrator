@@ -44,6 +44,7 @@ from shared.contracts.dto.engineering_execution import (
     ENGINEERING_INFRASTRUCTURE_KEY,
     EngineeringInfrastructurePark,
     EngineeringInfrastructureParkDisposition,
+    EngineeringInfrastructureRefusal,
     infrastructure_refusal_for_dispatch,
 )
 from shared.contracts.dto.project import (
@@ -52,6 +53,7 @@ from shared.contracts.dto.project import (
     require_initiating_run,
 )
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -59,9 +61,15 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionOutcome,
 )
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Run, Task
+from shared.models import Run, Task, WorkAdmissionAudit
 
-from .infrastructure_park import PARKABLE_TASK_HOPS, apply_infrastructure_park
+from .infrastructure_park import (
+    PARKABLE_TASK_HOPS,
+    SCAFFOLD_ERROR_KEY,
+    WORKSPACE_ENSURE_AUDIT_SUBJECT,
+    apply_infrastructure_park,
+    workspace_ensure_failure_detail,
+)
 from .work_admission import start_paid_run
 
 #: The orchestrator's own project. Its tasks are implemented by hand, so the
@@ -324,6 +332,84 @@ async def _park_infrastructure_refusal(
     )
 
 
+async def _workspace_refusal(
+    task: Task,
+    project_config: dict | None,
+    command: EngineeringDispatchCommand,
+    overrides: _Overrides,
+    db: AsyncSession,
+) -> EngineeringDispatchRead | None:
+    """Rung 3's workspace condition: ready, still being ensured, or failed to ensure."""
+    project_config = project_config or {}
+    if project_config.get("workspace_ready"):
+        return None
+    if project_config.get(SCAFFOLD_ERROR_KEY):
+        return await _park_workspace_ensure_failure(
+            task, project_config[SCAFFOLD_ERROR_KEY], command, overrides, db
+        )
+    return _refused(EngineeringDispatchRefusal.WORKSPACE_NOT_READY, overrides)
+
+
+async def _park_workspace_ensure_failure(
+    task: Task,
+    scaffold_error: object,
+    command: EngineeringDispatchCommand,
+    overrides: _Overrides,
+    db: AsyncSession,
+) -> EngineeringDispatchRead:
+    """Rung 3's park of a failed ensure-workspace: the one place that decides it.
+
+    However ensure failed — a failed clone or setup, or an exception in the
+    scaffolder's ensure job — the scaffolder records `scaffold_error` and the
+    scheduler stops re-triggering ensure. Every todo task of that project then
+    reaches this rung on its next tick, so this is where the failure becomes a
+    park, instead of a `workspace_not_ready` refusal repeated forever.
+
+    The park, its `workspace_ensure` audit (the committed fact the attempt id
+    names) and both owed notices land in the deciding transaction. A parked task
+    is no longer `todo` and a parked story is fenced on rung 2, so a later tick
+    or a redelivered scaffold message never parks or notifies twice. A task this
+    rung cannot park — not in a parkable status, or a story already handed to a
+    human — keeps the typed refusal and nothing is written.
+    """
+    from .routers._story_helpers import _get_story_for_update
+
+    refused = _refused(EngineeringDispatchRefusal.WORKSPACE_ENSURE_FAILED, overrides)
+    story = await _get_story_for_update(task.story_id, db) if task.story_id else None
+    if task.status not in PARKABLE_TASK_HOPS or (
+        story is not None and story.status == StoryStatus.WAITING_HUMAN_REVIEW.value
+    ):
+        return refused
+    attempt_id = f"ws-{uuid.uuid4().hex[:12]}"
+    park = EngineeringInfrastructurePark(
+        task_id=task.id,
+        attempt_id=attempt_id,
+        refusal=EngineeringInfrastructureRefusal.WORKSPACE_ENSURE_FAILED,
+        detail=workspace_ensure_failure_detail(scaffold_error),
+    )
+    disposition = await apply_infrastructure_park(
+        task, story, park, actor=command.origin.value, db=db
+    )
+    if disposition is EngineeringInfrastructureParkDisposition.PARKED:
+        db.add(
+            WorkAdmissionAudit(
+                subject=WORKSPACE_ENSURE_AUDIT_SUBJECT,
+                outcome=WorkAdmissionOutcome.DENIED.value,
+                reason=park.refusal.value,
+                reference_id=attempt_id,
+                message=park.detail,
+                command_payload={
+                    "type": RunType.ENGINEERING.value,
+                    "project_id": str(task.project_id),
+                    "task_id": task.id,
+                    "story_id": task.story_id,
+                    "run_metadata": {"iteration": task.current_iteration},
+                },
+            )
+        )
+    return refused.model_copy(update={"infrastructure_park": disposition})
+
+
 def _prior_attempt(
     task: Task, attempts: list[Run], initiating_run_id: str
 ) -> EngineeringDispatchRead | None:
@@ -475,8 +561,9 @@ async def admit_engineering_dispatch(
         return _refused(EngineeringDispatchRefusal.PROJECT_HAS_NO_INITIATING_RUN, overrides)
     if project.status == ProjectStatus.DRAFT.value:
         return _refused(EngineeringDispatchRefusal.PROJECT_NOT_SCAFFOLDED, overrides)
-    if not (project.config or {}).get("workspace_ready"):
-        return _refused(EngineeringDispatchRefusal.WORKSPACE_NOT_READY, overrides)
+    workspace_refusal = await _workspace_refusal(task, project.config, command, overrides, db)
+    if workspace_refusal is not None:
+        return workspace_refusal
 
     # --- rung 4: the attempt rows the last two conditions read --------------
     runs = await _lock_engineering_runs(sorted(locked), db)

@@ -102,6 +102,7 @@ For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks disp
 3. Sets `workspace_ready = True` in the project's config
 4. Until then the admission point refuses every dispatch of that project's tasks with `workspace_not_ready` — the check is a condition of the admission decision, on the project row it locks, not a flag the dispatcher reads
 5. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` when workspace is garbage-collected
+6. A failed ensure (a failed clone/setup or an exception in the ensure job) records `scaffold_error`, which stops the trigger; admission then parks each story with a todo task as `workspace_ensure_failed` instead of refusing it every tick, and the operator's `retry-infrastructure-attempt` removes `scaffold_error` so ensure runs again
 
 This prevents crashes when a workspace is GC'd between tasks in a story.
 

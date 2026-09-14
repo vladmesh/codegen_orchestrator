@@ -34,6 +34,14 @@ test('typed matching infrastructure evidence exposes one retry target', () => {
   })
 })
 
+test('a failed workspace ensure park exposes the same retry target', () => {
+  const workspace = { ...evidence, refusal: 'workspace_ensure_failed', attempt_id: 'ws-1' }
+  assert.equal(infrastructureRetryTarget(
+    { ...story, quarantine_reason: { engineering_infrastructure: workspace } },
+    [{ ...task, failure_metadata: { engineering_infrastructure: workspace } }],
+  )?.refusal, 'workspace_ensure_failed')
+})
+
 test('QA, product, budget, and mismatched task parks expose no retry target', () => {
   assert.equal(infrastructureRetryTarget({ ...story, quarantine_reason: { blocker: {} } }, [task]), null)
   assert.equal(infrastructureRetryTarget({ ...story, quarantine_reason: { reason: 'product' } }, [task]), null)

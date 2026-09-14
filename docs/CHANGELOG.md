@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- A failed ensure-workspace parks each story with a todo task as `workspace_ensure_failed` with owner and admin
+  notices, and the infrastructure retry clears `scaffold_error`, ending the silent `workspace_not_ready` loop.
+
 - The `qa_identity` role grants a non-root administrative account an effective ACL on the QA seat's `.ssh` and
   `authorized_keys` and proves it, so a deploy's `chmod` stops blanking the mask and parking QA on production.
 

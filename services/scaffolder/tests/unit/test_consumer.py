@@ -338,6 +338,72 @@ class TestProcessScaffoldJobEnsureMode:
         mock_api.update_project_config.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_ensure_failure_records_scaffold_error_and_keeps_config(
+        self, ensure_job_data, mock_redis, mock_api, mock_github
+    ):
+        """A failed ensure is recorded on the project; nothing else in config changes."""
+        mock_api.get_project.return_value = _make_project(
+            status="active", config={"modules": ["backend"], "tree": "."}
+        )
+        ensure_result = ScaffoldResult(success=False, error="Git clone failed: denied")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_ensure_workspace", return_value=ensure_result),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(ensure_job_data, mock_redis)
+
+        assert result == {"status": "failed", "error": "Git clone failed: denied"}
+        mock_api.update_project_config.assert_awaited_once_with(
+            "proj-123",
+            {"modules": ["backend"], "tree": ".", "scaffold_error": "Git clone failed: denied"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_ensure_exception_is_recorded_as_scaffold_error(
+        self, ensure_job_data, mock_redis, mock_api, mock_github
+    ):
+        """An exception inside ensure is a failure too, so admission can park on it."""
+        mock_api.get_project.return_value = _make_project(status="active", config={})
+        mock_github.get_repo.side_effect = RuntimeError("GitHub is unreachable")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_ensure_workspace") as mock_ensure,
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(ensure_job_data, mock_redis)
+
+        assert result == {"status": "failed", "error": "GitHub is unreachable"}
+        mock_ensure.assert_not_called()
+        mock_api.update_project_config.assert_awaited_once_with(
+            "proj-123", {"scaffold_error": "GitHub is unreachable"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_full_mode_exception_records_no_scaffold_error(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Full-mode exception behaviour is unchanged: nothing is recorded."""
+        mock_github.create_repo.side_effect = RuntimeError("GitHub is unreachable")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "failed"
+        mock_api.update_project_config.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_full_mode_calls_run_scaffold(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
