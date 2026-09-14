@@ -235,7 +235,12 @@ held shared lock on the stable lock inode is authoritative; a missing lock never
 proves no writer, and a torn read otherwise is `read_contended`, never logged
 out), then the pinned `AuthDotJson`/`TokenData` shape, including both
 `AgentIdentityStorage` variants, parsed no more permissively than `serde_json`
-(a file the CLI cannot load, or a struct stored as an array, is `unusable`), then the authoritative `auth_mode` (anything but the ChatGPT
+(a file the CLI cannot load, or a struct stored as an array, is `unusable`).
+Every reader parses JSON through one total boundary, `host_profile.load_json`:
+at most 1 MiB of strict UTF-8, nesting at most 127, and for Codex auth.json and
+JWT claims no duplicate keys, NaN/Infinity, lone surrogates or number the pinned
+serde_json 1.0.149 reports as `NumberOutOfRange`; it returns one failure result
+instead of raising. Then comes the authoritative `auth_mode` (anything but the ChatGPT
 subscription mode is `unusable`), and only then ChatGPT token material. The
 worker wrapper creates the lock inode at startup and the login recipe creates it
 before logging in. Timestamps are timezone-aware, each time fact names its

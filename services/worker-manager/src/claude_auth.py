@@ -5,7 +5,6 @@ provider, refreshes, copies or writes the profile.
 """
 
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 
 from shared.contracts.dto.executor_diagnostics import (
@@ -16,10 +15,13 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 
 from .host_profile import (
+    JSON_PARSE_FAILURE,
+    MAX_JSON_BYTES,
     MetadataError,
     ProfileFacts,
     ProfileInspection,
     epoch_instant,
+    load_json,
     logged_out,
     unusable,
 )
@@ -44,14 +46,15 @@ def inspect_claude_host_session(profile_path: str | None, *, now: datetime) -> P
     try:
         if not credentials.is_file() or credentials.stat().st_size == 0:
             return logged_out(_MISSING)
-        raw = credentials.read_text()
-    except OSError:
+        if credentials.stat().st_size > MAX_JSON_BYTES:
+            return unusable(_UNREADABLE)
+        raw = credentials.read_text(encoding="utf-8")
+    except (OSError, ValueError):
         return unusable(_UNREADABLE)
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return unusable(_UNREADABLE)
-    if not isinstance(data, dict):
+    # The same total boundary as Codex, with Python JSON semantics: Claude Code
+    # is not a serde_json reader, so only the bounds and totality are shared.
+    data = load_json(raw, pinned_serde_json=False)
+    if data is JSON_PARSE_FAILURE or not isinstance(data, dict):
         return unusable(_UNREADABLE)
 
     oauth = data.get("claudeAiOauth")

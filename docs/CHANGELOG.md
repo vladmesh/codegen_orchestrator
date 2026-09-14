@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   as the pinned CLI format; the Claude FIFO login recipe now works across two shells.
 - The Codex format check also validates the complete agent-identity record and serde_json's strict JSON rules, so a
   profile the CLI would reject before choosing its auth mode is never reported healthy or admitted.
+- Profile JSON now parses through one total, bounded boundary that mirrors pinned serde_json number range and depth,
+  so `1e400` or deep nesting maps to `unusable` instead of healthy or an uncaught exception.
 
 - Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
   and READY behind episode and identity fences, so operator edits win without partial state.

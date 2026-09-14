@@ -33,7 +33,14 @@ from shared.contracts.dto.executor_diagnostics import (
 from shared.contracts.vocab import AgentType
 from src.claude_auth import inspect_claude_host_session, validate_claude_host_session
 from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
-from src.host_profile import jwt_expiry
+from src.host_profile import (
+    JSON_PARSE_FAILURE,
+    MAX_JSON_BYTES,
+    MAX_JSON_NESTING,
+    jwt_expiry,
+    load_json,
+    serde_json_number_out_of_range,
+)
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -1415,3 +1422,193 @@ def test_every_pinned_auth_mode_value_loads_before_mode_precedence(tmp_path, aut
     inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
 
     assert inspection.refusal == refusal
+
+
+# --- one total JSON boundary: pinned serde_json 1.0.149 numbers and nesting -----------
+#
+# serde_json 1.0.149 as locked by Codex rust-v0.144.6, without `float_roundtrip`,
+# `arbitrary_precision` or `unbounded_depth`. A value parse fails with NumberOutOfRange
+# exactly when its non-roundtrip f64 computation reaches infinity, and with
+# RecursionLimitExceeded at nesting 128. Its `ignore_value` skips unknown fields by
+# syntax alone; this boundary applies both checks everywhere, which fails closed.
+
+_OUT_OF_RANGE_NUMBERS = [
+    pytest.param("1e400", id="exponent-1e400"),
+    pytest.param("-1e400", id="negative-overflow-1e400"),
+    pytest.param("1e309", id="power-just-past-the-table"),
+    pytest.param("2e308", id="finite-power-times-significand"),
+    pytest.param("2" + "0" * 308, id="integer-spelling-2e308"),
+    pytest.param("-2" + "0" * 308, id="negative-integer-spelling-2e308"),
+    pytest.param("1" + "0" * 400, id="integer-spelling-1e400"),
+    pytest.param("1.5e2147483648", id="i32-exponent-overflow"),
+    pytest.param("12345678901234567890123.5e300", id="long-integer-and-dropped-fraction"),
+]
+_IN_RANGE_NUMBERS = [
+    pytest.param("1e308", id="exponent-1e308"),
+    pytest.param("-1e308", id="negative-1e308"),
+    pytest.param("1.5e308", id="large-finite-decimal"),
+    pytest.param("1" + "0" * 308, id="integer-spelling-1e308"),
+    pytest.param("-1" + "0" * 308, id="negative-integer-spelling-1e308"),
+    pytest.param("18446744073709551615", id="u64-max"),
+    pytest.param("18446744073709551616", id="u64-max-plus-one"),
+    pytest.param("-9223372036854775808", id="i64-min"),
+    pytest.param("-9223372036854775809", id="i64-min-minus-one"),
+    pytest.param("123456789012345678901234567890", id="large-finite-integer"),
+    pytest.param("1e-400", id="underflow-to-zero"),
+    pytest.param("-1e-400", id="negative-underflow"),
+    pytest.param("0e2147483648", id="zero-significand-exponent-overflow"),
+    pytest.param("1e-2147483648", id="negative-exponent-overflow"),
+    pytest.param("0." + "0" * 400 + "1", id="long-fraction"),
+]
+
+
+def _auth_with_unknown(raw_value: str) -> bytes:
+    valid = json.dumps(_codex_auth())
+    return (valid[:-1] + ', "future": ' + raw_value + "}").encode()
+
+
+def _id_token_with_unknown(raw_value: str) -> str:
+    return _id_token_segments(_raw_b64(('{"future": ' + raw_value + "}").encode()))
+
+
+def _nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+@pytest.mark.parametrize("token", _OUT_OF_RANGE_NUMBERS)
+def test_an_out_of_range_number_in_auth_json_is_refused_by_admission_and_diagnostics(
+    tmp_path, monkeypatch, token
+):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    (profile / "auth.json").write_bytes(_auth_with_unknown(token))
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, profile, "Codex auth.json is unreadable or invalid JSON"
+    )
+
+
+@pytest.mark.parametrize("token", _OUT_OF_RANGE_NUMBERS)
+def test_an_out_of_range_number_in_jwt_claims_is_refused_by_admission_and_diagnostics(
+    tmp_path, monkeypatch, token
+):
+    auth = _codex_auth()
+    auth["tokens"]["id_token"] = _id_token_with_unknown(token)
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, _codex_profile(tmp_path, auth), FORMAT_REFUSAL
+    )
+
+
+@pytest.mark.parametrize("token", _IN_RANGE_NUMBERS)
+def test_a_finite_number_the_pinned_parser_accepts_keeps_the_session(tmp_path, token):
+    auth = _codex_auth()
+    auth["tokens"]["id_token"] = _id_token_with_unknown(token)
+    profile = _codex_profile(tmp_path, auth)
+    (profile / "auth.json").write_bytes(
+        (json.dumps(auth)[:-1] + ', "future": ' + token + "}").encode()
+    )
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+    validate_codex_host_session(str(profile))  # worker admission accepts it too
+
+
+@pytest.mark.parametrize(
+    ("token", "out_of_range"),
+    [*((param.values[0], True) for param in _OUT_OF_RANGE_NUMBERS)]
+    + [*((param.values[0], False) for param in _IN_RANGE_NUMBERS)],
+)
+def test_the_number_mirror_matches_the_pinned_serde_json_algorithm(token, out_of_range):
+    assert serde_json_number_out_of_range(token) is out_of_range
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_NESTING, 5000])
+def test_deeply_nested_unknown_auth_json_data_is_refused_everywhere(tmp_path, monkeypatch, depth):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    # The top-level object is one level; this value reaches `depth + 1`.
+    (profile / "auth.json").write_bytes(_auth_with_unknown(_nested(depth)))
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, profile, "Codex auth.json is unreadable or invalid JSON"
+    )
+
+
+@pytest.mark.parametrize("depth", [MAX_JSON_NESTING, 5000])
+def test_deeply_nested_unknown_jwt_claims_are_refused_everywhere(tmp_path, monkeypatch, depth):
+    auth = _codex_auth()
+    auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(depth))
+
+    _assert_refused_by_admission_and_diagnostics(
+        monkeypatch, _codex_profile(tmp_path, auth), FORMAT_REFUSAL
+    )
+
+
+def test_nesting_at_the_pinned_limit_keeps_the_session(tmp_path):
+    auth = _codex_auth()
+    auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(MAX_JSON_NESTING - 1))
+    profile = _codex_profile(tmp_path, auth)
+    (profile / "auth.json").write_bytes(
+        (json.dumps(auth)[:-1] + ', "future": ' + _nested(MAX_JSON_NESTING - 1) + "}").encode()
+    )
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"[" * 200_000, id="bytes-deeper-than-python-recursion"),
+        pytest.param("{" * 200_000, id="text-deeper-than-python-recursion"),
+        pytest.param(b"\xff", id="invalid-utf8"),
+        pytest.param(b"\xef\xbb\xbf{}", id="utf8-bom"),
+        pytest.param('{"a": 1, "a": 2}', id="duplicate-key"),
+        pytest.param("NaN", id="nan"),
+        pytest.param("[1e400]", id="out-of-range"),
+        pytest.param('"\\ud800"', id="lone-surrogate"),
+        pytest.param('{"a": [1, 2', id="truncated"),
+        pytest.param(b" " * (MAX_JSON_BYTES + 1), id="over-the-size-bound"),
+    ],
+)
+def test_the_json_boundary_returns_one_failure_result_and_never_raises(raw):
+    assert load_json(raw, pinned_serde_json=True) is JSON_PARSE_FAILURE
+
+
+def test_the_json_boundary_returns_parsed_values_distinct_from_failure():
+    assert load_json(b"null", pinned_serde_json=True) is None
+    assert load_json('{"n": 1e308, "i": 18446744073709551616}', pinned_serde_json=True) == {
+        "n": 1e308,
+        "i": 18446744073709551616,
+    }
+    # Claude's Python-JSON mode keeps its semantics but shares the bounds.
+    assert load_json('{"a": NaN}', pinned_serde_json=False) != JSON_PARSE_FAILURE
+    assert load_json("[" * 200_000, pinned_serde_json=False) is JSON_PARSE_FAILURE
+
+
+def test_jwt_expiry_never_raises_on_deep_or_out_of_range_claims():
+    header = _b64({"alg": "RS256"})
+
+    assert jwt_expiry(f"{header}.{_raw_b64(b'[' * 5000)}.c2ln") is None
+    assert jwt_expiry(f"{header}.{_raw_b64(b'{"exp": 1e400}')}.c2ln") is None
+
+
+def test_a_deeply_nested_claude_credentials_file_is_unusable_not_an_exception(tmp_path):
+    profile = _claude_profile(tmp_path, raw='{"claudeAiOauth": ' + _nested(5000) + "}")
+
+    inspection = inspect_claude_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+    with pytest.raises(RuntimeError, match="unreadable"):
+        validate_claude_host_session(str(profile))
+
+
+def test_every_reader_json_parse_goes_through_the_total_boundary():
+    root = Path(__file__).resolve().parents[2] / "src"
+    parses = {
+        name: (root / name).read_text().count("json.loads(")
+        for name in ("claude_auth.py", "codex_auth.py", "host_profile.py")
+    }
+
+    assert parses == {"claude_auth.py": 0, "codex_auth.py": 0, "host_profile.py": 1}

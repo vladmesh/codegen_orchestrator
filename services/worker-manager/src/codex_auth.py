@@ -24,7 +24,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import fcntl
-import json
 import os
 from pathlib import Path
 import re
@@ -42,12 +41,15 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 
 from .host_profile import (
+    JSON_PARSE_FAILURE,
     LAST_REFRESH_CLOCK_SKEW,
+    MAX_JSON_BYTES,
     MetadataError,
     ProfileFacts,
     ProfileInspection,
     iso_instant,
     jwt_expiry,
+    load_json,
     logged_out,
     read_contended,
     unusable,
@@ -227,6 +229,8 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
             return logged_out("Codex host session is missing a non-empty auth.json")
         if stat.S_IMODE(before.st_mode) != _PRIVATE_FILE_MODE:
             return unusable("Codex auth.json must have mode 0600")
+        if before.st_size > MAX_JSON_BYTES:
+            return unusable("Codex auth.json is unreadable or invalid JSON")
         # The CLI reads auth.json as a UTF-8 `String`; an undecodable file never loads.
         raw_auth = auth_path.read_text(encoding="utf-8")
         after = auth_path.stat()
@@ -238,9 +242,8 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
         after.st_mtime_ns,
     ):
         return None
-    try:
-        auth_data = _strict_json_loads(raw_auth)
-    except ValueError:
+    auth_data = _strict_json_loads(raw_auth)
+    if auth_data is JSON_PARSE_FAILURE:
         return unusable("Codex auth.json is unreadable or invalid JSON")
     if not isinstance(auth_data, dict):
         return unusable("Codex auth.json does not contain a cached session")
@@ -315,28 +318,13 @@ def _is_agent_identity_record(record: dict) -> bool:
     )
 
 
-def _reject_json_constant(name: str) -> object:
-    raise ValueError(f"serde_json does not accept {name}")
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
-    if len({key for key, _value in pairs}) != len(pairs):
-        raise ValueError("duplicate JSON object key")
-    return dict(pairs)
-
-
 def _strict_json_loads(raw: str | bytes) -> object:
-    """Parse JSON no more permissively than serde_json.
+    """The single JSON trust boundary for `auth.json` and decoded JWT claims.
 
-    Python also accepts NaN/Infinity, duplicate keys and lone surrogate escapes;
-    serde_json rejects the first and last, and derived structs reject duplicate
-    fields. Any duplicate key is refused here, which fails closed.
+    Delegates to the total `load_json` in pinned serde_json mode and returns
+    the parsed value or `JSON_PARSE_FAILURE`; it never raises.
     """
-    value = json.loads(
-        raw, object_pairs_hook=_unique_json_object, parse_constant=_reject_json_constant
-    )
-    json.dumps(value, ensure_ascii=False).encode("utf-8")  # UnicodeEncodeError on a lone surrogate
-    return value
+    return load_json(raw, pinned_serde_json=True)
 
 
 def _optional(data: dict, name: str, valid) -> bool:
@@ -391,11 +379,8 @@ def _is_cli_id_token(value: object) -> bool:
     # URL_SAFE_NO_PAD also rejects non-canonical trailing bits, which Python ignores.
     if base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != payload:
         return False
-    try:
-        claims = _strict_json_loads(decoded)
-    except ValueError:
-        return False
-    if not isinstance(claims, dict):
+    claims = _strict_json_loads(decoded)
+    if claims is JSON_PARSE_FAILURE or not isinstance(claims, dict):
         return False
     profile = claims.get("https://api.openai.com/profile")
     auth = claims.get("https://api.openai.com/auth")
