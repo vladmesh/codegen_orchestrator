@@ -30,6 +30,7 @@ import shutil
 import subprocess
 
 import jinja2
+from jinja2 import meta
 import pytest
 import yaml
 
@@ -60,6 +61,17 @@ def _tasks() -> list[dict]:
 
 def _task_named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task["name"] == name)
+
+
+def _strings(value) -> list[str]:
+    """Every scalar inside a task argument, each one a template on its own."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
 
 
 def _defaults() -> dict:
@@ -505,6 +517,48 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         assert f"not QA target profile {QA_TARGET_PROFILE_VERSION}" in result.stderr
         assert "qa_target_version=" not in result.stdout
 
+    # A host whose own name does not resolve makes sudo print this on stderr
+    # before it runs anything, and the account asks the wrapper through sudo.
+    SUDO_WARNING = "sudo: unable to resolve host vps-275301: Name or service not known"
+
+    @pytest.mark.parametrize("where", ["before", "after"])
+    def test_a_sudo_warning_beside_the_answer_is_not_an_old_wrapper(self, tmp_path, socket, where):
+        """What vps-275301's retrofit was refused on, with the right wrapper installed.
+
+        `sudo` writes that warning to stderr, the proof reads the answer with
+        stderr joined on — deliberately, because a wrapper that fails has
+        nothing else to say — and a host that cannot resolve its own name was
+        then reported as one carrying a wrapper of some other profile. The
+        wrapper's own line is what answers the question, so it is the line that
+        is read.
+        """
+        current = (
+            f"qa-docker profile={QA_TARGET_PROFILE_VERSION} "
+            f"verbs={' '.join(sorted(QA_DOCKER_REQUIRED_VERBS))}"
+        )
+        noisy = (
+            f"{self.SUDO_WARNING}\n{current}"
+            if where == "before"
+            else f"{current}\n{self.SUDO_WARNING}"
+        )
+
+        result = self._prove(self._target(tmp_path, wrapper_answer=noisy), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
+
+    def test_a_sudo_warning_does_not_excuse_a_wrapper_of_another_profile(self, tmp_path, socket):
+        """Tolerating the noise is not tolerating the answer underneath it."""
+        noisy = (
+            f"{self.SUDO_WARNING}\nqa-docker profile=0123456789abcdef "
+            f"verbs={' '.join(sorted(QA_DOCKER_REQUIRED_VERBS))}"
+        )
+
+        result = self._prove(self._target(tmp_path, wrapper_answer=noisy), socket)
+
+        assert result.returncode != 0
+        assert f"not QA target profile {QA_TARGET_PROFILE_VERSION}" in result.stderr
+
     def test_a_failed_proof_is_what_stops_the_identity_being_recorded(self):
         """The provisioner writes the label only when the playbook succeeded.
 
@@ -902,6 +956,99 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
         # — the same one `provision_software.yml` reports under, because one
         # marker has to find whichever play created the seat.
         assert "qa_identity_proof.stdout" in report["qa_identity_proof"]
+
+
+class TestAPlayReportReadsOnlyWhatThePlayHas:
+    """A play-level task is templated in the play's scope, never in a role's.
+
+    `include_role` is dynamic: the defaults of the role it pulls in live inside
+    the include and are gone again by the time a later play task is templated,
+    unless the include says `public`. The retrofit's own host report named
+    `qa_ssh_user` — a default of `qa_identity` — and both managed production
+    targets failed on it after every change the playbook makes had already been
+    applied, which is the worst place for a play to stop: the work is done and
+    the caller is told the host is broken.
+
+    So every variable a play-level report names is checked here against what the
+    play can actually see: its own vars and vars_files, the facts its tasks and
+    its roles' tasks register, and the defaults of the roles it includes
+    publicly. Registered variables are host facts and survive any include; role
+    defaults do not.
+    """
+
+    # Supplied by Ansible itself or by the caller's `-e`, not by this play.
+    AMBIENT = frozenset({"inventory_hostname", "ansible_facts", "item", "target_host"})
+
+    def _play(self, playbook: Path) -> dict:
+        return yaml.safe_load(playbook.read_text())[0]
+
+    def _role(self, name: str) -> Path:
+        return ANSIBLE_DIR / "roles" / name
+
+    @staticmethod
+    def _facts(task: dict) -> set[str]:
+        """What one task leaves behind as a host fact, which outlives any scope."""
+        names = {task["register"]} if "register" in task else set()
+        for key in ("set_fact", "ansible.builtin.set_fact"):
+            names |= {name for name in (task.get(key) or {}) if name != "cacheable"}
+        return names
+
+    def _visible(self, playbook: Path) -> set[str]:
+        play = self._play(playbook)
+        names = set(self.AMBIENT) | set(play.get("vars") or {})
+        for relative in play.get("vars_files") or []:
+            names |= set(yaml.safe_load((playbook.parent / relative).read_text()) or {})
+        for task in [
+            *(play.get("pre_tasks") or []),
+            *play["tasks"],
+            *(play.get("post_tasks") or []),
+        ]:
+            names |= self._facts(task)
+            include = task.get("ansible.builtin.include_role") or task.get("include_role")
+            if include is None:
+                continue
+            role_tasks = yaml.safe_load(
+                (self._role(include["name"]) / "tasks" / "main.yml").read_text()
+            )
+            for role_task in role_tasks or []:
+                names |= self._facts(role_task)
+            if not include.get("public"):
+                continue
+            for scope in ("defaults", "vars"):
+                source = self._role(include["name"]) / scope / "main.yml"
+                if source.exists():
+                    names |= set(yaml.safe_load(source.read_text()) or {})
+        return names
+
+    def _reports(self, playbook: Path):
+        for task in self._play(playbook)["tasks"]:
+            body = task.get("ansible.builtin.debug", task.get("debug"))
+            if body is not None:
+                yield task["name"], body
+
+    @pytest.mark.parametrize(
+        "playbook",
+        [SOFTWARE_PLAYBOOK, RETROFIT_PLAYBOOK],
+        ids=lambda path: path.name,
+    )
+    def test_every_variable_a_play_level_report_names_is_in_scope(self, playbook):
+        visible = self._visible(playbook)
+
+        env = jinja2.Environment(autoescape=False)  # noqa: S701
+
+        for name, body in self._reports(playbook):
+            referenced: set[str] = set()
+            for text in _strings(body):
+                referenced |= meta.find_undeclared_variables(env.parse(text))
+            missing = sorted(referenced - visible)
+
+            assert not missing, f"{playbook.name}: {name!r} reads {missing}, which the play has not"
+
+    def test_the_retrofit_report_reads_the_role_defaults_through_a_public_include(self):
+        """The fix, stated where a later edit would have to undo it deliberately."""
+        include = _task_named(self._play(RETROFIT_PLAYBOOK)["tasks"], "Create the QA run identity")
+
+        assert include["ansible.builtin.include_role"]["public"] is True
 
 
 class TestTheTargetRefusesWhatWrites:

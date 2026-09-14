@@ -73,6 +73,21 @@ def test_the_current_wrapper_answer_is_accepted():
     assert wrapper_answer_problem(answer) is None
 
 
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_sudo_warning_beside_the_answer_is_not_an_old_wrapper(where):
+    """A target that cannot resolve its own name still answers for its wrapper.
+
+    `sudo` prints `unable to resolve host ...` around the command it runs, and
+    the retrofit of vps-275301 was refused for it while the current wrapper was
+    installed. The wrapper's own line is what names the profile.
+    """
+    warning = "sudo: unable to resolve host vps-275301: Name or service not known"
+    current = f"qa-docker profile={QA_TARGET_PROFILE_VERSION} verbs={_VERBS}"
+    answer = f"{warning}\n{current}" if where == "before" else f"{current}\n{warning}"
+
+    assert wrapper_answer_problem(answer) is None
+
+
 @pytest.mark.parametrize(
     ("answer", "names"),
     [
