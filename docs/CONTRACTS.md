@@ -1462,8 +1462,8 @@ seat that answers anything else, then prints `qa_target_version=<version>`.
 
 The receipt is `servers.qa_target_version` and `servers.qa_target_proved_at`.
 Only `POST /api/servers/{handle}/target-readiness` (`TargetReadinessReport` →
-`TargetReadinessRead`) writes it; `qa_ssh_user`, `provisioning_phase` and PATCH
-never do, and the endpoint refuses a receipt for any other profile with 409.
+`TargetReadinessRead`) and the provisioning finalizer below write it;
+`qa_ssh_user`, `provisioning_phase` and PATCH never do.
 Every report carries the `TargetIdentity` it was proved over (`ssh_user`,
 `host`, `public_ip`, stored-key fingerprint); under the server row lock the
 endpoint refuses, with 409 and no change, a verdict whose identity is not the
@@ -1494,17 +1494,26 @@ administrative account; the software play runs through that identity, and its
 and the handler refuses a proof whose fingerprint or account is not the one it
 persists and the row administers.
 
-Fresh provisioning records its receipt at the provisioning-success boundary. The
-software play's proof travels as a typed `QATargetProof` to
-`handle_provisioning_success`, which validates and persists the generated key,
-writes the complete phase, and sends `POST
-/api/servers/{handle}/provisioning-attempts/reset` a required `QATargetReceipt`
-bound to the just-persisted identity. Under the row lock, only for the current
-episode, the endpoint records the receipt as a ready verdict and closes the
-episode as READY in one transaction; another identity or profile is 409 and
-leaves the episode open, and a superseded attempt records neither. A missing
-proof, a failed completion write, a changed identity or a failed receipt write
-marks the server `error` with a `provisioning_failed` incident instead.
+Fresh, existing-access and reinstall success all end at `POST
+/api/servers/{handle}/provisioning/finalize` (`ProvisioningFinalization` →
+`ProvisioningFinalizationResult`). The command carries the attempt and episode,
+the pre-proof row identity, the exact generated-key identity proved by login and
+the software play, raw generated key material, the complete-phase labels and the
+matching `QATargetReceipt`. The response never carries key material.
+
+The API locks the server row and checks the episode, pre-proof identity, proved
+user/host/address/fingerprint, current profile, exact completion labels, parsed
+key fingerprint and receipt agreement before its first mutation. It then
+encrypts the normalized key, merges the completion labels, records the receipt,
+settles the current provisioning episode and only matching readiness evidence,
+resets the active episode and writes READY in one transaction. A stale fence or
+operator identity edit returns typed `conflict`; malformed or inconsistent
+material is `contained`; neither writes anything. The last successful episode
+fence remains on the row solely to make an exact redelivery `idempotent`; a
+redelivery with different key identity, labels, proof or receipt conflicts.
+There is no worker-side key PATCH, completion-label PATCH, read-back or reset.
+An unknown HTTP outcome leaves the provisioner stream entry unacknowledged;
+redelivery asks the same idempotent finalizer instead of writing a failure.
 
 `shared/server_admission.py` refuses a managed row with `target_not_ready` while
 a readiness failure phase is recorded, and with `qa_target_receipt_missing` or

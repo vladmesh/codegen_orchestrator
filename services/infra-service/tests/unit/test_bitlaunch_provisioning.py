@@ -25,6 +25,7 @@ def _target(**overrides):
         host="203.0.113.19",
         status="pending_setup",
         ssh_user="deploy",
+        ssh_key_fingerprint="SHA256:creation-key",
         os_template=None,
         is_managed=True,
         provider=overrides.pop("provider", "bitlaunch"),

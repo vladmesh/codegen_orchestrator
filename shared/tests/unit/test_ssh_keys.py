@@ -13,6 +13,43 @@ from shared.ssh_keys import (
 )
 
 
+def test_provisioning_finalization_contract_binds_the_receipt_to_the_proved_identity():
+    from datetime import UTC, datetime
+
+    from pydantic import ValidationError
+    import pytest
+
+    from shared.contracts.dto.server import (
+        ProvisioningFinalization,
+        QATargetReceipt,
+        TargetIdentity,
+    )
+
+    identity = TargetIdentity(
+        ssh_user="root",
+        host="srv.example.test",
+        public_ip="203.0.113.1",
+        ssh_key_fingerprint="SHA256:generated",
+    )
+    receipt = QATargetReceipt(
+        profile_version="0123456789abcdef",
+        proved_at=datetime.now(UTC),
+        identity=identity.model_copy(update={"public_ip": "198.51.100.1"}),
+    )
+
+    with pytest.raises(ValidationError, match="receipt identity must equal proved identity"):
+        ProvisioningFinalization(
+            attempt_number=1,
+            episode_id="episode-1",
+            expected_identity=identity.model_copy(update={"ssh_key_fingerprint": None}),
+            proved_identity=identity,
+            generated_key_fingerprint="SHA256:generated",
+            generated_private_key="secret",
+            complete_labels={"provisioning_phase": "complete"},
+            qa_target_receipt=receipt,
+        )
+
+
 def _keygen(tmp_path: Path, name: str, *args: str) -> tuple[str, str]:
     """A real `ssh-keygen` pair: the private key text and `ssh-keygen -l` fingerprint."""
     path = tmp_path / name

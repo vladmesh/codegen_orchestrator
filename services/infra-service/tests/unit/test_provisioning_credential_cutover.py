@@ -20,6 +20,7 @@ os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 from shared.contracts.dto.incident import IncidentType
+from shared.contracts.dto.server import TargetIdentity
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.ssh_keys import normalize_admin_private_key
 from shared.tests.ssh_key_fixtures import fleet_private_key
@@ -89,7 +90,20 @@ def node_env(monkeypatch):
 async def _existing_access(plays: Plays, *, manager=None, **bootstrap) -> dict:
     node = ProvisionerNode(ssh_manager=manager or _manager(), ansible_runner=plays.runner)
     return await node._run_existing_access_path(
-        "vps-9", "203.0.113.9", "root", 1, "episode-1", False, {"errors": []}, **bootstrap
+        "vps-9",
+        "203.0.113.9",
+        "root",
+        1,
+        "episode-1",
+        False,
+        {"errors": []},
+        TargetIdentity(
+            ssh_user="root",
+            host="vps-9.example.test",
+            public_ip="203.0.113.9",
+            ssh_key_fingerprint=None,
+        ),
+        **bootstrap,
     )
 
 
@@ -244,6 +258,12 @@ class TestTheReinstallRoute:
             os_template="ubuntu",
             provisioning_attempts=1,
             provisioning_episode_id="episode-1",
+            expected_identity=TargetIdentity(
+                ssh_user="root",
+                host="vps-9.example.test",
+                public_ip="203.0.113.9",
+                ssh_key_fingerprint=None,
+            ),
             is_recovery=False,
             state={"errors": []},
         )

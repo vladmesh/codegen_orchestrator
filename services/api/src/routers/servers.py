@@ -13,8 +13,9 @@ from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservation,
     ProvisioningAttemptReservationResult,
-    ProvisioningAttemptReset,
-    ProvisioningAttemptResetResult,
+    ProvisioningFinalization,
+    ProvisioningFinalizationDisposition,
+    ProvisioningFinalizationResult,
     ServerStatus,
     SSHUser,
     TargetIdentity,
@@ -25,6 +26,7 @@ from shared.contracts.queues.provisioner import ProvisionerMessage, Provisioning
 from shared.crypto import SecretsCipher
 from shared.models import Application, Incident, PortAllocation, Server
 from shared.provisioning_policy import provider_operation_is_authorized
+from shared.qa_identity import provisioning_complete_labels
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.queues import PROVISIONER_QUEUE
 from shared.redis.client import RedisStreamClient
@@ -221,52 +223,105 @@ async def reserve_provisioning_attempt(
 
 
 @router.post(
-    "/{handle}/provisioning-attempts/reset",
-    response_model=ProvisioningAttemptResetResult,
+    "/{handle}/provisioning/finalize",
+    response_model=ProvisioningFinalizationResult,
 )
-async def reset_provisioning_attempts(
+async def finalize_provisioning(
     handle: str,
-    request: ProvisioningAttemptReset,
+    request: ProvisioningFinalization,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
-) -> ProvisioningAttemptResetResult:
-    """Close the current episode as READY together with the receipt it earned.
-
-    Under the row lock: an attempt that is no longer current closes nothing and
-    records nothing. For the current attempt the receipt must name the current
-    profile and the row's present connection identity — the key the success
-    handler just persisted — or the request is refused with 409 and the episode
-    stays open. Otherwise the receipt is recorded as a ready verdict and the
-    episode closes as READY in the same transaction, so a READY row never lacks
-    the receipt of the provisioning that made it ready, and a superseded attempt
-    never publishes one.
-    """
+) -> ProvisioningFinalizationResult:
+    """Commit the generated credential, proof and READY transition as one write."""
     server = await db.get(Server, handle, with_for_update=True)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+
+    def answer(
+        disposition: ProvisioningFinalizationDisposition, reason: str | None = None
+    ) -> ProvisioningFinalizationResult:
+        return ProvisioningFinalizationResult(
+            disposition=disposition,
+            reason=reason,
+            provisioning_attempts=server.provisioning_attempts,
+            episode_id=server.provisioning_episode_id,
+        )
+
+    current_identity = TargetIdentity(
+        ssh_user=server.ssh_user,
+        host=server.host,
+        public_ip=server.public_ip,
+        ssh_key_fingerprint=_stored_key_fingerprint(server),
+    )
+    same_finalized_fence = (
+        server.finalized_provisioning_attempt == request.attempt_number
+        and server.finalized_provisioning_episode_id == request.episode_id
+    )
+    if same_finalized_fence:
+        proved_at = request.qa_target_receipt.proved_at.astimezone(UTC).replace(tzinfo=None)
+        exact_duplicate = (
+            current_identity == request.proved_identity
+            and request.generated_key_fingerprint == current_identity.ssh_key_fingerprint
+            and server.qa_target_version == request.qa_target_receipt.profile_version
+            and server.qa_target_proved_at == proved_at
+            and all((server.labels or {}).get(k) == v for k, v in request.complete_labels.items())
+        )
+        return answer(
+            ProvisioningFinalizationDisposition.IDEMPOTENT
+            if exact_duplicate
+            else ProvisioningFinalizationDisposition.CONFLICT,
+            None if exact_duplicate else "finalized_delivery_mismatch",
+        )
     if (
         server.provisioning_attempts != request.attempt_number
         or server.provisioning_episode_id != request.episode_id
     ):
-        return ProvisioningAttemptResetResult(
-            reset=False,
-            provisioning_attempts=server.provisioning_attempts,
-            episode_id=server.provisioning_episode_id,
+        return answer(ProvisioningFinalizationDisposition.CONFLICT, "episode_superseded")
+    if current_identity != request.expected_identity:
+        return answer(ProvisioningFinalizationDisposition.CONFLICT, "expected_identity_changed")
+    if (
+        request.proved_identity.ssh_user,
+        request.proved_identity.host,
+        request.proved_identity.public_ip,
+    ) != (server.ssh_user, server.host, server.public_ip):
+        return answer(ProvisioningFinalizationDisposition.CONFLICT, "proved_identity_mismatch")
+    if request.complete_labels != provisioning_complete_labels():
+        return answer(ProvisioningFinalizationDisposition.CONTAINED, "completion_labels_invalid")
+    if request.qa_target_receipt.profile_version != QA_TARGET_PROFILE_VERSION:
+        return answer(ProvisioningFinalizationDisposition.CONFLICT, "profile_version_mismatch")
+    try:
+        generated_key = normalize_admin_private_key(request.generated_private_key)
+    except AdminKeyRejectedError as exc:
+        return answer(
+            ProvisioningFinalizationDisposition.CONTAINED,
+            f"generated_key_{exc.rejection.value}",
         )
+    if generated_key.fingerprint != request.generated_key_fingerprint:
+        return answer(ProvisioningFinalizationDisposition.CONTAINED, "generated_key_mismatch")
+
+    # Every check above precedes the first mutation. Everything below is covered
+    # by this request's transaction and the server-row lock.
+    server.ssh_key_enc = SecretsCipher().encrypt(generated_key.text)
+    server.ssh_key_fingerprint = generated_key.fingerprint
+    server.labels = dict(server.labels or {}) | request.complete_labels
     receipt = request.qa_target_receipt
-    _refuse_a_verdict_it_cannot_record(
-        server, identity=receipt.identity, profile_version=receipt.profile_version
-    )
     await _record_ready_verdict(
-        db, server, profile_version=receipt.profile_version, proved_at=receipt.proved_at
+        db,
+        server,
+        profile_version=receipt.profile_version,
+        proved_at=receipt.proved_at,
+        repaired_identity=request.expected_identity,
+        settle_provisioning_episode=True,
     )
+    server.finalized_provisioning_attempt = request.attempt_number
+    server.finalized_provisioning_episode_id = request.episode_id
     server.provisioning_attempts = 0
     server.provisioning_episode_id = None
     server.status = ServerStatus.READY.value
     # This write owns the status now; a readiness park no longer does.
     server.target_readiness_parked_status = None
     await db.commit()
-    return ProvisioningAttemptResetResult(reset=True, provisioning_attempts=0, episode_id=None)
+    return answer(ProvisioningFinalizationDisposition.FINALIZED)
 
 
 @router.get("/{handle}/ssh-key")
@@ -467,7 +522,13 @@ async def _active_incidents(
 
 
 async def _record_ready_verdict(
-    db: AsyncSession, server: Server, *, profile_version: str, proved_at: datetime
+    db: AsyncSession,
+    server: Server,
+    *,
+    profile_version: str,
+    proved_at: datetime,
+    repaired_identity: TargetIdentity,
+    settle_provisioning_episode: bool = False,
 ) -> None:
     """Write the receipt and resolve exactly the evidence a proof of this profile repairs.
 
@@ -478,11 +539,16 @@ async def _record_ready_verdict(
     now = datetime.now(UTC).replace(tzinfo=None)
     server.qa_target_version = profile_version
     server.qa_target_proved_at = proved_at.astimezone(UTC).replace(tzinfo=None)
+    repaired = repaired_identity.model_dump(mode="json")
     for incident in await _active_incidents(db, server.handle, IncidentType.TARGET_NOT_READY):
-        incident.status = IncidentStatus.RESOLVED.value
-        incident.resolved_at = now
+        if (incident.details or {}).get("identity") == repaired:
+            incident.status = IncidentStatus.RESOLVED.value
+            incident.resolved_at = now
     for incident in await _active_incidents(db, server.handle, IncidentType.PROVISIONING_FAILED):
-        if (incident.details or {}).get("step") == _QA_IDENTITY_REFUSAL_STEP:
+        if settle_provisioning_episode or (
+            (incident.details or {}).get("step") == _QA_IDENTITY_REFUSAL_STEP
+            and (incident.details or {}).get("server_ip") == repaired_identity.public_ip
+        ):
             incident.status = IncidentStatus.RESOLVED.value
             incident.resolved_at = now
     if (
@@ -666,7 +732,11 @@ async def record_target_readiness(
     incident_id: int | None = None
     if report.ready:
         await _record_ready_verdict(
-            db, server, profile_version=report.profile_version, proved_at=report.proved_at
+            db,
+            server,
+            profile_version=report.profile_version,
+            proved_at=report.proved_at,
+            repaired_identity=report.identity,
         )
     else:
         active = await _active_incidents(db, handle, IncidentType.TARGET_NOT_READY)
@@ -684,6 +754,7 @@ async def record_target_readiness(
             "revision": report.revision,
             "server_handle": handle,
             "repair": f"python -m src.provisioner.qa_identity_retrofit {handle}",
+            "identity": report.identity.model_dump(mode="json"),
         }
         if readiness_incident is None:
             readiness_incident = Incident(

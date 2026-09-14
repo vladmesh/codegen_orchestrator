@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
+  and READY behind episode and identity fences, so operator edits win without partial state.
 - Provisioning uses a bootstrap credential only for the access play, then proves the generated key by login and
   runs the proof through it, so a READY receipt never names a key that has not connected.
 

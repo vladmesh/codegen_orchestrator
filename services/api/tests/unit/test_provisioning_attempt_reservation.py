@@ -3,13 +3,12 @@ import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import HTTPException
-import pytest
 from sqlalchemy.sql import Select
 
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservation,
-    ProvisioningAttemptReset,
+    ProvisioningFinalization,
+    ProvisioningFinalizationDisposition,
     QATargetReceipt,
     TargetIdentity,
 )
@@ -17,30 +16,39 @@ from shared.crypto import SecretsCipher
 from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.ssh_keys import normalize_admin_private_key
 from shared.tests.ssh_key_fixtures import fleet_private_key
-from src.routers.servers import reserve_provisioning_attempt, reset_provisioning_attempts
+from src.routers.servers import finalize_provisioning, reserve_provisioning_attempt
 
 FLEET_KEY = fleet_private_key()
-IDENTITY = TargetIdentity(
+GENERATED_KEY = fleet_private_key()
+EXPECTED_IDENTITY = TargetIdentity(
     ssh_user="root",
     host="srv-1.example.test",
     public_ip="203.0.113.1",
     ssh_key_fingerprint=normalize_admin_private_key(FLEET_KEY).fingerprint,
 )
+PROVED_IDENTITY = EXPECTED_IDENTITY.model_copy(
+    update={"ssh_key_fingerprint": normalize_admin_private_key(GENERATED_KEY).fingerprint}
+)
 
 
-def _reset(attempt_number: int, episode_id: str, **receipt) -> ProvisioningAttemptReset:
-    return ProvisioningAttemptReset(
-        attempt_number=attempt_number,
-        episode_id=episode_id,
-        qa_target_receipt=QATargetReceipt(
-            **{
-                "profile_version": QA_TARGET_PROFILE_VERSION,
-                "proved_at": datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
-                "identity": IDENTITY,
-                **receipt,
-            }
-        ),
+def _finalization(attempt_number: int, episode_id: str, **overrides) -> ProvisioningFinalization:
+    receipt = QATargetReceipt(
+        profile_version=QA_TARGET_PROFILE_VERSION,
+        proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+        identity=PROVED_IDENTITY,
     )
+    values = {
+        "attempt_number": attempt_number,
+        "episode_id": episode_id,
+        "expected_identity": EXPECTED_IDENTITY,
+        "proved_identity": PROVED_IDENTITY,
+        "generated_key_fingerprint": PROVED_IDENTITY.ssh_key_fingerprint,
+        "generated_private_key": GENERATED_KEY,
+        "complete_labels": {"provisioning_phase": "complete", "qa_ssh_user": "qa-observer"},
+        "qa_target_receipt": receipt,
+    }
+    values.update(overrides)
+    return ProvisioningFinalization(**values)
 
 
 async def test_reservation_uses_conditional_atomic_increment():
@@ -88,14 +96,17 @@ class InMemoryAttemptSession:
             provisioning_attempts=attempts,
             provisioning_episode_id=None,
             status="provisioning",
-            ssh_user=IDENTITY.ssh_user,
-            host=IDENTITY.host,
-            public_ip=IDENTITY.public_ip,
+            ssh_user=EXPECTED_IDENTITY.ssh_user,
+            host=EXPECTED_IDENTITY.host,
+            public_ip=EXPECTED_IDENTITY.public_ip,
             ssh_key_enc=SecretsCipher().encrypt(FLEET_KEY),
             qa_target_version=None,
             qa_target_proved_at=None,
             target_readiness_failure_phase=None,
             target_readiness_parked_status=None,
+            labels={},
+            finalized_provisioning_attempt=None,
+            finalized_provisioning_episode_id=None,
         )
         self.incidents: list[SimpleNamespace] = []
         self.commits = 0
@@ -139,12 +150,12 @@ async def test_successful_episode_resets_persisted_attempts_and_next_reservation
     db.server.provisioning_episode_id = "episode-1"
     monkeypatch.setattr("src.routers.servers.uuid4", lambda: "episode-2")
 
-    reset = await reset_provisioning_attempts("srv-1", _reset(2, "episode-1"), db, None)
+    reset = await finalize_provisioning("srv-1", _finalization(2, "episode-1"), db, None)
     next_attempt = await reserve_provisioning_attempt(
         "srv-1", ProvisioningAttemptReservation(max_attempts=3), db, None
     )
 
-    assert reset.reset is True
+    assert reset.disposition is ProvisioningFinalizationDisposition.FINALIZED
     assert db.server.provisioning_attempts == 1
     assert db.server.status == "ready"
     assert next_attempt.reserved is True
@@ -156,7 +167,10 @@ async def test_the_episode_closes_as_ready_together_with_its_receipt():
     db = InMemoryAttemptSession(attempts=1)
     db.server.provisioning_episode_id = "episode-1"
     readiness = SimpleNamespace(
-        incident_type="target_not_ready", status="detected", resolved_at=None, details={}
+        incident_type="target_not_ready",
+        status="detected",
+        resolved_at=None,
+        details={"identity": EXPECTED_IDENTITY.model_dump(mode="json")},
     )
     software = SimpleNamespace(
         incident_type="provisioning_failed",
@@ -167,38 +181,56 @@ async def test_the_episode_closes_as_ready_together_with_its_receipt():
     db.incidents = [readiness, software]
     db.server.target_readiness_failure_phase = "admin_login"
 
-    reset = await reset_provisioning_attempts("srv-1", _reset(1, "episode-1"), db, None)
+    reset = await finalize_provisioning("srv-1", _finalization(1, "episode-1"), db, None)
 
-    assert reset.reset is True
+    assert reset.disposition is ProvisioningFinalizationDisposition.FINALIZED
     assert db.server.status == "ready"
     assert db.server.qa_target_version == QA_TARGET_PROFILE_VERSION
     assert db.server.qa_target_proved_at == datetime(2026, 9, 14, 8, 0)
     assert db.server.target_readiness_failure_phase is None
     assert readiness.status == "resolved"
-    # A software failure of an earlier attempt is the provisioner's to resolve.
-    assert software.status == "detected"
+    # The current successful episode settles its active provisioning failure in
+    # the same commit rather than through a later worker-side call.
+    assert software.status == "resolved"
     assert db.commits == 1
 
 
-@pytest.mark.parametrize(
-    "receipt",
-    [
-        {"identity": IDENTITY.model_copy(update={"ssh_key_fingerprint": "SHA256:another"})},
-        {"identity": IDENTITY.model_copy(update={"public_ip": "198.51.100.1"})},
-        {"profile_version": "0123456789abcdef"},
-    ],
-    ids=["another_key", "another_address", "stale_profile"],
-)
-async def test_a_receipt_for_another_identity_or_profile_closes_nothing(receipt):
+async def test_a_changed_expected_identity_closes_nothing():
     db = InMemoryAttemptSession(attempts=1)
     db.server.provisioning_episode_id = "episode-1"
 
-    with pytest.raises(HTTPException) as refused:
-        await reset_provisioning_attempts("srv-1", _reset(1, "episode-1", **receipt), db, None)
+    result = await finalize_provisioning(
+        "srv-1",
+        _finalization(
+            1,
+            "episode-1",
+            expected_identity=EXPECTED_IDENTITY.model_copy(update={"public_ip": "198.51.100.1"}),
+        ),
+        db,
+        None,
+    )
 
-    assert refused.value.status_code == 409
+    assert result.disposition is ProvisioningFinalizationDisposition.CONFLICT
     assert db.server.status == "provisioning"
     assert db.server.provisioning_attempts == 1
+    assert db.server.qa_target_version is None
+    assert db.commits == 0
+
+
+async def test_a_stale_profile_closes_nothing():
+    db = InMemoryAttemptSession(attempts=1)
+    db.server.provisioning_episode_id = "episode-1"
+    receipt = QATargetReceipt(
+        profile_version="0123456789abcdef",
+        proved_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+        identity=PROVED_IDENTITY,
+    )
+
+    result = await finalize_provisioning(
+        "srv-1", _finalization(1, "episode-1", qa_target_receipt=receipt), db, None
+    )
+
+    assert result.disposition is ProvisioningFinalizationDisposition.CONFLICT
     assert db.server.qa_target_version is None
     assert db.commits == 0
 
@@ -207,9 +239,9 @@ async def test_old_success_cannot_reset_newer_reserved_attempt():
     db = InMemoryAttemptSession(attempts=2)
     db.server.provisioning_episode_id = "episode-1"
 
-    reset = await reset_provisioning_attempts("srv-1", _reset(1, "episode-1"), db, None)
+    reset = await finalize_provisioning("srv-1", _finalization(1, "episode-1"), db, None)
 
-    assert reset.reset is False
+    assert reset.disposition is ProvisioningFinalizationDisposition.CONFLICT
     assert db.server.provisioning_attempts == 2
     # A superseded attempt publishes no receipt.
     assert db.server.qa_target_version is None
@@ -223,20 +255,63 @@ async def test_stale_success_cannot_reset_first_attempt_of_a_new_episode(monkeyp
     old_attempt = await reserve_provisioning_attempt(
         "srv-1", ProvisioningAttemptReservation(max_attempts=3), db, None
     )
-    await reset_provisioning_attempts("srv-1", _reset(1, old_attempt.episode_id), db, None)
+    await finalize_provisioning("srv-1", _finalization(1, old_attempt.episode_id), db, None)
     new_attempt = await reserve_provisioning_attempt(
         "srv-1", ProvisioningAttemptReservation(max_attempts=3), db, None
     )
     db.server.status = "provisioning"
     db.server.qa_target_version = None
-    stale_reset = await reset_provisioning_attempts(
-        "srv-1", _reset(1, old_attempt.episode_id), db, None
+    stale_reset = await finalize_provisioning(
+        "srv-1", _finalization(1, old_attempt.episode_id), db, None
     )
 
     assert new_attempt.provisioning_attempts == 1
     assert new_attempt.episode_id == "episode-new"
-    assert stale_reset.reset is False
+    assert stale_reset.disposition is ProvisioningFinalizationDisposition.CONFLICT
     assert db.server.provisioning_attempts == 1
     assert db.server.provisioning_episode_id == "episode-new"
     assert db.server.status == "provisioning"
     assert db.server.qa_target_version is None
+
+
+async def test_malformed_generated_key_is_contained_before_any_mutation():
+    db = InMemoryAttemptSession(attempts=1)
+    db.server.provisioning_episode_id = "episode-1"
+    encrypted_before = db.server.ssh_key_enc
+
+    result = await finalize_provisioning(
+        "srv-1",
+        _finalization(1, "episode-1", generated_private_key="not a private key"),
+        db,
+        None,
+    )
+
+    assert result.disposition is ProvisioningFinalizationDisposition.CONTAINED
+    assert result.reason == "generated_key_not_openssh_private_key"
+    assert db.server.ssh_key_enc == encrypted_before
+    assert db.server.labels == {}
+    assert db.server.qa_target_version is None
+    assert db.server.provisioning_attempts == 1
+    assert db.commits == 0
+
+
+async def test_exact_redelivery_is_idempotent_and_an_altered_redelivery_conflicts():
+    db = InMemoryAttemptSession(attempts=1)
+    db.server.provisioning_episode_id = "episode-1"
+    command = _finalization(1, "episode-1")
+
+    first = await finalize_provisioning("srv-1", command, db, None)
+    duplicate = await finalize_provisioning("srv-1", command, db, None)
+    altered = await finalize_provisioning(
+        "srv-1",
+        command.model_copy(update={"complete_labels": {"provisioning_phase": "different"}}),
+        db,
+        None,
+    )
+
+    assert first.disposition is ProvisioningFinalizationDisposition.FINALIZED
+    assert duplicate.disposition is ProvisioningFinalizationDisposition.IDEMPOTENT
+    assert altered.disposition is ProvisioningFinalizationDisposition.CONFLICT
+    assert altered.reason == "finalized_delivery_mismatch"
+    assert db.commits == 1
+    assert SecretsCipher().decrypt(db.server.ssh_key_enc) == GENERATED_KEY

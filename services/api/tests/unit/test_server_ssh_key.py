@@ -580,6 +580,45 @@ def _incident(incident_type: str, step: str, **overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+@pytest.mark.asyncio
+async def test_finalizer_validation_never_echoes_generated_private_key(client_for):
+    secret = "-----BEGIN OPENSSH PRIVATE KEY-----\nTOP-SECRET\n-----END OPENSSH PRIVATE KEY-----\n"  # noqa: S105 - redaction fixture
+    identity = {
+        "ssh_user": "root",
+        "host": "vps1.example.com",
+        "public_ip": "1.2.3.4",
+        "ssh_key_fingerprint": "SHA256:proved",
+    }
+    _, session_gen = _mock_session(server=_mock_server())
+
+    async with client_for(session_gen) as client:
+        response = await client.post(
+            "/api/servers/srv-1/provisioning/finalize",
+            headers=HEADERS,
+            json={
+                "attempt_number": 1,
+                "episode_id": "episode-1",
+                "expected_identity": identity | {"ssh_key_fingerprint": None},
+                "proved_identity": identity,
+                "generated_key_fingerprint": "SHA256:different",
+                "generated_private_key": secret,
+                "complete_labels": {
+                    "provisioning_phase": "complete",
+                    "qa_ssh_user": "qa-observer",
+                },
+                "qa_target_receipt": {
+                    "profile_version": QA_TARGET_PROFILE_VERSION,
+                    "proved_at": datetime.now(UTC).isoformat(),
+                    "identity": identity,
+                },
+            },
+        )
+
+    assert response.status_code == 422  # noqa: PLR2004
+    assert secret not in response.text
+    assert "TOP-SECRET" not in response.text
+
+
 class TestTargetReadinessVerdict:
     """POST /servers/{handle}/target-readiness applies one verdict in one transaction."""
 
@@ -624,9 +663,16 @@ class TestTargetReadinessVerdict:
             target_readiness_failure_phase="admin_login",
         )
         session, session_gen = _mock_session(server=server)
-        readiness = _incident("target_not_ready", "target_readiness")
+        readiness = _incident(
+            "target_not_ready", "target_readiness", details={"identity": identity}
+        )
         software = _incident("provisioning_failed", "software_setup", id=5)
-        qa_identity = _incident("provisioning_failed", "qa_identity", id=6)
+        qa_identity = _incident(
+            "provisioning_failed",
+            "qa_identity",
+            id=6,
+            details={"step": "qa_identity", "server_ip": identity["public_ip"]},
+        )
         session.execute = AsyncMock(
             side_effect=[_result(readiness), _result(software, qa_identity)]
         )

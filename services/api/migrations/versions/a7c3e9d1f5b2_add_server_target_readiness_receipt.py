@@ -24,6 +24,11 @@ def upgrade() -> None:
     op.add_column(TABLE, sa.Column("ssh_key_fingerprint", sa.String(length=100), nullable=True))
     op.add_column(TABLE, sa.Column("qa_target_version", sa.String(length=64), nullable=True))
     op.add_column(TABLE, sa.Column("qa_target_proved_at", sa.DateTime(), nullable=True))
+    op.add_column(TABLE, sa.Column("finalized_provisioning_attempt", sa.Integer(), nullable=True))
+    op.add_column(
+        TABLE,
+        sa.Column("finalized_provisioning_episode_id", sa.String(length=36), nullable=True),
+    )
     op.add_column(
         TABLE, sa.Column("target_readiness_failure_phase", sa.String(length=50), nullable=True)
     )
@@ -45,5 +50,7 @@ def downgrade() -> None:
     op.drop_column(TABLE, "target_readiness_parked_status")
     op.drop_column(TABLE, "target_readiness_failure_phase")
     op.drop_column(TABLE, "qa_target_proved_at")
+    op.drop_column(TABLE, "finalized_provisioning_episode_id")
+    op.drop_column(TABLE, "finalized_provisioning_attempt")
     op.drop_column(TABLE, "qa_target_version")
     op.drop_column(TABLE, "ssh_key_fingerprint")

@@ -24,7 +24,8 @@ class Server(Base):
     # Public fingerprint of the parsed key in ssh_key_enc; not a secret.
     ssh_key_fingerprint: Mapped[str | None] = mapped_column(String(100))
 
-    # QA target readiness receipt, written only by the target-readiness endpoint.
+    # QA target readiness receipt, written by reconciliation or provisioning's
+    # API-owned atomic finalizer.
     qa_target_version: Mapped[str | None] = mapped_column(String(64))
     qa_target_proved_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Readiness failure evidence and park ownership, written only by the
@@ -55,6 +56,11 @@ class Server(Base):
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime)
     provisioning_attempts: Mapped[int] = mapped_column(Integer, default=0)
     provisioning_episode_id: Mapped[str | None] = mapped_column(String(36))
+    # The last successfully finalized fence makes exact broker redelivery
+    # distinguishable from a stale or altered success after the active episode
+    # fields have been reset.
+    finalized_provisioning_attempt: Mapped[int | None] = mapped_column(Integer)
+    finalized_provisioning_episode_id: Mapped[str | None] = mapped_column(String(36))
     provisioning_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_incident: Mapped[datetime | None] = mapped_column(DateTime)
 

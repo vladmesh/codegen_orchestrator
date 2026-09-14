@@ -312,25 +312,6 @@ class TestTheKeyTheLoginAndThePrivilegePathAreSeparateEvidence:
         assert target.verdict.phase is TargetReadinessPhase.PRIVILEGE_PREFLIGHT
 
 
-class TestTheFreshPathRecordsTheIdentityWithThePhase:
-    async def test_completion_writes_the_phase_and_the_identity_in_one_call(self):
-        """One write, so a host cannot read as provisioned and lend no identity.
-
-        The receipt is not written here any more: the success handler records it
-        with READY once the generated key is stored (see
-        `test_provisioning_success_receipt.py`).
-        """
-        from src.provisioner.api_client import mark_provisioning_complete
-
-        with patch("src.provisioner.api_client.update_server_labels", new=AsyncMock()) as labels:
-            await mark_provisioning_complete("vps-1001")
-
-        assert labels.await_args.args[1] == {
-            PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE,
-            QA_SSH_USER_LABEL: QA_SSH_USER,
-        }
-
-
 class TestItRefusesAHostItCannotRepair:
     async def test_an_unmanaged_host_is_not_touched(self):
         runner = MagicMock()

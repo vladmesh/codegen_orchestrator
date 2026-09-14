@@ -3,84 +3,29 @@
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.dto.server import QATargetReceipt, target_identity
-from shared.notifications import notify_admins_best_effort
-from shared.qa_target_profile import QATargetProof
-from shared.ssh_keys import AdminKeyRejectedError, normalize_admin_private_key
-
-from .api_client import (
-    TargetReadinessSupersededError,
-    get_server_info,
-    mark_provisioning_complete,
-    reset_provisioning_attempts,
-    save_server_ssh_key,
-    update_server_status,
+from shared.contracts.dto.server import (
+    ProvisioningFinalization,
+    ProvisioningFinalizationDisposition,
+    QATargetReceipt,
+    TargetIdentity,
 )
-from .incidents import create_incident, resolve_active_incidents
+from shared.notifications import notify_admins_best_effort
+from shared.qa_identity import provisioning_complete_labels
+from shared.qa_target_profile import QATargetProof
+
+from .api_client import finalize_provisioning, update_server_status
+from .incidents import create_incident
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
 
 # The provisioning-failure steps the success handler owns, in execution order.
-KEY_PERSISTENCE_STEP = "ssh_key_persistence"
-COMPLETION_STEP = "provisioning_completion"
 RECEIPT_STEP = "qa_target_receipt"
 
 
-async def _persist_server_ssh_key(
-    server_handle: str, ssh_manager: SSHManager | None
-) -> tuple[str | None, str | None]:
-    """Validate and store the key that grants access to the provisioned server.
-
-    The key lives in the infra-service container's ephemeral filesystem. Until it
-    is in the DB, recreating the container loses access to the server forever, so
-    a failure here is a provisioning failure, not a skippable side effect.
-
-    Returns:
-        ``(None, fingerprint)`` on success, otherwise ``(failure reason, None)``.
-    """
-    if ssh_manager is None:
-        logger.error(
-            "provisioning_ssh_key_persist_failed",
-            server_handle=server_handle,
-            reason="ssh_manager_missing",
-        )
-        return "ssh_manager_missing", None
-
-    private_key = ssh_manager.get_private_key()
-    if not private_key:
-        logger.error(
-            "provisioning_ssh_key_persist_failed",
-            server_handle=server_handle,
-            reason="ssh_private_key_missing",
-        )
-        return "ssh_private_key_missing", None
-
-    try:
-        fingerprint = normalize_admin_private_key(private_key).fingerprint
-    except AdminKeyRejectedError as exc:
-        logger.error(
-            "provisioning_ssh_key_persist_failed",
-            server_handle=server_handle,
-            reason="ssh_private_key_invalid",
-            rejection=exc.rejection.value,
-        )
-        return "ssh_private_key_invalid", None
-
-    try:
-        await save_server_ssh_key(server_handle, private_key)
-    except Exception as exc:
-        logger.error(
-            "provisioning_ssh_key_persist_failed",
-            server_handle=server_handle,
-            reason="save_server_ssh_key_failed",
-            error_type=type(exc).__name__,
-            exc_info=True,
-        )
-        return "save_server_ssh_key_failed", None
-
-    return None, fingerprint
+class FinalizationOutcomeUnknown(RuntimeError):
+    """The API may have committed; the broker delivery must remain retryable."""
 
 
 async def _fail_provisioning_success(
@@ -128,18 +73,9 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
     *,
     ssh_manager: SSHManager | None,
     qa_target_proof: QATargetProof | None,
+    expected_identity: TargetIdentity,
 ) -> dict:
-    """Commit a successful provisioning — key, phase, receipt and READY — in a fixed order.
-
-    1. validate and persist the server's private SSH key — no key, no success;
-    2. record the complete software phase and the QA identity it created — only
-       now, because a managed row may not reach a complete phase without a key;
-    3. bind the software play's QA target proof to the row's connection identity
-       with the fingerprint of the key just persisted;
-    4. close the provisioning episode via ``reset_provisioning_attempts``, which
-       records that receipt and writes the terminal READY status in one row-locked
-       transaction — the single owner of that status;
-    5. resolve incidents and redeploy services.
+    """Submit key, completion facts, receipt and READY to the one API finalizer.
 
     A missing proof, a failed completion write, an identity that changed before
     the receipt landed, or a receipt that could not be written is a terminal
@@ -157,45 +93,19 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
         ssh_manager: SSHManager holding the private key; None is a failure
         qa_target_proof: The software play's proof of the current QA target
             profile, or None when it proved none
+        expected_identity: The server-row identity read before the proof began
 
     Returns:
         State update dict
     """
-    key_failure, fingerprint = await _persist_server_ssh_key(server_handle, ssh_manager)
-    if key_failure:
-        return await _fail_provisioning_success(
-            server_handle,
-            server_ip,
-            step=KEY_PERSISTENCE_STEP,
-            reason=key_failure,
-            what_failed="its SSH key could not be stored",
-        )
-
-    # Only a proof made through the key being persisted is evidence for it.
-    if qa_target_proof is not None and qa_target_proof.ssh_key_fingerprint != fingerprint:
+    private_key = ssh_manager.get_private_key() if ssh_manager is not None else None
+    if not private_key:
         return await _fail_provisioning_success(
             server_handle,
             server_ip,
             step=RECEIPT_STEP,
-            reason="proved_key_not_persisted",
-            what_failed="the key it stored is not the key its software play proved",
-        )
-
-    try:
-        await mark_provisioning_complete(server_handle)
-    except Exception as exc:
-        logger.error(
-            "provisioning_completion_write_failed",
-            server_handle=server_handle,
-            error_type=type(exc).__name__,
-            exc_info=True,
-        )
-        return await _fail_provisioning_success(
-            server_handle,
-            server_ip,
-            step=COMPLETION_STEP,
-            reason=type(exc).__name__,
-            what_failed="its completed software phase could not be recorded",
+            reason="ssh_private_key_missing",
+            what_failed="its SSH key could not be stored",
         )
 
     if qa_target_proof is None:
@@ -208,73 +118,53 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
         )
 
     try:
-        server = await get_server_info(server_handle)
-    except Exception as exc:
-        logger.error(
-            "provisioning_server_read_failed",
-            server_handle=server_handle,
-            error_type=type(exc).__name__,
+        proved_identity = TargetIdentity(
+            ssh_user=qa_target_proof.ssh_user,
+            host=expected_identity.host,
+            public_ip=server_ip,
+            ssh_key_fingerprint=qa_target_proof.ssh_key_fingerprint,
         )
-        return await _fail_provisioning_success(
-            server_handle,
-            server_ip,
-            step=RECEIPT_STEP,
-            reason="receipt_write_failed",
-            what_failed="its readiness receipt and READY status could not be recorded",
-        )
-    if server.ssh_user != qa_target_proof.ssh_user:
-        return await _fail_provisioning_success(
-            server_handle,
-            server_ip,
-            step=RECEIPT_STEP,
-            reason="proved_user_not_administrative",
-            what_failed="its software play proved an account the server row does not administer",
-        )
-
-    try:
         receipt = QATargetReceipt(
             profile_version=qa_target_proof.profile_version,
             proved_at=qa_target_proof.proved_at,
-            identity=target_identity(server, fingerprint),
+            identity=proved_identity,
         )
-        reset = await reset_provisioning_attempts(
-            server_handle, provisioning_attempts, provisioning_episode_id, receipt
-        )
-    except TargetReadinessSupersededError:
-        return await _fail_provisioning_success(
+        disposition = await finalize_provisioning(
             server_handle,
-            server_ip,
-            step=RECEIPT_STEP,
-            reason="identity_changed",
-            what_failed="its connection identity changed before the readiness receipt was recorded",
+            ProvisioningFinalization(
+                attempt_number=provisioning_attempts,
+                episode_id=provisioning_episode_id,
+                expected_identity=expected_identity,
+                proved_identity=proved_identity,
+                generated_key_fingerprint=qa_target_proof.ssh_key_fingerprint,
+                generated_private_key=private_key,
+                complete_labels=provisioning_complete_labels(),
+                qa_target_receipt=receipt,
+            ),
         )
     except Exception as exc:
         logger.error(
-            "provisioning_receipt_write_failed",
+            "provisioning_finalization_outcome_unknown",
             server_handle=server_handle,
             error_type=type(exc).__name__,
             exc_info=True,
         )
-        return await _fail_provisioning_success(
-            server_handle,
-            server_ip,
-            step=RECEIPT_STEP,
-            reason="receipt_write_failed",
-            what_failed="its readiness receipt and READY status could not be recorded",
-        )
-    if not reset:
+        raise FinalizationOutcomeUnknown(
+            f"Provisioning finalization outcome unknown for {server_handle}"
+        ) from exc
+    if disposition is ProvisioningFinalizationDisposition.CONFLICT:
         logger.info(
             "provisioning_attempt_reset_skipped",
             server_handle=server_handle,
             attempt=provisioning_attempts,
-            ssh_key_persisted=True,
+            ssh_key_persisted=False,
         )
         return {
             "messages": [
                 {
                     "message": (
-                        f"Provisioning success for {server_handle} superseded by a newer attempt "
-                        "(its SSH key is stored)"
+                        f"Provisioning success for {server_handle} was superseded by a concurrent "
+                        "server edit or newer attempt"
                     )
                 }
             ],
@@ -286,22 +176,13 @@ async def handle_provisioning_success(  # noqa: PLR0911, PLR0913
             "current_agent": "provisioner",
         }
 
-    incident_journal_status = "resolved"
-    try:
-        await resolve_active_incidents(server_handle)
-    except Exception as exc:
-        incident_journal_status = "pending_reconciliation"
-        logger.error(
-            "provisioning_incident_resolution_failed",
-            server_handle=server_handle,
-            error_type=type(exc).__name__,
-            exc_info=True,
-        )
-        await notify_admins_best_effort(
-            f"⚠️ Server *{server_handle}* is READY, but its provisioning incident journal "
-            "could not be closed. Reconciliation will retry automatically.",
-            level="warning",
-            server_handle=server_handle,
+    if disposition is ProvisioningFinalizationDisposition.CONTAINED:
+        return await _fail_provisioning_success(
+            server_handle,
+            server_ip,
+            step=RECEIPT_STEP,
+            reason="finalization_contained",
+            what_failed="its atomic success finalization was refused",
         )
 
     recovery_text = "recovered and " if is_recovery else ""
@@ -330,11 +211,6 @@ The server is now configured with:
 
     if is_recovery and (services_redeployed > 0 or services_failed > 0):
         message += f"\n📦 Services: {services_redeployed} redeployed, {services_failed} failed"
-    if incident_journal_status == "pending_reconciliation":
-        message += (
-            "\n⚠️ Provisioning incident journal could not be closed; reconciliation will retry."
-        )
-
     # Send notification
     await notify_admins_best_effort(
         f"Server *{server_handle}* {recovery_text}provisioned successfully! "
@@ -351,7 +227,7 @@ The server is now configured with:
             "server_ip": server_ip,
             "services_redeployed": services_redeployed,
             "services_failed": services_failed,
-            "incident_journal_status": incident_journal_status,
+            "incident_journal_status": "resolved",
         },
         "current_agent": "provisioner",
     }

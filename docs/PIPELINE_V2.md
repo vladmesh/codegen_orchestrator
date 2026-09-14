@@ -105,6 +105,17 @@ For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks disp
 
 This prevents crashes when a workspace is GC'd between tasks in a story.
 
+### Managed target provisioning finalization
+
+Fresh provisioning, existing-access retrofit and reinstall use bootstrap access
+only until the generated administrative key has logged in. After the software
+proof, infra-service sends one `ProvisioningFinalization` command. The API locks
+the server row and atomically commits the normalized encrypted key, exact
+completion labels, identity-bound QA receipt, matching incident settlement,
+episode reset and READY. An operator identity edit or newer attempt wins as a
+typed conflict with no partial state; exact redelivery of the same finalized
+episode is idempotent.
+
 ---
 
 ## Phase 3: Architecture

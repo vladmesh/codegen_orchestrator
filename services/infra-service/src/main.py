@@ -24,6 +24,7 @@ from shared.provisioning_policy import (
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis import RedisStreamClient
 
+from .provisioner.handlers import FinalizationOutcomeUnknown
 from .provisioner.incidents import IncidentPersistenceError, create_incident
 from .provisioner.node import ProvisionerNode
 
@@ -214,7 +215,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
                 errors=errors,
             )
 
-    except IncidentPersistenceError:
+    except (FinalizationOutcomeUnknown, IncidentPersistenceError):
         logger.error(
             "provisioner_incident_journal_unavailable",
             job_id=job_id,
@@ -277,6 +278,13 @@ async def run_worker():
 
             except IncidentPersistenceError as error:
                 await _handle_incident_outage(client, msg, job, error)
+
+            except FinalizationOutcomeUnknown:
+                # The API may have committed. Leave the stream entry pending;
+                # exact redelivery is idempotent at the finalizer.
+                logger.warning(
+                    "provisioning_finalization_redelivery_pending", entry_id=msg.message_id
+                )
 
             except Exception as e:
                 logger.error(

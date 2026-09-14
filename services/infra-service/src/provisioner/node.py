@@ -16,7 +16,7 @@ import httpx
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.contracts.dto.server import ServerDTO, ServerStatus, TargetIdentity, target_identity
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
@@ -239,6 +239,7 @@ class ProvisionerNode(FunctionalNode):
         os_template: str,
         provisioning_attempts: int,
         provisioning_episode_id: str,
+        expected_identity: TargetIdentity,
         is_recovery: bool,
         state: dict,
     ) -> dict:
@@ -271,6 +272,7 @@ class ProvisionerNode(FunctionalNode):
                 " (Reinstalled)",
                 ssh_manager=self.ssh_manager,
                 qa_target_proof=outcome.qa_target_proof,
+                expected_identity=expected_identity,
             )
 
         message = outcome.message
@@ -291,7 +293,7 @@ class ProvisionerNode(FunctionalNode):
             "provisioning_result": {"status": "failed", "method": "reinstall"},
         }
 
-    async def _run_existing_access_path(
+    async def _run_existing_access_path(  # noqa: PLR0913, PLR0917
         self,
         server_handle: str,
         server_ip: str,
@@ -300,6 +302,7 @@ class ProvisionerNode(FunctionalNode):
         provisioning_episode_id: str,
         is_recovery: bool,
         state: dict,
+        expected_identity: TargetIdentity,
         ssh_user: str | None = None,
         ssh_private_key: str | None = None,
         provisioning_profile: str | None = None,
@@ -398,6 +401,7 @@ class ProvisionerNode(FunctionalNode):
                     ssh_user=identity.ssh_user,
                     ssh_key_fingerprint=identity.fingerprint,
                 ),
+                expected_identity=expected_identity,
             )
 
         await update_server_status(server_handle, "error")
@@ -518,6 +522,7 @@ class ProvisionerNode(FunctionalNode):
             }
 
         provisioning_attempts, provisioning_episode_id = reservation
+        expected_identity = target_identity(server_info, server_info.ssh_key_fingerprint)
 
         # Step 3: Time4VPS repeats its provider proof at its destructive boundary.
         time4vps_client = None
@@ -550,6 +555,7 @@ class ProvisionerNode(FunctionalNode):
                 os_template=os_template,
                 provisioning_attempts=provisioning_attempts,
                 provisioning_episode_id=provisioning_episode_id,
+                expected_identity=expected_identity,
                 is_recovery=is_recovery,
                 state=state,
             )
@@ -562,6 +568,7 @@ class ProvisionerNode(FunctionalNode):
                 provisioning_episode_id=provisioning_episode_id,
                 is_recovery=is_recovery,
                 state=state,
+                expected_identity=expected_identity,
                 ssh_user="root" if target.provider == BITLAUNCH_PROVIDER else None,
                 ssh_private_key=bitlaunch_key,
                 provisioning_profile=state.get("provisioning_profile"),

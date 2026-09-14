@@ -25,8 +25,8 @@ from shared.contracts.dto.incident import (
 )
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservationResult,
-    ProvisioningAttemptResetResult,
-    QATargetReceipt,
+    ProvisioningFinalization,
+    ProvisioningFinalizationResult,
     ServerDTO,
     TargetReadinessRead,
     TargetReadinessReport,
@@ -106,24 +106,18 @@ class InfrastructureAPIClient(InternalAPIClient):
         )
         return ProvisioningAttemptReservationResult.model_validate(resp.json())
 
-    async def reset_provisioning_attempts(
+    async def finalize_provisioning(
         self,
         server_handle: str,
-        attempt_number: int,
-        episode_id: str,
-        qa_target_receipt: QATargetReceipt,
-    ) -> ProvisioningAttemptResetResult:
-        """Close an episode as READY with its receipt, only if no other attempt started."""
+        finalization: ProvisioningFinalization,
+    ) -> ProvisioningFinalizationResult:
+        """Ask the API to atomically commit one proved provisioning success."""
         resp = await self.request(
             "POST",
-            f"servers/{server_handle}/provisioning-attempts/reset",
-            json={
-                "attempt_number": attempt_number,
-                "episode_id": episode_id,
-                "qa_target_receipt": qa_target_receipt.model_dump(mode="json"),
-            },
+            f"servers/{server_handle}/provisioning/finalize",
+            json=finalization.model_dump(mode="json"),
         )
-        return ProvisioningAttemptResetResult.model_validate(resp.json())
+        return ProvisioningFinalizationResult.model_validate(resp.json())
 
     async def get_server_services(self, server_handle: str) -> list[DeploymentRecord]:
         """Get typed deployment records for a server."""

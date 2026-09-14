@@ -201,6 +201,16 @@ the refused Run no longer matches. Resolve that discrepancy before retrying.
 
 ## Reconcile managed deploy targets
 
+Provisioning success has one internal commit point:
+`POST /api/servers/{handle}/provisioning/finalize`. Infra-service sends the
+reserved attempt/episode fence, the row identity observed before proof, the
+generated key identity actually used for login and software proof, completion
+labels and the QA receipt. The API validates all of them under the server-row
+lock before writing the encrypted key, labels, receipt, incident settlement,
+episode reset and READY together. Do not repair a partial success with key,
+label, status or receipt PATCHes; a conflict means an operator edit or newer
+episode won and must be observed as current state.
+
 The production deploy's `Reconcile managed deploy targets` step runs, after the
 services are healthy and against the exact deployed SHA:
 

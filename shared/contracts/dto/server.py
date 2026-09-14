@@ -74,8 +74,8 @@ class TargetIdentity(BaseModel):
 class QATargetReceipt(BaseModel):
     """A readiness receipt a provisioning success records together with READY.
 
-    The proof comes from the software play; the identity is the row's connection
-    identity with the fingerprint of the key the success handler just persisted.
+    The proof comes from the software play; provisioning binds it to the
+    generated-key connection identity in the same API transaction that stores it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -153,22 +153,45 @@ class ProvisioningAttemptReservationResult(BaseModel):
     episode_id: str | None = None
 
 
-class ProvisioningAttemptReset(BaseModel):
-    """Request to close an episode only when its attempt is still current.
+class ProvisioningFinalization(BaseModel):
+    """Everything the API needs to commit one provisioning success atomically."""
 
-    READY is never written without the readiness receipt of the provisioning that
-    earned it: both are applied in one transaction, or neither is.
-    """
+    model_config = ConfigDict(extra="forbid")
 
     attempt_number: int = Field(gt=0)
     episode_id: str = Field(min_length=1)
+    expected_identity: TargetIdentity
+    proved_identity: TargetIdentity
+    generated_key_fingerprint: str = Field(min_length=1)
+    generated_private_key: str = Field(min_length=1, repr=False)
+    complete_labels: dict[str, str] = Field(min_length=1)
     qa_target_receipt: QATargetReceipt
 
+    @model_validator(mode="after")
+    def _one_proved_identity(self) -> "ProvisioningFinalization":
+        if self.proved_identity.ssh_key_fingerprint is None:
+            raise ValueError("proved identity requires a generated-key fingerprint")
+        if self.proved_identity.ssh_key_fingerprint != self.generated_key_fingerprint:
+            raise ValueError("generated-key fingerprint must equal proved identity")
+        if self.qa_target_receipt.identity != self.proved_identity:
+            raise ValueError("receipt identity must equal proved identity")
+        return self
 
-class ProvisioningAttemptResetResult(BaseModel):
-    """Result of conditionally closing a provisioning attempt episode."""
 
-    reset: bool
+class ProvisioningFinalizationDisposition(StrEnum):
+    """The contained result of trying to finalize one provisioning episode."""
+
+    FINALIZED = "finalized"
+    IDEMPOTENT = "idempotent"
+    CONFLICT = "conflict"
+    CONTAINED = "contained"
+
+
+class ProvisioningFinalizationResult(BaseModel):
+    """A finalization answer that never contains administrative key material."""
+
+    disposition: ProvisioningFinalizationDisposition
+    reason: str | None = None
     provisioning_attempts: int
     episode_id: str | None = None
 
@@ -213,8 +236,8 @@ class ServerDTO(TimestampedDTO):
     # never part of a server response.
     ssh_key_fingerprint: str | None = None
     # The QA target readiness receipt: the profile the target last proved, and
-    # when. Written only by `POST /api/servers/{handle}/target-readiness` after a
-    # successful role proof — never by a label and never by PATCH.
+    # when. Written only by target-readiness reconciliation or the atomic
+    # provisioning finalizer — never by a label and never by PATCH.
     qa_target_version: str | None = None
     qa_target_proved_at: datetime | None = None
     # The phase of the last readiness failure while it is unrepaired. Set and
