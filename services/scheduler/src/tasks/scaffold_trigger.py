@@ -120,6 +120,27 @@ async def _trigger_full_scaffold(project, api_client, redis_client, log) -> bool
     return True
 
 
+def _github_repo_name(git_url: str | None) -> str | None:
+    """The GitHub repository name a repo already lives under, or None.
+
+    The scaffolder names both the GitHub repository and the workspace by
+    ``project_name``, so the only thing that may fill it is a name GitHub
+    actually knows. A ``Repository.name`` is a human title (the PO stores the
+    project title there), so it is never usable; the linked repository a project
+    was imported from identifies itself in ``git_url``. Anything else — a
+    ``pending://`` placeholder for a repository the scaffolder has not created
+    yet — leaves the caller with the project slug.
+    """
+    if not git_url or "github.com/" not in git_url:
+        return None
+    path = git_url.split("github.com/", 1)[1].rstrip("/").removesuffix(".git")
+    match [part for part in path.split("/") if part]:
+        case [_owner, name]:
+            return name
+        case _:
+            return None
+
+
 async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bool:
     """Trigger ensure-workspace for ACTIVE projects with pending tasks."""
     project_id = str(project.id)
@@ -153,7 +174,7 @@ async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bo
         project,
         repo.id,
         mode="ensure",
-        project_name=repo.name,
+        project_name=_github_repo_name(repo.git_url),
     )
     await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
     log.info("scaffold_triggered", repository_id=repo.id, mode="ensure")

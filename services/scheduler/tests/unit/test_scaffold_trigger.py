@@ -115,7 +115,7 @@ class TestTriggerScaffolds:
         mock_api,
         mock_redis,
     ):
-        """Imported repositories keep their existing GitHub name."""
+        """Imported repositories keep the GitHub name their git_url points at."""
         project = _make_project(ProjectStatus.ACTIVE.value)
         imported_repo = _REPO.model_copy(
             update={
@@ -133,6 +133,55 @@ class TestTriggerScaffolds:
         msg = mock_redis.publish_message.call_args[0][1]
         assert msg.mode == "ensure"
         assert msg.project_name == "fortune-teller-bot"
+
+    @pytest.mark.asyncio
+    async def test_ensure_names_the_project_by_slug_when_repo_name_is_a_title(
+        self,
+        mock_api,
+        mock_redis,
+    ):
+        """A managed repo carries the human title, not a GitHub name: use the slug."""
+        project = _make_project(ProjectStatus.ACTIVE.value)
+        titled_repo = _REPO.model_copy(
+            update={
+                "name": "Бот с котиками",
+                "git_url": f"pending://{project.slug}",
+            }
+        )
+        mock_api.get_projects.return_value = [project]
+        mock_api.get_tasks_by_project_and_status.return_value = [{"id": "task-1"}]
+        mock_api.get_repositories.return_value = [titled_repo]
+
+        count = await trigger_scaffolds(mock_api, mock_redis)
+
+        assert count == 1
+        msg = mock_redis.publish_message.call_args[0][1]
+        assert msg.mode == "ensure"
+        assert msg.project_name == project.slug
+
+    @pytest.mark.asyncio
+    async def test_ensure_names_a_scaffolded_repo_by_its_github_name(
+        self,
+        mock_api,
+        mock_redis,
+    ):
+        """Once the scaffolder has pushed, git_url already carries the slug."""
+        project = _make_project(ProjectStatus.ACTIVE.value)
+        scaffolded_repo = _REPO.model_copy(
+            update={
+                "name": "Бот с котиками",
+                "git_url": f"https://github.com/project-factory-organization/{project.slug}.git",
+            }
+        )
+        mock_api.get_projects.return_value = [project]
+        mock_api.get_tasks_by_project_and_status.return_value = [{"id": "task-1"}]
+        mock_api.get_repositories.return_value = [scaffolded_repo]
+
+        count = await trigger_scaffolds(mock_api, mock_redis)
+
+        assert count == 1
+        msg = mock_redis.publish_message.call_args[0][1]
+        assert msg.project_name == project.slug
 
     @pytest.mark.asyncio
     async def test_active_project_workspace_ready_is_skipped(self, mock_api, mock_redis):

@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- Ensure-mode scaffold names the project by the GitHub name in the repository's `git_url`, falling back to the project
+  slug, so a project whose repository row holds a non-ASCII title stops failing workspace ensure after story teardown.
+
 - The QA identity retrofit includes its role publicly and reads the wrapper's own line out of sudo's output, so
   the host report stops failing on an undefined `qa_ssh_user` and a host that cannot resolve its name still proves.
 
