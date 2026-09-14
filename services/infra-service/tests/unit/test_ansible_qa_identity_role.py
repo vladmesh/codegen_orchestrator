@@ -350,6 +350,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         socket_reachable: bool = False,
         keys: str | None = SENTINEL,
         wrapper_answer: str | None = None,
+        admin_can: bool = True,
     ) -> Path:
         stubs = tmp_path / "bin"
         stubs.mkdir(exist_ok=True)
@@ -379,10 +380,15 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
             if wrapper_answer is None
             else f"cat <<'ANSWER'\n{wrapper_answer}\nANSWER\nexit 0"
         )
+        # Every other `runuser` is a `test` put to an account: the socket
+        # question, always as the QA account, and whether the administrative
+        # account can reach the seat, always as some other account.
         _stub(
             stubs,
             "runuser",
-            f'if [ "$4" = "sudo" ]; then\n{answer}\nfi\nexit {0 if socket_reachable else 1}',
+            f'if [ "$4" = "sudo" ]; then\n{answer}\nfi\n'
+            f'if [ "$2" != "{QA_SSH_USER}" ]; then exit {0 if admin_can else 1}; fi\n'
+            f"exit {0 if socket_reachable else 1}",
         )
         return stubs
 
@@ -393,6 +399,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         *,
         sshd: str = "admits",
         login_as: str = QA_SSH_USER,
+        admin: str = "root",
     ) -> subprocess.CompletedProcess:
         keys = stubs.parent / "home" / ".ssh" / "authorized_keys"
         return subprocess.run(
@@ -403,6 +410,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
                 str(socket),
                 SENTINEL,
                 QA_TARGET_PROFILE_VERSION,
+                admin,
             ],
             capture_output=True,
             text=True,
@@ -655,6 +663,40 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "instead" in result.stderr
 
+    def test_an_administrative_account_that_cannot_reach_the_seat_is_refused(
+        self, tmp_path, socket
+    ):
+        """The seat is lent by the administrative account, not by root.
+
+        `_qa_target.py` appends the run key to this file over SSH as the account
+        the target is managed as, without sudo. On prod-target-5wwb that account
+        is `prod-deploy`, and the deploy of 2026-09-14 left its ACL entries on a
+        0700 `.ssh` with an empty mask: the role reported `ready` and QA run
+        qa-deploy-poll-de17120d then parked story-f8788965 on
+        `qa_identity_unreadable`. A seat nobody can lend is not a seat.
+        """
+        result = self._prove(self._target(tmp_path, admin_can=False), socket, admin="prod-deploy")
+
+        assert result.returncode != 0
+        assert "prod-deploy" in result.stderr
+
+    def test_an_administrative_account_that_can_reach_the_seat_passes(self, tmp_path, socket):
+        result = self._prove(self._target(tmp_path), socket, admin="prod-deploy")
+
+        assert result.returncode == 0, result.stderr
+        assert "prod-deploy" in result.stdout
+
+    def test_a_root_administrative_account_is_asked_nothing(self, tmp_path, socket):
+        """root reaches the file by being root; an ACL entry for it would be noise."""
+        result = self._prove(self._target(tmp_path, admin_can=False), socket, admin="root")
+
+        assert result.returncode == 0, result.stderr
+
+    def test_the_role_tells_the_proof_which_account_lends_the_seat(self):
+        proof = _task_named(_tasks(), PROOF_TASK)["ansible.builtin.script"]
+
+        assert "deploy_user" in proof["cmd"]
+
     def test_the_role_puts_the_ssh_client_the_proof_needs_on_the_target(self):
         """The proof takes the seat, so the target needs a client to take it with.
 
@@ -671,6 +713,85 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert install["ansible.builtin.apt"]["state"] == "present"
         assert _task_index(install["name"]) < _task_index(PROOF_TASK)
         assert PROOF_TASK in names
+
+
+ADMIN_ACL_GRANTS = {
+    "{{ qa_ssh_home }}/.ssh": "rwx",
+    "{{ qa_ssh_home }}/.ssh/authorized_keys": "rw",
+}
+
+MODE_TASKS = (
+    "Create the QA account's SSH directory",
+    "Open the QA account's authorized_keys with a line that is never a key",
+)
+
+
+def _when(task: dict) -> list[str]:
+    condition = task.get("when", [])
+    return [condition] if isinstance(condition, str) else list(condition)
+
+
+class TestTheAdministrativeAccountCanLendTheQASeat:
+    """The precondition the runtime borrows the seat on, provisioned by the role.
+
+    A central QA run appends its one-shot key to the QA account's
+    `authorized_keys` over SSH as the account the target is managed as, without
+    sudo — so on a target whose administrative account is not root, that account
+    needs a search and a write inside a 0700 `.ssh` it does not own. Nothing in
+    this repository granted it: production worked only because somebody wrote
+    the ACL entries by hand in August, and a fresh Stand target is managed as
+    root, which is why the Stand never saw it.
+
+    Worse, the two mode tasks above recompute the ACL mask from the group bits
+    of the mode they set, so the deploy of 2026-09-14 reduced those hand-made
+    entries to `#effective:---` and QA run qa-deploy-poll-de17120d parked
+    story-f8788965 on `qa_identity_unreadable`. Hence both halves below: the
+    entry, and a mask that leaves it effective — after the modes that would
+    otherwise undo them.
+    """
+
+    def _acl(self, path: str, etype: str) -> dict:
+        return next(
+            task
+            for task in _tasks()
+            if task.get("ansible.posix.acl", {}).get("path") == path
+            and task["ansible.posix.acl"]["etype"] == etype
+        )
+
+    @pytest.mark.parametrize(("path", "permissions"), sorted(ADMIN_ACL_GRANTS.items()))
+    def test_the_administrative_account_gets_what_the_grant_script_tests_for(
+        self, path, permissions
+    ):
+        """The same four tests `_INSTALL_GRANT` makes, granted here."""
+        grant = self._acl(path, "user")["ansible.posix.acl"]
+
+        assert grant["entity"] == "{{ deploy_user }}"
+        assert grant["permissions"] == permissions
+        assert grant["state"] == "present"
+
+    @pytest.mark.parametrize(("path", "permissions"), sorted(ADMIN_ACL_GRANTS.items()))
+    def test_the_mask_leaves_that_entry_effective(self, path, permissions):
+        """An entry under a `---` mask grants nothing, which is the live defect."""
+        mask = self._acl(path, "mask")["ansible.posix.acl"]
+
+        assert mask["permissions"] == permissions
+        assert mask["state"] == "present"
+
+    @pytest.mark.parametrize(
+        ("path", "etype"), [(p, e) for p in ADMIN_ACL_GRANTS for e in ("user", "mask")]
+    )
+    def test_a_root_administrative_account_is_granted_nothing(self, path, etype):
+        """root already reaches the file, and an entry for it would be noise."""
+        assert "deploy_user != 'root'" in " ".join(_when(self._acl(path, etype)))
+
+    @pytest.mark.parametrize(
+        ("path", "etype"), [(p, e) for p in ADMIN_ACL_GRANTS for e in ("user", "mask")]
+    )
+    def test_the_grant_comes_after_the_modes_that_would_undo_it(self, path, etype):
+        grant = _task_index(self._acl(path, etype)["name"])
+
+        assert all(grant > _task_index(name) for name in MODE_TASKS)
+        assert grant < _task_index(PROOF_TASK)
 
 
 def _apply_user_module(before: dict, params: dict) -> dict:
