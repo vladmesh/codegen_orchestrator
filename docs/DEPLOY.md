@@ -98,9 +98,14 @@ refresh-credential expiry only when the refresh token itself is a JWT, and the
 Codex `last_refresh` stamp. Worker creation refuses exactly the profiles the
 diagnostic marks as lacking usable refresh material. The same diagnostics tick
 owns administrator alerts: one Redis episode per executor
-(`executor:profile-alert:v1:<executor>`) delivered through `deliver_to_admins`,
-retried with backoff from 60 seconds to one hour until every administrator
-received it, and closed by a later healthy observation. Worker-manager reads
+(`executor:profile-alert:v1:<executor>`) for its whole unhealthy stretch,
+delivered through `deliver_to_admins`, retried with backoff from 60 seconds to
+one hour until every administrator received it, and closed only by a later
+healthy observation. A change such as expiring to expired updates the episode's
+facts without another alert. The Codex reader joins the workers'
+`.codegen-codex.lock` read-only and requires the ChatGPT `auth_mode`: an
+API-key or other auth mode is unavailable even with retained ChatGPT tokens,
+and a read torn by a concurrent refresh is `unknown`, never logged out. Worker-manager reads
 `TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` for that delivery.
 
 For non-stand recovery follow the login recipes in

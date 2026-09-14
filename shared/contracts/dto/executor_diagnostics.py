@@ -36,6 +36,7 @@ SAFE_EXECUTOR_DIAGNOSTIC_REASONS = {
     "profile_refresh_expired": "Host-session refresh credential has expired.",
     "profile_refresh_expiring": "Host-session refresh credential expires within 24 hours.",
     "profile_metadata_unverifiable": "Host-session credential metadata could not be verified.",
+    "profile_read_contended": "Host-session profile was being refreshed; it is re-read next tick.",
     "api_key_missing": "Required local API-key configuration is unavailable.",
     "stand_token_ready": "Local stand-token authentication and worker inventory are ready.",
     "stand_token_invalid": "Required local stand-token authentication is unavailable.",
@@ -77,6 +78,9 @@ class ExecutorProfileCondition(StrEnum):
     UNUSABLE = "unusable"
     #: Refresh material exists but stored time metadata is malformed or contradictory.
     UNVERIFIABLE = "unverifiable"
+    #: A CLI held the profile lock and no stable read completed within the bound.
+    #: Nothing about the session is claimed; it is not alertable and not resolved.
+    READ_CONTENDED = "read_contended"
 
 
 class ProfileLoginState(StrEnum):
@@ -142,7 +146,23 @@ PROFILE_CONDITION_OUTCOMES: dict[ExecutorProfileCondition, tuple[str, ExecutorAv
         "profile_metadata_unverifiable",
         ExecutorAvailability.UNKNOWN,
     ),
+    ExecutorProfileCondition.READ_CONTENDED: (
+        "profile_read_contended",
+        ExecutorAvailability.UNKNOWN,
+    ),
 }
+
+#: Conditions that open or keep an administrator alert episode.
+ALERTABLE_PROFILE_CONDITIONS = frozenset(
+    {
+        ExecutorProfileCondition.REFRESH_EXPIRING,
+        ExecutorProfileCondition.REFRESH_EXPIRED,
+        ExecutorProfileCondition.REFRESH_MISSING,
+        ExecutorProfileCondition.LOGGED_OUT,
+        ExecutorProfileCondition.UNUSABLE,
+        ExecutorProfileCondition.UNVERIFIABLE,
+    }
+)
 
 #: Conditions whose admissibility still depends on a reconciled worker inventory.
 INVENTORY_DEPENDENT_PROFILE_CONDITIONS = {
@@ -201,6 +221,9 @@ class ExecutorProfileObservation(BaseModel):
             and self.refresh_material is refresh.MISSING
             and not has_facts,
             condition.UNUSABLE: self.login_state is login.UNKNOWN
+            and self.refresh_material is refresh.UNKNOWN
+            and not has_facts,
+            condition.READ_CONTENDED: self.login_state is login.UNKNOWN
             and self.refresh_material is refresh.UNKNOWN
             and not has_facts,
             condition.UNVERIFIABLE: self.login_state is login.UNKNOWN
@@ -428,8 +451,8 @@ class ExecutorProfileAlertEpisode(BaseModel):
 
     @model_validator(mode="after")
     def _consistent_delivery(self) -> "ExecutorProfileAlertEpisode":
-        if self.condition is ExecutorProfileCondition.HEALTHY:
-            raise ValueError("a healthy profile has no alert episode")
+        if self.condition not in ALERTABLE_PROFILE_CONDITIONS:
+            raise ValueError("only an alertable profile condition has an alert episode")
         if (self.attempts == 0) != (self.last_outcome is None) or (self.attempts == 0) != (
             self.last_attempt_at is None
         ):

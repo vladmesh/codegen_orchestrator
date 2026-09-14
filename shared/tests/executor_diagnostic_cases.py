@@ -27,6 +27,10 @@ _OBSERVATIONS = {
         ProfileLoginState.UNKNOWN,
         RefreshMaterialState.PRESENT,
     ),
+    ExecutorProfileCondition.READ_CONTENDED: (
+        ProfileLoginState.UNKNOWN,
+        RefreshMaterialState.UNKNOWN,
+    ),
 }
 
 _CONDITION_FOR_REASON = {
@@ -36,6 +40,7 @@ _CONDITION_FOR_REASON = {
     "profile_logged_out": ExecutorProfileCondition.LOGGED_OUT,
     "profile_refresh_missing": ExecutorProfileCondition.REFRESH_MISSING,
     "profile_metadata_unverifiable": ExecutorProfileCondition.UNVERIFIABLE,
+    "profile_read_contended": ExecutorProfileCondition.READ_CONTENDED,
 }
 
 

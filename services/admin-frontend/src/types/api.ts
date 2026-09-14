@@ -608,7 +608,7 @@ export interface ExecutorDiagnostic {
   profile?: ExecutorProfileObservation | null
 }
 
-export type ExecutorProfileCondition = 'healthy' | 'logged_out' | 'refresh_expired' | 'refresh_expiring' | 'refresh_missing' | 'unusable' | 'unverifiable'
+export type ExecutorProfileCondition = 'healthy' | 'logged_out' | 'read_contended' | 'refresh_expired' | 'refresh_expiring' | 'refresh_missing' | 'unusable' | 'unverifiable'
 export type ProfileLoginState = 'expired' | 'logged_in' | 'logged_out' | 'unknown'
 export type RefreshMaterialState = 'missing' | 'present' | 'unknown'
 export type CredentialExpirySource = 'claude_oauth_expires_at' | 'codex_access_token_jwt_exp' | 'codex_refresh_token_jwt_exp'

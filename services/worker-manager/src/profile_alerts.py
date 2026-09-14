@@ -1,10 +1,12 @@
 """Deduplicated administrator alerts for host-session profiles that need attention.
 
 The diagnostics publisher is the single reconciler. Each executor has at most one
-Redis alert episode: an alertable observation opens it and attempts delivery at
-once, failed/partial/unaddressable delivery stays owed with bounded backoff, full
-delivery settles it, and a later healthy observation deletes only that executor's
-episode so a future regression alerts again. Losing Redis can repeat an alert; it
+Redis alert episode, spanning one unhealthy stretch: the first alertable
+observation opens it and attempts delivery at once, failed/partial/unaddressable
+delivery stays owed with bounded backoff, full delivery settles it, and later
+alertable observations only update its current safe facts. A healthy observation
+deletes only that executor's episode, so a future regression alerts again. A
+contended profile read is ignored. Losing Redis can repeat an alert; it
 never changes the published diagnostic.
 """
 
@@ -72,7 +74,11 @@ class ExecutorProfileAlerts:
     async def reconcile(self, snapshot: ExecutorDiagnosticSnapshot) -> None:
         """Reconcile every observed profile. Never raises into the publisher."""
         for diagnostic in snapshot.diagnostics:
-            if diagnostic.profile is None:
+            # A contended read proves nothing: it neither opens nor resolves.
+            if (
+                diagnostic.profile is None
+                or diagnostic.profile.condition is ExecutorProfileCondition.READ_CONTENDED
+            ):
                 continue
             try:
                 await self._reconcile_executor(
@@ -105,11 +111,7 @@ class ExecutorProfileAlerts:
                         episode_id=episode.episode_id,
                     )
                 return
-            if (
-                episode is None
-                or episode.condition is not profile.condition
-                or episode.refresh_expires_at != profile.refresh_expires_at
-            ):
+            if episode is None:
                 episode = ExecutorProfileAlertEpisode(
                     executor=executor,
                     episode_id=secrets.token_urlsafe(18),
@@ -124,6 +126,28 @@ class ExecutorProfileAlerts:
                 await self.redis.set(key, episode.model_dump_json())
                 logger.info(
                     "executor_profile_alert_opened",
+                    executor=executor.value,
+                    episode_id=episode.episode_id,
+                    condition=episode.condition.value,
+                )
+            elif (
+                episode.condition is not profile.condition
+                or episode.refresh_expires_at != profile.refresh_expires_at
+            ):
+                # The same unhealthy stretch: keep the delivery state, record
+                # only the current safe facts. Expiring->expired or a move
+                # among logged-out/missing/unusable/unverifiable never reopens
+                # a settled delivery; only a healthy observation ends it.
+                episode = ExecutorProfileAlertEpisode.model_validate(
+                    {
+                        **episode.model_dump(),
+                        "condition": profile.condition,
+                        "refresh_expires_at": profile.refresh_expires_at,
+                    }
+                )
+                await self.redis.set(key, episode.model_dump_json())
+                logger.info(
+                    "executor_profile_alert_facts_updated",
                     executor=executor.value,
                     episode_id=episode.episode_id,
                     condition=episode.condition.value,

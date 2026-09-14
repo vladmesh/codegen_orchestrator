@@ -42,7 +42,8 @@ class ProfileInspection:
     """One passive reading: the safe observation and a fixed refusal message.
 
     `refusal` is set exactly when the profile holds no usable refresh-capable
-    material, so worker creation and diagnostics refuse the same profiles.
+    material, so worker creation and diagnostics refuse the same profiles. A
+    contended or unverifiable read proves neither way and carries no refusal.
     """
 
     observation: ExecutorProfileObservation
@@ -61,6 +62,18 @@ def unusable(refusal: str) -> ProfileInspection:
             refresh_material=RefreshMaterialState.UNKNOWN,
         ),
         refusal,
+    )
+
+
+def read_contended() -> ProfileInspection:
+    """A CLI was rewriting the profile and no stable read completed in the bound."""
+    return ProfileInspection(
+        ExecutorProfileObservation(
+            condition=ExecutorProfileCondition.READ_CONTENDED,
+            login_state=ProfileLoginState.UNKNOWN,
+            refresh_material=RefreshMaterialState.UNKNOWN,
+        ),
+        None,
     )
 
 

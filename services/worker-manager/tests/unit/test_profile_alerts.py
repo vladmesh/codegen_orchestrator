@@ -252,7 +252,7 @@ async def test_healthy_observation_resolves_only_that_executor_and_a_regression_
 
 
 @pytest.mark.asyncio
-async def test_near_expiry_alert_names_the_expiry_and_a_worse_condition_is_a_new_episode(redis):
+async def test_near_expiry_alert_names_the_expiry_and_expiry_keeps_the_same_episode(redis):
     admins = Admins()
     alerts = ExecutorProfileAlerts(redis, admins)
     expiring = _expiring(T0, hours=5)
@@ -267,8 +267,8 @@ async def test_near_expiry_alert_names_the_expiry_and_a_worse_condition_is_a_new
             "warning",
         )
     ]
+    opened = await _episode(redis, AgentType.CODEX)
 
-    expired_at = T0 + timedelta(hours=6)
     expired = ExecutorProfileObservation(
         condition=ExecutorProfileCondition.REFRESH_EXPIRED,
         login_state=ProfileLoginState.EXPIRED,
@@ -276,13 +276,86 @@ async def test_near_expiry_alert_names_the_expiry_and_a_worse_condition_is_a_new
         refresh_expires_at=expiring.refresh_expires_at,
         refresh_expiry_source=CredentialExpirySource.CODEX_REFRESH_TOKEN_JWT_EXP,
     )
-    await alerts.reconcile(_snapshot(expired_at, codex=expired))
+    await alerts.reconcile(_snapshot(T0 + timedelta(hours=6), codex=expired))
+
+    # The same unhealthy stretch: current facts change, delivery does not reopen.
+    assert len(admins.messages) == 1
+    current = await _episode(redis, AgentType.CODEX)
+    assert current.episode_id == opened.episode_id
+    assert current.condition is ExecutorProfileCondition.REFRESH_EXPIRED
+    assert current.state is ExecutorProfileAlertState.SETTLED
+    assert current.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_moves_among_unusable_states_never_reopen_a_settled_episode(redis):
+    admins = Admins()
+    alerts = ExecutorProfileAlerts(redis, admins)
+    stretch = [
+        ExecutorProfileCondition.LOGGED_OUT,
+        ExecutorProfileCondition.REFRESH_MISSING,
+        ExecutorProfileCondition.UNUSABLE,
+        ExecutorProfileCondition.UNVERIFIABLE,
+        ExecutorProfileCondition.LOGGED_OUT,
+    ]
+
+    for tick, condition in enumerate(stretch):
+        await alerts.reconcile(
+            _snapshot(T0 + timedelta(seconds=30 * tick), codex=host_profile(condition))
+        )
+
+    assert len(admins.messages) == 1
+    episode = await _episode(redis, AgentType.CODEX)
+    assert episode.condition is ExecutorProfileCondition.LOGGED_OUT
+    assert episode.state is ExecutorProfileAlertState.SETTLED
+
+
+@pytest.mark.asyncio
+async def test_a_condition_change_keeps_owed_delivery_under_the_same_backoff(redis):
+    admins = Admins(FAILED, DELIVERED)
+    alerts = ExecutorProfileAlerts(redis, admins)
+
+    await alerts.reconcile(_snapshot(T0, codex=LOGGED_OUT))
+    owed = await _episode(redis, AgentType.CODEX)
+    await alerts.reconcile(
+        _snapshot(
+            T0 + timedelta(seconds=30),
+            codex=host_profile(ExecutorProfileCondition.REFRESH_MISSING),
+        )
+    )
+
+    changed = await _episode(redis, AgentType.CODEX)
+    assert len(admins.messages) == 1
+    assert changed.episode_id == owed.episode_id
+    assert changed.state is ExecutorProfileAlertState.OWED
+    assert changed.next_attempt_at == owed.next_attempt_at == T0 + timedelta(seconds=60)
+
+    await alerts.reconcile(
+        _snapshot(
+            T0 + timedelta(seconds=60),
+            codex=host_profile(ExecutorProfileCondition.REFRESH_MISSING),
+        )
+    )
 
     assert len(admins.messages) == 2
-    assert admins.messages[-1][1] == "error"
-    assert (
-        await _episode(redis, AgentType.CODEX)
-    ).condition is ExecutorProfileCondition.REFRESH_EXPIRED
+    assert admins.messages[-1][0].endswith("Host-session profile has no refresh credential.")
+    assert (await _episode(redis, AgentType.CODEX)).state is ExecutorProfileAlertState.SETTLED
+
+
+@pytest.mark.asyncio
+async def test_a_contended_read_neither_opens_nor_resolves_an_episode(redis):
+    admins = Admins()
+    alerts = ExecutorProfileAlerts(redis, admins)
+    contended = host_profile(ExecutorProfileCondition.READ_CONTENDED)
+
+    await alerts.reconcile(_snapshot(T0, codex=contended))
+    assert await _episode(redis, AgentType.CODEX) is None
+
+    await alerts.reconcile(_snapshot(T0 + timedelta(seconds=30), codex=LOGGED_OUT))
+    await alerts.reconcile(_snapshot(T0 + timedelta(seconds=60), codex=contended))
+
+    assert len(admins.messages) == 1
+    assert (await _episode(redis, AgentType.CODEX)).condition is ExecutorProfileCondition.LOGGED_OUT
 
 
 @pytest.mark.asyncio
@@ -370,6 +443,7 @@ def test_alert_message_is_executor_reason_and_expiry_only():
     "fields",
     [
         {"condition": "healthy", "state": "owed", "attempts": 0, "next_attempt_at": T0},
+        {"condition": "read_contended", "state": "owed", "attempts": 0, "next_attempt_at": T0},
         {"condition": "logged_out", "state": "settled", "attempts": 1, "last_outcome": "partial"},
         {"condition": "logged_out", "state": "owed", "attempts": 0},
         {

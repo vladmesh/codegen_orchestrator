@@ -225,12 +225,22 @@ host-session diagnostic requires exactly one `ExecutorProfileObservation`, and
 its reason code and availability are derived from the observation's closed
 `condition` (`healthy` → `ready`/available, `refresh_expiring` → degraded,
 `refresh_expired`/`refresh_missing`/`logged_out`/`unusable` → unavailable,
-`unverifiable` → unknown); only a healthy or expiring profile defers to
-`inventory_unreconciled`. Timestamps are timezone-aware, each time fact names its
+`unverifiable`/`read_contended` → unknown); only a healthy or expiring profile
+defers to `inventory_unreconciled`. Access/session expiry is reported but stays
+renewable while refresh material exists; only a locally proved refresh-credential
+expiry drives `refresh_expiring` (24 hours) and `refresh_expired`. The Codex
+reader, shared by worker creation and diagnostics, observes in a fixed order: a
+stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (a torn
+read while a CLI holds it is `read_contended`, never logged out), then the
+authoritative `auth_mode` (anything but the ChatGPT subscription mode is
+`unusable`), and only then ChatGPT token material. Timestamps are timezone-aware, each time fact names its
 executor-specific source, and an access-token expiry can never be stored as a
 refresh expiry. Worker-manager's `ExecutorDiagnostics` publisher alone writes the
 snapshot and reconciles `ExecutorProfileAlertEpisode` records, whose delivery
-outcomes are the `AdminDeliveryStatus` values.
+outcomes are the `AdminDeliveryStatus` values. One episode spans an executor's
+whole unhealthy stretch: later alertable observations update its condition and
+refresh expiry without reopening delivery, `read_contended` neither opens nor
+resolves it, and only a healthy observation deletes it.
 
 `EngineeringExecutionEvidence` is the authoritative boundary for whether an
 engineering agent started. It is exactly either `agent_started` with no refusal,

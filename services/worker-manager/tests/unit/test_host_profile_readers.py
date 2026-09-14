@@ -7,13 +7,17 @@ fail loudly.
 
 import asyncio
 import base64
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+import fcntl
 import json
 import os
 from pathlib import Path
 import shutil
 import socket
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -27,10 +31,11 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 from shared.contracts.vocab import AgentType
 from src.claude_auth import inspect_claude_host_session, validate_claude_host_session
-from src.codex_auth import inspect_codex_host_session
+from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
 from src.host_profile import jwt_expiry
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+ROOT_DIR = Path(__file__).resolve().parents[4]
 ACCESS_SECRET = "sk-ant-oat01-SYNTHETIC-ACCESS"  # noqa: S105 - synthetic fixture
 REFRESH_SECRET = "sk-ant-ort01-SYNTHETIC-REFRESH"  # noqa: S105 - synthetic fixture
 OPAQUE_CODEX_REFRESH = "rt_SYNTHETIC-opaque-refresh"  # noqa: S105 - synthetic fixture
@@ -235,6 +240,7 @@ def _codex_auth(*, access=..., refresh=..., last_refresh=...) -> dict:
         "account_id": "synthetic-account",
     }
     auth = {
+        "auth_mode": "chatgpt",
         "OPENAI_API_KEY": None,
         "tokens": {key: value for key, value in tokens.items() if value is not None},
         "last_refresh": "2026-09-13T08:30:00.123456789Z" if last_refresh is ... else last_refresh,
@@ -445,6 +451,14 @@ def _forbid_side_effects(monkeypatch):
     import docker
     import httpx
 
+    real_os_open = os.open
+
+    def read_only_open(path, flags, *args, **kwargs):
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            raise AssertionError("a passive profile read opened a file for writing")
+        return real_os_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", read_only_open)
     monkeypatch.setattr(docker, "from_env", forbidden)
     monkeypatch.setattr(httpx.Client, "send", forbidden)
     monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
@@ -524,8 +538,18 @@ def test_readers_and_the_diagnostic_are_passive_and_in_place(tmp_path, monkeypat
 def test_reader_sources_use_no_process_copy_network_or_write_primitives():
     root = Path(__file__).resolve().parents[2] / "src"
     for name in ("claude_auth.py", "codex_auth.py", "host_profile.py"):
-        source = (root / name).read_text()
+        # The one descriptor a reader opens: the worker lock, read-only, to join it.
+        source = (
+            (root / name)
+            .read_text()
+            .replace("os.open(profile / CODEX_PROFILE_LOCK_NAME, os.O_RDONLY)", "")
+        )
         for forbidden in (
+            "O_WRONLY",
+            "O_RDWR",
+            "O_CREAT",
+            "O_TRUNC",
+            "LOCK_EX",
             "subprocess",
             "shutil",
             "socket",
@@ -630,3 +654,227 @@ def test_worker_creation_shares_the_reader_refresh_decision(tmp_path, monkeypatc
         manager_module.WorkerManager._validate_host_session(
             AgentType.CODEX, "host_session", None, "/docker-host/.codex"
         )
+
+
+# --- Codex observation order: stable locked read, then auth_mode, then tokens -------
+
+
+@contextmanager
+def _worker_holds_profile_lock(profile: Path):
+    """What `worker_wrapper.wrapper.codex_profile_lock` does for a whole Codex process."""
+    lock_path = profile / ".codegen-codex.lock"
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        lock_path.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _truncate_in_place(auth_path: Path) -> None:
+    """The pinned CLI's `FileAuthStorage::save`: open with truncate, same inode and mode."""
+    with auth_path.open("r+", encoding="utf-8") as handle:
+        handle.truncate(0)
+
+
+def test_the_reader_joins_the_lock_the_worker_wrapper_takes():
+    from src.codex_auth import CODEX_PROFILE_LOCK_NAME
+
+    wrapper = ROOT_DIR / "packages/worker-wrapper/src/worker_wrapper/wrapper.py"
+    assert f'profile / "{CODEX_PROFILE_LOCK_NAME}"' in wrapper.read_text()
+
+
+def test_a_torn_read_while_a_cli_holds_the_lock_is_contended_not_logged_out(tmp_path, monkeypatch):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    profile = _codex_profile(tmp_path, _codex_auth())
+    auth_path = profile / "auth.json"
+
+    with _worker_holds_profile_lock(profile):
+        _truncate_in_place(auth_path)
+        empty = inspect_codex_host_session(str(profile), now=NOW)
+        auth_path.write_text('{"auth_mode": "chatgpt", "tokens": {"access_')
+        partial = inspect_codex_host_session(str(profile), now=NOW)
+        # Worker creation does not refuse, or claim, what it could not read.
+        validate_codex_host_session(str(profile))
+
+    for inspection in (empty, partial):
+        assert inspection.observation.condition is ExecutorProfileCondition.READ_CONTENDED
+        assert inspection.observation.login_state is ProfileLoginState.UNKNOWN
+        assert inspection.refusal is None
+
+
+def test_the_same_empty_file_without_a_cli_holding_the_lock_is_logged_out(tmp_path):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    with _worker_holds_profile_lock(profile):
+        pass  # the lock file exists, as after any worker run, but nothing holds it
+    _truncate_in_place(profile / "auth.json")
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.LOGGED_OUT
+    assert inspection.refusal is not None
+
+
+def test_an_in_place_refresh_during_the_read_yields_the_new_stable_observation(
+    tmp_path, monkeypatch
+):
+    import src.codex_auth as codex_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_ATTEMPTS", 200)
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.01)
+    profile = _codex_profile(tmp_path, _codex_auth())
+    auth_path = profile / "auth.json"
+    refreshed_exp = NOW + timedelta(days=10)
+    refreshed = json.dumps(_codex_auth(access=_jwt(exp=_epoch(refreshed_exp))))
+    truncated = threading.Event()
+
+    def cli_refresh():
+        with auth_path.open("r+", encoding="utf-8") as handle:
+            handle.truncate(0)
+            handle.flush()
+            truncated.set()
+            time.sleep(0.15)
+            handle.write(refreshed)
+
+    with _worker_holds_profile_lock(profile):
+        writer = threading.Thread(target=cli_refresh)
+        writer.start()
+        assert truncated.wait(2)
+        inspection = inspect_codex_host_session(str(profile), now=NOW)
+        writer.join()
+
+    assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+    assert inspection.observation.session_expires_at == refreshed_exp
+    assert inspection.refusal is None
+
+
+def test_diagnostics_publish_a_contended_codex_read_as_unknown(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    import src.codex_auth as codex_module
+    import src.executor_diagnostics as diagnostics_module
+
+    monkeypatch.setattr(codex_module, "STABLE_READ_PAUSE_SECONDS", 0.001)
+    monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", None, raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/docker-host/.codex")
+    profile = _codex_profile(tmp_path, _codex_auth())
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
+    now = datetime.now(UTC)
+
+    with _worker_holds_profile_lock(profile):
+        _truncate_in_place(profile / "auth.json")
+        diagnostic = diagnostics_module.ExecutorDiagnostics(
+            redis=AsyncMock(), docker=MagicMock(), alerts=MagicMock()
+        )._executor_diagnostic(
+            AgentType.CODEX,
+            now,
+            now + timedelta(seconds=90),
+            {AgentType.CLAUDE: 0, AgentType.CODEX: 1},
+        )
+
+    assert diagnostic.availability is ExecutorAvailability.UNKNOWN
+    assert diagnostic.reason_code == "profile_read_contended"
+
+
+def test_the_reader_releases_its_shared_lock(tmp_path):
+    profile = _codex_profile(tmp_path, _codex_auth())
+    with _worker_holds_profile_lock(profile):
+        pass
+
+    inspect_codex_host_session(str(profile), now=NOW)
+
+    with (profile / ".codegen-codex.lock").open("a") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+API_KEY_SECRET = "sk-proj-SYNTHETIC-API-KEY"  # noqa: S105 - synthetic fixture
+
+
+@pytest.mark.parametrize(
+    ("overrides", "subscription"),
+    [
+        ({"auth_mode": "chatgpt"}, True),
+        # An explicit ChatGPT mode wins over a stored API key, as in the CLI.
+        ({"auth_mode": "chatgpt", "OPENAI_API_KEY": API_KEY_SECRET}, True),
+        ({"auth_mode": ...}, True),  # absent mode with no competing credential
+        ({"auth_mode": "apikey", "OPENAI_API_KEY": API_KEY_SECRET}, False),
+        ({"auth_mode": "apikey"}, False),
+        ({"auth_mode": ..., "OPENAI_API_KEY": API_KEY_SECRET}, False),
+        ({"auth_mode": ..., "personal_access_token": "pat-SYNTHETIC"}, False),
+        ({"auth_mode": ..., "bedrock_api_key": {"api_key": "SYNTHETIC"}}, False),
+        ({"auth_mode": "chatgptAuthTokens"}, False),
+        ({"auth_mode": "headers"}, False),
+        ({"auth_mode": "agentIdentity"}, False),
+        ({"auth_mode": "ChatGPT"}, False),
+        ({"auth_mode": 1}, False),
+    ],
+)
+def test_codex_auth_mode_is_checked_before_retained_chatgpt_tokens(
+    tmp_path, monkeypatch, overrides, subscription
+):
+    import src.executor_diagnostics as diagnostics_module
+    import src.manager as manager_module
+
+    auth = _codex_auth()
+    for key, value in overrides.items():
+        if value is ...:
+            auth.pop(key, None)
+        else:
+            auth[key] = value
+    profile = _codex_profile(tmp_path, auth)
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    if subscription:
+        assert inspection.observation.condition is ExecutorProfileCondition.HEALTHY
+        assert inspection.refusal is None
+        return
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+    assert inspection.refusal == "Codex auth.json is not in the ChatGPT subscription auth_mode"
+    assert API_KEY_SECRET not in inspection.refusal
+    monkeypatch.setattr(manager_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
+    with pytest.raises(RuntimeError, match="auth_mode"):
+        manager_module.WorkerManager._validate_host_session(
+            AgentType.CODEX, "host_session", None, "/docker-host/.codex"
+        )
+    monkeypatch.setattr(diagnostics_module.settings, "LIVE_CONTOUR", None, raising=False)
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_HOME", "/docker-host/.codex")
+    monkeypatch.setattr(diagnostics_module.settings, "HOST_CODEX_VALIDATION_PATH", str(profile))
+    now = datetime.now(UTC)
+    diagnostic = diagnostics_module.ExecutorDiagnostics(
+        redis=None, docker=None, alerts=object()
+    )._executor_diagnostic(
+        AgentType.CODEX, now, now + timedelta(seconds=90), {AgentType.CLAUDE: 0, AgentType.CODEX: 0}
+    )
+    assert diagnostic.availability is ExecutorAvailability.UNAVAILABLE
+    assert API_KEY_SECRET not in diagnostic.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [{}, {"access_token": _jwt(exp=_epoch(NOW + timedelta(days=1)))}],
+)
+def test_a_non_subscription_mode_wins_over_logged_out_or_missing_refresh_tokens(tmp_path, tokens):
+    auth = {"auth_mode": "apikey", "OPENAI_API_KEY": API_KEY_SECRET, "tokens": tokens}
+
+    inspection = inspect_codex_host_session(str(_codex_profile(tmp_path, auth)), now=NOW)
+
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE
+    assert "auth_mode" in inspection.refusal
+
+
+def test_joining_the_lock_is_passive_and_never_opens_for_writing(tmp_path, monkeypatch):
+    profile = _codex_profile(tmp_path, {**_codex_auth(), "auth_mode": "apikey"})
+    with _worker_holds_profile_lock(profile):
+        pass
+    before = _tree_state(tmp_path)
+    _forbid_side_effects(monkeypatch)
+
+    inspection = inspect_codex_host_session(str(profile), now=NOW)
+
+    assert _tree_state(tmp_path) == before
+    assert inspection.observation.condition is ExecutorProfileCondition.UNUSABLE

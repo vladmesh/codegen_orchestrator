@@ -288,9 +288,16 @@ publishes their login state, refresh-material state and stored expiry facts in
 a token. A logged-out, missing-refresh, unusable or expired profile is
 `unavailable` and refuses new starts; a refresh credential whose stored expiry is
 at or inside 24 hours is `degraded` and still admits starts until it expires;
-malformed or contradictory metadata is `unknown`. Each of those states sends one
-Telegram alert to every administrator, retried with backoff until every
-administrator received it; a healthy observation closes that executor's episode.
+malformed or contradictory metadata is `unknown`. An access/session expiry alone
+never degrades a profile that holds refresh material. A Codex profile whose
+`auth.json` is not in the ChatGPT subscription `auth_mode` is unavailable. The
+first of those states sends one Telegram alert to every administrator, retried
+with backoff until every administrator received it; further changes during the
+same unhealthy stretch (for example expiring to expired) update the card without
+another alert, and only a healthy observation closes the executor's episode so a
+later regression alerts again. `Host-session profile was being refreshed` means
+a worker's CLI was rewriting `auth.json` during the read; it is re-read on the
+next tick and never alerts.
 Worker-manager needs `TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` to
 deliver it.
 

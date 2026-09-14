@@ -144,6 +144,8 @@ def test_snapshot_requires_protocol_version_and_fixed_safe_reason_text():
         (True, "host_session", ExecutorAvailability.UNAVAILABLE, 0, "profile_logged_out"),
         (True, "host_session", ExecutorAvailability.UNAVAILABLE, 0, "profile_refresh_missing"),
         (True, "host_session", ExecutorAvailability.UNKNOWN, 0, "profile_metadata_unverifiable"),
+        (True, "host_session", ExecutorAvailability.UNKNOWN, 0, "profile_read_contended"),
+        (True, "host_session", ExecutorAvailability.UNKNOWN, None, "profile_read_contended"),
         (True, "api_key", ExecutorAvailability.UNAVAILABLE, 2, "api_key_missing"),
         (True, "stand_token", ExecutorAvailability.AVAILABLE, 0, "stand_token_ready"),
         (True, "stand_token", ExecutorAvailability.UNAVAILABLE, 2, "stand_token_invalid"),
@@ -473,3 +475,54 @@ async def test_endpoint_fallback_is_a_v2_unknown_snapshot_without_profiles(monke
     assert snapshot.schema_version == "v2"
     assert {item.availability for item in snapshot.diagnostics} == {ExecutorAvailability.UNKNOWN}
     assert all(item.profile is None for item in snapshot.diagnostics)
+
+
+@pytest.mark.parametrize(
+    ("availability", "reason_code"),
+    [
+        (ExecutorAvailability.AVAILABLE, "ready"),
+        (ExecutorAvailability.UNAVAILABLE, "profile_logged_out"),
+        (ExecutorAvailability.UNKNOWN, "inventory_unreconciled"),
+    ],
+)
+def test_a_contended_profile_read_can_only_be_published_as_unknown(availability, reason_code):
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        ExecutorDiagnostic(
+            executor=AgentType.CODEX,
+            enabled=True,
+            auth_mode="host_session",
+            availability=availability,
+            observed_at=now,
+            expires_at=now + timedelta(seconds=60),
+            active_lease_count=None if availability is ExecutorAvailability.UNKNOWN else 0,
+            reason_code=reason_code,
+            reason=safe_executor_diagnostic_reason(reason_code),
+            profile=host_profile(ExecutorProfileCondition.READ_CONTENDED),
+        )
+
+
+def test_an_access_session_expiry_alone_never_degrades_a_refreshable_profile():
+    """Observer decision: session expiry is reported but renewable with refresh material."""
+    now = datetime.now(UTC)
+    for session_offset in (timedelta(hours=2), -timedelta(hours=2)):
+        profile = ExecutorProfileObservation(
+            condition=ExecutorProfileCondition.HEALTHY,
+            login_state=ProfileLoginState.LOGGED_IN,
+            refresh_material=RefreshMaterialState.PRESENT,
+            session_expires_at=now + session_offset,
+            session_expiry_source=CredentialExpirySource.CODEX_ACCESS_TOKEN_JWT_EXP,
+        )
+        diagnostic = ExecutorDiagnostic(
+            executor=AgentType.CODEX,
+            enabled=True,
+            auth_mode="host_session",
+            availability=ExecutorAvailability.AVAILABLE,
+            observed_at=now,
+            expires_at=now + timedelta(seconds=60),
+            active_lease_count=0,
+            reason_code="ready",
+            reason=safe_executor_diagnostic_reason("ready"),
+            profile=profile,
+        )
+        assert diagnostic.availability is ExecutorAvailability.AVAILABLE
