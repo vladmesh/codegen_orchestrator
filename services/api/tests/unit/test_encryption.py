@@ -168,8 +168,22 @@ async def test_get_api_key_rejects_plaintext_value():
 @pytest.mark.asyncio
 async def test_create_server_encrypts_ssh_key():
     """POST /servers/ stores an encrypted SSH key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
     session = _mock_db_session()
     _override_session(session)
+    # The API parses a managed server's key before storing it, so the key has to
+    # be real OpenSSH private-key material rather than a placeholder.
+    fleet_key = (
+        ed25519.Ed25519PrivateKey.generate()
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+        .decode()
+    )
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -180,7 +194,7 @@ async def test_create_server_encrypts_ssh_key():
                 "handle": "srv-1",
                 "host": "srv-1.example.com",
                 "public_ip": "1.2.3.4",
-                "ssh_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END-----",
+                "ssh_key": fleet_key,
             },
         )
 
@@ -191,7 +205,11 @@ async def test_create_server_encrypts_ssh_key():
 
 @pytest.mark.asyncio
 async def test_create_server_without_ssh_key():
-    """POST /servers/ without ssh_key stores None."""
+    """POST /servers/ without ssh_key stores None for a row whose key is not owed yet.
+
+    A managed row needs a key unless provisioning still owns it and will mint
+    one, so the keyless row here is one provider discovery creates.
+    """
     session = _mock_db_session()
     _override_session(session)
 
@@ -204,6 +222,7 @@ async def test_create_server_without_ssh_key():
                 "handle": "srv-2",
                 "host": "srv-2.example.com",
                 "public_ip": "5.6.7.8",
+                "status": "pending_setup",
             },
         )
 

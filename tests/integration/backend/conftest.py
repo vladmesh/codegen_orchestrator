@@ -29,6 +29,7 @@ from shared.contracts.queues.worker import (
 )
 from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_MANAGER_GROUP
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -634,6 +635,7 @@ async def seed_server(api_client):
             "capacity_ram_mb": capacity_ram_mb,
             "capacity_disk_mb": capacity_disk_mb,
             "is_managed": is_managed,
+            "ssh_key": fleet_private_key(),
         }
         resp = await api_client.post("/api/servers/", json=body)
         assert resp.status_code == 201, f"Failed to seed server: {resp.text}"

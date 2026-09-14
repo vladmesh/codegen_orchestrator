@@ -26,6 +26,7 @@ acceptance against a real target is a separate card.
 
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import jinja2
@@ -33,6 +34,13 @@ import pytest
 import yaml
 
 from shared.qa_identity import QA_SSH_USER
+from shared.qa_target_profile import (
+    QA_DOCKER_REQUIRED_VERBS,
+    QA_TARGET_PROFILE_VERSION,
+    proved_profile_version,
+    qa_target_artefact_digest,
+    wrapper_answer_problem,
+)
 
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 ROLE = ANSIBLE_DIR / "roles" / "qa_identity"
@@ -329,6 +337,7 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         sudo: str | None = SUDO_ONE_WRAPPER,
         socket_reachable: bool = False,
         keys: str | None = SENTINEL,
+        wrapper_answer: str | None = None,
     ) -> Path:
         stubs = tmp_path / "bin"
         stubs.mkdir(exist_ok=True)
@@ -350,7 +359,19 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
             "sudo",
             "exit 1" if sudo is None else f"cat <<'LISTING'\n{sudo}\nLISTING",
         )
-        _stub(stubs, "runuser", f"exit {0 if socket_reachable else 1}")
+        # `runuser -u ACCOUNT -- sudo -n WRAPPER version` is the account asking the
+        # wrapper which profile it is; by default that is this role's own wrapper
+        # file answering. Every other `runuser` is the socket question.
+        answer = (
+            f"exec {WRAPPER} version"
+            if wrapper_answer is None
+            else f"cat <<'ANSWER'\n{wrapper_answer}\nANSWER\nexit 0"
+        )
+        _stub(
+            stubs,
+            "runuser",
+            f'if [ "$4" = "sudo" ]; then\n{answer}\nfi\nexit {0 if socket_reachable else 1}',
+        )
         return stubs
 
     def _prove(
@@ -363,7 +384,14 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
     ) -> subprocess.CompletedProcess:
         keys = stubs.parent / "home" / ".ssh" / "authorized_keys"
         return subprocess.run(
-            [str(PROOF), QA_SSH_USER, "/usr/local/bin/qa-docker", str(socket), SENTINEL],
+            [
+                str(PROOF),
+                QA_SSH_USER,
+                "/usr/local/bin/qa-docker",
+                str(socket),
+                SENTINEL,
+                QA_TARGET_PROFILE_VERSION,
+            ],
             capture_output=True,
             text=True,
             env={
@@ -445,7 +473,37 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         # so "this file is the one this role wrote" is asked with the role's own
         # sentinel rather than with a copy of it kept in the script.
         assert "{{ qa_authorized_keys_sentinel | quote }}" in proof["cmd"]
+        # The profile the wrapper must answer with travels in from the role's
+        # defaults, the same value the orchestrator pins.
+        assert "{{ qa_target_profile_version | quote }}" in proof["cmd"]
         assert _task_index(PROOF_TASK) == len(_tasks()) - 1
+
+    def test_the_proof_reports_the_profile_it_proved(self, tmp_path, socket):
+        """The receipt is written from this line, so it has to name the exact profile."""
+        result = self._prove(self._target(tmp_path), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            # The wrapper production target 5wwb carried: it predates `version`.
+            "qa-docker: docker version is refused on this host; "
+            "allowed: diff inspect logs port ps stats top",
+            "qa-docker profile=0123456789abcdef verbs=diff inspect logs port ps read-contract "
+            "stats top version",
+        ],
+    )
+    def test_a_seat_whose_wrapper_is_not_the_current_profile_is_refused(
+        self, tmp_path, socket, answer
+    ):
+        """Same path, same sudo rule, older file: the seat is not the one QA speaks to."""
+        result = self._prove(self._target(tmp_path, wrapper_answer=answer), socket)
+
+        assert result.returncode != 0
+        assert f"not QA target profile {QA_TARGET_PROFILE_VERSION}" in result.stderr
+        assert "qa_target_version=" not in result.stdout
 
     def test_a_failed_proof_is_what_stops_the_identity_being_recorded(self):
         """The provisioner writes the label only when the playbook succeeded.
@@ -952,3 +1010,53 @@ class TestTheTargetRefusesWhatWrites:
         names = set(allowed.split('"')[1].split())
         assert {"diff", "inspect", "logs", "port", "stats", "top"} <= names
         assert "ps" in names, "capability resolution asks docker which containers this project has"
+        assert QA_DOCKER_REQUIRED_VERBS <= names
+
+    def test_version_answers_the_pinned_profile_and_every_required_verb(self, docker):
+        result = self._wrapper(docker, "version")
+
+        assert result.returncode == 0, result.stderr
+        assert wrapper_answer_problem(result.stdout) is None
+        assert not docker.exists(), "version is answered by the wrapper, not by docker"
+
+    def test_version_takes_no_arguments_and_never_reaches_docker(self, docker):
+        result = self._wrapper(docker, "version", "--format", "{{json .}}")
+
+        assert result.returncode != 0
+        assert not docker.exists()
+
+
+class TestTheProfileVersionIsBoundToTheRoleFiles:
+    """`QA_TARGET_PROFILE_VERSION` is what these files say, mechanically.
+
+    A change to any role artefact — the wrapper's verbs above all — changes the
+    derived version, so this fails until the pinned constant, the wrapper's
+    line and the defaults' line are updated together. A host that still carries
+    the old files then answers an old profile and is refused.
+    """
+
+    def test_the_pinned_version_is_derived_from_the_role_files(self):
+        assert qa_target_artefact_digest(ROLE) == QA_TARGET_PROFILE_VERSION
+
+    def test_the_wrapper_and_the_defaults_carry_the_pinned_version(self):
+        assert f"QA_TARGET_PROFILE_VERSION={QA_TARGET_PROFILE_VERSION}\n" in WRAPPER.read_text()
+        assert _defaults()["qa_target_profile_version"] == QA_TARGET_PROFILE_VERSION
+
+    def test_changing_a_role_artefact_changes_the_version(self, tmp_path):
+        copy = tmp_path / "qa_identity"
+        shutil.copytree(ROLE, copy)
+        wrapper = copy / "files" / "qa-docker"
+        wrapper.write_text(wrapper.read_text().replace(" read-contract", "", 1))
+
+        assert qa_target_artefact_digest(copy) != QA_TARGET_PROFILE_VERSION
+
+    def test_the_version_lines_alone_do_not_change_the_version(self, tmp_path):
+        """Otherwise the version could never be written into the files it describes."""
+        copy = tmp_path / "qa_identity"
+        shutil.copytree(ROLE, copy)
+        wrapper = copy / "files" / "qa-docker"
+        wrapper.write_text(
+            wrapper.read_text().replace(QA_TARGET_PROFILE_VERSION, "ffffffffffffffff")
+        )
+
+        assert qa_target_artefact_digest(copy) == QA_TARGET_PROFILE_VERSION

@@ -69,3 +69,8 @@ class QAServerInfo:
     # and `qa_ssh_user` is set: the reason travels with the resolution so the
     # refusal can be journalled where it is decided rather than re-derived.
     qa_identity_rejection: str = ""
+    # Why this host's QA target readiness receipt does not prove the current
+    # profile (`shared.qa_target_profile.QATargetReceiptRejection`), when it
+    # does not. A run refuses such a host before issuing access or starting an
+    # executor.
+    qa_target_receipt_rejection: str = ""

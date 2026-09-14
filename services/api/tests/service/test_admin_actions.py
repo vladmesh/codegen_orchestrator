@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.models import Run, WorkAdmissionAudit
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 TASK_TEST_TELEGRAM_ID = 999000999
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -92,6 +93,7 @@ async def server_handle(client: AsyncClient, _ensure_project):
                 "handle": handle,
                 "host": "test.example.com",
                 "public_ip": "10.0.0.1",
+                "ssh_key": fleet_private_key(),
                 "ssh_user": "root",
             },
         )

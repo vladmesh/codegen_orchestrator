@@ -51,10 +51,14 @@ class SSHManager:
             raise RuntimeError(f"Failed to generate SSH keys: {e}") from e
 
     def get_private_key(self) -> str | None:
-        """Read SSH private key content."""
+        """Read SSH private key content exactly as ssh-keygen wrote it.
+
+        Not stripped: the key's terminal newline is part of the format, and the
+        API refuses a managed-server key that has lost it.
+        """
         if os.path.exists(self.key_path):
             with open(self.key_path) as f:
-                return f.read().strip()
+                return f.read()
         return None
 
     def get_public_key(self) -> str | None:

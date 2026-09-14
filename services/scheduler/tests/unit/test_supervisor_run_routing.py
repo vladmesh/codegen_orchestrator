@@ -1934,6 +1934,112 @@ class TestSuperviseTestingStories:
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "category",
+        [
+            "qa_target_profile_stale",
+            "qa_probe_unavailable",
+            "server_unavailable",
+            "qa_executor_unavailable",
+            "qa_identity_unreadable",
+        ],
+    )
+    async def test_a_qa_harness_blocker_parks_for_recheck_and_tells_administrators(
+        self, api_client, redis_client, category
+    ):
+        """The target's harness failed, not the product: park, tell admins, no fix, no blame."""
+        from unittest.mock import AsyncMock, patch
+
+        from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
+        from src.tasks.supervisor import supervise_testing_stories
+
+        assert QABlockerCategory(category) in QA_HARNESS_BLOCKERS
+        blocker = {
+            "category": category,
+            "attempted": "read the generated contract codegen_kit/_active_packages.py",
+            "sent": "docker read-contract weather-backend-1 codegen_kit/_active_packages.py 262144",
+            "received": "exit 2: qa-docker: docker read-contract is refused on this host",
+        }
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={"qa_outcome": QAOutcome.BLOCKED.value, "blocker": blocker},
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.create_task.assert_not_called()
+        api_client.fail_story.assert_not_called()
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        admins.assert_awaited_once()
+        message = admins.await_args.args[0]
+        assert category in message
+        assert "/api/stories/story-1/recheck-qa" in message
+        assert api_client.update_story.await_args.args[1]["quarantine_reason"]["blocker"] == blocker
+
+    def test_a_harness_blocker_is_never_worded_to_the_owner_as_a_product_problem(self):
+        from src.tasks.supervisor.qa import _quarantine_text
+
+        text = _quarantine_text(
+            {
+                "qa_outcome": QAOutcome.BLOCKED.value,
+                "blocker": {
+                    "category": "qa_target_profile_stale",
+                    "attempted": "a",
+                    "sent": "s",
+                    "received": "qa-docker: docker read-contract is refused on this host",
+                },
+            }
+        )
+
+        assert "not in the product" in text
+        assert "fix" not in text.lower()
+        assert "refused on this host" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_blocker_that_is_not_the_harness_raises_no_harness_notice(
+        self, api_client, redis_client
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.BLOCKED.value,
+                "blocker": {
+                    "category": "bot_not_live",
+                    "attempted": "confirm @bot is live",
+                    "sent": "GET /bot-liveness",
+                    "received": "token_revoked",
+                },
+            },
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            await supervise_testing_stories(api_client, redis_client)
+
+        admins.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_unreachable_health_only_qa_waits_for_human_without_fix_task(
         self, api_client, redis_client
     ):

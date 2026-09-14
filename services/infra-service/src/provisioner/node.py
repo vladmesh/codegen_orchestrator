@@ -16,7 +16,7 @@ import httpx
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.contracts.dto.server import ServerDTO, ServerStatus, TargetIdentity, target_identity
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
@@ -28,13 +28,14 @@ from shared.provisioning_policy import (
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
 
+from shared.qa_target_profile import current_profile_proof
+
 from ..config.constants import Provisioning, Timeouts
 from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
     get_server_ssh_key,
-    mark_provisioning_complete,
     reserve_provisioning_attempt,
     update_server_labels,
     update_server_status,
@@ -42,7 +43,11 @@ from .api_client import (
 from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient
 from .handlers import handle_provisioning_success
 from .incidents import create_incident
-from .operations import reinstall_and_provision
+from .operations import (
+    CredentialCutoverError,
+    cut_over_to_generated_key,
+    reinstall_and_provision,
+)
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -234,13 +239,14 @@ class ProvisionerNode(FunctionalNode):
         os_template: str,
         provisioning_attempts: int,
         provisioning_episode_id: str,
+        expected_identity: TargetIdentity,
         is_recovery: bool,
         state: dict,
     ) -> dict:
         """Execute reinstall provisioning path."""
         ssh_public_key = self.ssh_manager.get_public_key()
 
-        success, message = await reinstall_and_provision(
+        outcome = await reinstall_and_provision(
             time4vps_client=time4vps_client,
             server_handle=server_handle,
             provider=provider,
@@ -256,7 +262,7 @@ class ProvisionerNode(FunctionalNode):
             orchestrator_hostname=self.orchestrator_hostname,
         )
 
-        if success:
+        if outcome.success:
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,
@@ -265,13 +271,22 @@ class ProvisionerNode(FunctionalNode):
                 is_recovery,
                 " (Reinstalled)",
                 ssh_manager=self.ssh_manager,
+                qa_target_proof=outcome.qa_target_proof,
+                expected_identity=expected_identity,
+                retain_finalization=state.get("retain_finalization"),
             )
 
+        message = outcome.message
         await update_server_status(server_handle, "error")
         await create_incident(
             server_handle,
             IncidentType.PROVISIONING_FAILED,
-            {"step": "reinstall", "message": message},
+            {
+                "step": "reinstall",
+                "message": message,
+                "episode_id": provisioning_episode_id,
+                "identity": expected_identity.model_dump(mode="json"),
+            },
         )
         await notify_admins_best_effort(
             f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
@@ -284,7 +299,7 @@ class ProvisionerNode(FunctionalNode):
             "provisioning_result": {"status": "failed", "method": "reinstall"},
         }
 
-    async def _run_existing_access_path(
+    async def _run_existing_access_path(  # noqa: PLR0913, PLR0917
         self,
         server_handle: str,
         server_ip: str,
@@ -293,6 +308,7 @@ class ProvisionerNode(FunctionalNode):
         provisioning_episode_id: str,
         is_recovery: bool,
         state: dict,
+        expected_identity: TargetIdentity,
         ssh_user: str | None = None,
         ssh_private_key: str | None = None,
         provisioning_profile: str | None = None,
@@ -320,11 +336,48 @@ class ProvisionerNode(FunctionalNode):
             await create_incident(
                 server_handle,
                 IncidentType.PROVISIONING_FAILED,
-                {"step": "access_setup", "output": output_access[:500]},
+                {
+                    "step": "access_setup",
+                    "output": output_access[:500],
+                    "episode_id": provisioning_episode_id,
+                    "identity": expected_identity.model_dump(mode="json"),
+                },
             )
             return {
                 "messages": [{"message": f"❌ Phase 1 (Access) failed for {server_handle}"}],
                 "errors": state.get("errors", []) + ["Phase 1 failed"],
+            }
+
+        # The bootstrap credential has done its only job. A fresh login proves the
+        # generated key as the administrative account, and everything after it
+        # runs through that identity.
+        try:
+            identity = cut_over_to_generated_key(
+                ansible_runner=self.ansible_runner,
+                ssh_manager=self.ssh_manager,
+                server_ip=server_ip,
+                server_handle=server_handle,
+                admin_ssh_user=deploy_user,
+            )
+        except CredentialCutoverError as exc:
+            await update_server_status(server_handle, "error")
+            await create_incident(
+                server_handle,
+                IncidentType.PROVISIONING_FAILED,
+                {
+                    "step": "credential_cutover",
+                    "reason": exc.reason,
+                    "detail": exc.detail[:500],
+                    "episode_id": provisioning_episode_id,
+                    "identity": expected_identity.model_dump(mode="json"),
+                },
+            )
+            return {
+                "messages": [
+                    {"message": f"❌ Credential cutover ({exc.reason}) failed for {server_handle}"}
+                ],
+                "errors": state.get("errors", []) + ["Credential cutover failed"],
+                "provisioning_result": {"status": "failed", "server_ip": server_ip},
             }
 
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
@@ -337,8 +390,8 @@ class ProvisionerNode(FunctionalNode):
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
             deploy_user=deploy_user,
-            ssh_user=ssh_user,
-            ssh_private_key=ssh_private_key,
+            ssh_user=identity.ssh_user,
+            ssh_private_key=identity.private_key,
             orchestrator_ip=self.orchestrator_ip,
             orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
@@ -350,7 +403,8 @@ class ProvisionerNode(FunctionalNode):
         )
 
         if success_soft:
-            await mark_provisioning_complete(server_handle)
+            # The proof is carried, not recorded: the generated key is not stored
+            # yet, and the success handler binds the proof to it before READY.
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,
@@ -359,13 +413,25 @@ class ProvisionerNode(FunctionalNode):
                 is_recovery,
                 " (Retried)",
                 ssh_manager=self.ssh_manager,
+                qa_target_proof=current_profile_proof(
+                    output_soft,
+                    ssh_user=identity.ssh_user,
+                    ssh_key_fingerprint=identity.fingerprint,
+                ),
+                expected_identity=expected_identity,
+                retain_finalization=state.get("retain_finalization"),
             )
 
         await update_server_status(server_handle, "error")
         await create_incident(
             server_handle,
             IncidentType.PROVISIONING_FAILED,
-            {"step": "software_setup", "output": output_soft[:500]},
+            {
+                "step": "software_setup",
+                "output": output_soft[:500],
+                "episode_id": provisioning_episode_id,
+                "identity": expected_identity.model_dump(mode="json"),
+            },
         )
         return {
             "messages": [{"message": f"❌ Phase 2 (Software) failed for {server_handle}"}],
@@ -479,6 +545,7 @@ class ProvisionerNode(FunctionalNode):
             }
 
         provisioning_attempts, provisioning_episode_id = reservation
+        expected_identity = target_identity(server_info, server_info.ssh_key_fingerprint)
 
         # Step 3: Time4VPS repeats its provider proof at its destructive boundary.
         time4vps_client = None
@@ -511,6 +578,7 @@ class ProvisionerNode(FunctionalNode):
                 os_template=os_template,
                 provisioning_attempts=provisioning_attempts,
                 provisioning_episode_id=provisioning_episode_id,
+                expected_identity=expected_identity,
                 is_recovery=is_recovery,
                 state=state,
             )
@@ -523,6 +591,7 @@ class ProvisionerNode(FunctionalNode):
                 provisioning_episode_id=provisioning_episode_id,
                 is_recovery=is_recovery,
                 state=state,
+                expected_identity=expected_identity,
                 ssh_user="root" if target.provider == BITLAUNCH_PROVIDER else None,
                 ssh_private_key=bitlaunch_key,
                 provisioning_profile=state.get("provisioning_profile"),

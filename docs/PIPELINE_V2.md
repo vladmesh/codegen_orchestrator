@@ -105,6 +105,23 @@ For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks disp
 
 This prevents crashes when a workspace is GC'd between tasks in a story.
 
+### Managed target provisioning finalization
+
+Fresh provisioning, existing-access retrofit and reinstall use bootstrap access
+only until the generated administrative key has logged in. After the software
+proof, infra-service sends one `ProvisioningFinalization` command. The API locks
+the server row and atomically commits the normalized encrypted key, exact
+completion labels, identity-bound QA receipt, matching incident settlement,
+episode reset and READY. An operator identity edit or newer attempt wins as a
+typed conflict with no partial state; exact redelivery of the same finalized
+episode is idempotent. Infra-service encrypts that exact command under the
+stream entry before the POST. If the HTTP outcome is unknown, PEL reclaim calls
+only the saved finalizer command; it never reserves another attempt, rebuilds a
+node, reruns Ansible or rotates another key. The saved command has a 24-hour TTL
+and is deleted only after a typed finalizer result is published and acknowledged.
+Missing, corrupt, expired or unavailable replay state fails closed through the
+provisioning incident path.
+
 ---
 
 ## Phase 3: Architecture
@@ -452,11 +469,20 @@ pass as an ordinary schema error.
 - FAILED → create fix task, dispatch to `engineering:queue`, story → `in_progress`
 - EXHAUSTED → story `failed` (max QA→Engineering loops reached)
 - ERROR → story `failed`
+- BLOCKED → application stopped, story `waiting_human_review`, no fix task and no engineering
+  iteration. A QA harness blocker (`QA_HARNESS_BLOCKERS`: stale `qa-docker`, refused verb,
+  unavailable probe, SSH/runtime failure, an executor that never reached the capability endpoint)
+  also notifies administrators with the `recheck-qa` route, and the owner is told the platform's
+  test environment failed, not the product
 
 **Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
-**Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
-nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon session there.
+**Target prerequisites**: a managed target whose readiness receipt names the current QA target
+profile (`servers.qa_target_version`), written by managed-target reconciliation after the
+`qa_identity` role and its proof succeeded; a missing or stale receipt refuses the run before any
+access is issued. Before an executor starts, the runner also asks the live `qa-docker version`
+as the run's own identity and refuses an older wrapper. QA installs nothing on the target and
+needs no coding-agent CLI, LLM credentials or Telethon session there.
 
 **QA runtime prerequisites** (orchestrator `.env`):
 - `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly.

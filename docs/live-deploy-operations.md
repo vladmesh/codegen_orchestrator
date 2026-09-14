@@ -198,3 +198,82 @@ Do not PATCH `current_iteration`, sequence task transitions, or start the story
 manually. The action returns a typed 409 without partial changes when the reason
 is stale, either row left human review, the park is not infrastructure-owned, or
 the refused Run no longer matches. Resolve that discrepancy before retrying.
+
+## Reconcile managed deploy targets
+
+Provisioning success has one internal commit point:
+`POST /api/servers/{handle}/provisioning/finalize`. Infra-service sends the
+reserved attempt/episode fence, the row identity observed before proof, the
+generated key identity actually used for login and software proof, completion
+labels and the QA receipt. The API validates all of them under the server-row
+lock before writing the encrypted key, labels, receipt, incident settlement,
+episode reset and READY together. Do not repair a partial success with key,
+label, status or receipt PATCHes; a conflict means an operator edit or newer
+episode won and must be observed as current state.
+
+Infra-service retains the exact finalization command as one encrypted,
+delivery-bound Redis value for 24 hours before sending it. A connection reset,
+timeout or unknown 5xx leaves the stream entry pending. Reclaim retries only
+that command; it does not rerun provisioning or rotate the key. The encrypted
+command is removed after the definitive result is published and acknowledged.
+A missing, expired or corrupt replay value is a `provisioning_failed` incident
+and leaves the target non-admitting. Do not delete
+`provisioner:finalization-replay:*` values to retry provisioning; repair the
+incident and submit a new explicit provisioning request only after observing
+the current server row and host credential.
+
+The production deploy's `Reconcile managed deploy targets` step runs, after the
+services are healthy and against the exact deployed SHA:
+
+```bash
+docker compose exec -T infra-service \
+  python -m src.provisioner.target_readiness --revision "$DEPLOYED_SHA"
+```
+
+It prints one JSON line per managed server, whatever its status:
+
+- `ready` — receipt written for the current QA target profile.
+- `not_ready` — readiness failure recorded; admission refuses the row. An
+  admitting row is parked as `error` and gets its status back when proved; any
+  other status (`unreachable`, `reserved`, a provisioning `error`) is left alone.
+- `in_progress` — provisioning owns the row (`pending_setup`, `provisioning`,
+  `force_rebuild`); it was not reconciled.
+- `unhandled` — a managed row whose software phase is not complete, or one that
+  changed or cannot be addressed; it was not reconciled.
+- `superseded` — the row's key, user or address changed while it was being
+  proved, so no verdict was recorded.
+- `unrecorded` — the verdict could not be written.
+
+Only `ready` and `not_ready` are successes; any other outcome fails the deploy
+step. Finish or repair provisioning for an `in_progress` or `unhandled` row, and
+re-run the single-target command below for a `superseded` one. The command runs
+only the login, privilege and retrofit playbooks: no reinstall, no firewall
+change, no QA or stand run.
+
+A `not_ready` target has one active `target_not_ready` incident, separate from
+any `provisioning_failed` episode, whose details carry the failed `phase`, and
+the row's `target_readiness_failure_phase` names it too:
+
+- `ssh_key_missing` / `ssh_key_invalid` — the stored administrative key is
+  absent or does not parse. Supply valid operator material with
+  `PATCH /api/servers/{handle}` `{"ssh_key": "<unencrypted OpenSSH private key with final newline>"}`;
+  a refused key returns `ssh_key rejected: <reason>` and changes nothing.
+- `admin_login` — the login run failed or timed out as `servers.ssh_user`.
+- `privilege_preflight` — the login succeeded, and the separate privilege run
+  failed or timed out reaching root through non-interactive `sudo`/`become`.
+  Nothing on the target was changed.
+- `qa_identity_role` / `qa_identity_proof` — the role could not be applied, or
+  its proof refused the seat (the incident detail names what it found).
+
+After repairing, reconcile that one target, which records the verdict the same
+way and is safe to repeat:
+
+```bash
+docker compose exec -T infra-service python -m src.provisioner.qa_identity_retrofit "$HANDLE"
+```
+
+Never write `qa_target_version` or labels by hand: only the readiness endpoint
+records a receipt, and only for the current profile. A story parked with a QA
+harness blocker (`qa_target_profile_stale`, `qa_probe_unavailable`,
+`server_unavailable`, `qa_executor_unavailable`, `qa_identity_unreadable`) is
+recovered after reconciliation with `POST /api/stories/{story_id}/recheck-qa`.

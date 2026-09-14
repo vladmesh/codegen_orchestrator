@@ -69,6 +69,7 @@ from ._qa_target import (
     QAIdentityUnreadableError,
     QATarget,
     QATargetError,
+    QATargetHarnessError,
     new_grant_marker,
     qa_target_grant,
 )
@@ -1484,6 +1485,31 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
+            ),
+            _residues(grant, workspace),
+        )
+    except QATargetHarnessError as exc:
+        # The target's harness could not answer as the current profile, or a
+        # probe read could not be performed. Neither is a product verdict, and
+        # neither is `server_unavailable`: the run reached the host and its
+        # identity was established.
+        logger.error(
+            "qa_target_harness_unavailable",
+            server_ip=target.server_ip,
+            category=exc.category.value,
+            attempted=exc.attempted,
+            detail=exc.received,
+        )
+        return _apply_cleanup_residue(
+            QAResult(
+                passed=False,
+                summary=f"QA could not be performed: {exc.received}",
+                blocker=QABlocker(
+                    category=exc.category,
+                    attempted=exc.attempted,
+                    sent=exc.sent,
+                    received=exc.received,
+                ),
             ),
             _residues(grant, workspace),
         )

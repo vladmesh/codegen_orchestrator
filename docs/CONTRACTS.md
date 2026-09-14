@@ -1450,6 +1450,120 @@ carried through the queue, and consumed by infra-service for the disposable
 Stand target. It is not inferred from mutable server labels; a replay retains
 the profile that was originally queued.
 
+### Managed target readiness
+
+`shared/qa_target_profile.py` owns the one QA target profile.
+`QA_TARGET_PROFILE_VERSION` is derived from every file of the `qa_identity` role
+with the wrapper's and the defaults' version lines blanked, and a unit test holds
+the constant, both lines and the files together, so any artefact change changes
+the version. `qa-docker version` answers `qa-docker profile=<version> verbs=<...>`;
+`qa-identity-proof` asks it through the QA account's own sudo rule and fails a
+seat that answers anything else, then prints `qa_target_version=<version>`.
+
+The receipt is `servers.qa_target_version` and `servers.qa_target_proved_at`.
+Only `POST /api/servers/{handle}/target-readiness` (`TargetReadinessReport` →
+`TargetReadinessRead`) and the provisioning finalizer below write it;
+`qa_ssh_user`, `provisioning_phase` and PATCH never do.
+Every report carries the `TargetIdentity` it was proved over (`ssh_user`,
+`host`, `public_ip`, stored-key fingerprint); under the server row lock the
+endpoint refuses, with 409 and no change, a verdict whose identity is not the
+row's current one. `PATCH /api/servers/{handle}` locks the row too and clears the
+receipt in the same transaction whenever that identity changes, server-sync
+address updates included.
+
+Readiness owns its own evidence. A not-ready verdict clears the receipt, sets
+`target_readiness_failure_phase`, and creates or updates the one active
+`target_not_ready` incident (its own unique active index); it moves the row to
+`error` only out of an admitting status, recording that status in
+`target_readiness_parked_status`, and leaves any other status as it was.
+`ssh_key_enc` is never touched. A ready verdict writes the receipt, resolves the
+active `target_not_ready` incident and the QA runtime's `step=qa_identity`
+refusals, clears the failure phase, and restores the parked status only while
+the park still owns the row's `error`: any status write — PATCH, attempt reset,
+force rebuild — clears the park's ownership. Other `provisioning_failed`
+episodes and statuses are never overwritten or resolved by readiness.
+
+Every provisioning route cuts over credentials before anything is proved. A
+bootstrap credential — the BitLaunch creation key, existing host access, a
+reinstall's root password — runs only `provision_access.yml`, which installs the
+provisioner's public key. `cut_over_to_generated_key` then runs
+`target_readiness_login.yml` with the generated private key as the row's
+administrative account; the software play runs through that identity, and its
+`QATargetProof` carries that account and key fingerprint. A login that fails is a
+`credential_cutover` provisioning failure that never reaches the success handler,
+and the handler refuses a proof whose fingerprint or account is not the one it
+persists and the row administers.
+
+Fresh, existing-access and reinstall success all end at `POST
+/api/servers/{handle}/provisioning/finalize` (`ProvisioningFinalization` →
+`ProvisioningFinalizationResult`). The command carries the attempt and episode,
+the pre-proof row identity, the exact generated-key identity proved by login and
+the software play, raw generated key material, the complete-phase labels and the
+matching `QATargetReceipt`. The response never carries key material.
+
+The API locks the server row and checks the episode, pre-proof identity, proved
+user/host/address/fingerprint, current profile, exact completion labels, parsed
+key fingerprint and receipt agreement before its first mutation. It then
+encrypts the normalized key, merges the completion labels, records the receipt,
+settles the current provisioning episode and only matching readiness evidence,
+resets the active episode and writes READY in one transaction. A stale fence or
+operator identity edit returns typed `conflict`; malformed or inconsistent
+material is `contained`; neither writes anything. The last successful episode
+fence remains on the row solely to make an exact redelivery `idempotent`; a
+redelivery with different key identity, labels, proof or receipt conflicts.
+There is no worker-side key PATCH, completion-label PATCH, read-back or reset.
+An unknown HTTP outcome leaves the provisioner stream entry unacknowledged;
+before that HTTP call, infra-service stores a delivery-bound copy of the exact
+command under a bounded 24-hour TTL, with the whole envelope encrypted by
+`SecretsCipher`. PEL reclaim checks this record before constructing a
+`ProvisionerNode` and calls only the finalizer with the same attempt, episode,
+identity, key, labels and receipt. A typed definitive result clears the record
+only after its broker result is published and acknowledged; another unknown
+outcome leaves both it and the stream entry pending. Missing,
+expired, unavailable, corrupt or delivery-mismatched replay state records a
+`provisioning_failed` incident and keeps the target non-admitting instead of
+reserving an attempt or rerunning a playbook. Finalizer conflicts after key
+cutover also record that incident without reverting the operator's identity
+edit. Provisioning-failure settlement requires both the finalized episode and
+its pre-proof identity, so success never resolves unrelated or earlier-identity
+evidence.
+
+`shared/server_admission.py` refuses a managed row with `target_not_ready` while
+a readiness failure phase is recorded, and with `qa_target_receipt_missing` or
+`qa_target_receipt_stale`; each is reported as `server_not_provisioned`, never
+capacity, and allocation, the scheduler's resource wait and QA read the same
+predicate and receipt. Server create and SSH key update accept only an
+unencrypted OpenSSH private key with a terminal newline (`shared/ssh_keys.py`),
+parse it before commit, keep the encrypted canonical text and
+`ssh_key_fingerprint`, and refuse with `ssh_key rejected: <reason>` without
+changing the row or echoing key material. A managed row may not be created,
+promoted, moved to a complete software phase or have its key cleared into a
+keyless state
+(`managed_row_requires_admin_key`), except while provisioning owns it and will
+mint the key: `pending_setup`, `provisioning`, `force_rebuild` or `reserved`
+with no complete software phase — the rows provider discovery and allowlist
+adoption create.
+
+`retrofit_qa_identity` reconciles any explicitly managed, phase-complete row
+provisioning does not own, without provider authority: stored key parse →
+`target_readiness_login.yml` (`admin_login`) → `target_readiness_privilege.yml`
+(`privilege_preflight`, non-interactive `become` to uid 0) →
+`qa_identity_retrofit.yml` with no `qa_ssh_user` or profile variable → proof
+version check → receipt. Each step is its own run with its own timeout and the
+first failing run is the phase. `python -m src.provisioner.target_readiness
+--revision <sha>` gives every managed row one outcome after a production deploy
+and exits zero only when every outcome is a recorded `ready` or `not_ready`;
+`in_progress`, `unhandled`, `superseded` and `unrecorded` rows fail it.
+
+A QA harness failure is a typed `QABlocker`, never a product check. A receipt
+rejection refuses before any grant; the runner checks the live wrapper right
+after the one-shot identity connects; a wrapper refusal is
+`qa_target_profile_stale`, and a contract read that ends other than read, absent,
+outside `/app` or over the limit is `qa_target_profile_stale` or
+`qa_probe_unavailable`. `QA_HARNESS_BLOCKERS` park the story in human review with
+an administrator notice naming `recheck-qa` and owner wording that blames no
+product; `qa_target_profile_stale` is operator-recheckable.
+
 ## Source map
 
 | Area | Source of truth |

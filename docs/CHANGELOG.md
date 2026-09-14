@@ -3,8 +3,25 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-14
+
+- Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
+  and READY behind episode and identity fences, so operator edits win without partial state.
+- Server reads expose the active provisioning fence, and finalization replays require the exact canonical labels and
+  stored key, so altered deliveries cannot pass as idempotent.
+- Unknown finalizer outcomes retain one encrypted command for stream reclaim, preventing a second attempt, playbook
+  run or generated-key rotation while failures remain incident-backed and non-admitting.
+- Provisioning uses a bootstrap credential only for the access play, then proves the generated key by login and
+  runs the proof through it, so a READY receipt never names a key that has not connected.
+
 ## 2026-09-13
 
+- Fresh provisioning stores its generated key first and records the play's QA target proof with READY in one
+  episode-fenced reset, so a newly provisioned target is admissible instead of permanently unproved.
+- Managed targets are admitted only with a parsed admin key and an identity-bound receipt for the current
+  `qa_identity` profile, which every production deploy reconciles under its own `target_not_ready` park.
+- QA harness failures — stale `qa-docker`, refused verbs, unreadable probes, unreached executors — are typed
+  blockers that park the story for `recheck-qa` with an admin notice, never a product fix task.
 - Temporary QA admission now scopes legacy contention to an exact known target, and an audited admin drain
   closes unreconcilable legacy or escalated revokes without a manual SQL update.
 - Admission now parks pre-agent refusals in its deciding transaction and the Run-backed park needs matching

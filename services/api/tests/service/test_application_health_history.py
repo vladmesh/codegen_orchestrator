@@ -4,6 +4,8 @@ from http import HTTPStatus
 
 import pytest
 
+from shared.tests.ssh_key_fixtures import fleet_private_key
+
 
 @pytest.fixture
 async def test_app(async_client, _tasks_project):
@@ -18,6 +20,7 @@ async def test_app(async_client, _tasks_project):
             "handle": handle,
             "host": "test-app.example.com",
             "public_ip": "10.0.0.100",
+            "ssh_key": fleet_private_key(),
             "status": "active",
             "is_managed": True,
         },

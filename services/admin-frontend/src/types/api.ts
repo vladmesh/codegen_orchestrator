@@ -421,6 +421,8 @@ export interface Server {
   provider_id?: string | null
   notes?: string | null
   provisioning_started_at?: string | null
+  provisioning_attempts?: number
+  provisioning_episode_id?: string | null
   cpu_usage_pct?: number | null
   load_avg_1m?: number | null
   load_avg_5m?: number | null
@@ -431,6 +433,10 @@ export interface Server {
   container_count_total?: number | null
   uptime_seconds?: number | null
   last_health_check?: string | null
+  ssh_key_fingerprint?: string | null
+  qa_target_version?: string | null
+  qa_target_proved_at?: string | null
+  target_readiness_failure_phase?: string | null
 }
 
 export interface ContainerMetrics {

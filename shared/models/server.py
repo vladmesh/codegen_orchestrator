@@ -21,6 +21,19 @@ class Server(Base):
     ssh_user: Mapped[str] = mapped_column(String(50), default="root")
     # Store encrypted keys
     ssh_key_enc: Mapped[str | None] = mapped_column(String)
+    # Public fingerprint of the parsed key in ssh_key_enc; not a secret.
+    ssh_key_fingerprint: Mapped[str | None] = mapped_column(String(100))
+
+    # QA target readiness receipt, written by reconciliation or provisioning's
+    # API-owned atomic finalizer.
+    qa_target_version: Mapped[str | None] = mapped_column(String(64))
+    qa_target_proved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Readiness failure evidence and park ownership, written only by the
+    # target-readiness endpoint. `target_readiness_parked_status` is the status a
+    # readiness failure moved the row out of; any other status write clears it,
+    # so a later success restores only a park that still owns the row.
+    target_readiness_failure_phase: Mapped[str | None] = mapped_column(String(50))
+    target_readiness_parked_status: Mapped[str | None] = mapped_column(String(50))
 
     # Capacity metrics (from Time4VPS API)
     capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)
@@ -43,6 +56,11 @@ class Server(Base):
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime)
     provisioning_attempts: Mapped[int] = mapped_column(Integer, default=0)
     provisioning_episode_id: Mapped[str | None] = mapped_column(String(36))
+    # The last successfully finalized fence makes exact broker redelivery
+    # distinguishable from a stale or altered success after the active episode
+    # fields have been reset.
+    finalized_provisioning_attempt: Mapped[int | None] = mapped_column(Integer)
+    finalized_provisioning_episode_id: Mapped[str | None] = mapped_column(String(36))
     provisioning_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_incident: Mapped[datetime | None] = mapped_column(DateTime)
 

@@ -58,11 +58,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     except Exception:
         body_size = -1
 
+    errors = exc.errors()
+    finalization_secret = request.url.path.endswith("/provisioning/finalize")
+    if finalization_secret:
+        # Pydantic includes the whole model input for an after-validator error.
+        # This command alone carries raw private-key material, so neither logs
+        # nor the validation response may retain error inputs or the body.
+        errors = [
+            {key: value for key, value in error.items() if key not in {"input", "ctx"}}
+            for error in errors
+        ]
+
     logger.error(
         "validation_error",
         path=request.url.path,
         method=request.method,
-        errors=exc.errors(),
+        errors=errors,
         request_body_bytes=body_size,
     )
 
@@ -70,7 +81,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # the error ctx, which json.dumps cannot take. Encode before responding.
     return JSONResponse(
         status_code=422,
-        content=jsonable_encoder({"detail": exc.errors(), "body": exc.body}),
+        content=jsonable_encoder(
+            {
+                "detail": errors,
+                "body": "[redacted]" if finalization_secret else exc.body,
+            }
+        ),
     )
 
 

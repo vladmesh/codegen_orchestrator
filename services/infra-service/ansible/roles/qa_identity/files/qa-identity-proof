@@ -39,6 +39,7 @@ user=${1:?the account to prove}
 wrapper=${2:?the one command it may run through sudo}
 socket=${3:?the docker socket it must not reach}
 sentinel=${4:?the line the role opens authorized_keys with}
+profile=${5:?the QA target profile the wrapper must answer with}
 
 # The proof key is appended to a live `authorized_keys` and has to come back out
 # whichever way this script leaves, including a failure below it. Removal is a
@@ -88,6 +89,17 @@ granted=$(printf '%s\n' "$listing" |
     grep -v '^$' || true)
 expected="(root) NOPASSWD: $wrapper"
 [ "$granted" = "$expected" ] || fail "may run more through sudo than $wrapper: [$granted]"
+
+# The wrapper that sudo rule reaches has to be this role's current one. An older
+# copy passes every check above — same path, same rule — and refuses a verb QA
+# needs halfway through a paid run. So the account asks the wrapper itself,
+# through the same sudo rule a run uses, which profile it is.
+answer=$(runuser -u "$user" -- sudo -n "$wrapper" version 2>&1) ||
+    fail "cannot ask $wrapper for its profile through sudo: [$answer]"
+case "$answer" in
+    "qa-docker profile=$profile verbs="*) ;;
+    *) fail "reaches a $wrapper that is not QA target profile $profile: [$answer]" ;;
+esac
 
 # Asked as the account, so mode, group and ACL are all answered at once: an ACL
 # entry granting this account the socket leaves no trace in its group list.
@@ -147,4 +159,4 @@ logged_in=$(ssh -i "$work/key" \
 [ "$logged_in" = "$user" ] ||
     fail "logged a key written into $keys in as [$logged_in] instead"
 
-echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable keys=$keys login=ok"
+echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable keys=$keys login=ok qa_target_version=$profile"

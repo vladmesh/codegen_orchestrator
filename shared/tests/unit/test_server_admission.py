@@ -10,18 +10,22 @@ from shared.allocation_disposition import (
 )
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
 from shared.contracts.dto.run_result import AllocationFailureReason
+from shared.contracts.dto.server import ServerStatus
 from shared.server_admission import (
     ADMISSION_FAILURE_REASON,
     PROVISIONING_PHASE_COMPLETE,
     PROVISIONING_PHASE_LABEL,
     ServerAdmissionRejection,
+    managed_row_requires_admin_key,
     provisioning_failed_server_handles,
     server_admission_rejection,
     server_admits_application,
+    target_readiness_reconcilable,
 )
 from shared.tests.server_admission_cases import (
     ADMISSION_CASES,
     CAPACITY_REASONS,
+    AdmissionCase,
     admission_case_incidents,
     admission_case_server,
 )
@@ -83,10 +87,31 @@ def test_every_rejection_reports_one_reason_and_it_is_not_a_capacity_reason():
     assert ADMISSION_FAILURE_REASON is AllocationFailureReason.SERVER_NOT_PROVISIONED
     assert set(ServerAdmissionRejection) == {
         ServerAdmissionRejection.NOT_MANAGED,
+        ServerAdmissionRejection.TARGET_NOT_READY,
         ServerAdmissionRejection.STATUS_NOT_ADMITTING,
         ServerAdmissionRejection.PROVISIONING_INCOMPLETE,
         ServerAdmissionRejection.PROVISIONING_FAILED,
+        ServerAdmissionRejection.QA_TARGET_RECEIPT_MISSING,
+        ServerAdmissionRejection.QA_TARGET_RECEIPT_STALE,
     }
+
+
+@pytest.mark.parametrize(
+    ("case_name", "expected"),
+    [
+        ("complete_without_qa_target_receipt", ServerAdmissionRejection.QA_TARGET_RECEIPT_MISSING),
+        ("complete_with_stale_qa_target_receipt", ServerAdmissionRejection.QA_TARGET_RECEIPT_STALE),
+        ("reconciliation_found_target_not_ready", ServerAdmissionRejection.TARGET_NOT_READY),
+    ],
+)
+def test_readiness_evidence_is_a_typed_infrastructure_rejection(case_name, expected):
+    """A missing, stale or failed readiness proof is named as such, never as capacity."""
+    case = next(c for c in ADMISSION_CASES if c.name == case_name)
+    server = admission_case_server(case, last_health_check=_NOW)
+    failed = provisioning_failed_server_handles(admission_case_incidents(case, detected_at=_NOW))
+
+    assert server_admission_rejection(server, failed) is expected
+    assert ADMISSION_FAILURE_REASON not in CAPACITY_REASONS
 
 
 def test_an_admission_refusal_is_a_bounded_wait_not_an_owner_verdict():
@@ -118,3 +143,66 @@ def test_provisioning_phase_label_is_read_from_server_labels():
 
     assert server.labels[PROVISIONING_PHASE_LABEL] == PROVISIONING_PHASE_COMPLETE
     assert server_admission_rejection(server, frozenset()) is None
+
+
+def test_a_generic_error_is_not_a_readiness_park():
+    """Only a recorded readiness failure is `target_not_ready`; any other error is status."""
+    case = next(c for c in ADMISSION_CASES if c.name == "generic_error_status")
+    server = admission_case_server(case, last_health_check=_NOW)
+
+    assert server_admission_rejection(server, frozenset()) is (
+        ServerAdmissionRejection.STATUS_NOT_ADMITTING
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "labels", "reconcilable"),
+    [
+        (ServerStatus.READY, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.IN_USE, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.ERROR, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.UNREACHABLE, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.RESERVED, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.MISSING, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (ServerStatus.PROVISIONING, {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, False),
+        (
+            ServerStatus.FORCE_REBUILD,
+            {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+            False,
+        ),
+        (ServerStatus.ACTIVE, {}, False),
+    ],
+)
+def test_every_phase_complete_row_provisioning_does_not_own_is_reconcilable(
+    status, labels, reconcilable
+):
+    case = AdmissionCase(name="probe", status=status, labels=labels)
+    server = admission_case_server(case, last_health_check=_NOW)
+
+    assert target_readiness_reconcilable(server) is reconcilable
+
+
+@pytest.mark.parametrize(
+    ("is_managed", "status", "labels", "required"),
+    [
+        (True, "discovered", {}, True),
+        (True, "ready", {}, True),
+        (True, "active", {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (True, "error", {}, True),
+        # Provisioning mints these rows' key: discovery and allowlist adoption.
+        (True, "pending_setup", {}, False),
+        (True, "provisioning", {}, False),
+        (True, "force_rebuild", {}, False),
+        (True, "reserved", {}, False),
+        # ...but not once the software phase recorded itself complete.
+        (True, "reserved", {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE}, True),
+        (False, "ready", {}, False),
+    ],
+)
+def test_a_managed_row_needs_a_key_unless_provisioning_will_mint_it(
+    is_managed, status, labels, required
+):
+    assert (
+        managed_row_requires_admin_key(is_managed=is_managed, status=status, labels=labels)
+        is required
+    )

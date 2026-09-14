@@ -16,11 +16,16 @@ import asyncssh
 import structlog
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrant, QASshGrantState
+from shared.contracts.dto.run_result import QABlockerCategory
 from shared.generated_contracts import (
     CONTRACT_ABSENT,
+    CONTRACT_OUTSIDE_APP,
+    CONTRACT_PATH_REFUSED,
+    CONTRACT_TRUNCATED,
     GENERATED_CONTRACT_READ_LIMIT,
     validate_generated_contract_path,
 )
+from shared.qa_target_profile import wrapper_answer_problem
 
 from ..runtime_identity import SERVICE_BASE_DIR
 
@@ -69,6 +74,14 @@ QA_DOCKER = ("sudo", "-n", QA_DOCKER_WRAPPER)
 
 # Each Docker command must name a container in the run capability set.
 CONTAINER_SCOPED_DOCKER = frozenset({"diff", "inspect", "logs", "port", "stats", "top"})
+
+# What the wrapper prints when it refuses a verb it does not know. On a host
+# carrying an older wrapper that is the answer to a verb this runtime needs.
+WRAPPER_REFUSAL = "is refused on this host"
+# A generated-contract read that ended with one of these is the deployment's own
+# answer about its file: resolved outside /app, or larger than the fixed limit.
+# Every other failure of the read says nothing about the product.
+CONTRACT_PRODUCT_ANSWERS = frozenset({CONTRACT_OUTSIDE_APP, CONTRACT_TRUNCATED})
 
 # Secret paths remain forbidden inside the physical deployment root.
 SECRET_FILE_PATTERNS = (
@@ -189,6 +202,32 @@ class QAContainerRuntimeError(QACapabilityError):
     """Target Docker did not answer a deployment-container query."""
 
 
+class QATargetHarnessError(QACapabilityError):
+    """The target's QA harness could not give an answer about the product.
+
+    Raised for a wrapper that is not the current profile or refuses a verb the
+    runner sent (`qa_target_profile_stale`), and for a probe read the target
+    could not perform at all (`qa_probe_unavailable`). It carries the evidence a
+    blocker needs, because neither is ever a verdict about the product.
+    """
+
+    def __init__(
+        self, *, category: QABlockerCategory, attempted: str, sent: str, received: str
+    ) -> None:
+        super().__init__(received)
+        self.category = category
+        self.attempted = attempted
+        self.sent = sent
+        self.received = received
+
+
+def _harness_category(exit_status: int | None, output: str) -> QABlockerCategory:
+    """A wrapper refusal is a stale profile; any other unanswered read is an unavailable probe."""
+    if exit_status == CONTRACT_PATH_REFUSED or WRAPPER_REFUSAL in output:
+        return QABlockerCategory.QA_TARGET_PROFILE_STALE
+    return QABlockerCategory.QA_PROBE_UNAVAILABLE
+
+
 @dataclass(frozen=True)
 class QATarget:
     """Where the run's one deployment lives, and how to address it."""
@@ -268,6 +307,44 @@ def _reject_secret_path(path: str) -> None:
                 f"{path} holds deployment credentials; QA tests the running application, "
                 "not the secrets it was deployed with"
             )
+
+
+async def check_wrapper_profile(conn: asyncssh.SSHClientConnection, target: QATarget) -> None:
+    """Ask the live wrapper, as the run's own identity, whether it is the current profile.
+
+    The server row's receipt says what reconciliation proved; this says what is
+    on the host now, through the exact sudo rule the run will use. It runs after
+    the short-lived identity is established and before anything else — no
+    capability is resolved and no executor starts on a harness that would
+    refuse a verb halfway through.
+    """
+    command = " ".join(shlex.quote(part) for part in [*QA_DOCKER, "version"])
+    attempted = "confirm the target's qa-docker is the current QA target profile"
+    try:
+        answer = await conn.run(command, check=False, timeout=REMOTE_EXEC_TIMEOUT)
+    except (OSError, asyncssh.Error) as exc:
+        raise QATargetHarnessError(
+            category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+            attempted=attempted,
+            sent=command,
+            received=f"{target.server_ip} did not answer: {exc}",
+        ) from exc
+    output = f"{answer.stdout or ''}{answer.stderr or ''}".strip()
+    if answer.exit_status != 0:
+        raise QATargetHarnessError(
+            category=_harness_category(answer.exit_status, output),
+            attempted=attempted,
+            sent=command,
+            received=f"exit {answer.exit_status}: {output[:500] or 'no output'}",
+        )
+    problem = wrapper_answer_problem(answer.stdout or "")
+    if problem is not None:
+        raise QATargetHarnessError(
+            category=QABlockerCategory.QA_TARGET_PROFILE_STALE,
+            attempted=attempted,
+            sent=command,
+            received=f"{target.server_handle}: {problem}",
+        )
 
 
 async def resolve_capabilities(
@@ -432,7 +509,7 @@ class QATargetSession:
         if self._backend_container is None:
             backend: list[str] = []
             for container in sorted(self._capabilities.containers):
-                result = await self._run(
+                result = await self._harness_run(
                     [
                         "docker",
                         "inspect",
@@ -441,12 +518,15 @@ class QATargetSession:
                         "{{.State.Running}}",
                         container,
                     ],
-                    timeout=REMOTE_EXEC_TIMEOUT,
+                    attempted="identify the backend container of this deployment",
                 )
                 if result.exit_status != 0:
                     detail = (result.stderr or result.stdout or "no output").strip()[:300]
-                    raise QATargetError(
-                        f"could not identify the backend container of this deployment: {detail}"
+                    raise QATargetHarnessError(
+                        category=_harness_category(result.exit_status, detail),
+                        attempted="identify the backend container of this deployment",
+                        sent=f"docker inspect {container}",
+                        received=f"exit {result.exit_status}: {detail}",
                     )
                 if result.stdout.strip() == "backend true":
                     backend.append(container)
@@ -456,24 +536,36 @@ class QATargetSession:
                     "exactly one is required"
                 )
             self._backend_container = backend[0]
-        result = await self._run(
-            [
-                "docker",
-                "read-contract",
-                self._backend_container,
-                validated,
-                str(max_bytes),
-            ],
-            timeout=REMOTE_EXEC_TIMEOUT,
-        )
-        if result.exit_status == CONTRACT_ABSENT:
+        argv = ["docker", "read-contract", self._backend_container, validated, str(max_bytes)]
+        attempted = f"read the generated contract {validated} from the backend container"
+        result = await self._harness_run(argv, attempted=attempted)
+        if result.exit_status in (0, CONTRACT_ABSENT):
             return result
-        if result.exit_status != 0:
-            detail = (result.stderr or result.stdout or "no output").strip()[:300]
+        detail = (result.stderr or result.stdout or "no output").strip()[:300]
+        if result.exit_status in CONTRACT_PRODUCT_ANSWERS:
             raise QATargetError(
                 f"{validated} could not be read from the backend container: {detail}"
             )
-        return result
+        # A refused verb, an unreadable file, a docker or sudo failure: the
+        # harness did not read the product, so nothing about it was learned.
+        raise QATargetHarnessError(
+            category=_harness_category(result.exit_status, detail),
+            attempted=attempted,
+            sent=" ".join(argv),
+            received=f"exit {result.exit_status}: {detail}",
+        )
+
+    async def _harness_run(self, argv: list[str], *, attempted: str) -> RemoteResult:
+        """Run one harness read, turning a lost connection into typed harness evidence."""
+        try:
+            return await self._run(argv, timeout=REMOTE_EXEC_TIMEOUT)
+        except (OSError, asyncssh.Error) as exc:
+            raise QATargetHarnessError(
+                category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+                attempted=attempted,
+                sent=" ".join(argv),
+                received=f"{self._target.server_ip} did not answer: {exc}",
+            ) from exc
 
     async def exec(self, argv: list[str]) -> RemoteResult:
         """Run one read-only docker command against a container of this deployment.
@@ -764,6 +856,7 @@ async def qa_target_grant(
                 f"the run identity could not connect to {target.server_ip}: {exc}"
             ) from exc
         async with conn:
+            await check_wrapper_profile(conn, target)
             capabilities = await resolve_capabilities(conn, target)
             yield QATargetSession(target, conn, capabilities)
     finally:

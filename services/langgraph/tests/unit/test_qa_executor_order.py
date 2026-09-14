@@ -25,6 +25,7 @@ import pytest
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.config.settings import Settings
 from src.consumers._qa_runner import (
@@ -66,6 +67,14 @@ class FakeConn:
 
     async def run(self, command, *, check=False, timeout=None):
         self.commands.append(command)
+        # The live wrapper is the current QA target profile.
+        if command.endswith("qa-docker version"):
+            verbs = " ".join(sorted(QA_DOCKER_REQUIRED_VERBS))
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=f"qa-docker profile={QA_TARGET_PROFILE_VERSION} verbs={verbs}\n",
+                stderr="",
+            )
         if command.startswith("readlink -f --"):
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
         if " ps " in command:

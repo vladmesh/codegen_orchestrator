@@ -1,0 +1,17 @@
+---
+# Managed-target readiness, phase `admin_login`: does the stored administrative
+# key log in as `servers.ssh_user`. Run by itself, with its own timeout, before
+# anything on the target changes — so any failure of this run, a timeout
+# included, is the login phase and is never guessed from output.
+#
+# Nothing here escalates, writes to the target, reinstalls it or touches its
+# firewall.
+
+- name: Prove the administrative account logs in with the stored key
+  hosts: "{{ target_host | default('all') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Log in as the administrative account
+      ansible.builtin.raw: id -un
+      changed_when: false

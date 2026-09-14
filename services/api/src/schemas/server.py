@@ -52,6 +52,8 @@ class ServerRead(ServerBase, TimestampedDTO):
     used_disk_mb: int = 0
     os_template: str | None = None
     provisioning_started_at: datetime | None = None
+    provisioning_attempts: int = 0
+    provisioning_episode_id: str | None = None
 
     # Health metrics (from node_exporter + cadvisor)
     cpu_usage_pct: float | None = None
@@ -64,6 +66,14 @@ class ServerRead(ServerBase, TimestampedDTO):
     container_count_total: int | None = None
     uptime_seconds: float | None = None
     last_health_check: datetime | None = None
+
+    # The stored administrative key is never returned; its public fingerprint is.
+    ssh_key_fingerprint: str | None = None
+    # QA target readiness receipt (see `shared/qa_target_profile.py`).
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+    # An unrepaired readiness failure, while admission refuses the row for it.
+    target_readiness_failure_phase: str | None = None
 
 
 class MetricsHistoryCreate(BaseModel):
