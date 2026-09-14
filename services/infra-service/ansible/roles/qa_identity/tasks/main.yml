@@ -185,6 +185,61 @@
     permissions: rx
     state: present
 
+# The other direction, and the one nothing here used to provision. A central QA
+# run does not create this account's key file; it appends one key to it over SSH
+# **as the administrative account this target is managed as, without sudo**
+# (`services/langgraph/src/consumers/_qa_target.py`, `_INSTALL_GRANT`). That
+# account is not the QA account and is not in its group, so a 0700 `.ssh` and a
+# 0600 `authorized_keys` shut it out — unless it is root, which reaches them by
+# being root and needs nothing here.
+#
+# Until now the only host where this held was production, where the entries were
+# written by hand in August; every fresh Stand target is managed as root, which
+# is why no test target ever showed the gap. A named ACL entry is what grants it
+# without putting the administrative account in the QA account's group, which
+# would hand it the account's own files wholesale.
+#
+# The mask is stated as well as the entry. `chmod` recomputes the mask from the
+# mode's group bits, so the two tasks above — which re-apply 0700 and 0600 on
+# every deploy — reduce an entry under them to `#effective:---`. That is exactly
+# what the deploy of 2026-09-14 did to the hand-made entries on
+# prod-target-5wwb: `getfacl` showed `user:prod-deploy:rwx #effective:---`, and
+# QA run qa-deploy-poll-de17120d parked story-f8788965 on a blocked seat. Both
+# tasks run after the modes for the same reason.
+- name: Let the administrative account search and write the QA account's .ssh
+  ansible.posix.acl:
+    path: "{{ qa_ssh_home }}/.ssh"
+    entity: "{{ deploy_user }}"
+    etype: user
+    permissions: rwx
+    state: present
+  when: deploy_user != 'root'
+
+- name: Keep that entry on .ssh effective under the mode's mask
+  ansible.posix.acl:
+    path: "{{ qa_ssh_home }}/.ssh"
+    etype: mask
+    permissions: rwx
+    state: present
+  when: deploy_user != 'root'
+
+- name: Let the administrative account read and write the QA account's authorized_keys
+  ansible.posix.acl:
+    path: "{{ qa_ssh_home }}/.ssh/authorized_keys"
+    entity: "{{ deploy_user }}"
+    etype: user
+    permissions: rw
+    state: present
+  when: deploy_user != 'root'
+
+- name: Keep that entry on authorized_keys effective under the mode's mask
+  ansible.posix.acl:
+    path: "{{ qa_ssh_home }}/.ssh/authorized_keys"
+    etype: mask
+    permissions: rw
+    state: present
+  when: deploy_user != 'root'
+
 # Everything above states an intention. This asks the machine what came of it,
 # and it is the last word on whether this host has a QA identity at all: the
 # provisioner records the identity on the server row only when this playbook
@@ -207,5 +262,6 @@
       {{ qa_docker_socket | quote }}
       {{ qa_authorized_keys_sentinel | quote }}
       {{ qa_target_profile_version | quote }}
+      {{ deploy_user | quote }}
   changed_when: false
   register: qa_identity_proof

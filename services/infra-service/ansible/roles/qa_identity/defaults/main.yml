@@ -26,7 +26,7 @@ qa_sudoers_file: "/etc/sudoers.d/{{ qa_ssh_user }}"
 # the proof requires of it. Kept equal to
 # `shared/qa_target_profile.py::QA_TARGET_PROFILE_VERSION`, which a unit test
 # derives from this role's files with this line and the wrapper's own blanked.
-qa_target_profile_version: "ea1e7c6796f087e1"
+qa_target_profile_version: "f239eaa991672fa1"
 
 # The socket the account must not be able to reach by any route. Named here
 # because the proof below asks the account itself whether it can open it — group

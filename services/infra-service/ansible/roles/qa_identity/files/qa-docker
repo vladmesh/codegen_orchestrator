@@ -33,7 +33,7 @@ set -eu
 # this line blanked: a role artefact that changes while this stays put fails the
 # build, and a host still carrying an older copy answers `version` with a
 # profile the orchestrator refuses before any QA executor starts.
-QA_TARGET_PROFILE_VERSION=ea1e7c6796f087e1
+QA_TARGET_PROFILE_VERSION=f239eaa991672fa1
 
 ALLOWED="diff inspect logs port ps read-contract stats top version"
 

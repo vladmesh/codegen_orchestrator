@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-14
 
+- The `qa_identity` role grants a non-root administrative account an effective ACL on the QA seat's `.ssh` and
+  `authorized_keys` and proves it, so a deploy's `chmod` stops blanking the mask and parking QA on production.
+
 - Ensure-mode scaffold names the project by the GitHub name in the repository's `git_url`, falling back to the project
   slug, so a project whose repository row holds a non-ASCII title stops failing workspace ensure after story teardown.
 

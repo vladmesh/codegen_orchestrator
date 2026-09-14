@@ -35,7 +35,7 @@ from shared.contracts.dto.server import ServerDTO
 
 #: The profile the repository's `qa_identity` role installs and proves. Derived
 #: from the role files; see :func:`qa_target_artefact_digest`.
-QA_TARGET_PROFILE_VERSION = "ea1e7c6796f087e1"
+QA_TARGET_PROFILE_VERSION = "f239eaa991672fa1"
 QA_TARGET_PROFILE_VERSION_LENGTH = 16
 
 #: What the runtime needs the wrapper to answer. `version` itself is one of them:
