@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- The scheduler tears down every worker of an engineering attempt that gave up (story with no live run), so a
+  gave-up worker no longer stays RUNNING when the handler never asks for its removal.
+
 - Criteria needing an HTTP write are marked not verifiable before QA and reported as `qa_capability` failures;
   an upload criterion reaches the QA executor, which reports it as `qa_capability`. Architect and brief guidance
   state checks only through QA's read-only vocabulary.
