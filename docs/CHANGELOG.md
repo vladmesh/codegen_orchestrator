@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- The architect receives the brief's usage examples and limitations: each example becomes a QA check naming its
+  requirement, an undefined input is returned instead of narrowed, and every task requires asking back.
+
 - PO and architect default to `openai/gpt-5.6-sol` on OpenRouter; a unit test captures their real request bodies and
   proves no sampling parameter and only `max_completion_tokens` reach the model, plus an opt-in live smoke.
 

@@ -85,7 +85,8 @@ TEST_TREE_SKIP_DIRS = {
 # is that skipping a suite is a decision on the record, not a default.
 UNCLAIMED_TEST_DIRS = {
     "services/langgraph/tests/e2e": (
-        "needs a real LLM API key (PO_LLM_API_KEY) and skips without one, so running "
+        "needs a real LLM API key (PO_LLM_API_KEY or ARCHITECT_LLM_API_KEY) and skips "
+        "without one, so running "
         "it on a PR would only ever report a skip"
     ),
     "services/infra-service/tests/integration": (

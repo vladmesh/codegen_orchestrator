@@ -45,6 +45,56 @@ class TestProductBriefDirectives:
         assert "Nothing you planned is dispatched until all of them are recorded" in SYSTEM_PROMPT
 
 
+class TestUsageExampleDirectives:
+    """The architect plans exactly the uses the user confirmed in the brief."""
+
+    @staticmethod
+    def _prompt() -> str:
+        return " ".join(SYSTEM_PROMPT.split())
+
+    def test_every_usage_example_becomes_one_qa_criterion_naming_its_requirement(self):
+        prompt = self._prompt()
+        assert "Turn every usage example of a requirement you plan into its own" in prompt
+        assert "stated through what QA can do" in prompt
+        assert "`(requirement <id>)`" in prompt
+        assert (
+            '- Telegram: sending "кофе 250" replies that an expense was recorded '
+            "(requirement expense-text)"
+        ) in SYSTEM_PROMPT
+
+    def test_an_upload_example_is_checked_through_its_observable_or_marked(self):
+        prompt = self._prompt()
+        assert "is never silently dropped" in prompt
+        assert "check it through its observable after the fact" in prompt
+        assert "`not QA-verifiable: needs a photo upload`" in prompt
+        assert "Never write the upload itself as a step." in prompt
+
+    def test_a_requirement_with_an_undefined_input_is_returned_not_narrowed(self):
+        prompt = self._prompt()
+        assert "Return an undefined input; never narrow it." in prompt
+        assert "do not plan the version the examples happen to show" in prompt
+        assert "`record_requirement_coverage(requirement_id=..., returned_reason=...)`" in prompt
+        assert "make the reason name the undefined input" in prompt
+
+    def test_an_input_the_brief_settles_is_planned_not_returned(self):
+        prompt = self._prompt()
+        assert "A usage example or a limitation that settles the form" in prompt
+        assert "planned as settled and not returned" in prompt
+
+    def test_every_task_requires_asking_back_instead_of_storing_another_record_kind(self):
+        prompt = self._prompt()
+        assert "Every task for a product that accepts user input states this rule" in prompt
+        assert "in its description and its acceptance criteria" in prompt
+        assert "never stores input it does not recognize as a different kind of record" in prompt
+        assert "it asks the user back what they meant" in prompt
+
+    def test_the_workflow_points_the_criteria_step_at_the_usage_examples(self):
+        prompt = self._prompt()
+        step = prompt[prompt.find("7. Call `update_acceptance_criteria`") :]
+        step = step[: step.find("8. ")]
+        assert 'see "Usage Examples" below' in step
+
+
 class TestInitialSettingsDirectives:
     """A confirmed setting is planned for, not written by the plan."""
 
