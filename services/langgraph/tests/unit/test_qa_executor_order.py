@@ -201,6 +201,21 @@ class TestTheAssignedExecutorGoesFirst:
         )
         assert "POST `/api/settings/get`" not in executor.calls[0]["prompt"]
 
+    async def test_an_unverifiable_criterion_is_withheld_from_the_executor_and_reported(
+        self, tmp_path
+    ):
+        executor = _submitting_executor()
+        criteria = "- GET /health returns 200\n- POST /api/transactions returns 201"
+
+        result = await _run(executor=executor, tmp_path=tmp_path, acceptance_criteria=criteria)
+
+        assert "POST /api/transactions" not in executor.calls[0]["prompt"]
+        assert "GET /health returns 200" in executor.calls[0]["prompt"]
+        assert result.passed is False
+        [unverified] = [check for check in result.checks if not check["pass"]]
+        assert unverified["cause"] == "qa_capability"
+        assert "POST /api/transactions" in unverified["name"]
+
     async def test_codex_is_the_default_executor(self, tmp_path):
         executor = _submitting_executor()
 

@@ -184,8 +184,9 @@ with a failed check that has no cause, or any other cause, is rejected.
 - `product` — you performed the check and the application answered wrongly.
   Only this cause is a product failure.
 - `qa_capability` — the criterion needs an action your tools cannot perform,
-  for example an HTTP write (POST, PUT, DELETE) or a photo upload. Report the
-  check as failed with this cause; it is never a product failure.
+  for example an HTTP write (POST, PUT, DELETE) or a photo upload. A criterion
+  that needs a photo, file or other media sent to the bot is one of these. Report
+  the check as failed with this cause; it is never a product failure.
 - `qa_access` — the product refused the QA identity: a private bot that does not
   answer the QA account, an endpoint answering 401 or 403 to QA. Report the
   check as failed with this cause; it is never a product failure.

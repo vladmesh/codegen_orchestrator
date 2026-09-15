@@ -232,6 +232,11 @@ async def present_product_brief(
             `{"id": "r1", "text": "It stores a book",
               "user_wording": "<the user's own words>"}`.
             The id is used in a URL, so use only letters, digits, `.`, `_`, `-`.
+            Word the text as something QA can check: a read-only HTTP GET, a
+            Telegram text message and its reply, an inline button press, or a
+            declared scheduled behaviour and its observable. A behaviour that
+            needs a write or an upload is stated by its observable after the
+            fact (a GET or a bot reply), never as a POST or an upload step.
             Give either `user_wording` (what the user actually wrote) or
             `wording_reference` (where they wrote it) — exactly one, never both,
             never neither.

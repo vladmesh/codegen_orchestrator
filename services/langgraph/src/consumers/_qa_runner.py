@@ -34,7 +34,7 @@ from shared.telegram_access_probe import (
     run_probe_script,
 )
 
-from ..agents.qa.acceptance import prepare_central_qa_criteria
+from ..agents.qa.acceptance import CriteriaAdjustment, prepare_central_qa_criteria
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -910,6 +910,8 @@ def _behaviour_row(
                 "deployment holds no jobs capability for the QA runtime, so no fire could be "
                 "made and the behaviour was never exercised"
             ),
+            # QA had no tool to exercise it: not evidence about the product.
+            cause=QAFailedCheckCause.QA_CAPABILITY,
         )
     fired = workspace.fired_behaviours.get(name)
     if fired is None:
@@ -921,6 +923,8 @@ def _behaviour_row(
                 "deployed product accepted no fire of it in this run, so the behaviour was "
                 "never exercised"
             ),
+            # QA could fire it and the product refused or never received it.
+            cause=QAFailedCheckCause.PRODUCT,
         )
     evidence = workspace.behaviour_evidence.get(name)
     if evidence is not None and evidence.dispatch_status != DISPATCHED:
@@ -1029,6 +1033,8 @@ def apply_package_acceptance(
                         "for any of them, so the behaviour was never exercised. QA fires only "
                         "a name a criterion declared, and never invents one"
                     ),
+                    # A criteria gap leaves QA nothing to fire: not a product verdict.
+                    cause=QAFailedCheckCause.QA_CAPABILITY,
                 )
             )
             continue
@@ -1046,6 +1052,41 @@ def apply_package_acceptance(
         f"pass: {'; '.join(row['name'] for row in failed)}"
     )
     logger.info("qa_package_acceptance_failed", failed=[row["name"] for row in failed])
+    return qa_result
+
+
+def apply_unverifiable_criteria(
+    qa_result: QAResult, unverifiable: Sequence[CriteriaAdjustment]
+) -> QAResult:
+    """Report every criterion QA was not handed as a failed `qa_capability` check.
+
+    The executor never saw these lines, so its verdict says nothing about them;
+    a run that carried one cannot pass as if it had been checked. The cause
+    keeps each one out of any fix task: the supervisor parks a run whose only
+    failures are these, and fixes only the product failures of a mixed run.
+    """
+    if not unverifiable:
+        return qa_result
+    rows = [
+        {
+            "name": f"criterion not verifiable by QA: {adjustment.original.strip()}",
+            "pass": False,
+            "detail": (
+                f"this criterion needs an action outside QA's tools ({adjustment.reason}): QA "
+                "reads HTTP GET routes, sends Telegram text, presses inline buttons and fires "
+                "declared jobs, and nothing else. It was not handed to the executor and was "
+                "not checked; restate it through an observable QA can read"
+            ),
+            "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+        }
+        for adjustment in unverifiable
+    ]
+    already_failed = not qa_result.passed
+    qa_result.checks = [*qa_result.checks, *rows]
+    qa_result.passed = False
+    unchecked = f"{len(rows)} criterion line(s) were not verifiable by QA and were not checked"
+    qa_result.summary = f"{qa_result.summary}; {unchecked}" if already_failed else unchecked
+    logger.info("qa_unverifiable_criteria_reported", criteria=[row["name"] for row in rows])
     return qa_result
 
 
@@ -1218,12 +1259,19 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         submit_verdict=workspace.submit_verdict,
         advertised_host=runtime.capability_host,
     )
+    prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
+    if prepared_criteria.adjustments:
+        logger.info(
+            "qa_platform_owned_criteria_adjusted",
+            qa_run_id=ownership.attempt_id,
+            adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
+        )
     endpoint = await service.start()
     try:
         executor_run, executor_failure, said = await _run_central_executor(
             target=target,
             ownership=ownership,
-            acceptance_criteria=acceptance_criteria,
+            executable_criteria=prepared_criteria.criteria,
             runtime=runtime,
             established_facts=established_facts,
             settings_established=settings_established,
@@ -1232,12 +1280,15 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             timeout=timeout,
         )
         if executor_run is not None:
-            return apply_package_acceptance(
-                _apply_telegram_probe_evidence(
-                    _verdict_of(workspace, service, timeout, said), workspace
+            return apply_unverifiable_criteria(
+                apply_package_acceptance(
+                    _apply_telegram_probe_evidence(
+                        _verdict_of(workspace, service, timeout, said), workspace
+                    ),
+                    acceptance,
+                    workspace,
                 ),
-                acceptance,
-                workspace,
+                prepared_criteria.unverifiable,
             )
     finally:
         await service.stop()
@@ -1271,7 +1322,7 @@ async def _run_central_executor(
     *,
     target: QATarget,
     ownership: WorkerOwnership,
-    acceptance_criteria: str,
+    executable_criteria: str,
     runtime: QARuntimeConfig,
     established_facts: list[str],
     settings_established: bool,
@@ -1286,15 +1337,8 @@ async def _run_central_executor(
     used to return nothing at all. The attempts travel back with the outcome so
     the run they settle retains all of them.
     """
-    prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
-    if prepared_criteria.adjustments:
-        logger.info(
-            "qa_platform_owned_criteria_adjusted",
-            qa_run_id=ownership.attempt_id,
-            adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
-        )
     prompt = build_qa_prompt(
-        prepared_criteria.criteria,
+        executable_criteria,
         target.deployed_url,
         target.bot_username,
         established_facts=established_facts,

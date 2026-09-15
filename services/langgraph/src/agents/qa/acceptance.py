@@ -3,6 +3,13 @@
 The central executor is deliberately not a second deployer or jobs-core client.
 It may judge the product observable after a named fire, but deployment owns
 privileged setting seed/readback and jobs core owns its transport response.
+
+It is also not a writer. Its whole vocabulary is a read-only HTTP GET, a
+Telegram text message, an inline button press and a declared ``FIRE JOB``. A
+criterion that needs an HTTP write on a product route is marked not verifiable
+here, before the executor exists, and never reaches it as a check. A criterion
+that needs a photo or file sent to the bot is not recognised here: it reaches
+the executor, which reports it with its own `qa_capability` cause.
 """
 
 from __future__ import annotations
@@ -23,10 +30,32 @@ _JOBS_TRANSPORT_ASSERTION = re.compile(
 _THEN_OBSERVABLE = re.compile(r"\bTHEN\s+(?P<observable>\S.*)$", re.IGNORECASE)
 _BULLET = re.compile(r"^(?P<bullet>\s*(?:[-*]|\d+[.)])\s+)")
 
+# The rule for withholding a line: only when it certainly requires the tester to
+# send an HTTP write. No other action, an upload included, is inferred here.
+# When in doubt the line goes to the executor, whose own `qa_capability` cause
+# is the safe fallback; a wrongly withheld line would fail every run of a
+# correct product.
+#
+# An HTTP method is the line's action when it is an uppercase method token (not
+# a slash-command or a path segment such as `/delete`) followed by a route:
+# a path, optionally after a preposition, a scheme and host, or `localhost:port`.
+# The first such token decides: a GET line is never withheld.
+_METHOD_ROUTE = re.compile(
+    r"(?<![/\w-])(?P<method>GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE)\s+"
+    r"(?:(?:to|on|at|against)\s+)?`?(?:https?://[^\s/`]+|localhost:\d+)?/"
+)
+_HTTP_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+UNVERIFIABLE = "unverifiable"
+
 
 @dataclass(frozen=True)
 class CriteriaAdjustment:
-    """One platform-owned assertion omitted or made into a QA observable."""
+    """One criterion line QA is not handed as written.
+
+    ``dropped`` and ``rewritten`` are platform-owned assertions; ``unverifiable``
+    is a line that needs an action outside QA's vocabulary.
+    """
 
     action: str
     reason: str
@@ -47,26 +76,33 @@ class CriteriaAdjustment:
 
 @dataclass(frozen=True)
 class PreparedCentralQACriteria:
-    """Criteria the executor can grade plus the platform-owned adjustments."""
+    """Criteria the executor can grade plus every line it was not handed."""
 
     criteria: str
     adjustments: tuple[CriteriaAdjustment, ...]
 
+    @property
+    def unverifiable(self) -> tuple[CriteriaAdjustment, ...]:
+        """The lines QA had no tool for; each owes the run a `qa_capability` failure."""
+        return tuple(a for a in self.adjustments if a.action == UNVERIFIABLE)
+
 
 def prepare_central_qa_criteria(acceptance_criteria: str) -> PreparedCentralQACriteria:
-    """Exclude platform proofs while retaining a criterion's product observable.
+    """Exclude platform proofs and unverifiable lines, keeping every observable.
 
     Legacy checklist text may use Markdown bullets, prose before a path,
     backticks, or a versioned API prefix. A direct privileged settings or jobs
     transport assertion is omitted. If it has a ``THEN`` observable, it is
     rewritten instead: no observable is silently discarded. A valid ``FIRE
     JOB`` declaration is always retained because it is the contract that grants
-    QA the named fire and its observable.
+    QA the named fire and its observable. Any other line that needs an HTTP
+    write is withheld and returned as ``unverifiable``, so the run reports it
+    instead of losing it.
     """
     retained: list[str] = []
     adjustments: list[CriteriaAdjustment] = []
     for line in acceptance_criteria.splitlines():
-        adjustment = _platform_owned_adjustment(line)
+        adjustment = _platform_owned_adjustment(line) or _unverifiable_adjustment(line)
         if adjustment is None:
             retained.append(line)
             continue
@@ -74,6 +110,16 @@ def prepare_central_qa_criteria(acceptance_criteria: str) -> PreparedCentralQACr
         if adjustment.rewritten is not None:
             retained.append(adjustment.rewritten)
     return PreparedCentralQACriteria("\n".join(retained), tuple(adjustments))
+
+
+def _unverifiable_adjustment(line: str) -> CriteriaAdjustment | None:
+    """Mark a line whose check needs an action none of QA's tools performs."""
+    if parse_scheduled_behaviours(line):
+        return None
+    http = _METHOD_ROUTE.search(line)
+    if http is None or http.group("method") not in _HTTP_WRITES:
+        return None
+    return CriteriaAdjustment(action=UNVERIFIABLE, reason="http_write", original=line)
 
 
 def _platform_owned_adjustment(line: str) -> CriteriaAdjustment | None:

@@ -32,12 +32,32 @@ need full field definitions to decide how to split work.
 7. Call `update_acceptance_criteria` with the FULL updated criteria list. \
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
-Each check must be concrete and verifiable via curl or Telegram command. \
+Each check must be concrete and stated only through what QA can do — see \
+"What QA Can Check" below. \
 A scheduled behaviour is named there in the `- FIRE JOB ... THEN ...` form — \
 see "Scheduled Behaviours" below.
 8. Stop once the tasks exist. You do NOT move the story: the platform \
 puts it in progress around your run, and a second move from here would be \
 one story transition too many.
+
+## What QA Can Check
+
+QA is a black-box tester with a closed set of read-only actions, and a \
+criterion is only a check when it is stated through them:
+
+- a read-only HTTP GET of a route, and what it answers;
+- a Telegram text message sent to the bot, and the bot's reply;
+- a press of an inline button the bot showed, and what follows;
+- a declared `FIRE JOB <name> ... THEN <observable>` (see "Scheduled Behaviours").
+
+QA never sends an HTTP POST, PUT, PATCH or DELETE and never uploads a photo, \
+file or other media to the bot. A behaviour that needs a write or an upload is \
+verified through its observable after the fact — a GET that exposes the stored \
+record, or the bot's reply to a text message — and never as a POST or an upload \
+step. Write "GET /api/transactions lists the recorded transaction", not \
+"POST /api/transactions returns 201"; the platform marks a criterion that needs \
+a write as not verifiable and QA never checks it, and QA fails a criterion that \
+needs an upload as a check it cannot perform.
 
 ## Product Brief Must-Requirements
 
