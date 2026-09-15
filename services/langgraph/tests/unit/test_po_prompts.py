@@ -202,6 +202,17 @@ class TestSystemPrompt:
         assert "confirm a corrected brief for it as its own story" in bullet
         assert "Never call it built, tested or under review" in bullet
 
+    def test_a_completed_bot_is_explained_with_its_usage_instructions(self):
+        events = _section("## Story Events & Reminders")
+        bullet = events[events.index("- `story_completed`") :]
+        bullet = bullet[: bullet.index("\n- ")]
+        assert "relay the usage instructions from the event in the user's language" in bullet
+        assert "how to reach the bot (@username)" in bullet
+        assert "what they send and what the bot answers" in bullet.replace("\n", " ")
+        assert "Never give a backend API address" in bullet
+        assert "**NEVER fabricate URLs.**" in SYSTEM_PROMPT
+        assert "`completed` — DONE → good news as for `story_completed`" in SYSTEM_PROMPT
+
     def test_the_only_events_listed_are_the_owner_notification_vocabulary(self):
         """Drift: every event the prompt says it receives is one PO's consumer routes."""
         from shared.contracts.vocab import OwnerNotificationEvent

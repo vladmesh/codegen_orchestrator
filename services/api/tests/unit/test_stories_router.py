@@ -9,6 +9,11 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.contracts.dto.product_brief import (
+    MustRequirement,
+    ProductBriefContent,
+    UsageExample,
+)
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from src.database import get_async_session
@@ -457,7 +462,12 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
     application_result = MagicMock()
     application_result.scalar_one_or_none.return_value = "running"
     session = _mock_session()
-    session.execute.side_effect = [story_result, qa_result, application_result]
+    session.execute.side_effect = [
+        story_result,
+        qa_result,
+        application_result,
+        _briefs_result([]),
+    ]
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -467,7 +477,8 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
         resp = await client.post("/api/stories/story-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert "https://verified.example.com" in story.owner_notification["text"]
+    # A Telegram bot is reached by its username; the backend address is not for the user.
+    assert "https://verified.example.com" not in story.owner_notification["text"]
     assert "@verified_bot" in story.owner_notification["text"]
 
 
@@ -584,6 +595,181 @@ async def test_completion_query_excludes_qa_runs_before_the_reopen():
 
     query = str(session.execute.await_args.args[0])
     assert "runs.created_at >=" in query
+
+
+_DEPLOYED_URL = "http://212.24.101.230:8042"
+
+
+def _passed_qa_result(*, bot_username: str | None, outcome: str = "passed"):
+    qa_run = MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": outcome},
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url=_DEPLOYED_URL,
+                    application_id=42,
+                    acceptance_criteria="works",
+                    bot_username=bot_username,
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = qa_run
+    return result
+
+
+def _running_application_result():
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = "running"
+    return result
+
+
+def _briefs_result(briefs):
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = briefs
+    return result
+
+
+def _brief(*, story_id, language="ru", examples=()):
+    content = ProductBriefContent(
+        summary="Бот проверяет палиндромы",
+        must_requirements=[MustRequirement(id="palindrome", text="Проверять палиндромы")],
+        language=language,
+        usage_examples=[
+            UsageExample(requirement_id="palindrome", user_sends=sends, product_answers=answers)
+            for sends, answers in examples
+        ],
+    )
+    return MagicMock(story_id=story_id, content=content.model_dump(mode="json"))
+
+
+_RUSSIAN_EXAMPLES = (
+    ("шалаш", "Да, «шалаш» — палиндром"),
+    ("привет", "Нет, «привет» не палиндром"),
+)
+
+
+@pytest.mark.asyncio
+async def test_bot_completion_carries_the_story_briefs_examples_and_no_backend_address():
+    story = _make_story(id="story-abc", status="testing")
+    session = _mock_session()
+    session.execute.side_effect = [
+        _passed_qa_result(bot_username="palindrome_bot"),
+        _running_application_result(),
+        _briefs_result(
+            [
+                _brief(story_id="story-newer", examples=(("abba", "yes"),), language="en"),
+                _brief(story_id="story-abc", examples=_RUSSIAN_EXAMPLES),
+            ]
+        ),
+    ]
+
+    text = await _completion_notification_text(story, session)
+
+    assert "QA passed" in text
+    assert "@palindrome_bot" in text
+    assert "(ru)" in text
+    for sends, answers in _RUSSIAN_EXAMPLES:
+        assert f"the user sends: {sends} → the bot answers: {answers}" in text
+    assert "abba" not in text
+    assert _DEPLOYED_URL not in text
+    assert "212.24.101.230" not in text
+    assert "8042" not in text
+
+
+@pytest.mark.asyncio
+async def test_bot_completion_without_its_own_examples_uses_the_latest_project_brief_with_some():
+    story = _make_story(id="story-fix", status="testing", type="fix")
+    session = _mock_session()
+    session.execute.side_effect = [
+        _passed_qa_result(bot_username="palindrome_bot"),
+        _running_application_result(),
+        _briefs_result(
+            [
+                _brief(story_id="story-legacy", examples=()),
+                _brief(story_id="story-abc", examples=_RUSSIAN_EXAMPLES),
+                _brief(story_id="story-older", examples=(("kayak", "yes"),), language="en"),
+            ]
+        ),
+    ]
+
+    text = await _completion_notification_text(story, session)
+
+    assert "@palindrome_bot" in text
+    assert "(ru)" in text
+    assert "the user sends: шалаш → the bot answers: Да, «шалаш» — палиндром" in text
+    assert "kayak" not in text
+    assert _DEPLOYED_URL not in text
+
+
+@pytest.mark.asyncio
+async def test_bot_completion_without_any_exemplified_brief_points_to_start_and_help():
+    story = _make_story(id="story-abc", status="testing")
+    session = _mock_session()
+    session.execute.side_effect = [
+        _passed_qa_result(bot_username="palindrome_bot"),
+        _running_application_result(),
+        _briefs_result([_brief(story_id="story-abc", examples=())]),
+    ]
+
+    text = await _completion_notification_text(story, session)
+
+    assert "@palindrome_bot" in text
+    assert "/start" in text
+    assert "/help" in text
+    assert _DEPLOYED_URL not in text
+    query = str(session.execute.await_args.args[0])
+    assert "product_briefs.confirmed_at IS NOT NULL" in query
+
+
+@pytest.mark.asyncio
+async def test_operator_accepted_bot_completion_follows_the_same_rule():
+    story = _make_story(id="story-abc", status="waiting_human_review")
+    session = _mock_session()
+    session.execute.side_effect = [
+        _passed_qa_result(bot_username="palindrome_bot", outcome="failed"),
+        _running_application_result(),
+        _briefs_result([_brief(story_id="story-abc", examples=_RUSSIAN_EXAMPLES)]),
+    ]
+
+    text = await _completion_notification_text(
+        story,
+        session,
+        acceptance=StoryAcceptance(
+            actor="admin_console:orchestrator-admin",
+            basis="Verified the result manually.",
+            accepted_at=datetime.now(UTC),
+        ),
+    )
+
+    assert "operator accepted the deployed result" in text
+    assert "@palindrome_bot" in text
+    assert "the user sends: привет → the bot answers: Нет, «привет» не палиндром" in text
+    assert _DEPLOYED_URL not in text
+
+
+@pytest.mark.asyncio
+async def test_completion_of_a_product_without_a_bot_keeps_its_address():
+    story = _make_story(id="story-abc", status="testing")
+    session = _mock_session()
+    session.execute.side_effect = [
+        _passed_qa_result(bot_username=None),
+        _running_application_result(),
+    ]
+
+    text = await _completion_notification_text(story, session)
+
+    assert text == (
+        "The story is finished: it is deployed and QA passed. Tell the user the good "
+        f"news and give them the address: {_DEPLOYED_URL}"
+    )
 
 
 @pytest.mark.asyncio
