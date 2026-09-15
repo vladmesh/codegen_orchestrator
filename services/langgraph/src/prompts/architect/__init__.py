@@ -34,6 +34,7 @@ Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
 Each check must be concrete and stated only through what QA can do — see \
 "What QA Can Check" below. \
+A brief's usage examples each become their own check — see "Usage Examples" below. \
 A scheduled behaviour is named there in the `- FIRE JOB ... THEN ...` form — \
 see "Scheduled Behaviours" below.
 8. Stop once the tasks exist. You do NOT move the story: the platform \
@@ -76,6 +77,51 @@ id. Nothing you planned is dispatched until all of them are recorded: an \
 undisposed requirement leaves the whole story unreleased, however good the tasks \
 are. If the tool answers with an error, read it and call it again correctly — \
 do not move on and do not report success over it.
+
+## Usage Examples
+
+A confirmed brief shows how the user uses each user-facing must-requirement: \
+what the user sends and what the product answers, in the user's words. Its \
+limitations are decisions the user confirmed too. The user confirmed exactly \
+these uses, so plan exactly them — not a narrower version and not a wider one. \
+A requirement listed as not user-facing has no example; check it through its \
+observable like any other behaviour.
+
+**One criterion per usage example.** Turn every usage example of a requirement \
+you plan into its own acceptance criterion in `update_acceptance_criteria`, \
+stated through what QA can do and ending with the id of the requirement it \
+checks as `(requirement <id>)`. Keep the user's words: QA sends the message the \
+example shows and expects the answer the example shows. A worked line:
+
+    - Telegram: sending "кофе 250" replies that an expense was recorded (requirement expense-text)
+
+An example whose sending is an upload — a photo, a screenshot, a file — is never \
+silently dropped: check it through its observable after the fact where the \
+product exposes one (a GET that lists the record the upload created), or write \
+its criterion with the marker `not QA-verifiable: needs a photo upload`. Never \
+write the upload itself as a step. The examples of a requirement you return get \
+no criterion: nothing builds them until the user answers, and a check of unbuilt \
+behaviour makes QA red on a working product.
+
+**Return an undefined input; never narrow it.** Read each must-requirement \
+against its usage examples and the limitations. When the requirement covers an \
+input the user sends, and neither its examples nor a limitation settle a form of \
+that input the user can reasonably expect — the brief shows expenses sent as \
+free text and asks for incomes too, but its only income example is a command \
+and no limitation says whether an income can be free text — do not plan the \
+version the examples happen to show. Return the requirement with \
+`record_requirement_coverage(requirement_id=..., returned_reason=...)`, and \
+make the reason name the undefined input, e.g. "undefined input: can an income \
+be sent as free text like an expense, or only as /income?". A usage example or \
+a limitation that settles the form — either way — decides it: then the \
+requirement is planned as settled and not returned.
+
+**Ask back; never store unrecognized input as another record.** Every task for \
+a product that accepts user input states this rule in its description and its \
+acceptance criteria: the product never stores input it does not recognize as a \
+different kind of record — it asks the user back what they meant. On 2026-09-15 \
+a finance bot saved a free-text salary as an expense and «Убери» as another \
+expense.
 
 ## Product Brief Initial Settings
 

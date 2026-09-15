@@ -801,6 +801,112 @@ class TestUndisposedRequirementCounterfactual:
         assert boundary.tasks["task-1"]["dispatch_admitted"] is True
 
 
+class TestProductBriefUsageExamples:
+    """How the user confirmed each requirement is used reaches the plan in their words."""
+
+    @pytest.fixture
+    def mock_redis(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            telegram_chat_id="user-1",
+        ).model_dump(mode="json")
+
+    async def _instructions(self, api, mock_redis, valid_job_data, brief) -> str:
+        api.get_product_brief_by_story = AsyncMock(return_value=brief)
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        graph = _graph_returning()
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        return graph.ainvoke.call_args[0][0]["messages"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_examples_grouped_by_requirement_limitations_and_internal_requirements(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        brief = make_product_brief(
+            content=ProductBriefContent(
+                summary="Бот личных финансов",
+                language="ru",
+                must_requirements=[
+                    {"id": "expense-text", "text": "Записывает расход из текста"},
+                    {"id": "income", "text": "Записывает доход"},
+                    {"id": "backup", "text": "Ночная резервная копия", "user_facing": False},
+                ],
+                # Shown to the user out of requirement order; planned in it.
+                usage_examples=[
+                    {
+                        "requirement_id": "income",
+                        "user_sends": "/income 80000 зарплата",
+                        "product_answers": "Записал доход 80 000 ₽",
+                    },
+                    {
+                        "requirement_id": "expense-text",
+                        "user_sends": "текст «кофе 250»",
+                        "product_answers": "Записал расход 250 ₽",
+                    },
+                    {
+                        "requirement_id": "expense-text",
+                        "user_sends": "текст «такси 600»",
+                        "product_answers": "Записал расход 600 ₽",
+                    },
+                ],
+                limitations=["Чеки распознаются бесплатным способом и могут читаться с ошибками."],
+            )
+        )
+
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, brief
+        )
+
+        assert "user's language: ru" in instructions
+        assert (
+            "[expense-text]\n"
+            "  - the user sends: текст «кофе 250»\n"
+            "    the product answers: Записал расход 250 ₽\n"
+            "  - the user sends: текст «такси 600»\n"
+            "    the product answers: Записал расход 600 ₽\n"
+            "[income]\n"
+            "  - the user sends: /income 80000 зарплата\n"
+            "    the product answers: Записал доход 80 000 ₽"
+        ) in instructions
+        assert "- backup: Ночная резервная копия (not user-facing" in instructions
+        assert "- expense-text: Записывает расход из текста\n" in instructions
+        assert (
+            "Limitations and trade-offs the user confirmed:\n"
+            "- Чеки распознаются бесплатным способом и могут читаться с ошибками."
+        ) in instructions
+        # The three rules, next to the examples they apply to.
+        assert "(requirement <id>)" in instructions
+        assert "returned_reason" in instructions and "undefined input" in instructions
+        assert "asks the user back" in instructions
+        # The coverage boundary is untouched.
+        assert "record_requirement_coverage" in instructions
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_brief_without_examples_still_gets_valid_instructions(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, make_product_brief()
+        )
+
+        assert "- req-1: It must sign users in\n- req-2: It must list cities\n" in instructions
+        assert "record_requirement_coverage" in instructions
+        assert "user's language" not in instructions
+        assert "the user sends:" not in instructions
+        assert "Limitations and trade-offs" not in instructions
+        assert "not user-facing" not in instructions
+
+
 class TestProductBriefInitialSettings:
     """The typed settings the user confirmed reach the plan as data.
 
