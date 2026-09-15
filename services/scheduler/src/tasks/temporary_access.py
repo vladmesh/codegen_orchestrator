@@ -210,10 +210,17 @@ async def _publish_operation(
 
 
 def _operation_succeeded(run) -> bool:
+    """Whether the run carries the product's confirmed readback.
+
+    A capability run records `SUCCESS` only after the product read the access
+    back active for a grant, inactive for a revoke; any other readback fails the
+    run. A skipped run never reached the product, so it proves nothing.
+    """
     return (
         run.status is RunStatus.COMPLETED
         and run.result is not None
         and run.result.deploy_outcome is DeployOutcome.SUCCESS
+        and run.result.skipped_reason is None
     )
 
 

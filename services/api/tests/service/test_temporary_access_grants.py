@@ -523,3 +523,35 @@ async def test_drain_commit_failure_rolls_back_status_and_audit(
         assert grant.status == "granted"
         assert grant.revoked_at is None
         assert audit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_capability_run_never_proves_a_grant(async_client) -> None:
+    """The 2026-09-15 runs completed SUCCESS as a same-SHA skip and never reached the product."""
+    project_id, run_id = await _project_with_qa_run(async_client)
+    payload = _payload(project_id, run_id)
+    created = await async_client.post("/api/temporary-access-grants/", json=payload)
+    assert created.status_code == status.HTTP_201_CREATED
+    operation = await async_client.post(
+        "/api/runs/",
+        json={"id": payload["grant_run_id"], "type": "deploy", "project_id": project_id},
+    )
+    assert operation.status_code == status.HTTP_201_CREATED, operation.text
+    result = {"deploy_outcome": "success", "application_id": 42}
+    skipped = await async_client.patch(
+        f"/api/runs/{payload['grant_run_id']}",
+        json={
+            "status": "completed",
+            "result": {**result, "skipped_reason": "already_deployed_same_sha"},
+        },
+    )
+    assert skipped.status_code == status.HTTP_200_OK, skipped.text
+
+    refused = await async_client.patch(
+        f"/api/temporary-access-grants/{payload['id']}", json={"status": "granted"}
+    )
+
+    assert refused.status_code == status.HTTP_409_CONFLICT
+    assert "has not proved" in refused.json()["detail"]
+    stored = await async_client.get(f"/api/temporary-access-grants/{payload['id']}")
+    assert stored.json()["status"] == "granting"

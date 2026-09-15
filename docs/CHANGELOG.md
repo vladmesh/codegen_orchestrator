@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-15
+
+- A temporary-access grant/revoke deploy never takes the same-SHA skip, and the sweep and API refuse a skipped run
+  as proof, so QA is released only after the product read the grant back active.
+
 ## 2026-09-14
 
 - A failed ensure-workspace parks each story with a todo task as `workspace_ensure_failed` with owner and admin

@@ -556,9 +556,11 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             )
 
         # A fenced deploy has to run: the shortcut would report a value removed
-        # while the run that set it is still live on GitHub Actions.
+        # while the run that set it is still live on GitHub Actions. A capability
+        # operation exists to reach the product, so skipping it would record a
+        # grant or revoke that never happened.
         application_id = None
-        if grant_intent is None and not msg.fence_active_deploys:
+        if grant_intent is None and temporary_access_grant is None and not msg.fence_active_deploys:
             application_id = await _already_deployed_application(
                 allocated_resources, msg.head_sha, env_overrides
             )
