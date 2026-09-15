@@ -68,7 +68,7 @@ LABELS: dict[str, dict[str, str]] = {
         "summary": "Summary",
         "must_requirements": "Must-requirements",
         "your_words": "your words",
-        "said_in": "said in",
+        "said_in": "said earlier in our conversation",
         "source": "source",
         "usage": "How you will use it",
         "you_send": "You send",
@@ -83,7 +83,7 @@ LABELS: dict[str, dict[str, str]] = {
         "summary": "Кратко",
         "must_requirements": "Обязательные требования",
         "your_words": "ваши слова",
-        "said_in": "где сказано",
+        "said_in": "сказано раньше в нашей переписке",
         "source": "источник",
         "usage": "Как вы будете пользоваться",
         "you_send": "Вы отправляете",
@@ -184,7 +184,9 @@ def _render(brief: ProductBriefRead) -> str:
         if requirement.user_wording:
             lines.append(f'  {label["your_words"]}: "{requirement.user_wording}"')
         elif requirement.wording_reference:
-            lines.append(f"  {label['said_in']}: {requirement.wording_reference}")
+            # The reference is an audit pointer (`telegram:chat=42:message=17`)
+            # for the architect, not something the user can read.
+            lines.append(f"  {label['said_in']}")
         else:
             lines.append(f"  {label['source']}: {label['not_specified']}")
     if content.language is not None:

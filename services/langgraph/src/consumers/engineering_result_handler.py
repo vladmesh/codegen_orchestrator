@@ -437,7 +437,8 @@ async def handle_worker_gave_up(
                 event=OwnerNotificationEvent.STORY_BLOCKED,
                 text=(
                     f"Task hit a blocker: {reason[:200]}. "
-                    "Our specialist is reviewing — work will continue once resolved."
+                    "Work on this story is stopped until a person resolves it; "
+                    "there is no known time."
                 ),
                 story_id=story_id or "",
                 project_id=project_id or "",

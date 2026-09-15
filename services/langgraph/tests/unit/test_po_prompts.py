@@ -1,9 +1,23 @@
 """Unit tests for PO system prompt and tool docstrings."""
 
+import inspect
+import re
+
+from src.agents.po.tools_briefs import present_product_brief
 from src.agents.po.tools_stories import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
 MAX_PROMPT_LENGTH = 14000
+
+
+def _section(heading: str) -> str:
+    start = SYSTEM_PROMPT.index(heading)
+    end = SYSTEM_PROMPT.find("\n## ", start + len(heading))
+    return SYSTEM_PROMPT[start:] if end == -1 else SYSTEM_PROMPT[start:end]
+
+
+def _product_brief_section() -> str:
+    return _section("## The Product Brief")
 
 
 class TestSystemPrompt:
@@ -83,7 +97,11 @@ class TestSystemPrompt:
         assert "intended users" in SYSTEM_PROMPT
         assert "languages" in SYSTEM_PROMPT
         assert "must-requirements" in SYSTEM_PROMPT
-        assert "yes / correct me" in SYSTEM_PROMPT
+        # The tool renders the answer line in the user's language (ru: «да / поправить»),
+        # so an English literal here would contradict what the user is shown.
+        assert "already ends with the answer line in their language" in SYSTEM_PROMPT
+        assert "yes / correct me" not in SYSTEM_PROMPT
+        assert "not specified" not in SYSTEM_PROMPT
 
     def test_the_confirmation_is_the_product_brief_flow(self):
         """The confirmed brief, not a re-worded summary, is what is planned against."""
@@ -126,6 +144,57 @@ class TestSystemPrompt:
         """Rebinding while the old bot still polls loses the race with Telegram."""
         assert "ONLY after that tool reports the bot free" in SYSTEM_PROMPT
         assert "still shutting down" in SYSTEM_PROMPT
+
+    def test_documented_brief_arguments_are_the_tool_signature(self):
+        """The prompt's call and the tool drifted once (1293); this keeps them together."""
+        section = _product_brief_section()
+        call = re.search(r"`present_product_brief\(([^)]*)\)`", section)
+        assert call is not None
+        documented = [name.strip() for name in call.group(1).split(",")]
+        parameters = [
+            name
+            for name in inspect.signature(present_product_brief.coroutine).parameters
+            if name != "config"
+        ]
+        assert documented == parameters
+        for name in parameters[3:]:
+            assert f"`{name}`:" in section, f"{name} is not documented"
+        for field in ("user_wording", "wording_reference", "user_facing", "requirement_id"):
+            assert f"`{field}`" in section
+        assert "`description`" in section
+        assert "at least one per user-facing requirement" in section
+
+    def test_fixes_the_form_of_every_input_and_its_symmetric_case(self):
+        assert "For every input the product accepts, fix the form it takes" in SYSTEM_PROMPT
+        assert "a command, free text, a button or a photo" in SYSTEM_PROMPT
+        assert "Check the symmetric case" in SYSTEM_PROMPT
+        assert "say whether incomes can too" in SYSTEM_PROMPT
+        assert 'a usage example in that form, or an explicit "not supported"' in SYSTEM_PROMPT
+
+    def test_names_the_quality_trade_off_of_a_cheaper_variant(self):
+        assert "cheaper or free variant that is noticeably worse" in SYSTEM_PROMPT
+        assert "say the trade-off in one sentence and what can be connected later" in (
+            SYSTEM_PROMPT
+        )
+        assert "Record it in `limitations`" in SYSTEM_PROMPT
+
+    def test_a_stopped_story_is_reported_honestly(self):
+        events = _section("## Story Events & Reminders")
+        assert "work is stopped, a person is needed, there is no known time" in events
+        assert (
+            "Do NOT call it tested, finished, standard, a routine procedure or a specialist check"
+        ) in events
+        assert "do NOT say someone is checking or reviewing it, unless a tool result says so" in (
+            events
+        )
+        assert "`waiting_human_review` — blocked → say work is stopped, a person is needed" in (
+            events
+        )
+
+    def test_the_old_reassuring_blocked_wording_is_gone(self):
+        assert "specialist is looking into it" not in SYSTEM_PROMPT
+        assert "this is normal" not in SYSTEM_PROMPT
+        assert "specialist is reviewing" not in SYSTEM_PROMPT
 
     def test_no_trigger_engineering_references(self):
         """Prompt should not reference deprecated trigger_engineering."""

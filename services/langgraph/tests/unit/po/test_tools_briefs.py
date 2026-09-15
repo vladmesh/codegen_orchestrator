@@ -241,7 +241,11 @@ class TestPresenting:
         assert "A bot that keeps recipes" in message
         assert "[r1] It stores a recipe" in message
         assert 'your words: "I want to save my recipes"' in message
-        assert "said in: telegram:chat=42:message=17" in message
+        # Where the user said it is shown in words; the audit pointer is not.
+        assert "[r2] It suggests a recipe every morning\n  said earlier in our conversation" in (
+            message
+        )
+        assert "telegram:chat=42:message=17" not in message
         assert "How you will use it:\n[r1]\n  You send: the text: pancakes" in message
         assert "Limitations and chosen trade-offs:\n- Recipes are only saved from text" in message
         # The setting is shown by what it means, never by its key.
@@ -316,6 +320,40 @@ class TestPresenting:
         # What only the PO needs stays in the prefix it is not told to send.
         assert "(id: brief-1)" in message
         assert "brief-1" not in shown
+
+    @pytest.mark.asyncio
+    async def test_a_russian_brief_never_shows_a_raw_wording_reference(self, stream_client):
+        """The 1293 review: «где сказано: telegram:chat=42:message=17» reached the user."""
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(
+            title="Финансовый бот",
+            summary="Бот, который считает мои расходы",
+            language="ru",
+            must_requirements=[
+                {
+                    "id": "expense",
+                    "text": "Записывает расход",
+                    "wording_reference": "telegram:chat=42:message=17",
+                }
+            ],
+            usage_examples=[
+                {
+                    "requirement_id": "expense",
+                    "user_sends": "текст «кофе 250»",
+                    "product_answers": "Записал расход 250 ₽",
+                }
+            ],
+        )
+
+        shown = _user_part(message)
+        assert "[expense] Записывает расход\n  сказано раньше в нашей переписке\n" in shown
+        assert "telegram:chat=42:message=17" not in shown
+        assert "chat=" not in shown
+        # The reference itself is kept for the architect, in the stored revision.
+        stored = api.briefs["brief-1"]["content"]["must_requirements"][0]
+        assert stored["wording_reference"] == "telegram:chat=42:message=17"
 
     @pytest.mark.asyncio
     async def test_a_language_with_no_table_falls_back_to_english_labels(self, stream_client):
