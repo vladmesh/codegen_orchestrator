@@ -41,7 +41,15 @@ class TestWhatIsOutsideTheVocabulary:
         for line in (
             "- PUT /api/budgets/1 returns 200",
             "- PATCH `/api/v1/budgets/1` updates the limit",
-            "- delete /api/transactions/7 returns 204",
+            "- DELETE /api/transactions/7 returns 204",
+        ):
+            [adjustment] = prepare_central_qa_criteria(line).unverifiable
+            assert adjustment.reason == "http_write", line
+
+    def test_a_write_to_an_absolute_url_or_after_a_preposition_is_unverifiable(self):
+        for line in (
+            "- POST http://localhost:8000/api/transactions returns 201",
+            "- POST to /api/transactions creates a transaction",
         ):
             [adjustment] = prepare_central_qa_criteria(line).unverifiable
             assert adjustment.reason == "http_write", line
@@ -54,6 +62,22 @@ class TestWhatIsOutsideTheVocabulary:
         ):
             [adjustment] = prepare_central_qa_criteria(line).unverifiable
             assert adjustment.reason == "telegram_media_upload", line
+
+    def test_a_line_that_does_not_certainly_require_a_write_or_upload_stays_a_check(self):
+        """When in doubt the executor gets the line (the observer's 1290 invariant)."""
+        criteria = "\n".join(
+            (
+                "- Telegram: /delete /last removes it",
+                "- GET /api/documents returns the document attached to the expense",
+                "- Telegram: /report replies with an attached PDF document",
+                "- Telegram: /files lists uploaded files",
+            )
+        )
+
+        prepared = prepare_central_qa_criteria(criteria)
+
+        assert prepared.adjustments == ()
+        assert prepared.criteria == criteria
 
     def test_readable_evidence_is_not_mistaken_for_an_upload(self):
         criteria = "\n".join(

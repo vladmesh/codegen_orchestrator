@@ -29,23 +29,33 @@ _JOBS_TRANSPORT_ASSERTION = re.compile(
 _THEN_OBSERVABLE = re.compile(r"\bTHEN\s+(?P<observable>\S.*)$", re.IGNORECASE)
 _BULLET = re.compile(r"^(?P<bullet>\s*(?:[-*]|\d+[.)])\s+)")
 
-# An HTTP method QA has no tool for, applied to a route.
-_HTTP_WRITE = re.compile(r"\b(?:POST|PUT|PATCH|DELETE)\s+`?/", re.IGNORECASE)
-# A word, not a route segment: `/uploads/photos` names a path QA may GET.
-_WORD = r"(?<![/\w])"
-_MEDIA = (
-    rf"{_WORD}(?:photos?|images?|pictures?|screenshots?|files?|documents?|videos?|voice|audio"
-    r"|media)\b"
+# The rule for withholding a line: only when it certainly requires the tester to
+# act outside QA's vocabulary. When in doubt the line goes to the executor, whose
+# own `qa_capability` cause is the safe fallback; a wrongly withheld line would
+# fail every run of a correct product.
+#
+# An HTTP method is the line's action when it is an uppercase method token (not
+# a slash-command or a path segment such as `/delete`) followed by a route:
+# a path, optionally after a preposition, a scheme and host, or `localhost:port`.
+# The first such token decides: a GET line is never withheld.
+_METHOD_ROUTE = re.compile(
+    r"(?<![/\w-])(?P<method>GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE)\s+"
+    r"(?:(?:to|on|at|against)\s+)?`?(?:https?://[^\s/`]+|localhost:\d+)?/"
 )
-_UPLOAD_VERB = rf"{_WORD}(?:upload|attach)\w*"
-# Media the tester would have to send: an upload or attach verb, a media item
-# sent *to the bot*, or a media item used as an input ("receipt photo → OCR").
-# A bot replying with media is evidence QA can read, and is not matched.
+_HTTP_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# A bullet and an optional short label (`Telegram:`) before the line's action.
+_LEAD = re.compile(r"^\s*(?:(?:[-*]|\d+[.)])\s+)?(?:[A-Za-z][\w ]{0,20}:\s+)?")
+_MEDIA = r"(?:photos?|images?|pictures?|screenshots?|files?|documents?|videos?|voice|audio|media)\b"
+# Media is an upload only when the line's action is the tester or user sending
+# it: the line opens with an upload/attach/send verb whose subject is nobody,
+# the user or the tester, or it opens with media used as input
+# ("receipt photo → OCR"). A bot reply carrying media, a GET of stored media and
+# a text command mentioning uploaded things do not open that way.
+_ACTOR = r"(?:(?:the\s+)?(?:user|tester|QA|you)\s+)?"
+_SEND = r"(?:upload(?:s|ing)?|attach(?:es|ing)?|send(?:s|ing)?|forward(?:s|ing)?)"
 _TELEGRAM_UPLOAD = (
-    re.compile(rf"{_UPLOAD_VERB}.*{_MEDIA}", re.IGNORECASE),
-    re.compile(rf"{_MEDIA}.*{_UPLOAD_VERB}", re.IGNORECASE),
-    re.compile(rf"\bsend\w*\s+(?:\w+\s+){{0,3}}{_MEDIA}.*\bto\s+the\s+bot\b", re.IGNORECASE),
-    re.compile(rf"{_MEDIA}\s*(?:→|->|=>)", re.IGNORECASE),
+    re.compile(rf"^{_ACTOR}{_SEND}\s+(?:[\w-]+\s+){{0,3}}?{_MEDIA}", re.IGNORECASE),
+    re.compile(rf"^(?:[\w-]+\s+){{0,2}}{_MEDIA}\s*(?:→|->|=>)", re.IGNORECASE),
 )
 
 UNVERIFIABLE = "unverifiable"
@@ -118,12 +128,16 @@ def _unverifiable_adjustment(line: str) -> CriteriaAdjustment | None:
     """Mark a line whose check needs an action none of QA's tools performs."""
     if parse_scheduled_behaviours(line):
         return None
-    if _HTTP_WRITE.search(line):
+    http = _METHOD_ROUTE.search(line)
+    if http is not None:
+        if http.group("method") not in _HTTP_WRITES:
+            return None
         reason = "http_write"
-    elif any(pattern.search(line) for pattern in _TELEGRAM_UPLOAD):
-        reason = "telegram_media_upload"
     else:
-        return None
+        action = line[_LEAD.match(line).end() :]
+        if not any(pattern.search(action) for pattern in _TELEGRAM_UPLOAD):
+            return None
+        reason = "telegram_media_upload"
     return CriteriaAdjustment(action=UNVERIFIABLE, reason=reason, original=line)
 
 
