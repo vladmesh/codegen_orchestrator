@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- The Product Brief carries the user's language, usage examples per user-facing requirement, limitations and
+  setting descriptions; it renders in the user's language, and a user-facing requirement without an example is refused.
+
 - The scheduler tears down every worker of an engineering attempt that gave up (story with no live run), so a
   gave-up worker no longer stays RUNNING when the handler never asks for its removal.
 

@@ -526,9 +526,14 @@ class BriefScenario:
     brief_title: str
     brief_summary: str
     must_requirements: tuple[dict[str, str], ...]
+    #: How the user uses each must-requirement, one example or more per id.
+    usage_examples: tuple[dict[str, str], ...]
+    limitations: tuple[str, ...]
     story_title: str
     settings_key: str
     settings_value: object
+    #: What the setting means, as the user is shown it instead of its key.
+    settings_description: str
     #: The scheduled behaviour the architect must publish for this contract.
     job_name: str
     productive_seconds: int
@@ -567,9 +572,23 @@ BRIEF_DIGEST_SCENARIO = BriefScenario(
             "user_wording": "The digest must be produced in Russian and English.",
         },
     ),
+    usage_examples=(
+        {
+            "requirement_id": "scheduled_digest",
+            "user_sends": "a request to run the digest now",
+            "product_answers": "the digest runs and its records become readable",
+        },
+        {
+            "requirement_id": "selected_languages",
+            "user_sends": "a read of the digest records after a run",
+            "product_answers": "one record in Russian and one in English",
+        },
+    ),
+    limitations=("Only the languages chosen in the product setting get a digest.",),
     story_title="Build the multilingual scheduled digest",
     settings_key=BRIEF_SETTINGS_KEY,
     settings_value=BRIEF_LANGUAGES,
+    settings_description="The digest is produced in Russian and English.",
     job_name=BRIEF_JOB_NAME,
     productive_seconds=BRIEF_PRODUCTIVE_DEADLINE_SECONDS,
     behaviour_error=_digest_behaviour_error,
@@ -606,9 +625,23 @@ BRIEF_PACKAGE_SCENARIO = BriefScenario(
             "user_wording": "I want to check whether my reminder has already fired.",
         },
     ),
+    usage_examples=(
+        {
+            "requirement_id": "one_time_reminder",
+            "user_sends": "a reminder for a moment a minute from now",
+            "product_answers": "once that moment passes, the reminder is marked emitted",
+        },
+        {
+            "requirement_id": "reminder_state_readable",
+            "user_sends": "a read of my reminders",
+            "product_answers": "each reminder with whether it is still pending or emitted",
+        },
+    ),
+    limitations=("Reminders fire once; there are no repeating reminders.",),
     story_title="Build the one-time reminder capability",
     settings_key=BRIEF_PACKAGE_SETTINGS_KEY,
     settings_value=BRIEF_PACKAGE_OWNER_REF,
+    settings_description="Reminders are recorded for the configured user reference.",
     job_name=BRIEF_PACKAGE_JOB_NAME,
     productive_seconds=BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS,
     behaviour_error=_package_behaviour_error,
