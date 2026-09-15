@@ -120,6 +120,9 @@ class OwnerNotificationEvent(StrEnum):
     TASK_IMPOSSIBLE_CAPACITY = "task_impossible_capacity"
     STORY_IMPOSSIBLE_CAPACITY = "story_impossible_capacity"
     TASK_RESOURCES_RESUMED = "task_resources_resumed"
+    #: Non-terminal: the admitted plan returned must-requirements instead of
+    #: planning them. Published by the architect, never a durable record.
+    STORY_REQUIREMENTS_RETURNED = "story_requirements_returned"
 
 
 class POCallbackEvent(StrEnum):

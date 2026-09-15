@@ -27,6 +27,7 @@ from tests.unit.architect_finance_bot import (
     FinanceBotApi,
     IncomeFreeText,
     assert_plan_uses_exactly_the_confirmed_examples,
+    assert_the_owner_is_told_what_was_returned,
     finance_bot_brief,
     plan_finance_bot,
 )
@@ -118,8 +119,8 @@ def _script(api: FinanceBotApi, plan: _Plan) -> list[AIMessage]:
         if example.requirement_id == EXPENSE_PHOTO:
             if not plan.drop_photo_criterion:
                 criteria.append(
-                    "- GET /api/expenses lists the expense recorded from a receipt photo; the "
-                    "upload is not QA-verifiable: needs a photo upload "
+                    f"- GET /api/expenses lists the expense recorded from «{example.user_sends}»; "
+                    "the upload is not QA-verifiable: needs a photo upload "
                     f"(requirement {EXPENSE_PHOTO})"
                 )
             continue
@@ -153,6 +154,11 @@ async def test_the_undefined_income_form_is_returned_and_every_example_is_a_chec
     assert result["status"] == "success", result
     assert api.admit_calls == 1 and api.released == ["task-1"]
     assert_plan_uses_exactly_the_confirmed_examples(api)
+    # The returned free-text income form is told to the owner, with its reason.
+    assert_the_owner_is_told_what_was_returned(api)
+    assert len(api.redis.published) == 1
+    assert "- income: Записывает доход" in api.redis.published[0][1]["text"]
+    assert UNDEFINED_INCOME_REASON in api.redis.published[0][1]["text"]
     # The examples reached the model in the user's words, grouped by requirement.
     briefing = seen[0][-1].content
     assert f"[{INCOME}]\n  - the user sends: /income 80000 зарплата" in briefing
@@ -167,6 +173,8 @@ async def test_a_brief_that_settles_free_text_income_returns_nothing(income_free
     assert result["status"] == "success", result
     assert api.released == ["task-1", "task-2"]
     assert_plan_uses_exactly_the_confirmed_examples(api)
+    assert_the_owner_is_told_what_was_returned(api)
+    assert api.redis.published == []
 
 
 @pytest.mark.asyncio
@@ -182,7 +190,7 @@ async def test_a_brief_that_settles_free_text_income_returns_nothing(income_free
         pytest.param(
             "undefined",
             _Plan(return_income=True, drop_photo_criterion=True),
-            f"requirement {EXPENSE_PHOTO} has 1 usage example",
+            f"requirement {EXPENSE_PHOTO} has 2 usage example",
             id="drops-the-upload-example",
         ),
         pytest.param(

@@ -191,6 +191,28 @@ class TestSystemPrompt:
             events
         )
 
+    def test_a_returned_requirement_is_told_plainly_with_a_follow_up_offer(self):
+        events = _section("## Story Events & Reminders")
+        bullet = events[events.index("- `story_requirements_returned`") :]
+        bullet = bullet[: bullet.index("\n- ")] if "\n- " in bullet else bullet
+        assert "will NOT be built in this story" in bullet
+        assert "in their language, without jargon" in bullet
+        assert "which part will not be built and why, and that the rest is being built" in bullet
+        assert "Offer to settle that part as a follow-up feature" in bullet
+        assert "confirm a corrected brief for it as its own story" in bullet
+        assert "Never call it built, tested or under review" in bullet
+
+    def test_the_only_events_listed_are_the_owner_notification_vocabulary(self):
+        """Drift: every event the prompt says it receives is one PO's consumer routes."""
+        from shared.contracts.vocab import OwnerNotificationEvent
+
+        events = _section("## Story Events & Reminders")
+        listed_part, only = events.split("These are the ONLY events you receive.")
+        assert "No task/deploy/infra notifications." in only
+        listed = re.findall(r"^- `([a-z_]+)` —", listed_part, flags=re.MULTILINE)
+        assert "story_requirements_returned" in listed
+        assert set(listed) <= {event.value for event in OwnerNotificationEvent}
+
     def test_the_old_reassuring_blocked_wording_is_gone(self):
         assert "specialist is looking into it" not in SYSTEM_PROMPT
         assert "this is normal" not in SYSTEM_PROMPT

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from typing import Literal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.queues.architect import ArchitectMessage
@@ -25,7 +25,7 @@ from tests.unit.po.finance_bot_replay import (
     TELEGRAM_CHAT_ID,
     income_by_free_text_is_decided,
 )
-from tests.unit.test_architect_consumer import _FakeBriefBoundary
+from tests.unit.test_architect_consumer import _FakeBriefBoundary, _FakeRedis
 
 EXPENSE_TEXT = "expense-text"
 INCOME = "income"
@@ -64,6 +64,11 @@ def finance_bot_brief(income_free_text: IncomeFreeText) -> ProductBriefContent:
             "requirement_id": EXPENSE_PHOTO,
             "user_sends": "фото чека",
             "product_answers": "Записал расход 1 240 ₽ по чеку",
+        },
+        {
+            "requirement_id": EXPENSE_PHOTO,
+            "user_sends": "скриншот операции из банка",
+            "product_answers": "Записал расход 3 500 ₽ по скриншоту",
         },
     ]
     limitations = [
@@ -108,6 +113,8 @@ class FinanceBotApi(_FakeBriefBoundary):
         self.content = content
         self.task_payloads: list[dict] = []
         self.criteria: str | None = None
+        #: `po:input` as the consumer publishes to it.
+        self.redis = _FakeRedis()
 
     async def get_story(self, story_id):
         return make_story(
@@ -148,7 +155,7 @@ async def plan_finance_bot(api: FinanceBotApi, *, model: str, base_url: str, api
     ):
         from src.consumers.architect import process_architect_job
 
-        return await process_architect_job(job, AsyncMock())
+        return await process_architect_job(job, api.redis)
 
 
 _QA_ACTION = re.compile(r"telegram|\bGET /|FIRE JOB|button|кнопк", re.IGNORECASE)
@@ -229,6 +236,27 @@ def assert_every_task_asks_back(api: FinanceBotApi) -> None:
         assert _ASK_BACK.search(description) and _UNRECOGNIZED.search(description), (
             f"task {task['title']!r} does not carry the ask-back rule: {description}"
         )
+
+
+def assert_the_owner_is_told_what_was_returned(api: FinanceBotApi) -> None:
+    """One `story_requirements_returned` event names every returned requirement and its reason."""
+    events = [
+        fields
+        for _, fields in api.redis.published
+        if fields["event"] == "story_requirements_returned"
+    ]
+    returned = returned_requirements(api)
+    if not returned:
+        assert events == [], f"notice published although nothing was returned: {events}"
+        return
+    assert len(events) == 1, f"expected one returned-requirements event, got {events}"
+    event = events[0]
+    assert event["telegram_chat_id"] == TELEGRAM_CHAT_ID and event["story_id"] == STORY_ID
+    requirements = {r.id: r for r in api.content.must_requirements}
+    for requirement_id, reason in returned.items():
+        assert f"- {requirement_id}: {requirements[requirement_id].text}" in event["text"]
+        assert f"reason: {reason}" in event["text"]
+    assert _WORDING in event["text"]
 
 
 def assert_plan_uses_exactly_the_confirmed_examples(api: FinanceBotApi) -> None:

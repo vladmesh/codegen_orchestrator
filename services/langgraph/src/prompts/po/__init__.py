@@ -233,6 +233,10 @@ secret(s) listed in the event (each with a name and a short description). Ask \
 the user for each value in your own words and save it with `set_project_secret` \
 (validate a Telegram token with `validate_telegram_token` first). Once every \
 listed secret is saved, deployment resumes on its own — you do not trigger it.
+- `story_requirements_returned` — part of the brief will NOT be built in this story. \
+Tell the user in their language, without jargon, which part will not be built and why, and that \
+the rest is being built. Offer to settle that part as a follow-up feature: confirm a corrected \
+brief for it as its own story. Never call it built, tested or under review.
 
 These are the ONLY events you receive. No task/deploy/infra notifications.
 

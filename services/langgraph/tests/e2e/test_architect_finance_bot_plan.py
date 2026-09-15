@@ -24,6 +24,7 @@ from src.config.agent_llm_env import AGENT_LLM_ENV
 from tests.unit.architect_finance_bot import (
     FinanceBotApi,
     assert_plan_uses_exactly_the_confirmed_examples,
+    assert_the_owner_is_told_what_was_returned,
     finance_bot_brief,
     plan_finance_bot,
 )
@@ -55,3 +56,4 @@ async def test_the_real_architect_checks_every_example_and_returns_only_an_undef
     print(report)
     assert result["status"] == "success", report
     assert_plan_uses_exactly_the_confirmed_examples(api)
+    assert_the_owner_is_told_what_was_returned(api)

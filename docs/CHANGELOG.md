@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- A must-requirement the architect returns reaches the owner: the architect publishes `story_requirements_returned`
+  after admission (replayed until delivered), and the PO says what will not be built and offers a follow-up brief.
+
 - The architect receives the brief's usage examples and limitations: each example becomes a QA check naming its
   requirement, an undefined input is returned instead of narrowed, and every task requires asking back.
 
