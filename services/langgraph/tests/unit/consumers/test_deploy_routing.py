@@ -211,6 +211,51 @@ class TestHandleDeploySuccess:
         assert "capability-value" not in str(mock_api.patch.await_args)
 
     @pytest.mark.asyncio
+    async def test_temporary_revoke_still_active_readback_fails_the_run(self):
+        """Without an inactive readback the revoke run never records SUCCESS."""
+        from src.consumers.deploy_result_handler import _handle_deploy_success
+
+        mock_redis = AsyncMock()
+        grant = _temporary_grant(
+            status=TemporaryAccessStatus.REVOKING,
+            revoke_run_id="temporary-access-revoke-1",
+        )
+        with (
+            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
+            patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
+        ):
+            mock_api.patch = AsyncMock()
+            mock_api.get_product_brief_by_story = AsyncMock(return_value=None)
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=grant)
+            grant_client.return_value.revoke_and_resolve = AsyncMock(
+                return_value=SimpleNamespace(active=True, failure=None)
+            )
+            result = await _handle_deploy_success(
+                result={
+                    "deployed_url": "https://exact.example.com",
+                    "secret_values": {"USERS_GRANT_CAPABILITY": "capability-value"},
+                },
+                smoke_result=None,
+                task_id="temporary-access-revoke-1",
+                project_id="proj-1",
+                project=_project(),
+                callback_stream="cb:1",
+                telegram_chat_id="123",
+                story_id="story-1",
+                redis=mock_redis,
+                msg=_make_deploy_msg(),
+                application_id=42,
+                temporary_access_grant=grant,
+                temporary_access_operation="revoke",
+            )
+
+        assert result["status"] == "failed"
+        patched = mock_api.patch.await_args.kwargs["json"]
+        assert patched["status"] == "failed"
+        assert patched["result"]["deploy_outcome"] == DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value
+        assert patched["result"]["error_details"] == "unverified"
+
+    @pytest.mark.asyncio
     async def test_temporary_grant_failure_never_records_success_or_releases_handoff(self):
         from src.consumers.deploy_result_handler import _handle_deploy_success
 
