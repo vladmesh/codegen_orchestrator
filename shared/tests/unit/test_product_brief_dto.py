@@ -98,9 +98,161 @@ def _proposed(**overrides) -> dict:
         "must_requirements": [
             {"id": "r1", "text": "It stores a book", "user_wording": "remember my books"}
         ],
+        "language": "en",
+        "usage_examples": [
+            {"requirement_id": "r1", "user_sends": "the text Dune", "product_answers": "Saved"}
+        ],
     }
+    if "must_requirements" in overrides and "usage_examples" not in overrides:
+        base["usage_examples"] = [
+            {"requirement_id": requirement["id"], "user_sends": "hi", "product_answers": "ok"}
+            for requirement in overrides["must_requirements"]
+        ]
     base.update(overrides)
     return base
+
+
+class TestStoredContentWithoutUsageKeepsParsing:
+    """A brief stored before language, examples and limitations existed."""
+
+    def test_an_old_stored_brief_still_parses_with_the_new_fields_defaulted(self):
+        stored = {
+            "summary": "A bot that tracks reading",
+            "must_requirements": [
+                {
+                    "id": "r1",
+                    "text": "It stores a book",
+                    "user_wording": "remember my books",
+                    "wording_reference": None,
+                }
+            ],
+            "initial_settings": [{"key": "ocr.method", "scope": "product", "value": "free"}],
+        }
+        content = ProductBriefContent.model_validate(stored)
+        assert content.language is None
+        assert content.usage_examples == []
+        assert content.limitations == []
+        assert content.must_requirements[0].user_facing is True
+        assert content.initial_settings[0].description is None
+
+    def test_a_read_shape_without_examples_is_not_refused(self):
+        """Reading is not the boundary that holds a producer to examples."""
+        content = ProductBriefContent.model_validate(_content())
+        assert content.usage_examples == []
+
+
+class TestProposedContentShowsUsage:
+    """The write shape holds a producer to the user's language and examples."""
+
+    def test_the_new_fields_are_structured_and_readable(self):
+        content = ProposedProductBriefContent.model_validate(
+            _proposed(
+                language="RU",
+                limitations=["  Доход вводится только командой /income  "],
+                must_requirements=[
+                    {"id": "r1", "text": "Учёт расходов", "user_wording": "считай траты"},
+                    {
+                        "id": "r2",
+                        "text": "Ночная сводка",
+                        "user_wording": "присылай итог",
+                        "user_facing": False,
+                    },
+                ],
+                usage_examples=[
+                    {
+                        "requirement_id": "r1",
+                        "user_sends": "фото чека",
+                        "product_answers": "Записал расход 450 ₽",
+                    }
+                ],
+            )
+        )
+        assert content.language == "ru"
+        assert content.usage_examples[0].requirement_id == "r1"
+        assert content.usage_examples[0].user_sends == "фото чека"
+        assert content.limitations == ["Доход вводится только командой /income"]
+        assert content.must_requirements[1].user_facing is False
+
+    def test_the_create_and_read_shapes_round_trip_the_new_fields(self):
+        proposed = ProposedProductBriefContent.model_validate(
+            _proposed(
+                limitations=["Only text messages are understood"],
+                initial_settings=[
+                    {"key": "ocr.method", "value": "free", "description": "Free receipt reading"}
+                ],
+            )
+        )
+        stored = proposed.model_dump(mode="json")
+        read = ProductBriefContent.model_validate(stored)
+        assert read.model_dump(mode="json") == stored
+        assert read.initial_settings[0].description == "Free receipt reading"
+        assert read.usage_examples[0].product_answers == "Saved"
+
+    def test_a_missing_language_is_refused(self):
+        payload = _proposed()
+        del payload["language"]
+        with pytest.raises(ValidationError, match="language"):
+            ProposedProductBriefContent.model_validate(payload)
+
+    def test_a_language_that_is_not_a_code_is_refused(self):
+        with pytest.raises(ValidationError, match="ISO 639"):
+            ProposedProductBriefContent.model_validate(_proposed(language="Russian"))
+
+    def test_an_example_of_an_unknown_requirement_is_refused(self):
+        with pytest.raises(ValidationError, match="unknown must-requirement ids: r9"):
+            ProposedProductBriefContent.model_validate(
+                _proposed(
+                    usage_examples=[
+                        {"requirement_id": "r1", "user_sends": "a", "product_answers": "b"},
+                        {"requirement_id": "r9", "user_sends": "a", "product_answers": "b"},
+                    ]
+                )
+            )
+
+    def test_a_user_facing_requirement_without_an_example_is_refused(self):
+        with pytest.raises(ValidationError, match="no usage example: r2"):
+            ProposedProductBriefContent.model_validate(
+                _proposed(
+                    must_requirements=[
+                        {"id": "r1", "text": "one", "user_wording": "words"},
+                        {"id": "r2", "text": "two", "user_wording": "words"},
+                    ],
+                    usage_examples=[
+                        {"requirement_id": "r1", "user_sends": "a", "product_answers": "b"}
+                    ],
+                )
+            )
+
+    def test_a_requirement_the_user_never_touches_needs_no_example(self):
+        content = ProposedProductBriefContent.model_validate(
+            _proposed(
+                must_requirements=[
+                    {"id": "r1", "text": "one", "user_wording": "words", "user_facing": False}
+                ],
+                usage_examples=[],
+            )
+        )
+        assert content.usage_examples == []
+
+    def test_a_blank_example_side_is_refused(self):
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(
+                _proposed(
+                    usage_examples=[
+                        {"requirement_id": "r1", "user_sends": "  ", "product_answers": "b"}
+                    ]
+                )
+            )
+
+    def test_a_blank_limitation_is_refused(self):
+        with pytest.raises(ValidationError):
+            ProposedProductBriefContent.model_validate(_proposed(limitations=["  "]))
+
+    def test_a_setting_without_a_description_is_refused(self):
+        with pytest.raises(ValidationError, match="description"):
+            ProposedProductBriefContent.model_validate(
+                _proposed(initial_settings=[{"key": "ocr.method", "value": "free"}])
+            )
 
 
 class TestProposedContentIsPathSafe:
@@ -201,8 +353,8 @@ class TestInitialSettings:
         content = ProposedProductBriefContent.model_validate(
             _proposed(
                 initial_settings=[
-                    {"key": "alerts.default_currency", "value": "USD"},
-                    {"key": "alerts.digest_hour", "value": 9},
+                    {"key": "alerts.default_currency", "value": "USD", "description": "In USD"},
+                    {"key": "alerts.digest_hour", "value": 9, "description": "Digest at 9"},
                 ]
             )
         )
@@ -215,12 +367,12 @@ class TestInitialSettings:
 
     def test_the_same_key_scope_and_subject_twice_is_refused(self):
         """Two values for one identity is not an initial state."""
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="same key, scope and subject twice"):
             ProposedProductBriefContent.model_validate(
                 _proposed(
                     initial_settings=[
-                        {"key": "alerts.default_currency", "value": "USD"},
-                        {"key": "alerts.default_currency", "value": "EUR"},
+                        {"key": "alerts.default_currency", "value": "USD", "description": "USD"},
+                        {"key": "alerts.default_currency", "value": "EUR", "description": "EUR"},
                     ]
                 )
             )

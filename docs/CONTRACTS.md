@@ -374,6 +374,20 @@ back as a 404 that says nothing about why, and the refusal belongs where the
 revision is opened. Both are additive: `extra="forbid"` stays, ids stay unique,
 and no migration is needed because `content` is a JSON column.
 
+**A brief shows the user how they will use it, in their language.**
+`ProductBriefContent` carries `language` (an ISO 639 code such as `ru`),
+`usage_examples` (each `UsageExample` names a must-requirement id, what the user
+sends and what the product answers), `limitations` (plain-language sentences),
+`MustRequirement.user_facing` (default `true`) and `InitialSetting.description`.
+All default on the read shape, so a brief stored before them still parses. The
+write shape requires a language and a description on every setting, and refuses a
+usage example naming an unknown requirement id and a user-facing requirement with
+no example. `present_product_brief` renders the user-facing message from a
+per-language label table (`ru`, `en`; any other language falls back to `en`),
+shows settings only by their description, and keeps the brief id in the PO-facing
+prefix. A stored revision lacking these fields cannot be confirmed; the PO is told
+to present a correction.
+
 **A brief carries typed initial settings, and never a secret.**
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
 a manifest-declared `key`, an explicit `scope` (`product`, or `user` with a

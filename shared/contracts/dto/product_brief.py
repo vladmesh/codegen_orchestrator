@@ -109,6 +109,19 @@ class InitialSetting(BaseModel):
     scope: SettingScope = SettingScope.PRODUCT
     subject_id: int | None = Field(default=None, ge=1)
     value: Any = None
+    #: What this setting and its chosen value mean, in the user's language — the
+    #: only way the user is shown it. Absent on documents stored before it existed.
+    description: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("description")
+    @classmethod
+    def _description_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("a setting description that is present must not be blank")
+        return value
 
     @field_validator("key")
     @classmethod
@@ -159,6 +172,10 @@ class MustRequirement(BaseModel):
     #: Where the user's words are, when quoting them here is not the right
     #: place — e.g. `telegram:chat=42:message=1337`.
     wording_reference: str | None = Field(default=None, max_length=500)
+    #: Whether the user interacts with this requirement. A user-facing one is
+    #: shown with at least one usage example; one that is only internal or
+    #: scheduled with nothing the user sends may have none.
+    user_facing: bool = True
 
     @field_validator("id", "text")
     @classmethod
@@ -208,12 +225,47 @@ class ProposedMustRequirement(MustRequirement):
         return self
 
 
+class ProposedInitialSetting(InitialSetting):
+    """A setting as a producer may write it: the user is shown its description."""
+
+    description: str = Field(min_length=1, max_length=1000)
+
+
+#: A user's language as the brief names it: an ISO 639 code, optionally with a
+#: region or script subtag — `ru`, `en`, `pt-br`.
+LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$")
+
+
+class UsageExample(BaseModel):
+    """One exchange that shows the user how a must-requirement is used.
+
+    Both sides are in the user's words: what they send (a text, a command, a
+    button press, a photo — described, not encoded) and what the product
+    answers.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_id: str = Field(min_length=1, max_length=128)
+    user_sends: str = Field(min_length=1, max_length=2000)
+    product_answers: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("requirement_id", "user_sends", "product_answers")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("usage example fields must not be blank")
+        return value
+
+
 class ProductBriefContent(BaseModel):
     """The confirmed brief document. Frozen once `confirmed_at` is stamped.
 
     The read shape — what `ProductBriefRead` parses out of the JSON column.
-    `initial_settings` defaults to empty, so a document stored before this field
-    existed still parses as the same brief with nothing seeded.
+    Every field added after the first release defaults — `initial_settings`,
+    `language`, `usage_examples`, `limitations` — so a document stored before
+    it existed still parses as the same brief.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -224,6 +276,21 @@ class ProductBriefContent(BaseModel):
     #: them. Ordered because the confirmation is one message and its order is
     #: part of what was confirmed.
     initial_settings: list[InitialSetting] = Field(default_factory=list)
+    #: The language the user is shown the brief in, e.g. `ru` or `en`.
+    language: str | None = Field(default=None, max_length=35)
+    #: How the user will use the product: at least one example per user-facing
+    #: must-requirement, in the order the user was shown them.
+    usage_examples: list[UsageExample] = Field(default_factory=list)
+    #: Limitations and chosen trade-offs, one plain-language sentence each.
+    limitations: list[str] = Field(default_factory=list)
+
+    @field_validator("limitations")
+    @classmethod
+    def _limitations_not_blank(cls, value: list[str]) -> list[str]:
+        stripped = [limitation.strip() for limitation in value]
+        if not all(stripped):
+            raise ValueError("a limitation must not be blank")
+        return stripped
 
     @model_validator(mode="after")
     def _requirement_ids_are_unique(self) -> ProductBriefContent:
@@ -242,10 +309,43 @@ class ProposedProductBriefContent(ProductBriefContent):
     """The brief document as a producer may write it. The write shape.
 
     Identical to the stored document field for field; it differs only in
-    refusing what must never be opened as a revision in the first place.
+    refusing what must never be opened as a revision in the first place: a
+    missing language, a setting the user could only be shown by its key, a usage
+    example of a requirement the brief does not have, and a user-facing
+    requirement nobody showed the user how to use.
     """
 
     must_requirements: list[ProposedMustRequirement] = Field(min_length=1)
+    initial_settings: list[ProposedInitialSetting] = Field(default_factory=list)
+    language: str = Field(min_length=2, max_length=35)
+
+    @field_validator("language")
+    @classmethod
+    def _language_is_a_code(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not LANGUAGE_RE.match(value):
+            raise ValueError(f"a language is an ISO 639 code such as 'ru' or 'en', not {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _every_user_facing_requirement_has_an_example(self) -> ProposedProductBriefContent:
+        known = [requirement.id for requirement in self.must_requirements]
+        unknown = sorted({example.requirement_id for example in self.usage_examples} - set(known))
+        if unknown:
+            raise ValueError(
+                f"usage examples name unknown must-requirement ids: {', '.join(unknown)}"
+            )
+        exemplified = {example.requirement_id for example in self.usage_examples}
+        missing = [
+            requirement.id
+            for requirement in self.must_requirements
+            if requirement.user_facing and requirement.id not in exemplified
+        ]
+        if missing:
+            raise ValueError(
+                f"user-facing must-requirements have no usage example: {', '.join(missing)}"
+            )
+        return self
 
 
 class ProductBriefCreate(BaseModel):

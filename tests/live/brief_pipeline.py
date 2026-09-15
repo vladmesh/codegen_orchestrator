@@ -96,11 +96,15 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
                 "title": scenario.brief_title,
                 "summary": scenario.brief_summary,
                 "must_requirements": [dict(one) for one in scenario.must_requirements],
+                "language": "en",
+                "usage_examples": [dict(one) for one in scenario.usage_examples],
+                "limitations": list(scenario.limitations),
                 "initial_settings": [
                     {
                         "key": scenario.settings_key,
                         "scope": "product",
                         "value": scenario.settings_value,
+                        "description": scenario.settings_description,
                     }
                 ],
             },

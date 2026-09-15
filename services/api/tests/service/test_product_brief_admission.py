@@ -53,15 +53,23 @@ _CONTENT = {
             "text": "It stores a book",
             "user_wording": "I want it to remember the books I read",
             "wording_reference": None,
+            "user_facing": True,
         },
         {
             "id": "r2",
             "text": "It lists the books",
             "user_wording": None,
             "wording_reference": "telegram:chat=1:message=2",
+            "user_facing": True,
         },
     ],
     "initial_settings": [],
+    "language": "en",
+    "usage_examples": [
+        {"requirement_id": "r1", "user_sends": "the text Dune", "product_answers": "Saved Dune"},
+        {"requirement_id": "r2", "user_sends": "the command /list", "product_answers": "Dune"},
+    ],
+    "limitations": ["Books are only added by title, not by photo"],
 }
 
 
@@ -705,11 +713,7 @@ async def test_a_changed_brief_is_a_new_revision_not_an_edit(async_client: Async
     assert first.status_code == HTTPStatus.CREATED, first.text
     assert first.json()["revision"] == 1
 
-    changed = {
-        "summary": "A bot that tracks reading and lending",
-        "must_requirements": _CONTENT["must_requirements"],
-        "initial_settings": [],
-    }
+    changed = {**_CONTENT, "summary": "A bot that tracks reading and lending"}
     mismatch = await async_client.post(
         f"{BRIEFS_URL}/{first.json()['id']}/confirm",
         json={"request_id": f"conf-{uuid.uuid4().hex}", "content": changed},
