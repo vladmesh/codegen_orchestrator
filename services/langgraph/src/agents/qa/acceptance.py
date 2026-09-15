@@ -6,9 +6,10 @@ privileged setting seed/readback and jobs core owns its transport response.
 
 It is also not a writer. Its whole vocabulary is a read-only HTTP GET, a
 Telegram text message, an inline button press and a declared ``FIRE JOB``. A
-criterion that needs any other action — an HTTP write on a product route, a
-photo or file sent to the bot — is marked not verifiable here, before the
-executor exists, and never reaches it as a check.
+criterion that needs an HTTP write on a product route is marked not verifiable
+here, before the executor exists, and never reaches it as a check. A criterion
+that needs a photo or file sent to the bot is not recognised here: it reaches
+the executor, which reports it with its own `qa_capability` cause.
 """
 
 from __future__ import annotations
@@ -30,9 +31,10 @@ _THEN_OBSERVABLE = re.compile(r"\bTHEN\s+(?P<observable>\S.*)$", re.IGNORECASE)
 _BULLET = re.compile(r"^(?P<bullet>\s*(?:[-*]|\d+[.)])\s+)")
 
 # The rule for withholding a line: only when it certainly requires the tester to
-# act outside QA's vocabulary. When in doubt the line goes to the executor, whose
-# own `qa_capability` cause is the safe fallback; a wrongly withheld line would
-# fail every run of a correct product.
+# send an HTTP write. No other action, an upload included, is inferred here.
+# When in doubt the line goes to the executor, whose own `qa_capability` cause
+# is the safe fallback; a wrongly withheld line would fail every run of a
+# correct product.
 #
 # An HTTP method is the line's action when it is an uppercase method token (not
 # a slash-command or a path segment such as `/delete`) followed by a route:
@@ -43,23 +45,6 @@ _METHOD_ROUTE = re.compile(
     r"(?:(?:to|on|at|against)\s+)?`?(?:https?://[^\s/`]+|localhost:\d+)?/"
 )
 _HTTP_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# A bullet and an optional short label (`Telegram:`) before the line's action.
-_LEAD = re.compile(r"^\s*(?:(?:[-*]|\d+[.)])\s+)?(?:[A-Za-z][\w ]{0,20}:\s+)?")
-_MEDIA_NOUN = r"(?:photo|image|picture|video|voice|audio|file|document|sticker)"
-# A media upload is a closed grammar, not a heuristic. After the bullet and an
-# optional label, the line is exactly one of two forms; nothing else is inferred
-# from verbs, subjects or media words, and any other line goes to the executor.
-_TELEGRAM_UPLOAD = (
-    # 1. The tester's imperative: capitalised Upload, Attach or Send (never
-    #    `Sends` or `Sending`), an optional article, at most one adjective, a
-    #    media noun as the direct object, then exactly `to the bot`.
-    re.compile(
-        rf"^(?:Upload|Attach|Send) (?:(?:a|an|the) )?(?:[A-Za-z-]+ )?{_MEDIA_NOUN} to the bot\b"
-    ),
-    # 2. A media noun phrase of at most two words ending in the media noun,
-    #    immediately followed by an arrow: `Receipt photo → OCR`.
-    re.compile(rf"^(?:[A-Za-z-]+ )?(?i:{_MEDIA_NOUN}) ?(?:→|->)"),
-)
 
 UNVERIFIABLE = "unverifiable"
 
@@ -111,8 +96,8 @@ def prepare_central_qa_criteria(acceptance_criteria: str) -> PreparedCentralQACr
     rewritten instead: no observable is silently discarded. A valid ``FIRE
     JOB`` declaration is always retained because it is the contract that grants
     QA the named fire and its observable. Any other line that needs an HTTP
-    write or a Telegram media upload is withheld and returned as
-    ``unverifiable``, so the run reports it instead of losing it.
+    write is withheld and returned as ``unverifiable``, so the run reports it
+    instead of losing it.
     """
     retained: list[str] = []
     adjustments: list[CriteriaAdjustment] = []
@@ -132,16 +117,9 @@ def _unverifiable_adjustment(line: str) -> CriteriaAdjustment | None:
     if parse_scheduled_behaviours(line):
         return None
     http = _METHOD_ROUTE.search(line)
-    if http is not None:
-        if http.group("method") not in _HTTP_WRITES:
-            return None
-        reason = "http_write"
-    else:
-        action = line[_LEAD.match(line).end() :]
-        if not any(pattern.search(action) for pattern in _TELEGRAM_UPLOAD):
-            return None
-        reason = "telegram_media_upload"
-    return CriteriaAdjustment(action=UNVERIFIABLE, reason=reason, original=line)
+    if http is None or http.group("method") not in _HTTP_WRITES:
+        return None
+    return CriteriaAdjustment(action=UNVERIFIABLE, reason="http_write", original=line)
 
 
 def _platform_owned_adjustment(line: str) -> CriteriaAdjustment | None:

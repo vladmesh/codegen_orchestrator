@@ -56,7 +56,8 @@ verified through its observable after the fact — a GET that exposes the stored
 record, or the bot's reply to a text message — and never as a POST or an upload \
 step. Write "GET /api/transactions lists the recorded transaction", not \
 "POST /api/transactions returns 201"; the platform marks a criterion that needs \
-a write or an upload as not verifiable and QA never checks it.
+a write as not verifiable and QA never checks it, and QA fails a criterion that \
+needs an upload as a check it cannot perform.
 
 ## Product Brief Must-Requirements
 

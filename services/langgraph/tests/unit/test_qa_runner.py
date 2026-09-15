@@ -84,6 +84,7 @@ class TestBuildQAPrompt:
         assert '"cause": "product" | "qa_capability" | "qa_access"' in prompt
         assert "Every failed check carries a `cause`" in prompt
         assert "HTTP write" in prompt and "photo upload" in prompt
+        assert "needs a photo, file or other media sent to the bot is one of these" in prompt
         assert "fails with cause `qa_capability`" in prompt
         assert "fails with cause `qa_access`" in prompt
         assert prompt.count("it is never a product failure") == 2

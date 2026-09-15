@@ -2,7 +2,9 @@
 
 QA reads HTTP GET routes, sends Telegram text, presses inline buttons and fires
 declared jobs. On 2026-09-15 the architect wrote `POST /api/transactions` and a
-receipt photo upload as criteria, and QA failed them against any code.
+receipt photo upload as criteria, and QA failed them against any code. Only the
+HTTP write is withheld before QA; an upload reaches the executor, which reports
+it with its own `qa_capability` cause.
 """
 
 from __future__ import annotations
@@ -23,16 +25,20 @@ SEPT_15_CRITERIA = "\n".join((POST_ITEM, PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET
 
 EXECUTOR = None
 
-# Every line quoted by the 1290 reviews (rounds 5 and 17) and the observer's
+# Every line quoted by the 1290 reviews (rounds 5, 17 and 25) and the observer's
 # decision, with what the pre-QA classifier must do with it. `None` is a line
 # handed to the executor, which reports it itself if it cannot check it.
 CLASSIFICATION_TABLE = [
     ("- POST http://localhost:8000/api/transactions returns 201", "http_write"),
     ("- POST to /api/transactions creates a transaction", "http_write"),
     (POST_ITEM, "http_write"),
-    (PHOTO_ITEM, "telegram_media_upload"),
-    ("- Send a receipt photo to the bot", "telegram_media_upload"),
-    ("- Telegram: Upload a document to the bot", "telegram_media_upload"),
+    (PHOTO_ITEM, EXECUTOR),
+    ("- Send a receipt photo to the bot", EXECUTOR),
+    ("- Telegram: Upload a document to the bot", EXECUTOR),
+    ("- Report file → sent to the admin chat every Monday", EXECUTOR),
+    ("- Export file -> contains all transactions", EXECUTOR),
+    ("- Daily document -> delivered at 09:00", EXECUTOR),
+    ("- Bot: Send the report file to the bot owner", EXECUTOR),
     ("- GET /api/documents returns the document attached to the expense", EXECUTOR),
     ("- Telegram: /report replies with an attached PDF document", EXECUTOR),
     ("- Telegram: /files lists uploaded files", EXECUTOR),
@@ -51,7 +57,7 @@ CLASSIFICATION_TABLE = [
 
 
 @pytest.mark.parametrize(("line", "withheld_as"), CLASSIFICATION_TABLE)
-def test_a_line_is_withheld_only_when_it_certainly_needs_a_write_or_upload(line, withheld_as):
+def test_a_line_is_withheld_only_when_it_certainly_needs_an_http_write(line, withheld_as):
     prepared = prepare_central_qa_criteria(line)
 
     assert [adjustment.reason for adjustment in prepared.unverifiable] == (
@@ -61,20 +67,35 @@ def test_a_line_is_withheld_only_when_it_certainly_needs_a_write_or_upload(line,
 
 
 class TestTheSeptember15CriteriaSet:
-    def test_the_post_and_photo_items_are_marked_not_verifiable(self):
+    """Only the POST item is withheld; the receipt photo item goes to the executor.
+
+    The photo item is not recognised before QA. It relies on the executor's own
+    `qa_capability` cause: the executor cannot send a photo, so it fails that
+    check with that cause instead of a product failure.
+    """
+
+    def test_only_the_post_item_is_marked_not_verifiable(self):
         prepared = prepare_central_qa_criteria(SEPT_15_CRITERIA)
 
         assert [(a.action, a.reason, a.original) for a in prepared.unverifiable] == [
             ("unverifiable", "http_write", POST_ITEM),
-            ("unverifiable", "telegram_media_upload", PHOTO_ITEM),
         ]
         assert POST_ITEM not in prepared.criteria
-        assert PHOTO_ITEM not in prepared.criteria
 
-    def test_the_telegram_and_get_items_stay_checks_handed_to_the_executor(self):
+    def test_the_post_item_is_reported_as_qa_capability(self):
+        unverifiable = prepare_central_qa_criteria(SEPT_15_CRITERIA).unverifiable
+
+        result = apply_unverifiable_criteria(QAResult(passed=True, checks=[]), unverifiable)
+
+        assert result.passed is False
+        [check] = result.checks
+        assert check["cause"] == QAFailedCheckCause.QA_CAPABILITY.value
+        assert POST_ITEM.lstrip("- ") in check["name"]
+
+    def test_the_photo_telegram_and_get_items_are_handed_to_the_executor(self):
         prepared = prepare_central_qa_criteria(SEPT_15_CRITERIA)
 
-        assert prepared.criteria.splitlines() == [TEXT_ITEM, BUTTON_ITEM, GET_ITEM]
+        assert prepared.criteria.splitlines() == [PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET_ITEM]
 
 
 class TestWhatIsOutsideTheVocabulary:
@@ -135,7 +156,7 @@ class TestAnUnverifiableCriterionInTheRunResult:
             for check in result.checks
             if not check["pass"]
         ]
-        assert [check.cause for check in failed] == [QAFailedCheckCause.QA_CAPABILITY] * 2
+        assert [check.cause for check in failed] == [QAFailedCheckCause.QA_CAPABILITY]
         assert POST_ITEM.lstrip("- ") in failed[0].name
         assert "not verifiable" in result.summary
 

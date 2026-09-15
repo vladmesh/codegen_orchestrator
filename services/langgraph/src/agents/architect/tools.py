@@ -277,7 +277,7 @@ async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) 
     uses only what QA can do: a read-only HTTP GET, a Telegram text message and
     its reply, an inline button press, or a declared FIRE JOB. A behaviour that
     needs a write or an upload is checked by its observable afterwards, never as
-    a POST or an upload step — such a line is marked not verifiable:
+    a POST or an upload step — QA cannot check such a line:
         - GET /health returns 200
         - GET /api/cities lists Moscow after the bot is told "add city Moscow"
         - Telegram: /start responds with welcome message
