@@ -18,7 +18,10 @@ from shared.contracts.dto.qa_handoff import (
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import (
     QA_HARNESS_BLOCKERS,
+    QABlocker,
     QABlockerCategory,
+    QAFailedCheck,
+    QAFailedCheckCause,
     QARunResult,
 )
 from shared.contracts.dto.story import StoryStatus
@@ -141,7 +144,20 @@ async def supervise_testing_stories(
             # route instead.
             if run.result.blocker is not None or not run.result.failed_checks:
                 await _quarantine_unverified_application(
-                    api_client, redis_client, story_id, project_id, run, log
+                    api_client, redis_client, story_id, project_id, run, run.result, log
+                )
+                failed += 1
+            elif not _product_failures(run.result):
+                # Every failure lacked a QA tool or QA access: nothing about the
+                # product was judged, so no fix attempt is spent on it.
+                await _quarantine_unverified_application(
+                    api_client,
+                    redis_client,
+                    story_id,
+                    project_id,
+                    run,
+                    _with_unverifiable_checks_blocker(run.result),
+                    log,
                 )
                 failed += 1
             else:
@@ -155,7 +171,7 @@ async def supervise_testing_stories(
 
         elif outcome in (QAOutcome.BLOCKED, QAOutcome.EXHAUSTED, QAOutcome.ERROR):
             await _quarantine_unverified_application(
-                api_client, redis_client, story_id, project_id, run, log
+                api_client, redis_client, story_id, project_id, run, run.result, log
             )
             log.warning(
                 "qa_supervisor_quarantined",
@@ -244,15 +260,20 @@ async def _quarantine_unverified_application(
     story_id: str,
     project_id: str,
     run,
+    result: QARunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Stop an unverified bot, retain its binding, and request a human decision."""
+    """Stop an unverified bot, retain its binding, and request a human decision.
+
+    ``result`` is the run's result as the supervisor classified it, which for a
+    failure with no product check carries the blocker that classification typed.
+    """
     application_id = run.run_metadata.get("application_id")
     if not isinstance(application_id, int):
         raise RuntimeError(f"QA run {run.id} has no application_id for quarantine")
 
     await api_client.stop_application(application_id)
-    reason = _qa_quarantine_reason(run.result)
+    reason = _qa_quarantine_reason(result)
     await api_client.update_story(story_id, {"quarantine_reason": reason})
     owed = await owe_owner_notification(
         api_client,
@@ -266,7 +287,7 @@ async def _quarantine_unverified_application(
     )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
     await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
-    harness = _harness_blocker(run.result)
+    harness = _harness_blocker(result)
     if harness is not None:
         # Parked once: the story has left TESTING, so no later tick reaches here
         # for this run. The operator's route back is a recheck, after the target
@@ -278,8 +299,7 @@ async def _quarantine_unverified_application(
             f"attempted: {harness.attempted}\n"
             f"sent: {harness.sent}\n"
             f"received: {harness.received}\n"
-            "No fix task was created. Repair the target (managed-target reconciliation), "
-            f"then POST /api/stories/{story_id}/recheck-qa.",
+            f"No fix task was created. {_harness_repair(harness.category, story_id)}",
             level="error",
             component="supervisor",
             story_id=story_id,
@@ -295,6 +315,46 @@ def _harness_blocker(result: QARunResult):
     if blocker is None or blocker.category not in QA_HARNESS_BLOCKERS:
         return None
     return blocker
+
+
+def _harness_repair(category: QABlockerCategory, story_id: str) -> str:
+    """What an administrator does about a parked harness blocker."""
+    recheck = f"POST /api/stories/{story_id}/recheck-qa"
+    if category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE:
+        # A recheck runs the same QA with the same tools, so it cannot close a
+        # capability gap; it only helps once refused access has been repaired.
+        return (
+            "A qa_capability check needs a human decision on its criterion: accept it or "
+            "change it, because a recheck runs the same QA tools and fails the same way. "
+            f"A qa_access check needs the refused access repaired first; only then {recheck}."
+        )
+    return f"Repair the target (managed-target reconciliation), then {recheck}."
+
+
+def _product_failures(result: QARunResult) -> list[QAFailedCheck]:
+    """The failed checks that judge the product — the only ones a fix task may carry."""
+    return [check for check in result.failed_checks if check.cause is QAFailedCheckCause.PRODUCT]
+
+
+def _unverified_failures(result: QARunResult) -> list[QAFailedCheck]:
+    """Failed checks QA had no tool or no access for; evidence, never instructions."""
+    return [
+        check for check in result.failed_checks if check.cause is not QAFailedCheckCause.PRODUCT
+    ]
+
+
+def _with_unverifiable_checks_blocker(result: QARunResult) -> QARunResult:
+    """Type a failure with no product check as the blocker it is."""
+    checks = _unverified_failures(result)
+    blocker = QABlocker(
+        category=QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
+        attempted="judge the product from the QA executor's failed checks",
+        sent="; ".join(check.name for check in checks),
+        received="; ".join(
+            f"{check.cause.value}: {check.name}: {check.detail}" for check in checks
+        ),
+    )
+    return result.model_copy(update={"blocker": blocker})
 
 
 def _quarantine_text(reason: dict) -> str:
@@ -336,7 +396,13 @@ async def _handle_qa_failed(
     qa_run_id = run.id
     result = run.result
     summary = result.summary or "QA testing failed"
-    failed_checks = result.failed_checks
+    failed_checks = _product_failures(result)
+    unverified_checks = _unverified_failures(result)
+    qa_summary = summary
+    if unverified_checks:
+        # The executor's summary speaks for every failure, including the ones
+        # that are not about the product, so it cannot word or sign the fix.
+        summary = "QA found product failures: " + "; ".join(c.name for c in failed_checks)
 
     tasks = await api_client.get_tasks_by_story(story_id)
     prior_evidence = [item for task in tasks if (item := _qa_failure_metadata(task))]
@@ -357,8 +423,13 @@ async def _handle_qa_failed(
         "fingerprint_attempt": attempt,
         "fix_attempt": total_attempt,
         "summary": summary,
-        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+        "failed_checks": _product_check_evidence(failed_checks),
     }
+    if unverified_checks:
+        evidence["qa_summary"] = qa_summary
+        evidence["unverified_checks"] = [
+            check.model_dump(mode="json") for check in unverified_checks
+        ]
 
     if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
         exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
@@ -457,10 +528,19 @@ def _qa_failure_metadata(task: object) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _qa_failure_fingerprint(summary: str, failed_checks: list) -> str:
+def _product_check_evidence(failed_checks: list[QAFailedCheck]) -> list[dict]:
+    """Product checks as recorded before a cause existed.
+
+    Every check here is `product`, so the cause adds nothing, and leaving it out
+    keeps fingerprints and evidence identical to the fix tasks already stored.
+    """
+    return [check.model_dump(mode="json", exclude={"cause"}) for check in failed_checks]
+
+
+def _qa_failure_fingerprint(summary: str, failed_checks: list[QAFailedCheck]) -> str:
     """Build a stable signature for a QA failure's product evidence."""
     payload = {
-        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+        "failed_checks": _product_check_evidence(failed_checks),
         "summary": summary,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()

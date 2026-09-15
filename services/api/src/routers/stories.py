@@ -88,6 +88,9 @@ _RECHECKABLE_BLOCKERS = frozenset(
         QABlockerCategory.QA_TARGET_PROFILE_STALE,
         QABlockerCategory.QA_ACCESS_GRANT_FAILED,
         QABlockerCategory.QA_ACCESS_EXPIRED,
+        # Every failed check lacked a QA tool or QA access. Once an operator
+        # has granted the access or accepted the gap, exactly this recheck runs.
+        QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
     }
 )
 _COMMIT_SHA_LENGTHS = frozenset({40, 64})

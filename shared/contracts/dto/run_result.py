@@ -256,13 +256,30 @@ def deploy_fix_run_id(source_run_id: str, attempt: int) -> str:
     return f"eng-deploy-fix-{source_run_id}-{attempt}"
 
 
+class QAFailedCheckCause(StrEnum):
+    """Closed set of reasons one QA check failed.
+
+    Only `product` is evidence about the product and may reach an engineering
+    fix task. `qa_capability` is a criterion QA has no tool for (an HTTP write,
+    a photo upload); `qa_access` is the product refusing the QA identity.
+    """
+
+    PRODUCT = "product"
+    QA_CAPABILITY = "qa_capability"
+    QA_ACCESS = "qa_access"
+
+
 class QAFailedCheck(BaseModel):
-    """A single failed QA check the scheduler turns into a fix-task line."""
+    """A single failed QA check; only a `product` one becomes a fix-task line."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     detail: str
+    # Stored results written before the cause existed are product failures, as
+    # they were routed then. A new executor verdict without a cause is refused
+    # by the QA runner and never reaches this default.
+    cause: QAFailedCheckCause = QAFailedCheckCause.PRODUCT
 
 
 class QABlockerCategory(StrEnum):
@@ -317,6 +334,10 @@ class QABlockerCategory(StrEnum):
     # taken back while the run was still using it.
     QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
     QA_ACCESS_EXPIRED = "qa_access_expired"
+    # QA ran and every failed check was a criterion it had no tool for or a
+    # product refusing the QA identity. No product judgement exists, so no fix
+    # attempt may be spent on it.
+    QA_CHECKS_UNVERIFIABLE = "qa_checks_unverifiable"
     UNKNOWN = "unknown"
 
 
@@ -333,6 +354,7 @@ QA_HARNESS_BLOCKERS: frozenset[QABlockerCategory] = frozenset(
         QABlockerCategory.QA_TARGET_PROFILE_STALE,
         QABlockerCategory.SERVER_UNAVAILABLE,
         QABlockerCategory.QA_IDENTITY_UNREADABLE,
+        QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
     }
 )
 

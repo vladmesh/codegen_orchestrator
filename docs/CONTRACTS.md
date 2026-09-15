@@ -1610,6 +1610,17 @@ outside `/app` or over the limit is `qa_target_profile_stale` or
 an administrator notice naming `recheck-qa` and owner wording that blames no
 product; `qa_target_profile_stale` is operator-recheckable.
 
+Every failed check in an executor verdict carries a `cause`, and the runner refuses
+one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no QA
+tool for the criterion, such as an HTTP write or a photo upload) or `qa_access`
+(the product refused the QA identity). A verdict whose top-level `pass` disagrees
+with its checks (true with any failed check, false with none) is refused the same
+way. A stored `QAFailedCheck` without a cause
+reads as `product`. The supervisor puts only `product` checks into a fix task's
+description and fingerprint and records the rest as `unverified_checks` evidence;
+a FAILED run with no `product` check parks as `qa_checks_unverifiable`, a
+`QA_HARNESS_BLOCKERS` member that is operator-recheckable.
+
 ## Source map
 
 | Area | Source of truth |

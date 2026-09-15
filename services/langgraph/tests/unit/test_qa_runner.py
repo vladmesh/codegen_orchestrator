@@ -74,6 +74,20 @@ class TestBuildQAPrompt:
 
         assert '"Blocked", "skipped" and "cannot test" are not allowed results' in prompt
 
+    def test_prompt_asks_for_a_cause_on_every_failed_check(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- POST /api/transactions creates a transaction",
+            deployed_url="https://api.example.com",
+            bot_username="weather_bot",
+        )
+
+        assert '"cause": "product" | "qa_capability" | "qa_access"' in prompt
+        assert "Every failed check carries a `cause`" in prompt
+        assert "HTTP write" in prompt and "photo upload" in prompt
+        assert "fails with cause `qa_capability`" in prompt
+        assert "fails with cause `qa_access`" in prompt
+        assert prompt.count("it is never a product failure") == 2
+
     def test_prompt_without_bot_username(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- GET /api/items returns list",
@@ -123,7 +137,9 @@ class TestEstablishedFactsKeepTheContract:
 
         for prompt in (plain, with_facts):
             assert '"pass": true/false' in prompt
-            assert '"checks": [{"name": "check name", "pass": true/false' in prompt
+            assert '{"name": "passed check", "pass": true, "detail": "one-line summary"}' in prompt
+            assert '{"name": "failed check", "pass": false, "detail": "one-line summary",' in prompt
+            assert '"cause": "product" | "qa_capability" | "qa_access"}' in prompt
             assert '"summary": "brief summary"' in prompt
             assert "qa report <file>" in prompt
 
@@ -169,11 +185,96 @@ class TestParseQAResult:
     def test_valid_fail_result(self):
         raw = (
             '{"pass": false, "checks": [{"name": "weather", "pass": false,'
-            ' "detail": "404"}], "summary": "Broken", "state_changes": []}'
+            ' "detail": "404", "cause": "product"}], "summary": "Broken", "state_changes": []}'
         )
         result = parse_qa_result(raw)
         assert result.passed is False
+        assert result.blocker is None
         assert result.checks[0]["pass"] is False
+        assert result.checks[0]["cause"] == "product"
+
+    @pytest.mark.parametrize("cause", ["qa_capability", "qa_access"])
+    def test_a_failed_check_may_name_a_cause_outside_the_product(self, cause):
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [{"name": "upload", "pass": False, "detail": "x", "cause": cause}],
+                "summary": "not testable",
+            }
+        )
+
+        result = parse_qa_result(raw)
+
+        assert result.blocker is None
+        assert result.checks[0]["cause"] == cause
+
+    @pytest.mark.parametrize("cause", ["qa_capability", "qa_access", "product"])
+    def test_a_passing_verdict_with_a_failed_check_is_invalid_and_never_passes(self, cause):
+        raw = json.dumps(
+            {
+                "pass": True,
+                "checks": [
+                    {"name": "health", "pass": True, "detail": "200"},
+                    {
+                        "name": "create transaction",
+                        "pass": False,
+                        "detail": "no tool for POST /api/transactions",
+                        "cause": cause,
+                    },
+                ],
+                "summary": "everything QA could test works",
+            }
+        )
+
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.checks == []
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    def test_a_failing_verdict_with_every_check_passed_is_invalid(self):
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [{"name": "health", "pass": True, "detail": "200"}],
+                "summary": "something felt off",
+            }
+        )
+
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.checks == []
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    def test_prompt_ties_the_top_level_pass_to_every_check(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- GET /health returns 200", deployed_url="https://a.example"
+        )
+
+        assert "Top-level `pass` is false whenever any check failed, whatever its cause." in prompt
+
+    @pytest.mark.parametrize(
+        "check",
+        [
+            {"name": "weather", "pass": False, "detail": "404"},
+            {"name": "weather", "pass": False, "detail": "404", "cause": "flaky"},
+            {"name": "weather", "pass": False, "detail": "404", "cause": None},
+            {"name": "weather", "pass": True, "detail": "200", "cause": "product"},
+        ],
+        ids=["failed-without-cause", "unknown-cause", "null-cause", "passed-with-cause"],
+    )
+    def test_a_check_cause_outside_the_contract_is_an_invalid_result(self, check):
+        raw = json.dumps({"pass": False, "checks": [check], "summary": "bad"})
+
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.checks == []
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_malformed_json(self):
         result = parse_qa_result("not json at all")
