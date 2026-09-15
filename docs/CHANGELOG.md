@@ -8,6 +8,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 - The Product Brief carries the user's language, usage examples per user-facing requirement, limitations and
   setting descriptions; it renders in the user's language, and a user-facing requirement without an example is refused.
 
+- The PO fixes each input's form and its symmetric case, names a cheaper variant's trade-off in the brief's limitations,
+  and reports a blocked story as stopped; the brief no longer shows the user a raw wording reference.
+
 - The scheduler tears down every worker of an engineering attempt that gave up (story with no live run), so a
   gave-up worker no longer stays RUNNING when the handler never asks for its removal.
 
