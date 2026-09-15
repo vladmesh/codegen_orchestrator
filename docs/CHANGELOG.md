@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- PO and architect default to `openai/gpt-5.6-sol` on OpenRouter; a unit test captures their real request bodies and
+  proves no sampling parameter and only `max_completion_tokens` reach the model, plus an opt-in live smoke.
+
 - The Product Brief carries the user's language, usage examples per user-facing requirement, limitations and
   setting descriptions; it renders in the user's language, and a user-facing requirement without an example is refused.
 

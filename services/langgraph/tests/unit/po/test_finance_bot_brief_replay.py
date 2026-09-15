@@ -142,3 +142,48 @@ def test_the_checks_reject_the_brief_the_tester_was_actually_shown():
 
     assert not income_by_free_text_is_decided(shown_that_day)
     assert not ocr_trade_off_is_named(shown_that_day)
+
+
+def _brief_with_limitation(limitation: str) -> ProductBriefContent:
+    return ProductBriefContent.model_validate(
+        {
+            "summary": "Бот учёта финансов",
+            "language": "ru",
+            "must_requirements": [
+                {"id": "r4", "text": "Записывает доход", "user_wording": _WORDING},
+            ],
+            "usage_examples": [
+                {
+                    "requirement_id": "r4",
+                    "user_sends": "/income 80000 зарплата",
+                    "product_answers": "Записал доход",
+                },
+            ],
+            "limitations": [limitation],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    [
+        "Доходы пока только в рублях.",
+        "Учёт доходов только базовый.",
+        "Income is tracked in one currency only.",
+        "Нельзя экспортировать доходы в Excel.",
+    ],
+)
+def test_a_vague_income_limitation_does_not_decide_free_text_income(limitation):
+    assert not income_by_free_text_is_decided(_brief_with_limitation(limitation))
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    [
+        "Доход нельзя записать обычным текстом — только командой /income.",
+        "Бот не распознаёт доходы из свободного текста, используйте /income.",
+        "Income cannot be added as free text; use /income.",
+    ],
+)
+def test_an_explicit_refusal_of_free_text_income_decides_it(limitation):
+    assert income_by_free_text_is_decided(_brief_with_limitation(limitation))

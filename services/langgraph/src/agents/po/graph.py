@@ -98,7 +98,7 @@ async def create_po_graph(
     """Create and compile the PO ReactAgent graph.
 
     Args:
-        model: LLM model name (e.g. "anthropic/claude-sonnet-4-5").
+        model: LLM model name (e.g. "openai/gpt-5.6-sol").
         base_url: LLM API base URL (e.g. "https://openrouter.ai/api/v1").
         api_key: LLM API key.
         checkpoint_database_url: PostgreSQL URL for persistent checkpointer.
