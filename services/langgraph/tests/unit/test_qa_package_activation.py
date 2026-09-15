@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from shared.contracts.acceptance import ScheduledBehaviourCriterion, parse_scheduled_behaviours
+from shared.contracts.dto.run_result import QAFailedCheckCause
 from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -763,6 +764,31 @@ class TestEveryDeclaredBehaviourGetsItsOwnRow:
 
         assert _row(result, TICK_ROW)["pass"] is False
         assert "no jobs capability" in _row(result, TICK_ROW)["detail"]
+
+    def test_no_jobs_capability_is_a_qa_capability_failure(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True), _acceptance(declared=(TICK,), fireable=False), FakeWorkspace()
+        )
+
+        assert _row(result, TICK_ROW)["cause"] == QAFailedCheckCause.QA_CAPABILITY.value
+
+    def test_criteria_that_name_no_fire_job_are_a_qa_capability_failure(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True, checks=[]), _acceptance(), FakeWorkspace()
+        )
+
+        row = _row(result, behaviour_check_name("reminders"))
+        assert row["pass"] is False
+        assert row["cause"] == QAFailedCheckCause.QA_CAPABILITY.value
+
+    def test_a_fire_the_product_never_accepted_stays_a_product_failure(self):
+        result = apply_package_acceptance(
+            QAResult(passed=True), _acceptance(declared=(TICK,)), FakeWorkspace()
+        )
+
+        row = _row(result, TICK_ROW)
+        assert "accepted no fire of it in this run" in row["detail"]
+        assert row["cause"] == QAFailedCheckCause.PRODUCT.value
 
     def test_an_executor_row_of_the_same_name_is_not_a_second_route_to_a_verdict(self):
         """Only `_behaviour_row` writes a package behaviour row.

@@ -343,12 +343,14 @@ class TestDispatchIsNotProof:
             "FIRE JOB daily_digest THEN GET /digests exposes one record per language"
             in prepared.criteria
         )
-        assert "POST /orders returns 201" in prepared.criteria
+        # A product-route write is outside QA's vocabulary (codegen-orchestrator-1290).
+        assert "POST /orders returns 201" not in prepared.criteria
         assert [adjustment.action for adjustment in prepared.adjustments] == [
             "dropped",
             "dropped",
             "dropped",
             "rewritten",
+            "unverifiable",
         ]
 
     def test_settings_policy_appears_only_when_settings_are_established(self):

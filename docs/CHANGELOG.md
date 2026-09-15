@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- Criteria needing an HTTP write or a Telegram upload are marked not verifiable before QA and reported as
+  `qa_capability` failures; architect and brief guidance state checks only through QA's read-only vocabulary.
+
 - A failed QA check carries a closed cause (`product`, `qa_capability`, `qa_access`); only product failures reach a
   fix task, and a run with none parks as the `qa_checks_unverifiable` harness blocker.
 

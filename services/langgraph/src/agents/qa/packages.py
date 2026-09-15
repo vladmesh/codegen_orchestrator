@@ -25,6 +25,7 @@ import re
 
 import yaml
 
+from shared.contracts.dto.run_result import QAFailedCheckCause
 from shared.generated_contracts import (
     ACTIVE_PACKAGE_CONTRACT,
     BACKEND_MANIFEST,
@@ -288,6 +289,7 @@ def behaviour_check(
     observed: str = "",
     judged: str = "",
     reason: str = "",
+    cause: QAFailedCheckCause = QAFailedCheckCause.PRODUCT,
 ) -> dict:
     """One declared behaviour's result, and what the platform may say about it.
 
@@ -302,12 +304,17 @@ def behaviour_check(
     mechanically proven — the observable is English an architect wrote, no
     runner-side rule reads English, and a row claiming otherwise would be the
     fault this sprint has corrected five times.
+
+    A failed row carries its ``cause``: ``qa_capability`` when this run had no
+    way to exercise the behaviour at all, ``product`` when the product was
+    asked and did not produce it.
     """
     if reason:
         return {
             "name": behaviour_check_name(package.name, behaviour),
             "pass": False,
             "detail": reason,
+            "cause": cause.value,
         }
     return {
         "name": behaviour_check_name(package.name, behaviour),

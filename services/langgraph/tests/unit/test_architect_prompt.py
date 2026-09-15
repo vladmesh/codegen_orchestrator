@@ -76,6 +76,39 @@ class TestInitialSettingsDirectives:
         assert "duplicate" in lower and "service" in lower
 
 
+class TestCriteriaUseOnlyTheQAVocabulary:
+    """A criterion is stated through what QA can do, in the plan and in the brief."""
+
+    @staticmethod
+    def _brief_guidance() -> str:
+        from src.agents.po.tools_briefs import present_product_brief
+
+        return " ".join(present_product_brief.description.split())
+
+    def test_the_architect_prompt_no_longer_invites_curl(self):
+        assert "curl" not in SYSTEM_PROMPT.lower()
+
+    def test_the_architect_prompt_names_every_qa_capable_action(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "a read-only HTTP GET of a route" in prompt
+        assert "a Telegram text message sent to the bot, and the bot's reply" in prompt
+        assert "a press of an inline button" in prompt
+        assert "a declared `FIRE JOB <name> ... THEN <observable>`" in prompt
+
+    def test_the_architect_prompt_verifies_a_write_or_upload_through_its_observable(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "never uploads a photo, file or other media" in prompt
+        assert "verified through its observable after the fact" in prompt
+        assert "never as a POST or an upload step" in prompt
+
+    def test_the_brief_guidance_carries_the_same_rule(self):
+        guidance = self._brief_guidance()
+        assert "a read-only HTTP GET" in guidance
+        assert "a Telegram text message and its reply" in guidance
+        assert "an inline button press" in guidance
+        assert "never as a POST or an upload step" in guidance
+
+
 class TestScheduledBehaviourDirectives:
     """A behaviour the product runs on a schedule is declared, provided and fired."""
 
