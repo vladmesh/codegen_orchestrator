@@ -1865,6 +1865,8 @@ class TestSuperviseTestingStories:
         assert "qa_checks_unverifiable" in message
         assert "/api/stories/story-1/recheck-qa" in message
         assert "managed-target reconciliation" not in message
+        assert "qa_capability check needs a human decision on its criterion" in message
+        assert "qa_access check needs the refused access repaired first" in message
 
     @pytest.mark.asyncio
     async def test_exhausted_quarantines_application_and_notifies_owner(

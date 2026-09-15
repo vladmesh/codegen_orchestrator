@@ -299,8 +299,7 @@ async def _quarantine_unverified_application(
             f"attempted: {harness.attempted}\n"
             f"sent: {harness.sent}\n"
             f"received: {harness.received}\n"
-            f"No fix task was created. {_harness_repair(harness.category)}, "
-            f"then POST /api/stories/{story_id}/recheck-qa.",
+            f"No fix task was created. {_harness_repair(harness.category, story_id)}",
             level="error",
             component="supervisor",
             story_id=story_id,
@@ -318,11 +317,18 @@ def _harness_blocker(result: QARunResult):
     return blocker
 
 
-def _harness_repair(category: QABlockerCategory) -> str:
-    """What an administrator repairs before rechecking a parked harness blocker."""
+def _harness_repair(category: QABlockerCategory, story_id: str) -> str:
+    """What an administrator does about a parked harness blocker."""
+    recheck = f"POST /api/stories/{story_id}/recheck-qa"
     if category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE:
-        return "Give QA the access it was refused or accept the criteria QA has no tool for"
-    return "Repair the target (managed-target reconciliation)"
+        # A recheck runs the same QA with the same tools, so it cannot close a
+        # capability gap; it only helps once refused access has been repaired.
+        return (
+            "A qa_capability check needs a human decision on its criterion: accept it or "
+            "change it, because a recheck runs the same QA tools and fails the same way. "
+            f"A qa_access check needs the refused access repaired first; only then {recheck}."
+        )
+    return f"Repair the target (managed-target reconciliation), then {recheck}."
 
 
 def _product_failures(result: QARunResult) -> list[QAFailedCheck]:

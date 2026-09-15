@@ -156,6 +156,7 @@ After storing the report, write this JSON to a file and submit it with
 `{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
 and only after every check is done.
 {_RESULT_JSON}
+Top-level `pass` is false whenever any check failed, whatever its cause.
 {_FAILURE_CAUSE_RULE}
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as

@@ -308,6 +308,14 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
                 raw, f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
             )
 
+    # A verdict passes only if every check passed. A failure QA had no tool or
+    # no access for is still a failure, and it is parked only when `pass` says so.
+    any_check_failed = any(not check["pass"] for check in data["checks"])
+    if data["pass"] is any_check_failed:
+        return _invalid_qa_payload(
+            raw, "pass must be false exactly when a check failed, whatever its cause"
+        )
+
     return None
 
 

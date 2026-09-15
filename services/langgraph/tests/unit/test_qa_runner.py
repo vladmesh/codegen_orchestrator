@@ -208,6 +208,54 @@ class TestParseQAResult:
         assert result.blocker is None
         assert result.checks[0]["cause"] == cause
 
+    @pytest.mark.parametrize("cause", ["qa_capability", "qa_access", "product"])
+    def test_a_passing_verdict_with_a_failed_check_is_invalid_and_never_passes(self, cause):
+        raw = json.dumps(
+            {
+                "pass": True,
+                "checks": [
+                    {"name": "health", "pass": True, "detail": "200"},
+                    {
+                        "name": "create transaction",
+                        "pass": False,
+                        "detail": "no tool for POST /api/transactions",
+                        "cause": cause,
+                    },
+                ],
+                "summary": "everything QA could test works",
+            }
+        )
+
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.checks == []
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    def test_a_failing_verdict_with_every_check_passed_is_invalid(self):
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [{"name": "health", "pass": True, "detail": "200"}],
+                "summary": "something felt off",
+            }
+        )
+
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.checks == []
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+    def test_prompt_ties_the_top_level_pass_to_every_check(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- GET /health returns 200", deployed_url="https://a.example"
+        )
+
+        assert "Top-level `pass` is false whenever any check failed, whatever its cause." in prompt
+
     @pytest.mark.parametrize(
         "check",
         [
