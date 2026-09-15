@@ -332,6 +332,8 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
 
     terminal_workers = AsyncMock(return_value=1)
     monkeypatch.setattr(task_dispatcher, "reconcile_terminal_story_workers", terminal_workers)
+    gave_up_workers = AsyncMock(return_value=1)
+    monkeypatch.setattr(task_dispatcher, "reconcile_gave_up_attempt_workers", gave_up_workers)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
         "sleep",
@@ -342,6 +344,7 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         await task_dispatcher.task_dispatcher_loop()
 
     terminal_workers.assert_awaited_once_with(api_client, redis)
+    gave_up_workers.assert_awaited_once_with(api_client, redis)
     redis.close.assert_awaited_once()
 
 

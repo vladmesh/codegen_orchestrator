@@ -251,6 +251,11 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "runs/", params=params)
         return [RunDTO.model_validate(r) for r in resp.json()]
 
+    async def list_story_runs(self, story_id: str) -> list[RunDTO]:
+        """List every run of a story, of every type, newest first."""
+        resp = await self.request("GET", "runs/", params={"story_id": story_id})
+        return [RunDTO.model_validate(r) for r in resp.json()]
+
     async def list_runs_owing_owner_notification(self, *, limit: int) -> list[RunDTO]:
         """One page of the runs whose owner has not been told their story ended.
 
