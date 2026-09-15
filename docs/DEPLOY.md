@@ -301,13 +301,13 @@ is never passed into coding-worker containers.
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPEN_ROUTER_KEY` | OpenRouter API key |
-| `PO_LLM_MODEL` | PO agent model name |
+| `PO_LLM_MODEL` | PO agent model name (`openai/gpt-5.6-sol`) |
 | `PO_LLM_BASE_URL` | PO agent LLM base URL |
 | `PO_LLM_API_KEY` | PO agent LLM API key |
-| `ARCHITECT_LLM_MODEL` | Architect agent model name |
+| `ARCHITECT_LLM_MODEL` | Architect agent model name (`openai/gpt-5.6-sol`) |
 | `ARCHITECT_LLM_BASE_URL` | Architect agent LLM base URL |
 | `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
-| `SUMMARIZATION_MODEL` | Summarization model name |
+| `SUMMARIZATION_MODEL` | Summarization model name (`anthropic/claude-haiku-4-5`) |
 
 Numeric PO summarization tuning is not environment or secret configuration. Production reads
 `llm.summarization_max_tokens`, `llm.summarization_trigger_tokens`, and

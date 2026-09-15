@@ -29,7 +29,13 @@ NUDGE = "Покажи итоговое описание бота на подтв
 
 _INCOME = re.compile(r"доход|зарплат|преми|income|salary", re.IGNORECASE)
 _COMMAND = re.compile(r"(^|[\s«\"'])/[a-z_]+", re.IGNORECASE)
-_NOT_SUPPORTED = re.compile(r"не\s+поддерж|только|нельзя|not supported|only", re.IGNORECASE)
+_FREE_TEXT = re.compile(r"текст|сообщени|text|message", re.IGNORECASE)
+#: An explicit refusal; "только"/"only" alone is too vague to decide anything.
+_NOT_SUPPORTED = re.compile(
+    r"не\s+поддерж|нельзя|невозможно|не\s+(?:можете|получится|принима|распозна|записыва)"
+    r"|not\s+supported|cannot|can't|is\s+not\s+(?:accepted|recognized)",
+    re.IGNORECASE,
+)
 _FREE = re.compile(r"бесплатн|free", re.IGNORECASE)
 _RECOGNITION = re.compile(r"распозна|чек|фото|скриншот|ocr|receipt|photo", re.IGNORECASE)
 
@@ -44,13 +50,15 @@ def user_message(index: int, text: str, project_id: str) -> str:
 
 
 def income_by_free_text_is_decided(content: ProductBriefContent) -> bool:
-    """A usage example adds income as free text, or a limitation says it cannot."""
+    """A usage example adds income as free text, or a limitation refuses free-text income."""
     for example in content.usage_examples:
         exchange = f"{example.user_sends} {example.product_answers}"
         if _INCOME.search(exchange) and not _COMMAND.search(example.user_sends):
             return True
     return any(
-        _INCOME.search(limitation) and _NOT_SUPPORTED.search(limitation)
+        _INCOME.search(limitation)
+        and _FREE_TEXT.search(limitation)
+        and _NOT_SUPPORTED.search(limitation)
         for limitation in content.limitations
     )
 

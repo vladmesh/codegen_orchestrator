@@ -26,7 +26,7 @@ def create_architect_graph(
     """Create and compile the Architect ReactAgent graph.
 
     Args:
-        model: LLM model name (e.g. "anthropic/claude-sonnet-4").
+        model: LLM model name (e.g. "openai/gpt-5.6-sol").
         base_url: LLM API base URL (e.g. "https://openrouter.ai/api/v1").
         api_key: LLM API key.
     """
