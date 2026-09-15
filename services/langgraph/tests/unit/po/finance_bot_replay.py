@@ -29,7 +29,10 @@ NUDGE = "Покажи итоговое описание бота на подтв
 
 _INCOME = re.compile(r"доход|зарплат|преми|income|salary", re.IGNORECASE)
 _COMMAND = re.compile(r"(^|[\s«\"'])/[a-z_]+", re.IGNORECASE)
-_FREE_TEXT = re.compile(r"текст|сообщени|text|message", re.IGNORECASE)
+_FREE_TEXT = re.compile(
+    r"текст|сообщени|свободн\w*\s+форм|произвольн\w*\s+форм|text|message|free[\s-]form",
+    re.IGNORECASE,
+)
 #: An explicit refusal; "только"/"only" alone is too vague to decide anything.
 _NOT_SUPPORTED = re.compile(
     r"не\s+поддерж|нельзя|невозможно|не\s+(?:можете|получится|принима|распозна|записыва)"

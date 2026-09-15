@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- The finance-bot architect plan checks read a real model's Russian («спрашивает пользователя», «в свободной форме»),
+  so the opt-in replay stops failing a compliant plan; a plan that stores without asking back still fails.
+
 - A completed Telegram-bot story tells the user how to use it: the bot's @username and the confirmed brief's usage
   examples in its language (or /start and /help), never the backend API address; the PO relays them.
 

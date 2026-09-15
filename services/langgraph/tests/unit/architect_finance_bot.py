@@ -158,17 +158,23 @@ async def plan_finance_bot(api: FinanceBotApi, *, model: str, base_url: str, api
         return await process_architect_job(job, api.redis)
 
 
-_QA_ACTION = re.compile(r"telegram|\bGET /|FIRE JOB|button|кнопк", re.IGNORECASE)
+_QA_ACTION = re.compile(r"telegram|телеграм|\bGET /|FIRE JOB|button|кнопк", re.IGNORECASE)
 _UPLOAD = re.compile(r"фото|скриншот|photo|screenshot|file|файл|upload", re.IGNORECASE)
 _NOT_QA_VERIFIABLE = re.compile(r"not\s+QA[\s-]verifiable", re.IGNORECASE)
 _READ_OBSERVABLE = re.compile(r"\bGET /")
+#: An ask-back form, unless negated: «не спрашивая», «без уточнения», "without asking back"
+#: describe storing without asking.
 _ASK_BACK = re.compile(
-    r"\bask(?:s|ing)?\b[^.\n]*\bback\b|\basks?\s+the\s+user\b|clarif|переспрос|переспраш|уточн",
+    r"(?<!without\s)(?<!never\s)(?:\bask(?:s|ing)?\b[^.\n]*\bback\b|\basks?\s+the\s+user\b)"
+    r"|clarif"
+    r"|(?<!\w)(?<!не\s)(?<!без\s)(?:переспрос|переспраш|уточн|спрашива|спрос(?:ит|ить|ят|ив)\b"
+    r"|зада(?:[её]т|ст|ть)\s+(?:\w+\s+){0,2}вопрос|проси(?:т|ть)\s+пользовател)",
     re.IGNORECASE,
 )
 _UNRECOGNIZED = re.compile(
     r"unrecogni[sz]|not\s+recogni[sz]|(?:does\s+not|doesn't|cannot|can't)\s+recogni[sz]"
-    r"|не\s+распозна|нераспозна",
+    r"|ambiguous|не\s+распозна|нераспозна|неоднозначн|непонятн|не\s+понят|не\s+понял"
+    r"|не\s+(?:удалось|удаётся|удается|может|смог\w*|получилось)\s+(?:\w+\s+)?распозна",
     re.IGNORECASE,
 )
 
