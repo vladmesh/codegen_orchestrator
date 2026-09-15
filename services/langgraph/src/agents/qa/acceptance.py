@@ -45,17 +45,20 @@ _METHOD_ROUTE = re.compile(
 _HTTP_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # A bullet and an optional short label (`Telegram:`) before the line's action.
 _LEAD = re.compile(r"^\s*(?:(?:[-*]|\d+[.)])\s+)?(?:[A-Za-z][\w ]{0,20}:\s+)?")
-_MEDIA = r"(?:photos?|images?|pictures?|screenshots?|files?|documents?|videos?|voice|audio|media)\b"
-# Media is an upload only when the line's action is the tester or user sending
-# it: the line opens with an upload/attach/send verb whose subject is nobody,
-# the user or the tester, or it opens with media used as input
-# ("receipt photo → OCR"). A bot reply carrying media, a GET of stored media and
-# a text command mentioning uploaded things do not open that way.
-_ACTOR = r"(?:(?:the\s+)?(?:user|tester|QA|you)\s+)?"
-_SEND = r"(?:upload(?:s|ing)?|attach(?:es|ing)?|send(?:s|ing)?|forward(?:s|ing)?)"
+_MEDIA_NOUN = r"(?:photo|image|picture|video|voice|audio|file|document|sticker)"
+# A media upload is a closed grammar, not a heuristic. After the bullet and an
+# optional label, the line is exactly one of two forms; nothing else is inferred
+# from verbs, subjects or media words, and any other line goes to the executor.
 _TELEGRAM_UPLOAD = (
-    re.compile(rf"^{_ACTOR}{_SEND}\s+(?:[\w-]+\s+){{0,3}}?{_MEDIA}", re.IGNORECASE),
-    re.compile(rf"^(?:[\w-]+\s+){{0,2}}{_MEDIA}\s*(?:→|->|=>)", re.IGNORECASE),
+    # 1. The tester's imperative: capitalised Upload, Attach or Send (never
+    #    `Sends` or `Sending`), an optional article, at most one adjective, a
+    #    media noun as the direct object, then exactly `to the bot`.
+    re.compile(
+        rf"^(?:Upload|Attach|Send) (?:(?:a|an|the) )?(?:[A-Za-z-]+ )?{_MEDIA_NOUN} to the bot\b"
+    ),
+    # 2. A media noun phrase of at most two words ending in the media noun,
+    #    immediately followed by an arrow: `Receipt photo → OCR`.
+    re.compile(rf"^(?:[A-Za-z-]+ )?(?i:{_MEDIA_NOUN}) ?(?:→|->)"),
 )
 
 UNVERIFIABLE = "unverifiable"

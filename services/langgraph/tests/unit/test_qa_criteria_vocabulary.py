@@ -7,6 +7,8 @@ receipt photo upload as criteria, and QA failed them against any code.
 
 from __future__ import annotations
 
+import pytest
+
 from shared.contracts.dto.run_result import QAFailedCheck, QAFailedCheckCause
 from src.agents.qa.acceptance import prepare_central_qa_criteria
 from src.consumers._qa_runner import QAResult, apply_unverifiable_criteria
@@ -17,6 +19,45 @@ TEXT_ITEM = '- Telegram: sending "coffee 250" replies with "Recorded 250"'
 BUTTON_ITEM = "- Telegram: pressing the inline button Undo removes the last expense"
 GET_ITEM = "- GET /api/transactions lists the recorded transaction"
 SEPT_15_CRITERIA = "\n".join((POST_ITEM, PHOTO_ITEM, TEXT_ITEM, BUTTON_ITEM, GET_ITEM))
+
+
+EXECUTOR = None
+
+# Every line quoted by the 1290 reviews (rounds 5 and 17) and the observer's
+# decision, with what the pre-QA classifier must do with it. `None` is a line
+# handed to the executor, which reports it itself if it cannot check it.
+CLASSIFICATION_TABLE = [
+    ("- POST http://localhost:8000/api/transactions returns 201", "http_write"),
+    ("- POST to /api/transactions creates a transaction", "http_write"),
+    (POST_ITEM, "http_write"),
+    (PHOTO_ITEM, "telegram_media_upload"),
+    ("- Send a receipt photo to the bot", "telegram_media_upload"),
+    ("- Telegram: Upload a document to the bot", "telegram_media_upload"),
+    ("- GET /api/documents returns the document attached to the expense", EXECUTOR),
+    ("- Telegram: /report replies with an attached PDF document", EXECUTOR),
+    ("- Telegram: /files lists uploaded files", EXECUTOR),
+    ("- Telegram: /delete /last removes it", EXECUTOR),
+    ("- Sends a daily summary document at 09:00", EXECUTOR),
+    ("- Sends the weekly report file to the user every Monday", EXECUTOR),
+    ("- Forwarding a document link to the bot returns its title", EXECUTOR),
+    ("- Send the document number to the bot and get its status", EXECUTOR),
+    ("- The bot accepts a receipt photo and replies with the total", EXECUTOR),
+    ("- Telegram: a photo of a receipt is recognised", EXECUTOR),
+    ("- Telegram: send a voice note, bot transcribes", EXECUTOR),
+    (TEXT_ITEM, EXECUTOR),
+    (BUTTON_ITEM, EXECUTOR),
+    (GET_ITEM, EXECUTOR),
+]
+
+
+@pytest.mark.parametrize(("line", "withheld_as"), CLASSIFICATION_TABLE)
+def test_a_line_is_withheld_only_when_it_certainly_needs_a_write_or_upload(line, withheld_as):
+    prepared = prepare_central_qa_criteria(line)
+
+    assert [adjustment.reason for adjustment in prepared.unverifiable] == (
+        [] if withheld_as is EXECUTOR else [withheld_as]
+    )
+    assert prepared.criteria == ("" if withheld_as else line)
 
 
 class TestTheSeptember15CriteriaSet:
@@ -45,39 +86,6 @@ class TestWhatIsOutsideTheVocabulary:
         ):
             [adjustment] = prepare_central_qa_criteria(line).unverifiable
             assert adjustment.reason == "http_write", line
-
-    def test_a_write_to_an_absolute_url_or_after_a_preposition_is_unverifiable(self):
-        for line in (
-            "- POST http://localhost:8000/api/transactions returns 201",
-            "- POST to /api/transactions creates a transaction",
-        ):
-            [adjustment] = prepare_central_qa_criteria(line).unverifiable
-            assert adjustment.reason == "http_write", line
-
-    def test_a_file_or_media_sent_to_the_bot_is_unverifiable(self):
-        for line in (
-            "- Upload a PDF document and the bot confirms it",
-            "- The user sends a voice message to the bot and gets a transcript",
-            "- Attaching a photo to /expense stores it",
-        ):
-            [adjustment] = prepare_central_qa_criteria(line).unverifiable
-            assert adjustment.reason == "telegram_media_upload", line
-
-    def test_a_line_that_does_not_certainly_require_a_write_or_upload_stays_a_check(self):
-        """When in doubt the executor gets the line (the observer's 1290 invariant)."""
-        criteria = "\n".join(
-            (
-                "- Telegram: /delete /last removes it",
-                "- GET /api/documents returns the document attached to the expense",
-                "- Telegram: /report replies with an attached PDF document",
-                "- Telegram: /files lists uploaded files",
-            )
-        )
-
-        prepared = prepare_central_qa_criteria(criteria)
-
-        assert prepared.adjustments == ()
-        assert prepared.criteria == criteria
 
     def test_readable_evidence_is_not_mistaken_for_an_upload(self):
         criteria = "\n".join(
