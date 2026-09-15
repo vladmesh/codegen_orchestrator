@@ -14,6 +14,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationState,
 )
+from shared.contracts.dto.product_brief import ProductBriefContent
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
@@ -27,6 +28,7 @@ from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTr
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models.application import Application
+from shared.models.product_brief import ProductBrief
 from shared.models.repository import Repository
 from shared.models.run import Run
 from shared.models.story import Story
@@ -289,6 +291,61 @@ async def update_story(
 # --- Action endpoints (state machine transitions) ---
 
 
+async def _telegram_bot_usage_instructions(
+    story: Story, db: AsyncSession, *, bot_username: str
+) -> str:
+    """How the user reaches their bot and uses it, never the backend API address.
+
+    The examples come from the confirmed brief of this story; a story without one
+    (a fix, a reopen, a legacy brief) borrows the project's latest confirmed
+    brief that has examples, and with none the user is pointed to /start and /help.
+    """
+    briefs = (
+        (
+            await db.execute(
+                select(ProductBrief)
+                .where(
+                    ProductBrief.project_id == story.project_id,
+                    ProductBrief.confirmed_at.is_not(None),
+                )
+                .order_by(ProductBrief.confirmed_at.desc(), ProductBrief.revision.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exemplified = [
+        (brief, content)
+        for brief in briefs
+        if (content := ProductBriefContent.model_validate(brief.content)).usage_examples
+    ]
+    chosen = next(
+        (pair for pair in exemplified if pair[0].story_id == story.id),
+        exemplified[0] if exemplified else None,
+    )
+    reach = f"the Telegram bot @{bot_username} (https://t.me/{bot_username})"
+    never = "Do not give the user any server, API or backend address."
+    if chosen is None:
+        return (
+            f"Tell the user the good news in their language: they reach {reach}, send /start "
+            f"to begin and /help to see what it can do. {never}"
+        )
+
+    content = chosen[1]
+    language = (
+        f"the brief's language ({content.language})" if content.language else "the user's language"
+    )
+    examples = "\n".join(
+        f"- the user sends: {example.user_sends} → the bot answers: {example.product_answers}"
+        for example in content.usage_examples
+    )
+    return (
+        f"Tell the user the good news in {language} and how to use it: they reach {reach}. "
+        "Usage examples from the confirmed brief (what the user sends and what the bot "
+        f"answers):\n{examples}\n{never}"
+    )
+
+
 async def _completion_notification_text(
     story: Story,
     db: AsyncSession,
@@ -337,9 +394,18 @@ async def _completion_notification_text(
     if acceptance is not None and application_status != ApplicationStatus.RUNNING.value:
         return fallback
 
-    address = qa_message.deployed_url
     if qa_message.bot_username:
-        address = f"{address} (Telegram bot @{qa_message.bot_username})"
+        header = (
+            "The story is finished: an operator accepted the deployed result."
+            if acceptance is not None
+            else "The story is finished: it is deployed and QA passed."
+        )
+        instructions = await _telegram_bot_usage_instructions(
+            story, db, bot_username=qa_message.bot_username
+        )
+        return f"{header} {instructions}"
+
+    address = qa_message.deployed_url
     if acceptance is not None:
         return (
             "The story is finished: an operator accepted the deployed result. "

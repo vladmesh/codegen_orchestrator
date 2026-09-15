@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- A completed Telegram-bot story tells the user how to use it: the bot's @username and the confirmed brief's usage
+  examples in its language (or /start and /help), never the backend API address; the PO relays them.
+
 - A must-requirement the architect returns reaches the owner: the architect publishes `story_requirements_returned`
   after admission (replayed until delivered), and the PO says what will not be built and offers a follow-up brief.
 
