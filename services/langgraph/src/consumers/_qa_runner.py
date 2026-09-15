@@ -22,6 +22,7 @@ from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
+    QAFailedCheckCause,
     QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
@@ -282,19 +283,30 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     if not isinstance(data["checks"], list):
         return _invalid_qa_payload(raw, "checks must be a list")
 
-    expected_check_fields = {"name", "pass", "detail"}
+    passed_check_fields = {"name", "pass", "detail"}
+    failed_check_fields = passed_check_fields | {"cause"}
+    causes = {cause.value for cause in QAFailedCheckCause}
     for index, check in enumerate(data["checks"]):
-        if not isinstance(check, dict) or set(check) != expected_check_fields:
+        if not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
+            return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
+        if check["pass"] and set(check) != passed_check_fields:
             return _invalid_qa_payload(
                 raw,
-                f"check {index} must contain exactly name, pass, and detail fields",
+                f"passed check {index} must contain exactly name, pass, and detail fields",
+            )
+        if not check["pass"] and set(check) != failed_check_fields:
+            return _invalid_qa_payload(
+                raw,
+                f"failed check {index} must contain exactly name, pass, detail, and cause fields",
             )
         if not isinstance(check["name"], str) or not check["name"].strip():
             return _invalid_qa_payload(raw, f"check {index} name must be a non-empty string")
-        if not isinstance(check["pass"], bool):
-            return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
         if not isinstance(check["detail"], str) or not check["detail"].strip():
             return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
+        if not check["pass"] and check["cause"] not in causes:
+            return _invalid_qa_payload(
+                raw, f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
+            )
 
     return None
 

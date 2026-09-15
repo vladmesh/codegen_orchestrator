@@ -107,6 +107,9 @@ def _bot_section(bot_username: str) -> str:
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
   sent the message, you have no result to report. Do not substitute code reading.
+  A check that needs a photo upload or another action the calls above cannot
+  send fails with cause `qa_capability`, and a bot that refuses the QA account
+  fails with cause `qa_access`; neither is a product failure.
 - If either Telegram call returns an error, stop testing and submit no product
   failure for it. The runtime records this as a non-product blocker.
 """
@@ -153,6 +156,7 @@ After storing the report, write this JSON to a file and submit it with
 `{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
 and only after every check is done.
 {_RESULT_JSON}
+{_FAILURE_CAUSE_RULE}
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as
 a passing or failing product.\
@@ -162,9 +166,28 @@ a passing or failing product.\
 _RESULT_JSON = """\
 {
   "pass": true/false,
-  "checks": [{"name": "check name", "pass": true/false, "detail": "one-line summary"}],
+  "checks": [
+    {"name": "passed check", "pass": true, "detail": "one-line summary"},
+    {"name": "failed check", "pass": false, "detail": "one-line summary",
+     "cause": "product" | "qa_capability" | "qa_access"}
+  ],
   "summary": "brief summary"
 }
+"""
+
+
+_FAILURE_CAUSE_RULE = """\
+## Why a check failed
+Every failed check carries a `cause`, and a passed check carries none. A result
+with a failed check that has no cause, or any other cause, is rejected.
+- `product` — you performed the check and the application answered wrongly.
+  Only this cause is a product failure.
+- `qa_capability` — the criterion needs an action your tools cannot perform,
+  for example an HTTP write (POST, PUT, DELETE) or a photo upload. Report the
+  check as failed with this cause; it is never a product failure.
+- `qa_access` — the product refused the QA identity: a private bot that does not
+  answer the QA account, an endpoint answering 401 or 403 to QA. Report the
+  check as failed with this cause; it is never a product failure.
 """
 
 

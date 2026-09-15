@@ -8,6 +8,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -611,6 +612,39 @@ class TestProcessQAJobFail:
         assert run_data["result"]["qa_outcome"] == QAOutcome.FAILED.value
         assert run_data["result"]["summary"] == "Weather endpoint broken"
         assert len(run_data["result"]["failed_checks"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_qa_fail_carries_each_failed_checks_cause(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import parse_qa_result
+
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [
+                    {"name": "weather", "pass": False, "detail": "404", "cause": "product"},
+                    {
+                        "name": "upload",
+                        "pass": False,
+                        "detail": "no tool",
+                        "cause": "qa_capability",
+                    },
+                    {"name": "health", "pass": True, "detail": "200"},
+                ],
+                "summary": "mixed",
+            }
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = parse_qa_result(raw)
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_failed"
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["failed_checks"] == [
+            {"name": "weather", "detail": "404", "cause": "product"},
+            {"name": "upload", "detail": "no tool", "cause": "qa_capability"},
+        ]
 
     @pytest.mark.asyncio
     async def test_a_failed_run_keeps_the_executors_own_transcript_on_the_run(

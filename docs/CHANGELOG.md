@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
+- A failed QA check carries a closed cause (`product`, `qa_capability`, `qa_access`); only product failures reach a
+  fix task, and a run with none parks as the `qa_checks_unverifiable` harness blocker.
+
 - A temporary-access grant/revoke deploy never takes the same-SHA skip, and the sweep and API refuse a skipped run
   as proof, so QA is released only after the product read the grant back active.
 

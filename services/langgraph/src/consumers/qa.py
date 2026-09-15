@@ -863,8 +863,14 @@ async def _handle_qa_fail(
     qa_result: QAResult,
 ) -> dict:
     """Handle QA fail — store FAILED or EXHAUSTED outcome in run."""
+    # An executor's failed check always carries a cause: the runner refuses one
+    # without. Checks the runner produced itself (health GETs, package rows) are
+    # product verdicts and carry none, so they read as the contract's `product`.
     failed_checks = [
-        QAFailedCheck(name=c.get("name", ""), detail=c.get("detail", ""))
+        QAFailedCheck.model_validate(
+            {"name": c.get("name", ""), "detail": c.get("detail", "")}
+            | ({"cause": c["cause"]} if "cause" in c else {})
+        )
         for c in qa_result.checks
         if not c.get("pass", True)
     ]

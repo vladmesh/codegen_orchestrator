@@ -1750,6 +1750,123 @@ class TestSuperviseTestingStories:
         api_client.transition_story.assert_awaited_with("story-1", "human-review")
 
     @pytest.mark.asyncio
+    async def test_a_mixed_failure_fixes_only_the_product_checks(self, api_client, redis_client):
+        """Capability and access failures are evidence on the fix task, never its instructions."""
+        from shared.contracts.dto.run_result import QAFailedCheck
+        from src.tasks.supervisor import supervise_testing_stories
+        from src.tasks.supervisor.qa import _qa_failure_fingerprint
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "weather 404, no tool for POST /api/transactions, no access to bot",
+                "failed_checks": [
+                    {"name": "weather", "detail": "404", "cause": "product"},
+                    {
+                        "name": "create transaction",
+                        "detail": "no tool for POST /api/transactions",
+                        "cause": "qa_capability",
+                    },
+                    {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+                ],
+            },
+        )
+        api_client.get_tasks_by_story.return_value = []
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 1
+        api_client.create_task.assert_awaited_once()
+        task = api_client.create_task.await_args.args[0]
+        for text in (task["title"], task["description"]):
+            assert "POST /api/transactions" not in text
+            assert "no access" not in text
+            assert "bot /start" not in text
+        assert "- weather: 404" in task["description"]
+        evidence = task["failure_metadata"]["qa_failure"]
+        assert evidence["failed_checks"] == [{"name": "weather", "detail": "404"}]
+        assert evidence["fingerprint"] == _qa_failure_fingerprint(
+            evidence["summary"], [QAFailedCheck(name="weather", detail="404")]
+        )
+        assert "POST /api/transactions" not in evidence["summary"]
+        assert evidence["unverified_checks"] == [
+            {
+                "name": "create transaction",
+                "detail": "no tool for POST /api/transactions",
+                "cause": "qa_capability",
+            },
+            {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
+        ]
+        api_client.stop_application.assert_not_called()
+        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "causes",
+        [("qa_capability",), ("qa_access",), ("qa_capability", "qa_access")],
+        ids="+".join,
+    )
+    async def test_a_failure_with_no_product_check_parks_without_a_fix_attempt(
+        self, api_client, redis_client, causes
+    ):
+        """No product judgement exists: park for an administrator, spend no fix, blame nothing."""
+        from unittest.mock import AsyncMock, patch
+
+        from shared.contracts.dto.run_result import QA_HARNESS_BLOCKERS, QABlockerCategory
+        from src.tasks.supervisor import supervise_testing_stories
+        from src.tasks.supervisor.qa import _quarantine_text
+
+        failed_checks = [
+            {"name": f"check {index}", "detail": f"{cause} detail", "cause": cause}
+            for index, cause in enumerate(causes)
+        ]
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "could not test",
+                "failed_checks": failed_checks,
+            },
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result == {"completed": 0, "redispatched": 0, "failed": 1, "recovered": 0}
+        api_client.create_task.assert_not_called()
+        api_client.stop_application.assert_awaited_once_with(42)
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+        category = QABlockerCategory(reason["blocker"]["category"])
+        assert category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE
+        assert category in QA_HARNESS_BLOCKERS
+        for check in failed_checks:
+            assert (
+                f"{check['cause']}: {check['name']}: {check['detail']}"
+                in (reason["blocker"]["received"])
+            )
+        assert "not in the product" in _quarantine_text(reason)
+        admins.assert_awaited_once()
+        message = admins.await_args.args[0]
+        assert "qa_checks_unverifiable" in message
+        assert "/api/stories/story-1/recheck-qa" in message
+        assert "managed-target reconciliation" not in message
+
+    @pytest.mark.asyncio
     async def test_exhausted_quarantines_application_and_notifies_owner(
         self, api_client, redis_client
     ):
