@@ -184,8 +184,8 @@ async def _start_grant(
         target_application_id=application_id,
         target_base_url=TARGET_URL,
         head_sha=HEAD_SHA,
+        # A run-owned QA message: the sweep never reads a story.
         qa_message=QAMessage(
-            story_id="",
             project_id=project_id,
             initiating_run_id=f"deploy-{qa_run_id}",
             telegram_chat_id="",

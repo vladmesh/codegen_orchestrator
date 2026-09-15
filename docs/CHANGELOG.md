@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-15
 
-- A temporary-access grant/revoke deploy never takes the same-SHA skip, and the sweep refuses a skipped run as
-  proof, so QA is released only after the product read the grant back active.
+- A temporary-access grant/revoke deploy never takes the same-SHA skip, and the sweep and API refuse a skipped run
+  as proof, so QA is released only after the product read the grant back active.
 
 ## 2026-09-14
 

@@ -98,11 +98,13 @@ async def _require_proved_operation(db: AsyncSession, run_id: str | None, *, exp
             detail=f"Temporary access {expected} has no recorded capability operation",
         )
     run = await db.get(Run, run_id)
-    outcome = (run.result or {}).get("deploy_outcome") if run is not None else None
+    result = (run.result or {}) if run is not None else {}
+    # A skipped deploy never reached the product, so its SUCCESS proves no readback.
     if (
         run is None
         or run.status != RunStatus.COMPLETED.value
-        or outcome != DeployOutcome.SUCCESS.value
+        or result.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        or result.get("skipped_reason") is not None
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
