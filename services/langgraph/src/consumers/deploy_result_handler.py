@@ -176,6 +176,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
 
     settings_seed = await _seed_initial_settings(
         task_id=task_id,
+        project_id=project_id,
         story_id=story_id,
         deployed_url=result["deployed_url"],
         secret_values=result.get("secret_values", {}),
@@ -357,6 +358,7 @@ async def _apply_temporary_access_operation(
 async def _seed_initial_settings(
     *,
     task_id: str,
+    project_id: str,
     story_id: str,
     deployed_url: str,
     secret_values: dict,
@@ -372,15 +374,30 @@ async def _seed_initial_settings(
     environment variable: the values are the confirmed ones, read through the
     released brief endpoint, and the capability is this deploy's in-memory
     resolver output. Neither the capability nor a setting value is logged.
+
+    A deploy that names its story reads that story's brief. One that names
+    none — the owner-grant deploy of a fresh project is the only deploy such a
+    product gets — reads the project's latest confirmed brief carrying
+    settings, so the product never reaches QA unseeded. Either way one event
+    says which brief was found, or that there was nothing to seed.
     """
-    if not story_id:
-        return []
-    brief = await api_client.get_product_brief_by_story(story_id)
-    if brief is None or brief.confirmed_at is None:
+    if story_id:
+        route = "story"
+        brief = await api_client.get_product_brief_by_story(story_id)
+    else:
+        route = "project"
+        brief = await api_client.get_project_initial_settings_brief(project_id)
+    if brief is None or brief.confirmed_at is None or not brief.content.initial_settings:
+        logger.info("deploy_settings_seed_nothing_to_seed", task_id=task_id, route=route)
         return []
     settings = list(brief.content.initial_settings)
-    if not settings:
-        return []
+    logger.info(
+        "deploy_settings_seed_brief",
+        task_id=task_id,
+        brief_id=brief.id,
+        settings_count=len(settings),
+        route=route,
+    )
 
     capability = secret_values.get(_SETTINGS_WRITE_CAPABILITY)
     if not isinstance(capability, str) or not capability:

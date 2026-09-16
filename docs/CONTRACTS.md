@@ -435,7 +435,13 @@ header, and appears in no URL, log, error, event, callback, persisted
 diagnostic or LLM-facing text. Writing is idempotent by `(key, scope,
 subject_id)`, so redeploying the same story writes the same values and ends in
 the same state; a story with no brief and a brief with no settings touch
-nothing.
+nothing. A commit deploy whose message names no story — the owner-grant deploy
+of a fresh project is the only deploy such a product gets — reads the project's
+latest confirmed brief carrying `initial_settings` through
+`GET /api/product-briefs/by-project/{project_id}/initial-settings` (newest
+confirmation first; 404 when none) and seeds it the same way. Every seed step
+logs the brief id, settings count and route (`story` or `project`), or that
+there was nothing to seed; never a value or the capability.
 
 For a package-owned product setting, that same successful `POST /settings/set`
 write invokes the installed package's declared idempotent setting seed inside

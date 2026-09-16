@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import uuid
 
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.product_brief import (
     InitialSetting,
@@ -153,6 +154,7 @@ def mock_api():
     with patch(f"{_HANDLER_PATCH}.api_client") as api:
         api.patch = AsyncMock()
         api.get_product_brief_by_story = AsyncMock(return_value=_brief())
+        api.get_project_initial_settings_brief = AsyncMock(return_value=None)
         yield api
 
 
@@ -371,3 +373,131 @@ class TestFailClosedAndVisibly:
         stored = _stored_result(mock_api)
         assert stored["error_details"] == "settings_seed:key_not_declared,transport"
         assert "key_not_declared,transport" in result["error"]
+
+
+class TestADeployWithoutAStory:
+    """The owner-grant deploy of a fresh project is the only deploy it gets.
+
+    When its message names no story the project's latest confirmed brief that
+    carries settings supplies them, so the product never reaches QA unseeded.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_projects_confirmed_settings_are_seeded(self, mock_api, fake_settings_client):
+        mock_api.get_project_initial_settings_brief = AsyncMock(
+            return_value=_brief(
+                [
+                    InitialSetting(key="finance.currency", value="USD"),
+                    InitialSetting(key="interface.language", value="ru"),
+                ],
+                id="brief-project",
+            )
+        )
+
+        with capture_logs() as logs:
+            result = await _deploy(mock_api, story_id="")
+
+        assert result["status"] == "success"
+        mock_api.get_product_brief_by_story.assert_not_called()
+        mock_api.get_project_initial_settings_brief.assert_awaited_once_with("proj-1")
+        assert _FakeSettingsClient.instances[0].calls == [
+            ("finance.currency", SettingScope.PRODUCT, None, "USD"),
+            ("interface.language", SettingScope.PRODUCT, None, "ru"),
+        ]
+        stored = _stored_result(mock_api)
+        assert stored["deploy_outcome"] == DeployOutcome.SUCCESS.value
+        assert [(s["key"], s["written"]) for s in stored["settings_seed"]] == [
+            ("finance.currency", True),
+            ("interface.language", True),
+        ]
+        found = [e for e in logs if e["event"] == "deploy_settings_seed_brief"]
+        assert found == [
+            {
+                "event": "deploy_settings_seed_brief",
+                "log_level": "info",
+                "task_id": "deploy-1",
+                "brief_id": "brief-project",
+                "settings_count": 2,
+                "route": "project",
+            }
+        ]
+        assert "USD" not in str(logs)
+        assert _CAPABILITY not in str(logs)
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_confirmed_settings_says_there_was_nothing_to_seed(
+        self, mock_api, fake_settings_client
+    ):
+        with capture_logs() as logs:
+            result = await _deploy(mock_api, story_id="")
+
+        assert result["status"] == "success"
+        assert _FakeSettingsClient.instances == []
+        assert _stored_result(mock_api)["settings_seed"] == []
+        assert [e for e in logs if e["event"].startswith("deploy_settings_seed")] == [
+            {
+                "event": "deploy_settings_seed_nothing_to_seed",
+                "log_level": "info",
+                "task_id": "deploy-1",
+                "route": "project",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_settings_that_did_not_arrive_are_never_a_success_with_an_empty_seed(
+        self, mock_api, fake_settings_client
+    ):
+        mock_api.get_project_initial_settings_brief = AsyncMock(
+            return_value=_brief([InitialSetting(key="finance.currency", value="USD")])
+        )
+
+        result = await _deploy(mock_api, story_id="", secret_values={})
+
+        assert result["status"] == "failed"
+        stored = _stored_result(mock_api)
+        assert stored["deploy_outcome"] == DeployOutcome.SETTINGS_SEED_FAILED.value
+        assert stored["settings_seed"] == [
+            {
+                "key": "finance.currency",
+                "scope": "product",
+                "subject_id": None,
+                "written": False,
+                "failure": SettingsSeedFailureKind.CAPABILITY_UNAVAILABLE.value,
+            }
+        ]
+
+
+class TestEverySeedStepSaysWhatItFound:
+    @pytest.mark.asyncio
+    async def test_the_story_route_names_its_brief_and_count(self, mock_api, fake_settings_client):
+        with capture_logs() as logs:
+            await _deploy(mock_api)
+
+        mock_api.get_project_initial_settings_brief.assert_not_called()
+        assert [e for e in logs if e["event"] == "deploy_settings_seed_brief"] == [
+            {
+                "event": "deploy_settings_seed_brief",
+                "log_level": "info",
+                "task_id": "deploy-1",
+                "brief_id": "brief-1",
+                "settings_count": 1,
+                "route": "story",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_story_brief_without_settings_says_there_was_nothing_to_seed(
+        self, mock_api, fake_settings_client
+    ):
+        mock_api.get_product_brief_by_story = AsyncMock(return_value=_brief([]))
+
+        with capture_logs() as logs:
+            await _deploy(mock_api)
+
+        assert [e["event"] for e in logs if e["event"].startswith("deploy_settings_seed")] == [
+            "deploy_settings_seed_nothing_to_seed"
+        ]
+        assert (
+            next(e for e in logs if e["event"] == "deploy_settings_seed_nothing_to_seed")["route"]
+            == "story"
+        )

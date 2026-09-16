@@ -195,6 +195,30 @@ class TestProductBriefBoundaryClient:
         assert await api_client.get_product_brief_by_story("story-plain") is None
 
     @pytest.mark.asyncio
+    async def test_project_settings_brief_returns_the_typed_read(
+        self, api_client, mock_httpx_client
+    ):
+        mock_httpx_client.request.return_value = _ok_response(_brief_dict())
+
+        brief = await api_client.get_project_initial_settings_brief(_UUID)
+
+        assert brief is not None
+        assert brief.id == "brief-1"
+        method, path = mock_httpx_client.request.call_args[0]
+        assert (method, path) == (
+            "GET",
+            f"/api/product-briefs/by-project/{_UUID}/initial-settings",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_settings_brief_is_none_not_an_error(
+        self, api_client, mock_httpx_client
+    ):
+        mock_httpx_client.request.return_value = _not_found_response()
+
+        assert await api_client.get_project_initial_settings_brief(_UUID) is None
+
+    @pytest.mark.asyncio
     async def test_claim_returns_the_outcome_and_the_attempt(self, api_client, mock_httpx_client):
         mock_httpx_client.request.return_value = _ok_response(
             {

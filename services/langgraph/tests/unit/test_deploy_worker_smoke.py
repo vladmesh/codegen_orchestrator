@@ -7,12 +7,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.product_brief import (
+    InitialSetting,
+    MustRequirement,
+    ProductBriefContent,
+    ProductBriefRead,
+)
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntent,
     GrantIntentKind,
 )
-from shared.contracts.queues.deploy import DeployTrigger
+from shared.contracts.queues.deploy import DeployAction, DeployOutcome, DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
 from tests.unit.factories import make_project, make_repository, make_run, make_run_start
 
@@ -55,6 +61,8 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/my-project")
         )
+        # A storyless deploy asks the project for its confirmed settings.
+        api.get_project_initial_settings_brief = AsyncMock(return_value=None)
         yield api
 
 
@@ -166,6 +174,99 @@ async def test_bot_owner_is_granted_and_read_back_before_deploy_success(
         execution_run_id="deploy-smoke-1",
         active=True,
     )
+
+
+def _finance_brief() -> ProductBriefRead:
+    """The confirmed brief of the 2026-09-16 DoD 7 attempt, values as confirmed."""
+    return ProductBriefRead(
+        id="brief-58d709d8f41b921b301d2b09",
+        project_id="202a5f2b-3e87-4f32-bbde-84d31a004e14",
+        story_id="story-c3866cf1",
+        revision=1,
+        title="Finance bot",
+        content=ProductBriefContent(
+            summary="A personal finance bot",
+            must_requirements=[MustRequirement(id="spend", text="Record a spend")],
+            initial_settings=[
+                InitialSetting(key="finance.currency", value="USD"),
+                InitialSetting(key="interface.language", value="ru"),
+            ],
+        ),
+        confirmed_at="2026-09-16T21:00:00Z",
+        planning_attempt_active=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "story_id",
+    [
+        pytest.param("story-c3866cf1", id="grant-message-names-its-story"),
+        pytest.param("", id="grant-message-names-no-story"),
+    ],
+)
+async def test_initial_owner_grant_deploy_seeds_the_confirmed_brief_settings(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph, story_id
+):
+    """Production sequence of 2026-09-16: the grant deploy reported `settings_seed=[]`.
+
+    The owner-grant deploy is the only deploy a fresh product gets, so whether
+    its message carries the story or not the confirmed settings must arrive.
+    """
+    mock_api.get_project.return_value = make_project(config={"modules": ["backend", "tg_bot"]})
+    mock_api.get_run.return_value = make_run(
+        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent().id}
+    )
+    mock_api.get_product_brief_by_story = AsyncMock(return_value=_finance_brief())
+    mock_api.get_project_initial_settings_brief = AsyncMock(return_value=_finance_brief())
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployed_url": "http://1.2.3.4:8080",
+            "deployment_result": {},
+            "smoke_result": {"status": "pass", "checks": []},
+            "secret_values": {
+                "USERS_GRANT_CAPABILITY": "grant-capability",
+                "SETTINGS_WRITE_CAPABILITY": "settings-capability",
+            },
+        }
+    )
+    job = {
+        **_job(),
+        "triggered_by": DeployTrigger.PO.value,
+        "action": DeployAction.CREATE.value,
+        "story_id": story_id,
+    }
+
+    from src.clients.product_settings import SettingSeedProof
+    from src.consumers.deploy import process_deploy_job
+
+    with (
+        patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as grant_client,
+        patch("src.consumers.deploy_result_handler.GeneratedServiceSettingsClient") as settings,
+    ):
+        grant_client.return_value.grant_and_resolve = AsyncMock(
+            return_value=SimpleNamespace(active=True, failure=None)
+        )
+        settings.return_value.seed_and_resolve = AsyncMock(
+            return_value=[SettingSeedProof(written=True), SettingSeedProof(written=True)]
+        )
+        result = await process_deploy_job(job, mock_redis)
+
+    assert result["status"] == "success"
+    seeded = settings.return_value.seed_and_resolve.await_args
+    assert [(s.key, s.value) for s in seeded.args[0]] == [
+        ("finance.currency", "USD"),
+        ("interface.language", "ru"),
+    ]
+    assert seeded.kwargs == {"capability": "settings-capability"}
+    completed = [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
+    assert len(completed) == 1
+    stored = completed[0].kwargs["json"]["result"]
+    assert stored["deploy_outcome"] == DeployOutcome.SUCCESS.value
+    assert [(s["key"], s["written"]) for s in stored["settings_seed"]] == [
+        ("finance.currency", True),
+        ("interface.language", True),
+    ]
 
 
 @pytest.mark.asyncio
