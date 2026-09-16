@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-16
+
+- The owner-grant deploy carries its story and a storyless commit deploy seeds the project's latest confirmed
+  `initial_settings`, so a fresh product never reaches QA unseeded; every seed step logs what it found.
+
 ## 2026-09-15
 
 - The finance-bot architect plan checks read a real model's Russian («спрашивает пользователя», «в свободной форме»),

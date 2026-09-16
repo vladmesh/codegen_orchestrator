@@ -282,6 +282,22 @@ class LanggraphAPIClient(InternalAPIClient):
             raise
         return ProductBriefRead.model_validate(resp.json())
 
+    async def get_project_initial_settings_brief(self, project_id: str) -> ProductBriefRead | None:
+        """The project's latest confirmed brief carrying `initial_settings`, or None.
+
+        None is the ordinary answer for a project whose confirmed briefs carry
+        no settings, or that has no confirmed brief at all.
+        """
+        try:
+            resp = await self.request(
+                "GET", f"product-briefs/by-project/{project_id}/initial-settings"
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+        return ProductBriefRead.model_validate(resp.json())
+
     async def claim_planning_attempt(self, brief_id: str) -> ProductBriefPlanningAttemptRead:
         """Take ownership of this brief's incomplete plan, if it is free to take.
 

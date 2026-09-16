@@ -366,6 +366,9 @@ async def _dispatch_lifecycle(
         message = DeployMessage(
             task_id=run.id,
             project_id=str(project.id),
+            # The consumer seeds the confirmed brief's settings through this
+            # story; a live-target grant has none and keeps the DTO's "".
+            story_id=run.story_id or "",
             telegram_chat_id=recipient.telegram_chat_id,
             unaddressed_reason=recipient.unaddressed_reason,
             triggered_by=DeployTrigger.PO,

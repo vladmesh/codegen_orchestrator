@@ -48,6 +48,8 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/test-project")
         )
+        # A storyless deploy asks the project for its confirmed settings.
+        api.get_project_initial_settings_brief = AsyncMock(return_value=None)
         api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
         api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         yield api
