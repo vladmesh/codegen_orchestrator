@@ -70,9 +70,17 @@ async def get_story_worker(redis_client: redis.Redis, story_id: str) -> str | No
     sufficient evidence to remove that binding. Teardown must also release the
     owner-fenced workspace lock before the caller may spawn a replacement.
 
-    An absent or unrecognised status remains inconclusive and is returned for
-    the existing liveness waiter to handle. Redis uncertainty is not Docker
-    proof and must not create two writers in one workspace.
+    A worker with neither a status nor metadata left is a deleted one: teardown
+    removes both keys, so the binding is the last thing naming a worker that no
+    longer exists and nothing will ever arrive to evict it. That binding is
+    dropped here. There is no delete command to send for a worker already
+    removed, and no workspace to wait on: `delete_worker` releases the
+    owner-fenced lock before it deletes the keys whose absence is read here.
+
+    An unrecognised status — a status that is still there — remains
+    inconclusive and is returned for the existing liveness waiter to handle.
+    Redis uncertainty is not Docker proof and must not create two writers in one
+    workspace.
     """
     value = await redis_client.hget(STORY_WORKERS_KEY, story_id)
     if value is None:
@@ -85,6 +93,22 @@ async def get_story_worker(redis_client: redis.Redis, story_id: str) -> str | No
         status = WorkerStatus(status_value) if status_value is not None else None
     except ValueError:
         status = None
+
+    if status_value is None:
+        meta = decode_redis_fields(await redis_client.hgetall(f"worker:meta:{worker_id}"))
+        if meta:
+            # Metadata without a status is a worker mid-creation, not a dead one.
+            return worker_id
+        cleared = await _clear_if_current(redis_client, story_id, worker_id)
+        if not cleared:
+            return await get_story_worker(redis_client, story_id)
+        logger.warning(
+            "dead_story_worker_binding_evicted",
+            story_id=story_id,
+            worker_id=worker_id,
+        )
+        return None
+
     if status not in WORKER_TERMINAL_STATUSES:
         return worker_id
 

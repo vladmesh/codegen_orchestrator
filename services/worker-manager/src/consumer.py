@@ -16,6 +16,7 @@ from shared.log_config.correlation import bind_message_context, unbind_message_c
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis import RedisStreamClient, TypedMessage
 
+from .creation_failure import worker_creation_failure_reason, worker_creation_step
 from .manager import WorkerManager
 
 logger = structlog.get_logger()
@@ -153,7 +154,17 @@ class WorkerCommandConsumer:
             # No return — early ACK already sent, status is RUNNING in Redis
             return None
         except Exception as e:  # noqa: BLE001 — post-ACK failure is recorded instead of requeued
-            logger.error("worker_creation_failed_after_ack", worker_id=worker_id, error=str(e))
+            # The response is already out, so this log is the record of why the
+            # creation failed. `str(e)` is empty for a bare timeout — the shape a
+            # checkout that ran out its bound raises — and an empty `error=` reads
+            # as no failure at all, so the reason names the exception type and the
+            # creation step instead.
+            logger.error(
+                "worker_creation_failed_after_ack",
+                worker_id=worker_id,
+                error=worker_creation_failure_reason(e),
+                step=worker_creation_step(e),
+            )
             # Worker status is already FAILED in Redis (set by manager cleanup)
             # No second response needed — spawner polls status and will see FAILED
             return None
