@@ -1570,6 +1570,45 @@ class TestSuperviseTestingStories:
         api_client.transition_story.assert_called_once_with("story-1", "complete")
 
     @pytest.mark.asyncio
+    async def test_passed_run_with_a_refused_empty_input_is_not_quarantined(
+        self, api_client, redis_client
+    ):
+        """Regression sprint:1445: a transport-refused empty message leaves a pass a pass."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan(), "application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.PASSED.value,
+                "deployed_url": "https://example.com",
+                "telegram_probe_evidence": [
+                    {
+                        "action": "message",
+                        "attempted": "send '' to @financebot",
+                        "sent": "",
+                        "delivered": False,
+                        "replies": [],
+                    }
+                ],
+            },
+        )
+        api_client.transition_story.return_value = {}
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["completed"] == 1
+        assert result["failed"] == 0
+        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        api_client.stop_application.assert_not_called()
+        api_client.update_story.assert_not_called()
+        api_client.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_failed_creates_fix_task_and_redispatches(self, api_client, redis_client):
         """FAILED outcome → fix task created, story back to IN_PROGRESS, engineering redispatch."""
         from src.tasks.supervisor import supervise_testing_stories

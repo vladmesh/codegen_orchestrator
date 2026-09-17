@@ -251,6 +251,13 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
     return qa_result
 
 
+_PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
+_FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
+#: A check the transport could not carry: no `pass`, no `cause`. It counts toward
+#: nothing and is kept only when the runtime recorded the refusal itself.
+_NOT_APPLICABLE_CHECK_FIELDS = frozenset({"name", "not_applicable", "detail"})
+
+
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
     """Fail closed when the agent's result cannot safely drive QA routing."""
     return QAResult(
@@ -263,6 +270,73 @@ def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
             received=raw[:2000],
         ),
     )
+
+
+def _check_shape_error(index: int, check: object, causes: set[str]) -> str | None:
+    """Name what is wrong with one executor check, or None when its shape is valid."""
+    if isinstance(check, dict) and "not_applicable" in check:
+        if check["not_applicable"] is not True or set(check) != _NOT_APPLICABLE_CHECK_FIELDS:
+            return (
+                f"not-applicable check {index} must contain exactly name, "
+                "not_applicable (true), and detail fields"
+            )
+    elif not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
+        return f"check {index} pass must be a boolean"
+    elif check["pass"] and set(check) != _PASSED_CHECK_FIELDS:
+        return f"passed check {index} must contain exactly name, pass, and detail fields"
+    elif not check["pass"] and set(check) != _FAILED_CHECK_FIELDS:
+        return f"failed check {index} must contain exactly name, pass, detail, and cause fields"
+    if not isinstance(check["name"], str) or not check["name"].strip():
+        return f"check {index} name must be a non-empty string"
+    if not isinstance(check["detail"], str) or not check["detail"].strip():
+        return f"check {index} detail must be a non-empty string"
+    if check.get("pass") is False and check["cause"] not in causes:
+        return f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
+    return None
+
+
+def _ground_not_applicable_checks(
+    checks: list[dict], transport_refusals: Sequence[QATelegramProbeEvidence]
+) -> list[dict]:
+    """Keep a not-applicable check only where the runtime refused an input itself.
+
+    The executor's word that a check could not be delivered is not trusted. Each
+    not-applicable check, in order, is paired with a distinct transport refusal
+    this run's workspace recorded (today, `telegram_probe` refusing an empty
+    message), and the refusal it rests on is written onto the check. A check
+    left without one is what it would have been before this form existed: a
+    failed check QA had no tool for, cause `qa_capability`. The pairing is by
+    count, not by check: the prompt forbids the form for an acceptance-criterion
+    check, and the refusal itself is persisted on the run as Telegram evidence.
+    """
+    unused = list(transport_refusals)
+    grounded: list[dict] = []
+    for check in checks:
+        if not check.get("not_applicable"):
+            grounded.append(check)
+            continue
+        if unused:
+            refusal = unused.pop(0)
+            logger.info(
+                "qa_check_not_applicable",
+                check=check["name"],
+                transport_refusal=refusal.attempted,
+            )
+            grounded.append({**check, "transport_refusal": refusal.attempted})
+            continue
+        logger.warning("qa_check_not_applicable_ungrounded", check=check["name"])
+        grounded.append(
+            {
+                "name": check["name"],
+                "pass": False,
+                "detail": (
+                    "reported not applicable, but this run recorded no transport refusal "
+                    f"for it: {check['detail']}"
+                ),
+                "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+            }
+        )
+    return grounded
 
 
 def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
@@ -283,34 +357,17 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     if not isinstance(data["checks"], list):
         return _invalid_qa_payload(raw, "checks must be a list")
 
-    passed_check_fields = {"name", "pass", "detail"}
-    failed_check_fields = passed_check_fields | {"cause"}
     causes = {cause.value for cause in QAFailedCheckCause}
     for index, check in enumerate(data["checks"]):
-        if not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
-            return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
-        if check["pass"] and set(check) != passed_check_fields:
-            return _invalid_qa_payload(
-                raw,
-                f"passed check {index} must contain exactly name, pass, and detail fields",
-            )
-        if not check["pass"] and set(check) != failed_check_fields:
-            return _invalid_qa_payload(
-                raw,
-                f"failed check {index} must contain exactly name, pass, detail, and cause fields",
-            )
-        if not isinstance(check["name"], str) or not check["name"].strip():
-            return _invalid_qa_payload(raw, f"check {index} name must be a non-empty string")
-        if not isinstance(check["detail"], str) or not check["detail"].strip():
-            return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
-        if not check["pass"] and check["cause"] not in causes:
-            return _invalid_qa_payload(
-                raw, f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
-            )
+        shape_error = _check_shape_error(index, check, causes)
+        if shape_error:
+            return _invalid_qa_payload(raw, shape_error)
 
     # A verdict passes only if every check passed. A failure QA had no tool or
     # no access for is still a failure, and it is parked only when `pass` says so.
-    any_check_failed = any(not check["pass"] for check in data["checks"])
+    # A not-applicable check is not a failure; whether it stays one is decided by
+    # the runner's own evidence (`_ground_not_applicable_checks`), not here.
+    any_check_failed = any(check.get("pass") is False for check in data["checks"])
     if data["pass"] is any_check_failed:
         return _invalid_qa_payload(
             raw, "pass must be false exactly when a check failed, whatever its cause"
@@ -319,8 +376,15 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     return None
 
 
-def parse_qa_result(raw: str) -> QAResult:
-    """Parse raw, fenced, or result-wrapped QA JSON into a QAResult."""
+def parse_qa_result(
+    raw: str, *, transport_refusals: Sequence[QATelegramProbeEvidence] = ()
+) -> QAResult:
+    """Parse raw, fenced, or result-wrapped QA JSON into a QAResult.
+
+    `transport_refusals` are the inputs this run's runtime refused because the
+    transport cannot carry them; only they ground a not-applicable check. With
+    none, every not-applicable check is a failed `qa_capability` check.
+    """
     if not raw or not raw.strip():
         return QAResult(
             passed=False,
@@ -376,9 +440,10 @@ def parse_qa_result(raw: str) -> QAResult:
     if invalid_result:
         return invalid_result
 
+    checks = _ground_not_applicable_checks(data["checks"], transport_refusals)
     return QAResult(
-        passed=data["pass"],
-        checks=data["checks"],
+        passed=not any(check.get("pass") is False for check in checks),
+        checks=checks,
         summary=data["summary"],
         raw=raw,
     )
@@ -1407,7 +1472,7 @@ def _verdict_of(
                 received="the executor finished without submitting a result",
             ),
         )
-    qa_result = parse_qa_result(workspace.verdict)
+    qa_result = parse_qa_result(workspace.verdict, transport_refusals=workspace.transport_refusals)
     qa_result.report = workspace.read_report()
     qa_result.executor_evidence = said.evidence
     return qa_result
