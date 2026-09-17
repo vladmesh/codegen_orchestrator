@@ -969,7 +969,14 @@ class WorkerManager:
             )
 
         if branch:
-            await git_ops.checkout_branch(self.docker, container_id, branch, worker_id)
+            # A checkout that returns False established neither the branch nor
+            # its upstream. Ignoring it used to let creation continue with the
+            # worker on the wrong branch and no upstream to push to; raising
+            # sends the failure into the `checkout_branch` step record.
+            if not await git_ops.checkout_branch(self.docker, container_id, branch, worker_id):
+                raise RuntimeError(
+                    f"checkout_branch did not establish branch {branch} or its upstream"
+                )
 
     @staticmethod
     def _set_worker_workspace(
