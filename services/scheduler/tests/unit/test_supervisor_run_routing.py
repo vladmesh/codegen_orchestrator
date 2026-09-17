@@ -1601,6 +1601,39 @@ class TestSuperviseTestingStories:
         assert "weather" in task_data["description"].lower()
 
     @pytest.mark.asyncio
+    async def test_fix_task_carries_the_expected_and_received_wording(
+        self, api_client, redis_client
+    ):
+        """Regression 2026-09-17: the fix worker is told the exact wording QA wanted."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        expected = "«Доход 5000 «зарплата» записан.»"
+        received = "«Доход сохранён: 5000 — зарплата.»"
+        detail = f"expected: {expected}; received: {received}"
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "Income reply wording differs",
+                "failed_checks": [{"name": "/income reply", "detail": detail}],
+                "qa_attempt": 0,
+            },
+        )
+        api_client.transition_story.return_value = {}
+        api_client.create_task.return_value = {"id": "task-fix-1"}
+
+        await supervise_testing_stories(api_client, redis_client)
+
+        description = api_client.create_task.call_args[0][0]["description"]
+        assert f"- /income reply: {detail}" in description
+        assert expected in description
+        assert received in description
+
+    @pytest.mark.asyncio
     async def test_existing_fix_task_recovers_story_transition_after_partial_failure(
         self, api_client, redis_client
     ):

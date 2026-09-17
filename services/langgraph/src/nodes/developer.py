@@ -216,6 +216,8 @@ class DeveloperNode(FunctionalNode):
             action=action,
             feature_description=feature_description,
             story_context=state.get("story_context"),
+            task_acceptance_criteria=state.get("task_acceptance_criteria"),
+            repository_acceptance_criteria=state.get("repository_acceptance_criteria"),
         )
 
         task_title = get_task_title(action, project_name)

@@ -157,6 +157,7 @@ After storing the report, write this JSON to a file and submit it with
 and only after every check is done.
 {_RESULT_JSON}
 Top-level `pass` is false whenever any check failed, whatever its cause.
+{_FAILED_DETAIL_RULE}
 {_FAILURE_CAUSE_RULE}
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as
@@ -174,6 +175,18 @@ _RESULT_JSON = """\
   ],
   "summary": "brief summary"
 }
+"""
+
+
+_FAILED_DETAIL_RULE = """\
+## What a failed check's detail says
+The `detail` of a failed check is the whole of what the developer who fixes it
+is told, so it must say what was expected and what came back. Quote the expected
+value or wording exactly as the criterion states it, and the value you received
+exactly as you received it, in this form:
+`expected: <value or wording quoted from the criterion>; received: <actual value or reply>`.
+A detail that only says the wording or value is wrong, without both quotes, is
+not a valid failed check.
 """
 
 

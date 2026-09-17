@@ -57,6 +57,11 @@ class EngineeringState(TypedDict):
     # .story/STORY.md content (file-first context: goal, task list, references)
     story_md: str | None
 
+    # What QA judges the work by: the planning task's own criteria and the
+    # primary repository's cumulative checklist central QA runs after deploy.
+    task_acceptance_criteria: str | None
+    repository_acceptance_criteria: str | None
+
     # Repository info (for workspace mounting)
     repo_id: str | None
 

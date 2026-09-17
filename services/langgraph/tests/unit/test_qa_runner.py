@@ -42,6 +42,20 @@ class TestBuildQAPrompt:
         assert "/opt/qa-runner" not in prompt
         assert ".qa-telethon.env" not in prompt
 
+    def test_failed_check_detail_quotes_expected_and_received(self):
+        """A QA-fix worker is told the exact wording QA wanted, not only that it was wrong."""
+        prompt = build_qa_prompt(
+            acceptance_criteria="- /income 5000 зарплата → «Доход 5000 «зарплата» записан.»",
+            deployed_url="https://bot.example.com",
+        )
+
+        assert "## What a failed check's detail says" in prompt
+        assert (
+            "`expected: <value or wording quoted from the criterion>; "
+            "received: <actual value or reply>`" in prompt
+        )
+        assert "without both quotes, is\nnot a valid failed check" in prompt
+
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- Telegram: /start responds with welcome",
