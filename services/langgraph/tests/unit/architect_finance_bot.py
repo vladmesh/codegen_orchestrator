@@ -7,7 +7,9 @@ free-text salary as an expense. The checks below are the three facts a
 compliant plan carries, and both runs apply them to what the real tools sent to
 the stub API: one QA criterion per usage example naming its requirement, the
 undefined income form returned instead of narrowed, and the ask-back rule in
-every task.
+every task. A balance criterion is judged from the balance QA reads first:
+on 2026-09-17 QA's own records from an earlier round made an absolute balance
+check fail a correct bot.
 """
 
 from __future__ import annotations
@@ -30,6 +32,10 @@ from tests.unit.test_architect_consumer import _FakeBriefBoundary, _FakeRedis
 EXPENSE_TEXT = "expense-text"
 INCOME = "income"
 EXPENSE_PHOTO = "expense-photo"
+
+#: The 2026-09-17 check: after income 5000 and expense 300, /balance answers 4700.
+BALANCE_SEQUENCE = "/income 5000, затем текст «кофе 300», затем /balance"
+BALANCE_REPLY = "Баланс: 4 700 ₽"
 
 STORY_ID = "story-finance-bot"
 PREVIOUS_CRITERIA = "- GET /health returns 200"
@@ -59,6 +65,11 @@ def finance_bot_brief(income_free_text: IncomeFreeText) -> ProductBriefContent:
             "requirement_id": INCOME,
             "user_sends": "/income 80000 зарплата",
             "product_answers": "Записал доход 80 000 ₽",
+        },
+        {
+            "requirement_id": INCOME,
+            "user_sends": BALANCE_SEQUENCE,
+            "product_answers": BALANCE_REPLY,
         },
         {
             "requirement_id": EXPENSE_PHOTO,
@@ -179,6 +190,10 @@ _UNRECOGNIZED = re.compile(
 )
 
 
+_BALANCE = re.compile(r"баланс|balance", re.IGNORECASE)
+_FROM_START = re.compile(r"\bstart|начальн|исходн|стартов", re.IGNORECASE)
+
+
 def _names(requirement_id: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w-]){re.escape(requirement_id)}(?![\w-])")
 
@@ -214,6 +229,35 @@ def assert_one_criterion_per_usage_example(api: FinanceBotApi) -> None:
             assert any(
                 _NOT_QA_VERIFIABLE.search(line) or _READ_OBSERVABLE.search(line) for line in naming
             ), f"upload example of {requirement.id} is neither observed nor marked:\n{naming}"
+
+
+def assert_balance_is_judged_from_its_start(api: FinanceBotApi) -> None:
+    """A planned balance example is checked as a change from the balance QA reads first.
+
+    QA always acts as one identity whose earlier records stay in the product, so
+    an absolute balance fails every retest of a correct bot.
+    """
+    assert api.criteria is not None, "update_acceptance_criteria was never called"
+    returned = returned_requirements(api)
+    planned = [
+        example
+        for example in api.content.usage_examples
+        if example.requirement_id not in returned and _BALANCE.search(example.product_answers)
+    ]
+    if not planned:
+        return
+    lines = [line.strip() for line in api.criteria.splitlines() if line.strip().startswith("- ")]
+    for example in planned:
+        balance = [
+            line
+            for line in lines
+            if _names(example.requirement_id).search(line) and _BALANCE.search(line)
+        ]
+        assert balance, f"no balance criterion for {example.requirement_id}:\n{api.criteria}"
+        for line in balance:
+            assert _FROM_START.search(line), (
+                f"balance criterion is not judged from a starting value QA reads first: {line}"
+            )
 
 
 def assert_undefined_income_is_returned(api: FinanceBotApi) -> None:
@@ -267,5 +311,6 @@ def assert_the_owner_is_told_what_was_returned(api: FinanceBotApi) -> None:
 
 def assert_plan_uses_exactly_the_confirmed_examples(api: FinanceBotApi) -> None:
     assert_one_criterion_per_usage_example(api)
+    assert_balance_is_judged_from_its_start(api)
     assert_undefined_income_is_returned(api)
     assert_every_task_asks_back(api)

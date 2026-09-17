@@ -103,6 +103,21 @@ write the upload itself as a step. The examples of a requirement you return get 
 no criterion: nothing builds them until the user answers, and a check of unbuilt \
 behaviour makes QA red on a working product.
 
+**Judge accumulated state from the value QA reads first.** QA always acts as \
+one Telegram identity, and its records from earlier QA rounds and earlier \
+stories stay in the product. A criterion whose expected value accumulates — a \
+balance, a total, a count, a list of records, "no records yet" — is written \
+relative to a starting value QA reads first: QA reads it through the same \
+observable, performs the example's sequence, and expects the start plus the \
+change the example shows, in the example's reply wording. An absolute value \
+fails every retest and every later story's regression run on a correct \
+product. A worked line:
+
+    - Telegram: send "/balance" and note the starting balance, send "/income 5000" and \
+"кофе 300"; "/balance" then replies "Баланс: <start + 4700> ₽" (requirement balance)
+
+A reply that does not depend on earlier records keeps its exact wording, as above.
+
 **Return an undefined input; never narrow it.** Read each must-requirement \
 against its usage examples and the limitations. When the requirement covers an \
 input the user sends, and neither its examples nor a limitation settle a form of \

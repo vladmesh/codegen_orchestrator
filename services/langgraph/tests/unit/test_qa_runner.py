@@ -56,6 +56,29 @@ class TestBuildQAPrompt:
         )
         assert "without both quotes, is\nnot a valid failed check" in prompt
 
+    def test_accumulated_state_is_judged_as_a_change_from_the_observed_start(self):
+        """QA's earlier records stay in the product, so a balance is judged as a change."""
+        prompt = build_qa_prompt(
+            acceptance_criteria="- после дохода 5000 и расхода 300 /balance отвечает 4700",
+            deployed_url="https://bot.example.com",
+        )
+        flat = " ".join(prompt.split())
+
+        assert "## Accumulated state" in prompt
+        assert 'a balance, a total, a count, a list of records, "no records yet"' in flat
+        assert "First read the starting value through the same observable" in flat
+        assert "Perform the criterion's sequence." in flat
+        assert "is met when the balance grew by 4700 from the observed start" in flat
+        assert "the reply keeps the criterion's wording form" in flat
+        assert "names the observed starting value" in flat
+        assert "`expected: /balance отвечает 14100 (start 9400 + 4700); received: 9400`" in flat
+        assert "A starting value you cannot read makes the check unverifiable" in flat
+        assert "cause `qa_capability`" in flat and "`qa_access`" in flat
+        assert "is still matched exactly as the criterion words it" in flat
+        # The write prohibition and the one identity are unchanged.
+        assert "You cannot write to the application's data, and must not try." in prompt
+        assert "telegram_id=8202532144" in prompt
+
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- Telegram: /start responds with welcome",

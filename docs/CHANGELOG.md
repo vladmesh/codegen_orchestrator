@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Every engineering run's TASK.md quotes the planning task's criteria and the repository's QA checklist verbatim,
   and a failed QA check's detail quotes expected and received values, so fix workers never guess the wording.
+- QA reads an accumulating value (balance, count, list) first and judges the change, and the architect writes
+  such criteria relative to that start, since QA's one identity keeps its earlier records.
 
 ## 2026-09-16
 
