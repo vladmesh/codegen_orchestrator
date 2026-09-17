@@ -370,6 +370,10 @@ class LanggraphAPIClient(InternalAPIClient):
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})
         return [TaskDTO.model_validate(t) for t in resp.json()]
 
+    async def get_task(self, task_id: str) -> TaskDTO:
+        resp = await self.request("GET", f"tasks/{task_id}")
+        return TaskDTO.model_validate(resp.json())
+
     async def get_task_events(self, task_id: str) -> list[TaskEventDTO]:
         resp = await self.request("GET", f"tasks/{task_id}/events")
         return [TaskEventDTO.model_validate(e) for e in resp.json()]

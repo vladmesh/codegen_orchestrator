@@ -242,7 +242,7 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 2. Mounts workspace volume: `/data/workspaces/{repo_id}/ → /workspace`
 3. Worker-manager creates/checks out `story/{story_id}` branch in the workspace
 4. Project is already scaffolded — code, venv, git all ready
-5. Writes `TASK.md` into `/workspace/TASK.md` (task description + acceptance criteria)
+5. Writes `TASK.md` into `/workspace/TASK.md` (task description, the planning task's acceptance criteria and the primary repository's post-deploy QA checklist, both verbatim; the engineering consumer reads them for every producer)
 
 **Each task** (including first):
 1. Claude Code is invoked with a one-line redirect: `claude -p "Read TASK.md"` (full task stays in file)

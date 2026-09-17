@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-17
+
+- Every engineering run's TASK.md quotes the planning task's criteria and the repository's QA checklist verbatim,
+  and a failed QA check's detail quotes expected and received values, so fix workers never guess the wording.
+
 ## 2026-09-16
 
 - The owner-grant deploy carries its story and a storyless commit deploy seeds the project's latest confirmed
