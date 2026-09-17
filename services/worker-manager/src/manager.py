@@ -30,6 +30,7 @@ from shared.redis import decode_redis_fields, decode_redis_value
 from . import garbage_collector as gc, git_ops, qa_egress, workspace as workspace_mod
 from .config import settings
 from .container_config import TRANSCRIPT_MOUNT, WorkerContainerConfig
+from .creation_failure import mark_worker_creation_step, worker_creation_failure_reason
 from .docker_ops import DockerClientWrapper
 from .executor_diagnostics import ExecutorDiagnostics
 from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
@@ -346,7 +347,10 @@ class WorkerManager:
 
     async def _fail_acquired_worker(self, worker_id: str, exc: Exception) -> None:
         """Publish terminal state and durable teardown intent for an acquired worker."""
-        await self.redis.set(f"worker:error:{worker_id}", str(exc))
+        # The reason, not `str(exc)`: an exception that stringifies to nothing —
+        # a bare timeout is the common one — would otherwise publish an empty
+        # error to the only place the spawner can read one.
+        await self.redis.set(f"worker:error:{worker_id}", worker_creation_failure_reason(exc))
         evidence = EngineeringExecutionEvidence(
             execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
             infrastructure_refusal=EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED,
@@ -735,6 +739,10 @@ class WorkerManager:
         # fence, or a cleanup command. A terminal status still tells the early-
         # ACKed caller to stop polling without manufacturing teardown state.
         held_project_id: str | None = None
+        # The step this creation is in. It is the only thing that says *where* a
+        # failure happened once the command has been ACKed, and an exception
+        # whose message is empty carries nothing else.
+        step = "validate_request"
         try:
             network_name, allow_host_network, factory_api_key = (
                 self._validate_worker_creation_request(
@@ -756,11 +764,13 @@ class WorkerManager:
             # but touches no workspace of it, so it neither takes the lock nor is
             # blocked by one — its ownership is a record, not a claim.
             if not is_qa_worker:
+                step = "find_developer_workspace"
                 workspace_path = await self._find_developer_workspace(project_id, repo_id)
 
                 # Take the project and, with it, stamp ownership — early, so the
                 # spawner gets worker_id before the image build, and long before
                 # anything can produce a container.
+                step = "acquire_workspace_lock"
                 held_project_id = await self._acquire_workspace_lock(
                     worker_id,
                     ownership,
@@ -772,6 +782,7 @@ class WorkerManager:
                 # A QA executor takes no lock, so nothing gates its ownership:
                 # it is stamped as soon as this is known to be a worker that
                 # will exist, and still before any container of it does.
+                step = "stamp_ownership"
                 await self._stamp_ownership(
                     worker_id,
                     ownership,
@@ -780,6 +791,7 @@ class WorkerManager:
                     worker_type=worker_type,
                 )
         except Exception as exc:
+            mark_worker_creation_step(exc, step)
             # Acquisition is the only thing in the block that takes anything,
             # and it either succeeded or withdrew what it wrote — so the release
             # path is asked with what was actually acquired, not assumed.
@@ -794,6 +806,7 @@ class WorkerManager:
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         try:
+            step = "build_image"
             image_tag = await self.ensure_or_build_image(
                 capabilities=capabilities,
                 base_image=base_image,
@@ -830,6 +843,7 @@ class WorkerManager:
             # told about the proxy is a convenience for its CLI — the boundary
             # is the internal network it is about to be attached to.
             if is_qa_worker:
+                step = "establish_qa_egress"
                 egress = await qa_egress.establish(
                     self.docker,
                     worker_id=worker_id,
@@ -857,6 +871,7 @@ class WorkerManager:
             )
             volumes = config.to_volume_mounts()
 
+            step = "create_container"
             container_id = await self.create_worker(
                 worker_id=worker_id,
                 image=image_tag,
@@ -891,8 +906,10 @@ class WorkerManager:
             if repo_id:
                 await self.redis.hset(f"worker:meta:{worker_id}", "repo_id", repo_id)
 
+            step = "checkout_branch" if branch else "prepare_worker_checkout"
             await self._prepare_worker_checkout(container_id, worker_id, repo_id, env_vars, branch)
 
+            step = "inject_worker_materials"
             await self._inject_worker_materials(
                 container_id, worker_id, agent, instructions, task_content
             )
@@ -913,11 +930,17 @@ class WorkerManager:
             # or QA setup step fails.  Do not erase the only ownership record
             # or free its checkout here: `delete_worker` is the teardown owner
             # and releases both only after Docker confirms removal.
+            reason = worker_creation_failure_reason(mark_worker_creation_step(exc, step))
             if is_qa_worker:
-                logger.warning("qa_worker_creation_failed", worker_id=worker_id, error=str(exc))
+                logger.warning(
+                    "qa_worker_creation_failed", worker_id=worker_id, error=reason, step=step
+                )
             else:
                 logger.warning(
-                    "developer_worker_creation_failed", worker_id=worker_id, error=str(exc)
+                    "developer_worker_creation_failed",
+                    worker_id=worker_id,
+                    error=reason,
+                    step=step,
                 )
             await self._fail_acquired_worker(worker_id, exc)
             raise

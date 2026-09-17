@@ -970,6 +970,12 @@ compare-deletes only the unchanged binding. A failed publish, incomplete
 removal, or replacement owner remains retryable and blocks handoff. Both
 `complete_stories` PR-review routes and terminal reconciliation use this same
 order before transition or next-story eligibility.
+Canonical teardown also unbinds the story itself: `delete_worker` compare-deletes
+the `story:workers` entry that still names the worker it is removing, before it
+deletes that worker's status and metadata. Reuse requires the same evidence from
+the other side — a binding whose `worker:status:<id>` and `worker:meta:<id>` are
+both absent names a removed worker, so the registry evicts it and the caller
+spawns. A present but unrecognised status stays inconclusive and is still reused.
 
 The owner-fenced `workspace:lock:<project>` is repaired during create only when
 its worker metadata names a story and an authenticated internal API read proves

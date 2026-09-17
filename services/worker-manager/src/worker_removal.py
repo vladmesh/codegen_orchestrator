@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
+from redis.exceptions import WatchError
 import structlog
 
 from shared.contracts.queues.worker import WorkerOwnership
@@ -19,6 +20,7 @@ from shared.contracts.worker_evidence import (
     secret_env_values,
 )
 from shared.diagnostics import redact_diagnostic
+from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
 
 from . import qa_egress, workspace as workspace_mod
@@ -277,6 +279,47 @@ class WorkerRemoval:
         await self.redis.hset(key, evidence.worker_id, evidence.model_dump_json())
         await self.redis.expire(key, settings.WORKER_REMOVAL_EVIDENCE_TTL_SECONDS)
 
+    async def _clear_story_binding(self, worker_id: str, story_id: str | None) -> None:
+        """Drop this worker's story binding as part of its teardown.
+
+        The story registry is the one pointer that outlives the container, and
+        this method is the only place that knows the worker is going away:
+        `worker:status:<id>` and `worker:meta:<id>` are deleted just below, so
+        once this returns there is nothing left for the registry to learn the
+        worker is dead from. A binding kept past its worker is what sends the
+        next engineering attempt to an input stream with no consumer.
+
+        Compare-and-delete, because a newer worker may already have taken the
+        story over while this teardown ran; that binding belongs to the live
+        worker and is not ours to remove.
+        """
+        if not story_id:
+            return
+        try:
+            async with self.redis.pipeline() as pipe:
+                await pipe.watch(STORY_WORKERS_KEY)
+                bound = await pipe.hget(STORY_WORKERS_KEY, story_id)
+                if isinstance(bound, bytes):
+                    bound = bound.decode()
+                if bound != worker_id:
+                    await pipe.unwatch()
+                    logger.info(
+                        "story_worker_binding_not_ours",
+                        worker_id=worker_id,
+                        story_id=story_id,
+                        bound_worker_id=bound,
+                    )
+                    return
+                pipe.multi()
+                pipe.hdel(STORY_WORKERS_KEY, story_id)
+                await pipe.execute()
+        except WatchError:
+            # The binding was rewritten between the read and the delete, which
+            # means it now names a worker that is not this one.
+            logger.info("story_worker_binding_not_ours", worker_id=worker_id, story_id=story_id)
+            return
+        logger.info("story_worker_binding_cleared", worker_id=worker_id, story_id=story_id)
+
     async def delete_worker(self, worker_id: str, reason: str | None = None) -> None:
         """Stop and remove a worker, its dev network, workspace, and Redis keys."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
@@ -410,6 +453,11 @@ class WorkerRemoval:
                     await self.redis.expire(failure_key, 48 * 3600)
                 elif reason == "completed":
                     await self.redis.delete(failure_key)
+
+        # Before the keys whose absence nobody can interpret: a story bound to
+        # this worker is unbound here, while it is still known that this is a
+        # removal and which worker it is of.
+        await self._clear_story_binding(worker_id, meta.get("story_id") if meta else None)
 
         keys_to_delete = [
             f"worker:status:{worker_id}",

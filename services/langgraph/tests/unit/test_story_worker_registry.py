@@ -86,6 +86,52 @@ class TestStoryWorkerRegistry:
         mock_redis.xadd.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_deleted_worker_binding_is_evicted(self, mock_redis):
+        """No status and no meta is a removed worker, not an inconclusive read."""
+        mock_redis.hget.side_effect = [b"dev-deleted", None]
+        mock_redis.hgetall.return_value = {}
+        mock_redis.eval.return_value = 1
+
+        result = await get_story_worker(mock_redis, "story-1")
+
+        assert result is None
+        mock_redis.eval.assert_awaited_once()
+        # Nothing is left to delete, so teardown is not asked for a second time.
+        mock_redis.xadd.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worker_with_meta_but_no_status_is_still_returned(self, mock_redis):
+        """A worker mid-creation has its metadata but not yet a status."""
+        mock_redis.hget.side_effect = [b"dev-starting", None]
+        mock_redis.hgetall.return_value = {b"project_id": b"project-1"}
+
+        result = await get_story_worker(mock_redis, "story-1")
+
+        assert result == "dev-starting"
+        mock_redis.eval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_status_stays_inconclusive(self, mock_redis):
+        """A status this version cannot read is not proof the worker is gone."""
+        mock_redis.hget.side_effect = [b"dev-unknown", b"SOMETHING_NEW"]
+
+        result = await get_story_worker(mock_redis, "story-1")
+
+        assert result == "dev-unknown"
+        mock_redis.eval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_replacement_wins_dead_binding_eviction_race(self, mock_redis):
+        """Compare-and-delete never removes a binding a newer worker just took."""
+        mock_redis.hget.side_effect = [b"dev-deleted", None, b"dev-new", b"RUNNING"]
+        mock_redis.hgetall.return_value = {}
+        mock_redis.eval.return_value = 0
+
+        result = await get_story_worker(mock_redis, "story-1")
+
+        assert result == "dev-new"
+
+    @pytest.mark.asyncio
     async def test_set_story_worker(self, mock_redis):
         """Stores worker_id for story."""
         await set_story_worker(mock_redis, "story-1", "dev-abc-12345678")

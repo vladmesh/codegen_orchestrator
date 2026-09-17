@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-17
 
+- Worker teardown unbinds the story it held, and the registry evicts a binding whose worker has neither status
+  nor metadata left, so a deleted worker is never handed to the next engineering attempt.
+- A worker creation that fails after the early ACK records the exception type and the step it failed in, so a
+  bare timeout no longer logs an empty reason.
 - QA reports a check the transport refused (an empty Telegram message) as not applicable, and the runner keeps it
   only against its own recorded refusal, so a passing bot is no longer quarantined as `qa_checks_unverifiable`.
 - Every engineering run's TASK.md quotes the planning task's criteria and the repository's QA checklist verbatim,
