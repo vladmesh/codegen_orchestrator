@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-17
 
+- QA reports a check the transport refused (an empty Telegram message) as not applicable, and the runner keeps it
+  only against its own recorded refusal, so a passing bot is no longer quarantined as `qa_checks_unverifiable`.
 - Every engineering run's TASK.md quotes the planning task's criteria and the repository's QA checklist verbatim,
   and a failed QA check's detail quotes expected and received values, so fix workers never guess the wording.
 - QA reads an accumulating value (balance, count, list) first and judges the change, and the architect writes

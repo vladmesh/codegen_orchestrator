@@ -1641,6 +1641,13 @@ description and fingerprint and records the rest as `unverified_checks` evidence
 a FAILED run with no `product` check parks as `qa_checks_unverifiable`, a
 `QA_HARNESS_BLOCKERS` member that is operator-recheckable.
 
+A verdict check may instead be `{"name", "not_applicable": true, "detail"}`, with no
+`pass` or `cause`: an input the transport refused, such as an empty Telegram
+message. It never counts toward `pass` and is never a failed check, but the runner
+keeps it only when paired with a distinct refusal this run's workspace recorded
+(`QAWorkspace.transport_refusals`); an unpaired one becomes a failed `qa_capability`
+check. The prompt forbids the form for an acceptance-criterion check.
+
 ## Source map
 
 | Area | Source of truth |

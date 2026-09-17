@@ -107,6 +107,9 @@ def _bot_section(bot_username: str) -> str:
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
   sent the message, you have no result to report. Do not substitute code reading.
+  The one exception is a call that answers `not_applicable`: the transport
+  refused the input before it reached the bot, so report that check in the
+  not-applicable form, never as failed (see "Not applicable").
   A check that needs a photo upload or another action the calls above cannot
   send fails with cause `qa_capability`, and a bot that refuses the QA account
   fails with cause `qa_access`; neither is a product failure.
@@ -157,6 +160,7 @@ After storing the report, write this JSON to a file and submit it with
 and only after every check is done.
 {_RESULT_JSON}
 Top-level `pass` is false whenever any check failed, whatever its cause.
+{_NOT_APPLICABLE_RULE}
 {_FAILED_DETAIL_RULE}
 {_ACCUMULATED_STATE_RULE}
 {_FAILURE_CAUSE_RULE}
@@ -172,10 +176,24 @@ _RESULT_JSON = """\
   "checks": [
     {"name": "passed check", "pass": true, "detail": "one-line summary"},
     {"name": "failed check", "pass": false, "detail": "one-line summary",
-     "cause": "product" | "qa_capability" | "qa_access"}
+     "cause": "product" | "qa_capability" | "qa_access"},
+    {"name": "not applicable check", "not_applicable": true, "detail": "one-line summary"}
   ],
   "summary": "brief summary"
 }
+"""
+
+
+_NOT_APPLICABLE_RULE = """\
+## Not applicable
+A check you added beyond the acceptance criteria whose input the transport
+refused — a call answered `not_applicable` — is reported in the not-applicable
+form: `name`, `"not_applicable": true` and a `detail` quoting that answer, with
+no `pass` and no `cause`. A not-applicable check is not a failed check and does
+not make top-level `pass` false. Use the form only after a call answered
+`not_applicable`: the runner accepts it only where it recorded that refusal
+itself, and otherwise counts the check as failed with cause `qa_capability`.
+An acceptance-criterion check is never not applicable: it passes or fails.
 """
 
 
@@ -328,7 +346,9 @@ CRITICAL RULES:
 2. Every check from acceptance criteria — execute and verify; for a value that
    accumulates, read its starting value first (see "Accumulated state")
 3. {_container_checklist_item(established_facts)}
-4. Edge cases — empty input, missing parameters, invalid values
+4. Edge cases you add beyond the acceptance criteria — missing parameters,
+   invalid values — using only inputs the transport can deliver. Over Telegram,
+   never send an empty or whitespace-only message: Telegram cannot carry one.
 
 {_report_section()}
 In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste the actual
