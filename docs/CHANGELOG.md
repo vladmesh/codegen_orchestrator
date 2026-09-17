@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-17
 
+- The worker manager's own git runs no product hook (`-c core.hooksPath=/dev/null` per command), cuts a new
+  story branch from the freshly fetched default branch, and fails worker creation when the upstream was not set.
 - Worker teardown unbinds the story it held, and the registry evicts a binding whose worker has neither status
   nor metadata left, so a deleted worker is never handed to the next engineering attempt.
 - A worker creation that fails after the early ACK records the exception type and the step it failed in, so a
