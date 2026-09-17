@@ -88,6 +88,23 @@ class TestUsageExampleDirectives:
         assert "never stores input it does not recognize as a different kind of record" in prompt
         assert "it asks the user back what they meant" in prompt
 
+    def test_accumulated_state_is_judged_from_a_starting_value_qa_reads_first(self):
+        prompt = self._prompt()
+        assert "Judge accumulated state from the value QA reads first." in prompt
+        assert "a balance, a total, a count, a list of records" in prompt
+        assert "is written relative to a starting value QA reads first" in prompt
+        assert "in the example's reply wording" in prompt
+        assert (
+            '- Telegram: send "/balance" and note the starting balance, send "/income 5000" '
+            'and "кофе 300"; "/balance" then replies "Баланс: <start + 4700> ₽" '
+            "(requirement balance)"
+        ) in SYSTEM_PROMPT
+
+    def test_a_stateless_reply_keeps_its_exact_wording(self):
+        prompt = self._prompt()
+        assert "A reply that does not depend on earlier records keeps its exact wording" in prompt
+        assert "Keep the user's words: QA sends the message the example shows" in prompt
+
     def test_the_workflow_points_the_criteria_step_at_the_usage_examples(self):
         prompt = self._prompt()
         step = prompt[prompt.find("7. Call `update_acceptance_criteria`") :]

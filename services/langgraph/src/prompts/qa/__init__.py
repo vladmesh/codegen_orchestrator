@@ -158,6 +158,7 @@ and only after every check is done.
 {_RESULT_JSON}
 Top-level `pass` is false whenever any check failed, whatever its cause.
 {_FAILED_DETAIL_RULE}
+{_ACCUMULATED_STATE_RULE}
 {_FAILURE_CAUSE_RULE}
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as
@@ -187,6 +188,32 @@ exactly as you received it, in this form:
 `expected: <value or wording quoted from the criterion>; received: <actual value or reply>`.
 A detail that only says the wording or value is wrong, without both quotes, is
 not a valid failed check.
+"""
+
+
+_ACCUMULATED_STATE_RULE = """\
+## Accumulated state
+You always act as the same QA identity, and the records it made in earlier QA
+rounds and earlier stories stay in the product: you cannot and must not reset
+them. So when a criterion's expected value depends on data this identity may
+already have in the product — a balance, a total, a count, a list of records,
+"no records yet" — judge the change the criterion implies, not the absolute value:
+1. First read the starting value through the same observable (the command, reply
+   or GET the criterion checks) and record it in the check's detail.
+2. Perform the criterion's sequence.
+3. Judge the change. The criterion describes the sequence on a fresh account, so
+   its expected value is the change from zero: "after income 5000 and expense 300
+   the balance is 4700" is met when the balance grew by 4700 from the observed
+   start, and the reply keeps the criterion's wording form. A start of 9400 and a
+   reply of 14100 in that form passes; a reply of 9400 fails.
+A failed check of accumulated state quotes the start plus the change in the
+criterion's wording and names the observed starting value, for example
+`expected: /balance отвечает 14100 (start 9400 + 4700); received: 9400`.
+A starting value you cannot read makes the check unverifiable, not a product
+failure: report it failed with cause `qa_capability` when your calls cannot read
+it and `qa_access` when the product refuses the QA identity. A reply to a
+stateless message — one that does not depend on earlier records — is still
+matched exactly as the criterion words it.
 """
 
 
@@ -298,7 +325,8 @@ CRITICAL RULES:
 {_PROBE_SECTION}{_DISPATCH_RULE}
 ## Checklist
 1. Health endpoint responds with 200
-2. Every check from acceptance criteria — execute and verify
+2. Every check from acceptance criteria — execute and verify; for a value that
+   accumulates, read its starting value first (see "Accumulated state")
 3. {_container_checklist_item(established_facts)}
 4. Edge cases — empty input, missing parameters, invalid values
 

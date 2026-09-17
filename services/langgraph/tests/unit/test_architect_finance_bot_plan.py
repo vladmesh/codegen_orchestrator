@@ -20,6 +20,8 @@ import pytest
 
 from src.agents.architect.tools import reset_task_chain
 from tests.unit.architect_finance_bot import (
+    BALANCE_REPLY,
+    BALANCE_SEQUENCE,
     EXPENSE_PHOTO,
     EXPENSE_TEXT,
     INCOME,
@@ -60,6 +62,7 @@ class _Plan:
     return_income: bool
     drop_photo_criterion: bool = False
     ask_back: bool = True
+    absolute_balance: bool = False
 
 
 def _script(api: FinanceBotApi, plan: _Plan) -> list[AIMessage]:
@@ -124,6 +127,19 @@ def _script(api: FinanceBotApi, plan: _Plan) -> list[AIMessage]:
                     f"(requirement {EXPENSE_PHOTO})"
                 )
             continue
+        if example.user_sends == BALANCE_SEQUENCE:
+            if plan.absolute_balance:
+                criteria.append(
+                    '- Telegram: after "/income 5000" and "кофе 300", "/balance" replies '
+                    f'"{BALANCE_REPLY}" (requirement {INCOME})'
+                )
+            else:
+                criteria.append(
+                    '- Telegram: send "/balance" and note the starting balance, send '
+                    '"/income 5000" and "кофе 300"; "/balance" then replies '
+                    f'"Баланс: <start + 4700> ₽" (requirement {INCOME})'
+                )
+            continue
         sent = example.user_sends.split("«")[-1].rstrip("»")
         criteria.append(
             f'- Telegram: sending "{sent}" replies "{example.product_answers}" '
@@ -175,6 +191,9 @@ async def test_a_brief_that_settles_free_text_income_returns_nothing(income_free
     assert_plan_uses_exactly_the_confirmed_examples(api)
     assert_the_owner_is_told_what_was_returned(api)
     assert api.redis.published == []
+    # The 2026-09-17 balance check is written against the balance QA reads first.
+    balance = [line for line in api.criteria.splitlines() if "/balance" in line]
+    assert len(balance) == 1 and "<start + 4700>" in balance[0], api.criteria
 
 
 @pytest.mark.asyncio
@@ -198,6 +217,12 @@ async def test_a_brief_that_settles_free_text_income_returns_nothing(income_free
             _Plan(return_income=True, ask_back=False),
             "does not carry the ask-back rule",
             id="forgets-the-ask-back-rule",
+        ),
+        pytest.param(
+            "example",
+            _Plan(return_income=False, absolute_balance=True),
+            "not judged from a starting value",
+            id="checks-an-absolute-balance",
         ),
     ],
 )
