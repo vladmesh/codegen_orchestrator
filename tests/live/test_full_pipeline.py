@@ -13,10 +13,18 @@ Exercises the entire path from project creation to a live /health response:
 
 The noop path stays deterministic. The LLM path exercises the product route where a
 real developer worker changes code before CI, merge, deploy, health, and QA.
+
+The deterministic path is level-1: a Telegram-bot product with modules `backend`
+and `tg_bot`, its bot token bound through the product route, and an engineering
+task per change set that the merged scripted runner applies. What it deploys
+therefore carries a backend endpoint, a product-scoped setting and a Telegram
+command handler that no scaffolded tree has — and the assertions below ask the
+deployment for them, not the repository.
 """
 
 import os
 
+from level1_change_set import LEVEL1_SETTING_KEY
 from live_harness import cleanup_guard
 from pipeline_helpers import (
     DEPLOY_OUTCOME_TIMEOUT,
@@ -32,16 +40,19 @@ from pipeline_helpers import (
     api_client_as_unscoped_observer,
     cleanup_all,
     configured_qa_executor,
+    create_level1_bot_project,
     create_llm_backend_project,
-    create_noop_project,
     create_story_and_task,
     dump_debug,
     ensure_test_user,
     evidence_pass,
     po_input_cursor,
     record_deployed_image_tags,
+    record_engineering_failure_steps,
     record_env_contract,
     record_health_probe,
+    record_level1_product_evidence,
+    record_level1_scripted_path,
     record_noop_settlement_evidence,
     record_qa_run,
     record_story_branch_ahead,
@@ -234,9 +245,18 @@ async def _pipeline_phases(
             api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
         )
     if ctx.get("task_status") != TaskStatus.DONE:
+        # A failed scripted step has a name; the run says which one before it
+        # stops, so its evidence reads "setup" rather than only "engineering".
+        record_engineering_failure_steps(ctx)
         yield ctx
         dump_debug(ctx, f"{debug_prefix}-engineering")
         return
+
+    # Both engineering tasks are settled, so what the story branch carries is
+    # settled too: this is where the scripted path is told apart from the
+    # runner's empty-commit fallback, one GitHub comparison, before any wait.
+    if ctx.get("level1_change_set_paths"):
+        record_level1_scripted_path(ctx)
 
     # The deploy that follows exists only if engineering committed something.
     # Task-done is the first moment that is settled and this is the last one
@@ -282,6 +302,10 @@ async def _pipeline_phases(
         # failure behind it, so an orchestrator that could not reach the
         # deployment is a stated read rather than an absent one.
         await record_health_probe(ctx, ctx["deployed_url"], expect_marker=ctx.get("health_marker"))
+        # The level-1 product facts are read from the running deployment, here,
+        # because the noop lifecycle undeploys it a few phases later.
+        if ctx.get("level1_change_set_paths"):
+            await record_level1_product_evidence(ctx)
         # Before any QA attempt: the deployed images must be this commit's. A
         # successful deploy Run and an HTTP 200 are both compatible with the
         # host running an older image, and QA is where that shows up — as a
@@ -319,11 +343,11 @@ async def _pipeline_phases(
 
 @pytest_asyncio.fixture(loop_scope="module", scope="module")
 async def pipeline():
-    """Full noop pipeline: scaffold → engineering → deploy."""
+    """The level-1 Telegram-bot product: scaffold → scripted developer → deploy."""
     async for ctx in _pipeline_run(
-        create_noop_project,
+        create_level1_bot_project,
         engineering_timeout=ENGINEERING_TIMEOUT,
-        debug_prefix="full-noop",
+        debug_prefix="full-level1",
         lifecycle_undeploy=True,
     ):
         yield ctx
@@ -341,8 +365,116 @@ async def llm_pipeline():
         yield ctx
 
 
+def _no_probe(pipeline: dict, name: str) -> str:
+    """Why a deployed-product probe is missing — a failure, never a skip.
+
+    The probes run while the deployment is up. If the run never got that far the
+    product assertions cannot pass, and saying which phase ended the run is more
+    useful than a KeyError and far more useful than a skip that would report a
+    failed deploy as an untested product.
+    """
+    return (
+        f"{name} was never recorded: engineering ended {pipeline.get('task_status')}, "
+        f"deploy_outcome={pipeline.get('deploy_outcome')}, "
+        f"application={pipeline.get('final_app_status')}"
+    )
+
+
 class TestFullPipeline:
-    """THE MEGA TEST: project → scaffold → noop worker → CI → deploy → health check."""
+    """THE MEGA TEST: level-1 bot product → scripted developer → CI → deploy → QA."""
+
+    async def test_the_product_is_a_two_module_bot_with_its_token_bound(self, pipeline):
+        """Modules and binding are one decision: `tg_bot` is why the token is required."""
+        assert pipeline["modules"] == ["backend", "tg_bot"]
+        binding = pipeline.get("bot_binding")
+        assert binding and binding["status"] == "ok", binding
+        assert binding["bot_username"], binding
+        # The route runs the whole chain server-side; every layer it reports
+        # must have passed, including the external-poller probe that is the
+        # other half of "this run has the bot to itself".
+        assert [check["name"] for check in binding["checks"] if not check["passed"]] == []
+
+    async def test_the_worker_took_the_scripted_path(self, pipeline):
+        """Both tasks carried a change set, and the branch carries their changes.
+
+        The runner falls back to an empty commit when a task document holds no
+        change-set block, and an empty commit still makes the branch ahead of
+        main — so "ahead by two" proves nothing. The branch's own diff does.
+        """
+        assert pipeline.get("level1_scripted_path_error") is None, pipeline.get(
+            "level1_scripted_path_error"
+        )
+        scripted = pipeline.get("level1_scripted_path")
+        assert scripted, (
+            "no scripted-path evidence was recorded; engineering ended "
+            f"{pipeline.get('task_status')}"
+        )
+        assert scripted["paths_missing_from_diff"] == []
+        assert len(scripted["change_set_paths"]) >= 5
+
+    async def test_the_deployed_backend_answers_the_endpoint_the_change_set_added(self, pipeline):
+        """Honest because the marker is this run's and the kit serves no such route.
+
+        `GET /level1/marker` does not exist in the pinned template, and the
+        marker is minted per run, so neither a scaffolded file nor a cached image
+        nor an earlier run can answer with it.
+        """
+        assert pipeline.get("level1_endpoint_probe_error") is None, pipeline.get(
+            "level1_endpoint_probe_error"
+        )
+        probe = pipeline.get("level1_endpoint_probe")
+        assert probe, _no_probe(pipeline, "level1_endpoint_probe")
+        assert probe["status_code"] == 200, probe
+        assert probe["marker"] == pipeline["level1_marker"], probe
+
+    async def test_the_product_scoped_setting_is_registered_on_the_deployment(self, pipeline):
+        """Honest because the registry is generated, not written by the change set.
+
+        The change set edits `services/backend/manifest.yaml` and nothing else;
+        `SETTINGS_SCHEMAS` is produced from it by `framework.generate` during
+        `make setup`, and the offline gate test asserts the change set never
+        writes a generated file. So a declaration that reaches this payload
+        reached it through the product's own generator, on the deployed image —
+        and its declared default is this run's marker, which nothing else has.
+        """
+        probe = pipeline.get("level1_endpoint_probe")
+        assert probe, _no_probe(pipeline, "level1_endpoint_probe")
+        assert probe["setting_key"] == LEVEL1_SETTING_KEY, probe
+        declared = probe["declared_settings"]
+        # Exactly one declared key carries this run's marker as the value the
+        # manifest declares for it. The registry key is spelled by the
+        # generator, not by the change set, so the assertion names the local key
+        # as a suffix rather than assuming how the generator qualifies it — and
+        # "exactly one" is what keeps that from being a weaker claim.
+        assert len(probe["settings_declaring_marker"]) == 1, declared
+        assert probe["settings_declaring_marker"][0].endswith(LEVEL1_SETTING_KEY), declared
+
+    async def test_the_deployed_bot_registered_the_command_handler(self, pipeline):
+        """Honest because Telegram is answering for the running bot, not for us.
+
+        The deployed bot publishes its command list with `setMyCommands` in its
+        own post-init, using the token this run bound, and the description
+        carries this run's marker — so a menu an earlier run left on the same bot
+        cannot satisfy this, and nothing but the deployed image could have
+        written it. It is the cheapest honest probe available: reading the image
+        out of the registry would need a pull and a credential, and exercising
+        the handler would need a second Telegram identity the harness has not
+        got.
+        """
+        assert pipeline.get("level1_command_menu_probe_error") is None, pipeline.get(
+            "level1_command_menu_probe_error"
+        )
+        probe = pipeline.get("level1_command_menu_probe")
+        assert probe, _no_probe(pipeline, "level1_command_menu_probe")
+        assert probe["status_code"] == 200, probe
+        assert {
+            "command": probe["expected_command"],
+            "description": probe["expected_description"],
+        } in probe["commands"], probe
+
+    async def test_no_engineering_step_failed(self, pipeline):
+        """A green run names no failed step; a red one names which one it was."""
+        assert pipeline.get("engineering_failure_steps", {}) == {}
 
     async def test_project_active(self, pipeline):
         """Project status should be 'active' after successful scaffold + deploy."""

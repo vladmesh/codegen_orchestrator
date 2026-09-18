@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -30,6 +31,12 @@ from brief_telemetry import (
 )
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
+from level1_change_set import (
+    LEVEL1_COMMAND,
+    LEVEL1_ENDPOINT_PATH,
+    build_level1_change_sets,
+    level1_command_description,
+)
 from live_harness import (
     TERMINAL_RUN_STATUSES,
     CleanupError,
@@ -206,6 +213,32 @@ NOOP_TASK_TITLE = "Noop implementation task"
 NOOP_TASK_DESCRIPTION = "Empty commit via NoopRunner - pipeline test"
 NOOP_FOLLOWUP_TASK_TITLE = "Noop follow-up integration task"
 NOOP_FOLLOWUP_TASK_DESCRIPTION = "Second empty NoopRunner commit after the first task"
+
+# The product shape every suite but level-1 has always created.
+BACKEND_ONLY_MODULES = ["backend"]
+
+# Level-1: a Telegram-bot product. `tg_bot` is what makes the bot token a
+# *required* user secret of the deploy (services/tg_bot/env.contract.yaml), so
+# this module list and the token binding below are one decision, not two.
+LEVEL1_MODULES = ["backend", "tg_bot"]
+LEVEL1_PROJECT_DESCRIPTION = "Pipeline E2E test - level-1 Telegram bot product"
+LEVEL1_BACKEND_TASK_TITLE = "Level-1 marker endpoint and product setting"
+LEVEL1_BOT_TASK_TITLE = "Level-1 Telegram command handler"
+#: The stand environment secret holding the token of @mega_e2e_codegen_bot.
+#: One bot, one stand, so a run that cannot have it exclusively refuses to start.
+STAND_PRODUCT_BOT_TOKEN_ENV = "STAND_PRODUCT_BOT_TOKEN"  # noqa: S105 — a name, not a secret
+#: The secret key the binding route writes, and teardown drops again
+#: (services/api/src/utils/telegram_binding.py).
+TELEGRAM_TOKEN_SECRET_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 — a key name, not a secret
+#: The one route a bot token may reach a project through
+#: (services/api/src/routers/projects/telegram.py); the plain secret path
+#: refuses it on purpose (services/api/src/routers/projects/secrets.py).
+TELEGRAM_TOKEN_ROUTE = "/api/projects/{project_id}/telegram/token"  # noqa: S105
+#: How long the deployed bot is given to publish its command menu to Telegram
+#: after the deploy reports success. It happens in the bot's own post-init, so
+#: this is startup latency, not work.
+LEVEL1_COMMAND_MENU_TIMEOUT = 120
+LEVEL1_COMMAND_MENU_POLL_SECONDS = 5
 
 LLM_BACKEND_PROJECT_DESCRIPTION = (
     "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
@@ -953,6 +986,7 @@ async def create_pipeline_project(
     agent_type: str,
     task_title: str,
     task_description: str,
+    modules: list[str],
     detailed_spec: str | None = None,
 ) -> dict:
     """Create project + repository for one live pipeline variant. Returns ctx dict.
@@ -960,6 +994,11 @@ async def create_pipeline_project(
     This factory serves the scaffold, engineering and full pipelines alike, so it
     cannot tell whether this run will reach a deploy — and it does not guess. The
     deploy stack is owned by ``own_deploy_ahead``, from the fact that decides it.
+
+    ``modules`` is required rather than defaulted: it decides which services the
+    scaffolder renders and therefore which environment contract the deploy has to
+    satisfy — a bot module brings a required user secret with it. A default here
+    would let a caller inherit a product shape it never asked for.
     """
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
@@ -970,7 +1009,7 @@ async def create_pipeline_project(
     manifest = OwnershipManifest(run_id=f"live-{uuid.uuid4().hex[:12]}")
     config = {
         "description": description,
-        "modules": ["backend"],
+        "modules": list(modules),
         "agent_type": agent_type,
     }
     if detailed_spec:
@@ -999,7 +1038,7 @@ async def create_pipeline_project(
         "repo_name": project_name,
         "manifest": manifest,
         "agent_type": agent_type,
-        "modules": ["backend"],
+        "modules": list(modules),
         "scaffold_task_description": task_description,
         "task_title": task_title,
         "task_description": task_description,
@@ -1032,7 +1071,106 @@ async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncC
         agent_type="noop",
         task_title=NOOP_TASK_TITLE,
         task_description=NOOP_TASK_DESCRIPTION,
+        modules=BACKEND_ONLY_MODULES,
     )
+
+
+class Level1RunRefused(RuntimeError):
+    """The level-1 run cannot start, and this says which precondition failed.
+
+    A refusal, never a skip: every reason this is raised for means the run would
+    have gone on to prove something it cannot prove — a bot product with no bot,
+    or a bot somebody else is already driving.
+    """
+
+
+def require_product_bot_token() -> str:
+    """The stand's product bot token, or a refusal naming what is missing.
+
+    Read at the very start of the run. The level-1 story deploys a Telegram-bot
+    product whose `tg_bot` module declares `TELEGRAM_BOT_TOKEN` as a *required*
+    user secret, so without it the deploy dead-ends in WAITING_FOR_USER_SECRET
+    forty minutes later and every product assertion after it is vacuous.
+    """
+    token = (os.getenv(STAND_PRODUCT_BOT_TOKEN_ENV) or "").strip()
+    if not token:
+        raise Level1RunRefused(
+            f"{STAND_PRODUCT_BOT_TOKEN_ENV} is not set, so the level-1 run has no bot to bind "
+            "to its product. It is a protected `stand` environment secret; "
+            ".github/workflows/stand-e2e.yml passes it to this suite for the level-1 suite only."
+        )
+    return token
+
+
+async def bind_product_bot_token(api: httpx.AsyncClient, ctx: dict, token: str) -> dict:
+    """Bind the stand's bot to this project, through the one route that may.
+
+    The route runs the whole validation chain server-side and answers with a
+    typed verdict, so this is also where "somebody is already polling this bot"
+    is detected: `_check_no_poller` probes `getUpdates` and a live long-poller
+    makes Telegram answer 409, which comes back as `poller_active`. That is a
+    refusal here rather than a second probe of our own — one asker, one answer.
+    """
+    route = TELEGRAM_TOKEN_ROUTE.format(project_id=ctx["project_id"])
+    response = await api.post(route, json={"token": token})
+    response.raise_for_status()
+    verdict = response.json()
+    # The verdict carries no token; the username and the check names are what a
+    # failed run needs to read afterwards.
+    ctx["bot_binding"] = {
+        "status": verdict["status"],
+        "reason_code": verdict.get("reason_code"),
+        "bot_username": verdict.get("bot_username"),
+        "checks": [
+            {"name": check["name"], "passed": check["passed"]}
+            for check in verdict.get("checks", [])
+        ],
+    }
+    if verdict["status"] != "ok":
+        raise Level1RunRefused(
+            f"{STAND_PRODUCT_BOT_TOKEN_ENV} was refused by {route}: "
+            f"{verdict.get('reason_code')} — {verdict['user_message']} "
+            f"(checks: {ctx['bot_binding']['checks']})"
+        )
+    ctx["bot_username"] = verdict["bot_username"]
+    return ctx["bot_binding"]
+
+
+async def create_level1_bot_project(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+) -> dict:
+    """Create the level-1 Telegram-bot product: two modules, a bot, two change sets.
+
+    Order matters and is the point. The token is demanded before anything is
+    created, so a stand without it spends nothing. The change sets are built
+    before the project, so a kit that moved under the pin refuses here rather
+    than in a worker container. The binding happens after the repository exists
+    — the route needs a primary repository to hang `bot_username` on — and
+    inside a cleanup guard, so a refused token leaves no project behind.
+    """
+    token = require_product_bot_token()
+    marker = new_health_marker()
+    change_sets = build_level1_change_sets(marker, resolve_template())
+
+    ctx = await create_pipeline_project(
+        api,
+        api_internal,
+        project_prefix=require_live_contour().pipeline,
+        description=LEVEL1_PROJECT_DESCRIPTION,
+        agent_type="noop",
+        task_title=LEVEL1_BACKEND_TASK_TITLE,
+        task_description=change_sets.backend_task_description(),
+        modules=LEVEL1_MODULES,
+    )
+    ctx["level1_marker"] = marker
+    ctx["level1_change_set_paths"] = change_sets.paths
+    ctx["followup_task_title"] = LEVEL1_BOT_TASK_TITLE
+    ctx["followup_task_description"] = change_sets.bot_task_description()
+    ctx["product_bot_token"] = token
+
+    async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
+        await bind_product_bot_token(api, ctx, token)
+    return ctx
 
 
 async def create_llm_backend_project(
@@ -1055,6 +1193,7 @@ async def create_llm_backend_project(
         agent_type=live_worker_agent_type(),
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=llm_backend_task_description(marker),
+        modules=BACKEND_ONLY_MODULES,
     )
     ctx["health_marker"] = marker
     ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
@@ -1128,11 +1267,27 @@ def resolve_template() -> tuple[str, str]:
     return repo, ref
 
 
+def registry_repository(repo_name: str, module: str) -> str:
+    """The registry repository one module's image is published to.
+
+    Derived the way the deploy's own resolver derives it from the environment
+    contract's ``<SERVICE>_IMAGE`` variable
+    (``services/langgraph/src/subgraphs/devops/secret_resolver.py``): the service
+    name, lowercased, with underscores turned into hyphens. `tg_bot` therefore
+    publishes to ``<repo>-tg-bot``, and teardown has to own that name to remove
+    it.
+    """
+    return f"{GITHUB_ORG}/{repo_name}-{module.lower().replace('_', '-')}"
+
+
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
     template_repo, template_ref = resolve_template()
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
-    ctx["manifest"].own("registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend")
+    # One registry repository per module: a two-module product publishes two
+    # images, and an unowned one is residue teardown never looks for.
+    for module in ctx["modules"]:
+        ctx["manifest"].own("registry_repository", registry_repository(ctx["repo_name"], module))
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
@@ -1141,7 +1296,10 @@ def trigger_scaffold(ctx: dict) -> None:
         "template_repo": template_repo,
         "template_ref": template_ref,
         "project_name": ctx["project_name"],
-        "modules": "backend",
+        # The module list this run's project was created with. It was hard-coded
+        # to "backend" while every caller asked for exactly that; a two-module
+        # product would otherwise have been scaffolded without its bot.
+        "modules": ",".join(ctx["modules"]),
         "task_description": ctx.get("scaffold_task_description", "Pipeline E2E test project"),
     }
     result = subprocess.run(
@@ -1456,8 +1614,11 @@ async def create_story_and_task(
     ctx["task_ids"] = [first_task_id]
     if linear_noop_tasks:
         second_task_id = await create_task(
-            title=NOOP_FOLLOWUP_TASK_TITLE,
-            description=NOOP_FOLLOWUP_TASK_DESCRIPTION,
+            # The second task of the level-1 story carries its own change set,
+            # so its text comes from the context that built it. Every other
+            # linear-noop suite keeps the empty-commit follow-up it has today.
+            title=ctx.get("followup_task_title", NOOP_FOLLOWUP_TASK_TITLE),
+            description=ctx.get("followup_task_description", NOOP_FOLLOWUP_TASK_DESCRIPTION),
             blocked_by_task_id=first_task_id,
         )
         ctx["second_task_id"] = second_task_id
@@ -3579,8 +3740,180 @@ async def wait_application_not_deployed(
     return None
 
 
+# ── Level-1 product probes ───────────────────────────────────────────────
+
+
+async def probe_level1_endpoint(ctx: dict) -> dict:
+    """Ask the deployed backend for the endpoint the change set added.
+
+    Why this is honest: the scaffolded kit serves no `/level1/marker`, and the
+    marker is minted for this run, so nothing in the pinned template, no cached
+    image and no earlier run's artifact can answer with it. The same call also
+    answers the settings question — the payload carries the generated
+    `SETTINGS_SCHEMAS` registry, which exists only because `make setup` ran
+    `framework.generate` over the manifest the change set edited. A manifest edit
+    that never reached the generator comes back as an empty registry here.
+    """
+    url = f"{ctx['deployed_url']}{LEVEL1_ENDPOINT_PATH}"
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as product:
+        response = await product.get(url)
+    payload = response.json() if response.status_code == 200 else None
+    declared = (payload or {}).get("declared_settings") or {}
+    return {
+        "url": url,
+        "status_code": response.status_code,
+        "marker": (payload or {}).get("marker"),
+        "setting_key": (payload or {}).get("setting_key"),
+        "declared_settings": declared,
+        # The registry key is derived by the generator, so the probe does not
+        # assume its spelling: what is asserted is that exactly one declared key
+        # carries this run's marker as the value the manifest declares for it.
+        "settings_declaring_marker": sorted(
+            key
+            for key, schema in declared.items()
+            if isinstance(schema, dict) and schema.get("default") == ctx["level1_marker"]
+        ),
+    }
+
+
+async def probe_level1_command_menu(ctx: dict) -> dict:
+    """Ask Telegram what the running bot registered, with this run's marker in it.
+
+    Why this is honest, and why it is the cheapest thing that is: the command
+    menu is published by the deployed bot itself, in its own post-init, using
+    the token this run bound — so an answer carrying this run's marker can only
+    have been written by this run's deployed image. Reading the image out of the
+    registry instead would prove the same thing at the cost of a pull and a
+    credential; sending the bot a message would need a second Telegram identity
+    the harness does not have.
+
+    Bounded polling, because the bot publishes at startup and the deploy reports
+    success as soon as the containers are up.
+    """
+    url = f"https://api.telegram.org/bot{ctx['product_bot_token']}/getMyCommands"
+    expected_description = level1_command_description(ctx["level1_marker"])
+    observed: list[dict] = []
+    status_code = None
+    deadline = time.monotonic() + LEVEL1_COMMAND_MENU_TIMEOUT
+    while True:
+        async with httpx.AsyncClient(timeout=15) as telegram:
+            response = await telegram.get(url)
+        status_code = response.status_code
+        if status_code == 200:
+            observed = response.json().get("result") or []
+            if any(
+                command.get("command") == LEVEL1_COMMAND
+                and command.get("description") == expected_description
+                for command in observed
+            ):
+                break
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(LEVEL1_COMMAND_MENU_POLL_SECONDS)
+    return {
+        "status_code": status_code,
+        "expected_command": LEVEL1_COMMAND,
+        "expected_description": expected_description,
+        "commands": observed,
+    }
+
+
+async def record_level1_product_evidence(ctx: dict) -> None:
+    """Read the three product facts while the deployment is still running.
+
+    Evidence collection: a probe that cannot run is recorded as the reason it
+    could not, so the artifact says which of the three was unreadable instead of
+    losing all of them — and the assertions that follow still fail the run.
+    """
+    for name, probe in (
+        ("level1_endpoint_probe", probe_level1_endpoint),
+        ("level1_command_menu_probe", probe_level1_command_menu),
+    ):
+        try:
+            ctx[name] = await probe(ctx)
+        except (httpx.HTTPError, ValueError) as error:
+            ctx[f"{name}_error"] = (
+                f"{name} could not be read: {type(error).__name__}: "
+                f"{redacted_dump_text(str(error))[:300]}"
+            )
+
+
+def record_level1_scripted_path(ctx: dict) -> None:
+    """Whether the worker applied the change set or fell back to an empty commit.
+
+    The fallback path commits nothing, so the story branch's own diff is what
+    tells the two apart — and the diff is already read through an existing probe
+    for every run's evidence. It is read once here, at the first moment both
+    engineering tasks are settled, so the suite can assert it rather than
+    inferring the scripted path from the deployed product alone.
+    """
+    record_story_branch_diff(ctx)
+    if ctx.get("story_branch_diff_error"):
+        ctx["level1_scripted_path_error"] = ctx["story_branch_diff_error"]
+        return
+    diff = ctx["story_branch_diff"]["diff"]
+    missing = [path for path in ctx["level1_change_set_paths"] if path not in diff]
+    ctx["level1_scripted_path"] = {
+        "head_sha": ctx["story_branch_diff"]["head_sha"],
+        "change_set_paths": ctx["level1_change_set_paths"],
+        "paths_missing_from_diff": missing,
+    }
+    ctx["level1_scripted_path_error"] = (
+        None
+        if not missing
+        else (
+            "the story branch carries no change for "
+            f"{missing}: the worker took the runner's fallback path (an empty commit) "
+            "instead of applying the change set"
+        )
+    )
+
+
+def record_engineering_failure_steps(ctx: dict) -> dict[str, str | None]:
+    """Name the runner step behind every failed engineering task of this run.
+
+    The scripted runner names the step it died on and the wrapper now carries it
+    into the blocked reason, which the control plane stores as the task's
+    `failure_metadata.reason`. This lifts it back out so a red run's evidence
+    says `setup` or `commit` rather than only that engineering failed.
+    """
+    steps: dict[str, str | None] = {}
+    for task_id, diagnostic in (ctx.get("task_diagnostics") or {}).items():
+        if diagnostic.get("status") != TaskStatus.FAILED:
+            continue
+        reason = (diagnostic.get("failure_metadata") or {}).get("reason") or ""
+        match = re.search(r"\bstep=([A-Za-z0-9_]+)", reason)
+        steps[task_id] = match.group(1) if match else None
+    ctx["engineering_failure_steps"] = steps
+    return steps
+
+
+async def _bot_binding_residue(api_internal: httpx.AsyncClient, ctx: dict) -> dict:
+    """What the project still holds of its bot after the undeploy released it.
+
+    The release is server-side, on the transition that means teardown
+    (`services/api/src/routers/applications.py` → `release_bot_binding`), and it
+    drops two things: the `bot_username` the uniqueness check reads, and the
+    stored `TELEGRAM_BOT_TOKEN`. Both are read back here, because a run that
+    ends holding either leaves the next one unable to bind the same bot — and
+    the stand has exactly one.
+    """
+    repository = await api_internal.get(f"/api/repositories/{ctx['repo_id']}")
+    repository.raise_for_status()
+    keys = await api_internal.get(f"/api/projects/{ctx['project_id']}/config/secrets/keys")
+    keys.raise_for_status()
+    return {
+        "bot_username": repository.json().get("bot_username"),
+        "secret_keys": keys.json().get("keys", []),
+    }
+
+
 async def verify_undeploy_residue(api_internal: httpx.AsyncClient, ctx: dict) -> dict | None:
-    """Fail closed unless the exact pre-undeploy port allocation is gone."""
+    """Fail closed unless the exact pre-undeploy port allocation is gone.
+
+    A run that bound a bot answers for that too: the binding is a resource of a
+    finite pool of one, so "the undeploy left nothing behind" includes it.
+    """
     response = await api_internal.get(f"/api/servers/{ctx['server_handle']}/ports")
     response.raise_for_status()
     owned = [
@@ -3595,11 +3928,29 @@ async def verify_undeploy_residue(api_internal: httpx.AsyncClient, ctx: dict) ->
         "port_allocation_absent": not owned,
         "observed_allocations": owned,
     }
-    ctx["undeploy_residue"] = residue
+    errors = []
     if owned:
-        ctx["undeploy_residue_error"] = (
+        errors.append(
             f"undeploy left owned port allocations for application {ctx['application_id']}: {owned}"
         )
+    if ctx.get("bot_binding"):
+        binding = await _bot_binding_residue(api_internal, ctx)
+        residue["bot_username_released"] = binding["bot_username"] is None
+        residue["bot_token_released"] = TELEGRAM_TOKEN_SECRET_KEY not in binding["secret_keys"]
+        residue["observed_bot_binding"] = binding
+        if not residue["bot_username_released"]:
+            errors.append(
+                f"undeploy left project {ctx['project_id']} bound to bot "
+                f"@{binding['bot_username']}, so the next run cannot bind the same bot"
+            )
+        if not residue["bot_token_released"]:
+            errors.append(
+                f"undeploy left {TELEGRAM_TOKEN_SECRET_KEY} in the secrets of project "
+                f"{ctx['project_id']}"
+            )
+    ctx["undeploy_residue"] = residue
+    if errors:
+        ctx["undeploy_residue_error"] = "; ".join(errors)
         return None
     return residue
 

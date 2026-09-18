@@ -5,6 +5,13 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-18
 
+- The level-1 stand suite builds a Telegram-bot product: modules `backend` and `tg_bot`, its token bound
+  through `POST /projects/{id}/telegram/token`, and a change set per task the scripted developer applies.
+- `POST /result` carries the runner's `step`, `error_class` and `exit_code` into the blocked reason, so a
+  failed scripted step names the step instead of being dropped at the wrapper boundary.
+- The live scaffold trigger sends the project's own module list and owns a registry repository per module,
+  so a two-module product is rendered whole and leaves no unowned image behind.
+
 - The no-LLM developer runner applies a change set fenced in `/workspace/TASK.md`, runs the product's
   `make setup` and commits through its own hooks, so a level-1 E2E run really changes code without a model.
 
