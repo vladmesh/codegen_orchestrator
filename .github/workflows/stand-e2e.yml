@@ -532,7 +532,11 @@ jobs:
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
           Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
-          Path(".stand-github-app.pem").write_text(os.environ["GH_APP_PRIVATE_KEY"])
+          # Same terminal newline the key files get: a stored secret whose final
+          # newline was eaten otherwise lands on the stand as a truncated PEM.
+          Path(".stand-github-app.pem").write_text(
+              os.environ["GH_APP_PRIVATE_KEY"].rstrip("\n") + "\n"
+          )
           '
 
       - name: Bring up dynamic orchestrator and wait for API
