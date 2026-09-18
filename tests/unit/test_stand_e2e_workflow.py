@@ -5,6 +5,7 @@ below are the ones whose absence is discovered at the worst moment — a second
 run trampling the first, or a failed run whose logs were never collected.
 """
 
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from scripts.stand_run import (
     STAND_PROVISIONING_TIMEOUT_SECONDS,
     SUITES,
 )
+from shared.ssh_keys import normalize_admin_private_key
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 COLLECTOR = Path(__file__).parents[2] / "scripts" / "stand_collect_run_evidence.sh"
@@ -917,3 +919,73 @@ def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environm
 
 def test_obsolete_self_target_registration_route_is_deleted():
     assert not (WORKFLOW.parents[2] / "scripts" / "register_stand_target.py").exists()
+
+
+def _write_target_key(secret: str) -> str:
+    """Run the registration step's own key writer and return the file it left.
+
+    The script below is the step's `run` up to the point the material leaves the
+    runner, so the writer under test is the workflow's line and not a copy of it.
+    The step's cleanup trap shreds the file on exit, so the copy is taken inside
+    the same shell.
+    """
+    script = _steps()["Register and provision dynamic target"]["run"]
+    prefix = script.split('key_path="${RUNNER_TEMP}/stand-bootstrap.key"')[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        copy = root / "delivered.key"
+        subprocess.run(
+            ["bash", "-c", prefix + '\ncp "${target_key}" "$1"\n', "write-target-key", str(copy)],
+            check=True,
+            env={
+                "PATH": os.environ["PATH"],
+                "RUNNER_TEMP": str(root),
+                "TARGET_ID": "6a920e74c9c98a452507b09b",
+                "TARGET_IP": "203.0.113.19",
+                "STAND_RUN_TAG": "gha-41-1",
+                "SSH_PRIVATE_KEY": secret,
+            },
+        )
+        return copy.read_text()
+
+
+def test_the_registration_key_file_is_accepted_when_the_secret_lost_its_last_newline():
+    """The refusal that killed stand run 35380550303, pinned at its producer.
+
+    `SSH_PRIVATE_KEY` reaches the step as an environment variable, and a stored
+    secret whose final newline was eaten is exactly the shape the API refuses
+    with `ssh_key rejected: no_terminal_newline`. The writer restores it, so the
+    key the script submits parses.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "fleet"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        key_text = generated.read_text()
+
+    delivered = _write_target_key(key_text.rstrip("\n"))
+
+    assert delivered.endswith("\n")
+    assert normalize_admin_private_key(delivered).fingerprint == (
+        normalize_admin_private_key(key_text).fingerprint
+    )
+
+
+def test_a_secret_that_kept_its_newline_still_yields_one_accepted_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "fleet"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        key_text = generated.read_text()
+
+    delivered = _write_target_key(key_text)
+
+    assert normalize_admin_private_key(delivered).fingerprint == (
+        normalize_admin_private_key(key_text).fingerprint
+    )
