@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-18
 
+- The no-LLM developer runner applies a change set fenced in `/workspace/TASK.md`, runs the product's
+  `make setup` and commits through its own hooks, so a level-1 E2E run really changes code without a model.
+
 - The architect never writes a criterion whose precondition central QA's one fixed identity cannot reach
   (an empty history, another month): it rewrites the example against the value QA reads first, or returns it.
 
