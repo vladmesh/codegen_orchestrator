@@ -1,16 +1,22 @@
-"""The scripted developer: change-set parsing, apply, and step ordering.
+"""The scripted developer: change-set parsing, apply, hooks and step ordering.
 
-These tests execute the runner's embedded script instead of matching its source text,
-so the parse, the apply and the failure payload are exercised as real behaviour.
+These tests execute the runner's embedded script instead of matching its source text.
+The two paths must treat the product's hooks in opposite ways, so both are also exercised
+against a *real* local git repository with the product's hooks installed — the
+fake-subprocess tests below cannot tell the difference, which is how the first submission
+shipped a fallback that ran the product's hooks.
 """
 
 import json
+from pathlib import Path
 import subprocess
 import textwrap
 from types import SimpleNamespace
 
 import pytest
 from worker_wrapper.runners.noop import NoopRunner
+
+SENTINEL = "codegen-change-set v1"
 
 
 def load_script():
@@ -21,8 +27,32 @@ def load_script():
     return namespace
 
 
-def change_set(body: str) -> str:
-    return "# Task\n\nSome prose.\n\n```codegen-change-set\n" + body + "```\n"
+def change_set(body: str, sentinel: str = SENTINEL) -> str:
+    fence = "```codegen-change-set\n"
+    if sentinel:
+        fence += sentinel + "\n"
+    return "# Task\n\nSome prose.\n\n" + fence + body + "```\n"
+
+
+def capture_results(namespace) -> list:
+    """Replace the script's urlopen with a recorder; no HTTP in a unit test."""
+    payloads: list = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def urlopen(request, timeout):
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    namespace["urlopen"] = urlopen
+    return payloads
 
 
 class FakeGit:
@@ -39,11 +69,14 @@ class FakeGit:
         if key in self.failures:
             code, stderr = self.failures[key]
             return SimpleNamespace(returncode=code, stdout="", stderr=stderr)
-        if args[:3] == ("git", "rev-parse", "--abbrev-ref"):
+        core = ("git", *args[3:]) if args[:2] == ("git", "-c") else args
+        if core[:3] == ("git", "rev-parse", "--abbrev-ref"):
             return SimpleNamespace(returncode=0, stdout="feature/scripted\n", stderr="")
-        if args[:3] == ("git", "config", "--get"):
+        if core[:3] == ("git", "rev-parse", "--git-path"):
+            return SimpleNamespace(returncode=0, stdout=".git/info/exclude\n", stderr="")
+        if core[:2] == ("git", "config"):
             return SimpleNamespace(returncode=0, stdout=".githooks\n", stderr="")
-        if args[:2] == ("git", "rev-parse"):
+        if core[:2] == ("git", "rev-parse"):
             return SimpleNamespace(returncode=0, stdout="abc1234\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -51,22 +84,7 @@ class FakeGit:
 def run_main(namespace, monkeypatch, workspace, failures=None):
     git = FakeGit(failures)
     monkeypatch.setattr(subprocess, "run", git)
-    payloads = []
-
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-    def urlopen(request, timeout):
-        payloads.append(json.loads(request.data))
-        return Response()
-
-    namespace["urlopen"] = urlopen
+    payloads = capture_results(namespace)
     exit_code = namespace["main"](str(workspace))
     return exit_code, git.calls, payloads
 
@@ -108,14 +126,25 @@ class TestChangeSetParse:
         assert namespace["parse_change_set"]("# Task\n\nNo change set here.\n") is None
         assert namespace["parse_change_set"](None) is None
 
+    def test_prose_that_only_names_the_marker_is_not_a_block(self):
+        """Card 1301 quotes acceptance criteria verbatim, marker text included."""
+        namespace = load_script()
+        quoted = (
+            "# Task\n\n"
+            "1. Read a change set from a fenced block with an explicit marker\n"
+            "   (e.g. ```codegen-change-set ... ```) holding a machine format.\n"
+        )
+
+        assert namespace["parse_change_set"](quoted) is None
+
     @pytest.mark.parametrize(
         "text",
         [
-            "```codegen-change-set\n@@ create a.py\nbody\n",
-            "```codegen-change-set\n```\n",
-            "```codegen-change-set\n@@ destroy a.py\n```\n",
-            "```codegen-change-set\n@@ create\n```\n",
-            "```codegen-change-set\nstray content\n@@ create a.py\n```\n",
+            "```codegen-change-set\ncodegen-change-set v1\n@@ create a.py\nbody\n",
+            "```codegen-change-set\ncodegen-change-set v1\n```\n",
+            "```codegen-change-set\ncodegen-change-set v1\n@@ destroy a.py\n```\n",
+            "```codegen-change-set\ncodegen-change-set v1\n@@ create\n```\n",
+            "```codegen-change-set\ncodegen-change-set v1\nstray\n@@ create a.py\n```\n",
         ],
         ids=["unclosed", "empty", "unknown-op", "no-path", "content-first"],
     )
@@ -124,6 +153,32 @@ class TestChangeSetParse:
 
         with pytest.raises(namespace["MalformedChangeSet"]):
             namespace["parse_change_set"](text)
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        ["", "codegen-change-set v2", "@@ create a.py"],
+        ids=["missing", "wrong-version", "straight-to-directive"],
+    )
+    def test_block_without_the_version_sentinel_is_refused(self, sentinel):
+        """A quoted example that lacks the sentinel is never executed as a change set."""
+        namespace = load_script()
+        text = change_set("@@ create a.py\nbody\n", sentinel=sentinel)
+
+        with pytest.raises(namespace["MalformedChangeSet"]) as raised:
+            namespace["parse_change_set"](text)
+
+        assert "sentinel" in str(raised.value)
+
+    def test_two_candidate_blocks_are_refused_rather_than_guessed(self):
+        """A card that documents the format plus a real change set: refuse, don't pick."""
+        namespace = load_script()
+        documented = change_set("@@ create doc/example.py\nexample\n")
+        real = change_set("@@ create pkg/real.py\nreal\n")
+
+        with pytest.raises(namespace["MalformedChangeSet"]) as raised:
+            namespace["parse_change_set"](documented + real)
+
+        assert "2 change-set blocks" in str(raised.value)
 
     @pytest.mark.parametrize(
         "path",
@@ -213,7 +268,7 @@ class TestScriptedRun:
         assert payloads[0]["success"] is True
         assert payloads[0]["commit"] == "abc1234"
 
-    def test_hooks_are_active_for_the_commit(self, tmp_path, monkeypatch):
+    def test_hooks_are_active_for_the_scripted_commit(self, tmp_path, monkeypatch):
         namespace = load_script()
         self._task(tmp_path)
 
@@ -221,15 +276,23 @@ class TestScriptedRun:
 
         assert not any("/dev/null" in arg for call in calls for arg in call)
         assert not any(call[:3] == ("git", "config", "core.hooksPath") for call in calls), (
-            "the runner must not override the product's hooksPath"
+            "the runner must never write the product's hooksPath"
         )
-        assert ("git", "config", "--get", "core.hooksPath") in calls
         assert "--no-verify" not in [arg for call in calls for arg in call]
+
+    def test_hooks_path_guard_reads_the_local_config(self, tmp_path, monkeypatch):
+        """A global or system core.hooksPath must not be able to satisfy the guard."""
+        namespace = load_script()
+        self._task(tmp_path)
+
+        _, calls, _ = run_main(namespace, monkeypatch, tmp_path)
+
+        assert ("git", "config", "--local", "--get", "core.hooksPath") in calls
 
     def test_a_hooks_path_that_setup_did_not_configure_fails_the_run(self, tmp_path, monkeypatch):
         namespace = load_script()
         self._task(tmp_path)
-        failures = {"git config --get core.hooksPath": (1, "")}
+        failures = {"git config --local --get core.hooksPath": (1, "")}
 
         exit_code, calls, payloads = run_main(namespace, monkeypatch, tmp_path, failures)
 
@@ -298,12 +361,21 @@ class TestFallbackRun:
         assert ("make", "setup") not in calls
         assert (
             "git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "commit",
             "--allow-empty",
             "-m",
             "chore: noop marker for e2e test",
         ) in calls
-        assert ("git", "push", "origin", "feature/scripted") in calls
+        assert (
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "origin",
+            "feature/scripted",
+        ) in calls
         assert payloads[0]["success"] is True
         assert payloads[0]["summary"] == "noop commit pushed to feature/scripted"
 
@@ -315,4 +387,168 @@ class TestFallbackRun:
 
         assert exit_code == 0
         assert ("make", "setup") not in calls
-        assert any(call[:3] == ("git", "commit", "--allow-empty") for call in calls)
+        assert any(call[3:5] == ("commit", "--allow-empty") for call in calls)
+
+    def test_fallback_never_writes_the_workspace_hooks_config(self, tmp_path, monkeypatch):
+        namespace = load_script()
+
+        _, calls, _ = run_main(namespace, monkeypatch, tmp_path)
+
+        assert not any(call[:3] == ("git", "config", "core.hooksPath") for call in calls)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(  # noqa: S603
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=60, check=True
+    )
+    return result.stdout.strip()
+
+
+def _scaffolded_workspace(
+    tmp_path: Path,
+    pre_commit: str,
+    pre_push: str,
+    *,
+    enable_hooks: bool,
+) -> tuple[Path, Path]:
+    """A bare remote plus a workspace clone carrying the product's hooks.
+
+    This is the shape the scaffolder leaves behind: `.githooks/` installed and, once
+    `make setup` has run, `core.hooksPath` pointing at it in the workspace's own config
+    (`services/scaffolder/src/scaffold.py`).
+    """
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare", "--initial-branch=main")
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch=main")
+    _git(seed, "config", "user.email", "ai@codegen.local")
+    _git(seed, "config", "user.name", "Codegen Bot")
+    (seed / "README.md").write_text("# product\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "first story")
+    _git(seed, "remote", "add", "origin", str(remote))
+    _git(seed, "push", "-u", "origin", "main")
+
+    workspace = tmp_path / "workspace"
+    _git(tmp_path, "clone", str(remote), str(workspace))
+    _git(workspace, "config", "user.email", "ai@codegen.local")
+    _git(workspace, "config", "user.name", "Codegen Bot")
+    hooks = workspace / ".githooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text(pre_commit)
+    (hooks / "pre-commit").chmod(0o755)
+    (hooks / "pre-push").write_text(pre_push)
+    (hooks / "pre-push").chmod(0o755)
+    if enable_hooks:
+        _git(workspace, "config", "core.hooksPath", ".githooks")
+    return remote, workspace
+
+
+_FATAL_PRE_COMMIT = '#!/bin/sh\ntouch "$(git rev-parse --show-toplevel)/pre-commit-ran"\nexit 1\n'
+_FATAL_PRE_PUSH = '#!/bin/sh\ntouch "$(git rev-parse --show-toplevel)/pre-push-ran"\nexit 1\n'
+
+
+class TestFallbackAgainstRealProductHooks:
+    """AC4 in the shape the live noop suites actually meet it.
+
+    The developer workspace is the scaffolded product directory, and
+    `services/scaffolder/src/scaffold.py` leaves `core.hooksPath=.githooks` in its own
+    config. So the fallback's "empty commit" runs in a repository whose hooks are armed,
+    and asserting its argv proves nothing about the config that argv runs against.
+    """
+
+    def test_the_fixture_hook_really_fires_without_an_override(self, tmp_path):
+        """Guards the guard: without the override this workspace's hook takes over."""
+        _, workspace = _scaffolded_workspace(
+            tmp_path, _FATAL_PRE_COMMIT, _FATAL_PRE_PUSH, enable_hooks=True
+        )
+
+        result = subprocess.run(  # noqa: S603
+            ["git", "commit", "--allow-empty", "-m", "unguarded"],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode != 0
+        assert (workspace / "pre-commit-ran").exists()
+
+    def test_empty_commit_and_push_run_with_the_products_hooks_disabled(self, tmp_path):
+        namespace = load_script()
+        remote, workspace = _scaffolded_workspace(
+            tmp_path, _FATAL_PRE_COMMIT, _FATAL_PRE_PUSH, enable_hooks=True
+        )
+        payloads = capture_results(namespace)
+
+        exit_code = namespace["main"](str(workspace))
+
+        assert exit_code == 0, payloads
+        assert not (workspace / "pre-commit-ran").exists()
+        assert not (workspace / "pre-push-ran").exists()
+        assert payloads[0]["success"] is True
+        assert _git(remote, "log", "-1", "--format=%s", "main") == (
+            "chore: noop marker for e2e test"
+        )
+        # Per command only: the product's own config is left exactly as it was, so the
+        # scripted path in the same workspace still gets its hooks.
+        assert _git(workspace, "config", "--local", "--get", "core.hooksPath") == ".githooks"
+
+
+class TestScriptedRunAgainstRealProductHooks:
+    """AC2 plus the injected-file repair, against a real hook that runs `git add -A`."""
+
+    def _workspace(self, tmp_path: Path) -> tuple[Path, Path]:
+        # The kit's pre-commit runs `make format` and then `git add -A`; reduced to the
+        # effect that matters here, it stages everything the worker left in the tree.
+        pre_commit = '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/pre-commit-ran"\ngit add -A\n'
+        pre_push = '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/pre-push-ran"\n'
+        remote, workspace = _scaffolded_workspace(
+            tmp_path, pre_commit, pre_push, enable_hooks=False
+        )
+        # The kit's `make setup` ends by enabling the hooks; that is the step the runner
+        # has to run rather than simulate.
+        (workspace / "Makefile").write_text("setup:\n\t@git config core.hooksPath .githooks\n")
+        # Injected by the worker manager for AgentType.NOOP, not the product's content.
+        (workspace / "CLAUDE.md").write_text("# orchestrator instructions\n")
+        (workspace / "TASK.md").write_text(change_set("@@ create pkg/new.py\nbody\n"))
+        return remote, workspace
+
+    def test_setup_enables_the_hooks_and_the_commit_runs_them(self, tmp_path):
+        namespace = load_script()
+        remote, workspace = self._workspace(tmp_path)
+        payloads = capture_results(namespace)
+
+        exit_code = namespace["main"](str(workspace))
+
+        assert exit_code == 0, payloads
+        assert payloads[0]["success"] is True
+        assert (workspace / ".git/pre-commit-ran").exists(), "the product's hook must run"
+        assert (workspace / ".git/pre-push-ran").exists()
+        assert _git(workspace, "config", "--local", "--get", "core.hooksPath") == ".githooks"
+        assert "pkg/new.py" in _git(remote, "show", "--name-only", "--format=", "HEAD")
+
+    def test_the_managers_injected_files_are_never_committed(self, tmp_path):
+        namespace = load_script()
+        remote, workspace = self._workspace(tmp_path)
+        capture_results(namespace)
+
+        assert namespace["main"](str(workspace)) == 0
+
+        committed = _git(remote, "show", "--name-only", "--format=", "HEAD").split()
+        assert "CLAUDE.md" not in committed
+        assert "TASK.md" not in committed
+        assert (workspace / "CLAUDE.md").exists(), "excluded, not deleted"
+        assert "/CLAUDE.md" in (workspace / ".git/info/exclude").read_text()
+
+    def test_the_exclude_rule_is_written_once(self, tmp_path):
+        namespace = load_script()
+        _, workspace = self._workspace(tmp_path)
+
+        namespace["exclude_worker_internal_files"](str(workspace))
+        namespace["exclude_worker_internal_files"](str(workspace))
+
+        assert (workspace / ".git/info/exclude").read_text().count("/CLAUDE.md") == 1

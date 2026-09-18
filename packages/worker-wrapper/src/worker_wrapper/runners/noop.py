@@ -12,11 +12,13 @@ container, in the workspace, with no model call. It has two modes:
 Change-set format
 -----------------
 
-The change set travels in the task document the manager already delivers to
-``/workspace/TASK.md``; there is no extra queue field, env var or mount. It is a single
-fenced block opened by ``codegen-change-set``::
+The change set travels in the task document the manager already writes to
+``/workspace/TASK.md``; there is no extra queue field, env var, mount or manager
+transport. It is a single fenced block opened by ``codegen-change-set`` whose first line
+is the version sentinel ``codegen-change-set v1``::
 
     ```codegen-change-set
+    codegen-change-set v1
     @@ create services/bot/handlers/ping.py
     def ping() -> str:
         return "pong"
@@ -34,20 +36,63 @@ Rules:
 * ``create`` writes a new file (parent directories are created) and refuses an existing
   path; ``replace`` overwrites an existing file; ``append`` appends to an existing file.
 * Operations are applied in the order written.
-* Anything else is a ``MalformedChangeSet``: an unterminated fence, an empty block, an
-  unknown op, a directive without a path, or content before the first directive.
+* Anything else is a ``MalformedChangeSet``: an unterminated fence, an empty block, a
+  missing or unsupported version sentinel, an unknown op, a directive without a path, or
+  content before the first directive.
 * A path that escapes the workspace — absolute, ``~``-rooted, or containing a ``..``
-  component — is refused with ``PathEscapesWorkspace``. The whole change set is parsed and
-  every path validated *before* the first write, so a rejected change set writes nothing.
+  component — is refused with ``PathEscapesWorkspace``. The whole block is parsed and
+  every path validated *before* the first write, so a refused change set writes nothing.
+
+Why the marker alone is not enough: since card 1301 the task document quotes a card's
+acceptance criteria verbatim, so a card that *documents* this format would otherwise have
+its documentation executed. Hence the sentinel first line, and hence a document holding
+more than one block opened by the marker is refused as ``MalformedChangeSet`` instead of
+silently running the first one.
+
+Two limitations of the format, deliberate and bounded:
+
+* A *content* line that itself begins with ``@@ `` is read as a directive, so a change set
+  cannot carry a file whose content contains a diff hunk header. The change sets are
+  written by this repository's own harness, not by users, so the escape a general format
+  would need buys nothing here.
+* ``validate_path`` is a pure string check and does not resolve symlinks: a symlink already
+  present in the workspace could still redirect a write outside it. The threat model is a
+  harness-authored change set applied to a freshly scaffolded product workspace, so the
+  guard exists to catch a malformed path, not an attacker who can already plant a symlink
+  inside the workspace — anybody who can do that can write the file directly.
+
+Hooks
+-----
+
+The two modes treat the product's hooks in opposite ways, on purpose:
+
+* Scripted — the hooks must run, because that is what the card is for. ``make setup``
+  ends with ``git config core.hooksPath .githooks``, the script verifies that with
+  ``git config --local --get core.hooksPath`` (``--local``, so a global or system value
+  cannot satisfy it), and the commit then runs the product's own gate.
+* Fallback — the hooks must not run. Its workspace is a scaffolded product whose config
+  already has ``core.hooksPath=.githooks`` (``services/scaffolder/src/scaffold.py``), so
+  an "empty" commit would otherwise fire ``pre-commit``, whose ``git add -A`` stages the
+  worker's injected files, and then a full-lint ``pre-push``. The fallback therefore runs
+  its commit and push as ``git -c core.hooksPath=/dev/null …`` — per process, the form
+  ``services/worker-manager/src/git_ops.py`` already uses — and never writes
+  ``core.hooksPath`` into the workspace config.
+
+Before the scripted commit the script adds the worker's own injected files to
+``.git/info/exclude`` (``/CLAUDE.md``, ``/TASK.md``, ``/REPORT.md``), because the
+product's ``pre-commit`` hook runs ``git add -A`` and would otherwise publish
+orchestrator-internal instruction files into the product repository. ``info/exclude`` is
+workspace-local, so this changes nothing in the product kit.
 
 Failure reporting
 -----------------
 
-Every step is named (``change_set``, ``setup``, ``hooks_path``, ``branch``, ``stage``,
-``commit``, ``push``). The first failure stops the run and is POSTed to the result
-endpoint as ``success: false`` with the step name, its exit code and its stderr,
-credential-redacted and truncated to the last 4000 characters, and the script exits with
-that code. A ``make setup`` or hook failure is a failure of the run, never a skip.
+Every step is named (``change_set``, ``branch``, ``setup``, ``hooks_path``, ``exclude``,
+``stage``, ``commit``, ``push``, ``sha``). The first failure stops the run and is POSTed
+to the result endpoint as ``success: false`` with the step name, its exit code and its
+stderr, credential-redacted and truncated to the last 4000 characters, and the script
+exits with that code. A ``make setup`` or hook failure is a failure of the run, never a
+skip.
 
 Timeouts
 --------
@@ -72,9 +117,17 @@ from urllib.request import Request, urlopen
 WORKSPACE = "/workspace"
 TASK_FILENAME = "TASK.md"
 CHANGE_SET_MARKER = "codegen-change-set"
+CHANGE_SET_SENTINEL = "codegen-change-set v1"
 DIRECTIVE = "@@ "
 OPERATIONS = ("create", "replace", "append")
 RESULT_URL = "http://127.0.0.1:9090/result"
+
+# Injected by the worker manager, never part of the product repository.
+WORKER_INTERNAL_FILES = ("/CLAUDE.md", "/TASK.md", "/REPORT.md")
+
+# Per process, never written into the workspace config: the scripted path needs the
+# product's hooks, so the fallback may not disable them for anybody but itself.
+HOOKLESS_GIT = ("git", "-c", "core.hooksPath=/dev/null")
 
 SETUP_TIMEOUT_SECONDS = 1800
 HOOK_TIMEOUT_SECONDS = 600
@@ -137,26 +190,29 @@ def validate_path(path):
     return candidate
 
 
-def parse_change_set(text):
-    """Return a list of (op, path, content), or None when there is no block."""
-    lines = (text or "").splitlines()
-    start = None
-    for index, line in enumerate(lines):
-        if line.strip() == "```" + CHANGE_SET_MARKER:
-            start = index + 1
-            break
-    if start is None:
-        return None
-    end = None
-    for index in range(start, len(lines)):
-        if lines[index].strip() == "```":
-            end = index
-            break
-    if end is None:
-        raise MalformedChangeSet("change-set block is never closed")
+def candidate_blocks(lines):
+    """Every fenced block whose opening line is exactly the change-set marker."""
+    blocks = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "```" + CHANGE_SET_MARKER:
+            index += 1
+            continue
+        end = None
+        for scan in range(index + 1, len(lines)):
+            if lines[scan].strip() == "```":
+                end = scan
+                break
+        if end is None:
+            raise MalformedChangeSet("change-set block is never closed")
+        blocks.append(lines[index + 1:end])
+        index = end + 1
+    return blocks
 
+
+def parse_directives(body):
     operations = []
-    for line in lines[start:end]:
+    for line in body:
         if line.startswith(DIRECTIVE):
             parts = line[len(DIRECTIVE):].strip().split(None, 1)
             if not parts:
@@ -176,6 +232,23 @@ def parse_change_set(text):
         (op, path, "\n".join(content) + "\n" if content else "")
         for op, path, content in operations
     ]
+
+
+def parse_change_set(text):
+    """Return a list of (op, path, content), or None when there is no block."""
+    blocks = candidate_blocks((text or "").splitlines())
+    if not blocks:
+        return None
+    if len(blocks) > 1:
+        raise MalformedChangeSet(
+            "task document holds %d change-set blocks; refusing to guess" % len(blocks)
+        )
+    body = blocks[0]
+    if not body or body[0].strip() != CHANGE_SET_SENTINEL:
+        raise MalformedChangeSet(
+            "change-set block does not open with the sentinel %r" % CHANGE_SET_SENTINEL
+        )
+    return parse_directives(body[1:])
 
 
 def apply_change_set(operations, workspace):
@@ -226,6 +299,43 @@ def step(name, args, timeout, workspace, error_class="CommandFailed"):
     return result
 
 
+def exclude_worker_internal_files(workspace):
+    """Keep the manager's injected files out of the product's commit.
+
+    The product's `pre-commit` hook runs `git add -A`, so an ignore rule is the only
+    thing between an orchestrator-internal instruction file and the product repository.
+    `.git/info/exclude` is workspace-local, so the product kit stays untouched.
+    """
+    located = step(
+        "exclude",
+        ("git", "rev-parse", "--git-path", "info/exclude"),
+        GIT_TIMEOUT_SECONDS,
+        workspace,
+        "GitCommandFailed",
+    )
+    relative = located.stdout.strip()
+    path = relative if os.path.isabs(relative) else os.path.join(workspace, relative)
+    try:
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        existing = ""
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                existing = handle.read()
+        present = [line.strip() for line in existing.splitlines()]
+        missing = [name for name in WORKER_INTERNAL_FILES if name not in present]
+        if not missing:
+            return
+        with open(path, "a", encoding="utf-8") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write("# worker-internal, injected by the manager; never the product's\n")
+            handle.write("\n".join(missing) + "\n")
+    except OSError as error:
+        raise StepFailed("exclude", 1, str(error), "ExcludeWriteFailed")
+
+
 def current_branch(workspace):
     result = step(
         "branch",
@@ -249,7 +359,7 @@ def run_scripted(operations, workspace):
     step("setup", ("make", "setup"), SETUP_TIMEOUT_SECONDS, workspace, "SetupFailed")
     hooks = step(
         "hooks_path",
-        ("git", "config", "--get", "core.hooksPath"),
+        ("git", "config", "--local", "--get", "core.hooksPath"),
         GIT_TIMEOUT_SECONDS,
         workspace,
         "HooksPathNotConfigured",
@@ -261,6 +371,7 @@ def run_scripted(operations, workspace):
             "core.hooksPath is %r after setup, expected '.githooks'" % hooks.stdout.strip(),
             "HooksPathNotConfigured",
         )
+    exclude_worker_internal_files(workspace)
     step("stage", ("git", "add", "-A"), GIT_TIMEOUT_SECONDS, workspace, "GitCommandFailed")
     step(
         "commit",
@@ -286,14 +397,14 @@ def run_fallback(workspace):
     branch = current_branch(workspace)
     step(
         "commit",
-        ("git", "commit", "--allow-empty", "-m", "chore: noop marker for e2e test"),
+        HOOKLESS_GIT + ("commit", "--allow-empty", "-m", "chore: noop marker for e2e test"),
         HOOK_TIMEOUT_SECONDS,
         workspace,
         "CommitFailed",
     )
     step(
         "push",
-        ("git", "push", "origin", branch),
+        HOOKLESS_GIT + ("push", "origin", branch),
         HOOK_TIMEOUT_SECONDS,
         workspace,
         "PushFailed",
