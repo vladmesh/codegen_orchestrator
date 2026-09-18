@@ -1787,6 +1787,7 @@ async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_nam
             agent_type="noop",
             task_title="t",
             task_description="td",
+            modules=pipeline_helpers.BACKEND_ONLY_MODULES,
         )
 
 
@@ -5565,3 +5566,364 @@ def test_a_contained_branch_with_no_merge_commit_names_what_it_could_not_recover
 
     assert probe["reference"] == "c0ffee"
     assert probe["reference_kind"] == live_harness_cleanup.MERGE_BASE_IS_HEAD_REFERENCE
+
+
+# ── Level-1 Telegram-bot product ─────────────────────────────────────────
+
+
+LEVEL1_TOKEN = "123456789:AA-level-1-stand-product-bot-token-value"  # noqa: S105 — a fake
+
+
+def _rejected_verdict(reason_code: str) -> dict:
+    return {
+        "status": "rejected",
+        "reason_code": reason_code,
+        "user_message": "Something is already running on this token.",
+        "bot_username": None,
+        "checks": [
+            {"name": "format", "passed": True},
+            {"name": "telegram_poller", "passed": False},
+        ],
+    }
+
+
+def _accepted_verdict() -> dict:
+    return {
+        "status": "ok",
+        "reason_code": None,
+        "user_message": "Token is valid.",
+        "bot_username": "mega_e2e_codegen_bot",
+        "checks": [
+            {"name": "format", "passed": True},
+            {"name": "telegram_get_me", "passed": True},
+            {"name": "telegram_webhook", "passed": True},
+            {"name": "telegram_poller", "passed": True},
+            {"name": "project_uniqueness", "passed": True},
+        ],
+    }
+
+
+def _binding_client(verdict: dict, recorder: list) -> httpx.AsyncClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json=verdict)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+
+
+def test_an_absent_product_bot_token_refuses_the_run_by_name(monkeypatch):
+    """No skip, no late assertion: the run stops and says which secret is missing."""
+    monkeypatch.delenv(pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV, raising=False)
+
+    with pytest.raises(pipeline_helpers.Level1RunRefused) as refusal:
+        pipeline_helpers.require_product_bot_token()
+
+    assert pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV in str(refusal.value)
+    assert "stand-e2e.yml" in str(refusal.value)
+
+
+def test_a_blank_product_bot_token_is_absent_not_a_token(monkeypatch):
+    """The workflow hands every non-level-1 suite an empty value on the same channel."""
+    monkeypatch.setenv(pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV, "   ")
+
+    with pytest.raises(pipeline_helpers.Level1RunRefused):
+        pipeline_helpers.require_product_bot_token()
+
+
+async def test_a_bot_somebody_else_is_polling_refuses_the_run_by_reason():
+    """The binding route's own poller probe is the answer; the suite adds none."""
+    requests: list = []
+    ctx = {"project_id": "project-1"}
+
+    async with _binding_client(_rejected_verdict("poller_active"), requests) as api:
+        with pytest.raises(pipeline_helpers.Level1RunRefused) as refusal:
+            await pipeline_helpers.bind_product_bot_token(api, ctx, LEVEL1_TOKEN)
+
+    assert "poller_active" in str(refusal.value)
+    assert ctx["bot_binding"]["status"] == "rejected"
+    assert "bot_username" not in ctx
+
+
+async def test_the_token_reaches_the_project_only_through_the_telegram_route():
+    """Never as a plain project secret — `/config/secrets` refuses it on purpose."""
+    requests: list = []
+    ctx = {"project_id": "project-1"}
+
+    async with _binding_client(_accepted_verdict(), requests) as api:
+        binding = await pipeline_helpers.bind_product_bot_token(api, ctx, LEVEL1_TOKEN)
+
+    assert [path for path, _ in requests] == ["/api/projects/project-1/telegram/token"]
+    assert requests[0][1] == {"token": LEVEL1_TOKEN}
+    assert binding["bot_username"] == "mega_e2e_codegen_bot"
+    assert ctx["bot_username"] == "mega_e2e_codegen_bot"
+    # The verdict is kept for evidence, and it carries no token.
+    assert LEVEL1_TOKEN not in json.dumps(ctx["bot_binding"])
+
+
+def _residue_client(bot_username: str | None, secret_keys: list[str]) -> httpx.AsyncClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/servers/"):
+            return httpx.Response(200, json=[])
+        if request.url.path.startswith("/api/repositories/"):
+            return httpx.Response(200, json={"bot_username": bot_username})
+        if request.url.path.endswith("/config/secrets/keys"):
+            return httpx.Response(200, json={"keys": secret_keys})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+
+
+def _residue_ctx() -> dict:
+    return {
+        "server_handle": "server-1",
+        "allocation_id": "alloc-1",
+        "application_id": "app-1",
+        "repo_id": "repo-1",
+        "project_id": "project-1",
+        "bot_binding": {"status": "ok", "bot_username": "mega_e2e_codegen_bot"},
+    }
+
+
+async def test_teardown_leaves_the_bot_free_for_the_next_run():
+    ctx = _residue_ctx()
+
+    async with _residue_client(None, ["APP_SECRET_KEY"]) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue["bot_username_released"] is True
+    assert residue["bot_token_released"] is True
+    assert ctx.get("undeploy_residue_error") is None
+
+
+async def test_a_binding_that_outlives_the_undeploy_fails_the_residue_check():
+    """One bot, one stand: a run that keeps it makes the next one unable to start."""
+    ctx = _residue_ctx()
+
+    async with _residue_client("mega_e2e_codegen_bot", ["TELEGRAM_BOT_TOKEN"]) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue is None
+    assert "bound to bot @mega_e2e_codegen_bot" in ctx["undeploy_residue_error"]
+    assert "TELEGRAM_BOT_TOKEN" in ctx["undeploy_residue_error"]
+
+
+async def test_a_run_that_bound_no_bot_keeps_the_residue_check_it_had():
+    """Every other suite calling this helper answers for ports and nothing else."""
+    ctx = _residue_ctx()
+    del ctx["bot_binding"]
+
+    async with _residue_client(None, []) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue == {
+        "application_id": "app-1",
+        "allocation_id": "alloc-1",
+        "port_allocation_absent": True,
+        "observed_allocations": [],
+    }
+
+
+def test_the_empty_commit_fallback_is_told_apart_from_the_scripted_path(monkeypatch):
+    """An empty commit leaves the branch ahead of main and the diff empty."""
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(
+            story_branch_diff_error=None,
+            story_branch_diff={"head_sha": "c0ffee", "diff": ""},
+        ),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path"]["paths_missing_from_diff"] == ["services/tg_bot/src/menu.py"]
+    assert "fallback path" in ctx["level1_scripted_path_error"]
+
+
+def test_the_scripted_path_is_recognised_from_the_branch_diff(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(
+            story_branch_diff_error=None,
+            story_branch_diff={
+                "head_sha": "c0ffee",
+                "diff": "+++ b/services/tg_bot/src/menu.py\n",
+            },
+        ),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path_error"] is None
+
+
+def test_an_unreadable_branch_diff_is_a_stated_reason_not_a_silent_pass(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(story_branch_diff_error="GitHub answered 502"),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path_error"] == "GitHub answered 502"
+    assert "level1_scripted_path" not in ctx
+
+
+def _gave_up_reason(**failure) -> str:
+    """The reason a scripted step failure really carries, built by the real code.
+
+    The runner POSTs `success=false` with the step it died on; the wrapper folds
+    that into `WorkerBlockedResult.block_reason`; `worker_spawner` hands the same
+    string on as `gave_up_reason`; and `handle_worker_gave_up` stores it verbatim
+    as the planning task's `failure_metadata.reason`. Running the first two links
+    here rather than typing their output out is what keeps this test honest when
+    that format moves.
+    """
+    from worker_wrapper.http_models import ResultRequest, to_worker_result
+
+    return to_worker_result(ResultRequest(success=False, **failure)).block_reason
+
+
+def _diagnostics_for(ctx: dict, *tasks: dict) -> None:
+    """Record each task the way the suite records a task it read from the API."""
+    for task in tasks:
+        pipeline_helpers._record_task_diagnostic(ctx, task)
+
+
+def test_a_failed_engineering_task_names_the_runner_step_it_died_on():
+    """Card 1307's carried finding, read back at the other end of the pipeline.
+
+    Built from the status the control plane really writes: a gave-up sends the
+    planning task to `WAITING_HUMAN_REVIEW` and writes `failure_metadata` there,
+    while the `FAILED` path writes no `failure_metadata` at all. A fixture that
+    paired `FAILED` with a reason described a combination the pipeline never
+    produces, so it could be green while a real red run carried no step name.
+    """
+    reason = _gave_up_reason(
+        reason="noop runner step setup failed",
+        step="setup",
+        error_class="SetupFailed",
+        exit_code=2,
+    )
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None},
+        {
+            "id": "task-2",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": f"Worker gave up: {reason}"},
+        },
+    )
+
+    recorded = pipeline_helpers.record_engineering_failure_steps(ctx)
+
+    assert recorded == {"task-2": {"status": "waiting_human_review", "step": "setup"}}
+    assert ctx["engineering_failure_steps"] == recorded
+    # The park is part of the evidence, not a detail the step name hides: the
+    # sprint's "Zero intervention" item forbids a story reaching this state.
+    assert recorded["task-2"]["status"] == TaskStatus.WAITING_HUMAN_REVIEW.value
+
+
+def test_a_technical_engineering_failure_is_recorded_even_with_no_metadata():
+    """`handle_engineering_failure` writes `FAILED` and no `failure_metadata`.
+
+    That run has no step to name, and the evidence says so rather than staying
+    silent about a task that failed.
+    """
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.FAILED, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "failed", "step": None}
+    }
+
+
+def test_a_failure_that_names_no_step_is_recorded_as_naming_none():
+    """An unnamed failure is reported as unnamed rather than guessed at."""
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {
+            "id": "task-1",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": "Worker gave up: timeout"},
+        },
+    )
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "waiting_human_review", "step": None}
+    }
+
+
+def test_a_settled_run_names_no_failed_step():
+    """The green case the suite asserts: nothing unsettled, so nothing recorded."""
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {}
+
+
+def test_every_module_of_a_product_owns_its_registry_repository():
+    """A two-module product publishes two images; teardown must own both names."""
+    assert pipeline_helpers.registry_repository("live-x", "backend").endswith("/live-x-backend")
+    assert pipeline_helpers.registry_repository("live-x", "tg_bot").endswith("/live-x-tg-bot")
+
+
+def _trigger_scaffold_with_stubbed_redis(monkeypatch, modules: list[str]):
+    """Drive the scaffold trigger without a Redis container, keeping what it sent."""
+    owned: list[tuple[str, str]] = []
+    published: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        published.append(list(args))
+        return subprocess.CompletedProcess(args, 0, stdout="1-0\n", stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", fake_run)
+    manifest = SimpleNamespace(
+        own=lambda kind, identifier, **extra: owned.append((kind, identifier)),
+        write=lambda path: None,
+        run_id="live-test",
+    )
+    ctx = {
+        "manifest": manifest,
+        "repo_name": "live-x",
+        "project_name": "live-x",
+        "modules": modules,
+        "project_id": "p",
+        "repo_id": "r",
+    }
+
+    pipeline_helpers.trigger_scaffold(ctx)
+
+    return owned, published[0]
+
+
+def test_the_scaffold_trigger_owns_one_registry_repository_per_module(monkeypatch):
+    owned, _ = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend", "tg_bot"])
+
+    assert [identifier for kind, identifier in owned if kind == "registry_repository"] == [
+        pipeline_helpers.registry_repository("live-x", "backend"),
+        pipeline_helpers.registry_repository("live-x", "tg_bot"),
+    ]
+
+
+def test_the_scaffolder_is_asked_for_the_modules_the_project_was_created_with(monkeypatch):
+    """The scaffold message decides what is rendered; the project config alone does not."""
+    _, published = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend", "tg_bot"])
+
+    assert published[published.index("modules") + 1] == "backend,tg_bot"
+
+
+def test_a_backend_only_project_still_scaffolds_exactly_backend(monkeypatch):
+    owned, published = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend"])
+
+    assert published[published.index("modules") + 1] == "backend"
+    assert [identifier for kind, identifier in owned if kind == "registry_repository"] == [
+        pipeline_helpers.registry_repository("live-x", "backend")
+    ]

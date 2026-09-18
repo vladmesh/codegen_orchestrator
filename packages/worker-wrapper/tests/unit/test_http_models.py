@@ -78,3 +78,46 @@ class TestToWorkerResult:
         assert isinstance(result, WorkerBlockedResult)
         assert result.status == WorkerResultStatus.BLOCKED
         assert result.block_reason == "Need API key for external service"
+
+
+class TestFailedStepSurvivesTheBoundary:
+    """The runner names the step it failed on; the pipeline has to hear it.
+
+    Before this, `ResultRequest` modelled only success/commit/summary/reason, so
+    `step`, `error_class` and `exit_code` were dropped by Pydantic at this exact
+    boundary and a red run said only "noop runner step setup failed" in prose.
+    """
+
+    def test_failure_carries_the_step_into_the_blocked_reason(self):
+        req = ResultRequest(
+            success=False,
+            reason="noop runner step setup failed",
+            step="setup",
+            error_class="SetupFailed",
+            exit_code=2,
+        )
+        result = to_worker_result(req)
+        assert isinstance(result, WorkerBlockedResult)
+        assert result.block_reason == (
+            "noop runner step setup failed (step=setup, error_class=SetupFailed, exit_code=2)"
+        )
+
+    def test_a_failure_without_step_facts_reads_exactly_as_before(self):
+        req = ResultRequest(success=False, reason="Need API key for external service")
+        assert to_worker_result(req).block_reason == "Need API key for external service"
+
+    def test_partial_step_facts_are_reported_without_inventing_the_rest(self):
+        req = ResultRequest(success=False, reason="agent gave up", step="push")
+        assert to_worker_result(req).block_reason == "agent gave up (step=push)"
+
+    def test_exit_code_zero_is_a_value_not_an_absence(self):
+        req = ResultRequest(success=False, reason="agent gave up", exit_code=0)
+        assert to_worker_result(req).block_reason == "agent gave up (exit_code=0)"
+
+    def test_step_facts_are_refused_on_a_success(self):
+        with pytest.raises(ValidationError):
+            ResultRequest(success=True, commit="abc123", summary="done", step="setup")
+
+    def test_empty_step_is_refused_rather_than_carried(self):
+        with pytest.raises(ValidationError):
+            ResultRequest(success=False, reason="failed", step="  ")

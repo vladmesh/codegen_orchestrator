@@ -18,6 +18,17 @@ dev = [
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
     "copier>=9.17.1",
+    # The pinned kit's own tooling, at exactly the commit the vendored render
+    # resolves (`shared/tests/fixtures/<pin>/pyproject.toml`). It is what
+    # `make lint` and the product's `.githooks` run on the stand, so the offline
+    # level-1 change-set gate runs the real checks rather than a re-implementation.
+    # `tests/unit/test_level1_change_set.py` fails if this pin and the fixture's
+    # ever drift apart.
+    "codegen-kit-tooling",
+    # The two other binaries the kit's own `make lint` / `pre-push` run, so the
+    # offline gate runs them rather than describing them.
+    "xenon>=0.9.3",
+    "deptry>=0.22.0",
     # Workspace members (all services + packages)
     "api",
     "langgraph-orchestrator",
@@ -54,6 +65,10 @@ worker-manager = { workspace = true }
 infra-service = { workspace = true }
 scaffolder = { workspace = true }
 worker-wrapper = { workspace = true }
+
+# Not a workspace member: the product kit's tooling, pulled at the same commit the
+# vendored fixture's own `pyproject.toml` resolves.
+codegen-kit-tooling = { git = "https://github.com/vladmesh/codegen-product-kit.git", rev = "9a4acfd8b75fec4aec4ec4bd48805f7f9a2e8914" }
 
 # No build-system — this is a virtual workspace root (not a distributable package)
 
