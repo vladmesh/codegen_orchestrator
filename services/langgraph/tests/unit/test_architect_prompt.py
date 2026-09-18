@@ -100,6 +100,30 @@ class TestUsageExampleDirectives:
             "(requirement balance)"
         ) in SYSTEM_PROMPT
 
+    def test_an_example_qa_cannot_reach_is_rewritten_or_returned_never_written(self):
+        prompt = self._prompt()
+        assert "**QA is one identity that cannot start over.**" in prompt
+        assert (
+            "Central QA acts as a single fixed Telegram identity whose product state "
+            "persists across rounds and across stories, and it cannot reset that state, "
+            "replace it, or act as a second user."
+        ) in prompt
+        assert (
+            "An example that can only be observed from a state that identity cannot be in "
+            '— a fresh user, an empty history, "no operations yet", another calendar month '
+            "— is not a check"
+        ) in prompt
+        assert "**Rewrite it into what QA can observe.**" in prompt
+        assert "becomes a check relative to the value QA reads first" in prompt
+        assert "one criterion stands for both" in prompt
+        assert (
+            "A precondition that is merely a time the identity cannot occupy — another "
+            "calendar month, a past period — has no rewrite and is not one."
+        ) in prompt
+        assert "**Return the requirement to the user**" in prompt
+        assert "`record_requirement_coverage(requirement_id=..., returned_reason=...)`" in prompt
+        assert "make the reason name the unreachable precondition" in prompt
+
     def test_a_stateless_reply_keeps_its_exact_wording(self):
         prompt = self._prompt()
         assert "A reply that does not depend on earlier records keeps its exact wording" in prompt
