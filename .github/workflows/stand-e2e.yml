@@ -625,7 +625,10 @@ jobs:
           target_key="${RUNNER_TEMP}/stand-target.key"
           trap 'shred -u "${registration_input}" "${target_key}" || true' EXIT INT TERM
           export REGISTRATION_INPUT_PATH="${registration_input}"
-          export TARGET_KEY_PATH="${target_key}"
+          # The same writer the bootstrap key file uses: the secret's stored
+          # value may have lost its final newline, and a key file without one is
+          # refused by the API (and by OpenSSH) as a truncated paste.
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${target_key}"
           python3 -c '
           import json
           import os
@@ -635,7 +638,6 @@ jobs:
               "target_ip": os.environ["TARGET_IP"],
               "run_tag": os.environ["STAND_RUN_TAG"],
           }) + "\n")
-          Path(os.environ["TARGET_KEY_PATH"]).write_text(os.environ["SSH_PRIVATE_KEY"])
           '
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           tar -C "${RUNNER_TEMP}" -cf - stand-target.json stand-target.key | \

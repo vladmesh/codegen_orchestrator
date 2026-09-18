@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-18
 
+- The stand target key file is written with `printf '%s\n'` like the bootstrap one, so a secret without a
+  trailing newline no longer fails registration, and an API refusal now prints its status and reason.
 - The level-1 stand suite builds a Telegram-bot product: modules `backend` and `tg_bot`, its token bound
   through `POST /projects/{id}/telegram/token`, and a change set per task the scripted developer applies.
 - `POST /result` carries the runner's `step`, `error_class` and `exit_code` into the blocked reason, so a
