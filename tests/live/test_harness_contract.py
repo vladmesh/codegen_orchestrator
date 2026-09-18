@@ -5774,36 +5774,99 @@ def test_an_unreadable_branch_diff_is_a_stated_reason_not_a_silent_pass(monkeypa
     assert "level1_scripted_path" not in ctx
 
 
-def test_a_failed_engineering_task_names_the_runner_step_it_died_on():
-    """Card 1307's carried finding, read back at the other end of the pipeline."""
-    ctx = {
-        "task_diagnostics": {
-            "task-1": {"status": TaskStatus.DONE, "failure_metadata": None},
-            "task-2": {
-                "status": TaskStatus.FAILED,
-                "failure_metadata": {
-                    "reason": (
-                        "Worker gave up: noop runner step setup failed "
-                        "(step=setup, error_class=SetupFailed, exit_code=2)"
-                    )
-                },
-            },
-        }
-    }
+def _gave_up_reason(**failure) -> str:
+    """The reason a scripted step failure really carries, built by the real code.
 
-    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {"task-2": "setup"}
-    assert ctx["engineering_failure_steps"] == {"task-2": "setup"}
+    The runner POSTs `success=false` with the step it died on; the wrapper folds
+    that into `WorkerBlockedResult.block_reason`; `worker_spawner` hands the same
+    string on as `gave_up_reason`; and `handle_worker_gave_up` stores it verbatim
+    as the planning task's `failure_metadata.reason`. Running the first two links
+    here rather than typing their output out is what keeps this test honest when
+    that format moves.
+    """
+    from worker_wrapper.http_models import ResultRequest, to_worker_result
+
+    return to_worker_result(ResultRequest(success=False, **failure)).block_reason
+
+
+def _diagnostics_for(ctx: dict, *tasks: dict) -> None:
+    """Record each task the way the suite records a task it read from the API."""
+    for task in tasks:
+        pipeline_helpers._record_task_diagnostic(ctx, task)
+
+
+def test_a_failed_engineering_task_names_the_runner_step_it_died_on():
+    """Card 1307's carried finding, read back at the other end of the pipeline.
+
+    Built from the status the control plane really writes: a gave-up sends the
+    planning task to `WAITING_HUMAN_REVIEW` and writes `failure_metadata` there,
+    while the `FAILED` path writes no `failure_metadata` at all. A fixture that
+    paired `FAILED` with a reason described a combination the pipeline never
+    produces, so it could be green while a real red run carried no step name.
+    """
+    reason = _gave_up_reason(
+        reason="noop runner step setup failed",
+        step="setup",
+        error_class="SetupFailed",
+        exit_code=2,
+    )
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None},
+        {
+            "id": "task-2",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": f"Worker gave up: {reason}"},
+        },
+    )
+
+    recorded = pipeline_helpers.record_engineering_failure_steps(ctx)
+
+    assert recorded == {"task-2": {"status": "waiting_human_review", "step": "setup"}}
+    assert ctx["engineering_failure_steps"] == recorded
+    # The park is part of the evidence, not a detail the step name hides: the
+    # sprint's "Zero intervention" item forbids a story reaching this state.
+    assert recorded["task-2"]["status"] == TaskStatus.WAITING_HUMAN_REVIEW.value
+
+
+def test_a_technical_engineering_failure_is_recorded_even_with_no_metadata():
+    """`handle_engineering_failure` writes `FAILED` and no `failure_metadata`.
+
+    That run has no step to name, and the evidence says so rather than staying
+    silent about a task that failed.
+    """
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.FAILED, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "failed", "step": None}
+    }
 
 
 def test_a_failure_that_names_no_step_is_recorded_as_naming_none():
     """An unnamed failure is reported as unnamed rather than guessed at."""
-    ctx = {
-        "task_diagnostics": {
-            "task-1": {"status": TaskStatus.FAILED, "failure_metadata": {"reason": "timeout"}}
-        }
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {
+            "id": "task-1",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": "Worker gave up: timeout"},
+        },
+    )
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "waiting_human_review", "step": None}
     }
 
-    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {"task-1": None}
+
+def test_a_settled_run_names_no_failed_step():
+    """The green case the suite asserts: nothing unsettled, so nothing recorded."""
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {}
 
 
 def test_every_module_of_a_product_owns_its_registry_repository():

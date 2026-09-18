@@ -11,6 +11,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   failed scripted step names the step instead of being dropped at the wrapper boundary.
 - The live scaffold trigger sends the project's own module list and owns a registry repository per module,
   so a two-module product is rendered whole and leaves no unowned image behind.
+- The level-1 change set is put through the product's own gate offline: `codegen-kit-tooling` is a test-only
+  dependency at the commit the pinned render resolves, and `tests/unit/test_level1_change_set.py` runs
+  `framework.generate`, spec validation, spec compliance, controller-sync, ruff, xenon and deptry over the
+  applied tree, so a change set the stand would reject fails in CI instead.
 
 - The no-LLM developer runner applies a change set fenced in `/workspace/TASK.md`, runs the product's
   `make setup` and commits through its own hooks, so a level-1 E2E run really changes code without a model.

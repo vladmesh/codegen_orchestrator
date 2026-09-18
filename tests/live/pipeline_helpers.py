@@ -1110,6 +1110,12 @@ async def bind_product_bot_token(api: httpx.AsyncClient, ctx: dict, token: str) 
     is detected: `_check_no_poller` probes `getUpdates` and a live long-poller
     makes Telegram answer 409, which comes back as `poller_active`. That is a
     refusal here rather than a second probe of our own — one asker, one answer.
+
+    What that probe proves is one-directional and the suite does not overstate
+    it: anything that is not a 409 is recorded as a passed check, so an
+    unreachable or odd Telegram answer reads as "no poller seen" rather than as
+    "no poller". The binding itself is what actually keeps the bot to this run —
+    one live project may hold it, and teardown releases it.
     """
     route = TELEGRAM_TOKEN_ROUTE.format(project_id=ctx["project_id"])
     response = await api.post(route, json={"token": token})
@@ -3869,21 +3875,45 @@ def record_level1_scripted_path(ctx: dict) -> None:
     )
 
 
-def record_engineering_failure_steps(ctx: dict) -> dict[str, str | None]:
-    """Name the runner step behind every failed engineering task of this run.
+#: The task statuses an engineering failure really lands on, and why both.
+#:
+#: A scripted step failure POSTs `success=false`, which becomes a
+#: `WorkerBlockedResult` and reaches `handle_worker_gave_up`
+#: (`services/langgraph/src/consumers/engineering_result_handler.py:343`). That
+#: handler transitions the planning task to `WAITING_HUMAN_REVIEW` and is the
+#: **only** writer of `failure_metadata` — the field that carries the reason the
+#: wrapper stamped `(step=…, error_class=…, exit_code=…)` into. The path that
+#: does set `FAILED`, `handle_engineering_failure`, writes no `failure_metadata`
+#: at all. Reading `FAILED` alone therefore collects nothing on exactly the run
+#: whose step name is wanted, so both are read.
+ENGINEERING_FAILURE_STATUSES = (TaskStatus.FAILED, TaskStatus.WAITING_HUMAN_REVIEW)
+
+
+def record_engineering_failure_steps(ctx: dict) -> dict[str, dict[str, str | None]]:
+    """Name the runner step behind every unsettled engineering task of this run.
 
     The scripted runner names the step it died on and the wrapper now carries it
     into the blocked reason, which the control plane stores as the task's
     `failure_metadata.reason`. This lifts it back out so a red run's evidence
     says `setup` or `commit` rather than only that engineering failed.
+
+    The status is recorded beside the step rather than dropped, because the two
+    say different things and one of them is never normal: a gave-up parks the
+    task in `waiting_human_review`, which the sprint's "Zero intervention" item
+    forbids outright. The evidence has to name the step *and* show the park, so
+    reading the step is never mistaken for accepting the state it came from.
     """
-    steps: dict[str, str | None] = {}
+    steps: dict[str, dict[str, str | None]] = {}
     for task_id, diagnostic in (ctx.get("task_diagnostics") or {}).items():
-        if diagnostic.get("status") != TaskStatus.FAILED:
+        status = diagnostic.get("status")
+        if status not in ENGINEERING_FAILURE_STATUSES:
             continue
         reason = (diagnostic.get("failure_metadata") or {}).get("reason") or ""
         match = re.search(r"\bstep=([A-Za-z0-9_]+)", reason)
-        steps[task_id] = match.group(1) if match else None
+        steps[task_id] = {
+            "status": str(getattr(status, "value", status)),
+            "step": match.group(1) if match else None,
+        }
     ctx["engineering_failure_steps"] = steps
     return steps
 

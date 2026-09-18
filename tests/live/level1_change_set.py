@@ -53,7 +53,13 @@ LEVEL1_ENDPOINT_PATH = "/level1/marker"
 LEVEL1_COMMAND = "level1"
 
 BACKEND_MANIFEST = "services/backend/manifest.yaml"
-BACKEND_ENDPOINT_MODULE = "services/backend/src/app/api/v1/level1.py"
+#: Where the endpoint module goes. The kit's own gate
+#: (``framework.enforce_spec_compliance``) forbids an ``APIRouter()`` call
+#: outside ``app/api/routers/`` — ``in_routers = "routers" in file_path.parts``
+#: — so the product's hand-written route lives there rather than beside
+#: ``v1/health.py``. The generator writes its own routers to
+#: ``src/generated/routers/``, so this package stays the product's own.
+BACKEND_ENDPOINT_MODULE = "services/backend/src/app/api/routers/level1.py"
 BACKEND_ROUTER = "services/backend/src/app/api/router.py"
 BOT_MENU_MODULE = "services/tg_bot/src/menu.py"
 BOT_MAIN = "services/tg_bot/src/main.py"
@@ -162,8 +168,8 @@ def _backend_router() -> str:
     text = _substitute(
         _fixture_text(BACKEND_ROUTER),
         "from .v1.health import router as health_router\n",
-        "from .v1.health import router as health_router\n"
-        "from .v1.level1 import router as level1_router\n",
+        "from .routers.level1 import router as level1_router\n"
+        "from .v1.health import router as health_router\n",
         where=BACKEND_ROUTER,
     )
     return _substitute(

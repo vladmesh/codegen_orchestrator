@@ -82,6 +82,7 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.telegram import TokenCheckName
 from shared.contracts.queues.deploy import DeployOutcome
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -389,10 +390,24 @@ class TestFullPipeline:
         binding = pipeline.get("bot_binding")
         assert binding and binding["status"] == "ok", binding
         assert binding["bot_username"], binding
-        # The route runs the whole chain server-side; every layer it reports
-        # must have passed, including the external-poller probe that is the
-        # other half of "this run has the bot to itself".
+        # The route runs the whole chain server-side, and no layer it reports may
+        # have refused. What that proves is asymmetric and worth being exact
+        # about: the database checks are decisive — no other live project holds
+        # this bot — while the two Telegram probes only ever prove *activity*.
+        # `_check_no_poller` records `passed=True` for anything that is not a 409
+        # (`services/api/src/utils/telegram_token.py:188-191`), so an unreachable
+        # or odd Telegram answer reads as "no poller seen", not as "no poller".
+        # That is the right default for the route — refusing a run because
+        # Telegram had a moment would be worse — and it is why this asserts that
+        # every check reported is unrefused rather than that every check proved
+        # its subject absent. The run's real protection against a second poller
+        # is the binding itself: one project may hold the bot at a time, and
+        # teardown releases it.
         assert [check["name"] for check in binding["checks"] if not check["passed"]] == []
+        assert {check["name"] for check in binding["checks"]} >= {
+            TokenCheckName.TELEGRAM_WEBHOOK,
+            TokenCheckName.TELEGRAM_POLLER,
+        }, binding
 
     async def test_the_worker_took_the_scripted_path(self, pipeline):
         """Both tasks carried a change set, and the branch carries their changes.
