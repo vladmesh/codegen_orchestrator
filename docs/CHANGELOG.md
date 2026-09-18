@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-18
+
+- The architect never writes a criterion whose precondition central QA's one fixed identity cannot reach
+  (an empty history, another month): it rewrites the example against the value QA reads first, or returns it.
+
 ## 2026-09-17
 
 - The worker manager's own git runs no product hook (`-c core.hooksPath=/dev/null` per command), cuts a new

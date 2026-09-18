@@ -118,6 +118,31 @@ product. A worked line:
 
 A reply that does not depend on earlier records keeps its exact wording, as above.
 
+**QA is one identity that cannot start over.** Central QA acts as a single \
+fixed Telegram identity whose product state persists across rounds and across \
+stories, and it cannot reset that state, replace it, or act as a second user. \
+An example that can only be observed from a state that identity cannot be in — \
+a fresh user, an empty history, "no operations yet", another calendar month — \
+is not a check: written as a criterion it fails on a correct product and parks \
+the story. Two outcomes, in this order:
+
+- **Rewrite it into what QA can observe.** The read-first rule above extends \
+from an accumulated value to an unreachable precondition: an example whose \
+precondition is an empty or fresh state becomes a check relative to the value \
+QA reads first, in the example's reply wording where that wording does not \
+depend on the unreachable state. Where that rewrite collapses the example into \
+the check another example of the same requirement already carries, one \
+criterion stands for both — "one criterion per usage example" is never a \
+reason to emit a line QA cannot run. A precondition that is merely a time the \
+identity cannot occupy — another calendar month, a past period — has no \
+rewrite and is not one.
+- **Return the requirement to the user** with \
+`record_requirement_coverage(requirement_id=..., returned_reason=...)` when no \
+observable rewrite exists, and make the reason name the unreachable \
+precondition, e.g. "unreachable precondition: the check needs a user with no \
+operations this calendar month, and QA's one identity already has them". The \
+examples of a returned requirement get no criterion, as above.
+
 **Return an undefined input; never narrow it.** Read each must-requirement \
 against its usage examples and the limitations. When the requirement covers an \
 input the user sends, and neither its examples nor a limitation settle a form of \

@@ -14,6 +14,7 @@ check fail a correct bot.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 import re
 from typing import Literal
 from unittest.mock import MagicMock, patch
@@ -202,12 +203,21 @@ def returned_requirements(api: FinanceBotApi) -> dict[str, str]:
     return {rid: reason for rid, (_, _, reason) in api.coverage.items() if reason}
 
 
-def assert_one_criterion_per_usage_example(api: FinanceBotApi) -> None:
+def assert_one_criterion_per_usage_example(
+    api: FinanceBotApi, *, unreachable: Collection[str] = ()
+) -> None:
     """Every example of a planned requirement is its own QA line naming that requirement.
 
     An example whose sending is an upload may be checked through a GET of its
     observable or carry the `not QA-verifiable` marker, but it has a line. The
     examples of a returned requirement have none: nothing builds them yet.
+
+    `unreachable` holds the `user_sends` of examples whose precondition central
+    QA's one fixed identity cannot reach — an empty history, "no operations
+    yet", another calendar month. Such an example owes no line of its own,
+    because the rewrite may collapse it into the check a sibling example
+    already carries; a planned requirement still owes at least one criterion,
+    so this is never a licence to drop its examples.
     """
     assert api.criteria is not None, "update_acceptance_criteria was never called"
     lines = [line.strip() for line in api.criteria.splitlines() if line.strip().startswith("- ")]
@@ -215,11 +225,16 @@ def assert_one_criterion_per_usage_example(api: FinanceBotApi) -> None:
     for requirement in api.content.must_requirements:
         if requirement.id in returned:
             continue
-        examples = [e for e in api.content.usage_examples if e.requirement_id == requirement.id]
+        all_examples = [e for e in api.content.usage_examples if e.requirement_id == requirement.id]
+        examples = [e for e in all_examples if e.user_sends not in unreachable]
         naming = [line for line in lines if _names(requirement.id).search(line)]
         assert len(naming) >= len(examples), (
             f"requirement {requirement.id} has {len(examples)} usage example(s) but "
             f"{len(naming)} criterion line(s) name it:\n{api.criteria}"
+        )
+        assert naming or not all_examples, (
+            f"requirement {requirement.id} is planned and has usage example(s) but no "
+            f"criterion line names it:\n{api.criteria}"
         )
         for line in naming:
             assert _QA_ACTION.search(line) or _NOT_QA_VERIFIABLE.search(line), (
