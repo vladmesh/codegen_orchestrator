@@ -53,6 +53,7 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.qa_max_fix_attempts": 2,
         "supervisor.resource_wait_timeout_minutes": 60,
         "supervisor.resource_wait_metrics_freshness_seconds": 300,
+        "supervisor.qa_handoff_target_held_max_minutes": 4,
         "supervisor.temporary_access_ttl_minutes": 60,
         "supervisor.temporary_access_grant_stale_minutes": 15,
         "supervisor.temporary_access_max_grant_attempts": 3,

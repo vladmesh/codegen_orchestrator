@@ -369,6 +369,26 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "temporary-access-grants/", params={"live": "true"})
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
 
+    async def live_temporary_access_grant_holding_target(
+        self, project_id: str, target_application_id: int
+    ) -> TemporaryAccessGrantDTO | None:
+        """The grant a refused handoff is waiting behind, if it is still readable.
+
+        The create endpoint answers a held target with 409 and names the holder
+        in prose. A deferral has to report the holder as fields, so it reads the
+        record instead of parsing that sentence.
+        """
+        resp = await self.request(
+            "GET",
+            "temporary-access-grants/",
+            params={"live": "true", "project_id": project_id},
+        )
+        for row in resp.json():
+            grant = TemporaryAccessGrantDTO.model_validate(row)
+            if grant.target_application_id == target_application_id:
+                return grant
+        return None
+
     async def get_live_temporary_access_grant_for_run(
         self, qa_run_id: str
     ) -> TemporaryAccessGrantDTO | None:

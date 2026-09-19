@@ -2362,6 +2362,97 @@ class TestSuperviseTestingStories:
         mock_notify.assert_called_once()
 
 
+class TestAQueuedQARunWhoseAccessWasRefused:
+    """A handoff the target refused is retried on the next tick, not in five minutes.
+
+    Stand-e2e run 35470184817: the second story's handoff was refused the target
+    at 22:08:45 because the first story's grant still held it, and nothing tried
+    again — the only retry was the five-minute recovery window, which the
+    harness's own QA wait beat by sixteen seconds. Waiting it out is wrong here
+    regardless of who watches: whether the handoff landed is not a question about
+    the clock, it is whether a grant exists for the run.
+    """
+
+    @staticmethod
+    def _queued_access_run(**overrides):
+        plan = QAHandoffPlan(
+            qa_message=_qa_handoff_plan()["qa_message"],
+            access={
+                "target_application_id": 42,
+                "target_base_url": "https://example.com",
+                "head_sha": "a" * 40,
+            },
+        ).model_dump(mode="json")
+        defaults = {
+            "id": "qa-1",
+            "type": RunType.QA,
+            "status": RunStatus.QUEUED,
+            "run_metadata": {QA_HANDOFF_KEY: plan},
+            "created_at": datetime.now(UTC),
+        }
+        defaults.update(overrides)
+        return _make_run(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_grant_is_handed_off_again_this_tick(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._queued_access_run()
+        # The refusal left no grant behind, which is the whole test of whether
+        # the handoff landed.
+        api_client.temporary_access_grant_exists_for_run.return_value = False
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["recovered"] == 1
+        api_client.create_temporary_access_grant.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_already_has_a_grant_is_left_to_the_sweep(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._queued_access_run()
+        api_client.temporary_access_grant_exists_for_run.return_value = True
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["recovered"] == 0
+        api_client.create_temporary_access_grant.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_publish_only_handoff_still_waits_out_its_recovery_window(
+        self, api_client, redis_client
+    ):
+        """The clock still bounds the plan whose landing only the clock can tell."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            status=RunStatus.QUEUED,
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan()},
+            created_at=datetime.now(UTC),
+        )
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["recovered"] == 0
+        redis_client.publish_message.assert_not_awaited()
+
+
 class TestDeployRefusedByAdmission:
     """A deploy the platform could not place must never terminate the story, and
     each refusal disposition must get its own behaviour.
