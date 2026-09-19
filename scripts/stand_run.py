@@ -63,6 +63,7 @@ from shared.stand_deadlines import (
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
     MEGA_BRIEF_PRODUCTIVE_SECONDS,
+    NOOP_SUITE_TIMEOUT_SECONDS,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,16 +97,10 @@ COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
 _INSIDE_RECREATE_GATE = False
-# The noop lifecycle has 3,800s of explicit waits at its worst case: scaffold,
-# two ordered engineering Tasks, story aggregation, deploy/run/outcome, the
-# bounded public health probe, QA, completed-story/PO delivery, deployment
-# record, undeploy Run and terminal resource release. The scaffold share is 240s
-# rather than 120s because `mega-noop` scaffolds the two-module level-1 product
-# and `shared.stand_deadlines.scaffold_budget_seconds` sizes the wait by module
-# count. The cap leaves 700s for
-# manifest teardown and diagnostics; the LLM route does not run this lifecycle
-# acceptance yet. See tests/live/README.md for the ledger.
-NOOP_SUITE_TIMEOUT_SECONDS = 4500
+# The noop lifecycle's cap is not stated here: it is derived in
+# `shared/stand_deadlines.py` from the waits themselves, so the runner, its test
+# and `tests/live/README.md` cannot drift apart again. Since card 1316 the
+# lifecycle runs two stories on one project, which is what moved it.
 LLM_SUITE_TIMEOUT_SECONDS = 3600
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300

@@ -30,6 +30,7 @@ from scripts.stand_run import (
     write_junit_report,
     write_qa_executor,
 )
+from shared import stand_deadlines
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -92,27 +93,81 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
         assert SUITES[name].timeout_seconds > 0
 
 
-def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
-    """A new lifecycle wait must not silently exceed the named suite cap."""
-    explicit_waits = (
-        120  # scaffold
-        + 840  # two ordered noop engineering Tasks
-        + 60  # story aggregation after both Tasks are done
-        + 420  # merged deploy Run
-        + 420  # deploy
-        + 120  # typed deploy outcome
-        + 320  # five-attempt public health probe (two 30s paths + four sleeps)
-        + 300  # deterministic QA
-        + 180  # Story.completed
-        + 180  # durable PO notification
-        + 120  # exact service-deployment record
-        + 300  # undeploy Run
-        + 300  # terminal application/resource release
-    )
+def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
+    """The cap covers the lifecycle, and the ledger is the waits it is made of.
 
-    assert explicit_waits == 3680
-    assert NOOP_SUITE_TIMEOUT_SECONDS == 4500
-    assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 800
+    The ledger is in `shared/stand_deadlines.py` and the cap is checked against
+    it there, at import. What this asserts is what that check cannot: that the
+    ledger's entries are the *live* bounds the harness waits on rather than
+    copies of them, and that the runner spends the derived cap.
+
+    Round 5 of card 1316 is why the identity is asserted entry by entry. It
+    booked 420 s for the merged deploy Run while `tests/live` had been waiting
+    `DEPLOY_RUN_TIMEOUT` — 1320 s, the old 420 plus the producer's 900 s image
+    bound — so the lifecycle understated itself by 1800 s while a cap *derived*
+    from the ledger read as checked. A number that has to be remembered is not a
+    ledger; a number that is the constant cannot drift from it.
+    """
+    first = dict(stand_deadlines.NOOP_FIRST_STORY_WAITS)
+    second = dict(stand_deadlines.NOOP_SECOND_STORY_WAITS)
+    teardown = dict(stand_deadlines.NOOP_TEARDOWN_WAITS)
+
+    # Every entry is the constant the wait is made from, not a transcription.
+    assert first["scaffold"] == stand_deadlines.scaffold_budget_seconds(
+        stand_deadlines.NOOP_MODULE_COUNT
+    )
+    assert first["two ordered noop engineering Tasks"] == 2 * stand_deadlines.ENGINEERING_TIMEOUT
+    assert (
+        first["merged deploy Run, including the product's own image publication"]
+        == stand_deadlines.DEPLOY_RUN_TIMEOUT
+        == second["extension story: merged deploy Run, including image publication"]
+    )
+    assert first["deploy"] == stand_deadlines.DEPLOY_TIMEOUT
+    assert first["typed deploy outcome"] == stand_deadlines.DEPLOY_OUTCOME_TIMEOUT
+    assert first["public health probe"] == stand_deadlines.health_probe_budget_seconds()
+    assert first["deterministic QA"] == stand_deadlines.QA_RUN_TIMEOUT
+    assert first["Story.completed"] == stand_deadlines.STORY_COMPLETION_TIMEOUT
+    assert first["durable PO completion notification"] == stand_deadlines.OWNER_NOTIFICATION_TIMEOUT
+    assert first["exact service-deployment record"] == stand_deadlines.DEPLOY_OUTCOME_TIMEOUT
+    assert (
+        first["Story aggregation after both Tasks are done"]
+        == stand_deadlines.STORY_AGGREGATION_TIMEOUT
+    )
+    assert second["extension story: one noop engineering Task"] == (
+        stand_deadlines.ENGINEERING_TIMEOUT
+    )
+    assert second["extension story: typed deploy outcome, covering the deploy itself"] == (
+        stand_deadlines.SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT
+    )
+    assert second["extension story: the application's own terminal status"] == (
+        stand_deadlines.DEPLOY_TIMEOUT
+    )
+    assert set(teardown.values()) == {stand_deadlines.UNDEPLOY_TIMEOUT}
+
+    # The totals the README states, and the cap the runner actually spends.
+    assert sum(first.values()) == 4100
+    assert sum(second.values()) == 3740
+    assert stand_deadlines.noop_lifecycle_explicit_waits() == 8440
+    assert NOOP_SUITE_TIMEOUT_SECONDS == 9300
+    assert SUITES["mega-noop"].timeout_seconds == NOOP_SUITE_TIMEOUT_SECONDS
+    assert (
+        NOOP_SUITE_TIMEOUT_SECONDS - stand_deadlines.noop_lifecycle_explicit_waits()
+        >= stand_deadlines.NOOP_TEARDOWN_RESERVE_SECONDS
+    )
+    # And it fits the one job the workflow gives the whole run: 45m provisioning,
+    # 10m pre-provisioning reserve, preflight, readiness, the executor switch,
+    # the suite, the sweep and the job reserve (`stand-e2e.yml`, 360 minutes).
+    noop_job_seconds = (
+        stand_run.STAND_PROVISIONING_TIMEOUT_SECONDS
+        + stand_run.STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + stand_run.PREFLIGHT_TIMEOUT_SECONDS
+        + stand_run.READINESS_TIMEOUT_SECONDS
+        + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
+        + NOOP_SUITE_TIMEOUT_SECONDS
+        + stand_run.SWEEP_TIMEOUT_SECONDS
+        + stand_run.STAND_JOB_RESERVE_SECONDS
+    )
+    assert noop_job_seconds <= stand_run.STAND_JOB_TIMEOUT_MINUTES * 60
 
 
 def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():

@@ -33,6 +33,7 @@ ENV_CONTRACT_FILENAME = "env.contract.yaml"
 ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
 STORY_BRANCH_DIFF_MARKER = "STORY_BRANCH_DIFF:"
+STORY_BRANCH_BASE_PROBE_MARKER = "STORY_BRANCH_BASE_PROBE:"
 MAIN_HEAD_PROBE_MARKER = "MAIN_HEAD_PROBE:"
 # How the `story-branch-diff` probe chose what to compare the branch against.
 # The choice is a fact of the payload rather than an assumption of its reader:
@@ -248,6 +249,69 @@ async def probe_story_branch(
         "status": comparison["status"],
         "ahead_by": comparison["ahead_by"],
         "behind_by": comparison["behind_by"],
+    }
+    print(marker + json.dumps(payload))
+    return payload
+
+
+async def probe_story_branch_base(
+    *,
+    owner: str,
+    repo: str,
+    branch: str,
+    contains_sha: str,
+    marker: str = STORY_BRANCH_BASE_PROBE_MARKER,
+) -> dict[str, Any]:
+    """Print where one story branch was cut from, and what that commit contains.
+
+    The second story of a project is cut in a workspace the first story left
+    behind, and card 1305 is the run where it was cut from that workspace's stale
+    HEAD instead of the remote default branch. The fork point is the compare's
+    own ``merge_base_commit`` between the default branch and the branch, and
+    whether it carries a given commit is GitHub's answer to a second comparison —
+    ``identical`` or ``ahead`` from that commit — never something inferred from
+    the two SHAs being different.
+
+    One degenerate case, stated so a reader of the payload is not misled: once
+    the branch has merged it is contained in the default branch, so the compare's
+    merge base *is* its head and this reports the head rather than the fork
+    point. The containment answer is unchanged by that — the fork point is an
+    ancestor of the head, so a head that does not carry the commit is a fork
+    point that does not either — and the caller asks before the merge, so the
+    payload normally names the fork point itself.
+    """
+    gh = GitHubAppClient()
+    repository = await gh.get_repo(owner, repo)
+    base_ref = repository.default_branch
+    token = await gh.get_token(owner, repo)
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{owner}/{repo}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        head = await client.get(f"{api}/branches/{branch}", headers=headers)
+        head.raise_for_status()
+        head_sha = head.json()["commit"]["sha"]
+
+        forward = await client.get(f"{api}/compare/{base_ref}...{branch}", headers=headers)
+        forward.raise_for_status()
+        merge_base = forward.json()["merge_base_commit"]["sha"]
+
+        containment = await client.get(
+            f"{api}/compare/{contains_sha}...{merge_base}", headers=headers
+        )
+        containment.raise_for_status()
+        status = containment.json()["status"]
+
+    payload = {
+        "branch": branch,
+        "base_ref": base_ref,
+        "head_sha": head_sha,
+        "merge_base": merge_base,
+        "contains_sha": contains_sha,
+        # `identical` is the fork point being that commit; `ahead` is the fork
+        # point being a descendant of it. Both are containment; `behind` and
+        # `diverged` are not.
+        "status": status,
+        "contains": status in ("identical", "ahead"),
     }
     print(marker + json.dumps(payload))
     return payload
@@ -754,6 +818,14 @@ async def _run(args: argparse.Namespace) -> None:
             branch=args.branch,
             marker=args.marker,
         )
+    elif args.command == "story-branch-base-probe":
+        await probe_story_branch_base(
+            owner=args.owner,
+            repo=args.repo,
+            branch=args.branch,
+            contains_sha=args.contains_sha,
+            marker=args.marker,
+        )
     elif args.command == "story-branch-diff":
         await probe_story_branch_diff(
             owner=args.owner,
@@ -814,6 +886,13 @@ def _parser() -> argparse.ArgumentParser:
     story_branch.add_argument("--repo", required=True)
     story_branch.add_argument("--branch", required=True)
     story_branch.add_argument("--marker", default=STORY_BRANCH_PROBE_MARKER)
+
+    story_branch_base = sub.add_parser("story-branch-base-probe")
+    story_branch_base.add_argument("--owner", required=True)
+    story_branch_base.add_argument("--repo", required=True)
+    story_branch_base.add_argument("--branch", required=True)
+    story_branch_base.add_argument("--contains-sha", required=True)
+    story_branch_base.add_argument("--marker", default=STORY_BRANCH_BASE_PROBE_MARKER)
 
     story_branch_diff = sub.add_parser("story-branch-diff")
     story_branch_diff.add_argument("--owner", required=True)

@@ -48,7 +48,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two scripted engineering Tasks and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 75 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 281 min | derived worst case: initial lifecycle, two repairs plus one retry, post-deploy checks, 10m evidence/cleanup margin |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 281 min | derived worst case as `mega-brief`, with the kit install inside the engineering budget |
@@ -115,12 +115,30 @@ is not a constant: `shared/stand_deadlines.py` derives it from the product's mod
 seconds for the first rendered service and another 120 for each further one — because `make setup`
 runs `uv sync --frozen` for the root and then for every service before `framework.generate` and ruff.
 `mega-noop` scaffolds the two-module level-1 product, so its scaffold bound is 240 seconds; every
-one-module suite keeps 120. The noop lifecycle's explicit
-waits sum to at most 63m20s (`240 + 840 + 60 + 420 + 420 + 120 + 320 + 300 + 180 + 180 + 120 + 300 +
-300` seconds): scaffold; two ordered noop Tasks; Story aggregation; deploy; a bounded public health
-probe (up to two 30-second paths per attempt); deterministic QA; completed-story and durable PO
-delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
-release. The 75-minute cap leaves 11m40s for manifest-owned teardown and diagnostics. The LLM pipeline
+one-module suite keeps 120. The noop lifecycle's explicit waits are not transcribed here any more,
+and they are not transcribed in `shared/stand_deadlines.py` either: the ledger there
+(`NOOP_LIFECYCLE_WAITS`) is built from the wait constants themselves — `DEPLOY_RUN_TIMEOUT`,
+`ENGINEERING_TIMEOUT`, `QA_RUN_TIMEOUT` and the rest, which `tests/live/pipeline_helpers.py` imports
+from that same module — so a timeout that moves takes the ledger and the cap with it. The numbers
+below are what it sums to today, not a second copy of it. The ledger sums to 140m40s and the
+155-minute cap leaves 14m20s for manifest-owned teardown and diagnostics — at least the 11m40s
+reserve the ledger requires of it, which is checked where both are defined.
+
+It has three parts. The **first story** spends 68m20s (`240 + 840 + 60 + 1320 + 420 + 120 + 320 +
+300 + 180 + 180 + 120` seconds): scaffold; two ordered noop Tasks; Story aggregation; the merged
+deploy Run, whose 1320 seconds legitimately span the *product's own* CI, because no Run is created
+until the merged commit's images are observed published; deploy; the typed deploy outcome; a bounded
+public health probe (each attempt tries both health paths, each with the client timeout);
+deterministic QA; completed-story and durable PO delivery; the exact deployment record. The **second
+story on the same project** spends 62m20s (`420 + 60 + 1320 + 540 + 420 + 320 + 300 + 180 + 180`):
+one noop Task and its Story aggregation; its own merged deploy Run, with the same image-publication
+bound inside it; the typed deploy outcome, which for a second story has to cover the deploy itself,
+because the application is already `running` from the first story's deploy and stays terminal
+throughout a redeploy — the Run is the fact, not the status; the application's own terminal status
+once that Run has settled; the health probe; QA; completed-story and PO delivery. **Teardown**
+spends 10m: undeploy Run, terminal application and port-allocation release. The whole `mega-noop`
+path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, the executor switch,
+this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes. The LLM pipeline
 remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because its project is backend-only — one
 module, so one module's scaffold bound — and it does not yet run the new lifecycle
 acceptance. `mega-brief` has a 281-minute cap: 93m pre-follow-up lifecycle, up to 153m under the

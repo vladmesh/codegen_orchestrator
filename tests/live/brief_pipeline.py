@@ -26,7 +26,6 @@ from pipeline_helpers import (
     ORCHESTRATOR_ROOT,
     PO_BRIEF_ID_RE,
     PO_STORY_ID_RE,
-    QA_RUN_TIMEOUT,
     BriefScenario,
     api_client_as_internal_service,
     api_client_as_test_user,
@@ -67,6 +66,7 @@ from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.stand_deadlines import QA_RUN_TIMEOUT
 
 _PROJECT_ID_RE = re.compile(r"Project created\. ID: ([0-9a-f-]{36}),")
 
