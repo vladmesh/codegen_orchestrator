@@ -5,7 +5,7 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -111,7 +111,7 @@ from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResul
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
-from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.deploy import LIFECYCLE_ACTIONS, DeployOutcome
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
@@ -4330,6 +4330,47 @@ async def wait_owner_completion_notification(
     return None
 
 
+async def _project_deploy_runs(api_internal: httpx.AsyncClient, project_id: str) -> list[dict]:
+    """Every deploy Run of this project, not only the ones a story owns.
+
+    The capability deploys carry no story — `temporary_access` sends its
+    `DeployMessage` with `story_id=""` — so `_story_runs` cannot see them, and
+    they are exactly the deploys whose records have to be accounted for here.
+    """
+    require_unscoped_run_observer(api_internal)
+    response = await api_internal.get(
+        "/api/runs/", params={"project_id": project_id, "run_type": RunType.DEPLOY.value}
+    )
+    response.raise_for_status()
+    return [run for run in response.json() if run.get("type") == RunType.DEPLOY.value]
+
+
+_LIFECYCLE_ACTION_VALUES = frozenset(action.value for action in LIFECYCLE_ACTIONS)
+
+
+def deploys_that_record(runs: Iterable[dict]) -> list[dict]:
+    """The deploy Runs that can have written a `service_deployments` row.
+
+    `_create_deployment_record` runs once per deploy of repository state, so a
+    deploy Run writes at most one record. A stop or undeploy Run writes none: it
+    acts on an already-deployed application over SSH and never reaches the
+    deployer (`_handle_lifecycle_action`). A Run still in flight is counted,
+    because its record is written before the Run is patched terminal.
+    """
+    return [
+        run
+        for run in runs
+        if ((run.get("result") or {}).get("action")) not in _LIFECYCLE_ACTION_VALUES
+    ]
+
+
+def _newest_deployment(deployments: Sequence[dict]) -> dict | None:
+    """The row the application is currently serving: the last one written."""
+    if not deployments:
+        return None
+    return max(deployments, key=lambda row: (str(row.get("deployed_at") or ""), row.get("id") or 0))
+
+
 async def wait_service_deployment(
     api_internal: httpx.AsyncClient,
     ctx: dict,
@@ -4337,7 +4378,34 @@ async def wait_service_deployment(
     timeout: float = DEPLOY_OUTCOME_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
 ) -> dict | None:
-    """Select exactly one successful deployment for this application and SHA."""
+    """Select the deployment this application is serving, out of a log of deploys.
+
+    `service_deployments` is an immutable log of deploy attempts
+    (`shared/models/deployment.py`), and one level-1 run fills it more than
+    once. Run 35451082771 failed here with `ambiguous deployments for
+    application 1 … [2, 1]`, and the two rows were written by two different
+    deploys of the same commit: `deploy-grant-71672573103249b09aaf4cb3dbdf2a54`
+    at 15:48:00 and `temporary-access-grant-a6a508bec27d` at 15:49:14, the
+    redeploy that hands QA its temporary capability. Both carry
+    `service_name=stand-t-477db6f21739461cb11fa8e6f94cc169` — the project's
+    runtime slug, which is the only service name a deploy record ever holds,
+    whether the product has one module or two. So "exactly one row per
+    application" was never about modules: it was an assertion about a product
+    that deploys once, and this product deploys again whenever a capability is
+    granted or revoked.
+
+    What the rows cannot say by themselves is which deploy wrote them — the
+    record carries no run id — so the guard the old assertion existed for is
+    kept by counting them against the deploys that could have written them. Each
+    deploy Run of this project writes at most one record and a stop/undeploy Run
+    writes none, so more records than deploys is the same deploy recorded twice,
+    and that still fails here by name. Taking the first row instead, or dropping
+    the count, would have made a genuine duplicate invisible.
+
+    The row that is selected is the newest one, because that is the deploy the
+    application is actually running, and it still has to be a success carrying
+    this run's merged SHA.
+    """
     application_id = ctx["application_id"]
     project_id = ctx["project_id"]
     deadline = time.monotonic() + timeout
@@ -4353,14 +4421,17 @@ async def wait_service_deployment(
             if str(deployment.get("application_id")) == str(application_id)
             and str(deployment.get("project_id")) == str(project_id)
         ]
-        if len(deployments) > 1:
+        recorded_by = deploys_that_record(await _project_deploy_runs(api_internal, project_id))
+        if len(deployments) > len(recorded_by):
             ctx["service_deployment_error"] = (
-                f"ambiguous deployments for application {application_id}, project {project_id}: "
-                f"{[deployment.get('id') for deployment in deployments]}"
+                f"more deployment records than deploys for application {application_id}, "
+                f"project {project_id}: records "
+                f"{[deployment.get('id') for deployment in deployments]} from deploy runs "
+                f"{[run.get('id') for run in recorded_by]}"
             )
             return None
-        if len(deployments) == 1:
-            deployment = deployments[0]
+        deployment = _newest_deployment(deployments)
+        if deployment is not None:
             if (
                 deployment.get("result") == "success"
                 and deployment.get("deployed_sha") == ctx["deploy_head_sha"]
