@@ -20,7 +20,6 @@ import asyncio
 from live_harness import cleanup_guard
 from pipeline_helpers import (
     ENGINEERING_TIMEOUT,
-    SCAFFOLD_TIMEOUT,
     api_client_as_internal_service,
     api_client_as_test_user,
     cleanup_all,
@@ -33,7 +32,6 @@ from pipeline_helpers import (
 )
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -75,13 +73,9 @@ async def test_two_projects_run_engineering_at_the_same_time():
         ):
             for ctx in (first, second):
                 trigger_scaffold(ctx)
-            await asyncio.gather(
-                *(wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT) for ctx in (first, second))
-            )
-            for ctx in (first, second):
-                assert ctx.get("scaffold_status") == ProjectStatus.ACTIVE, (
-                    f"scaffold did not finish for {ctx['project_id']}"
-                )
+            # A scaffold that does not finish raises `ScaffoldDidNotComplete`
+            # from its own wait, naming the phase and this project.
+            await asyncio.gather(*(wait_scaffold(api, ctx) for ctx in (first, second)))
 
             # Both stories are created before either is waited on: the point is
             # that the second does not queue behind the first.

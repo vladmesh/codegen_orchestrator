@@ -34,7 +34,7 @@ from pipeline_helpers import (
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
     LLM_ENGINEERING_TIMEOUT,
     QA_RUN_TIMEOUT,
-    SCAFFOLD_TIMEOUT,
+    ScaffoldDidNotComplete,
     api_client_as_internal_service,
     api_client_as_test_user,
     api_client_as_unscoped_observer,
@@ -207,13 +207,16 @@ async def _pipeline_phases(
     if ctx.get("qa_requires_executor"):
         ctx["qa_agent_type"] = configured_qa_executor()
 
-    # Phase 1: Scaffold
+    # Phase 1: Scaffold. A scaffold that does not reach `active` raises here,
+    # naming its own phase, so it cannot be reported to the test session as an
+    # assertion about engineering or the scripted path. The dump is written
+    # first, because it is the post-mortem this failure is worth reading with.
     trigger_scaffold(ctx)
-    await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-    if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-        yield ctx
+    try:
+        await wait_scaffold(api, ctx)
+    except ScaffoldDidNotComplete:
         dump_debug(ctx, f"{debug_prefix}-scaffold")
-        return
+        raise
 
     # Phase 2: Engineering. Every poll takes an evidence pass: a retry removes
     # the previous attempt's container, and the attempt that died is exactly the

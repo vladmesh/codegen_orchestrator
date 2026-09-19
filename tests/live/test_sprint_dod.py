@@ -18,7 +18,6 @@ from pipeline_helpers import (
     ENGINEERING_TIMEOUT,
     LLM_ENGINEERING_TIMEOUT,
     ORCHESTRATOR_ROOT,
-    SCAFFOLD_TIMEOUT,
     api_client_as_internal_service,
     api_client_as_test_user,
     api_client_as_unscoped_observer,
@@ -354,8 +353,7 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
         ):
             trigger_scaffold(ctx)
-            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-            assert ctx.get("scaffold_status") == ProjectStatus.ACTIVE
+            await wait_scaffold(api, ctx)
             # A turn that lands no commit is judged failed regardless of adoption,
             # so this proof needs a turn whose result is a real push. It keeps its
             # own endpoint task rather than inheriting the mega's marker task: what

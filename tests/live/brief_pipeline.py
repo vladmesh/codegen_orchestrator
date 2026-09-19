@@ -25,7 +25,6 @@ from pipeline_helpers import (
     LLM_ENGINEERING_TIMEOUT,
     ORCHESTRATOR_ROOT,
     QA_RUN_TIMEOUT,
-    SCAFFOLD_TIMEOUT,
     BriefScenario,
     api_client_as_internal_service,
     api_client_as_test_user,
@@ -64,7 +63,6 @@ from run_evidence import RunEvidenceCollector, emit_run_evidence
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 
@@ -220,12 +218,8 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                 await wait_scaffold(
                     api,
                     ctx,
-                    timeout=SCAFFOLD_TIMEOUT,
                     on_poll=lambda: brief_poll(ctx, observed_state="scaffold_pending"),
                 )
-                if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-                    yield ctx
-                    return
 
                 report_brief_stage(ctx, "brief_admission", observed_state="scaffold_active")
                 ctx["po_input_cursor"] = po_input_cursor()

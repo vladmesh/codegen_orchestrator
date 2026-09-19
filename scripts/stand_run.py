@@ -96,10 +96,13 @@ COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
 _INSIDE_RECREATE_GATE = False
-# The noop lifecycle has 3,680s of explicit waits at its worst case: scaffold,
+# The noop lifecycle has 3,800s of explicit waits at its worst case: scaffold,
 # two ordered engineering Tasks, story aggregation, deploy/run/outcome, the
 # bounded public health probe, QA, completed-story/PO delivery, deployment
-# record, undeploy Run and terminal resource release. The cap leaves 820s for
+# record, undeploy Run and terminal resource release. The scaffold share is 240s
+# rather than 120s because `mega-noop` scaffolds the two-module level-1 product
+# and `shared.stand_deadlines.scaffold_budget_seconds` sizes the wait by module
+# count. The cap leaves 700s for
 # manifest teardown and diagnostics; the LLM route does not run this lifecycle
 # acceptance yet. See tests/live/README.md for the ledger.
 NOOP_SUITE_TIMEOUT_SECONDS = 4500
