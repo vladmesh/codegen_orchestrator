@@ -71,6 +71,7 @@ from pipeline_helpers import (
     request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
+    verify_level1_plan_is_this_runs_alone,
     verify_linear_noop_story_completion,
     verify_undeploy_residue,
     wait_application_not_deployed,
@@ -255,6 +256,14 @@ async def _level1_brief_plan_and_engineering(
     if not await verify_linear_noop_story_completion(api, ctx):
         dump_debug(ctx, f"{debug_prefix}-noop-linear-story")
         raise Level1PhaseFailed("engineering", ctx["linear_noop_completion_error"])
+    # Last, because an architect that won the claim would have spent minutes on
+    # its model turn and landed its own tasks in this story well after the
+    # admission: the roster is asked again once engineering is settled.
+    try:
+        await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_engineering")
+    except Level1PhaseFailed as failure:
+        dump_debug(ctx, f"{debug_prefix}-{failure.phase}")
+        raise
 
 
 async def _record_level1_settings_seed_evidence(ctx: dict, deploy_result) -> None:
@@ -765,6 +774,30 @@ class TestFullPipeline:
             True,
             True,
         ]
+
+    async def test_nothing_but_this_run_planned_the_story(self, pipeline):
+        """The zero-model property is proved from durable rows, not from a won race.
+
+        The level-1 run publishes its story to the live architect consumer, so
+        "the harness claimed first" is a race — and a race lost quietly would
+        spend an architect model turn on a suite that then passed. Every
+        observation the run took says the same three things: the brief's
+        planning attempt is this run's (a rival claim would have minted another
+        id), the claim was never finished out from under it, and the story
+        carries exactly the two tasks this run planned.
+        """
+        observations = pipeline["level1_plan_provenance"]
+        assert [one["when"] for one in observations] == [
+            "before_admission",
+            "after_admission",
+            "after_engineering",
+        ]
+        attempt_id = pipeline["level1_planning_attempt_id"]
+        assert {one["planning_attempt_id"] for one in observations} == {attempt_id}
+        assert [one["planning_attempt_active"] for one in observations] == [True, False, False]
+        assert all(one["task_ids"] == sorted(pipeline["task_ids"]) for one in observations)
+        assert all(one["task_planning_attempt_ids"] == [attempt_id] for one in observations)
+        assert pipeline["level1_story_started_by"] in {"harness", "architect"}
 
     async def test_the_deploy_seeded_the_confirmed_setting_into_the_product(self, pipeline):
         """Three facts, and the third is the only one the product itself says.

@@ -1760,7 +1760,15 @@ class Level1PhaseFailed(RuntimeError):
 #: the claim below lands between that bind and the architect message it
 #: publishes. It is a handful of API round trips, not work.
 LEVEL1_PLAN_CLAIM_TIMEOUT = 120
-LEVEL1_PLAN_CLAIM_POLL_INTERVAL = 0.1
+#: While the bind is plausibly still in flight the claim is retried with no
+#: delay at all, so it lands within one round trip of the bind. After that a
+#: brief that is still unbound is waited for rather than hammered.
+LEVEL1_PLAN_CLAIM_TIGHT_SECONDS = 5
+LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL = 0.5
+#: The API's own refusal for a brief that has no story yet
+#: (`services/api/src/routers/product_briefs.py:113-120`). It is the one refusal
+#: the claim retry tolerates; every other answer is an answer.
+PLAN_HAS_NO_STORY_DETAIL = "planning requires a confirmed Product Brief bound to a story"
 
 #: What the PO tools print, and the two ids the level-1 flow reads back out of
 #: them. `brief_pipeline` reads the same two.
@@ -1786,34 +1794,63 @@ def po_tool_config(ctx: dict) -> dict:
     }
 
 
-async def _claim_plan_once_the_story_is_bound(api: httpx.AsyncClient, ctx: dict) -> dict:
-    """Own this brief's plan from the moment it has a story, and before anyone else.
+def _brief_is_not_bound_yet(response: httpx.Response) -> bool:
+    """Is this the API saying the brief has no story to plan in *yet*?"""
+    if response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
+        return False
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return False
+    return detail == PLAN_HAS_NO_STORY_DETAIL
 
-    `create_story` binds the brief to the story and only then publishes the
-    story to the architect, so the brief becomes claimable a few round trips
-    before the architect can possibly hear of it. Watching for that bind from
-    here — concurrently with the tool call that performs it — is what makes the
-    level-1 plan this harness's, deterministically, rather than a race the real
-    architect sometimes wins and then spends a model turn on.
 
-    The architect that does pick the message up finds the plan owned, answers
-    `in_progress` and returns without invoking its graph
-    (`services/langgraph/src/consumers/architect.py::_claim_planning_attempt`).
+async def _claim_plan_as_soon_as_it_is_claimable(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Own this brief's plan the instant it becomes ownable, and before anyone else.
+
+    This is the claim itself in a tight retry, not a poll for the bind followed
+    by a claim: the refusal for a brief with no story yet is a known 422
+    (`PLAN_HAS_NO_STORY_DETAIL`), so retrying through it is the same wait with
+    the extra read — and its sleep — removed.
+
+    Why that is enough to win. `create_story` binds the brief to its story
+    (`POST /product-briefs/{id}/story`) and only *then* publishes the story to
+    `architect:queue` (`services/langgraph/src/agents/po/tools_stories.py`), and
+    both the bind and this claim take the brief row `SELECT ... FOR UPDATE`
+    (`_product_brief_helpers.load_brief_for_update`). A claim that arrives while
+    the bind is committing therefore queues on that row and reads the bound row
+    the moment it is released — it cannot miss the bind and retry past it. The
+    architect, meanwhile, has not yet been told the story exists.
+
+    It is still a race, and the run does not rely on having won it: a claim that
+    comes back anything but `claimed` stops the run, and
+    `verify_level1_plan_is_this_runs_alone` proves from durable state that
+    nothing else planned this brief.
     """
     brief_id = ctx["brief_id"]
-    deadline = time.monotonic() + LEVEL1_PLAN_CLAIM_TIMEOUT
+    route = f"/api/product-briefs/{brief_id}/planning-attempts/claim"
+    started = time.monotonic()
+    deadline = started + LEVEL1_PLAN_CLAIM_TIMEOUT
+    attempts = 0
     while time.monotonic() < deadline:
-        response = await api.get(f"/api/product-briefs/{brief_id}")
-        response.raise_for_status()
-        if response.json().get("story_id"):
-            claim = await api.post(f"/api/product-briefs/{brief_id}/planning-attempts/claim")
-            claim.raise_for_status()
-            return claim.json()
-        await asyncio.sleep(LEVEL1_PLAN_CLAIM_POLL_INTERVAL)
+        attempts += 1
+        response = await api.post(route)
+        if response.status_code == httpx.codes.OK:
+            ctx["level1_plan_claim_attempts"] = attempts
+            return response.json()
+        if not _brief_is_not_bound_yet(response):
+            raise Level1PhaseFailed(
+                "brief",
+                f"the plan of Product Brief {brief_id} could not be claimed: "
+                f"HTTP {response.status_code} {response.text[:300]}",
+            )
+        if time.monotonic() - started > LEVEL1_PLAN_CLAIM_TIGHT_SECONDS:
+            await asyncio.sleep(LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL)
     raise Level1PhaseFailed(
         "brief",
         f"Product Brief {brief_id} was never bound to a story within "
-        f"{LEVEL1_PLAN_CLAIM_TIMEOUT}s, so its plan could not be claimed",
+        f"{LEVEL1_PLAN_CLAIM_TIMEOUT}s, so its plan could not be claimed "
+        f"({attempts} attempts)",
     )
 
 
@@ -1847,7 +1884,7 @@ async def create_level1_confirmed_brief(api: httpx.AsyncClient, ctx: dict) -> di
         # The deploy stack can arise as soon as the story's plan is released, so
         # recovery ownership precedes the story publication.
         own_deploy_ahead(ctx)
-        claim_ahead = asyncio.create_task(_claim_plan_once_the_story_is_bound(api, ctx))
+        claim_ahead = asyncio.create_task(_claim_plan_as_soon_as_it_is_claimable(api, ctx))
         try:
             created = await po["create_story"].ainvoke(
                 {
@@ -1872,7 +1909,12 @@ async def create_level1_confirmed_brief(api: httpx.AsyncClient, ctx: dict) -> di
         claim = await claim_ahead
 
     response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
-    response.raise_for_status()
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "brief",
+            f"the confirmed brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
     ctx["brief_read"] = response.json()
     if not ctx["brief_read"].get("confirmed_at"):
         raise Level1PhaseFailed(
@@ -1895,6 +1937,151 @@ async def create_level1_confirmed_brief(api: httpx.AsyncClient, ctx: dict) -> di
     return ctx["brief_read"]
 
 
+async def _start_level1_story(api: httpx.AsyncClient, ctx: dict) -> str:
+    """Move this run's story to `in_progress`, or accept that the architect did.
+
+    The architect consumer transitions the story with `start` *before* it reaches
+    the claim that turns it away (`consumers/architect.py:611-617`) and swallows
+    its own failure there. Whichever of the two gets there first is correct, and
+    the other must not treat that as an error: `IN_PROGRESS -> IN_PROGRESS` is
+    not a declared transition (`shared/contracts/dto/story.py:50-59`), so a
+    second `start` answers 422. What matters is only where the story landed —
+    and anything that is not "it is in progress" stops the run by name, never as
+    a bare `raise_for_status`.
+    """
+    story_id = ctx["story_id"]
+    read = await api.get(f"/api/stories/{story_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} could not be read: HTTP {read.status_code} {read.text[:300]}",
+        )
+    observed = read.json().get("status")
+    if observed == StoryStatus.IN_PROGRESS.value:
+        ctx["level1_story_started_by"] = "architect"
+        return observed
+    if observed != StoryStatus.CREATED.value:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} is {observed!r}; a plan is built in a story that is "
+            f"{StoryStatus.CREATED.value} or {StoryStatus.IN_PROGRESS.value}",
+        )
+    started = await api.post(f"/api/stories/{story_id}/start", json={"actor": "live-test"})
+    if started.status_code == httpx.codes.OK:
+        ctx["level1_story_started_by"] = "harness"
+        return StoryStatus.IN_PROGRESS.value
+    # The architect started it between the read and this post. Its start is as
+    # good as ours, so the refusal is only a failure if the story is not there.
+    reread = await api.get(f"/api/stories/{story_id}")
+    if reread.status_code == httpx.codes.OK and (
+        reread.json().get("status") == StoryStatus.IN_PROGRESS.value
+    ):
+        ctx["level1_story_started_by"] = "architect"
+        return StoryStatus.IN_PROGRESS.value
+    raise Level1PhaseFailed(
+        "admission",
+        f"story {story_id} could not be started: HTTP {started.status_code} {started.text[:300]}",
+    )
+
+
+async def verify_level1_plan_is_this_runs_alone(
+    api: httpx.AsyncClient, ctx: dict, *, when: str
+) -> dict:
+    """Prove, from durable state, that nothing but this harness planned this brief.
+
+    The level-1 run must not need an architect model credential, and "the
+    harness usually wins the claim" is not that proof: a race lost quietly would
+    spend an architect turn on a suite that then passes, which is worse than a
+    red run. So this asks the durable rows instead, and every answer it needs is
+    there:
+
+    * **the plan's attempt is this run's.** A claim by anything else either
+      answered `in_progress` and changed nothing, or took the plan over — and a
+      takeover mints a *new* attempt id (`product_briefs.py:401-404`). So an
+      attempt id on the brief that is still ours means no rival claim succeeded.
+    * **nobody gave our claim up.** `finish` only accepts the id the brief
+      currently names (`product_briefs.py:460-467`), and only this run has it, so
+      an attempt that is still `active` before the admission was never finished
+      by anyone else. After the admission it is closed, by our own admit
+      (`product_briefs.py:669`).
+    * **nobody else planned into this story.** An architect that did run its
+      graph would create its own tasks here; the roster is therefore exactly the
+      tasks this run planned, each naming this run's attempt.
+    * every coverage disposition names this run's attempt.
+
+    `when` labels the observation so the artifact shows the sequence of them.
+    Returns the observation and records it on `ctx["level1_plan_provenance"]`.
+    """
+    attempt_id = ctx["level1_planning_attempt_id"]
+    brief_id = ctx["brief_id"]
+    read = await api.get(f"/api/product-briefs/{brief_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"Product Brief {brief_id} could not be read to prove its planning "
+            f"provenance: HTTP {read.status_code} {read.text[:300]}",
+        )
+    brief = read.json()
+    roster = await api.get("/api/tasks/", params={"story_id": ctx["story_id"]})
+    if roster.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {ctx['story_id']} task roster could not be read: "
+            f"HTTP {roster.status_code} {roster.text[:300]}",
+        )
+    tasks = [task for task in roster.json() if task.get("story_id") == ctx["story_id"]]
+    admitted = bool(brief.get("coverage_admitted_at"))
+    observation = {
+        "when": when,
+        "planning_attempt_id": brief.get("planning_attempt_id"),
+        "planning_attempt_active": brief.get("planning_attempt_active"),
+        "coverage_admitted_at": brief.get("coverage_admitted_at"),
+        "task_ids": sorted(task["id"] for task in tasks),
+        "task_planning_attempt_ids": sorted(
+            {str(task.get("planning_attempt_id")) for task in tasks}
+        ),
+    }
+    ctx.setdefault("level1_plan_provenance", []).append(observation)
+
+    reasons: list[str] = []
+    if brief.get("planning_attempt_id") != attempt_id:
+        reasons.append(
+            f"the brief's planning attempt is {brief.get('planning_attempt_id')!r}, not this "
+            f"run's {attempt_id!r}: something else claimed this plan"
+        )
+    if not admitted and brief.get("planning_attempt_active") is not True:
+        reasons.append(
+            "this run's claim is no longer active while the plan is still unadmitted: "
+            "something else finished or superseded it"
+        )
+    if admitted and brief.get("planning_attempt_active") is not False:
+        reasons.append("the plan is admitted but its attempt is still open")
+    expected_tasks = sorted(ctx.get("task_ids", []))
+    if expected_tasks and observation["task_ids"] != expected_tasks:
+        reasons.append(
+            f"story {ctx['story_id']} carries tasks this run did not plan: "
+            f"{observation['task_ids']} against {expected_tasks}"
+        )
+    foreign = sorted(
+        task["id"] for task in tasks if task.get("planning_attempt_id") not in (attempt_id, None)
+    )
+    if foreign:
+        reasons.append(f"tasks planned under another attempt are in this story: {foreign}")
+    for row in ctx.get("level1_coverage", []):
+        if row.get("planning_attempt_id") != attempt_id:
+            reasons.append(
+                f"coverage of {row.get('requirement_id')!r} names attempt "
+                f"{row.get('planning_attempt_id')!r}, not this run's"
+            )
+    if reasons:
+        raise Level1PhaseFailed(
+            "admission",
+            f"this run does not own the planning of Product Brief {brief_id} at {when}: "
+            + "; ".join(reasons),
+        )
+    return observation
+
+
 async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
     """Plan and admit the level-1 story through the architect's own routes.
 
@@ -1908,8 +2095,7 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
     brief: Level1Brief = ctx["level1_brief"]
     attempt_id = ctx["level1_planning_attempt_id"]
 
-    response = await api.post(f"/api/stories/{ctx['story_id']}/start", json={"actor": "live-test"})
-    response.raise_for_status()
+    await _start_level1_story(api, ctx)
 
     async def plan_task(*, title: str, description: str, blocked_by_task_id: str | None) -> str:
         created = await api.post(
@@ -1923,10 +2109,18 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
                 "status": TaskStatus.TODO,
                 "blocked_by_task_id": blocked_by_task_id,
                 "planning_attempt_id": attempt_id,
-                "created_by": "architect",
+                # Named for what actually planned it. Nothing routes on this
+                # field, and calling the harness "architect" would hide exactly
+                # the distinction `verify_level1_plan_is_this_runs_alone` makes.
+                "created_by": "live-test",
             },
         )
-        created.raise_for_status()
+        if created.status_code != httpx.codes.CREATED:
+            raise Level1PhaseFailed(
+                "admission",
+                f"a task of this plan could not be created: HTTP {created.status_code} "
+                f"{created.text[:300]}",
+            )
         return created.json()["id"]
 
     backend_task_id = await plan_task(
@@ -1951,8 +2145,10 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
             "admission", f"the level-1 plan disposes of no task for {', '.join(missing)}"
         )
 
-    # Before the admission: the plan exists and none of it may move. This is the
-    # gate itself, read rather than assumed.
+    # Before the admission: the plan is this run's alone, it exists, and none of
+    # it may move. The first is the zero-model property; the second is the gate
+    # itself, read rather than assumed.
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="before_admission")
     ctx["level1_plan_before_admission"] = await _level1_plan_snapshot(api, ctx)
     unadmitted = [
         task
@@ -1975,12 +2171,22 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
                 "task_id": task_id,
             },
         )
-        recorded.raise_for_status()
+        if recorded.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"the disposition of {requirement_id!r} was refused: "
+                f"HTTP {recorded.status_code} {recorded.text[:300]}",
+            )
 
     admission = await api.post(
         f"/api/product-briefs/{ctx['brief_id']}/admit", json={"planning_attempt_id": attempt_id}
     )
-    admission.raise_for_status()
+    if admission.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the one admission step was refused: HTTP {admission.status_code} "
+            f"{admission.text[:300]}",
+        )
     ctx["level1_admission"] = admission.json()
     if ctx["level1_admission"]["outcome"] != ProductBriefAdmissionOutcome.ADMITTED.value:
         raise Level1PhaseFailed(
@@ -1990,7 +2196,12 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
         )
 
     response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
-    response.raise_for_status()
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
     ctx["brief_read"] = response.json()
     if not ctx["brief_read"].get("coverage_admitted_at"):
         raise Level1PhaseFailed(
@@ -1999,9 +2210,15 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
             "coverage_admitted_at",
         )
     coverage = await api.get(f"/api/product-briefs/{ctx['brief_id']}/coverage")
-    coverage.raise_for_status()
+    if coverage.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted coverage could not be read back: HTTP {coverage.status_code} "
+            f"{coverage.text[:300]}",
+        )
     ctx["level1_coverage"] = coverage.json()
     ctx["level1_plan_after_admission"] = await _level1_plan_snapshot(api, ctx)
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_admission")
     return ctx["brief_read"]
 
 
@@ -2010,7 +2227,12 @@ async def _level1_plan_snapshot(api: httpx.AsyncClient, ctx: dict) -> list[dict]
     snapshot = []
     for task_id in ctx["task_ids"]:
         response = await api.get(f"/api/tasks/{task_id}")
-        response.raise_for_status()
+        if response.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"planned task {task_id} could not be read: HTTP {response.status_code} "
+                f"{response.text[:300]}",
+            )
         task = response.json()
         snapshot.append(
             {

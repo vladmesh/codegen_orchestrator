@@ -193,7 +193,7 @@ def _admission_context() -> dict:
         "story_id": "story-1",
         "brief_id": "brief-abc",
         "level1_brief": brief,
-        "level1_planning_attempt_id": "plan-deadbeef",
+        "level1_planning_attempt_id": ATTEMPT,
         "task_title": "backend task",
         "task_description": "backend change set",
         "followup_task_title": "bot task",
@@ -201,31 +201,61 @@ def _admission_context() -> dict:
     }
 
 
-def _admission_handler(
+ATTEMPT = "plan-deadbeef"
+
+
+def _admission_handler(  # noqa: C901 - one fake of the whole planning surface
     calls: list[tuple[str, str]],
     *,
     dispatch_admitted_before: bool = False,
     admission_outcome: str = "admitted",
+    story_status: str = "created",
+    start_status: int = 200,
+    brief_attempt_id: str = ATTEMPT,
+    brief_attempt_active: bool | None = None,
+    extra_tasks: list[dict] | None = None,
 ):
+    """One fake of every route the admission drives, with the levers a test needs."""
     tasks: list[dict] = []
     coverage: list[dict] = []
+    story = {"id": "story-1", "status": story_status}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def brief_row() -> dict:
+        admitted = any(task["dispatch_admitted"] for task in tasks) and tasks
+        active = brief_attempt_active if brief_attempt_active is not None else not bool(admitted)
+        return {
+            "id": "brief-abc",
+            "story_id": "story-1",
+            "planning_attempt_id": brief_attempt_id,
+            "planning_attempt_active": active,
+            "coverage_admitted_at": "2026-09-19T10:00:00Z" if admitted else None,
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: PLR0911 - one route each
         path = request.url.path
         calls.append((request.method, path))
+        if request.method == "GET" and path == "/api/stories/story-1":
+            return httpx.Response(200, json=story)
         if request.method == "POST" and path == "/api/stories/story-1/start":
-            return httpx.Response(200, json={"id": "story-1", "status": "in_progress"})
+            if start_status == 200:
+                story["status"] = "in_progress"
+                return httpx.Response(200, json=story)
+            return httpx.Response(start_status, json={"detail": "Cannot transition"})
         if request.method == "POST" and path == "/api/tasks/":
             body = json.loads(request.content)
             task = {
                 "id": f"task-{len(tasks) + 1}",
+                "story_id": "story-1",
                 "status": body["status"],
                 "dispatch_admitted": dispatch_admitted_before,
                 "planning_attempt_id": body["planning_attempt_id"],
                 "blocked_by_task_id": body["blocked_by_task_id"],
+                "created_by": body["created_by"],
             }
             tasks.append(task)
             return httpx.Response(201, json=task)
+        if request.method == "GET" and path == "/api/tasks/":
+            return httpx.Response(200, json=[*tasks, *(extra_tasks or [])])
         if request.method == "GET" and path.startswith("/api/tasks/"):
             task = next(one for one in tasks if one["id"] == path.rsplit("/", 1)[-1])
             return httpx.Response(200, json=task)
@@ -249,7 +279,7 @@ def _admission_handler(
                 },
             )
         if request.method == "GET" and path == "/api/product-briefs/brief-abc":
-            return httpx.Response(200, json={"coverage_admitted_at": "2026-09-19T10:00:00Z"})
+            return httpx.Response(200, json=brief_row())
         if request.method == "GET" and path == "/api/product-briefs/brief-abc/coverage":
             return httpx.Response(200, json=coverage)
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -288,7 +318,7 @@ async def test_the_plan_is_built_unadmitted_and_released_only_by_the_admission()
         LEVEL1_SETTING_REQUIREMENT: "task-1",
         LEVEL1_COMMAND_REQUIREMENT: "task-2",
     }
-    assert all(row["planning_attempt_id"] == "plan-deadbeef" for row in ctx["level1_coverage"])
+    assert all(row["planning_attempt_id"] == ATTEMPT for row in ctx["level1_coverage"])
     # Every disposition is recorded before the admission, and the admission is
     # reached exactly once: a plan admitted mid-way releases work nothing covers.
     coverage_calls = [index for index, call in enumerate(calls) if call[0] == "PUT"]
@@ -323,41 +353,192 @@ async def test_an_admission_that_did_not_admit_stops_naming_the_phase():
     assert "incomplete" in refused.value.reason
 
 
+def _unbound_refusal() -> httpx.Response:
+    """The API's own answer for a brief that has no story to plan in yet."""
+    return httpx.Response(422, json={"detail": pipeline_helpers.PLAN_HAS_NO_STORY_DETAIL})
+
+
 @pytest.mark.asyncio
-async def test_the_plan_is_claimed_the_moment_the_story_is_bound(monkeypatch):
-    """The claim waits for the bind and takes the plan before anything else can.
+async def test_the_claim_is_retried_through_the_pre_bind_refusal_with_no_delay():
+    """The claim itself is the loop: no read of the brief, and no sleep in the window.
 
-    `create_story` binds the brief to its story and only then publishes the
-    story to the architect, so a claim that fires on the bind is ahead of every
-    architect that will ever hear about this story.
+    `create_story` binds the brief and only then publishes the story to the
+    architect, so the claim has to land in the gap between those two. Retrying
+    the claim through its own 422 removes the extra read and the poll interval
+    that used to sit in that gap.
     """
-
-    async def no_sleep(_seconds):
-        return None
-
-    monkeypatch.setattr(pipeline_helpers.asyncio, "sleep", no_sleep)
     ctx = {"brief_id": "brief-abc"}
-    reads = {"count": 0}
     calls: list[str] = []
+    answers = {"count": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(f"{request.method} {request.url.path}")
-        if request.method == "GET":
-            reads["count"] += 1
-            bound = {"story_id": "story-1"} if reads["count"] >= 3 else {"story_id": None}
-            return httpx.Response(200, json=bound)
-        return httpx.Response(200, json={"outcome": "claimed", "planning_attempt_id": "plan-1"})
+        answers["count"] += 1
+        if answers["count"] < 3:
+            return _unbound_refusal()
+        return httpx.Response(200, json={"outcome": "claimed", "planning_attempt_id": ATTEMPT})
 
     async with _client(handler) as api:
-        claim = await pipeline_helpers._claim_plan_once_the_story_is_bound(api, ctx)
+        claim = await pipeline_helpers._claim_plan_as_soon_as_it_is_claimable(api, ctx)
 
-    assert claim == {"outcome": "claimed", "planning_attempt_id": "plan-1"}
+    assert claim == {"outcome": "claimed", "planning_attempt_id": ATTEMPT}
+    assert ctx["level1_plan_claim_attempts"] == 3
+    assert calls == ["POST /api/product-briefs/brief-abc/planning-attempts/claim"] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_claim_refused_for_any_other_reason_stops_naming_the_phase():
+    """Only "no story yet" is retried; anything else is an answer, not a wait."""
+    ctx = {"brief_id": "brief-abc"}
+
+    async with _client(lambda _request: httpx.Response(409, text="gone")) as api:
+        with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+            await pipeline_helpers._claim_plan_as_soon_as_it_is_claimable(api, ctx)
+
+    assert refused.value.phase == "brief"
+    assert "409" in refused.value.reason
+
+
+@pytest.mark.asyncio
+async def test_a_story_the_architect_already_started_is_not_an_error():
+    """The architect starts this story too, and whoever got there first is right.
+
+    `consumers/architect.py` transitions the story with `start` before the claim
+    that turns it away, and `IN_PROGRESS -> IN_PROGRESS` is not a declared
+    transition — so an unconditional second `start` would turn a lost race into
+    a raw HTTP error. The story's landing place is what this run needs.
+    """
+    ctx = _admission_context()
+    calls: list[tuple[str, str]] = []
+
+    async with _client(_admission_handler(calls, story_status="in_progress")) as api:
+        await pipeline_helpers.admit_level1_plan(api, ctx)
+
+    assert ctx["level1_story_started_by"] == "architect"
+    assert ("POST", "/api/stories/story-1/start") not in calls
+
+
+@pytest.mark.asyncio
+async def test_a_start_lost_between_the_read_and_the_post_is_not_an_error():
+    """The architect can start it in the gap; the re-read is what decides."""
+    ctx = _admission_context()
+    calls: list[tuple[str, str]] = []
+    states = {"started": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path == "/api/stories/story-1":
+            calls.append((request.method, path))
+            status = "in_progress" if states["started"] else "created"
+            return httpx.Response(200, json={"id": "story-1", "status": status})
+        if request.method == "POST" and path == "/api/stories/story-1/start":
+            calls.append((request.method, path))
+            # Somebody else got there between the read above and this post.
+            states["started"] = True
+            return httpx.Response(422, json={"detail": "Cannot transition"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with _client(handler) as api:
+        landed = await pipeline_helpers._start_level1_story(api, ctx)
+
+    assert landed == "in_progress"
+    assert ctx["level1_story_started_by"] == "architect"
     assert calls == [
-        "GET /api/product-briefs/brief-abc",
-        "GET /api/product-briefs/brief-abc",
-        "GET /api/product-briefs/brief-abc",
-        "POST /api/product-briefs/brief-abc/planning-attempts/claim",
+        ("GET", "/api/stories/story-1"),
+        ("POST", "/api/stories/story-1/start"),
+        ("GET", "/api/stories/story-1"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_story_that_did_not_reach_in_progress_stops_naming_the_phase():
+    """A refusal that is not a lost race is still a failure, and it names its phase."""
+    ctx = _admission_context()
+
+    async with _client(_admission_handler([], story_status="created", start_status=409)) as api:
+        with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+            await pipeline_helpers._start_level1_story(api, ctx)
+
+    assert refused.value.phase == "admission"
+    assert "could not be started" in refused.value.reason
+
+
+@pytest.mark.asyncio
+async def test_a_plan_claimed_by_something_else_is_caught_from_durable_state():
+    """A rival claim mints a new attempt id, and that is what this reads.
+
+    This is the zero-model property proved rather than assumed: an architect
+    that took the plan over would be planning this story with its model, and the
+    only trace the harness needs is the attempt id on the brief no longer being
+    the one this run claimed.
+    """
+    ctx = _admission_context()
+
+    async with _client(_admission_handler([], brief_attempt_id="plan-somebody-else")) as api:
+        with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+            await pipeline_helpers.admit_level1_plan(api, ctx)
+
+    assert refused.value.phase == "admission"
+    assert "something else claimed this plan" in refused.value.reason
+
+
+@pytest.mark.asyncio
+async def test_a_claim_finished_out_from_under_the_run_is_caught():
+    """An unadmitted plan whose attempt is closed was given up by somebody."""
+    ctx = _admission_context()
+
+    async with _client(_admission_handler([], brief_attempt_active=False)) as api:
+        with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+            await pipeline_helpers.admit_level1_plan(api, ctx)
+
+    assert refused.value.phase == "admission"
+    assert "no longer active" in refused.value.reason
+
+
+@pytest.mark.asyncio
+async def test_a_task_this_run_never_planned_in_the_story_is_caught():
+    """An architect that did run its graph would leave its own tasks here."""
+    ctx = _admission_context()
+    foreign = {
+        "id": "task-architect",
+        "story_id": "story-1",
+        "status": "todo",
+        "dispatch_admitted": True,
+        "planning_attempt_id": "plan-somebody-else",
+        "created_by": "architect",
+    }
+
+    async with _client(_admission_handler([], extra_tasks=[foreign])) as api:
+        with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+            await pipeline_helpers.admit_level1_plan(api, ctx)
+
+    assert refused.value.phase == "admission"
+    assert "tasks this run did not plan" in refused.value.reason
+
+
+@pytest.mark.asyncio
+async def test_the_provenance_observations_are_kept_in_order_for_the_artifact():
+    """Every observation is retained, so a green run can be read back afterwards."""
+    ctx = _admission_context()
+
+    async with _client(_admission_handler([])) as api:
+        await pipeline_helpers.admit_level1_plan(api, ctx)
+        await pipeline_helpers.verify_level1_plan_is_this_runs_alone(
+            api, ctx, when="after_engineering"
+        )
+
+    assert [one["when"] for one in ctx["level1_plan_provenance"]] == [
+        "before_admission",
+        "after_admission",
+        "after_engineering",
+    ]
+    assert {one["planning_attempt_id"] for one in ctx["level1_plan_provenance"]} == {ATTEMPT}
+    assert [one["planning_attempt_active"] for one in ctx["level1_plan_provenance"]] == [
+        True,
+        False,
+        False,
+    ]
+    assert all(one["task_ids"] == ["task-1", "task-2"] for one in ctx["level1_plan_provenance"])
 
 
 def test_the_seed_line_is_selected_by_this_runs_deploy_and_names_its_route(monkeypatch):

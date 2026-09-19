@@ -154,7 +154,9 @@ the confirmed brief's usage examples in the brief's language, and no backend add
 successful service deployment's exact merged SHA, and a product API undeploy through terminal
 `not_deployed` plus owned port-allocation absence. Its Story is planned against a confirmed Product
 Brief the released PO tools froze without any model call, and released only by the one admission step
-on the architect's own coverage routes; the grant deploy that follows seeds that brief's
+on the architect's own coverage routes — and because publishing that story wakes the live architect
+consumer, the run proves from durable rows that nothing but the harness ever claimed this brief's
+plan, rather than relying on having won that race; the grant deploy that follows seeds that brief's
 `initial_settings` into the deployed product, and the run reads the value back from the product
 itself. Every named suite also compares the deploy Run's image references with the commit `main` points at —
 read from GitHub, never from what the deploy was given — before it spends a QA attempt, so a
@@ -170,6 +172,7 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
 | Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
 | Confirmed brief without a model | the frozen brief's `confirmed_at` and `story_id`, read back over the API, and a plan released only by `POST /product-briefs/{id}/admit` over tasks that were undispatchable before it | `mega-noop` |
+| Nothing but the harness planned it | three durable observations — before the admission, after it and after engineering — that the brief's planning attempt is still this run's, that the claim was never finished out from under it, and that the story carries exactly the tasks this run planned | `mega-noop` |
 | Confirmed settings reach the product | the deploy Run's per-setting `settings_seed`, the consumer's `deploy_settings_seed_brief` line with `route=story`, and the deployed product's own readback | `mega-noop` |
 | Scripted product change | the story branch diff carries every change-set path, and the deployment answers the added endpoint, the registered product setting and the published bot command | `mega-noop` |
 | Deployed artifact identity | the deploy Run's image references, tagged with `main`'s head as GitHub reports it, read before any QA attempt | all named suites |

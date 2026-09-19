@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - The level-1 live run builds its story from a Russian Product Brief confirmed through the released PO tools
   and admits the plan through the architect's own coverage routes, both without any model call.
+- The level-1 run proves from durable rows that nothing but the harness claimed its brief's plan, and accepts
+  a story the live architect consumer started, so publishing that story cannot cost an architect model turn.
 - The level-1 run asserts the grant deploy seeded the confirmed `initial_settings` into the deployed product,
   and that the owner's completion message is a bot product's: the bot handle and usage examples, no backend address.
 - A completion-notification wait that times out now names which conjunct failed — the notification's own fields or
