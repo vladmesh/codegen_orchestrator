@@ -5927,3 +5927,174 @@ def test_a_backend_only_project_still_scaffolds_exactly_backend(monkeypatch):
     assert [identifier for kind, identifier in owned if kind == "registry_repository"] == [
         pipeline_helpers.registry_repository("live-x", "backend")
     ]
+
+
+# ── The scaffold wait ───────────────────────────────────────────────────────
+# Three properties, exercised offline against a stubbed project read: the budget
+# a project actually gets is derived from the product it is, a scaffold that
+# never reaches `active` fails naming its own phase, and a scaffold the
+# scaffolder has already declared failed is not waited out.
+
+
+class _ScaffoldClock:
+    """A monotonic clock that only advances when the wait sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _scaffold_project_reads(monkeypatch, modules, responses):
+    """Drive `wait_scaffold` over `responses`, one per poll, and count the polls."""
+    clock = _ScaffoldClock()
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(pipeline_helpers.asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "last_scaffolder_event",
+        lambda project_id: "scaffold_make_setup_start (stubbed)",
+    )
+    polls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        polls.append(str(request.url))
+        payload = responses[min(len(polls) - 1, len(responses) - 1)]
+        return httpx.Response(200, json=payload)
+
+    ctx = {"project_id": "project-1", "modules": list(modules)}
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://test"
+        ) as api:
+            await pipeline_helpers.wait_scaffold(api, ctx)
+
+    return ctx, polls, run
+
+
+def test_the_level1_project_waits_the_budget_its_two_modules_earn(monkeypatch):
+    """The level-1 product's own module list is what sizes its wait.
+
+    Not a restatement of the constant: the wait is driven until it gives up, and
+    what is asserted is how long it actually waited for the modules
+    `create_level1_bot_project` creates the project with.
+    """
+    ctx, polls, run = _scaffold_project_reads(
+        monkeypatch, pipeline_helpers.LEVEL1_MODULES, [{"status": "draft", "config": {}}]
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    waited = len(polls) * pipeline_helpers.SCAFFOLD_POLL_INTERVAL
+    assert waited == 240
+    assert "Waited 240s of a 240s budget for 2 module(s) (backend, tg_bot)" in str(raised.value)
+    assert ctx["scaffold_status"] == "draft"
+
+
+def test_a_one_module_project_keeps_the_shorter_wait(monkeypatch):
+    """The two-module budget is earned, not global: backend-only still gets 120s."""
+    _, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.BACKEND_ONLY_MODULES,
+        [{"status": "draft", "config": {}}],
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    assert len(polls) * pipeline_helpers.SCAFFOLD_POLL_INTERVAL == 120
+    assert "for 1 module(s) (backend)" in str(raised.value)
+
+
+def test_a_scaffold_that_never_reaches_active_fails_naming_its_own_phase(monkeypatch):
+    """The failure names the phase, the wait, the last status and the last event.
+
+    This is the observation run 35406260851 never produced: it reported a
+    downstream assertion about the scripted path instead of the phase that
+    stopped it.
+    """
+    _, _, run = _scaffold_project_reads(
+        monkeypatch, pipeline_helpers.LEVEL1_MODULES, [{"status": "draft", "config": {}}]
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    message = str(raised.value)
+    assert message.startswith("scaffold did not complete for project project-1")
+    assert "the scaffolder recorded no failure" in message
+    assert "Project status: draft" in message
+    assert "Scaffolder's last recorded event: scaffold_make_setup_start (stubbed)" in message
+    assert "engineering" not in message and "scripted" not in message
+
+
+def test_a_recorded_scaffold_error_fails_the_poll_after_it_is_published(monkeypatch):
+    """The scaffolder's own failure signal is not waited out.
+
+    `services/scaffolder/src/consumer.py` writes `scaffold_error` into the
+    project config when a full scaffold fails, and the project read returns it.
+    """
+    _, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.LEVEL1_MODULES,
+        [
+            {"status": "draft", "config": {}},
+            {"status": "draft", "config": {"scaffold_error": "make setup failed: rc=2"}},
+        ],
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    assert len(polls) == 2
+    message = str(raised.value)
+    assert "scaffold_error='make setup failed: rc=2'" in message
+    assert "Waited 6s of a 240s budget" in message
+
+
+def test_a_scaffold_that_reaches_active_records_it_and_waits_no_longer(monkeypatch):
+    ctx, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.LEVEL1_MODULES,
+        [{"status": "draft", "config": {}}, {"status": "active", "config": {}}],
+    )
+
+    asyncio.run(run())
+
+    assert len(polls) == 2
+    assert ctx["scaffold_status"] == ProjectStatus.ACTIVE
+
+
+def test_the_last_scaffolder_event_is_read_from_this_project_s_own_log_lines(monkeypatch):
+    lines = "\n".join(
+        [
+            "scaffolder | event=scaffold_job_started project_id=other-project",
+            "scaffolder | event=scaffold_copier_start project_id=project-1",
+            "scaffolder | event=scaffold_make_setup_start project_id=project-1",
+            "scaffolder | event=scaffold_job_started project_id=other-project",
+        ]
+    )
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=lines, stderr=""),
+    )
+
+    assert pipeline_helpers.last_scaffolder_event("project-1").startswith(
+        "scaffold_make_setup_start"
+    )
+
+
+def test_an_unreadable_scaffolder_log_is_reported_not_raised(monkeypatch):
+    def explode(*args, **kwargs):
+        raise OSError("no docker here")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", explode)
+
+    assert pipeline_helpers.last_scaffolder_event("project-1") == "unreadable (OSError)"

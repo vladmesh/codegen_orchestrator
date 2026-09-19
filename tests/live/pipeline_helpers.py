@@ -114,7 +114,10 @@ from shared.live_harness_cleanup import (
     build_remote_cleanup_command,
 )
 from shared.queues import SCAFFOLD_QUEUE
-from shared.stand_deadlines import MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
+from shared.stand_deadlines import (
+    MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
+    scaffold_budget_seconds,
+)
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -135,7 +138,11 @@ TEMPLATE_REF_ENV = "LIVE_TEMPLATE_REF"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
-SCAFFOLD_TIMEOUT = 120
+# The scaffold has no flat budget: it is derived per project from the module
+# count, in `shared.stand_deadlines.scaffold_budget_seconds`, and `wait_scaffold`
+# reads it from the project it was handed. There is deliberately no constant here
+# for a caller to pass instead.
+SCAFFOLD_POLL_INTERVAL = 3
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
@@ -1332,25 +1339,119 @@ def trigger_scaffold(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
+class ScaffoldDidNotComplete(AssertionError):
+    """The scaffold phase ended this run, and the failure says so itself.
+
+    Raised from `wait_scaffold`, so a scaffold that never reached `active`
+    stops the fixture at the phase that actually failed. Before this existed the
+    wait returned quietly and the first thing pytest reported was an assertion
+    about engineering or the scripted path — a downstream symptom of a phase
+    that never ran (stand-e2e run 35406260851).
+    """
+
+
+# The scaffolder's own log is the only place its progress is written down, and
+# `dump_debug` already reads it the same way. Both renderers `setup_logging` can
+# install (JSON and console) put the event name in the line verbatim, so the
+# event is recovered by name rather than by parsing one of the two formats. The
+# names looked for are the scaffold-phase ones the scaffolder emits
+# (`scaffold_job_started`, `scaffold_make_setup_start`, `scaffold_complete`, …);
+# the underscore is what keeps the compose stream prefix `scaffolder` from
+# answering on every line.
+SCAFFOLDER_EVENT_TAIL_LINES = 200
+SCAFFOLDER_EVENT_MAX_CHARS = 400
+_SCAFFOLD_EVENT_PATTERN = re.compile(r"\b(scaffold_[a-z0-9_]+)\b")
+
+
+def last_scaffolder_event(project_id: str) -> str:
+    """The scaffolder's last recorded event for this project, or why there is none.
+
+    Never raises: this runs inside the construction of a failure message, and a
+    failure message that dies reading a log tail is worse than one that says the
+    tail was unreadable.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "logs", f"--tail={SCAFFOLDER_EVENT_TAIL_LINES}", "scaffolder"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+    except Exception as error:  # noqa: BLE001 - any read failure is reported, not raised
+        return f"unreadable ({type(error).__name__})"
+    if result.returncode != 0:
+        return f"unreadable (docker compose logs exited {result.returncode})"
+    all_lines = result.stdout.splitlines()
+    own_lines = [line for line in all_lines if project_id in line]
+    lines = own_lines or all_lines
+    for line in reversed(lines):
+        match = _SCAFFOLD_EVENT_PATTERN.search(line)
+        if match is None:
+            continue
+        scope = "this project" if own_lines else "no line named this project, so the container's"
+        detail = redacted_dump_text(line.strip())[-SCAFFOLDER_EVENT_MAX_CHARS:]
+        return f"{match.group(1)} ({scope} last scaffold line: {detail})"
+    return "no scaffold event in the scaffolder's log tail"
+
+
 async def wait_scaffold(
     api: httpx.AsyncClient,
     ctx: dict,
-    timeout: int = SCAFFOLD_TIMEOUT,
     on_poll: Callable[[], None] | None = None,
 ) -> None:
-    """Wait for scaffold to complete. Updates ctx['scaffold_status'].
+    """Wait out this project's own scaffold budget. Updates ctx['scaffold_status'].
 
-    After ProjectStatus split (#22), scaffold success sets status to 'active'.
-    Failure leaves status as 'draft' — we detect that via timeout.
+    The budget is derived from the product being scaffolded — its module count,
+    through `scaffold_budget_seconds` — and not passed in, so no caller can hand
+    a two-module product a one-module number.
+
+    Two of the three outcomes are told apart rather than conflated. The
+    scaffolder publishes its own failure by writing `scaffold_error` into the
+    project config (`services/scaffolder/src/consumer.py`), which the project
+    read returns, so a scaffold that failed is reported the poll after it
+    records that instead of waiting out the whole budget. What remains
+    indistinguishable is a scaffold still working from one that died without
+    writing anything — a full-mode exception records no `scaffold_error` — and
+    that is exactly what the timeout message describes rather than diagnoses.
     """
-    status = await poll_status(
-        api,
-        f"/api/projects/{ctx['project_id']}",
-        {ProjectStatus.ACTIVE},
-        timeout,
-        on_poll,
+    timeout = scaffold_budget_seconds(len(ctx["modules"]))
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        if on_poll is not None:
+            on_poll()
+        await asyncio.sleep(SCAFFOLD_POLL_INTERVAL)
+        response = await api.get(f"/api/projects/{ctx['project_id']}")
+        response.raise_for_status()
+        project = response.json()
+        ctx["scaffold_status"] = project.get("status")
+        if ctx["scaffold_status"] == ProjectStatus.ACTIVE:
+            return
+        scaffold_error = (project.get("config") or {}).get("scaffold_error")
+        if scaffold_error:
+            ctx["scaffold_error"] = scaffold_error
+            raise ScaffoldDidNotComplete(_scaffold_failure_message(ctx, started, timeout))
+        if time.monotonic() >= deadline:
+            raise ScaffoldDidNotComplete(_scaffold_failure_message(ctx, started, timeout))
+
+
+def _scaffold_failure_message(ctx: dict, started: float, timeout: int) -> str:
+    """Name the phase, the wait, the last status and the scaffolder's last event."""
+    modules = ctx["modules"]
+    scaffold_error = ctx.get("scaffold_error")
+    verdict = (
+        f"the scaffolder recorded scaffold_error={scaffold_error!r}"
+        if scaffold_error
+        else "the scaffolder recorded no failure, so it was still working or died silently"
     )
-    ctx["scaffold_status"] = status
+    return (
+        f"scaffold did not complete for project {ctx.get('project_id')}: "
+        f"{verdict}. Waited {time.monotonic() - started:.0f}s of a {timeout}s budget for "
+        f"{len(modules)} module(s) ({', '.join(modules)}). "
+        f"Project status: {ctx.get('scaffold_status')}. "
+        f"Scaffolder's last recorded event: {last_scaffolder_event(str(ctx.get('project_id')))}"
+    )
 
 
 async def wait_product_brief_admission(

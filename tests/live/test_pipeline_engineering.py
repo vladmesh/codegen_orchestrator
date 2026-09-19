@@ -9,7 +9,7 @@ No deploy. Verifies the engineering pipeline works end-to-end.
 from live_harness import cleanup_guard
 from pipeline_helpers import (
     ENGINEERING_TIMEOUT,
-    SCAFFOLD_TIMEOUT,
+    ScaffoldDidNotComplete,
     api_client_as_internal_service,
     api_client_as_test_user,
     cleanup_all,
@@ -45,11 +45,11 @@ async def engineering_ctx():
         ):
             # Phase 1: Scaffold
             trigger_scaffold(ctx)
-            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-                yield ctx
+            try:
+                await wait_scaffold(api, ctx)
+            except ScaffoldDidNotComplete:
                 dump_debug(ctx, "engineering-scaffold")
-                return
+                raise
 
             # Phase 2: Engineering
             await create_story_and_task(api, ctx)

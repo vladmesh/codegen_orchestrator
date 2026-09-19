@@ -110,13 +110,19 @@ could not log in.
 
 ### Timeout budget
 
-The timeout values are deliberate bounds, not duration estimates. The noop lifecycle's explicit
-waits sum to at most 61m20s (`120 + 840 + 60 + 420 + 420 + 120 + 320 + 300 + 180 + 180 + 120 + 300 +
+The timeout values are deliberate bounds, not duration estimates. The scaffold bound is the one that
+is not a constant: `shared/stand_deadlines.py` derives it from the product's module count — 120
+seconds for the first rendered service and another 120 for each further one — because `make setup`
+runs `uv sync --frozen` for the root and then for every service before `framework.generate` and ruff.
+`mega-noop` scaffolds the two-module level-1 product, so its scaffold bound is 240 seconds; every
+one-module suite keeps 120. The noop lifecycle's explicit
+waits sum to at most 63m20s (`240 + 840 + 60 + 420 + 420 + 120 + 320 + 300 + 180 + 180 + 120 + 300 +
 300` seconds): scaffold; two ordered noop Tasks; Story aggregation; deploy; a bounded public health
 probe (up to two 30-second paths per attempt); deterministic QA; completed-story and durable PO
 delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
-release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnostics. The LLM pipeline
-remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
+release. The 75-minute cap leaves 11m40s for manifest-owned teardown and diagnostics. The LLM pipeline
+remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because its project is backend-only — one
+module, so one module's scaffold bound — and it does not yet run the new lifecycle
 acceptance. `mega-brief` has a 281-minute cap: 93m pre-follow-up lifecycle, up to 153m under the
 harness settings-seed ceiling (two manifest repairs plus one convergent retry), 25m post-follow-up
 lifecycle, and a 10m evidence/cleanup margin inside pytest. `mega-brief-package` runs the same

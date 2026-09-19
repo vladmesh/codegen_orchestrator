@@ -7,7 +7,7 @@ Verifies the scaffolded project exists and has the expected structure.
 from live_harness import cleanup_guard
 from pipeline_helpers import (
     GITHUB_ORG,
-    SCAFFOLD_TIMEOUT,
+    ScaffoldDidNotComplete,
     api_client_as_internal_service,
     api_client_as_test_user,
     cleanup_all,
@@ -39,12 +39,13 @@ async def scaffold_ctx():
             lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]
         ):
             trigger_scaffold(ctx)
-            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+            try:
+                await wait_scaffold(api, ctx)
+            except ScaffoldDidNotComplete:
+                dump_debug(ctx, "scaffold")
+                raise
 
             yield ctx
-
-            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-                dump_debug(ctx, "scaffold")
 
 
 class TestScaffoldPipeline:

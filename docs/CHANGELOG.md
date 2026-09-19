@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-19
+
+- The scaffold wait is sized by the product: `shared/stand_deadlines.scaffold_budget_seconds` gives the
+  first rendered module 120 s and each further one another 120 s, so level-1's two modules get 240 s.
+- `wait_scaffold` raises `ScaffoldDidNotComplete` naming the phase, the wait, the last project status and
+  the scaffolder's last event, and fails the poll after `scaffold_error` appears instead of waiting it out.
+
 ## 2026-09-18
 
 - The stand target key file is written with `printf '%s\n'` like the bootstrap one, so a secret without a
