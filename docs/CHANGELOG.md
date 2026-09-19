@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- The level-1 lifecycle runs a second story on the same project, from a corrected brief revision through the
+  released PO tools, and asserts what only it can show: checkout duration, branch base, deploy path, hooks.
 - The level-1 plan creates its two tasks with the acceptance criteria QA checks them by, keyed on the run's
   marker, so the run's verbatim assertion over each attempt's TASK.md has something it can fail on.
 - Run evidence keeps the `TASK.md` and `.story/STORY.md` of every engineering attempt, keyed by task and

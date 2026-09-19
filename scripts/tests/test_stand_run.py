@@ -30,6 +30,7 @@ from scripts.stand_run import (
     write_junit_report,
     write_qa_executor,
 )
+from shared import stand_deadlines
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -92,27 +93,36 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
         assert SUITES[name].timeout_seconds > 0
 
 
-def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
-    """A new lifecycle wait must not silently exceed the named suite cap."""
-    explicit_waits = (
-        120  # scaffold
-        + 840  # two ordered noop engineering Tasks
-        + 60  # story aggregation after both Tasks are done
-        + 420  # merged deploy Run
-        + 420  # deploy
-        + 120  # typed deploy outcome
-        + 320  # five-attempt public health probe (two 30s paths + four sleeps)
-        + 300  # deterministic QA
-        + 180  # Story.completed
-        + 180  # durable PO notification
-        + 120  # exact service-deployment record
-        + 300  # undeploy Run
-        + 300  # terminal application/resource release
-    )
+def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
+    """A new lifecycle wait must not silently exceed the named suite cap.
 
-    assert explicit_waits == 3680
-    assert NOOP_SUITE_TIMEOUT_SECONDS == 4500
-    assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 800
+    The ledger itself is in `shared/stand_deadlines.py` and the cap is checked
+    against it there, at import, so this asserts the two things that check
+    cannot: that the ledger still describes the lifecycle the suite runs — two
+    stories on one project, the second one planning a single task and waiting on
+    its deploy Run rather than on an ApplicationStatus the first deploy already
+    made terminal — and that the runner spends the derived cap rather than a
+    number of its own.
+
+    This is the assertion that used to transcribe the ledger and had already
+    drifted from it: it carried 120 seconds of scaffold for a two-module product
+    whose scaffold bound became 240 when `scaffold_budget_seconds` was
+    introduced. Reading the ledger is what keeps that from recurring.
+    """
+    assert stand_deadlines.noop_lifecycle_explicit_waits() == 6640
+    assert NOOP_SUITE_TIMEOUT_SECONDS == 7500
+    assert SUITES["mega-noop"].timeout_seconds == NOOP_SUITE_TIMEOUT_SECONDS
+    # The lifecycle's two stories are both in the ledger, and the scaffold bound
+    # is the function of the module count rather than a transcribed constant.
+    assert dict(stand_deadlines.NOOP_FIRST_STORY_WAITS)["scaffold"] == (
+        stand_deadlines.scaffold_budget_seconds(stand_deadlines.NOOP_MODULE_COUNT)
+    )
+    assert sum(seconds for _label, seconds in stand_deadlines.NOOP_SECOND_STORY_WAITS) == 2840
+    # And the reserve the cap leaves for manifest-owned teardown is still there.
+    assert (
+        NOOP_SUITE_TIMEOUT_SECONDS - stand_deadlines.noop_lifecycle_explicit_waits()
+        >= stand_deadlines.NOOP_TEARDOWN_RESERVE_SECONDS
+    )
 
 
 def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():

@@ -51,3 +51,81 @@ def scaffold_budget_seconds(module_count: int) -> int:
     if module_count < 1:
         raise ValueError(f"a scaffold renders at least one module, got {module_count}")
     return SCAFFOLD_FIRST_MODULE_SECONDS + (module_count - 1) * SCAFFOLD_ADDITIONAL_MODULE_SECONDS
+
+
+# ── The level-1 (`mega-noop`) lifecycle ─────────────────────────────────
+# The suite's pytest cap is not a duration estimate: it is the sum of the
+# explicit waits the lifecycle can actually spend, plus a reserve for
+# manifest-owned teardown and diagnostics. It lives here, as the waits
+# themselves, because three places used to state it — the runner's constant, its
+# test's transcription of the ledger and `tests/live/README.md` — and two of
+# them had already drifted from the third when the scaffold bound became a
+# function of the module count.
+#
+# Since card 1316 the lifecycle runs **two stories on one project**. The second
+# one is not a repetition of the first: it plans one task instead of two, and it
+# waits for its deploy Run's typed outcome rather than for an ApplicationStatus
+# that is already `running` from the first story's deploy and stays terminal
+# throughout a redeploy. Its waits are therefore listed on their own below, and
+# the cap moved with them rather than the ledger being trimmed to fit.
+#: The level-1 product's rendered services, which is what sizes its scaffold.
+NOOP_MODULE_COUNT = 2
+
+NOOP_FIRST_STORY_WAITS: tuple[tuple[str, int], ...] = (
+    ("scaffold", scaffold_budget_seconds(NOOP_MODULE_COUNT)),
+    ("two ordered noop engineering Tasks", 840),
+    ("Story aggregation after both Tasks are done", 60),
+    ("merged deploy Run", 420),
+    ("deploy", 420),
+    ("typed deploy outcome", 120),
+    ("five-attempt public health probe (two 30s paths and four sleeps)", 320),
+    ("deterministic QA", 300),
+    ("Story.completed", 180),
+    ("durable PO completion notification", 180),
+    ("exact service-deployment record", 120),
+)
+
+NOOP_SECOND_STORY_WAITS: tuple[tuple[str, int], ...] = (
+    ("extension story: one noop engineering Task", 420),
+    ("extension story: Story aggregation after its Task is done", 60),
+    ("extension story: merged deploy Run", 420),
+    ("extension story: typed deploy outcome, covering the deploy itself", 540),
+    ("extension story: the application's own terminal status", 420),
+    ("extension story: five-attempt public health probe", 320),
+    ("extension story: deterministic QA", 300),
+    ("extension story: Story.completed", 180),
+    ("extension story: durable PO completion notification", 180),
+)
+
+NOOP_TEARDOWN_WAITS: tuple[tuple[str, int], ...] = (
+    ("undeploy Run", 300),
+    ("terminal application and port-allocation release", 300),
+)
+
+NOOP_LIFECYCLE_WAITS: tuple[tuple[str, int], ...] = (
+    *NOOP_FIRST_STORY_WAITS,
+    *NOOP_SECOND_STORY_WAITS,
+    *NOOP_TEARDOWN_WAITS,
+)
+
+#: What the cap leaves after every explicit wait: manifest-owned teardown of the
+#: project, repository, registry, workspace and target host, plus the evidence
+#: artifact the fixture writes before any of it.
+NOOP_TEARDOWN_RESERVE_SECONDS = 700
+
+
+def noop_lifecycle_explicit_waits() -> int:
+    """Every wait the level-1 lifecycle can spend, summed."""
+    return sum(seconds for _label, seconds in NOOP_LIFECYCLE_WAITS)
+
+
+#: The `mega-noop` pytest cap: 125 minutes. Two stories' waits plus the reserve.
+NOOP_SUITE_TIMEOUT_SECONDS = 7500
+
+if NOOP_SUITE_TIMEOUT_SECONDS < noop_lifecycle_explicit_waits() + NOOP_TEARDOWN_RESERVE_SECONDS:
+    raise RuntimeError(
+        "the mega-noop cap no longer covers its own lifecycle: "
+        f"{noop_lifecycle_explicit_waits()}s of explicit waits and "
+        f"{NOOP_TEARDOWN_RESERVE_SECONDS}s of teardown reserve need more than "
+        f"{NOOP_SUITE_TIMEOUT_SECONDS}s"
+    )

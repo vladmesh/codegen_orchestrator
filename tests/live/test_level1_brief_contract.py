@@ -20,17 +20,24 @@ from jsonschema import Draft202012Validator
 from level1_brief import (
     LEVEL1_BRIEF_LANGUAGE,
     LEVEL1_COMMAND_REQUIREMENT,
+    LEVEL1_EXTENSION_REQUIREMENT,
     LEVEL1_SETTING_REQUIREMENT,
     bot_completion_message_mismatches,
     build_level1_brief,
+    build_level1_extension_brief,
 )
 from level1_change_set import (
+    BACKEND_MANIFEST,
     LEVEL1_COMMAND,
     LEVEL1_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_SETTING_KEY,
     LEVEL1_SETTING_KEY,
     backend_acceptance_criteria,
     backend_operations,
     bot_acceptance_criteria,
+    extension_acceptance_criteria,
+    extension_operations,
 )
 import pipeline_helpers
 import pytest
@@ -41,6 +48,8 @@ from shared.contracts.dto.product_brief import ProposedProductBriefContent
 pytestmark = pytest.mark.needs_no_api_credential
 
 MARKER = "e2e-abc123def456"
+#: The extension story's own marker, minted per story as well as per run.
+EXTENSION_MARKER = "e2e-654fed321cba"
 
 
 def _client(handler):
@@ -677,3 +686,156 @@ def test_a_seed_line_this_run_never_wrote_is_a_stated_reason(monkeypatch):
 
     assert "settings_seed_brief_log" not in ctx
     assert "deploy-grant-1" in ctx["settings_seed_brief_log_error"]
+
+
+# ── The extension story: the second story of the same project ────────────
+
+
+def _extension_admission_context() -> dict:
+    """The context the extension story's admission is driven with: one task."""
+    return {
+        "project_id": "11111111-1111-1111-1111-111111111111",
+        "story_id": "story-1",
+        "brief_id": "brief-abc",
+        "level1_brief": build_level1_extension_brief(MARKER, EXTENSION_MARKER),
+        "level1_planning_attempt_id": ATTEMPT,
+        "task_title": "extension task",
+        "task_description": "extension change set",
+        "task_criteria": extension_acceptance_criteria(MARKER, EXTENSION_MARKER),
+    }
+
+
+def test_the_extension_brief_is_a_document_the_released_write_shape_accepts():
+    """The second brief parses as a proposed revision too, so no tool refuses it.
+
+    Same check as the first brief's, asked of the document the *correction*
+    confirms: one user-facing requirement, one usage example for it, its
+    limitations, and the one product-scoped setting the extension change set
+    declares. A revision the write boundary would refuse is a run that spends
+    its first story and then stops.
+    """
+    content = _proposed_content(build_level1_extension_brief(MARKER, EXTENSION_MARKER))
+
+    assert content.language == LEVEL1_BRIEF_LANGUAGE
+    assert content.limitations
+    exemplified = {example.requirement_id for example in content.usage_examples}
+    user_facing = {
+        requirement.id for requirement in content.must_requirements if requirement.user_facing
+    }
+    assert user_facing == {LEVEL1_EXTENSION_REQUIREMENT}
+    assert user_facing <= exemplified
+    assert [(setting.key, setting.scope.value) for setting in content.initial_settings] == [
+        (LEVEL1_EXTENSION_SETTING_KEY, "product")
+    ]
+    assert content.initial_settings[0].description
+
+
+def test_the_correction_presents_a_different_document_than_the_revision_it_corrects():
+    """A correction that changed nothing would open no revision at all.
+
+    `present_product_brief` keys a presentation on a fingerprint of the document
+    (`_creation_request_id`), so presenting the identical text again is a *retry*
+    of the same revision and the released tool answers with the revision it was
+    asked to correct. The two documents therefore have to differ, and this is
+    where that is guaranteed rather than discovered on the stand.
+    """
+    draft = build_level1_extension_brief(MARKER, EXTENSION_MARKER, draft=True)
+    corrected = build_level1_extension_brief(MARKER, EXTENSION_MARKER)
+    project_id = "11111111-1111-1111-1111-111111111111"
+
+    assert draft.present_arguments(project_id) != corrected.present_arguments(project_id)
+    # And what differs is what a user actually corrects, not the machine-readable
+    # side: the requirement ids, the setting and its value are the same document
+    # being confirmed, so the correction cannot change what the plan covers.
+    assert draft.requirement_ids == corrected.requirement_ids
+    assert (draft.settings_key, draft.settings_value) == (
+        corrected.settings_key,
+        corrected.settings_value,
+    )
+
+
+def test_the_extension_setting_is_one_the_deployed_product_can_hold_beside_the_first():
+    """Two declared keys after the extension change set, and the second is the brief's.
+
+    The deploy writes the confirmed value through the product's own
+    `settings.set`, which refuses a key the manifest does not declare. The
+    extension story's manifest edit declares its key *beside* the first story's
+    rather than over it, so both remain writable — and a value equal to the
+    manifest default would prove nothing, which is why it is not one.
+    """
+    brief = build_level1_extension_brief(MARKER, EXTENSION_MARKER)
+    manifest = next(
+        operation
+        for operation in extension_operations(MARKER, EXTENSION_MARKER)
+        if operation.path == BACKEND_MANIFEST
+    )
+    declared = yaml.safe_load(manifest.content)["settings_schema"]["properties"]
+
+    assert sorted(declared) == sorted([LEVEL1_SETTING_KEY, LEVEL1_EXTENSION_SETTING_KEY])
+    assert declared[LEVEL1_SETTING_KEY]["default"] == MARKER
+    schema = declared[brief.settings_key]
+    assert not list(Draft202012Validator(schema).iter_errors(brief.settings_value))
+    assert brief.settings_value != schema["default"]
+
+
+def test_the_extension_acceptance_criteria_are_this_story_s_and_are_what_qa_checks():
+    """The extension story's own criteria, keyed on its own marker.
+
+    Both markers are in them, and that is the point of the second one: the
+    criteria say the deployment still carries the first story's work, which is
+    what a branch cut from a stale workspace HEAD would have lost. The first
+    story's criteria are a different text, so a `TASK.md` the first story left in
+    the reused workspace cannot satisfy the verbatim check against these.
+    """
+    criteria = extension_acceptance_criteria(MARKER, EXTENSION_MARKER)
+
+    assert EXTENSION_MARKER in criteria
+    assert MARKER in criteria
+    assert LEVEL1_EXTENSION_ENDPOINT_PATH in criteria
+    assert LEVEL1_EXTENSION_SETTING_KEY in criteria
+    assert criteria not in (
+        backend_acceptance_criteria(MARKER),
+        bot_acceptance_criteria(MARKER),
+    )
+    # Same two shape rules the first story's criteria are held to: no fence of
+    # their own for the scripted runner to find, and already stripped.
+    assert "```" not in criteria
+    assert criteria.strip() == criteria
+
+
+@pytest.mark.asyncio
+async def test_the_extension_plan_is_one_task_admitted_through_the_same_gate():
+    """The second story's plan crosses the coverage gate the first story's did.
+
+    Same function, same routes, same order — a plan of one task instead of two.
+    The task is created unadmitted under this run's attempt, its one requirement
+    is disposed of, and the single admission step is what releases it.
+    """
+    calls: list[tuple[str, str]] = []
+    ctx = _extension_admission_context()
+    bodies: list[dict] = []
+    handler = _admission_handler(calls)
+
+    def recording_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/tasks/":
+            bodies.append(json.loads(request.content))
+        return handler(request)
+
+    async with _client(recording_handler) as api:
+        await pipeline_helpers.admit_level1_extension_plan(api, ctx)
+
+    assert len(ctx["task_ids"]) == 1
+    assert ctx["task_id"] == ctx["first_task_id"] == ctx["task_ids"][0]
+    assert "second_task_id" not in ctx
+    assert [body["blocked_by_task_id"] for body in bodies] == [None]
+    assert [body["acceptance_criteria"] for body in bodies] == [
+        extension_acceptance_criteria(MARKER, EXTENSION_MARKER)
+    ]
+    assert [task["dispatch_admitted"] for task in ctx["level1_plan_before_admission"]] == [False]
+    assert [task["dispatch_admitted"] for task in ctx["level1_plan_after_admission"]] == [True]
+    assert [row["requirement_id"] for row in ctx["level1_coverage"]] == [
+        LEVEL1_EXTENSION_REQUIREMENT
+    ]
+    # The gate was crossed, not stepped around: the tasks were read before the
+    # admission and the admission is what made them dispatchable.
+    assert ("POST", "/api/product-briefs/brief-abc/admit") in calls

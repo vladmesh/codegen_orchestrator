@@ -1150,7 +1150,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 18
+    assert EVIDENCE_SCHEMA_VERSION == 19
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1187,6 +1187,13 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
             }
             for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
         },
+    }
+    # v19: a run that ran no second story says so, rather than omitting the
+    # section — the same shape every other unread fact of this artifact has.
+    assert artifact["second_story"]["ran"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "this run ran no second story",
     }
     assert artifact["discovery"]["run_id"] == RUN_ID
     assert artifact["discovery"]["docker_filters"] == [
@@ -3752,6 +3759,81 @@ def test_both_tasks_of_one_reused_worker_keep_the_document_they_were_given(works
     assert len(ledger) == 2
     assert all("body" not in reading for reading in ledger)
     assert {reading["worker_id"] for reading in ledger} == {DEV_WORKER}
+
+
+#: The second story of the same project: its own task, its own worker, and the
+#: *same* workspace directory — the manager reuses one persistent checkout per
+#: project, so the extension story's turn rewrites the same `/workspace/TASK.md`
+#: the first story's two turns did.
+EXTENSION_WORKER = "dev-live-test-repo-cc33dd44"
+EXTENSION_TASK = "11111111-aaaa-4444-8888-000000000003"
+EXTENSION_DESCRIPTION = "Add GET /level1/extension to the backend, beside the first story's."
+
+
+def test_a_second_story_on_the_reused_workspace_keeps_its_own_attempt(workspace, transcripts):
+    """Three attempts, two containers, one directory — and three documents kept.
+
+    An attempt is one engineering task of the *run*, not of one story: the
+    level-1 lifecycle runs a second story on the same project, its worker is
+    handed the workspace the first story left behind, and its turn overwrites
+    the same file again. A capture that kept only the current story's roster
+    would file the extension story's document under nothing at all.
+    """
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+    collector.capture()
+    write_turn(workspace, task=task_md(BOT_DESCRIPTION), at=RUN_START + timedelta(seconds=40))
+    collector.capture()
+    # The first story ends; the second story's worker gets the same directory.
+    docker.add(
+        f"worker-{EXTENSION_WORKER}",
+        container_payload(
+            worker_id=EXTENSION_WORKER,
+            agent_type=FREE_AGENT_TYPE,
+            exit_code=0,
+            transcript_source=str(transcripts),
+            attempt_id=EXTENSION_TASK,
+            workspace_source=str(workspace),
+        ),
+        f"scripted runner applied the change set worker_id={EXTENSION_WORKER}",
+    )
+    write_turn(
+        workspace, task=task_md(EXTENSION_DESCRIPTION), at=RUN_START + timedelta(seconds=120)
+    )
+    collector.capture()
+
+    ctx = level1_ctx(
+        **{
+            run_evidence.ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY: [
+                BACKEND_TASK,
+                BOT_TASK,
+                EXTENSION_TASK,
+            ],
+            run_evidence.TASK_DESCRIPTIONS_CTX_KEY: {
+                BACKEND_TASK: BACKEND_DESCRIPTION,
+                BOT_TASK: BOT_DESCRIPTION,
+                EXTENSION_TASK: EXTENSION_DESCRIPTION,
+            },
+        }
+    )
+    instructions = run_evidence.developer_instructions(ctx, collector.records())
+
+    assert [attempt["attempt_id"] for attempt in instructions["attempts"]] == [
+        BACKEND_TASK,
+        BOT_TASK,
+        EXTENSION_TASK,
+    ]
+    extension = instructions["attempts"][2]
+    assert EXTENSION_DESCRIPTION in captured_text(extension, run_evidence.TASK_DOCUMENT)
+    assert BOT_DESCRIPTION not in captured_text(extension, run_evidence.TASK_DOCUMENT)
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+    assert instructions["complete"]["value"]["attempts"] == 3
+    # The reading that carries it was taken from the *second* story's container,
+    # which is how one reused directory keeps two stories' documents apart.
+    assert extension["documents"][run_evidence.TASK_DOCUMENT]["readings"][0]["worker_id"] == (
+        EXTENSION_WORKER
+    )
 
 
 def test_a_document_read_unchanged_on_many_passes_is_one_reading(workspace, transcripts):

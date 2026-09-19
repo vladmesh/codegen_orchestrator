@@ -21,6 +21,12 @@ Two things the rest of the suite reads out of this module:
   (``services/api/src/routers/stories.py::_telegram_bot_usage_instructions``).
   `bot_completion_message_mismatches` states that as a predicate so the live
   wait and the offline regressions judge one thing.
+
+The *extension* story — the project's second story — has its own brief here as
+well, and it comes in two documents: the revision the user is first shown and
+the corrected one that supersedes it. The released PO tool makes a correction a
+new revision rather than an edit, and it keys a presentation on a fingerprint of
+the document, so the two have to differ or the correction opens nothing.
 """
 
 from __future__ import annotations
@@ -28,7 +34,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from level1_change_set import LEVEL1_COMMAND, LEVEL1_SETTING_KEY
+from level1_change_set import (
+    LEVEL1_COMMAND,
+    LEVEL1_EXTENSION_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_SETTING_KEY,
+    LEVEL1_SETTING_KEY,
+)
 
 #: The language the level-1 user confirms their brief in. Deliberately not the
 #: harness's own language: the completion message is composed in the *brief's*
@@ -39,6 +50,8 @@ LEVEL1_BRIEF_LANGUAGE = "ru"
 #: The two must-requirements, one per engineering task of the level-1 story.
 LEVEL1_COMMAND_REQUIREMENT = "level1_command"
 LEVEL1_SETTING_REQUIREMENT = "level1_setting"
+#: The one must-requirement of the extension story's brief, and its one task.
+LEVEL1_EXTENSION_REQUIREMENT = "level1_extension"
 
 #: The only link a bot product's completion message may carry.
 BOT_LINK_PREFIX = "https://t.me/"
@@ -158,6 +171,83 @@ def build_level1_brief(marker: str) -> Level1Brief:
         story_description=(
             f"Бот отвечает на /{LEVEL1_COMMAND} маркером продукта, "
             f"а маркер берётся из настройки продукта {LEVEL1_SETTING_KEY}."
+        ),
+    )
+
+
+def level1_extension_settings_value(extension_marker: str) -> str:
+    """The value the user confirms for the extension story's product setting.
+
+    The same discipline as `level1_settings_value`: the change set declares the
+    extension marker as the key's manifest `default`, so a readback equal to the
+    marker would be satisfied by a product that was never seeded, and this value
+    exists nowhere but in the corrected brief.
+    """
+    return f"{extension_marker}-confirmed"
+
+
+def build_level1_extension_brief(
+    marker: str, extension_marker: str, *, draft: bool = False
+) -> Level1Brief:
+    """The extension story's product contract — the second brief of one project.
+
+    Two documents, not one, because the released PO tool makes a correction a new
+    revision rather than an edit
+    (`services/langgraph/src/agents/po/tools_briefs.py`): the run presents
+    `draft=True` first, then presents this same brief again naming the draft in
+    `corrects_brief_id`, and confirms what comes back. The two therefore have to
+    *differ* — the presentation key is a fingerprint of the document, so
+    re-presenting the identical text is a retry of the same revision and opens
+    nothing. The difference is the one a user actually makes: the limitation they
+    had not thought of, and a summary that says what they meant.
+    """
+    summary = (
+        "Расширение того же бота: продукт дополнительно отдаёт маркер расширения, "
+        "а сам маркер задаётся отдельной настройкой продукта."
+    )
+    limitations: tuple[str, ...] = (
+        "Маркер расширения не заменяет маркер первой истории: продукт отдаёт оба.",
+    )
+    if draft:
+        summary = "Расширение того же бота: продукт дополнительно отдаёт маркер расширения."
+        limitations = ()
+    return Level1Brief(
+        marker=extension_marker,
+        title="Расширение бота уровня 1: маркер расширения",
+        summary=summary,
+        must_requirements=(
+            {
+                "id": LEVEL1_EXTENSION_REQUIREMENT,
+                "text": (
+                    f"Продукт отвечает по адресу {LEVEL1_EXTENSION_ENDPOINT_PATH} "
+                    f"маркером расширения, а сам маркер хранится в настройке "
+                    f"{LEVEL1_EXTENSION_SETTING_KEY}."
+                ),
+                "user_wording": (
+                    "Хочу, чтобы у продукта появился второй маркер — для расширения, "
+                    "и чтобы он тоже лежал в настройках."
+                ),
+            },
+        ),
+        usage_examples=(
+            {
+                "requirement_id": LEVEL1_EXTENSION_REQUIREMENT,
+                "user_sends": "вопрос, какой маркер расширения сейчас настроен",
+                "product_answers": "значение, подтверждённое в настройке расширения",
+            },
+        ),
+        limitations=limitations,
+        settings_key=LEVEL1_EXTENSION_SETTING_KEY,
+        settings_value=level1_extension_settings_value(extension_marker),
+        settings_description=(
+            "Маркер расширения продукта, который продукт отдаёт по адресу "
+            f"{LEVEL1_EXTENSION_ENDPOINT_PATH}."
+        ),
+        story_title="Расширение уровня 1: второй маркер продукта",
+        story_description=(
+            f"Продукт отдаёт маркер расширения по адресу {LEVEL1_EXTENSION_ENDPOINT_PATH}, "
+            f"а маркер берётся из настройки продукта {LEVEL1_EXTENSION_SETTING_KEY}. "
+            f"Маркер первой истории {marker} продолжает работать."
         ),
     )
 

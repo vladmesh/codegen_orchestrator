@@ -292,7 +292,15 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      the section cannot read as complete while one is unread. Each attempt also
 #      states whether the captured `TASK.md` quotes its task's acceptance criteria
 #      verbatim.
-EVIDENCE_SCHEMA_VERSION = 18
+# v19: a lifecycle that runs a *second story on the same project* retains it as
+#      its own section — the brief revision the correction opened, the manager's
+#      first `checkout_branch` of the story branch with the duration it took as a
+#      number, where the branch was cut from and what that base contains, which
+#      deploy path created the deploy Run, the project's own CI runs for the
+#      merge commit, and every engineering Run of the story. Each is a capture,
+#      so an unread one says why. `developer_instructions` covers both stories'
+#      attempts, because an attempt is the run's and not one story's.
+EVIDENCE_SCHEMA_VERSION = 19
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -3249,12 +3257,21 @@ def verdict(
 TASK_DESCRIPTIONS_CTX_KEY = "task_descriptions"
 TASK_ACCEPTANCE_CRITERIA_CTX_KEY = "task_acceptance_criteria"
 
+#: Every engineering task of the *run*, in the order it was planned, for a run
+#: whose lifecycle has more than one story. `task_ids` is one story's roster —
+#: the level-1 lifecycle swaps it when it moves to the project's second story —
+#: and the attempts below are the run's, so a run that ran two stories records
+#: the union here and this is preferred over the current story's roster.
+ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY = "engineering_attempt_task_ids"
+
 DEVELOPER_INSTRUCTIONS_NOTE = (
     "What the developer was actually told, attempt by attempt. An attempt here is "
-    "one engineering task of this run, not one container: a story's worker is "
-    "reused across its tasks and rewrites /workspace/TASK.md at the start of every "
-    "turn, so `run.attempts` (developer containers) and the attempts below are "
-    "different counts of different things. Each pass this run already takes reads "
+    "one engineering task of this run, not one container and not one story: a "
+    "story's worker is reused across its tasks and rewrites /workspace/TASK.md at "
+    "the start of every turn, and a lifecycle that runs a second story on the same "
+    "project hands that same workspace to a second worker — so `run.attempts` "
+    "(developer containers) and the attempts below are different counts of "
+    "different things. Each pass this run already takes reads "
     "the workspace, and every distinct thing a document has been is kept, because "
     "the next turn destroys the previous one in place. A reading is attributed to "
     "an attempt by the task's own description appearing in it, and the story "
@@ -3281,8 +3298,17 @@ STORY_NOT_WRITTEN_REASON = (
 
 
 def _attempt_task_ids(ctx: dict) -> list[str]:
-    """The engineering tasks of this run, which is what its attempts are."""
-    task_ids = [task_id for task_id in (ctx.get("task_ids") or []) if task_id]
+    """The engineering tasks of this run, which is what its attempts are.
+
+    The run's own roster when it has one — a lifecycle with two stories records
+    it, because each story's `task_ids` is only that story's — and otherwise the
+    current story's, which is every other run.
+    """
+    task_ids = [
+        task_id
+        for task_id in (ctx.get(ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY) or ctx.get("task_ids") or [])
+        if task_id
+    ]
     if task_ids:
         return task_ids
     return [ctx["task_id"]] if ctx.get("task_id") else []
@@ -3614,6 +3640,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "task_id": ctx.get("task_id"),
         },
         "generated_product_timeline": generated_product_timeline(ctx),
+        "second_story": second_story(ctx),
         "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
@@ -3650,6 +3677,62 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "workers": retain_worker_bodies(ctx, records),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
+    }
+
+
+SECOND_STORY_NOTE = (
+    "The second story of the same project, on the workspace the first one left "
+    "behind. Five of the seven regressions sprint:1445 found by hand lived only "
+    "here, and none of them is visible in a story's success: a second story can "
+    "deploy, pass QA and complete while its first checkout was retried, its "
+    "branch was cut from a stale workspace HEAD, or its deploy went through the "
+    "initial-owner grant instead of the PR poller. So each fact below is the "
+    "observation itself — the checkout's duration in seconds, the base commit "
+    "and what it contains, the Run id and the path that minted it — and not a "
+    "verdict about it."
+)
+
+
+def second_story(ctx: dict) -> dict:
+    """What this run's second story did, fact by fact, or a stated absence."""
+    extension = ctx.get("level1_extension")
+    if not isinstance(extension, dict) or not extension:
+        return {
+            "note": SECOND_STORY_NOTE,
+            "ran": Capture.missed("this run ran no second story").as_dict(),
+        }
+
+    def captured(key: str, error_key: str | None = None) -> dict:
+        if key in extension:
+            return Capture.captured(extension[key]).as_dict()
+        reason = extension.get(error_key) if error_key else None
+        return Capture.missed(reason or f"{key} was never recorded by this run").as_dict()
+
+    return {
+        "note": SECOND_STORY_NOTE,
+        "ran": Capture.captured(
+            {
+                "story_id": extension.get("story_id"),
+                "task_ids": extension.get("task_ids"),
+                "task_status": str(extension.get("task_status")),
+            }
+        ).as_dict(),
+        "brief_revisions": captured("level1_brief_revisions"),
+        "first_checkout": captured("first_checkout", "first_checkout_error"),
+        "manager_checkout_script": captured(
+            "manager_checkout_script", "manager_checkout_script_error"
+        ),
+        "branch_base": captured("story_branch_base_probe", "story_branch_base_error"),
+        "ci_runs": captured("story_ci_runs", "story_ci_runs_error"),
+        "engineering_runs": captured("story_engineering_runs", "story_engineering_runs_error"),
+        "deploy_path": captured("deploy_path", "deploy_run_error"),
+        "deploy_outcome": captured("deploy_outcome", "deploy_outcome_error"),
+        "product_probe": captured(
+            "level1_extension_endpoint_probe", "level1_extension_endpoint_probe_error"
+        ),
+        "qa": captured("qa_result"),
+        "story_terminal": captured("story_terminal", "story_terminal_error"),
+        "owner_notification": captured("owner_notification", "owner_notification_error"),
     }
 
 
