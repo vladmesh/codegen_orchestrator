@@ -64,6 +64,8 @@ from run_evidence import (
     LOG_TAIL_LINES,
     LOG_TAIL_MAX_CHARS,
     TARGET_SNAPSHOT_FILENAME,
+    TASK_ACCEPTANCE_CRITERIA_CTX_KEY,
+    TASK_DESCRIPTIONS_CTX_KEY,
     Capture,
     DeployRunRecord,
     QARunLookup,
@@ -1196,6 +1198,12 @@ async def create_level1_bot_project(
     ctx["level1_brief"] = build_level1_brief(marker)
     ctx["followup_task_title"] = LEVEL1_BOT_TASK_TITLE
     ctx["followup_task_description"] = change_sets.bot_task_description()
+    # What QA judges each task by, and what `format_acceptance_criteria` has to
+    # put into that task's TASK.md word for word. Minted from the same marker as
+    # the change sets and the brief, so the three cannot drift apart and a
+    # document left over from another run cannot satisfy the verbatim check.
+    ctx["task_criteria"] = change_sets.backend_acceptance_criteria()
+    ctx["followup_task_criteria"] = change_sets.bot_acceptance_criteria()
     ctx["product_bot_token"] = token
 
     async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
@@ -2097,7 +2105,13 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
 
     await _start_level1_story(api, ctx)
 
-    async def plan_task(*, title: str, description: str, blocked_by_task_id: str | None) -> str:
+    async def plan_task(
+        *,
+        title: str,
+        description: str,
+        acceptance_criteria: str,
+        blocked_by_task_id: str | None,
+    ) -> str:
         created = await api.post(
             "/api/tasks/",
             json={
@@ -2106,6 +2120,15 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
                 "type": "create",
                 "title": title,
                 "description": description,
+                # What QA checks this task by. It is not decoration: the
+                # engineering consumer reads it back
+                # (`consumers/acceptance_context.load_task_acceptance_criteria`)
+                # and `format_acceptance_criteria` quotes it into the worker's
+                # TASK.md stripped and otherwise untouched, which is the thing
+                # this run's evidence then asserts is there word for word. A plan
+                # whose tasks carry none leaves that assertion with nothing to
+                # check, which is how it went vacuous once already.
+                "acceptance_criteria": acceptance_criteria,
                 "status": TaskStatus.TODO,
                 "blocked_by_task_id": blocked_by_task_id,
                 "planning_attempt_id": attempt_id,
@@ -2124,11 +2147,15 @@ async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
         return created.json()["id"]
 
     backend_task_id = await plan_task(
-        title=ctx["task_title"], description=ctx["task_description"], blocked_by_task_id=None
+        title=ctx["task_title"],
+        description=ctx["task_description"],
+        acceptance_criteria=ctx["task_criteria"],
+        blocked_by_task_id=None,
     )
     bot_task_id = await plan_task(
         title=ctx["followup_task_title"],
         description=ctx["followup_task_description"],
+        acceptance_criteria=ctx["followup_task_criteria"],
         blocked_by_task_id=backend_task_id,
     )
     ctx["task_id"] = ctx["first_task_id"] = backend_task_id
@@ -2873,6 +2900,18 @@ def _record_task_diagnostic(ctx: dict, task: dict, *, task_id: str | None = None
             secrets=secret_env_values(dict(os.environ)),
         )
         failure_metadata = json.loads(redacted)
+    if "acceptance_criteria" in task:
+        # What the run's evidence checks the attempt's TASK.md quotes verbatim.
+        # Recorded only when the payload actually carries the field: a reader
+        # that never saw the task must say so rather than read a missing key as
+        # "this task has no acceptance criteria".
+        ctx.setdefault(TASK_ACCEPTANCE_CRITERIA_CTX_KEY, {})[diagnostic_task_id] = task[
+            "acceptance_criteria"
+        ]
+    if task.get("description"):
+        # How a reading of the workspace document is attributed to this task: it
+        # is the text the control plane builds that task's TASK.md around.
+        ctx.setdefault(TASK_DESCRIPTIONS_CTX_KEY, {})[diagnostic_task_id] = task["description"]
     ctx.setdefault("task_diagnostics", {})[diagnostic_task_id] = {
         "status": task.get("status"),
         "current_iteration": task.get("current_iteration"),

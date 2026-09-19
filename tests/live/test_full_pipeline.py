@@ -88,7 +88,8 @@ from pipeline_helpers import (
 )
 import pytest
 import pytest_asyncio
-from run_evidence import RunEvidenceCollector, emit_run_evidence
+import run_evidence
+from run_evidence import CaptureStatus, RunEvidenceCollector, emit_run_evidence
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -863,6 +864,40 @@ class TestFullPipeline:
             "undeploy_residue_error"
         )
         assert pipeline.get("undeploy_residue", {}).get("port_allocation_absent") is True
+
+    async def test_the_run_kept_what_each_developer_attempt_was_told(self, pipeline):
+        """Both tasks' TASK.md is in the evidence, and quotes their criteria verbatim.
+
+        The story's worker is reused across its two tasks and rewrites
+        `/workspace/TASK.md` at the start of each turn, so this asserts something
+        only the per-pass capture can produce: two attempts, each with the
+        document that attempt was actually handed. A document this run could not
+        read is a gap `complete` names — the artifact is allowed to be honest
+        about one, and this test is what says the run had none.
+        """
+        instructions = run_evidence.developer_instructions(
+            pipeline, pipeline["run_evidence"].records()
+        )
+        assert [attempt["attempt_id"] for attempt in instructions["attempts"]] == list(
+            pipeline["task_ids"]
+        )
+        assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value, instructions[
+            "complete"
+        ]["reason"]
+        # The one assertion about the *content*, and it is the strict helper on
+        # purpose. Two claims at once: every attempt of this story *has*
+        # acceptance criteria — `admit_level1_plan` plans them from this run's
+        # marker — and the document that attempt's developer was actually handed
+        # quotes them word for word. The permissive
+        # `attempts_not_quoting_acceptance_criteria` would answer `[]` for a plan
+        # that asked for nothing, which is exactly how this assertion was vacuous
+        # before; it stays for callers whose tasks may genuinely carry none.
+        assert run_evidence.attempts_without_quoted_acceptance_criteria(instructions) == []
+        # And the criteria really are this run's, so a document another run left
+        # behind could not have satisfied the check above.
+        for attempt in instructions["attempts"]:
+            document = attempt["documents"][run_evidence.TASK_DOCUMENT]
+            assert pipeline["level1_marker"] in document["readings"][0]["body"]["value"]["text"]
 
 
 class TestFullPipelineLLM:

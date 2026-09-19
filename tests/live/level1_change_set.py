@@ -83,6 +83,44 @@ def level1_command_description(marker: str) -> str:
     return f"level-1 product marker {marker}"
 
 
+def backend_acceptance_criteria(marker: str) -> str:
+    """What QA checks the backend task by, on the running deployment.
+
+    The brief's `level1_setting` requirement, stated as observations a QA
+    executor can make: the endpoint the change set adds answers, it answers with
+    *this run's* marker, and the settings key the confirmed brief seeded is
+    registered on the deployment the answer came from. Every line is something
+    the suite's own deployed-product probes already read, so this is the check
+    QA would make and not a restatement of the diff.
+
+    The marker is in it on purpose. It is minted per run, so a `TASK.md` left
+    behind by an earlier run — in a cached image, a stale workspace, a document
+    nobody rewrote — cannot satisfy a verbatim check against these criteria.
+    """
+    return (
+        f"- GET {LEVEL1_ENDPOINT_PATH} on the deployed backend answers HTTP 200.\n"
+        f'- The JSON it answers with carries "marker" exactly equal to "{marker}".\n'
+        f'- That JSON carries "{LEVEL1_SETTING_KEY}" among the keys of "declared_settings", '
+        "so the product setting the confirmed brief seeded is registered on the running "
+        "deployment."
+    )
+
+
+def bot_acceptance_criteria(marker: str) -> str:
+    """What QA checks the bot task by, on the running deployment.
+
+    The brief's `level1_command` requirement: the command answers with this
+    run's marker, and the running bot publishes that command to Telegram. Same
+    per-run marker discipline as `backend_acceptance_criteria`.
+    """
+    return (
+        f"- The deployed bot answers the command /{LEVEL1_COMMAND} with exactly "
+        f'"level-1 marker: {marker}".\n'
+        f"- The command menu the running bot publishes to Telegram lists /{LEVEL1_COMMAND} "
+        f'with the description "{level1_command_description(marker)}".'
+    )
+
+
 def _fixture_text(relative: str) -> str:
     path: Path = TEMPLATE_PIN.fixture_path() / relative
     return path.read_text(encoding="utf-8")
@@ -325,6 +363,14 @@ class Level1ChangeSets:
             f"Add the /{LEVEL1_COMMAND} Telegram command and publish the bot's command menu.",
             self.bot,
         )
+
+    def backend_acceptance_criteria(self) -> str:
+        """What the first task's `TASK.md` has to quote, word for word."""
+        return backend_acceptance_criteria(self.marker)
+
+    def bot_acceptance_criteria(self) -> str:
+        """What the second task's `TASK.md` has to quote, word for word."""
+        return bot_acceptance_criteria(self.marker)
 
 
 def _task_description(headline: str, operations: list[Operation]) -> str:
