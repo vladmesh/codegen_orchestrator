@@ -21,7 +21,29 @@ what Postgres does when the parent goes: `CASCADE` removes the child itself,
 delete. The plan therefore contains exactly the tables that must be emptied
 first, which is also exactly the set whose absence has to be proven afterwards —
 the append-only `engineering_attempt_ledger`, which FKs runs with `SET NULL`, is
-correctly absent from both.
+correctly absent from both. A table reachable *only* through a `CASCADE` edge —
+`projects -CASCADE-> X -NO ACTION-> Y` — is therefore not in the plan either;
+today no such path exists, because every `CASCADE` in this schema points at
+`servers`, outside the closure. If one appears, Postgres refuses the delete of
+`X` and `describe_failure` names the constraint and says the plan did not know
+about `Y`: the gap surfaces as a loud refusal, not as silence.
+
+**A foreign key is the only thing the catalog can see, so the columns that are
+not one are derived too.** `service_deployments.project_id` is denormalized from
+the application and carries no foreign key on purpose, and its `application_id`
+is nullable — so a row can name this run's project and be reachable through no
+key at all. `denormalized_references` finds such columns without listing them:
+a column name that some foreign key in this schema uses for a parent (here
+`project_id`, which a dozen tables FK to `projects` with) identifies every
+*other* column of that name that carries no key of its own. Those become
+predicates and ordering edges exactly like a foreign key, so the plan covers
+`service_deployments` and `api_keys` by their `project_id` too, and the next
+denormalized column joins it by existing. A name that resolves to more than one
+parent table inside the closure is raised rather than guessed at, and an
+explicit key outranks an inferred one: a table the schema unlinks by its own
+`SET NULL`/`CASCADE` key into the closure is left alone however its other
+columns are named, which is what keeps the deliberately-retained
+`engineering_budget_reservations` out of the plan.
 
 **The order is the catalog's, not a person's.** Deletion is the reverse
 topological order of that closure; a cycle between two tables is raised by name
@@ -79,7 +101,15 @@ SELECT json_build_object(
       JOIN pg_class rel ON rel.oid = con.conrelid
       JOIN pg_namespace ns ON ns.oid = rel.relnamespace
       WHERE con.contype = 'p' AND ns.nspname = 'public'
-  ) AS pk), '[]'::json)
+  ) AS pk), '[]'::json),
+  'columns', COALESCE((SELECT json_agg(cl) FROM (
+      SELECT rel.relname AS table_name, att.attname AS column_name
+      FROM pg_attribute att
+      JOIN pg_class rel ON rel.oid = att.attrelid
+      JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+      WHERE ns.nspname = 'public' AND rel.relkind = 'r'
+        AND att.attnum > 0 AND NOT att.attisdropped
+  ) AS cl), '[]'::json)
 );
 """.strip()
 
@@ -110,6 +140,22 @@ class ForeignKey:
     def refuses_parent_delete(self) -> bool:
         return self.delete_rule in REFUSING_DELETE_RULES
 
+    @property
+    def child_key(self) -> str:
+        return self._single(self.child_columns)
+
+    @property
+    def parent_key(self) -> str:
+        return self._single(self.parent_columns)
+
+    def _single(self, columns: tuple[str, ...]) -> str:
+        if len(columns) != 1:
+            raise TeardownError(
+                f"constraint {self.constraint!r} on {self.child_table!r} spans several columns; "
+                "teardown selects a run's rows one key at a time"
+            )
+        return columns[0]
+
     def describe(self) -> str:
         child = ", ".join(self.child_columns)
         parent = ", ".join(self.parent_columns)
@@ -120,11 +166,37 @@ class ForeignKey:
 
 
 @dataclass(frozen=True)
+class DenormalizedReference:
+    """A column that names a parent row without a foreign key to hold it there.
+
+    Not a lesser foreign key: the database enforces nothing here, which is why
+    such a row can survive a teardown refusing nothing and naming nothing. It is
+    derived, never listed — see `denormalized_references`.
+    """
+
+    child_table: str
+    child_key: str
+    parent_table: str
+    parent_key: str
+
+    def describe(self) -> str:
+        return (
+            f"{self.child_table}.{self.child_key} → {self.parent_table}.{self.parent_key} "
+            "(no foreign key: a denormalized reference)"
+        )
+
+
+# A reference by which a row belongs to the run, enforced or not.
+Reference = ForeignKey | DenormalizedReference
+
+
+@dataclass(frozen=True)
 class Catalog:
-    """The foreign keys and primary keys of one schema."""
+    """The foreign keys, primary keys and columns of one schema."""
 
     foreign_keys: tuple[ForeignKey, ...]
     primary_keys: Mapping[str, tuple[str, ...]]
+    columns: Mapping[str, tuple[str, ...]]
 
     def refusing_children(self, table: str) -> tuple[ForeignKey, ...]:
         """The foreign keys that would refuse a delete of a row in `table`.
@@ -149,13 +221,14 @@ class PlanStep:
     key_expression: str
     key_name: str
     predicate: str
-    # The edges by which this table's rows belong to the run. Empty for the root.
-    via: tuple[ForeignKey, ...] = ()
+    # The references by which this table's rows belong to the run, foreign key
+    # or denormalized column. Empty for the root.
+    via: tuple[Reference, ...] = ()
 
     def belongs_because(self) -> str:
         if not self.via:
             return "the run owns it directly"
-        return "; ".join(fk.describe() for fk in self.via)
+        return "; ".join(reference.describe() for reference in self.via)
 
 
 @dataclass
@@ -212,7 +285,14 @@ def parse_catalog(payload: str) -> Catalog:
         for row in data["foreign_keys"]
     )
     primary_keys = {row["table_name"]: tuple(row["columns"]) for row in data["primary_keys"]}
-    return Catalog(foreign_keys=foreign_keys, primary_keys=primary_keys)
+    columns: dict[str, list[str]] = {}
+    for row in data["columns"]:
+        columns.setdefault(row["table_name"], []).append(row["column_name"])
+    return Catalog(
+        foreign_keys=foreign_keys,
+        primary_keys=primary_keys,
+        columns={table: tuple(names) for table, names in columns.items()},
+    )
 
 
 # What separates the columns of a composite key when it is printed and asked
@@ -240,58 +320,177 @@ def _key_expression(catalog: Catalog, table: str) -> tuple[str, str]:
     )
 
 
-def _edge_predicate(fk: ForeignKey, parent_predicate: str) -> str:
-    if len(fk.child_columns) != 1 or len(fk.parent_columns) != 1:
-        raise TeardownError(
-            f"constraint {fk.constraint!r} on {fk.child_table!r} spans several columns; "
-            "teardown selects a run's rows one key at a time"
-        )
+def _edge_predicate(reference: Reference, parent_predicate: str) -> str:
     return (
-        f"{fk.child_columns[0]} IN "
-        f"(SELECT {fk.parent_columns[0]} FROM {fk.parent_table} WHERE {parent_predicate})"
+        f"{reference.child_key} IN "
+        f"(SELECT {reference.parent_key} FROM {reference.parent_table} "
+        f"WHERE {parent_predicate})"
     )
 
 
-def _reachable(catalog: Catalog, root_table: str) -> dict[str, tuple[ForeignKey, ...]]:
-    """Every table the root's rows are referenced from, with the edges that reach it."""
-    incoming: dict[str, list[ForeignKey]] = {root_table: []}
-    queue = [root_table]
-    while queue:
-        table = queue.pop(0)
-        for fk in catalog.refusing_children(table):
-            if fk.child_table not in incoming:
-                incoming[fk.child_table] = []
-                queue.append(fk.child_table)
-            if fk not in incoming[fk.child_table]:
-                incoming[fk.child_table].append(fk)
+def denormalized_references(catalog: Catalog) -> tuple[DenormalizedReference, ...]:
+    """Columns that name a parent row and carry no foreign key, derived.
+
+    The schema's own foreign keys say what a column name means: `project_id` is
+    a name a dozen tables use for `projects.id`. So a column of that name that
+    is part of no foreign key on its own table is a reference the catalog walk
+    would otherwise miss — `service_deployments.project_id`, denormalized from
+    the application, and `api_keys.project_id` are the two this schema has.
+
+    Nothing is listed here, so a new denormalized column is covered by existing.
+    A name several tables use for *different* parents cannot be resolved this
+    way; it is raised, by `build_plan`, if it touches the closure at all.
+    """
+    parents: dict[str, set[tuple[str, str]]] = {}
+    covered: set[tuple[str, str]] = set()
+    for fk in catalog.foreign_keys:
+        for child_column, parent_column in zip(fk.child_columns, fk.parent_columns, strict=True):
+            parents.setdefault(child_column, set()).add((fk.parent_table, parent_column))
+            covered.add((fk.child_table, child_column))
+    references = []
+    for table, columns in sorted(catalog.columns.items()):
+        for column in columns:
+            if (table, column) in covered or column not in parents:
+                continue
+            for parent_table, parent_column in sorted(parents[column]):
+                references.append(
+                    DenormalizedReference(
+                        child_table=table,
+                        child_key=column,
+                        parent_table=parent_table,
+                        parent_key=parent_column,
+                    )
+                )
+    return tuple(references)
+
+
+def _ambiguous_names(references: Sequence[DenormalizedReference], tables: Iterable[str]) -> str:
+    """Denormalized column names that resolve to more than one parent in the closure."""
+    inside = set(tables)
+    by_column: dict[tuple[str, str], set[str]] = {}
+    for reference in references:
+        if reference.parent_table in inside:
+            by_column.setdefault((reference.child_table, reference.child_key), set()).add(
+                reference.parent_table
+            )
+    ambiguous = {
+        f"{table}.{column} → {', '.join(sorted(found))}"
+        for (table, column), found in by_column.items()
+        if len(found) > 1
+    }
+    return ", ".join(sorted(ambiguous))
+
+
+def _unlinking_tables(catalog: Catalog, tables: Iterable[str]) -> set[str]:
+    """Tables the schema already says what to do with when a closure row goes.
+
+    A foreign key with `SET NULL` or `CASCADE` into the closure is the schema's
+    own instruction for teardown, and it outranks a column name. That is what
+    keeps `engineering_budget_reservations` — whose `project_id` is deliberately
+    `ON DELETE SET NULL`, and whose `story_id` happens to carry no key — out of
+    the plan, while `service_deployments`, whose only unlinking key points at
+    `servers` outside the closure, stays in it.
+    """
+    inside = set(tables)
+    return {
+        fk.child_table
+        for fk in catalog.foreign_keys
+        if not fk.refuses_parent_delete
+        and fk.parent_table in inside
+        and fk.child_table != fk.parent_table
+    }
+
+
+def _walk(
+    catalog: Catalog,
+    root_table: str,
+    denormalized: Sequence[DenormalizedReference],
+    excluded: Iterable[str],
+) -> dict[str, list[Reference]]:
+    """One pass to a fixpoint over both kinds of reference."""
+    refused = set(excluded)
+    incoming: dict[str, list[Reference]] = {root_table: []}
+
+    def reach(child: str, reference: Reference) -> bool:
+        if child in refused:
+            return False
+        added = child not in incoming
+        edges = incoming.setdefault(child, [])
+        if reference not in edges:
+            edges.append(reference)
+        return added
+
+    changed = True
+    while changed:
+        changed = False
+        for table in list(incoming):
+            for fk in catalog.refusing_children(table):
+                changed |= reach(fk.child_table, fk)
+        for reference in denormalized:
+            if reference.parent_table in incoming and reference.child_table != root_table:
+                changed |= reach(reference.child_table, reference)
+    return incoming
+
+
+def _reachable(catalog: Catalog, root_table: str) -> dict[str, tuple[Reference, ...]]:
+    """Every table the root's rows are reached from, with the references that reach it.
+
+    Two kinds of reference, one walk: a foreign key the database would refuse,
+    and a denormalized column it would not. A denormalized table is a seed of
+    its own, so the foreign keys pointing at *it* are followed too — which is
+    why the walk runs to a fixpoint rather than in one pass.
+
+    A table pulled in by a column name alone is dropped again when the schema
+    has an unlinking key of its own into the closure, and the exclusion set only
+    grows, so the outer loop terminates.
+    """
+    denormalized = denormalized_references(catalog)
+    excluded: set[str] = set()
+    while True:
+        incoming = _walk(catalog, root_table, denormalized, excluded)
+        by_name_only = {
+            table
+            for table, edges in incoming.items()
+            if edges and all(isinstance(edge, DenormalizedReference) for edge in edges)
+        }
+        found = excluded | (by_name_only & _unlinking_tables(catalog, incoming))
+        if found == excluded:
+            break
+        excluded = found
+    ambiguous = _ambiguous_names(denormalized, incoming)
+    if ambiguous:
+        raise TeardownError(
+            "these denormalized columns name more than one parent table, so teardown "
+            "cannot tell which rows belong to the run: " + ambiguous
+        )
     return {table: tuple(edges) for table, edges in incoming.items()}
 
 
 def _deletion_order(
-    incoming: Mapping[str, tuple[ForeignKey, ...]], root_table: str
+    incoming: Mapping[str, tuple[Reference, ...]], root_table: str
 ) -> tuple[str, ...]:
     """Children before parents, ties broken by name so the plan is reproducible."""
     dependents: dict[str, int] = dict.fromkeys(incoming, 0)
     for edges in incoming.values():
-        for fk in edges:
-            if fk.parent_table in dependents:
-                dependents[fk.parent_table] += 1
+        for reference in edges:
+            if reference.parent_table in dependents:
+                dependents[reference.parent_table] += 1
     ready = [table for table, count in dependents.items() if count == 0]
     heapq.heapify(ready)
     order: list[str] = []
     while ready:
         table = heapq.heappop(ready)
         order.append(table)
-        for fk in incoming[table]:
-            if fk.parent_table not in dependents:
+        for reference in incoming[table]:
+            if reference.parent_table not in dependents:
                 continue
-            dependents[fk.parent_table] -= 1
-            if dependents[fk.parent_table] == 0:
-                heapq.heappush(ready, fk.parent_table)
+            dependents[reference.parent_table] -= 1
+            if dependents[reference.parent_table] == 0:
+                heapq.heappush(ready, reference.parent_table)
     if len(order) != len(incoming):
         stuck = sorted(set(incoming) - set(order))
         raise TeardownError(
-            "the foreign keys of these tables form a cycle, so no deletion order exists: "
+            "the references between these tables form a cycle, so no deletion order exists: "
             + ", ".join(stuck)
         )
     if order[-1] != root_table:
@@ -310,7 +509,8 @@ def build_plan(catalog: Catalog, *, root_table: str, root_predicate: str) -> tup
         if table == root_table:
             continue
         predicates[table] = " OR ".join(
-            _edge_predicate(fk, predicates[fk.parent_table]) for fk in incoming[table]
+            _edge_predicate(reference, predicates[reference.parent_table])
+            for reference in incoming[table]
         )
     steps = []
     for table in order:

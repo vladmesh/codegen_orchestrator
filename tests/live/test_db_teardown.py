@@ -99,6 +99,12 @@ def test_a_new_table_referencing_runs_joins_the_plan_by_itself():
         }
     )
     catalog_payload["primary_keys"].append({"table_name": "later_table", "columns": ["id"]})
+    catalog_payload["columns"].extend(
+        [
+            {"table_name": "later_table", "column_name": "id"},
+            {"table_name": "later_table", "column_name": "run_id"},
+        ]
+    )
 
     _, plan = _plan(json.dumps(catalog_payload))
     tables = [step.table for step in plan]
@@ -139,6 +145,14 @@ def test_a_cycle_is_named_rather_than_guessed_at():
             {"table_name": table, "columns": ["id"]}
             for table in ("projects", "left_table", "right_table")
         ],
+        "columns": [
+            {"table_name": "projects", "column_name": "id"},
+            {"table_name": "left_table", "column_name": "id"},
+            {"table_name": "left_table", "column_name": "project_id"},
+            {"table_name": "left_table", "column_name": "right_id"},
+            {"table_name": "right_table", "column_name": "id"},
+            {"table_name": "right_table", "column_name": "left_id"},
+        ],
     }
     with pytest.raises(TeardownError) as excinfo:
         _plan(json.dumps(payload))
@@ -148,6 +162,87 @@ def test_a_cycle_is_named_rather_than_guessed_at():
     # this needs the names, not a traceback out of psql.
     assert "left_table" in str(excinfo.value)
     assert "right_table" in str(excinfo.value)
+
+
+# ── the columns that are not foreign keys ────────────────────────────────
+
+
+def test_a_denormalized_project_column_is_covered_without_being_listed():
+    """`service_deployments.project_id` carries no foreign key, on purpose.
+
+    `shared/models/deployment.py` denormalizes it from the application and
+    leaves `application_id` nullable, so a row can name this run's project and
+    be reachable through no key at all. A walk of foreign keys alone cannot see
+    it: it is not deleted, it refuses nothing, and the residue proof would call
+    the teardown clean.
+    """
+    _, plan = _plan()
+    step = next(step for step in plan if step.table == "service_deployments")
+
+    assert "project_id IN (SELECT id FROM projects WHERE" in step.predicate
+    assert "no foreign key" in step.belongs_because()
+    # Same derivation, second table, nothing listed anywhere.
+    assert "api_keys" in [step.table for step in plan]
+
+
+def test_a_row_the_foreign_keys_cannot_see_is_deleted_and_named(monkeypatch):
+    deployment_row = "4711"
+    database = FakeDatabase(
+        owned={"projects": [PROJECT_ID], "service_deployments": [deployment_row]},
+        residue=[("service_deployments", deployment_row)],
+    )
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
+
+    with pytest.raises(TeardownError) as excinfo:
+        pipeline_helpers._cleanup_db(PROJECT_ID)
+
+    message = str(excinfo.value)
+    assert f"service_deployments: id={deployment_row}" in message
+    assert "service_deployments.project_id → projects.id (no foreign key" in message
+
+
+def test_the_schemas_own_unlinking_key_outranks_a_column_name():
+    """`engineering_budget_reservations` is retained on purpose.
+
+    Its `project_id` is `ON DELETE SET NULL` — the schema's own instruction for
+    teardown — while its `story_id` happens to carry no key. The explicit key
+    wins, so the table is neither deleted nor expected gone.
+    """
+    _, plan = _plan()
+
+    assert "engineering_budget_reservations" not in [step.table for step in plan]
+
+
+def test_an_ambiguous_denormalized_column_is_raised():
+    payload = {
+        "foreign_keys": [
+            {
+                "constraint_name": f"{child}_thing_id_fkey",
+                "child_table": child,
+                "parent_table": parent,
+                "delete_rule": "a",
+                "child_columns": ["thing_id"],
+                "parent_columns": ["id"],
+            }
+            for child, parent in (("left_things", "projects"), ("right_things", "left_things"))
+        ],
+        "primary_keys": [
+            {"table_name": table, "columns": ["id"]}
+            for table in ("projects", "left_things", "right_things", "stowaway")
+        ],
+        "columns": [
+            {"table_name": "projects", "column_name": "id"},
+            {"table_name": "left_things", "column_name": "thing_id"},
+            {"table_name": "right_things", "column_name": "thing_id"},
+            {"table_name": "stowaway", "column_name": "id"},
+            {"table_name": "stowaway", "column_name": "thing_id"},
+        ],
+    }
+    with pytest.raises(TeardownError) as excinfo:
+        _plan(json.dumps(payload))
+
+    assert "stowaway.thing_id" in str(excinfo.value)
+    assert "more than one parent table" in str(excinfo.value)
 
 
 # ── teardown of the run the evidence describes ───────────────────────────
@@ -165,6 +260,10 @@ def test_grant_path_project_tears_down_completely(monkeypatch):
     # A refused statement ends the batch instead of running the rest of the
     # transaction against a failure.
     assert "ON_ERROR_STOP=1" in database.argv[0]
+    # The batch goes in on stdin: the residue pass names every key the run
+    # owned, and one argv element is capped at 128 KiB.
+    assert database.argv[0][-2:] == ["-f", "-"]
+    assert not any("DELETE FROM" in argument for argument in database.argv[0])
 
 
 def test_a_deliberately_left_row_is_reported_by_name(monkeypatch):

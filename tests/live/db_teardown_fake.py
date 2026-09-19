@@ -56,9 +56,13 @@ class FakeDatabase:
         )
 
     def subprocess_run(self, argv, **kwargs):
-        """Stand in for `subprocess.run` so `pipeline_helpers._psql` can be driven."""
+        """Stand in for `subprocess.run` so `pipeline_helpers._psql` can be driven.
+
+        The batch arrives the way psql is given it — on stdin, so that a test
+        reads back what a real invocation would have sent.
+        """
         self.argv.append(list(argv))
-        result = self.run_sql(argv[-1])
+        result = self.run_sql(kwargs["input"])
         return SimpleNamespace(
             returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
         )

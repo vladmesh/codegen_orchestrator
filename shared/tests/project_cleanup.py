@@ -26,9 +26,10 @@ _DELETE_RULES: Final[dict[str | None, str]] = {
 def metadata_catalog_payload() -> str:
     """The live catalog query's answer, derived from this schema's own metadata.
 
-    Offline teardown tests need the foreign keys the stand's database would
-    report. Restating them by hand is the failure this exists to prevent, so
-    they are read off `shared.models.Base.metadata` instead: a new table that
+    Offline teardown tests need the foreign keys — and the columns that are not
+    one — that the stand's database would report. Restating them by hand is the
+    failure this exists to prevent, so they are read off
+    `shared.models.Base.metadata` instead: a new table that
     references a run appears here the moment its model does, and a test that
     asserts the teardown plan covers it therefore tracks the schema rather than
     a copy of it. Unnamed constraints are spelled the way Postgres names them.
@@ -37,7 +38,11 @@ def metadata_catalog_payload() -> str:
 
     foreign_keys = []
     primary_keys = []
+    columns = []
     for table in Base.metadata.sorted_tables:
+        columns.extend(
+            {"table_name": table.name, "column_name": column.name} for column in table.columns
+        )
         pk_columns = [column.name for column in table.primary_key.columns]
         if pk_columns:
             primary_keys.append({"table_name": table.name, "columns": pk_columns})
@@ -56,4 +61,6 @@ def metadata_catalog_payload() -> str:
                     "parent_columns": parent_columns,
                 }
             )
-    return json.dumps({"foreign_keys": foreign_keys, "primary_keys": primary_keys})
+    return json.dumps(
+        {"foreign_keys": foreign_keys, "primary_keys": primary_keys, "columns": columns}
+    )

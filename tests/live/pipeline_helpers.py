@@ -4724,9 +4724,13 @@ async def cleanup_all(
 def _psql(sql: str) -> db_teardown.SqlResult:
     """Run one statement batch against the stack's database.
 
-    `ON_ERROR_STOP` makes a refused statement end the batch instead of letting
-    the rest of a transaction run against a failed one, and the unaligned
-    tab-separated tuples are what `db_teardown.parse_rows` reads back.
+    The batch arrives on stdin (`-f -`), not as an argument: the residue pass
+    names every key the run owned, and Linux caps one argv element at 128 KiB,
+    so a run with a few thousand `rag_chunks` rows would have failed that pass
+    with a bare `OSError` after the deletes had already committed. Stdin has no
+    such ceiling. `ON_ERROR_STOP` makes a refused statement end the batch
+    instead of letting the rest of a transaction run against a failed one, and
+    the unaligned tab-separated tuples are what `db_teardown.parse_rows` reads.
     """
     result = subprocess.run(
         [
@@ -4746,9 +4750,10 @@ def _psql(sql: str) -> db_teardown.SqlResult:
             "-A",
             "-F",
             "\t",
-            "-c",
-            sql,
+            "-f",
+            "-",
         ],
+        input=sql,
         capture_output=True,
         text=True,
         timeout=DB_TEARDOWN_TIMEOUT,
