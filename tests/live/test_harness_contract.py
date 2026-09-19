@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 from capability_cleanup import cleanup_owned_capability_messages
 import conftest as live_conftest
 from conftest import create_test_project_context
+from db_teardown_fake import FakeDatabase
 import httpx
 from live_harness import (
     LIVE_NO_CLEANUP_ENV,
@@ -1368,16 +1369,17 @@ fi
 
 
 def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
-    executed = []
+    """Port allocations hang off applications, not off the project.
 
-    def run(*args, **kwargs):
-        executed.append(args[0][-1])
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+    The relation is now read out of the foreign-key catalog rather than spelled
+    in a delete list, so the fake database answers with this schema's metadata;
+    the relation the test asserts is the same one.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
     pipeline_helpers._cleanup_db("project-1")
 
-    sql = executed[0]
+    sql = database.delete_sql
     assert "port_allocations WHERE application_id IN" in sql
     assert "port_allocations WHERE project_id" not in sql
     assert sql.index("DELETE FROM port_allocations") < sql.index("DELETE FROM applications")

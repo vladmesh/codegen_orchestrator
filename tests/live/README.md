@@ -441,6 +441,29 @@ record, its Redis keys included. A capture that fails is not a licence to remove
 and why its ending could not be read. That is an acceptable ending; a worker that simply disappears
 is not.
 
+## Database teardown, derived from the catalog
+
+The rows a run leaves behind are removed by `tests/live/db_teardown.py`, which is given one fact —
+the project id — and reads the rest out of `pg_constraint`. Starting at that project's row it walks
+*incoming* foreign keys, so what the run owns is what the keys say points at it, and it follows only
+the edges the database would refuse (`NO ACTION`, `RESTRICT`); a child the schema removes or unlinks
+by itself (`CASCADE`, `SET NULL`) is neither deleted here nor expected to be gone, which is why the
+append-only `engineering_attempt_ledger` survives a teardown untouched. The deletion order is the
+reverse topological order of that closure, in one transaction, and a cycle between two tables is
+raised by name rather than guessed at.
+
+The proof is the same plan read back. Every key the run owns is recorded *before* the deletes and
+asked for again afterwards, so the check still answers once the project row is gone; anything that
+answers is raised as its table, its key and the constraint by which it belongs to the run. A delete
+the database refuses is reported as the constraint, the table it is on and whether the plan knew
+about that table at all — a table outside the plan means the catalog it was built from is stale.
+
+This replaced a hand-written list of `DELETE` statements, which went stale silently and in the
+direction of leaving residue behind: run 35441716423 could not delete its project because the
+level-1 grant deploy had written a `users_grant_intents` row referencing its `deploy-grant-…` run,
+and that table was in nobody's list. `tests/live/test_db_teardown.py` holds both properties offline,
+against this schema's own metadata (`shared/tests/project_cleanup.py::metadata_catalog_payload`).
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

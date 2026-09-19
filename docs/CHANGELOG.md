@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- Live teardown derives the project's delete order and its residue proof from `pg_constraint` instead of a
+  hand-written list, so `users_grant_intents` and the next such table are covered and a leftover is named.
 - The scaffold wait is sized by the product: `shared/stand_deadlines.scaffold_budget_seconds` gives the
   first rendered module 120 s and each further one another 120 s, so level-1's two modules get 240 s.
 - `wait_scaffold` raises `ScaffoldDidNotComplete` naming the phase, the wait, the last project status and
