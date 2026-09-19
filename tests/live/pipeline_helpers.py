@@ -6,7 +6,7 @@ These are plain functions, not pytest fixtures.
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -32,6 +32,13 @@ from brief_telemetry import (
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import db_teardown
 import httpx
+from level1_brief import (
+    LEVEL1_COMMAND_REQUIREMENT,
+    LEVEL1_SETTING_REQUIREMENT,
+    Level1Brief,
+    bot_completion_message_mismatches,
+    build_level1_brief,
+)
 from level1_change_set import (
     LEVEL1_COMMAND,
     LEVEL1_ENDPOINT_PATH,
@@ -94,6 +101,10 @@ from shared.contracts.dto.engineering_budget_policy import (
 )
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.owner_notification import OwnerNotificationState
+from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionOutcome,
+    ProductBriefPlanningAttemptOutcome,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
@@ -222,8 +233,6 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 NOOP_PROJECT_DESCRIPTION = "Pipeline E2E test - noop"
 NOOP_TASK_TITLE = "Noop implementation task"
 NOOP_TASK_DESCRIPTION = "Empty commit via NoopRunner - pipeline test"
-NOOP_FOLLOWUP_TASK_TITLE = "Noop follow-up integration task"
-NOOP_FOLLOWUP_TASK_DESCRIPTION = "Second empty NoopRunner commit after the first task"
 
 # The product shape every suite but level-1 has always created.
 BACKEND_ONLY_MODULES = ["backend"]
@@ -1181,6 +1190,10 @@ async def create_level1_bot_project(
     )
     ctx["level1_marker"] = marker
     ctx["level1_change_set_paths"] = change_sets.paths
+    # The product contract this run's story is planned against. Minted from the
+    # same marker as the change sets, so the setting the user confirms is the
+    # one the backend manifest declares and the value is this run's alone.
+    ctx["level1_brief"] = build_level1_brief(marker)
     ctx["followup_task_title"] = LEVEL1_BOT_TASK_TITLE
     ctx["followup_task_description"] = change_sets.bot_task_description()
     ctx["product_bot_token"] = token
@@ -1649,10 +1662,8 @@ def own_deploy_ahead(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
-async def create_story_and_task(
-    api: httpx.AsyncClient, ctx: dict, *, linear_noop_tasks: bool = False
-) -> None:
-    """Create an in-progress Story and one or two schedulable engineering Tasks.
+async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
+    """Create an in-progress Story and one schedulable engineering Task.
 
     Creating the story is what makes this run able to deploy, so this is where the
     deploy stack is owned — derived, not declared at the call site. Once the
@@ -1723,17 +1734,605 @@ async def create_story_and_task(
     ctx["task_id"] = first_task_id
     ctx["first_task_id"] = first_task_id
     ctx["task_ids"] = [first_task_id]
-    if linear_noop_tasks:
-        second_task_id = await create_task(
-            # The second task of the level-1 story carries its own change set,
-            # so its text comes from the context that built it. Every other
-            # linear-noop suite keeps the empty-commit follow-up it has today.
-            title=ctx.get("followup_task_title", NOOP_FOLLOWUP_TASK_TITLE),
-            description=ctx.get("followup_task_description", NOOP_FOLLOWUP_TASK_DESCRIPTION),
-            blocked_by_task_id=first_task_id,
+
+
+# ── Level-1: the confirmed brief, and the plan admitted without a model ──
+
+
+class Level1PhaseFailed(RuntimeError):
+    """A level-1 phase did not produce what the phases after it are about.
+
+    Raised out of the fixture rather than yielded, the way card 1310 made the
+    scaffold raise `ScaffoldDidNotComplete`: the level-1 route is deterministic,
+    so a brief that was not confirmed, a plan that was not admitted, engineering
+    that did not finish or a deploy that did not succeed is a failure of that
+    phase — never a skip, and never a later assertion about the product that
+    phase never produced.
+    """
+
+    def __init__(self, phase: str, reason: str) -> None:
+        super().__init__(f"level-1 {phase} phase failed: {reason}")
+        self.phase = phase
+        self.reason = reason
+
+
+#: How long the brief is watched for the story bind `create_story` performs, so
+#: the claim below lands between that bind and the architect message it
+#: publishes. It is a handful of API round trips, not work.
+LEVEL1_PLAN_CLAIM_TIMEOUT = 120
+#: While the bind is plausibly still in flight the claim is retried with no
+#: delay at all, so it lands within one round trip of the bind. After that a
+#: brief that is still unbound is waited for rather than hammered.
+LEVEL1_PLAN_CLAIM_TIGHT_SECONDS = 5
+LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL = 0.5
+#: The API's own refusal for a brief that has no story yet
+#: (`services/api/src/routers/product_briefs.py:113-120`). It is the one refusal
+#: the claim retry tolerates; every other answer is an answer.
+PLAN_HAS_NO_STORY_DETAIL = "planning requires a confirmed Product Brief bound to a story"
+
+#: What the PO tools print, and the two ids the level-1 flow reads back out of
+#: them. `brief_pipeline` reads the same two.
+PO_BRIEF_ID_RE = re.compile(r"\(id: (brief-[a-f0-9]+)\)")
+PO_STORY_ID_RE = re.compile(r"Story: (story-[A-Za-z0-9-]+) —")
+
+
+def po_tool_config(ctx: dict) -> dict:
+    """The LangGraph config the released PO tools are invoked with.
+
+    The chat id is the identity every PO tool composes its `X-Telegram-ID`
+    header from, so it is the harness user — the owner of this project.
+    """
+    return {
+        "configurable": {
+            "thread_id": ctx["manifest"].run_id,
+            "telegram_chat_id": str(TEST_TELEGRAM_ID),
+            "project_creation_identity": {
+                "project_id": ctx["project_id"],
+                "initiating_run_id": ctx["manifest"].run_id,
+            },
+        }
+    }
+
+
+def _brief_is_not_bound_yet(response: httpx.Response) -> bool:
+    """Is this the API saying the brief has no story to plan in *yet*?"""
+    if response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
+        return False
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return False
+    return detail == PLAN_HAS_NO_STORY_DETAIL
+
+
+async def _claim_plan_as_soon_as_it_is_claimable(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Own this brief's plan the instant it becomes ownable, and before anyone else.
+
+    This is the claim itself in a tight retry, not a poll for the bind followed
+    by a claim: the refusal for a brief with no story yet is a known 422
+    (`PLAN_HAS_NO_STORY_DETAIL`), so retrying through it is the same wait with
+    the extra read — and its sleep — removed.
+
+    Why that is enough to win. `create_story` binds the brief to its story
+    (`POST /product-briefs/{id}/story`) and only *then* publishes the story to
+    `architect:queue` (`services/langgraph/src/agents/po/tools_stories.py`), and
+    both the bind and this claim take the brief row `SELECT ... FOR UPDATE`
+    (`_product_brief_helpers.load_brief_for_update`). A claim that arrives while
+    the bind is committing therefore queues on that row and reads the bound row
+    the moment it is released — it cannot miss the bind and retry past it. The
+    architect, meanwhile, has not yet been told the story exists.
+
+    It is still a race, and the run does not rely on having won it: a claim that
+    comes back anything but `claimed` stops the run, and
+    `verify_level1_plan_is_this_runs_alone` proves from durable state that
+    nothing else planned this brief.
+    """
+    brief_id = ctx["brief_id"]
+    route = f"/api/product-briefs/{brief_id}/planning-attempts/claim"
+    started = time.monotonic()
+    deadline = started + LEVEL1_PLAN_CLAIM_TIMEOUT
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        response = await api.post(route)
+        if response.status_code == httpx.codes.OK:
+            ctx["level1_plan_claim_attempts"] = attempts
+            return response.json()
+        if not _brief_is_not_bound_yet(response):
+            raise Level1PhaseFailed(
+                "brief",
+                f"the plan of Product Brief {brief_id} could not be claimed: "
+                f"HTTP {response.status_code} {response.text[:300]}",
+            )
+        if time.monotonic() - started > LEVEL1_PLAN_CLAIM_TIGHT_SECONDS:
+            await asyncio.sleep(LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL)
+    raise Level1PhaseFailed(
+        "brief",
+        f"Product Brief {brief_id} was never bound to a story within "
+        f"{LEVEL1_PLAN_CLAIM_TIMEOUT}s, so its plan could not be claimed "
+        f"({attempts} attempts)",
+    )
+
+
+async def create_level1_confirmed_brief(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Drive the released PO tools to a confirmed brief and its story. No model.
+
+    The same three tools `brief_pipeline._po_create_confirmed_story` drives, in
+    the same order, against the same boundary — what a PO model would have
+    composed is `level1_brief.build_level1_brief` instead. The frozen object is
+    then read back over the API, because the rendered PO message is an
+    instruction to a user and not durable proof of anything.
+    """
+    brief: Level1Brief = ctx["level1_brief"]
+    config = po_tool_config(ctx)
+    async with po_tool_boundary(api_url=API_URL) as po:
+        presented = await po["present_product_brief"].ainvoke(
+            brief.present_arguments(ctx["project_id"]), config=config
         )
-        ctx["second_task_id"] = second_task_id
-        ctx["task_ids"].append(second_task_id)
+        match = PO_BRIEF_ID_RE.search(presented)
+        if match is None:
+            raise Level1PhaseFailed("brief", f"PO presented no Product Brief id: {presented}")
+        ctx["brief_id"] = match.group(1)
+        ctx["brief_requirement_ids"] = brief.requirement_ids
+
+        confirmed = await po["confirm_product_brief"].ainvoke(
+            {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"]}, config=config
+        )
+        if "confirmed and frozen" not in confirmed:
+            raise Level1PhaseFailed("brief", f"PO did not freeze the brief: {confirmed}")
+
+        # The deploy stack can arise as soon as the story's plan is released, so
+        # recovery ownership precedes the story publication.
+        own_deploy_ahead(ctx)
+        claim_ahead = asyncio.create_task(_claim_plan_as_soon_as_it_is_claimable(api, ctx))
+        try:
+            created = await po["create_story"].ainvoke(
+                {
+                    "project_id": ctx["project_id"],
+                    "title": brief.story_title,
+                    "description": brief.story_description,
+                    "product_brief_id": ctx["brief_id"],
+                },
+                config=config,
+            )
+            match = PO_STORY_ID_RE.search(created)
+            if match is None:
+                # The PO refused, so no story was ever bound and the claim would
+                # only wait out its own budget before saying so less usefully.
+                raise Level1PhaseFailed("brief", f"PO created and published no story: {created}")
+        except BaseException:
+            claim_ahead.cancel()
+            with suppress(asyncio.CancelledError):
+                await claim_ahead
+            raise
+        ctx["story_id"] = match.group(1)
+        claim = await claim_ahead
+
+    response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "brief",
+            f"the confirmed brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
+    ctx["brief_read"] = response.json()
+    if not ctx["brief_read"].get("confirmed_at"):
+        raise Level1PhaseFailed(
+            "brief", f"the frozen brief carries no confirmed_at: {ctx['brief_read']}"
+        )
+    if ctx["brief_read"].get("story_id") != ctx["story_id"]:
+        raise Level1PhaseFailed(
+            "brief",
+            f"brief {ctx['brief_id']} backs story {ctx['brief_read'].get('story_id')}, "
+            f"not the story {ctx['story_id']} the PO created",
+        )
+    if claim.get("outcome") != ProductBriefPlanningAttemptOutcome.CLAIMED.value:
+        raise Level1PhaseFailed(
+            "brief",
+            "this run does not own the plan of its own brief: the claim answered "
+            f"{claim.get('outcome')!r} for attempt {claim.get('planning_attempt_id')!r}, "
+            "so something else is planning it",
+        )
+    ctx["level1_planning_attempt_id"] = claim["planning_attempt_id"]
+    return ctx["brief_read"]
+
+
+async def _start_level1_story(api: httpx.AsyncClient, ctx: dict) -> str:
+    """Move this run's story to `in_progress`, or accept that the architect did.
+
+    The architect consumer transitions the story with `start` *before* it reaches
+    the claim that turns it away (`consumers/architect.py:611-617`) and swallows
+    its own failure there. Whichever of the two gets there first is correct, and
+    the other must not treat that as an error: `IN_PROGRESS -> IN_PROGRESS` is
+    not a declared transition (`shared/contracts/dto/story.py:50-59`), so a
+    second `start` answers 422. What matters is only where the story landed —
+    and anything that is not "it is in progress" stops the run by name, never as
+    a bare `raise_for_status`.
+    """
+    story_id = ctx["story_id"]
+    read = await api.get(f"/api/stories/{story_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} could not be read: HTTP {read.status_code} {read.text[:300]}",
+        )
+    observed = read.json().get("status")
+    if observed == StoryStatus.IN_PROGRESS.value:
+        ctx["level1_story_started_by"] = "architect"
+        return observed
+    if observed != StoryStatus.CREATED.value:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} is {observed!r}; a plan is built in a story that is "
+            f"{StoryStatus.CREATED.value} or {StoryStatus.IN_PROGRESS.value}",
+        )
+    started = await api.post(f"/api/stories/{story_id}/start", json={"actor": "live-test"})
+    if started.status_code == httpx.codes.OK:
+        ctx["level1_story_started_by"] = "harness"
+        return StoryStatus.IN_PROGRESS.value
+    # The architect started it between the read and this post. Its start is as
+    # good as ours, so the refusal is only a failure if the story is not there.
+    reread = await api.get(f"/api/stories/{story_id}")
+    if reread.status_code == httpx.codes.OK and (
+        reread.json().get("status") == StoryStatus.IN_PROGRESS.value
+    ):
+        ctx["level1_story_started_by"] = "architect"
+        return StoryStatus.IN_PROGRESS.value
+    raise Level1PhaseFailed(
+        "admission",
+        f"story {story_id} could not be started: HTTP {started.status_code} {started.text[:300]}",
+    )
+
+
+async def verify_level1_plan_is_this_runs_alone(
+    api: httpx.AsyncClient, ctx: dict, *, when: str
+) -> dict:
+    """Prove, from durable state, that nothing but this harness planned this brief.
+
+    The level-1 run must not need an architect model credential, and "the
+    harness usually wins the claim" is not that proof: a race lost quietly would
+    spend an architect turn on a suite that then passes, which is worse than a
+    red run. So this asks the durable rows instead, and every answer it needs is
+    there:
+
+    * **the plan's attempt is this run's.** A claim by anything else either
+      answered `in_progress` and changed nothing, or took the plan over — and a
+      takeover mints a *new* attempt id (`product_briefs.py:401-404`). So an
+      attempt id on the brief that is still ours means no rival claim succeeded.
+    * **nobody gave our claim up.** `finish` only accepts the id the brief
+      currently names (`product_briefs.py:460-467`), and only this run has it, so
+      an attempt that is still `active` before the admission was never finished
+      by anyone else. After the admission it is closed, by our own admit
+      (`product_briefs.py:669`).
+    * **nobody else planned into this story.** An architect that did run its
+      graph would create its own tasks here; the roster is therefore exactly the
+      tasks this run planned, each naming this run's attempt.
+    * every coverage disposition names this run's attempt.
+
+    `when` labels the observation so the artifact shows the sequence of them.
+    Returns the observation and records it on `ctx["level1_plan_provenance"]`.
+    """
+    attempt_id = ctx["level1_planning_attempt_id"]
+    brief_id = ctx["brief_id"]
+    read = await api.get(f"/api/product-briefs/{brief_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"Product Brief {brief_id} could not be read to prove its planning "
+            f"provenance: HTTP {read.status_code} {read.text[:300]}",
+        )
+    brief = read.json()
+    roster = await api.get("/api/tasks/", params={"story_id": ctx["story_id"]})
+    if roster.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {ctx['story_id']} task roster could not be read: "
+            f"HTTP {roster.status_code} {roster.text[:300]}",
+        )
+    tasks = [task for task in roster.json() if task.get("story_id") == ctx["story_id"]]
+    admitted = bool(brief.get("coverage_admitted_at"))
+    observation = {
+        "when": when,
+        "planning_attempt_id": brief.get("planning_attempt_id"),
+        "planning_attempt_active": brief.get("planning_attempt_active"),
+        "coverage_admitted_at": brief.get("coverage_admitted_at"),
+        "task_ids": sorted(task["id"] for task in tasks),
+        "task_planning_attempt_ids": sorted(
+            {str(task.get("planning_attempt_id")) for task in tasks}
+        ),
+    }
+    ctx.setdefault("level1_plan_provenance", []).append(observation)
+
+    reasons: list[str] = []
+    if brief.get("planning_attempt_id") != attempt_id:
+        reasons.append(
+            f"the brief's planning attempt is {brief.get('planning_attempt_id')!r}, not this "
+            f"run's {attempt_id!r}: something else claimed this plan"
+        )
+    if not admitted and brief.get("planning_attempt_active") is not True:
+        reasons.append(
+            "this run's claim is no longer active while the plan is still unadmitted: "
+            "something else finished or superseded it"
+        )
+    if admitted and brief.get("planning_attempt_active") is not False:
+        reasons.append("the plan is admitted but its attempt is still open")
+    expected_tasks = sorted(ctx.get("task_ids", []))
+    if expected_tasks and observation["task_ids"] != expected_tasks:
+        reasons.append(
+            f"story {ctx['story_id']} carries tasks this run did not plan: "
+            f"{observation['task_ids']} against {expected_tasks}"
+        )
+    foreign = sorted(
+        task["id"] for task in tasks if task.get("planning_attempt_id") not in (attempt_id, None)
+    )
+    if foreign:
+        reasons.append(f"tasks planned under another attempt are in this story: {foreign}")
+    for row in ctx.get("level1_coverage", []):
+        if row.get("planning_attempt_id") != attempt_id:
+            reasons.append(
+                f"coverage of {row.get('requirement_id')!r} names attempt "
+                f"{row.get('planning_attempt_id')!r}, not this run's"
+            )
+    if reasons:
+        raise Level1PhaseFailed(
+            "admission",
+            f"this run does not own the planning of Product Brief {brief_id} at {when}: "
+            + "; ".join(reasons),
+        )
+    return observation
+
+
+async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Plan and admit the level-1 story through the architect's own routes.
+
+    Claim (taken in `create_level1_confirmed_brief`, before the architect could)
+    → one task per must-requirement, created unadmitted under that attempt →
+    one coverage disposition per requirement → the one admission step. No model
+    is asked anything, and the gate is passed rather than stepped around: the
+    tasks are read *before* the admission to show them undispatchable, and the
+    admission's own release set is what makes them dispatchable.
+    """
+    brief: Level1Brief = ctx["level1_brief"]
+    attempt_id = ctx["level1_planning_attempt_id"]
+
+    await _start_level1_story(api, ctx)
+
+    async def plan_task(*, title: str, description: str, blocked_by_task_id: str | None) -> str:
+        created = await api.post(
+            "/api/tasks/",
+            json={
+                "project_id": ctx["project_id"],
+                "story_id": ctx["story_id"],
+                "type": "create",
+                "title": title,
+                "description": description,
+                "status": TaskStatus.TODO,
+                "blocked_by_task_id": blocked_by_task_id,
+                "planning_attempt_id": attempt_id,
+                # Named for what actually planned it. Nothing routes on this
+                # field, and calling the harness "architect" would hide exactly
+                # the distinction `verify_level1_plan_is_this_runs_alone` makes.
+                "created_by": "live-test",
+            },
+        )
+        if created.status_code != httpx.codes.CREATED:
+            raise Level1PhaseFailed(
+                "admission",
+                f"a task of this plan could not be created: HTTP {created.status_code} "
+                f"{created.text[:300]}",
+            )
+        return created.json()["id"]
+
+    backend_task_id = await plan_task(
+        title=ctx["task_title"], description=ctx["task_description"], blocked_by_task_id=None
+    )
+    bot_task_id = await plan_task(
+        title=ctx["followup_task_title"],
+        description=ctx["followup_task_description"],
+        blocked_by_task_id=backend_task_id,
+    )
+    ctx["task_id"] = ctx["first_task_id"] = backend_task_id
+    ctx["second_task_id"] = bot_task_id
+    ctx["task_ids"] = [backend_task_id, bot_task_id]
+
+    covers = {
+        LEVEL1_SETTING_REQUIREMENT: backend_task_id,
+        LEVEL1_COMMAND_REQUIREMENT: bot_task_id,
+    }
+    missing = sorted(set(brief.requirement_ids) - set(covers))
+    if missing:
+        raise Level1PhaseFailed(
+            "admission", f"the level-1 plan disposes of no task for {', '.join(missing)}"
+        )
+
+    # Before the admission: the plan is this run's alone, it exists, and none of
+    # it may move. The first is the zero-model property; the second is the gate
+    # itself, read rather than assumed.
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="before_admission")
+    ctx["level1_plan_before_admission"] = await _level1_plan_snapshot(api, ctx)
+    unadmitted = [
+        task
+        for task in ctx["level1_plan_before_admission"]
+        if task["dispatch_admitted"] is not False
+    ]
+    if unadmitted:
+        raise Level1PhaseFailed(
+            "admission",
+            f"tasks planned under attempt {attempt_id} were dispatchable before the "
+            f"brief's coverage was admitted: {unadmitted}",
+        )
+
+    for requirement_id, task_id in sorted(covers.items()):
+        recorded = await api.put(
+            f"/api/product-briefs/{ctx['brief_id']}/coverage/{requirement_id}",
+            json={
+                "requirement_id": requirement_id,
+                "planning_attempt_id": attempt_id,
+                "task_id": task_id,
+            },
+        )
+        if recorded.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"the disposition of {requirement_id!r} was refused: "
+                f"HTTP {recorded.status_code} {recorded.text[:300]}",
+            )
+
+    admission = await api.post(
+        f"/api/product-briefs/{ctx['brief_id']}/admit", json={"planning_attempt_id": attempt_id}
+    )
+    if admission.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the one admission step was refused: HTTP {admission.status_code} "
+            f"{admission.text[:300]}",
+        )
+    ctx["level1_admission"] = admission.json()
+    if ctx["level1_admission"]["outcome"] != ProductBriefAdmissionOutcome.ADMITTED.value:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the one admission step answered {ctx['level1_admission']['outcome']!r}: "
+            f"{ctx['level1_admission']}",
+        )
+
+    response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
+    ctx["brief_read"] = response.json()
+    if not ctx["brief_read"].get("coverage_admitted_at"):
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admission answered admitted but brief {ctx['brief_id']} carries no "
+            "coverage_admitted_at",
+        )
+    coverage = await api.get(f"/api/product-briefs/{ctx['brief_id']}/coverage")
+    if coverage.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted coverage could not be read back: HTTP {coverage.status_code} "
+            f"{coverage.text[:300]}",
+        )
+    ctx["level1_coverage"] = coverage.json()
+    ctx["level1_plan_after_admission"] = await _level1_plan_snapshot(api, ctx)
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_admission")
+    return ctx["brief_read"]
+
+
+async def _level1_plan_snapshot(api: httpx.AsyncClient, ctx: dict) -> list[dict]:
+    """The plan's tasks, as the durable rows a reader can check the gate against."""
+    snapshot = []
+    for task_id in ctx["task_ids"]:
+        response = await api.get(f"/api/tasks/{task_id}")
+        if response.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"planned task {task_id} could not be read: HTTP {response.status_code} "
+                f"{response.text[:300]}",
+            )
+        task = response.json()
+        snapshot.append(
+            {
+                "id": task["id"],
+                "status": task["status"],
+                "dispatch_admitted": task["dispatch_admitted"],
+                "planning_attempt_id": task["planning_attempt_id"],
+            }
+        )
+    return snapshot
+
+
+#: How far back the deploy consumer's log is read for this run's seed line. The
+#: line is written while the deploy result is being handled, which is the poll
+#: the harness is inside of when it reads this.
+SETTINGS_SEED_LOG_TAIL_LINES = 2000
+SETTINGS_SEED_BRIEF_EVENT = "deploy_settings_seed_brief"
+
+
+def record_settings_seed_brief_log(ctx: dict) -> None:
+    """Read the deploy consumer's own statement of which brief it seeded from.
+
+    The run result says what became of each setting; this says *where the
+    settings came from* — `route=story` means the deploy read the brief of the
+    story it names, which is the route a story-carrying grant deploy must take.
+    A deploy that fell back to the project's latest confirmed brief would seed
+    the same values and be indistinguishable in the result alone.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "logs",
+                f"--tail={SETTINGS_SEED_LOG_TAIL_LINES}",
+                "deploy-worker",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+    except Exception as error:  # noqa: BLE001 - an unreadable log is a stated reason
+        ctx["settings_seed_brief_log_error"] = (
+            f"the deploy consumer's log could not be read: {type(error).__name__}"
+        )
+        return
+    if result.returncode != 0:
+        ctx["settings_seed_brief_log_error"] = (
+            f"docker compose logs deploy-worker exited {result.returncode}"
+        )
+        return
+    run_id = ctx["deploy_run_id"]
+    for line in reversed(result.stdout.splitlines()):
+        start = line.find('{"')
+        if start < 0:
+            continue
+        try:
+            record = json.loads(line[start:])
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("event") != SETTINGS_SEED_BRIEF_EVENT or record.get("task_id") != run_id:
+            continue
+        ctx["settings_seed_brief_log"] = {
+            "event": record.get("event"),
+            "task_id": record.get("task_id"),
+            "brief_id": record.get("brief_id"),
+            "route": record.get("route"),
+            "settings_count": record.get("settings_count"),
+        }
+        ctx["settings_seed_brief_log_error"] = None
+        return
+    ctx["settings_seed_brief_log_error"] = (
+        f"no {SETTINGS_SEED_BRIEF_EVENT} line naming deploy run {run_id} in the last "
+        f"{SETTINGS_SEED_LOG_TAIL_LINES} lines of the deploy consumer's log"
+    )
+
+
+def level1_completion_text_requirement(ctx: dict) -> Callable[[str], list[str]]:
+    """What the level-1 owner's completion message has to be: a bot product's.
+
+    Judged against the *confirmed* brief read back from the API, not against the
+    constant the harness presented, so the message is checked against what the
+    user actually froze.
+    """
+    usage_examples = ctx["brief_read"]["content"]["usage_examples"]
+    language = ctx["brief_read"]["content"]["language"]
+    bot_username = ctx["bot_username"]
+
+    def requirement(text: str) -> list[str]:
+        return bot_completion_message_mismatches(
+            text,
+            bot_username=bot_username,
+            usage_examples=usage_examples,
+            language=language,
+        )
+
+    return requirement
 
 
 async def wait_engineering(
@@ -3606,38 +4205,105 @@ async def wait_story_completed(
 
 def _matching_completion_event(
     events: list[POSystemEvent], notification: dict, ctx: dict
-) -> POSystemEvent | None:
-    """Return the one new PO event that is the durable completion record."""
+) -> tuple[POSystemEvent | None, str]:
+    """The one new PO event that is the durable completion record, and why not.
+
+    Returns `(event, reason)`. The reason is what a timed-out wait prints: "no
+    single matching PO event" is not diagnosable, while "one story_completed
+    event for this story, and its text is not the notification's" is.
+    """
     # POSystemEvent always names a subject through task_id. A story-level
     # notification has no task in its durable record, so the producer uses the
     # story id as that subject.
     expected_subject = notification.get("task_id") or notification.get("story_id")
-    matches = [
+    own = [
         event
         for event in events
-        if event.event == "story_completed"
-        and event.story_id == ctx["story_id"]
-        and event.project_id == ctx["project_id"]
+        if event.event == "story_completed" and event.story_id == ctx["story_id"]
+    ]
+    matches = [
+        event
+        for event in own
+        if event.project_id == ctx["project_id"]
         and event.text == notification.get("text")
         and event.task_id == expected_subject
     ]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0], "matched"
+    if len(matches) > 1:
+        return None, f"{len(matches)} PO events match this completion; exactly one may"
+    if not own:
+        return None, (
+            f"none of the {len(events)} new PO events is a story_completed event for "
+            f"story {ctx['story_id']}"
+        )
+    differences = sorted(
+        {
+            difference
+            for event in own
+            for difference in ([] if event.project_id == ctx["project_id"] else ["project_id"])
+            + ([] if event.text == notification.get("text") else ["text"])
+            + ([] if event.task_id == expected_subject else ["task_id"])
+        }
+    )
+    return None, (
+        f"{len(own)} story_completed PO event(s) for this story, and none matches the "
+        f"notification on: {', '.join(differences)}"
+    )
+
+
+def _completion_notification_mismatches(
+    notification: dict, ctx: dict, *, text_requirement: Callable[[str], list[str]]
+) -> list[str]:
+    """Every field of the durable record that is not what it has to be.
+
+    The identity, the terminal status, the delivered state and the absent task
+    subject are the same for every product. What the message itself has to say
+    is not, so the caller states it: a bot product's owner is told how to reach
+    their bot, a backend product's owner is given an address.
+    """
+    expectations = (
+        ("event", notification.get("event"), "story_completed"),
+        ("story_id", notification.get("story_id"), ctx["story_id"]),
+        ("project_id", notification.get("project_id"), ctx["project_id"]),
+        ("terminal_status", notification.get("terminal_status"), StoryStatus.COMPLETED.value),
+        ("state", notification.get("state"), OwnerNotificationState.DELIVERED.value),
+        ("task_id", notification.get("task_id"), None),
+    )
+    reasons = [
+        f"{field}={observed!r}, expected {expected!r}"
+        for field, observed, expected in expectations
+        if observed != expected
+    ]
+    reasons.extend(f"text: {reason}" for reason in text_requirement(notification.get("text", "")))
+    return reasons
 
 
 async def wait_owner_completion_notification(
     api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
+    text_requirement: Callable[[str], list[str]],
     timeout: float = OWNER_NOTIFICATION_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
     events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
 ) -> tuple[dict, POSystemEvent] | None:
-    """Prove the durable completion record was accepted by the PO input stream."""
+    """Prove the durable completion record was accepted by the PO input stream.
+
+    Two conjuncts, and a timeout says which of them failed. Run 35441716423 is
+    why: the notification was delivered and the harness rejected it, and its
+    artifact — `last_state=delivered events_after_cursor=1` — could not say
+    whether the message or the durable PO record was the thing that did not
+    match. Both answers are recorded on every pass now, and the last ones are
+    what the error carries.
+    """
     story_id = ctx["story_id"]
     cursor = ctx["po_input_cursor"]
     deadline = time.monotonic() + timeout
     last_state = None
     last_events = 0
+    notification_reasons: list[str] = ["the notification was never read"]
+    event_reason = "no PO events were read"
     while time.monotonic() < deadline:
         response = await api_internal.get(f"/api/stories/{story_id}/owner-notification")
         response.raise_for_status()
@@ -3645,24 +4311,21 @@ async def wait_owner_completion_notification(
         last_state = notification.get("state")
         events = events_after(cursor)
         last_events = len(events)
-        event = _matching_completion_event(events, notification, ctx)
-        valid_notification = (
-            notification.get("event") == "story_completed"
-            and notification.get("story_id") == story_id
-            and notification.get("project_id") == ctx["project_id"]
-            and notification.get("terminal_status") == StoryStatus.COMPLETED.value
-            and notification.get("state") == OwnerNotificationState.DELIVERED.value
-            and notification.get("task_id") is None
-            and ctx["deployed_url"] in notification.get("text", "")
+        event, event_reason = _matching_completion_event(events, notification, ctx)
+        notification_reasons = _completion_notification_mismatches(
+            notification, ctx, text_requirement=text_requirement
         )
-        if valid_notification and event is not None:
+        if not notification_reasons and event is not None:
             ctx["owner_notification"] = notification
             ctx["owner_notification_po_event"] = event.model_dump(mode="json")
             return notification, event
         await asyncio.sleep(poll_interval)
     ctx["owner_notification_error"] = (
-        f"story {story_id} completion notification was not delivered to PO in {timeout}s; "
-        f"last_state={last_state} events_after_cursor={last_events}"
+        f"story {story_id} completion notification was not accepted in {timeout}s; "
+        f"last_state={last_state} events_after_cursor={last_events}. "
+        "The notification itself: "
+        + ("every field matched" if not notification_reasons else "; ".join(notification_reasons))
+        + f". The durable PO record: {event_reason}."
     )
     return None
 

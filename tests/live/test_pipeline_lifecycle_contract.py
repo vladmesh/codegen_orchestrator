@@ -1,7 +1,5 @@
 """Offline contracts for mega-noop's completed-story and undeploy lifecycle."""
 
-import json
-
 import httpx
 import pipeline_helpers
 import pytest
@@ -66,46 +64,6 @@ def test_po_cursor_and_events_exclude_history_and_type_the_new_system_event():
     events = pipeline_helpers.po_events_after("10-0", command=command)
     assert len(events) == 1
     assert events[0].story_id == "story-1"
-
-
-@pytest.mark.asyncio
-async def test_linear_noop_story_creates_a_todo_dependent_second_task(monkeypatch):
-    """Both tasks are schedulable, but the second carries the first as its fence."""
-    monkeypatch.setattr(pipeline_helpers, "own_deploy_ahead", lambda _ctx: None)
-    ctx = {
-        "project_id": "project-1",
-        "task_title": "first noop",
-        "task_description": "first deterministic noop",
-    }
-    task_payloads = []
-    transitions = []
-
-    def handler(request):
-        if request.method == "POST" and request.url.path == "/api/stories/":
-            return httpx.Response(201, json={"id": "story-1"})
-        if request.method == "POST" and request.url.path == "/api/stories/story-1/start":
-            return httpx.Response(200, json={"id": "story-1"})
-        if request.method == "POST" and request.url.path == "/api/tasks/":
-            task_payloads.append(json.loads(request.content))
-            return httpx.Response(201, json={"id": f"task-{len(task_payloads)}"})
-        if request.method == "POST" and request.url.path.endswith("/transition"):
-            transitions.append((request.url.path, request.url.params["to_status"]))
-            return httpx.Response(200, json={"status": request.url.params["to_status"]})
-        raise AssertionError(f"unexpected request: {request.method} {request.url}")
-
-    async with _client(handler) as api:
-        await pipeline_helpers.create_story_and_task(api, ctx, linear_noop_tasks=True)
-
-    assert ctx["task_ids"] == ["task-1", "task-2"]
-    assert ctx["task_id"] == ctx["first_task_id"] == "task-1"
-    assert ctx["second_task_id"] == "task-2"
-    assert task_payloads[0]["status"] == TaskStatus.BACKLOG
-    assert task_payloads[1]["status"] == TaskStatus.BACKLOG
-    assert task_payloads[1]["blocked_by_task_id"] == "task-1"
-    assert transitions == [
-        ("/api/tasks/task-1/transition", TaskStatus.TODO),
-        ("/api/tasks/task-2/transition", TaskStatus.TODO),
-    ]
 
 
 @pytest.mark.asyncio
@@ -257,17 +215,10 @@ async def test_linear_noop_wait_keeps_the_dependent_task_and_pr_fenced(monkeypat
     assert set(ctx["engineering_dispatch_decisions"]) == {"eng-task-1", "eng-task-2"}
 
 
-@pytest.mark.asyncio
-async def test_owner_notification_requires_durable_identity_url_and_new_po_event():
-    ctx = {
-        "story_id": "story-1",
-        "project_id": "project-1",
-        "deployed_url": "http://198.51.100.2:8010",
-        "po_input_cursor": "10-0",
-    }
-    notification = {
+def _bot_notification(text: str) -> dict:
+    return {
         "event": "story_completed",
-        "text": "Done: http://198.51.100.2:8010",
+        "text": text,
         "story_id": "story-1",
         "project_id": "project-1",
         "terminal_status": "completed",
@@ -275,29 +226,58 @@ async def test_owner_notification_requires_durable_identity_url_and_new_po_event
         "state": "delivered",
     }
 
+
+def _po_event(text: str):
+    return lambda _cursor: pipeline_helpers.po_events_after(
+        "10-0",
+        command=lambda *_args: [
+            [
+                "12-0",
+                {
+                    "type": "system_event",
+                    "event": "story_completed",
+                    "text": text,
+                    "story_id": "story-1",
+                    "project_id": "project-1",
+                    # Story-level notifications use the story as the PO subject
+                    # even though the durable record has no task.
+                    "task_id": "story-1",
+                },
+            ]
+        ],
+    )
+
+
+#: What the level-1 product's owner is told, as the API composes it. The path no
+#: longer demands the backend address: this is a bot product, and its owner is
+#: given the bot instead (`_telegram_bot_usage_instructions`).
+BOT_COMPLETION_TEXT = (
+    "The story is finished: it is deployed and QA passed. They reach the Telegram bot "
+    "@mega_e2e_codegen_bot (https://t.me/mega_e2e_codegen_bot)."
+)
+
+
+def _names_the_bot(text: str) -> list[str]:
+    return [] if "@mega_e2e_codegen_bot" in text else ["it does not name the bot"]
+
+
+@pytest.mark.asyncio
+async def test_owner_notification_requires_durable_identity_message_and_new_po_event():
+    ctx = {
+        "story_id": "story-1",
+        "project_id": "project-1",
+        "deployed_url": "http://198.51.100.2:8010",
+        "po_input_cursor": "10-0",
+    }
+    notification = _bot_notification(BOT_COMPLETION_TEXT)
+
     async with _client(lambda _request: httpx.Response(200, json=notification)) as api:
         result = await pipeline_helpers.wait_owner_completion_notification(
             api,
             ctx,
             timeout=1,
-            events_after=lambda _cursor: pipeline_helpers.po_events_after(
-                "10-0",
-                command=lambda *_args: [
-                    [
-                        "12-0",
-                        {
-                            "type": "system_event",
-                            "event": "story_completed",
-                            "text": "Done: http://198.51.100.2:8010",
-                            "story_id": "story-1",
-                            "project_id": "project-1",
-                            # Story-level notifications use the story as the PO
-                            # subject even though the durable record has no task.
-                            "task_id": "story-1",
-                        },
-                    ]
-                ],
-            ),
+            text_requirement=_names_the_bot,
+            events_after=_po_event(BOT_COMPLETION_TEXT),
         )
 
     assert result is not None
@@ -306,30 +286,89 @@ async def test_owner_notification_requires_durable_identity_url_and_new_po_event
 
 
 @pytest.mark.asyncio
-async def test_owner_notification_fails_closed_for_a_foreign_po_event():
+async def test_a_message_the_caller_refuses_is_named_as_the_message():
+    """The text requirement is the level-1 path's own, and a timeout says so.
+
+    Run 35441716423 delivered its notification and was rejected; its artifact
+    could not say whether the message or the durable PO record was what did not
+    match. Both are reported now, separately.
+    """
     ctx = {
         "story_id": "story-1",
         "project_id": "project-1",
         "deployed_url": "http://198.51.100.2:8010",
         "po_input_cursor": "10-0",
     }
-    notification = {
-        "event": "story_completed",
-        "text": "Done: http://198.51.100.2:8010",
-        "story_id": "story-1",
-        "project_id": "project-1",
-        "terminal_status": "completed",
-        "task_id": None,
-        "state": "delivered",
-    }
+    backend_text = "Done: http://198.51.100.2:8010"
+    notification = _bot_notification(backend_text)
 
     async with _client(lambda _request: httpx.Response(200, json=notification)) as api:
         result = await pipeline_helpers.wait_owner_completion_notification(
-            api, ctx, timeout=0.001, poll_interval=0, events_after=lambda _cursor: []
+            api,
+            ctx,
+            timeout=0.001,
+            poll_interval=0,
+            text_requirement=_names_the_bot,
+            events_after=_po_event(backend_text),
         )
 
     assert result is None
-    assert "events_after_cursor=0" in ctx["owner_notification_error"]
+    error = ctx["owner_notification_error"]
+    assert "The notification itself: text: it does not name the bot" in error
+    assert "The durable PO record: matched" in error
+
+
+@pytest.mark.asyncio
+async def test_a_missing_po_record_is_named_as_the_po_record():
+    ctx = {
+        "story_id": "story-1",
+        "project_id": "project-1",
+        "deployed_url": "http://198.51.100.2:8010",
+        "po_input_cursor": "10-0",
+    }
+    notification = _bot_notification(BOT_COMPLETION_TEXT)
+
+    async with _client(lambda _request: httpx.Response(200, json=notification)) as api:
+        result = await pipeline_helpers.wait_owner_completion_notification(
+            api,
+            ctx,
+            timeout=0.001,
+            poll_interval=0,
+            text_requirement=_names_the_bot,
+            events_after=lambda _cursor: [],
+        )
+
+    assert result is None
+    error = ctx["owner_notification_error"]
+    assert "events_after_cursor=0" in error
+    assert "The notification itself: every field matched" in error
+    assert "none of the 0 new PO events is a story_completed event for story story-1" in error
+
+
+@pytest.mark.asyncio
+async def test_a_po_record_whose_text_differs_says_which_field_differs():
+    ctx = {
+        "story_id": "story-1",
+        "project_id": "project-1",
+        "deployed_url": "http://198.51.100.2:8010",
+        "po_input_cursor": "10-0",
+    }
+    notification = _bot_notification(BOT_COMPLETION_TEXT)
+
+    async with _client(lambda _request: httpx.Response(200, json=notification)) as api:
+        result = await pipeline_helpers.wait_owner_completion_notification(
+            api,
+            ctx,
+            timeout=0.001,
+            poll_interval=0,
+            text_requirement=_names_the_bot,
+            events_after=_po_event("some other completion message"),
+        )
+
+    assert result is None
+    error = ctx["owner_notification_error"]
+    assert "The notification itself: every field matched" in error
+    assert "none matches the notification on: text" in error
 
 
 @pytest.mark.asyncio
