@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- A temporary-access capability redeploy no longer seeds the brief's settings, so a proved revoke stops being
+  recorded as failed and the previous story's grant stops holding the target against the next story's QA.
+- A QA handoff refused the target retries on the next tick instead of waiting out the recovery window, and past
+  a bound fails the run naming the holder, so the story reaches a verdict rather than sitting in TESTING.
 - The level-1 lifecycle runs a second story on the same project, from a corrected brief revision through the
   released PO tools, and asserts what only it can show: checkout duration, branch base, deploy path, hooks.
 - The `mega-noop` ledger is built from the wait constants the harness imports from it, not from copies, so the

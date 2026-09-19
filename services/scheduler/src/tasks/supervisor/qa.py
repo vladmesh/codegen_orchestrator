@@ -204,7 +204,14 @@ async def _recover_qa_handoff(
     only had to publish is left alone once the publish is stamped.
 
     The age bound keeps this off a handoff that is merely in progress — a run
-    created seconds ago is being worked on, not abandoned.
+    created seconds ago is being worked on, not abandoned. It bounds the
+    publish-only plan, where the stamp is written after the publish and only the
+    clock tells an unfinished handoff from a finished one whose stamp was lost.
+    An access-backed plan needs no such bound: "a grant exists for this run" is
+    the exact test, and a handoff the target refused left no grant at all. Making
+    it wait out the recovery window is what left a second story's QA unstarted
+    while the previous story's grant was already being cleaned up — the retry
+    arrived minutes after the target was free.
 
     Returns True if this tick took the handoff over.
     """
@@ -217,19 +224,28 @@ async def _recover_qa_handoff(
         return False
 
     age_minutes = (datetime.now(UTC) - _parse_datetime(run.created_at)).total_seconds() / 60
-    if age_minutes < _qa_handoff_recovery_minutes():
-        return False
-
     plan = QAHandoffPlan.model_validate(plan_data)
-    if plan.access is not None and await api_client.temporary_access_grant_exists_for_run(run.id):
+    if plan.access is not None:
+        if await api_client.temporary_access_grant_exists_for_run(run.id):
+            return False
+    elif age_minutes < _qa_handoff_recovery_minutes():
         return False
 
-    log.warning(
-        "qa_handoff_recovered",
-        run_id=run.id,
-        age_minutes=round(age_minutes, 1),
-        needs_access=plan.access is not None,
-    )
+    if plan.access is not None and age_minutes < _qa_handoff_recovery_minutes():
+        # Not a dead process: the previous attempt was refused the target and
+        # said so. Retrying it is the ordinary next tick of that wait.
+        log.info(
+            "qa_handoff_retried_without_grant",
+            run_id=run.id,
+            age_minutes=round(age_minutes, 1),
+        )
+    else:
+        log.warning(
+            "qa_handoff_recovered",
+            run_id=run.id,
+            age_minutes=round(age_minutes, 1),
+            needs_access=plan.access is not None,
+        )
     await _execute_qa_handoff(api_client, redis_client, run.id, plan, log)
     return True
 
