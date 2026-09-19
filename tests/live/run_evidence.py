@@ -98,6 +98,35 @@ its stated reason instead of its input, exactly as the service-tail branch of
 the redacted text, and a body that hits it says in the artifact that it was
 truncated and at what limit.
 
+**What the developer was told.** Every run — paid or free — retains, for every
+engineering attempt, the two documents the control plane put in front of that
+attempt's agent: the ``TASK.md`` worker-manager injected into the attempt's
+workspace and, where the attempt has one, the ``.story/STORY.md`` worker-wrapper
+wrote beside it. They are read off the host side of the container's own
+``/workspace`` bind mount, on the passes this run already takes, so nothing is
+held open and teardown does not move; a document those passes could not reach
+before the container was removed is reported unread rather than waited for.
+
+An attempt is an engineering **task** of the run, not a container. A story's
+worker is reused across its tasks (``run_evidence``'s own ``run.attempts``
+counts containers, which is a different number), the developer workspace belongs
+to a *repository* rather than to an attempt, and worker-wrapper rewrites
+``/workspace/TASK.md`` at the start of every turn — so the file one attempt was
+given is destroyed in place by the next. Therefore every pass keeps what it
+read: the readings of a document are accumulated, distinct by the digest of
+their own bytes, and nothing already read is ever dropped. A reading is then
+attributed to an attempt by the task's own description appearing in it — the
+text ``build_feature_task`` writes into ``TASK.md`` under "What To Do" verbatim —
+and the story document by the reading written closest to it, since
+``_prepare_workspace`` writes both in the same turn.
+
+``developer_instructions`` presents that attempt by attempt and answers, in
+``complete``, whether anything is missing: a missed capture naming every gap, so
+the section cannot read as complete while a document is unread. It also states
+per attempt whether the captured ``TASK.md`` quotes that task's acceptance
+criteria verbatim, which ``attempts_not_quoting_acceptance_criteria`` is the
+suite's own assertion over.
+
 **What ``failure`` and ``verdict`` claim, and what they do not.**
 ``run_failure`` answers one question — did this *combination* succeed — from
 three sources: pytest's per-test reports, pytest's own exit status, and the
@@ -128,6 +157,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -253,7 +283,16 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 17
+# v18: every engineering attempt carries what the developer was actually told —
+#      the `TASK.md` worker-manager injected into its workspace and, where it has
+#      one, the `.story/STORY.md` beside it — on the worker record's `documents`
+#      and, attempt by attempt, in `developer_instructions`. A document that could
+#      not be read says which kind of not-here it is and why, and
+#      `developer_instructions.complete` is a missed capture naming every gap, so
+#      the section cannot read as complete while one is unread. Each attempt also
+#      states whether the captured `TASK.md` quotes its task's acceptance criteria
+#      verbatim.
+EVIDENCE_SCHEMA_VERSION = 18
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -291,6 +330,37 @@ WORKER_TYPE_LABEL = f"{WorkerLabel.TYPE.value}=worker"
 # The container side of the transcript bind mount
 # (worker-manager container_config.TRANSCRIPT_MOUNT).
 TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
+
+# The container side of the workspace bind mount, and the two documents the
+# control plane puts inside it to tell a developer what to do. worker-manager
+# injects the task content at `/workspace/TASK.md` (manager.py
+# `_inject_worker_materials`) and worker-wrapper writes the story context to
+# `/workspace/.story/STORY.md` (wrapper.py `_write_story_md`). Both are read
+# here off the host side of that same bind mount, exactly as the transcript is.
+WORKSPACE_MOUNT = "/workspace"
+TASK_DOCUMENT = "TASK.md"
+STORY_DOCUMENT = ".story/STORY.md"
+# What "what the developer was told" is, for one engineering attempt. TASK.md is
+# required — an engineering attempt that was told nothing is not a thing that can
+# have happened — while STORY.md is written only for story-scoped work, so an
+# attempt without one is a stated absence and not a gap.
+ENGINEERING_DOCUMENTS = (TASK_DOCUMENT, STORY_DOCUMENT)
+REQUIRED_ENGINEERING_DOCUMENTS = frozenset({TASK_DOCUMENT})
+
+NO_WORKSPACE_MOUNT_REASON = (
+    f"the container declares no {WORKSPACE_MOUNT} bind mount, so what this attempt "
+    "was told cannot be read from the host"
+)
+QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON = (
+    "a QA executor is not an engineering attempt: it is given a probe command, not "
+    "the task and story documents a developer is told to work from"
+)
+DOCUMENTS_REMOVED_WITH_CONTAINER_REASON = (
+    "the container was removed before any evidence pass read its workspace, and the "
+    "removal record worker-manager writes carries no workspace document. Nothing here "
+    "holds a container open to change that: the capture reads what the passes the run "
+    "already takes can reach, and says so when they could not reach this"
+)
 
 # The bounded, redacted snapshot the workflow takes from the *target* host when
 # this artifact says the deployed URL stopped answering after a successful
@@ -439,6 +509,44 @@ class RoleEvidence(StrEnum):
     # ids are minted `qa-{request_id[:12]}` (clients/qa_worker.py) and developer
     # ids `dev-{repo}-{request_id[:8]}` (clients/worker_spawner.py).
     WORKER_ID = "worker_id_prefix"
+
+
+class DocumentStatus(StrEnum):
+    """What became of one document an engineering attempt was given.
+
+    Four states, and they never merge into three. "This attempt was given no
+    STORY.md" and "this attempt's STORY.md could not be read" are different
+    findings about the run, and an artifact that spells both `missed` cannot be
+    asked whether it is complete.
+    """
+
+    # The body is here, redacted and bounded like every other retained body.
+    CAPTURED = "captured"
+    # The workspace was read and this document is not in it. For STORY.md that
+    # is an ordinary fact about a non-story attempt; for TASK.md it is a gap,
+    # because `REQUIRED_ENGINEERING_DOCUMENTS` says so.
+    ABSENT = "absent"
+    # The document exists or may exist and this run could not read it, with the
+    # reason. Always a gap.
+    UNREADABLE = "unreadable"
+    # This worker is not an engineering attempt at all, so there is no document
+    # of this kind for it to have been given.
+    NOT_APPLICABLE = "not_applicable"
+
+
+class CriteriaCheck(StrEnum):
+    """Whether one attempt's TASK.md quotes its task's acceptance criteria."""
+
+    # The task's acceptance criteria appear in the captured TASK.md verbatim.
+    QUOTED = "quoted"
+    # The task carries acceptance criteria and the captured TASK.md does not
+    # carry them verbatim — or carries no TASK.md at all. The one failing state.
+    NOT_QUOTED = "not_quoted"
+    # The task carries no acceptance criteria, so there is nothing to quote.
+    NO_CRITERIA = "no_criteria"
+    # This run never read the task, so what TASK.md would have to quote is not
+    # known here. Claiming either answer would be an invention.
+    CRITERIA_UNREAD = "criteria_unread"
 
 
 class TerminalState(StrEnum):
@@ -917,6 +1025,167 @@ def _transcript_evidence(inspected: dict, worker_id: str) -> dict:
     }
 
 
+def _document(name: str, path: str | None, status: DocumentStatus, reason: str | None) -> dict:
+    """One document of one workspace, as the pass that just looked at it found it."""
+    return {
+        "name": name,
+        "path": path,
+        "status": status.value,
+        "reason": reason,
+        "readings": [],
+    }
+
+
+def _unread_document(
+    name: str, status: DocumentStatus, reason: str, path: str | None = None
+) -> dict:
+    """A document that is not here, saying which kind of not-here it is and why."""
+    return _document(name, path, status, reason)
+
+
+def _workspace_document(source: str, name: str, *, now: datetime) -> dict:
+    """Read one document off the host side of this container's workspace mount.
+
+    What comes back is this pass's reading, not the attempt's answer. A worker
+    container is reused across the tasks of one story and rewrites
+    `/workspace/TASK.md` at the start of every turn, so a single reading is one
+    observation of a file that changes; the readings are accumulated across the
+    run's passes and attributed to attempts afterwards.
+    """
+    path = f"{source}/{name}"
+    try:
+        stat = Path(path).stat()
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _unread_document(
+            name,
+            DocumentStatus.ABSENT,
+            f"{path} does not exist: this workspace holds no {name}",
+            path,
+        )
+    except (OSError, UnicodeDecodeError) as error:
+        return _unread_document(
+            name,
+            DocumentStatus.UNREADABLE,
+            f"{path} could not be read from the harness host: {type(error).__name__}",
+            path,
+        )
+    modified_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    body = _retained_body(text, {"path": path, "modified_at": modified_at})
+    if not body.is_captured:
+        return _unread_document(name, DocumentStatus.UNREADABLE, body.reason or "", path)
+    entry = _document(name, path, DocumentStatus.CAPTURED, None)
+    entry["readings"] = [
+        {
+            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+            "modified_at": modified_at,
+            "first_seen_at": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "body": body.as_dict(),
+        }
+    ]
+    return entry
+
+
+def _workspace_documents(inspected: dict, role: WorkerRole, now: datetime) -> dict:
+    """What this container's workspace holds now, document by document.
+
+    This reads host files under the bind mount the container already declares.
+    It starts nothing, holds nothing open and asks the container for nothing, so
+    it neither extends a worker's life nor moves teardown: a document this run's
+    existing passes could not reach before the container was removed is reported
+    unread rather than waited for.
+    """
+    if role is not WorkerRole.DEVELOPER:
+        return {
+            name: _unread_document(
+                name, DocumentStatus.NOT_APPLICABLE, QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    source = next(
+        (
+            mount["Source"]
+            for mount in inspected["Mounts"] or []
+            if mount.get("Destination") == WORKSPACE_MOUNT
+        ),
+        None,
+    )
+    if source is None:
+        return {
+            name: _unread_document(name, DocumentStatus.UNREADABLE, NO_WORKSPACE_MOUNT_REASON)
+            for name in ENGINEERING_DOCUMENTS
+        }
+    if not Path(source).is_dir():
+        return {
+            name: _unread_document(
+                name,
+                DocumentStatus.UNREADABLE,
+                f"{source} is not a readable directory on the harness host, so nothing "
+                "this run's attempts were told can be read from their workspace",
+                f"{source}/{name}",
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    return {name: _workspace_document(source, name, now=now) for name in ENGINEERING_DOCUMENTS}
+
+
+def _unread_documents(role: WorkerRole, reason: str) -> dict:
+    """Every document of a worker whose workspace nothing can be read from."""
+    if role is not WorkerRole.DEVELOPER:
+        return {
+            name: _unread_document(
+                name, DocumentStatus.NOT_APPLICABLE, QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    return {
+        name: _unread_document(name, DocumentStatus.UNREADABLE, reason)
+        for name in ENGINEERING_DOCUMENTS
+    }
+
+
+def _merged_readings(previous: list[dict], current: list[dict]) -> list[dict]:
+    """Every distinct thing one document has been while this run watched it.
+
+    Distinct by the digest of its own bytes, so a document read unchanged on ten
+    passes is one reading with a widened window, and a turn that rewrote it is a
+    second reading. Nothing already read is ever dropped: the reading of what one
+    attempt was told is destroyed by the next attempt's write, so a pass that
+    saw it is the only place it exists.
+    """
+    readings = {reading["digest"]: dict(reading) for reading in previous}
+    for reading in current:
+        known = readings.get(reading["digest"])
+        if known is None:
+            readings[reading["digest"]] = dict(reading)
+            continue
+        known["last_seen_at"] = max(known["last_seen_at"], reading["last_seen_at"])
+    return sorted(
+        readings.values(), key=lambda reading: (reading["first_seen_at"], reading["digest"])
+    )
+
+
+def _merged_documents(previous: dict, current: dict) -> dict:
+    """Fold one pass's look at the workspace into what this run has already read.
+
+    The status is the latest pass's — it describes the workspace now — while the
+    readings are cumulative, because what an earlier attempt was told is no
+    longer in the directory to be read again.
+    """
+    documents = {}
+    for name in ENGINEERING_DOCUMENTS:
+        before = previous["documents"].get(name)
+        now = current["documents"].get(name)
+        if before is None or now is None:
+            documents[name] = now if now is not None else before
+            continue
+        entry = dict(now)
+        entry["readings"] = _merged_readings(before["readings"], now["readings"])
+        documents[name] = entry
+    return documents
+
+
 def capture_worker(probe: ContainerProbe, listed: ListedWorker, *, now: datetime) -> dict:
     """Collect one dynamic worker's evidence from a live or exited container.
 
@@ -970,6 +1239,7 @@ def capture_worker(probe: ContainerProbe, listed: ListedWorker, *, now: datetime
         "exit_code": exit_code.as_dict(),
         "log_tail": log_tail.as_dict(),
         "transcript": _transcript_evidence(inspected, listed.worker_id),
+        "documents": _workspace_documents(inspected, role, now),
         "captured_at": now.isoformat(),
     }
 
@@ -1002,6 +1272,7 @@ def _absent_worker(
             "host_dir": Capture.missed(reason).as_dict(),
             "files": Capture.missed(reason).as_dict(),
         },
+        "documents": _unread_documents(role, reason),
         "captured_at": now.isoformat(),
     }
 
@@ -1063,6 +1334,7 @@ def removed_worker_record(evidence: RemovedWorkerEvidence) -> dict:
             else Capture.missed(log_tail.missed_reason)
         ).as_dict(),
         "transcript": transcript,
+        "documents": _unread_documents(role, DOCUMENTS_REMOVED_WITH_CONTAINER_REASON),
         "captured_at": evidence.removed_at,
     }
 
@@ -1192,16 +1464,22 @@ class RunEvidenceCollector:
         """
         worker_id = record["worker_id"]
         existing = self._records.get(worker_id)
-        if existing is not None and _has_exit_code(existing):
-            return
-        if existing is None or _has_exit_code(record):
+        if existing is None:
             self._records[worker_id] = record
             return
-        # The remover could not read the ending either. Keep what the live
-        # observation saw and state the loss in the remover's own words.
-        self._records[worker_id] = _lost_race(
-            existing, self._clock(), reason=record["exit_code"]["reason"]
-        )
+        if _has_exit_code(existing):
+            kept = dict(existing)
+        elif _has_exit_code(record):
+            kept = dict(record)
+        else:
+            # The remover could not read the ending either. Keep what the live
+            # observation saw and state the loss in the remover's own words.
+            kept = _lost_race(existing, self._clock(), reason=record["exit_code"]["reason"])
+        # Whichever ending wins, a document an earlier pass read off the
+        # container's workspace is kept: the remover's record carries none, and
+        # the workspace it was read from is gone.
+        kept["documents"] = _merged_documents(existing, record)
+        self._records[worker_id] = kept
 
     def note_error(self, message: str) -> None:
         """Record a collection failure raised outside this collector."""
@@ -1305,13 +1583,18 @@ class RunEvidenceCollector:
             self._records[record["worker_id"]] = record
             return
         if _has_exit_code(existing) and not _has_exit_code(record):
-            return
-        if existing["container_present"] and not record["container_present"]:
+            kept = dict(existing)
+        elif existing["container_present"] and not record["container_present"]:
             # The container was there and is not any more. What was read of it
             # is worth more than a bare "removed", so keep it and state the loss.
-            self._records[record["worker_id"]] = _lost_race(existing, self._clock())
-            return
-        self._records[record["worker_id"]] = record
+            kept = _lost_race(existing, self._clock())
+        else:
+            kept = dict(record)
+        # A later pass reads the *next* attempt's document out of the same
+        # shared workspace directory, so what this attempt was told is kept from
+        # the pass that read it while this container held it.
+        kept["documents"] = _merged_documents(existing, record)
+        self._records[record["worker_id"]] = kept
 
 
 def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
@@ -2958,6 +3241,301 @@ def verdict(
     }
 
 
+#: Where the harness puts each engineering task's own text, keyed by task id.
+#: `task_descriptions` is what the control plane built that task's `TASK.md`
+#: around (`build_feature_task` writes it under "## What To Do" verbatim), and it
+#: is how a reading of a rewritten workspace file is attributed to the attempt it
+#: belonged to. `task_acceptance_criteria` is what that `TASK.md` has to quote.
+TASK_DESCRIPTIONS_CTX_KEY = "task_descriptions"
+TASK_ACCEPTANCE_CRITERIA_CTX_KEY = "task_acceptance_criteria"
+
+DEVELOPER_INSTRUCTIONS_NOTE = (
+    "What the developer was actually told, attempt by attempt. An attempt here is "
+    "one engineering task of this run, not one container: a story's worker is "
+    "reused across its tasks and rewrites /workspace/TASK.md at the start of every "
+    "turn, so `run.attempts` (developer containers) and the attempts below are "
+    "different counts of different things. Each pass this run already takes reads "
+    "the workspace, and every distinct thing a document has been is kept, because "
+    "the next turn destroys the previous one in place. A reading is attributed to "
+    "an attempt by the task's own description appearing in it, and the story "
+    "document by the reading written closest to it. Every attempt's document is "
+    "either captured or carries the stated reason it is not, and `complete` is a "
+    "missed capture naming every gap — so this section cannot read as complete "
+    "while a document is missing. `acceptance_criteria` states, per attempt, "
+    "whether the captured TASK.md quotes that task's acceptance criteria verbatim."
+)
+
+NO_ATTEMPT_DESCRIPTION_REASON = (
+    "task {task_id} was never read by this run, so the text its TASK.md was built "
+    "around is not known here and no reading could be attributed to it"
+)
+NO_MATCHING_READING_REASON = (
+    "none of the {count} reading(s) this run took of TASK.md carries task {task_id}'s "
+    "own description, so what that attempt was told is not in this artifact"
+)
+NO_TASK_READING_REASON = "this run read no TASK.md at all for task {task_id}: {detail}"
+NO_STORY_READING_REASON = "this run read no .story/STORY.md while its attempts ran: {detail}"
+STORY_NOT_WRITTEN_REASON = (
+    "the workspace holds no .story/STORY.md: this attempt was given no story document"
+)
+
+
+def _attempt_task_ids(ctx: dict) -> list[str]:
+    """The engineering tasks of this run, which is what its attempts are."""
+    task_ids = [task_id for task_id in (ctx.get("task_ids") or []) if task_id]
+    if task_ids:
+        return task_ids
+    return [ctx["task_id"]] if ctx.get("task_id") else []
+
+
+def _developer_records(records: list[dict]) -> list[dict]:
+    return [record for record in records if record["role"] == WorkerRole.DEVELOPER.value]
+
+
+def _all_readings(records: list[dict], name: str) -> list[dict]:
+    """Every distinct reading of one document, across every developer container."""
+    return [
+        {**reading, "worker_id": record["worker_id"], "container": record["container"]}
+        for record in records
+        for reading in record["documents"][name]["readings"]
+    ]
+
+
+def _unread_detail(records: list[dict], name: str) -> str:
+    """Why no reading of one document exists, in the words of every container."""
+    reasons = sorted(
+        {
+            f"{record['worker_id']}: {record['documents'][name]['reason']}"
+            for record in records
+            if record["documents"][name]["reason"]
+        }
+    )
+    return "; ".join(reasons) if reasons else "no developer container was observed at all"
+
+
+def _attempt_task_document(
+    ctx: dict, task_id: str, records: list[dict], readings: list[dict]
+) -> dict:
+    """The TASK.md this attempt was given, or the stated reason it is not here."""
+    description = ((ctx.get(TASK_DESCRIPTIONS_CTX_KEY) or {}).get(task_id) or "").strip()
+    if not description:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_ATTEMPT_DESCRIPTION_REASON.format(task_id=task_id),
+        )
+    if not readings:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_TASK_READING_REASON.format(
+                task_id=task_id, detail=_unread_detail(records, TASK_DOCUMENT)
+            ),
+        )
+    matched = [reading for reading in readings if description in reading["body"]["value"]["text"]]
+    if not matched:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_MATCHING_READING_REASON.format(count=len(readings), task_id=task_id),
+        )
+    # A reading that carries only this task's description is the unambiguous one.
+    # Nothing in the control plane puts a sibling's description in a task's
+    # document today — the story context lists titles and statuses only — so this
+    # costs nothing; it is here so that a document which did carry two would be
+    # attributed to the one it is *about* rather than to whichever came last.
+    others = [
+        other.strip()
+        for other_id, other in (ctx.get(TASK_DESCRIPTIONS_CTX_KEY) or {}).items()
+        if other_id != task_id and (other or "").strip()
+    ]
+    unique = [
+        reading
+        for reading in matched
+        if not any(other in reading["body"]["value"]["text"] for other in others)
+    ]
+    chosen = (unique or matched)[-1]
+    entry = _document(TASK_DOCUMENT, chosen["body"]["value"]["path"], DocumentStatus.CAPTURED, None)
+    entry["readings"] = [chosen]
+    return entry
+
+
+def _attempt_story_document(records: list[dict], readings: list[dict], task_document: dict) -> dict:
+    """The story document written closest to the TASK.md this attempt was given.
+
+    worker-wrapper writes both at the start of a turn, one after the other, so
+    "closest by write time" is the same turn's story context and not a guess
+    across turns. An attempt outside a story has none at all, which is a fact
+    about the attempt rather than a gap in the evidence.
+    """
+    if not readings:
+        statuses = {record["documents"][STORY_DOCUMENT]["status"] for record in records}
+        if statuses and statuses <= {DocumentStatus.ABSENT.value}:
+            return _unread_document(STORY_DOCUMENT, DocumentStatus.ABSENT, STORY_NOT_WRITTEN_REASON)
+        return _unread_document(
+            STORY_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_STORY_READING_REASON.format(detail=_unread_detail(records, STORY_DOCUMENT)),
+        )
+    if task_document["readings"]:
+        anchor = datetime.fromisoformat(task_document["readings"][0]["modified_at"])
+        chosen = min(
+            readings,
+            key=lambda reading: abs(datetime.fromisoformat(reading["modified_at"]) - anchor),
+        )
+    else:
+        chosen = readings[-1]
+    entry = _document(
+        STORY_DOCUMENT, chosen["body"]["value"]["path"], DocumentStatus.CAPTURED, None
+    )
+    entry["readings"] = [chosen]
+    return entry
+
+
+def _acceptance_criteria_check(ctx: dict, task_id: str, task_document: dict) -> dict:
+    """Whether this attempt's TASK.md quotes its task's acceptance criteria verbatim.
+
+    Verbatim means the task's own text, whole: the criteria are searched for as
+    one exact substring of the captured document, so a paraphrase, a reflowed
+    copy or a prefix of them does not answer. `format_acceptance_criteria`
+    (services/langgraph/src/nodes/developer_tasks.py) writes them into TASK.md
+    stripped and otherwise untouched, which is what makes the exact check the
+    right one rather than a generous one.
+    """
+    known = ctx.get(TASK_ACCEPTANCE_CRITERIA_CTX_KEY) or {}
+    if task_id not in known:
+        return {
+            "status": CriteriaCheck.CRITERIA_UNREAD.value,
+            "task_id": task_id,
+            "detail": (
+                f"task {task_id} was never read by this run, so its acceptance criteria "
+                "are not known here and nothing is claimed about them"
+            ),
+        }
+    criteria = (known[task_id] or "").strip()
+    if not criteria:
+        return {
+            "status": CriteriaCheck.NO_CRITERIA.value,
+            "task_id": task_id,
+            "detail": f"task {task_id} carries no acceptance criteria, so TASK.md quotes none",
+        }
+    if task_document["status"] != DocumentStatus.CAPTURED.value:
+        return {
+            "status": CriteriaCheck.NOT_QUOTED.value,
+            "task_id": task_id,
+            "detail": (
+                f"task {task_id} carries acceptance criteria and its {TASK_DOCUMENT} is "
+                f"{task_document['status']}, so the evidence does not carry them "
+                f"verbatim: {task_document['reason']}"
+            ),
+        }
+    body = task_document["readings"][0]["body"]["value"]
+    if criteria in body["text"]:
+        return {
+            "status": CriteriaCheck.QUOTED.value,
+            "task_id": task_id,
+            "detail": (
+                f"all {len(criteria)} characters of task {task_id}'s acceptance criteria "
+                f"appear in {body['path']} verbatim"
+            ),
+        }
+    return {
+        "status": CriteriaCheck.NOT_QUOTED.value,
+        "task_id": task_id,
+        "detail": (
+            f"task {task_id}'s acceptance criteria ({len(criteria)} characters) do not "
+            f"appear in the captured {body['path']} ({body['characters']} characters) as "
+            "one exact substring: what the developer was told is a paraphrase, a partial "
+            "copy or nothing"
+        ),
+    }
+
+
+def _document_gap(task_id: str, entry: dict) -> str | None:
+    """The gap one document of one attempt leaves, or None when it leaves none."""
+    if entry["status"] == DocumentStatus.CAPTURED.value:
+        return None
+    if (
+        entry["status"] == DocumentStatus.ABSENT.value
+        and entry["name"] not in REQUIRED_ENGINEERING_DOCUMENTS
+    ):
+        return None
+    return f"attempt {task_id}: {entry['name']} is {entry['status']}: {entry['reason']}"
+
+
+def developer_instructions(ctx: dict, records: list[dict]) -> dict:
+    """What every engineering attempt of this run was told, and whether all of it is here."""
+    developers = _developer_records(records)
+    task_readings = _all_readings(developers, TASK_DOCUMENT)
+    story_readings = _all_readings(developers, STORY_DOCUMENT)
+    attempts = []
+    gaps: list[str] = []
+    for task_id in _attempt_task_ids(ctx):
+        task_document = _attempt_task_document(ctx, task_id, developers, task_readings)
+        story_document = _attempt_story_document(developers, story_readings, task_document)
+        attempts.append(
+            {
+                "attempt_id": task_id,
+                "documents": {
+                    TASK_DOCUMENT: task_document,
+                    STORY_DOCUMENT: story_document,
+                },
+                "acceptance_criteria": _acceptance_criteria_check(ctx, task_id, task_document),
+            }
+        )
+        gaps += [
+            gap
+            for entry in (task_document, story_document)
+            if (gap := _document_gap(task_id, entry)) is not None
+        ]
+    if gaps:
+        complete = Capture.missed(
+            f"{len(gaps)} document(s) of this run's {len(attempts)} engineering attempt(s) "
+            f"are not in this artifact: {'; '.join(gaps)}"
+        )
+    else:
+        complete = Capture.captured(
+            {
+                "attempts": len(attempts),
+                "documents": sorted(
+                    f"{attempt['attempt_id']}/{name}"
+                    for attempt in attempts
+                    for name in ENGINEERING_DOCUMENTS
+                    if attempt["documents"][name]["status"] == DocumentStatus.CAPTURED.value
+                ),
+            }
+        )
+    return {
+        "note": DEVELOPER_INSTRUCTIONS_NOTE,
+        "complete": complete.as_dict(),
+        "attempts": attempts,
+        # The whole ledger, without the bodies the attempts above already carry:
+        # every distinct thing each document was while this run watched it, so a
+        # reader can see a reading that was taken and attributed to no attempt.
+        "workspace_readings": {
+            name: [
+                {key: value for key, value in reading.items() if key != "body"}
+                for reading in _all_readings(developers, name)
+            ]
+            for name in ENGINEERING_DOCUMENTS
+        },
+    }
+
+
+def attempts_not_quoting_acceptance_criteria(instructions: dict) -> list[str]:
+    """Every attempt whose TASK.md does not carry its task's criteria verbatim.
+
+    The suite's own assertion reads this: an empty list is the claim that for
+    every engineering attempt that has acceptance criteria, the document the
+    developer was actually given quotes them word for word.
+    """
+    return [
+        attempt["acceptance_criteria"]["detail"]
+        for attempt in instructions["attempts"]
+        if attempt["acceptance_criteria"]["status"] == CriteriaCheck.NOT_QUOTED.value
+    ]
+
+
 def combination_label(ctx: dict) -> str:
     """The stable name of one worker/QA combination, used in the filename."""
     worker = ctx.get("agent_type") or "unknown"
@@ -2982,6 +3560,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     worker_executed = collector.executed_worker_agent().as_dict()
     qa = qa_cell(ctx)
     brief = brief_evidence(ctx)
+    records = collector.records()
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "kind": EVIDENCE_KIND,
@@ -3046,7 +3625,8 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": retain_worker_bodies(ctx, collector.records()),
+        "developer_instructions": developer_instructions(ctx, records),
+        "workers": retain_worker_bodies(ctx, records),
         "capture_errors": collector.errors,
         "privacy": PRIVACY_STATEMENT,
     }

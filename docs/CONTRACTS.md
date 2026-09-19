@@ -1471,6 +1471,30 @@ artifact rather than of one that classifies itself as failed. A free
 deterministic run spends no subscription and retains none of them: its
 transcript is named by path and file list only.
 
+**Every run's artifact carries what each engineering attempt was told.** Not
+just a paid one: `developer_instructions` holds, per engineering **task** of the
+run, the `TASK.md` worker-manager injected into that attempt's workspace and,
+where the attempt has one, the `.story/STORY.md` beside it. An attempt is a task,
+not a container — a story's worker is reused across its tasks, so `run.attempts`
+(containers) is a different count — and worker-wrapper rewrites
+`/workspace/TASK.md` at the start of every turn, destroying the previous
+attempt's document in place. So every evidence pass the run already takes reads
+the workspace off the host side of the container's own bind mount and keeps what
+it read, distinct by digest; a reading is attributed to an attempt by that task's
+own description appearing in it, and the story document by the reading written
+closest to it. Nothing holds a container open or moves teardown to make this
+possible: a document no pass reached before removal is reported unread.
+
+A document is `captured`, `absent` (the attempt was given none — ordinary for
+`.story/STORY.md`, a gap for `TASK.md`), `unreadable` (with the reason) or
+`not_applicable` (a QA executor is not an engineering attempt).
+`developer_instructions.complete` is a missed capture naming every gap, so the
+section cannot read as complete while a document is missing. Per attempt,
+`acceptance_criteria` states whether the task's acceptance criteria appear in the
+captured `TASK.md` as one exact substring — `format_acceptance_criteria` writes
+them there stripped and otherwise untouched — and the live suite asserts that for
+every attempt whose task has criteria.
+
 Unconditional because the condition could not be evaluated where the artifact
 must be written. A `stand-e2e` run's result is decided outside the pytest
 process and after it — `scripts/stand_run.py` fails a run on a sweep error after

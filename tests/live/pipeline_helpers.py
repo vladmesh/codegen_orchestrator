@@ -64,6 +64,8 @@ from run_evidence import (
     LOG_TAIL_LINES,
     LOG_TAIL_MAX_CHARS,
     TARGET_SNAPSHOT_FILENAME,
+    TASK_ACCEPTANCE_CRITERIA_CTX_KEY,
+    TASK_DESCRIPTIONS_CTX_KEY,
     Capture,
     DeployRunRecord,
     QARunLookup,
@@ -2873,6 +2875,18 @@ def _record_task_diagnostic(ctx: dict, task: dict, *, task_id: str | None = None
             secrets=secret_env_values(dict(os.environ)),
         )
         failure_metadata = json.loads(redacted)
+    if "acceptance_criteria" in task:
+        # What the run's evidence checks the attempt's TASK.md quotes verbatim.
+        # Recorded only when the payload actually carries the field: a reader
+        # that never saw the task must say so rather than read a missing key as
+        # "this task has no acceptance criteria".
+        ctx.setdefault(TASK_ACCEPTANCE_CRITERIA_CTX_KEY, {})[diagnostic_task_id] = task[
+            "acceptance_criteria"
+        ]
+    if task.get("description"):
+        # How a reading of the workspace document is attributed to this task: it
+        # is the text the control plane builds that task's TASK.md around.
+        ctx.setdefault(TASK_DESCRIPTIONS_CTX_KEY, {})[diagnostic_task_id] = task["description"]
     ctx.setdefault("task_diagnostics", {})[diagnostic_task_id] = {
         "status": task.get("status"),
         "current_iteration": task.get("current_iteration"),

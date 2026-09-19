@@ -88,7 +88,8 @@ from pipeline_helpers import (
 )
 import pytest
 import pytest_asyncio
-from run_evidence import RunEvidenceCollector, emit_run_evidence
+import run_evidence
+from run_evidence import CaptureStatus, RunEvidenceCollector, emit_run_evidence
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -863,6 +864,31 @@ class TestFullPipeline:
             "undeploy_residue_error"
         )
         assert pipeline.get("undeploy_residue", {}).get("port_allocation_absent") is True
+
+    async def test_the_run_kept_what_each_developer_attempt_was_told(self, pipeline):
+        """Both tasks' TASK.md is in the evidence, and quotes their criteria verbatim.
+
+        The story's worker is reused across its two tasks and rewrites
+        `/workspace/TASK.md` at the start of each turn, so this asserts something
+        only the per-pass capture can produce: two attempts, each with the
+        document that attempt was actually handed. A document this run could not
+        read is a gap `complete` names — the artifact is allowed to be honest
+        about one, and this test is what says the run had none.
+        """
+        instructions = run_evidence.developer_instructions(
+            pipeline, pipeline["run_evidence"].records()
+        )
+        assert [attempt["attempt_id"] for attempt in instructions["attempts"]] == list(
+            pipeline["task_ids"]
+        )
+        assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value, instructions[
+            "complete"
+        ]["reason"]
+        # The one assertion about the *content*: what QA judges the task by is in
+        # the document the developer was given, word for word. An attempt whose
+        # task carries no acceptance criteria has nothing to quote and is not
+        # claimed about here.
+        assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == []
 
 
 class TestFullPipelineLLM:
