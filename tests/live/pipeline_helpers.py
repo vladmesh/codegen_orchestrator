@@ -30,6 +30,7 @@ from brief_telemetry import (
     stage,
 )
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
+import db_teardown
 import httpx
 from level1_change_set import (
     LEVEL1_COMMAND,
@@ -195,6 +196,9 @@ UNDEPLOY_TIMEOUT = 300
 LIFECYCLE_POLL_INTERVAL = 3
 # One owned deploy's teardown: 60s of SSH per target server, plus container start.
 SERVER_CLEANUP_TIMEOUT = 180
+# Four psql round trips: the foreign-key catalog, the run's owned keys, the
+# deletes, and the residue proof. The old single-statement delete had 15s.
+DB_TEARDOWN_TIMEOUT = 60
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -4717,35 +4721,17 @@ async def cleanup_all(
     manifest_path.unlink(missing_ok=True)
 
 
-def _cleanup_db(project_id: str) -> None:
-    """Delete project and all related records via SQL (proper cascade)."""
-    sql = (
-        f"DELETE FROM task_events WHERE task_id IN "
-        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
-        f"DELETE FROM runs WHERE project_id = '{project_id}';"
-        f"DELETE FROM requirement_coverages WHERE brief_id IN "
-        f"(SELECT id FROM product_briefs WHERE project_id = '{project_id}');"
-        f"DELETE FROM product_briefs WHERE project_id = '{project_id}';"
-        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
-        f"DELETE FROM stories WHERE project_id = '{project_id}';"
-        f"DELETE FROM brainstorms WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_chunks WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_documents WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
-        f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
-        f"DELETE FROM port_allocations WHERE application_id IN "
-        f"(SELECT id FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
-        # application_health_history FKs applications (NO ACTION), delete it first.
-        f"DELETE FROM application_health_history WHERE application_id IN "
-        f"(SELECT id FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
-        f"DELETE FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}');"
-        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
-        f"DELETE FROM projects WHERE id = '{project_id}';"
-    )
+def _psql(sql: str) -> db_teardown.SqlResult:
+    """Run one statement batch against the stack's database.
+
+    The batch arrives on stdin (`-f -`), not as an argument: the residue pass
+    names every key the run owned, and Linux caps one argv element at 128 KiB,
+    so a run with a few thousand `rag_chunks` rows would have failed that pass
+    with a bare `OSError` after the deletes had already committed. Stdin has no
+    such ceiling. `ON_ERROR_STOP` makes a refused statement end the batch
+    instead of letting the rest of a transaction run against a failed one, and
+    the unaligned tab-separated tuples are what `db_teardown.parse_rows` reads.
+    """
     result = subprocess.run(
         [
             "docker",
@@ -4758,16 +4744,38 @@ def _cleanup_db(project_id: str) -> None:
             "postgres",
             "-d",
             "orchestrator",
-            "-c",
-            sql,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-t",
+            "-A",
+            "-F",
+            "\t",
+            "-f",
+            "-",
         ],
+        input=sql,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=DB_TEARDOWN_TIMEOUT,
         cwd=ORCHESTRATOR_ROOT,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
+    return db_teardown.SqlResult(
+        returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
+    )
+
+
+def _cleanup_db(project_id: str) -> None:
+    """Delete the project's rows, and prove from the catalog that none survived.
+
+    The list of tables is not written down anywhere: `db_teardown` derives it
+    from the foreign keys that point at this project's rows, deletes in the
+    order those keys imply, and then asks the database for the exact keys it
+    owned. A new table referencing a run — `users_grant_intents` was the one
+    that stranded run 35441716423 — is in the plan the moment its foreign key
+    exists, and a row that survives anyway is raised by table, key and
+    constraint rather than as a psql error string.
+    """
+    db_teardown.teardown_project(project_id, _psql)
 
 
 # ── Debug dump ───────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+from db_teardown_fake import FakeDatabase
 import httpx
 from live_harness import OwnershipManifest
 import pipeline_helpers
@@ -175,17 +176,20 @@ _DEPENDENTS = ["application_health_history", "service_deployments", "port_alloca
 
 
 def test_cleanup_db_deletes_dependents_before_applications(monkeypatch):
-    captured: dict[str, str] = {}
+    """The same child-before-parent invariant, now derived rather than written.
 
-    def fake_run(argv, **kwargs):
-        captured["sql"] = argv[argv.index("-c") + 1]
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(pipeline_helpers.subprocess, "run", fake_run)
+    `_cleanup_db` no longer carries a list of DELETEs: it reads the foreign-key
+    catalog and orders the closure from it (`tests/live/db_teardown.py`). The
+    invariant this test has always asserted is unchanged and still has to hold —
+    what changed is that the order it checks is the database's answer, so the
+    fake database here answers with this schema's own metadata.
+    """
+    database = FakeDatabase(owned={"projects": ["11111111-1111-1111-1111-111111111111"]})
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
 
     pipeline_helpers._cleanup_db("11111111-1111-1111-1111-111111111111")
 
-    sql = captured["sql"]
+    sql = database.delete_sql
     for dependent in _DEPENDENTS:
         _assert_before(sql, dependent, "applications")
     assert _cleanup_order(sql) == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)

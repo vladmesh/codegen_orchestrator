@@ -441,6 +441,55 @@ record, its Redis keys included. A capture that fails is not a licence to remove
 and why its ending could not be read. That is an acceptable ending; a worker that simply disappears
 is not.
 
+## Database teardown, derived from the catalog
+
+The rows a run leaves behind are removed by `tests/live/db_teardown.py`, which is given one fact —
+the project id — and reads the rest out of `pg_constraint`. Starting at that project's row it walks
+*incoming* foreign keys, so what the run owns is what the keys say points at it, and it follows only
+the edges the database would refuse (`NO ACTION`, `RESTRICT`); a child the schema removes or unlinks
+by itself (`CASCADE`, `SET NULL`) is neither deleted here nor expected to be gone, which is why the
+append-only `engineering_attempt_ledger` survives a teardown untouched; a table reachable only
+through a `CASCADE` edge is out of the plan for the same reason, and when one appears the database
+refuses the delete and the error names the constraint, so the gap is loud rather than silent. The
+deletion order is the
+reverse topological order of that closure, in one transaction, and a cycle between two tables is
+raised by name rather than guessed at.
+
+**The plan is built from foreign keys and only foreign keys — and the schema has columns that are
+not one.** `service_deployments.project_id` is denormalized from the application and deliberately
+carries no key (`shared/models/deployment.py`), and its `application_id` is nullable, so a row can
+name a run's project and be reachable through no key at all: nothing deletes it, nothing refuses,
+and a proof built from keys alone would call the teardown clean. Such columns are therefore derived
+too, never listed. The schema's own foreign keys say what a column name means — `project_id` is the
+name a dozen tables use for `projects.id` — so any *other* column of that name carrying no key of
+its own is treated as the reference it is, and becomes a predicate and an ordering edge like any
+foreign key. That covers `service_deployments` and `api_keys` today, and covers the next
+denormalized column by existing. Two rules keep it honest: a name that resolves to more than one
+parent inside the closure is raised rather than guessed at, and an explicit key outranks an inferred
+one — a table the schema unlinks with its own `ON DELETE SET NULL` key into the closure, such as the
+deliberately-retained `engineering_budget_reservations`, is left alone however its other columns are
+named.
+
+**The run's user is not a row the run owns — today.** `ensure_test_user` reuses one fixture user at a
+fixed `TEST_TELEGRAM_ID` for every run, so teardown must not delete it, and rows that hang off that
+user without hanging off the project (`engineering_budget_policies`, `promo_codes`,
+`work_admission_audits`) are outside the closure on purpose. That is the regime this code is in. The
+sprint's **registration door** item replaces the fixture with a fresh Telegram id per run; when it
+lands, the user becomes run-owned and teardown has to delete it and prove it gone, which is a change
+to the roots of the plan, not to its mechanism.
+
+The proof is the same plan read back. Every key the run owns is recorded *before* the deletes and
+asked for again afterwards, so the check still answers once the project row is gone; anything that
+answers is raised as its table, its key and the constraint by which it belongs to the run. A delete
+the database refuses is reported as the constraint, the table it is on and whether the plan knew
+about that table at all — a table outside the plan means the catalog it was built from is stale.
+
+This replaced a hand-written list of `DELETE` statements, which went stale silently and in the
+direction of leaving residue behind: run 35441716423 could not delete its project because the
+level-1 grant deploy had written a `users_grant_intents` row referencing its `deploy-grant-…` run,
+and that table was in nobody's list. `tests/live/test_db_teardown.py` holds both properties offline,
+against this schema's own metadata (`shared/tests/project_cleanup.py::metadata_catalog_payload`).
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a
