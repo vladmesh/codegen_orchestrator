@@ -4056,3 +4056,111 @@ def test_a_free_run_retains_what_its_developer_was_told(workspace, transcripts, 
         instructions["attempts"][0]["acceptance_criteria"]["status"]
         == run_evidence.CriteriaCheck.QUOTED.value
     )
+
+
+# --- The level-1 assertion, in the shape the live run has ---------------------
+#
+# Two attempts of one story, one reused worker, criteria planned per task. The
+# live suite asserts `attempts_without_quoted_acceptance_criteria(...) == []`,
+# and these are the ways that has to go red — including the one that made the
+# permissive helper vacuous: a task nobody gave acceptance criteria to.
+
+BOT_CRITERIA = (
+    "- The deployed bot answers the command /level1 with exactly "
+    '"level-1 marker: e2e-abc123def456".\n'
+    "- The command menu the running bot publishes lists /level1."
+)
+
+
+def two_turn_instructions(
+    workspace, transcripts, *, backend_written: str, bot_written: str, criteria: dict
+) -> dict:
+    """One worker, two turns, each turn's TASK.md read by the pass that saw it."""
+    docker = developer_docker(workspace, transcripts)
+    write_turn(
+        workspace,
+        task=task_md(BACKEND_DESCRIPTION, backend_written),
+        at=RUN_START + timedelta(seconds=6),
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    write_turn(
+        workspace,
+        task=task_md(BOT_DESCRIPTION, bot_written),
+        at=RUN_START + timedelta(seconds=40),
+    )
+    collector.capture()
+    return run_evidence.developer_instructions(
+        level1_ctx(**{run_evidence.TASK_ACCEPTANCE_CRITERIA_CTX_KEY: criteria}),
+        collector.records(),
+    )
+
+
+def test_the_level1_assertion_passes_when_every_attempt_quotes_its_own_criteria(
+    workspace, transcripts
+):
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA,
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: BOT_CRITERIA},
+    )
+
+    assert [attempt["acceptance_criteria"]["status"] for attempt in instructions["attempts"]] == [
+        run_evidence.CriteriaCheck.QUOTED.value
+    ] * 2
+    assert run_evidence.attempts_without_quoted_acceptance_criteria(instructions) == []
+
+
+def test_the_level1_assertion_fails_when_one_attempt_s_criteria_were_altered(
+    workspace, transcripts
+):
+    """Card 1301's quoting regressing on one of the two tasks turns the run red."""
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA.replace('"level-1 marker:', "'level-1 marker:"),
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: BOT_CRITERIA},
+    )
+
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert BOT_TASK in failures[0]
+    assert "do not appear in the captured" in failures[0]
+
+
+def test_the_level1_assertion_fails_when_a_task_carries_no_criteria(workspace, transcripts):
+    """The vacuum this round closes, stated as a test.
+
+    The permissive helper answers `[]` for a plan that asked for nothing — which
+    is why the live assertion reads the strict one. Both are asserted here
+    together so the difference cannot be lost in a later edit.
+    """
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written="",
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: ""},
+    )
+
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == []
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert f"task {BOT_TASK} carries no acceptance criteria" in failures[0]
+
+
+def test_the_level1_assertion_fails_when_the_criteria_were_never_read(workspace, transcripts):
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA,
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA},
+    )
+
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert "was never read by this run" in failures[0]

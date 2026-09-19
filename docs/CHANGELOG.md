@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- The level-1 plan creates its two tasks with the acceptance criteria QA checks them by, keyed on the run's
+  marker, so the run's verbatim assertion over each attempt's TASK.md has something it can fail on.
 - Run evidence keeps the `TASK.md` and `.story/STORY.md` of every engineering attempt, keyed by task and
   gap-by-gap honest, and the suite asserts each attempt's TASK.md quotes its acceptance criteria verbatim.
 - The live deployment assertion reads `service_deployments` as the deploy log it is: the newest record is

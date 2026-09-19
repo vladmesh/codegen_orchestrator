@@ -24,7 +24,14 @@ from level1_brief import (
     bot_completion_message_mismatches,
     build_level1_brief,
 )
-from level1_change_set import LEVEL1_SETTING_KEY, backend_operations
+from level1_change_set import (
+    LEVEL1_COMMAND,
+    LEVEL1_ENDPOINT_PATH,
+    LEVEL1_SETTING_KEY,
+    backend_acceptance_criteria,
+    backend_operations,
+    bot_acceptance_criteria,
+)
 import pipeline_helpers
 import pytest
 import yaml
@@ -196,8 +203,10 @@ def _admission_context() -> dict:
         "level1_planning_attempt_id": ATTEMPT,
         "task_title": "backend task",
         "task_description": "backend change set",
+        "task_criteria": backend_acceptance_criteria(MARKER),
         "followup_task_title": "bot task",
         "followup_task_description": "bot change set",
+        "followup_task_criteria": bot_acceptance_criteria(MARKER),
     }
 
 
@@ -248,6 +257,7 @@ def _admission_handler(  # noqa: C901 - one fake of the whole planning surface
                 "story_id": "story-1",
                 "status": body["status"],
                 "dispatch_admitted": dispatch_admitted_before,
+                "acceptance_criteria": body.get("acceptance_criteria"),
                 "planning_attempt_id": body["planning_attempt_id"],
                 "blocked_by_task_id": body["blocked_by_task_id"],
                 "created_by": body["created_by"],
@@ -285,6 +295,74 @@ def _admission_handler(  # noqa: C901 - one fake of the whole planning surface
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     return handler
+
+
+def test_the_level1_acceptance_criteria_are_this_run_s_and_are_what_qa_checks():
+    """Not filler: the brief's two requirements, as observations, keyed on the marker.
+
+    The marker is in both. It is minted per run, so a `TASK.md` an earlier run
+    left in a cached image or a stale workspace cannot satisfy the verbatim check
+    the run's evidence makes against these — the same discipline the deployed
+    product probes already use.
+    """
+    backend = backend_acceptance_criteria(MARKER)
+    bot = bot_acceptance_criteria(MARKER)
+
+    assert MARKER in backend
+    assert MARKER in bot
+    # The `level1_setting` requirement: the endpoint answers, with this marker,
+    # and the confirmed setting is registered on the deployment that answered.
+    assert LEVEL1_ENDPOINT_PATH in backend
+    assert LEVEL1_SETTING_KEY in backend
+    # The `level1_command` requirement: the command answers with this marker and
+    # the running bot publishes it.
+    assert f"/{LEVEL1_COMMAND}" in bot
+    assert f"level-1 marker: {MARKER}" in bot
+    # They are two different checks of two different tasks, not one text twice.
+    assert backend != bot
+    # `format_acceptance_criteria` writes them into TASK.md `.strip()`ed and
+    # otherwise untouched, and the scripted runner reads exactly one fenced
+    # change-set block out of that document: criteria carrying a fence of their
+    # own would give it a second one.
+    assert "```" not in backend + bot
+    assert backend.strip() == backend
+    assert bot.strip() == bot
+
+
+@pytest.mark.asyncio
+async def test_the_plan_asks_for_the_acceptance_criteria_its_task_documents_must_quote():
+    """Without this the run's verbatim assertion has nothing to check.
+
+    `load_task_acceptance_criteria` reads this field back and
+    `format_acceptance_criteria` quotes it into the worker's TASK.md, which is
+    what `run_evidence.attempts_without_quoted_acceptance_criteria` then asserts
+    is there word for word. A plan that creates its tasks without criteria makes
+    that assertion pass on any document at all, which is what it did before.
+    """
+    ctx = _admission_context()
+    bodies: list[dict] = []
+    handler = _admission_handler([])
+
+    def recording_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/tasks/":
+            bodies.append(json.loads(request.content))
+        return handler(request)
+
+    read_back = []
+    async with _client(recording_handler) as api:
+        await pipeline_helpers.admit_level1_plan(api, ctx)
+        for task_id in ctx["task_ids"]:
+            response = await api.get(f"/api/tasks/{task_id}")
+            read_back.append(response.json())
+
+    expected = [backend_acceptance_criteria(MARKER), bot_acceptance_criteria(MARKER)]
+    assert [body["acceptance_criteria"] for body in bodies] == expected
+    # And they are on the task rows this run reads its evidence from: it is that
+    # read (`_record_task_diagnostic`) that tells the artifact what TASK.md must
+    # quote, so a field written and not returned would be just as vacuous.
+    assert [task["acceptance_criteria"] for task in read_back] == expected
+    # One task, one check: the bot task is not judged by the backend's criteria.
+    assert read_back[0]["acceptance_criteria"] != read_back[1]["acceptance_criteria"]
 
 
 @pytest.mark.asyncio

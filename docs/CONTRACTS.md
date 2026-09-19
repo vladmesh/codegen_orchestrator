@@ -1492,8 +1492,19 @@ A document is `captured`, `absent` (the attempt was given none — ordinary for
 section cannot read as complete while a document is missing. Per attempt,
 `acceptance_criteria` states whether the task's acceptance criteria appear in the
 captured `TASK.md` as one exact substring — `format_acceptance_criteria` writes
-them there stripped and otherwise untouched — and the live suite asserts that for
-every attempt whose task has criteria.
+them there stripped and otherwise untouched.
+
+Two helpers read that, and the difference is the assertion:
+`attempts_not_quoting_acceptance_criteria` counts only `not_quoted`, so an
+attempt whose task carries no criteria is not counted — the right question only
+for a scenario whose tasks genuinely may have none.
+`attempts_without_quoted_acceptance_criteria` counts everything that is not
+`quoted`, so an empty list is two claims at once: every engineering attempt *has*
+acceptance criteria, and each attempt's `TASK.md` quotes them. The level-1 live
+suite asserts the second, and `admit_level1_plan` plans both tasks with the
+criteria QA checks them by, keyed on that run's marker — so a `TASK.md` left over
+from another run cannot satisfy the check, and a plan that asked for nothing
+cannot pass it.
 
 Unconditional because the condition could not be evaluated where the artifact
 must be written. A `stand-e2e` run's result is decided outside the pytest

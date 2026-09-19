@@ -884,11 +884,20 @@ class TestFullPipeline:
         assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value, instructions[
             "complete"
         ]["reason"]
-        # The one assertion about the *content*: what QA judges the task by is in
-        # the document the developer was given, word for word. An attempt whose
-        # task carries no acceptance criteria has nothing to quote and is not
-        # claimed about here.
-        assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == []
+        # The one assertion about the *content*, and it is the strict helper on
+        # purpose. Two claims at once: every attempt of this story *has*
+        # acceptance criteria — `admit_level1_plan` plans them from this run's
+        # marker — and the document that attempt's developer was actually handed
+        # quotes them word for word. The permissive
+        # `attempts_not_quoting_acceptance_criteria` would answer `[]` for a plan
+        # that asked for nothing, which is exactly how this assertion was vacuous
+        # before; it stays for callers whose tasks may genuinely carry none.
+        assert run_evidence.attempts_without_quoted_acceptance_criteria(instructions) == []
+        # And the criteria really are this run's, so a document another run left
+        # behind could not have satisfied the check above.
+        for attempt in instructions["attempts"]:
+            document = attempt["documents"][run_evidence.TASK_DOCUMENT]
+            assert pipeline["level1_marker"] in document["readings"][0]["body"]["value"]["text"]
 
 
 class TestFullPipelineLLM:

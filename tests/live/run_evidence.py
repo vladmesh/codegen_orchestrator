@@ -3525,14 +3525,35 @@ def developer_instructions(ctx: dict, records: list[dict]) -> dict:
 def attempts_not_quoting_acceptance_criteria(instructions: dict) -> list[str]:
     """Every attempt whose TASK.md does not carry its task's criteria verbatim.
 
-    The suite's own assertion reads this: an empty list is the claim that for
-    every engineering attempt that has acceptance criteria, the document the
-    developer was actually given quotes them word for word.
+    The conditional reading of criterion 3 — "for every engineering attempt that
+    has acceptance criteria" — so an attempt whose task carries none is not
+    counted. That is the right question for a scenario whose tasks genuinely may
+    have no criteria, and the wrong one for a scenario that is supposed to have
+    them: an empty list here cannot tell "every attempt quoted them" from
+    "nobody asked for anything". A caller that means the second reading asserts
+    on `attempts_without_quoted_acceptance_criteria` instead.
     """
     return [
         attempt["acceptance_criteria"]["detail"]
         for attempt in instructions["attempts"]
         if attempt["acceptance_criteria"]["status"] == CriteriaCheck.NOT_QUOTED.value
+    ]
+
+
+def attempts_without_quoted_acceptance_criteria(instructions: dict) -> list[str]:
+    """Every attempt that does not *demonstrate* its criteria quoted verbatim.
+
+    Anything but `QUOTED` is here, which is what makes this assertable: an
+    attempt whose task carries no acceptance criteria fails, and so does one
+    whose criteria this run never read. An empty list is therefore two claims at
+    once — every engineering attempt of the run *has* acceptance criteria, and
+    the document that attempt's developer was actually handed quotes them word
+    for word — and it cannot be satisfied by a run that asked for nothing.
+    """
+    return [
+        attempt["acceptance_criteria"]["detail"]
+        for attempt in instructions["attempts"]
+        if attempt["acceptance_criteria"]["status"] != CriteriaCheck.QUOTED.value
     ]
 
 
