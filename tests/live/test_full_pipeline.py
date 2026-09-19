@@ -24,6 +24,11 @@ deployment for them, not the repository.
 
 import os
 
+from level1_brief import (
+    LEVEL1_BRIEF_LANGUAGE,
+    bot_completion_message_mismatches,
+    level1_settings_value,
+)
 from level1_change_set import LEVEL1_SETTING_KEY
 from live_harness import cleanup_guard
 from pipeline_helpers import (
@@ -34,19 +39,24 @@ from pipeline_helpers import (
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
     LLM_ENGINEERING_TIMEOUT,
     QA_RUN_TIMEOUT,
+    Level1PhaseFailed,
     ScaffoldDidNotComplete,
+    admit_level1_plan,
     api_client_as_internal_service,
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     cleanup_all,
     configured_qa_executor,
     create_level1_bot_project,
+    create_level1_confirmed_brief,
     create_llm_backend_project,
     create_story_and_task,
     dump_debug,
     ensure_test_user,
     evidence_pass,
+    level1_completion_text_requirement,
     po_input_cursor,
+    read_product_setting,
     record_deployed_image_tags,
     record_engineering_failure_steps,
     record_env_contract,
@@ -55,6 +65,7 @@ from pipeline_helpers import (
     record_level1_scripted_path,
     record_noop_settlement_evidence,
     record_qa_run,
+    record_settings_seed_brief_log,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
     request_undeploy,
@@ -159,7 +170,12 @@ async def _complete_noop_lifecycle(api, api_internal, ctx: dict, *, debug_prefix
     if await wait_story_completed(api_internal, ctx) is None:
         dump_debug(ctx, f"{debug_prefix}-story-completed")
         return False
-    if await wait_owner_completion_notification(api_internal, ctx) is None:
+    if (
+        await wait_owner_completion_notification(
+            api_internal, ctx, text_requirement=level1_completion_text_requirement(ctx)
+        )
+        is None
+    ):
         dump_debug(ctx, f"{debug_prefix}-owner-notification")
         return False
     if await wait_service_deployment(api_internal, ctx) is None:
@@ -192,6 +208,69 @@ async def _complete_noop_lifecycle(api, api_internal, ctx: dict, *, debug_prefix
     return True
 
 
+async def _level1_brief_plan_and_engineering(
+    api,
+    api_internal,
+    ctx: dict,
+    *,
+    engineering_timeout: int,
+    debug_prefix: str,
+) -> None:
+    """The level-1 story: a confirmed brief, an admitted plan, two scripted tasks.
+
+    Every exit from here that is not "the story is built" raises naming its own
+    phase, the way card 1310 made the scaffold raise. The level-1 route is
+    deterministic — nothing in it is allowed to fail for a reason that is not
+    this platform's — so a phase that did not produce what the phases after it
+    are about is a failure of that phase, never a skip and never an assertion
+    about a product that was never built.
+    """
+    # A cursor fences out historical and foreign PO events. It is captured
+    # before the story can produce a completion notification.
+    ctx["po_input_cursor"] = po_input_cursor()
+    try:
+        await create_level1_confirmed_brief(api, ctx)
+        await admit_level1_plan(api, ctx)
+    except Level1PhaseFailed as failure:
+        dump_debug(ctx, f"{debug_prefix}-{failure.phase}")
+        raise
+
+    await wait_linear_noop_engineering(
+        api, api_internal, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
+    )
+    if ctx.get("task_status") != TaskStatus.DONE:
+        # A failed scripted step has a name; the run says which one before it
+        # stops, so its evidence reads "setup" rather than only "engineering".
+        record_engineering_failure_steps(ctx)
+        dump_debug(ctx, f"{debug_prefix}-engineering")
+        raise Level1PhaseFailed(
+            "engineering",
+            f"task status {ctx.get('task_status')}; "
+            f"failed steps {ctx.get('engineering_failure_steps')}",
+        )
+    await record_noop_settlement_evidence(api_internal, ctx)
+    if ctx.get("noop_settlement_error") is not None:
+        dump_debug(ctx, f"{debug_prefix}-noop-settlement")
+        raise Level1PhaseFailed("engineering", ctx["noop_settlement_error"])
+    if not await verify_linear_noop_story_completion(api, ctx):
+        dump_debug(ctx, f"{debug_prefix}-noop-linear-story")
+        raise Level1PhaseFailed("engineering", ctx["linear_noop_completion_error"])
+
+
+async def _record_level1_settings_seed_evidence(ctx: dict, deploy_result) -> None:
+    """What the deploy did with the confirmed brief's initial settings.
+
+    Three reads, all while the deployment is still up: the deploy run's own
+    per-setting record, the deploy consumer's statement of which brief it read
+    and by which route, and the value the *product* itself now holds.
+    """
+    ctx["level1_settings_seed"] = [
+        seed.model_dump(mode="json") for seed in deploy_result.settings_seed
+    ]
+    record_settings_seed_brief_log(ctx)
+    ctx["level1_settings_readback"] = await read_product_setting(ctx, key=LEVEL1_SETTING_KEY)
+
+
 async def _pipeline_phases(
     api,
     api_internal,
@@ -222,39 +301,25 @@ async def _pipeline_phases(
     # the previous attempt's container, and the attempt that died is exactly the
     # one that has to stay attributable.
     if lifecycle_undeploy:
-        # A cursor fences out historical and foreign PO events.  It is captured
-        # before the story can produce a completion notification.
-        ctx["po_input_cursor"] = po_input_cursor()
-    await create_story_and_task(api, ctx, linear_noop_tasks=lifecycle_undeploy)
-    if lifecycle_undeploy:
-        await wait_linear_noop_engineering(
+        await _level1_brief_plan_and_engineering(
             api,
             api_internal,
             ctx,
-            timeout=engineering_timeout,
-            on_poll=lambda: evidence_pass(ctx),
+            engineering_timeout=engineering_timeout,
+            debug_prefix=debug_prefix,
         )
-        if ctx.get("task_status") == TaskStatus.DONE:
-            await record_noop_settlement_evidence(api_internal, ctx)
-            if ctx.get("noop_settlement_error") is not None:
-                yield ctx
-                dump_debug(ctx, f"{debug_prefix}-noop-settlement")
-                return
-            if not await verify_linear_noop_story_completion(api, ctx):
-                yield ctx
-                dump_debug(ctx, f"{debug_prefix}-noop-linear-story")
-                return
     else:
+        await create_story_and_task(api, ctx)
         await wait_engineering(
             api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
         )
-    if ctx.get("task_status") != TaskStatus.DONE:
-        # A failed scripted step has a name; the run says which one before it
-        # stops, so its evidence reads "setup" rather than only "engineering".
-        record_engineering_failure_steps(ctx)
-        yield ctx
-        dump_debug(ctx, f"{debug_prefix}-engineering")
-        return
+        if ctx.get("task_status") != TaskStatus.DONE:
+            # A failed scripted step has a name; the run says which one before
+            # it stops, so its evidence reads "setup" rather than "engineering".
+            record_engineering_failure_steps(ctx)
+            yield ctx
+            dump_debug(ctx, f"{debug_prefix}-engineering")
+            return
 
     # Both engineering tasks are settled, so what the story branch carries is
     # settled too: this is where the scripted path is told apart from the
@@ -281,8 +346,10 @@ async def _pipeline_phases(
     # scaffolded tree proves nothing about what engineering merged.
     deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
     if deploy_run is None:
-        yield ctx
         dump_debug(ctx, f"{debug_prefix}-deploy-run")
+        if lifecycle_undeploy:
+            raise Level1PhaseFailed("deploy", ctx.get("deploy_run_error", "no deploy run appeared"))
+        yield ctx
         return
     if not record_env_contract(
         ctx,
@@ -295,11 +362,23 @@ async def _pipeline_phases(
         return
 
     await wait_deploy(api, api_observer, ctx, timeout=DEPLOY_TIMEOUT)
-    await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
-    if (
+    deploy_result = await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
+    deploy_succeeded = (
         ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
         and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
-    ):
+    )
+    if lifecycle_undeploy and not deploy_succeeded:
+        # The level-1 deploy is the one that carries the confirmed brief's
+        # settings into the product; nothing after it is about anything else.
+        dump_debug(ctx, f"{debug_prefix}-deploy")
+        raise Level1PhaseFailed(
+            "deploy",
+            f"deploy run {ctx.get('deploy_run_id')} ended "
+            f"deploy_outcome={ctx.get('deploy_outcome')} "
+            f"application={ctx.get('final_app_status')} "
+            f"({ctx.get('deploy_error_details') or ctx.get('deploy_outcome_error')})",
+        )
+    if deploy_succeeded:
         # The external probe happens while the application is running, but its
         # evidence remains available after the noop lifecycle undeploys it.
         # The probe keeps its raise; what it also does now is leave the
@@ -310,6 +389,8 @@ async def _pipeline_phases(
         # because the noop lifecycle undeploys it a few phases later.
         if ctx.get("level1_change_set_paths"):
             await record_level1_product_evidence(ctx)
+        if lifecycle_undeploy:
+            await _record_level1_settings_seed_evidence(ctx, deploy_result)
         # Before any QA attempt: the deployed images must be this commit's. A
         # successful deploy Run and an HTTP 200 are both compatible with the
         # host running an older image, and QA is where that shows up — as a
@@ -539,8 +620,6 @@ class TestFullPipeline:
         Deploy reads the contract at the merged head SHA, not at the scaffolded
         tree, so a fragment lost or broken during engineering only shows here.
         """
-        if pipeline.get("task_status") != TaskStatus.DONE:
-            pytest.skip("engineering failed")
         assert pipeline.get("deploy_run_error") is None, pipeline["deploy_run_error"]
         errors = pipeline.get("env_contract_errors") or {}
         assert "merged" not in errors, errors.get("merged")
@@ -555,8 +634,6 @@ class TestFullPipeline:
         A running application only proves some container answers on the port;
         the typed outcome is what the pipeline itself concluded about the deploy.
         """
-        if pipeline.get("task_status") != TaskStatus.DONE:
-            pytest.skip("engineering failed")
         assert pipeline.get("deploy_run_error") is None, pipeline["deploy_run_error"]
         assert pipeline.get("deploy_outcome_error") is None, pipeline["deploy_outcome_error"]
         assert pipeline.get("deploy_outcome") == DeployOutcome.SUCCESS.value, (
@@ -574,21 +651,11 @@ class TestFullPipeline:
 
     async def test_deployed_images_are_the_built_commits(self, pipeline):
         """The deployment runs the images the built commit produced."""
-        if (
-            pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
-            or pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
-        ):
-            pytest.skip("deploy failed")
         assert pipeline.get("deployed_image_error") is None, pipeline["deployed_image_error"]
         assert pipeline["deployed_image_references"], "the deploy run named no image references"
 
     async def test_non_llm_qa_passed(self, pipeline):
         """A separate post-deploy QA run must terminate as passed."""
-        if (
-            pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
-            or pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
-        ):
-            pytest.skip("deploy failed")
         assert pipeline.get("qa_result") == {
             "run_id": pipeline["qa_result"]["run_id"],
             "status": "completed",
@@ -612,7 +679,129 @@ class TestFullPipeline:
         assert notification["task_id"] is None
         assert event["task_id"] == pipeline["story_id"]
         assert notification["text"] == event["text"]
-        assert pipeline["deployed_url"] in notification["text"]
+
+    async def test_the_owner_message_is_the_one_a_bot_product_sends(self, pipeline):
+        """A bot owner is told how to reach their bot, never a backend address.
+
+        The level-1 product is a Telegram bot, so the completion message names
+        the bot, repeats the usage examples the owner confirmed — in the
+        language they confirmed them in — and gives no server address at all.
+        Judged against the brief read back from the API, so it is the frozen
+        document the message is compared with and not the harness's constant.
+        """
+        notification = pipeline.get("owner_notification")
+        assert notification, pipeline.get("owner_notification_error")
+        content = pipeline["brief_read"]["content"]
+        assert (
+            bot_completion_message_mismatches(
+                notification["text"],
+                bot_username=pipeline["bot_username"],
+                usage_examples=content["usage_examples"],
+                language=content["language"],
+            )
+            == []
+        )
+        # Stated separately as well: the address this run actually deployed at
+        # is the one a regression would be most likely to reintroduce.
+        assert pipeline["deployed_url"] not in notification["text"]
+
+    async def test_the_story_is_backed_by_a_confirmed_brief_built_without_a_model(self, pipeline):
+        """The released PO tools froze this contract; no model composed any of it.
+
+        The document is read back over the API rather than out of the PO's own
+        rendered message: what a story is planned against is the frozen object,
+        and that is what carries the confirmation and the story it backs.
+        """
+        brief = pipeline["brief_read"]
+        assert brief["confirmed_at"]
+        assert brief["story_id"] == pipeline["story_id"]
+        content = brief["content"]
+        assert content["language"] == LEVEL1_BRIEF_LANGUAGE
+        assert content["limitations"]
+        exemplified = {example["requirement_id"] for example in content["usage_examples"]}
+        user_facing = {
+            requirement["id"]
+            for requirement in content["must_requirements"]
+            if requirement["user_facing"]
+        }
+        assert user_facing and user_facing <= exemplified
+        assert content["initial_settings"] == [
+            {
+                "key": LEVEL1_SETTING_KEY,
+                "scope": "product",
+                "subject_id": None,
+                "value": level1_settings_value(pipeline["level1_marker"]),
+                "description": content["initial_settings"][0]["description"],
+            }
+        ]
+
+    async def test_the_plan_crossed_the_coverage_gate_rather_than_going_round_it(self, pipeline):
+        """Admission is what released this story's tasks, and nothing else was.
+
+        Both halves matter. Before the one admission step the tasks existed and
+        were undispatchable — that is the gate, read rather than assumed — and
+        the admission's own release set is exactly the tasks the story went on
+        to run. A plan that had bypassed the gate would show tasks already
+        dispatchable in the first snapshot.
+        """
+        assert [task["dispatch_admitted"] for task in pipeline["level1_plan_before_admission"]] == [
+            False,
+            False,
+        ]
+        attempt_id = pipeline["level1_planning_attempt_id"]
+        assert {
+            task["planning_attempt_id"] for task in pipeline["level1_plan_before_admission"]
+        } == {attempt_id}
+        admission = pipeline["level1_admission"]
+        assert admission["outcome"] == "admitted"
+        assert sorted(admission["released_task_ids"]) == sorted(pipeline["task_ids"])
+        assert pipeline["brief_read"]["coverage_admitted_at"]
+        assert pipeline["brief_read"]["planning_attempt_id"] == attempt_id
+        covered = {row["requirement_id"]: row for row in pipeline["level1_coverage"]}
+        assert set(covered) == set(pipeline["brief_requirement_ids"])
+        assert all(row["task_id"] in pipeline["task_ids"] for row in covered.values())
+        assert all(row["returned_reason"] is None for row in covered.values())
+        assert [task["dispatch_admitted"] for task in pipeline["level1_plan_after_admission"]] == [
+            True,
+            True,
+        ]
+
+    async def test_the_deploy_seeded_the_confirmed_setting_into_the_product(self, pipeline):
+        """Three facts, and the third is the only one the product itself says.
+
+        The run result records what the deploy's own write path concluded per
+        setting; the deploy consumer's log says which brief it read and by which
+        route — `story`, this story's own brief, not the project's latest; and
+        the readback is the deployed product answering with the value the user
+        confirmed. The confirmed value is deliberately not the manifest default,
+        so a product that was never seeded cannot answer with it.
+        """
+        assert pipeline["level1_settings_seed"] == [
+            {
+                "key": LEVEL1_SETTING_KEY,
+                "scope": "product",
+                "subject_id": None,
+                "written": True,
+                "failure": None,
+            }
+        ]
+        assert pipeline.get("settings_seed_brief_log_error") is None, pipeline.get(
+            "settings_seed_brief_log_error"
+        )
+        assert pipeline["settings_seed_brief_log"] == {
+            "event": "deploy_settings_seed_brief",
+            "task_id": pipeline["deploy_run_id"],
+            "brief_id": pipeline["brief_id"],
+            "route": "story",
+            "settings_count": 1,
+        }
+        assert pipeline["level1_settings_readback"] == {
+            "contract_version": 1,
+            "key": LEVEL1_SETTING_KEY,
+            "scope": "product",
+            "subject_id": None,
+            "value": level1_settings_value(pipeline["level1_marker"]),
+        }
 
     async def test_deployment_sha_and_product_undeploy_lifecycle(self, pipeline):
         """The selected deployment matches merged SHA, then product undeploy clears it."""

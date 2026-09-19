@@ -48,7 +48,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two scripted engineering Tasks and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 75 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two scripted engineering Tasks and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 75 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 281 min | derived worst case: initial lifecycle, two repairs plus one retry, post-deploy checks, 10m evidence/cleanup margin |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 281 min | derived worst case as `mega-brief`, with the kit install inside the engineering budget |
@@ -149,9 +149,14 @@ immutable noop `ExecutorDecision`, typed terminal result, canonical zero-provide
 and actual reservation outcome; its second `todo` Task is blocked by the first and must not receive
 a Run early. The two Tasks complete through one observed Story-worker lifecycle before the PR/merge
 can lead to deploy. It also proves the completed Story's durable `story_completed` owner record, its
-matching post-cursor PO input event and verified public URL, the successful service deployment's exact
-merged SHA, and a product API undeploy through terminal `not_deployed` plus owned port-allocation
-absence. Every named suite also compares the deploy Run's image references with the commit `main` points at —
+matching post-cursor PO input event and the message a *bot* product's owner is owed — the bot handle,
+the confirmed brief's usage examples in the brief's language, and no backend address at all — the
+successful service deployment's exact merged SHA, and a product API undeploy through terminal
+`not_deployed` plus owned port-allocation absence. Its Story is planned against a confirmed Product
+Brief the released PO tools froze without any model call, and released only by the one admission step
+on the architect's own coverage routes; the grant deploy that follows seeds that brief's
+`initial_settings` into the deployed product, and the run reads the value back from the product
+itself. Every named suite also compares the deploy Run's image references with the commit `main` points at —
 read from GitHub, never from what the deploy was given — before it spends a QA attempt, so a
 deployment running an older image fails as a deploy defect rather than as a product one. Because no
 deploy Run is created until that commit's images are published, `DEPLOY_RUN_TIMEOUT` now spans the
@@ -164,6 +169,8 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
 | Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
 | Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
+| Confirmed brief without a model | the frozen brief's `confirmed_at` and `story_id`, read back over the API, and a plan released only by `POST /product-briefs/{id}/admit` over tasks that were undispatchable before it | `mega-noop` |
+| Confirmed settings reach the product | the deploy Run's per-setting `settings_seed`, the consumer's `deploy_settings_seed_brief` line with `route=story`, and the deployed product's own readback | `mega-noop` |
 | Scripted product change | the story branch diff carries every change-set path, and the deployment answers the added endpoint, the registered product setting and the published bot command | `mega-noop` |
 | Deployed artifact identity | the deploy Run's image references, tagged with `main`'s head as GitHub reports it, read before any QA attempt | all named suites |
 | Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |

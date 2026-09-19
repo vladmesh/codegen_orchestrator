@@ -24,6 +24,8 @@ from pipeline_helpers import (
     DEPLOY_TIMEOUT,
     LLM_ENGINEERING_TIMEOUT,
     ORCHESTRATOR_ROOT,
+    PO_BRIEF_ID_RE,
+    PO_STORY_ID_RE,
     QA_RUN_TIMEOUT,
     BriefScenario,
     api_client_as_internal_service,
@@ -67,8 +69,6 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 
 _PROJECT_ID_RE = re.compile(r"Project created\. ID: ([0-9a-f-]{36}),")
-_BRIEF_ID_RE = re.compile(r"\(id: (brief-[a-f0-9]+)\)")
-_STORY_ID_RE = re.compile(r"Story: (story-[A-Za-z0-9-]+) —")
 
 
 def _po_config(manifest: OwnershipManifest, project_id: str) -> dict:
@@ -108,7 +108,7 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
             },
             config=config,
         )
-        match = _BRIEF_ID_RE.search(presented)
+        match = PO_BRIEF_ID_RE.search(presented)
         assert match, f"PO did not present a Product Brief id: {presented}"
         ctx["brief_id"] = match.group(1)
         ctx["brief_requirement_ids"] = scenario.requirement_ids
@@ -130,7 +130,7 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
             },
             config=config,
         )
-        match = _STORY_ID_RE.search(created)
+        match = PO_STORY_ID_RE.search(created)
         assert match, f"PO did not create and publish a story: {created}"
         ctx["story_id"] = match.group(1)
 

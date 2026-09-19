@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- The level-1 live run builds its story from a Russian Product Brief confirmed through the released PO tools
+  and admits the plan through the architect's own coverage routes, both without any model call.
+- The level-1 run asserts the grant deploy seeded the confirmed `initial_settings` into the deployed product,
+  and that the owner's completion message is a bot product's: the bot handle and usage examples, no backend address.
+- A completion-notification wait that times out now names which conjunct failed — the notification's own fields or
+  the missing durable PO record — instead of only a state and an event count.
 - Live teardown derives the project's delete order and its residue proof from the catalog — foreign keys plus
   the denormalized columns that are not one — instead of a hand-written list, and names any leftover row.
 - The scaffold wait is sized by the product: `shared/stand_deadlines.scaffold_budget_seconds` gives the
