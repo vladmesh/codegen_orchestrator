@@ -371,55 +371,120 @@ async def test_a_po_record_whose_text_differs_says_which_field_differs():
     assert "none matches the notification on: text" in error
 
 
-@pytest.mark.asyncio
-async def test_service_deployment_selects_exact_application_project_and_sha():
-    ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
+def _deployment(identifier, *, sha="abc123", result="success", deployed_at="2026-09-19T15:48:00"):
+    return {
+        "id": identifier,
+        "application_id": 7,
+        "project_id": "project-1",
+        "result": result,
+        "deployed_sha": sha,
+        "deployed_at": deployed_at,
+    }
+
+
+def _deployment_and_runs(deployments, runs):
+    """Answer the two reads `wait_service_deployment` takes on every pass."""
     seen = {}
 
     def handler(request):
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "id": 4,
-                    "application_id": 7,
-                    "project_id": "project-1",
-                    "result": "success",
-                    "deployed_sha": "abc123",
-                }
-            ],
-        )
+        seen.setdefault("params", {})[request.url.path] = dict(request.url.params)
+        body = runs if request.url.path == "/api/runs/" else deployments
+        return httpx.Response(200, json=body)
+
+    return handler, seen
+
+
+@pytest.mark.asyncio
+async def test_service_deployment_selects_exact_application_project_and_sha():
+    ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
+    handler, seen = _deployment_and_runs([_deployment(4)], [{"id": "deploy-1", "type": "deploy"}])
 
     async with _client(handler) as api:
         deployment = await pipeline_helpers.wait_service_deployment(api, ctx, timeout=1)
 
     assert deployment["id"] == 4
-    assert seen["params"] == {"application_id": "7", "project_id": "project-1"}
+    assert seen["params"]["/api/service-deployments/"] == {
+        "application_id": "7",
+        "project_id": "project-1",
+    }
+    assert seen["params"]["/api/runs/"] == {"project_id": "project-1", "run_type": "deploy"}
 
 
 @pytest.mark.asyncio
-async def test_service_deployment_rejects_ambiguous_or_wrong_sha_records():
+async def test_two_deploys_of_one_application_are_a_log_not_an_ambiguity():
+    """What run 35451082771 actually had, and what the old assertion called ambiguous.
+
+    The story's own grant deploy wrote one record; the redeploy that hands QA
+    its temporary capability wrote a second one for the same application, the
+    same project and the same merged commit — `service_name` is the project's
+    runtime slug in both, whatever the product's modules are. Two deploys, two
+    records, and the one the application is serving is the later of them.
+    """
     ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
-    ambiguous = [
-        {
-            "id": 4,
-            "application_id": 7,
-            "project_id": "project-1",
-            "result": "success",
-            "deployed_sha": "abc123",
-        },
-        {
-            "id": 5,
-            "application_id": 7,
-            "project_id": "project-1",
-            "result": "success",
-            "deployed_sha": "abc123",
-        },
-    ]
-    async with _client(lambda _request: httpx.Response(200, json=ambiguous)) as api:
+    handler, _ = _deployment_and_runs(
+        [
+            _deployment(1, deployed_at="2026-09-19T15:48:00"),
+            _deployment(2, deployed_at="2026-09-19T15:49:14"),
+        ],
+        [
+            {"id": "deploy-grant-7167257310", "type": "deploy"},
+            {"id": "temporary-access-grant-a6a508be", "type": "deploy"},
+        ],
+    )
+
+    async with _client(handler) as api:
+        deployment = await pipeline_helpers.wait_service_deployment(api, ctx, timeout=1)
+
+    assert deployment["id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_deploy_recorded_twice_is_still_refused():
+    """The guard the one-row assertion existed for, kept.
+
+    The records carry no run id, so the duplicate is caught by counting: two
+    records for one deploy is one deploy recorded twice, and the selection says
+    which records and which deploys it counted.
+    """
+    ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
+    handler, _ = _deployment_and_runs(
+        [_deployment(4), _deployment(5)], [{"id": "deploy-1", "type": "deploy"}]
+    )
+
+    async with _client(handler) as api:
         assert await pipeline_helpers.wait_service_deployment(api, ctx, timeout=1) is None
-    assert "ambiguous" in ctx["service_deployment_error"]
+
+    error = ctx["service_deployment_error"]
+    assert "more deployment records than deploys" in error
+    assert "[4, 5]" in error
+    assert "deploy-1" in error
+
+
+@pytest.mark.asyncio
+async def test_an_undeploy_run_is_not_counted_as_a_deploy_that_records():
+    """A stop or undeploy never reaches the deployer, so it writes no record."""
+    runs = [
+        {"id": "deploy-1", "type": "deploy", "result": {"action": "feature"}},
+        {"id": "undeploy-1", "type": "deploy", "result": {"action": "undeploy"}},
+    ]
+
+    assert [run["id"] for run in pipeline_helpers.deploys_that_record(runs)] == ["deploy-1"]
+
+
+@pytest.mark.asyncio
+async def test_service_deployment_rejects_a_record_of_another_sha():
+    ctx = {"application_id": 7, "project_id": "project-1", "deploy_head_sha": "abc123"}
+    handler, _ = _deployment_and_runs(
+        [_deployment(4, sha="def456")], [{"id": "deploy-1", "type": "deploy"}]
+    )
+
+    async with _client(handler) as api:
+        assert (
+            await pipeline_helpers.wait_service_deployment(api, ctx, timeout=0.001, poll_interval=0)
+            is None
+        )
+
+    assert "deployed_sha=def456" in ctx["service_deployment_error"]
 
 
 @pytest.mark.asyncio

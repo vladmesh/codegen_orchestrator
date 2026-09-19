@@ -349,3 +349,109 @@ def test_residue_is_asked_for_by_the_keys_the_run_owned(monkeypatch):
     assert f"'{GRANT_INTENT_ID}'" in residue_query
     assert f"'{GRANT_RUN_ID}'" in residue_query
     assert database.queries.index(residue_query) > database.queries.index(database.delete_sql)
+
+
+# ── the stand sweep deletes through the same derivation ──────────────────
+
+SWEEP_RUN_ID = "deploy-grant-71672573103249b09aaf4cb3dbdf2a54"
+
+
+def _sweep_module():
+    """The sweep, imported the way the stand runs it (`python -m`)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"
+    spec = importlib.util.spec_from_file_location("clean_live_tests_for_teardown", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sweep_against(database: FakeDatabase, monkeypatch) -> object:
+    module = _sweep_module()
+    monkeypatch.setattr(module, "run_cmd", database.subprocess_run)
+    return module
+
+
+def test_the_sweep_deletes_through_the_derived_plan(monkeypatch):
+    """Not a second enumeration: the same closure, from its own selection.
+
+    The sweep selects a set of projects by title prefix rather than one project
+    id, and that predicate is all it brings. The tables, their order and the
+    keys read back afterwards come from the catalog, exactly as they do for one
+    run's teardown.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    module = _sweep_against(database, monkeypatch)
+
+    module.clean_database()
+
+    sql = database.delete_sql
+    deleted = database.deleted_tables
+    assert deleted[-1] == "projects"
+    assert "title LIKE" in sql
+    # The catalog's order, not a person's: children before the parents they hang off.
+    assert deleted.index("port_allocations") < deleted.index("applications")
+    assert deleted.index("applications") < deleted.index("repositories")
+    assert deleted.index("repositories") < deleted.index("projects")
+    # Read on stdin, with a refused statement ending the batch.
+    assert "ON_ERROR_STOP=1" in database.argv[0]
+    assert database.argv[0][-2:] == ["-f", "-"]
+
+
+def test_a_grant_intent_no_longer_refuses_the_sweep(monkeypatch):
+    """The exact row that stranded run 35451082771.
+
+    `users_grant_intents` references `runs.id` and was in no hand-written list,
+    so the sweep's project delete was refused with
+    `Key (id)=(deploy-grant-…) is still referenced`. The derived plan empties it
+    before the runs it points at, and proves afterwards that it is gone.
+    """
+    database = FakeDatabase(
+        owned={
+            "projects": ["project-1"],
+            "runs": [SWEEP_RUN_ID],
+            "users_grant_intents": ["grant-intent-71672573"],
+        }
+    )
+    module = _sweep_against(database, monkeypatch)
+
+    module.clean_database()
+
+    deleted = database.deleted_tables
+    assert deleted.index("users_grant_intents") < deleted.index("runs")
+    residue_query = database.queries[-2]
+    assert SWEEP_RUN_ID in residue_query
+
+
+def test_the_sweep_still_removes_the_reusable_test_user_after_the_projects(monkeypatch):
+    """The sweep's own selection and its fixture user are kept.
+
+    The derived plan follows incoming references only, so a project's owner is
+    never inside the closure. The user is therefore its own statement, issued
+    after the projects and only while the append-only attempt ledger points at
+    nothing.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    module = _sweep_against(database, monkeypatch)
+
+    module.clean_database()
+
+    user_delete = database.queries[-1]
+    assert "DELETE FROM users WHERE telegram_id = 999000001" in user_delete
+    assert "NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger" in user_delete
+    assert database.queries.index(database.delete_sql) < database.queries.index(user_delete)
+
+
+def test_a_sweep_that_is_refused_says_which_constraint_refused_it(monkeypatch):
+    database = FakeDatabase(
+        owned={"projects": ["project-1"], "runs": [SWEEP_RUN_ID]},
+        delete_result=SqlResult(returncode=3, stdout="", stderr=REFUSAL_STDERR),
+    )
+    module = _sweep_against(database, monkeypatch)
+
+    with pytest.raises(module.CleanupFailure) as excinfo:
+        module.clean_database()
+
+    assert "users_grant_intents_execution_run_id_fkey" in str(excinfo.value)

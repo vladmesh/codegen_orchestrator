@@ -6,11 +6,13 @@ Reproduces the three teardown failures a live mega run hit:
 3. database project delete -> FK violation (dependent rows, including Product
    Brief coverage, removed after their parents).
 
-The API uses SQLAlchemy while the live helper and recovery script execute raw
-SQL over different project selectors, so sharing an executable deletion helper
-would hide those boundary differences. The two SQL-capture tests below and the
-API unit test mechanically keep their common child-before-parent invariant in
-sync.
+The API uses SQLAlchemy; the live helper and the sweep execute raw SQL over
+different project selectors — one project id against a set of title prefixes —
+but they no longer keep separate delete lists: both build the closure from
+`pg_constraint` through `tests/live/db_teardown.py`, and only the predicate that
+selects the projects differs. The two SQL-capture tests below and the API unit
+test still assert their common child-before-parent invariant, now against the
+order the catalog answers with.
 
 These run without a live stack: HTTP is driven through MockTransport and the
 SQL paths are captured at the subprocess boundary.
@@ -198,19 +200,21 @@ def test_cleanup_db_deletes_dependents_before_applications(monkeypatch):
 
 
 def test_clean_live_tests_deletes_dependents_before_applications(monkeypatch):
+    """The sweep's half of the same invariant, now derived as well.
+
+    Card 1313 replaced the sweep's own delete list with the catalog derivation
+    the per-run teardown already used, so the order this asserts is the
+    database's answer here too — and the fake database answers with this
+    schema's metadata rather than with a list somebody kept in step.
+    """
     module = _load_clean_live_tests()
-    captured: dict[str, str] = {}
+    database = FakeDatabase(owned={"projects": ["project-1"]})
 
-    def fake_run_cmd(cmd, **kwargs):
-        if "-c" in cmd:
-            captured["sql"] = cmd[cmd.index("-c") + 1]
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(module, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(module, "run_cmd", database.subprocess_run)
 
     module.clean_database()
 
-    sql = captured["sql"]
+    sql = database.delete_sql
     for dependent in _DEPENDENTS:
         _assert_before(sql, dependent, "applications")
     assert _cleanup_order(sql) == list(PROJECT_BRIEF_TASK_STORY_DELETE_ORDER)

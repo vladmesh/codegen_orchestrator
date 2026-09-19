@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-19
 
+- The live deployment assertion reads `service_deployments` as the deploy log it is: the newest record is
+  selected, and more records than the project's deploys is still refused as the same deploy written twice.
+- The stand sweep deletes through the catalog-derived plan `tests/live/db_teardown.py` builds, keeping its own
+  project selection and its fixture-user removal, so no second delete list can go stale on `users_grant_intents`.
 - The level-1 live run builds its story from a Russian Product Brief confirmed through the released PO tools
   and admits the plan through the architect's own coverage routes, both without any model call.
 - The level-1 run proves from durable rows that nothing but the harness claimed its brief's plan, and accepts

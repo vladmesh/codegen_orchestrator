@@ -5,15 +5,19 @@ somebody who remembered the schema at the time they wrote it. That list goes
 stale silently, and it goes stale in the direction of leaving residue behind:
 run 35441716423 ended `cleanup failed` because `users_grant_intents` — the table
 the level-1 grant deploy writes — references `runs.id` and was in nobody's list,
-so the project row could not be deleted and stayed on the stand.
+so the project row could not be deleted and stayed on the stand. The second such
+list, the stand sweep's own, stranded run 35451082771 the same way three weeks
+later; it is gone too, and both teardown paths now start here.
 
 Nothing here restates the schema. The plan is derived from `pg_constraint`:
 
 **What belongs to the run is what the foreign keys say belongs to it.** Starting
-at `projects WHERE id = <the run's project>`, the plan walks *incoming* foreign
-keys — the rows that point at a row the run owns — and never outgoing ones, so a
-project's owner, its server and every other row the project merely refers to are
-outside the closure and are never touched.
+at `projects WHERE <the caller's predicate>` — one run's project id for a run's
+own teardown, the contour's title prefixes for the stand sweep, and nothing else
+differs between them — the plan walks *incoming* foreign keys, the rows that
+point at a row the run owns, and never outgoing ones, so a project's owner, its
+server and every other row the project merely refers to are outside the closure
+and are never touched.
 
 **Only the edges the database would refuse are followed.** `confdeltype` says
 what Postgres does when the parent goes: `CASCADE` removes the child itself,
@@ -233,15 +237,19 @@ class PlanStep:
 
 @dataclass
 class TeardownReport:
-    """What one teardown pass deleted, in the words its caller reports in."""
+    """What one teardown pass deleted, in the words its caller reports in.
 
-    project_id: str
+    `selection` is the predicate's subject: one run's project id for a per-run
+    teardown, and the sweep's own description of the projects it selected.
+    """
+
+    selection: str
     tables: list[str] = field(default_factory=list)
     owned_keys: dict[str, list[str]] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
-            "project_id": self.project_id,
+            "selection": self.selection,
             "tables": list(self.tables),
             "owned_keys": {table: list(keys) for table, keys in sorted(self.owned_keys.items())},
         }
@@ -633,18 +641,22 @@ def load_catalog(run_sql: RunSql) -> Catalog:
     return parse_catalog(_require(run_sql(CATALOG_SQL), "reading the foreign-key catalog"))
 
 
-def teardown_project(project_id: str, run_sql: RunSql) -> TeardownReport:
-    """Delete one project's rows and prove that none of them survived.
+def teardown_selection(
+    root_predicate: str, run_sql: RunSql, *, selection: str | None = None
+) -> TeardownReport:
+    """Delete the rows of every project a predicate selects, and prove they are gone.
+
+    The predicate is the only thing a caller brings. One run's teardown names
+    one project id; the stand sweep names the projects its contour's title
+    prefixes match. Everything after that — which tables belong to the
+    selection, in which order they go and which keys are read back — is derived
+    from the catalog for both, so neither can go stale on its own schedule.
 
     Raises `TeardownError` — naming the table and the constraint — rather than
     reporting a clean teardown it cannot demonstrate.
     """
     catalog = load_catalog(run_sql)
-    plan = build_plan(
-        catalog,
-        root_table="projects",
-        root_predicate=f"id::text = {sql_literal(project_id)}",
-    )
+    plan = build_plan(catalog, root_table="projects", root_predicate=root_predicate)
     owned = group_rows(
         parse_rows(_require(run_sql(inventory_sql(plan)), "reading the rows this run owns"))
     )
@@ -661,7 +673,14 @@ def teardown_project(project_id: str, run_sql: RunSql) -> TeardownReport:
                 "database rows of this run survived teardown: " + format_residue(left, plan)
             )
     return TeardownReport(
-        project_id=project_id,
+        selection=selection if selection is not None else root_predicate,
         tables=[step.table for step in plan],
         owned_keys=owned,
+    )
+
+
+def teardown_project(project_id: str, run_sql: RunSql) -> TeardownReport:
+    """Delete one project's rows and prove that none of them survived."""
+    return teardown_selection(
+        f"id::text = {sql_literal(project_id)}", run_sql, selection=project_id
     )
