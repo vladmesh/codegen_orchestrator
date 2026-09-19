@@ -54,9 +54,7 @@ from pipeline_helpers import (
     ENGINEERING_TIMEOUT,
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
     LLM_ENGINEERING_TIMEOUT,
-    QA_RUN_TIMEOUT,
     SECOND_STORY_CHECKOUT_BOUND_SECONDS,
-    SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT,
     Level1PhaseFailed,
     ScaffoldDidNotComplete,
     admit_level1_extension_plan,
@@ -125,6 +123,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.telegram import TokenCheckName
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.stand_deadlines import QA_RUN_TIMEOUT, SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -1246,11 +1245,26 @@ class TestFullPipeline:
         assignment of the scaffolded checkout under this event is the directory
         the scaffolder made for the first story, and every developer worker of
         this repository sharing one path is that directory being reused.
+
+        Asserted of the extension story's *own* worker, not of whichever
+        assignments the manager's log tail happens to still hold: the first
+        story's line alone must not be able to answer this.
         """
         extension = _extension(pipeline)
         assert extension.get("first_checkout_error") is None, extension.get("first_checkout_error")
-        assignments = extension["workspace_assignments"]
-        assert workspace_reuse_mismatches(assignments, repo_id=pipeline["repo_id"]) == []
+        # Judged by the worker that actually ran *this* story — the one the
+        # manager checked this story's branch out on. Over every assignment for
+        # the repository, the first story's line alone would answer.
+        own_workers = {attempt["worker_id"] for attempt in extension["first_checkout"]}
+        assert own_workers, "no worker ran a checkout of the extension story's branch"
+        assert (
+            workspace_reuse_mismatches(
+                extension["workspace_assignments"],
+                repo_id=pipeline["repo_id"],
+                worker_ids=own_workers,
+            )
+            == []
+        )
 
     async def test_the_extension_story_has_no_failed_or_cancelled_engineering_run(self, pipeline):
         """A done task is not a clean attempt, so the Runs are what is read.

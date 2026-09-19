@@ -127,47 +127,56 @@ def test_another_story_s_checkout_is_not_this_story_s():
 # ── The workspace the story ran in ───────────────────────────────────────
 
 
+def _assignment(worker: str, path: str, repo_id: str = REPO_ID) -> dict:
+    return {
+        "event": "using_scaffolded_workspace",
+        "worker_id": worker,
+        "repo_id": repo_id,
+        "path": path,
+    }
+
+
 def test_both_stories_sharing_the_scaffolded_checkout_is_the_reused_workspace():
     log = _log(
-        {
-            "event": "using_scaffolded_workspace",
-            "worker_id": "dev-1",
-            "repo_id": REPO_ID,
-            "path": f"/data/workspaces/{REPO_ID}",
-        },
-        {
-            "event": "using_scaffolded_workspace",
-            "worker_id": "dev-2",
-            "repo_id": REPO_ID,
-            "path": f"/data/workspaces/{REPO_ID}",
-        },
+        _assignment("dev-1", f"/data/workspaces/{REPO_ID}"),
+        _assignment("dev-2", f"/data/workspaces/{REPO_ID}"),
         {"event": "using_ephemeral_qa_workspace", "worker_id": "qa-1", "path": "/data/ws/qa-1"},
     )
 
     assignments = workspace_assignments(log, repo_id=REPO_ID)
 
     assert [one["worker_id"] for one in assignments] == ["dev-1", "dev-2"]
-    assert workspace_reuse_mismatches(assignments, repo_id=REPO_ID) == []
+    assert workspace_reuse_mismatches(assignments, repo_id=REPO_ID, worker_ids={"dev-2"}) == []
+
+
+def test_the_first_story_s_assignment_alone_cannot_answer_for_the_second_story():
+    """The narrowing: this story's own worker has to be in the log that is read.
+
+    `MANAGER_LOG_TAIL_LINES` is finite and the manager is chatty, so the
+    extension worker's assignment scrolling off is the realistic way this could
+    have been satisfied by the first story's line — which is exactly the shape
+    of vacuity the assertion exists to avoid.
+    """
+    log = _log(_assignment("dev-1", f"/data/workspaces/{REPO_ID}"))
+
+    reasons = workspace_reuse_mismatches(
+        workspace_assignments(log, repo_id=REPO_ID), repo_id=REPO_ID, worker_ids={"dev-2"}
+    )
+
+    assert reasons == [
+        f"worker dev-2 ran this story but was assigned no workspace for repository {REPO_ID} "
+        "in the log this run read"
+    ]
 
 
 def test_a_second_workspace_for_the_same_repository_is_refused():
     log = _log(
-        {
-            "event": "using_scaffolded_workspace",
-            "worker_id": "dev-1",
-            "repo_id": REPO_ID,
-            "path": f"/data/workspaces/{REPO_ID}",
-        },
-        {
-            "event": "using_scaffolded_workspace",
-            "worker_id": "dev-2",
-            "repo_id": REPO_ID,
-            "path": "/data/workspaces/qa-dev-2",
-        },
+        _assignment("dev-1", f"/data/workspaces/{REPO_ID}"),
+        _assignment("dev-2", "/data/workspaces/qa-dev-2"),
     )
 
     reasons = workspace_reuse_mismatches(
-        workspace_assignments(log, repo_id=REPO_ID), repo_id=REPO_ID
+        workspace_assignments(log, repo_id=REPO_ID), repo_id=REPO_ID, worker_ids={"dev-2"}
     )
 
     assert reasons == [
@@ -178,11 +187,14 @@ def test_a_second_workspace_for_the_same_repository_is_refused():
     ]
 
 
-def test_no_workspace_assignment_at_all_is_refused():
-    assert workspace_reuse_mismatches([], repo_id=REPO_ID) == [
+def test_no_workspace_assignment_at_all_and_no_named_worker_are_both_refused():
+    assert workspace_reuse_mismatches([], repo_id=REPO_ID, worker_ids={"dev-2"}) == [
         f"the manager assigned no developer workspace for repository {REPO_ID} in the log "
         "this run read"
     ]
+    assert workspace_reuse_mismatches(
+        [_assignment("dev-2", f"/data/workspaces/{REPO_ID}")], repo_id=REPO_ID, worker_ids=set()
+    ) == ["this story named no developer worker for its workspace to be judged by"]
 
 
 # ── The manager's own git ────────────────────────────────────────────────

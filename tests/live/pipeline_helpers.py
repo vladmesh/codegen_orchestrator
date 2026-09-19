@@ -136,7 +136,20 @@ from shared.live_harness_cleanup import (
 )
 from shared.queues import SCAFFOLD_QUEUE
 from shared.stand_deadlines import (
+    DEPLOY_OUTCOME_TIMEOUT,
+    DEPLOY_RUN_TIMEOUT,
+    DEPLOY_TIMEOUT,
+    ENGINEERING_TIMEOUT,
+    HEALTH_PROBE_ATTEMPTS,
+    HEALTH_PROBE_PATHS,
+    HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS,
+    HEALTH_PROBE_RETRY_DELAY_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
+    OWNER_NOTIFICATION_TIMEOUT,
+    STORY_AGGREGATION_POLL_INTERVAL,
+    STORY_AGGREGATION_TIMEOUT,
+    STORY_COMPLETION_TIMEOUT,
+    UNDEPLOY_TIMEOUT,
     scaffold_budget_seconds,
 )
 
@@ -164,34 +177,16 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 # reads it from the project it was handed. There is deliberately no constant here
 # for a caller to pass instead.
 SCAFFOLD_POLL_INTERVAL = 3
-ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
+# Every bound this lifecycle waits on is defined in `shared/stand_deadlines.py`
+# and imported above, not restated here: the `mega-noop` cap is derived from the
+# ledger that sums those same constants, so a timeout a caller could change
+# without the ledger noticing is exactly the defect round 5 of card 1316 left
+# behind. What stays local is a poll interval — how often a wait looks — which
+# no budget is computed from.
 LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
-DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 SCAFFOLD_FENCE_TIMEOUT = 900
-# Merged PR → pr_poller cycle → deploy run carrying the merged head SHA.
-# The wait for a deploy Run to *appear*. It now legitimately spans the project's
-# own CI: no Run is created until the merged commit's images are observed
-# published, which is what keeps DEPLOY_TIMEOUT below meaning "deploy.yml +
-# smoke" instead of quietly absorbing somebody else's build. So it is the old
-# 420 s of merge detection and Run creation plus the producer's full image bound
-# (`image_publication.IMAGE_PUBLICATION_TIMEOUT_SECONDS`, 900 s), after which the
-# story is refused and no Run can ever appear. Derived rather than measured on
-# purpose: it is the ceiling the gate itself imposes, so it cannot be too small.
-DEPLOY_RUN_TIMEOUT = 1320
 DEPLOY_RUN_POLL_INTERVAL = 5
-# The deploy consumer writes the run result right after the app reports its
-# status, so this only covers that last write on the initial lifecycle. A
-# settings-seed follow-up goes directly from Run discovery to this wait, so its
-# derived budgets also include the full deploy lifecycle below.
-DEPLOY_OUTCOME_TIMEOUT = 120
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
-#: What the *second* story of a project waits for instead of an application
-#: status. The application is already `running` from the first story's deploy and
-#: stays terminal throughout a redeploy, so polling it would answer instantly and
-#: prove nothing; the deploy Run's typed outcome is the fact. This wait therefore
-#: has to cover the deploy itself as well as the settling `DEPLOY_OUTCOME_TIMEOUT`
-#: covers, which is exactly the sum of the two the first story spends.
-SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT = DEPLOY_TIMEOUT + DEPLOY_OUTCOME_TIMEOUT
 #: How long the manager's first `checkout_branch` of a story branch may take.
 #:
 #: `issue:028670f21dbd138ccd04` is the measurement this is chosen against: on
@@ -221,16 +216,7 @@ SETTINGS_SEED_REPAIR_POLL_INTERVAL = 10
 # A one-repair brief ceiling is therefore safer than pretending retries can be
 # matched: it cannot pay for repeated undeclared-key repairs of any identity.
 BRIEF_MAX_MANIFEST_REPAIRS = 1
-# Deploy hands off to QA on the scheduler's next poll, then QA retries the health
-# check while the service finishes coming up.
-QA_RUN_TIMEOUT = 300
 QA_RUN_POLL_INTERVAL = 5
-# Completion is emitted after QA by the supervisor, then the durable owner
-# notification is delivered to PO.  Undeploy runs over the same bounded deploy
-# consumer path as a normal deployment, but has no GitHub workflow phase.
-STORY_COMPLETION_TIMEOUT = 180
-OWNER_NOTIFICATION_TIMEOUT = 180
-UNDEPLOY_TIMEOUT = 300
 LIFECYCLE_POLL_INTERVAL = 3
 # One owned deploy's teardown: 60s of SSH per target server, plus container start.
 SERVER_CLEANUP_TIMEOUT = 180
@@ -2618,8 +2604,8 @@ async def wait_engineering(
     # With PR-based CI gate, story goes to PR_REVIEW (not DEPLOYING) after all tasks done.
     # PR_REVIEW → DEPLOYING happens later via webhook when PR is merged.
     if "story_id" in ctx and status == TaskStatus.DONE:
-        for _ in range(20):  # up to 60s
-            await asyncio.sleep(3)
+        for _ in range(STORY_AGGREGATION_TIMEOUT // STORY_AGGREGATION_POLL_INTERVAL):
+            await asyncio.sleep(STORY_AGGREGATION_POLL_INTERVAL)
             resp = await api.get(f"/api/stories/{ctx['story_id']}")
             resp.raise_for_status()
             story_status = resp.json().get("status")
@@ -3243,8 +3229,8 @@ async def wait_linear_noop_engineering(
     ctx["task_status"] = second_status
     ctx["engineering_elapsed"] = elapsed
     if second_status == TaskStatus.DONE:
-        for _ in range(20):
-            await asyncio.sleep(3)
+        for _ in range(STORY_AGGREGATION_TIMEOUT // STORY_AGGREGATION_POLL_INTERVAL):
+            await asyncio.sleep(STORY_AGGREGATION_POLL_INTERVAL)
             response = await api.get(f"/api/stories/{ctx['story_id']}")
             response.raise_for_status()
             ctx["story_status"] = response.json().get("status")
@@ -4717,7 +4703,11 @@ async def wait_service_deployment(
 
 
 async def probe_health_endpoint(
-    url: str, *, attempts: int = 5, retry_delay: float = 5, expect_marker: str | None = None
+    url: str,
+    *,
+    attempts: int = HEALTH_PROBE_ATTEMPTS,
+    retry_delay: float = HEALTH_PROBE_RETRY_DELAY_SECONDS,
+    expect_marker: str | None = None,
 ) -> dict:
     """Probe the public health endpoint while the application is still running.
 
@@ -4728,9 +4718,9 @@ async def probe_health_endpoint(
     always did.
     """
     last_error = None
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS) as client:
         for attempt in range(1, attempts + 1):
-            for path in ("/health", "/v1/health"):
+            for path in HEALTH_PROBE_PATHS:
                 try:
                     response = await client.get(f"{url}{path}")
                 except httpx.ConnectError as error:

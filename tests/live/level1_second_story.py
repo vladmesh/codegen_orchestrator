@@ -264,29 +264,49 @@ def workspace_assignments(log_text: str, *, repo_id: str) -> list[dict]:
     ]
 
 
-def workspace_reuse_mismatches(assignments: list[dict], *, repo_id: str) -> list[str]:
+def workspace_reuse_mismatches(
+    assignments: list[dict], *, repo_id: str, worker_ids: set[str]
+) -> list[str]:
     """Why this story did not run in the project's one reused workspace.
 
-    What this proves, exactly. The manager has two ways to give a worker a
+    `worker_ids` is the story's *own* developer worker — the one the manager
+    logged a `checkout_branch` for on this story's branch — and naming it is
+    what keeps this from being answerable by somebody else's assignment. Read
+    over every assignment for the repository, the first story's line alone would
+    satisfy this if the extension story's had scrolled off the log tail: an
+    assertion that a previous story can satisfy is the shape of vacuity this
+    sprint keeps finding, whatever else carries the property in practice.
+
+    What it proves, exactly. The manager has two ways to give a worker a
     workspace: the project's persistent checkout, which
     `_find_developer_workspace` refuses to invent — it raises when the
     scaffolder's directory is not already there — and an ephemeral directory,
     which only a QA executor gets and which logs a different event. So an
-    assignment of `…/<repo_id>` under this event is the scaffolded checkout the
-    project already had, and every assignment naming the same path is every
-    developer worker of this repository sharing one directory.
+    assignment of `…/<repo_id>` under this event, made to *this story's* worker,
+    is the scaffolded checkout the project already had; and every assignment for
+    this repository naming that same path is the directory being shared rather
+    than replaced.
 
     What it does not prove on its own is that the directory's *contents*
     survived, and nothing here claims that. The first checkout's duration is
     what says so: a workspace that had to be re-cloned could not be put on a
     branch in seconds.
     """
+    if not worker_ids:
+        return ["this story named no developer worker for its workspace to be judged by"]
     if not assignments:
         return [
             f"the manager assigned no developer workspace for repository {repo_id} in the log "
             "this run read"
         ]
     reasons = []
+    assigned = {str(assignment["worker_id"]): assignment["path"] for assignment in assignments}
+    reasons.extend(
+        f"worker {worker_id} ran this story but was assigned no workspace for repository "
+        f"{repo_id} in the log this run read"
+        for worker_id in sorted(worker_ids)
+        if worker_id not in assigned
+    )
     paths = sorted({assignment["path"] for assignment in assignments})
     if len(paths) > 1:
         reasons.append(
