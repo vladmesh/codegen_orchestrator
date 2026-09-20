@@ -16,6 +16,7 @@ red run would print.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from level1_second_story import (
     DEPLOY_PATH_OWNER_GRANT,
@@ -27,10 +28,12 @@ from level1_second_story import (
     deploy_path_mismatches,
     deploy_path_record,
     engineering_run_mismatches,
+    manager_log_coverage,
     product_hook_mismatches,
     workspace_assignments,
     workspace_reuse_mismatches,
 )
+import pipeline_helpers
 import pytest
 import run_evidence
 
@@ -152,8 +155,8 @@ def test_both_stories_sharing_the_scaffolded_checkout_is_the_reused_workspace():
 def test_the_first_story_s_assignment_alone_cannot_answer_for_the_second_story():
     """The narrowing: this story's own worker has to be in the log that is read.
 
-    `MANAGER_LOG_TAIL_LINES` is finite and the manager is chatty, so the
-    extension worker's assignment scrolling off is the realistic way this could
+    Any read of a log is a read of part of the world, so the extension worker's
+    assignment being absent from what was read is the realistic way this could
     have been satisfied by the first story's line — which is exactly the shape
     of vacuity the assertion exists to avoid.
     """
@@ -462,3 +465,162 @@ def test_a_run_with_no_second_story_says_so():
 
     assert section["ran"]["status"] == run_evidence.CaptureStatus.MISSED.value
     assert section["ran"]["reason"] == "this run ran no second story"
+
+
+# ── The read of the manager's log itself ─────────────────────────────────
+
+#: The manager's own rendering, copied from stand-e2e run 35475905032's
+#: `suite-services.log`. The worker-manager process never calls
+#: `shared.log_config.setup_logging`, so the container's `LOG_FORMAT=json` never
+#: reaches structlog and every line it writes looks like this.
+_CONSOLE_CHECKOUT = (
+    "worker-manager-1  | 2026-09-19 23:59:53 [info     ] checkout_branch_start"
+    "          branch={branch} correlation_id=491f2d40-423e-4169-9dc4-22e3db3a930c "
+    "request_id=7c8954f1 worker_id={worker}\n"
+    "worker-manager-1  | 2026-09-19 23:59:58 [info     ] checkout_branch_complete"
+    "       branch={branch} correlation_id=491f2d40-423e-4169-9dc4-22e3db3a930c "
+    "request_id=7c8954f1 worker_id={worker}\n"
+)
+_CONSOLE_ASSIGNMENT = (
+    "worker-manager-1  | 2026-09-19 23:59:52 [info     ] using_scaffolded_workspace"
+    "     correlation_id=491f2d40 path=/data/workspaces/{repo} repo_id={repo} "
+    "request_id=7c8954f1 worker_id={worker}\n"
+)
+#: What the manager writes between the interesting lines. Run 35475905032's
+#: manager wrote roughly two hundred lines in total; six thousand is well past
+#: the `--tail=5000` the read used to carry.
+_CHATTER = 'worker-manager-1  | INFO:     127.0.0.1:47484 - "GET /health HTTP/1.1" 200 OK\n'
+
+
+def _console_log(*, branch: str = BRANCH, worker: str = "dev-2", repo: str = REPO_ID) -> str:
+    return _CONSOLE_ASSIGNMENT.format(repo=repo, worker=worker) + _CONSOLE_CHECKOUT.format(
+        branch=branch, worker=worker
+    )
+
+
+def test_the_manager_s_console_rendered_checkout_is_read_as_a_record():
+    """Run 35475905032's own lines, read as the checkout they are.
+
+    The regression: this capture used to yield nothing at all, because the
+    reader knew only `JSONRenderer` output and the manager writes structlog's
+    default console rendering. An empty answer then looked like a manager that
+    had run no checkout.
+    """
+    log = _console_log()
+
+    attempts = checkout_records(log, branch=BRANCH)
+
+    assert [attempt["worker_id"] for attempt in attempts] == ["dev-2"]
+    assert attempts[0]["duration_seconds"] == 5.0
+    assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
+    assert workspace_assignments(log, repo_id=REPO_ID) == [
+        {"worker_id": "dev-2", "repo_id": REPO_ID, "path": f"/data/workspaces/{REPO_ID}"}
+    ]
+
+
+def test_both_renderings_are_read_out_of_one_capture():
+    """A capture holds whatever each service was configured to write."""
+    log = _console_log() + _log(
+        _checkout("checkout_branch_start", at="2026-09-19T18:50:34.000000", branch="story/other"),
+    )
+
+    assert [one["branch"] for one in checkout_records(log, branch=BRANCH)] == [BRANCH]
+    assert [one["branch"] for one in checkout_records(log, branch="story/other")] == ["story/other"]
+
+
+def test_a_capture_with_no_record_in_it_is_not_an_empty_list_of_checkouts():
+    """The two empty answers, told apart by what the capture holds."""
+    unreadable = _CHATTER * 10
+
+    assert manager_log_coverage(unreadable)["records"] == 0
+    assert manager_log_coverage(_console_log())["records"] == 3
+    assert manager_log_coverage(_console_log())["first_record_at"] == "2026-09-19T23:59:52"
+
+
+def _fake_compose_logs(monkeypatch, *, stdout: str, returncode: int = 0) -> list[list[str]]:
+    """Stand in for the one `docker compose logs` the reader runs, and record it."""
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", fake_run)
+    return calls
+
+
+def _reader_ctx() -> dict:
+    return {"story_id": BRANCH.removeprefix("story/"), "repo_id": REPO_ID}
+
+
+def test_the_reader_finds_a_checkout_that_sits_beyond_the_old_line_bound(monkeypatch):
+    """Six thousand lines of chatter before the checkout, and it is still read.
+
+    The old read asked for the last 5000 lines, so a run chatty enough to bury
+    its own checkout under that many lines reported no checkout at all. The
+    read is now bounded by the container's start instead, which is why the
+    command it runs carries no `--tail` for a chattier run to outgrow.
+    """
+    ctx = _reader_ctx()
+    calls = _fake_compose_logs(monkeypatch, stdout=_CHATTER * 6000 + _console_log())
+
+    pipeline_helpers.record_first_checkout(ctx)
+
+    assert ctx["first_checkout_error"] is None
+    assert {attempt["worker_id"] for attempt in ctx["first_checkout"]} == {"dev-2"}
+    assert ctx["workspace_assignments"] == [
+        {"worker_id": "dev-2", "repo_id": REPO_ID, "path": f"/data/workspaces/{REPO_ID}"}
+    ]
+    assert calls == [["docker", "compose", "logs", "--no-color", "worker-manager"]]
+    assert not [argument for argument in calls[0] if argument.startswith("--tail")]
+
+
+def test_a_manager_that_logged_no_checkout_is_reported_as_absent(monkeypatch):
+    """Absent, not unreadable — and the run still fails on it."""
+    ctx = _reader_ctx()
+    _fake_compose_logs(monkeypatch, stdout=_console_log(branch="story/somebody-else"))
+
+    pipeline_helpers.record_first_checkout(ctx)
+
+    assert ctx["first_checkout_error"] is None
+    assert ctx["first_checkout"] == []
+    assert ctx["manager_log_read"]["records"] == 3
+    section = run_evidence.second_story({"level1_extension": ctx})
+    assert section["first_checkout"]["status"] == run_evidence.CaptureStatus.CAPTURED.value
+    assert section["first_checkout"]["value"] == []
+    assert section["manager_log_read"]["status"] == run_evidence.CaptureStatus.CAPTURED.value
+    assert section["manager_log_read"]["value"]["bound"] == pipeline_helpers.MANAGER_LOG_BOUND
+    # Fail-closed: an absent checkout is still a red run that names why.
+    assert checkout_mismatches(ctx["first_checkout"], branch=BRANCH, bound_seconds=BOUND) == [
+        f"the manager ran no checkout_branch for {BRANCH} in the log this run read"
+    ]
+
+
+def test_a_log_that_yields_no_record_is_reported_as_unreadable(monkeypatch):
+    """Nothing parsed out of the capture says nothing about the manager."""
+    ctx = _reader_ctx()
+    _fake_compose_logs(monkeypatch, stdout=_CHATTER * 10)
+
+    pipeline_helpers.record_first_checkout(ctx)
+
+    assert "first_checkout" not in ctx
+    assert "cannot be told" in ctx["first_checkout_error"]
+    assert ctx["manager_log_read"]["records"] == 0
+    section = run_evidence.second_story({"level1_extension": ctx})
+    assert section["first_checkout"]["status"] == run_evidence.CaptureStatus.MISSED.value
+    assert section["first_checkout"]["reason"] == ctx["first_checkout_error"]
+
+
+def test_a_read_that_failed_is_reported_as_unreadable(monkeypatch):
+    """The other unreadable: compose itself did not answer."""
+    ctx = _reader_ctx()
+    _fake_compose_logs(monkeypatch, stdout="", returncode=1)
+
+    pipeline_helpers.record_first_checkout(ctx)
+
+    assert "first_checkout" not in ctx
+    assert ctx["first_checkout_error"] == "docker compose logs worker-manager exited 1"
+    section = run_evidence.second_story({"level1_extension": ctx})
+    assert section["first_checkout"]["status"] == run_evidence.CaptureStatus.MISSED.value
+    assert section["manager_log_read"]["status"] == run_evidence.CaptureStatus.MISSED.value
+    assert section["manager_log_read"]["reason"] == ctx["first_checkout_error"]

@@ -1256,7 +1256,10 @@ class TestFullPipeline:
         # manager checked this story's branch out on. Over every assignment for
         # the repository, the first story's line alone would answer.
         own_workers = {attempt["worker_id"] for attempt in extension["first_checkout"]}
-        assert own_workers, "no worker ran a checkout of the extension story's branch"
+        assert own_workers, (
+            "no worker ran a checkout of the extension story's branch; the manager's log was "
+            f"read as {extension.get('manager_log_read')}"
+        )
         assert (
             workspace_reuse_mismatches(
                 extension["workspace_assignments"],
