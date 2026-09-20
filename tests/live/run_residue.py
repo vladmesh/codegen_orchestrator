@@ -77,10 +77,11 @@ from shared.live_harness_cleanup import (
     RESIDUE_FINDINGS_KEY,
     RUN_RESIDUE_MARKER,
 )
-from shared.live_harness_workspaces import PLAN_DIRECTORY, WORKSPACE_RESIDUE_MARKER
+from shared.live_harness_workspaces import WORKSPACE_RESIDUE_MARKER
 from shared.queues import STORY_WORKERS_KEY
 from shared.worker_compose import (
     COMPOSE_ONEOFF_NAME_INFIX,
+    COMPOSE_PLAN_DIRECTORY,
     worker_compose_project,
 )
 
@@ -165,7 +166,7 @@ class RunInventory:
         """
         entries = [self.repo_id] if self.repo_id else []
         entries += [f"qa-{worker_id}" for worker_id in self.worker_ids]
-        entries += [f"{PLAN_DIRECTORY}/{worker_id}" for worker_id in self.worker_ids]
+        entries += [f"{COMPOSE_PLAN_DIRECTORY}/{worker_id}" for worker_id in self.worker_ids]
         return entries
 
     def redis_patterns(self) -> list[str]:
@@ -201,17 +202,6 @@ def unexpected_keys(keys: Iterable[str], run_id: str) -> list[str]:
     """Every key a scan returned that this run was not supposed to keep."""
     expected = retained_keys(run_id)
     return sorted({key.strip() for key in keys if key.strip()} - expected)
-
-
-def one_off_containers(names: Iterable[str]) -> list[str]:
-    """The one-shot compose containers among these names, said in their own terms.
-
-    Named apart from the rest because they are the kind the Definition of Done
-    calls out by shape — `*-integration-tests-run-*` — and because a reader of a
-    red run needs to know at once whether they are looking at the known defect
-    or at something new.
-    """
-    return [name for name in names if COMPOSE_ONEOFF_NAME_INFIX in name]
 
 
 @dataclass(frozen=True)
@@ -278,6 +268,11 @@ def _control_host_containers(ops: ResidueOps, inventory: RunInventory) -> list[s
     creates inside the worker's bounded plan, and those containers are the ones
     that survived teardown on production, so they are asked for by the label
     Compose does stamp: the worker's own project name.
+
+    A one-shot container is said to be one, because that shape —
+    `*-integration-tests-run-*` — is the kind the Definition of Done calls out by
+    name, and a reader of a red run needs to know at once whether they are
+    looking at `issue:868e40fc0377b0dabb77` or at something new.
     """
     findings = [f"labelled {name}" for name in ops.run_labelled_containers(inventory.run_id)]
     for worker_id in inventory.worker_ids:

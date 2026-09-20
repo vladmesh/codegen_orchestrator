@@ -38,15 +38,13 @@ import os
 from pathlib import Path
 import shutil
 
+from shared.worker_compose import COMPOSE_PLAN_DIRECTORY
+
 #: What the live suite parses this module's answer out of.
 WORKSPACE_RESIDUE_MARKER = "WORKSPACE_RESIDUE:"
 #: A plan directory is `.compose-plans/<worker id>`: the one nested shape, and
 #: therefore the one entry with two path parts.
 _PLAN_ENTRY_PARTS = 2
-#: The directory worker-manager keeps one compiled compose plan per worker in.
-#: It is a child of the workspace root and holds the manager-owned resolved
-#: project, so a run's plan directories are as much its residue as its checkout.
-PLAN_DIRECTORY = ".compose-plans"
 
 
 def workspace_root() -> Path:
@@ -69,12 +67,14 @@ def resolve_entry(root: Path, entry: str) -> Path:
     if candidate.is_absolute():
         raise ValueError(f"workspace entry {entry!r} must be relative to {root}")
     parts = candidate.parts
-    permitted = len(parts) == 1 or (len(parts) == _PLAN_ENTRY_PARTS and parts[0] == PLAN_DIRECTORY)
+    permitted = len(parts) == 1 or (
+        len(parts) == _PLAN_ENTRY_PARTS and parts[0] == COMPOSE_PLAN_DIRECTORY
+    )
     resolved = (root / candidate).resolve()
     if not permitted or not resolved.is_relative_to(root) or resolved == root:
         raise ValueError(
             f"workspace entry {entry!r} must name a direct child of {root} "
-            f"or one {PLAN_DIRECTORY}/<worker id> directory"
+            f"or one {COMPOSE_PLAN_DIRECTORY}/<worker id> directory"
         )
     return resolved
 

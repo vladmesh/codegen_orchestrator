@@ -27,6 +27,11 @@ COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff"
 #: The infix Compose puts in a one-shot container's name.
 COMPOSE_ONEOFF_NAME_INFIX = "-run-"
+#: The workspace-root child worker-manager compiles one plan per worker into.
+#: Part of the same ownership as the project name above — the plan is the
+#: manager-owned source the project runs from — so it is spelled here once:
+#: `compose_runner` writes it and the live suite asks for it as residue.
+COMPOSE_PLAN_DIRECTORY = ".compose-plans"
 
 
 def worker_compose_project(worker_id: str) -> str:

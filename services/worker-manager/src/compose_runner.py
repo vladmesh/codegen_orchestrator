@@ -8,7 +8,7 @@ import subprocess
 import structlog
 import yaml
 
-from shared.worker_compose import worker_compose_project
+from shared.worker_compose import COMPOSE_PLAN_DIRECTORY, worker_compose_project
 
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
@@ -28,7 +28,6 @@ _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 # Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
-_PLAN_DIRECTORY = ".compose-plans"
 _DEFAULT_CPU_LIMIT = "1.0"
 _DEFAULT_MEMORY_LIMIT = "512MiB"
 _DOCKER_EXECUTABLE = Path(shutil.which("docker") or "/usr/bin/docker")
@@ -166,7 +165,7 @@ class ComposeRunner:
         self.workspace_base_path = Path(workspace_base_path)
 
     def _plan_directory(self, worker_id: str) -> Path:
-        path = self.workspace_base_path / _PLAN_DIRECTORY / worker_id
+        path = self.workspace_base_path / COMPOSE_PLAN_DIRECTORY / worker_id
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         path.chmod(0o700)
         return path

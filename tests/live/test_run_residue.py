@@ -23,7 +23,6 @@ from run_residue import (
     ResidueOps,
     RunInventory,
     database_check_from,
-    one_off_containers,
     prove_run_residue,
     residue_questions,
     unexpected_keys,
@@ -31,9 +30,8 @@ from run_residue import (
 )
 
 from shared.live_harness_cleanup import RESIDUE_ERROR_KEY, RESIDUE_FINDINGS_KEY
-from shared.live_harness_workspaces import PLAN_DIRECTORY
 from shared.queues import STORY_WORKERS_KEY
-from shared.worker_compose import worker_compose_project
+from shared.worker_compose import COMPOSE_PLAN_DIRECTORY, worker_compose_project
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -277,7 +275,7 @@ class TestWhatTheProofAsksAbout:
         assert INVENTORY.workspace_entries() == [
             "repo-9",
             f"qa-{WORKER}",
-            f"{PLAN_DIRECTORY}/{WORKER}",
+            f"{COMPOSE_PLAN_DIRECTORY}/{WORKER}",
         ]
 
     def test_the_redis_patterns_name_the_run_project_repository_stories_and_workers(self):
@@ -321,9 +319,6 @@ class TestWhatTheProofAsksAbout:
         question = check_for(prove(clean_ops()), "po_checkpoint_thread").question
         assert "po-chat-999000001" in question
         assert RUN not in question
-
-    def test_one_off_containers_are_told_apart_by_the_name_compose_gives_them(self):
-        assert one_off_containers([ONE_OFF, "worker-dev-1", "stack-backend-1"]) == [ONE_OFF]
 
 
 class TestAGreenProofSaysWhichKindsAskedAboutNothing:

@@ -17,7 +17,6 @@ import pytest
 
 from shared.live_harness_cleanup import build_remote_run_residue_command
 from shared.live_harness_workspaces import (
-    PLAN_DIRECTORY,
     WORKSPACE_RESIDUE_MARKER,
     main,
     present,
@@ -27,6 +26,7 @@ from shared.live_harness_workspaces import (
 )
 from shared.worker_compose import (
     COMPOSE_ONEOFF_NAME_INFIX,
+    COMPOSE_PLAN_DIRECTORY,
     COMPOSE_PROJECT_LABEL,
     worker_compose_project,
     worker_compose_project_filter,
@@ -125,19 +125,20 @@ class TestTheWorkspaceRemover:
     def test_it_removes_a_checkout_a_scratch_and_a_plan_and_reads_absence_back(
         self, tmp_path, monkeypatch
     ):
-        for entry in ("repo-9", f"qa-{WORKER}", f"{PLAN_DIRECTORY}/{WORKER}"):
+        for entry in ("repo-9", f"qa-{WORKER}", f"{COMPOSE_PLAN_DIRECTORY}/{WORKER}"):
             (tmp_path / entry).mkdir(parents=True)
         (tmp_path / "repo-9" / "file.txt").write_text("x")
         (tmp_path / "repo-other").mkdir()
         monkeypatch.setenv("SCAFFOLDED_WORKSPACE_PATH", str(tmp_path))
 
-        entries = ["repo-9", f"qa-{WORKER}", f"{PLAN_DIRECTORY}/{WORKER}"]
+        entries = ["repo-9", f"qa-{WORKER}", f"{COMPOSE_PLAN_DIRECTORY}/{WORKER}"]
         assert present(workspace_root(), entries) == entries
         assert remove(workspace_root(), entries) == []
         assert (tmp_path / "repo-other").exists()
 
     @pytest.mark.parametrize(
-        "entry", ["..", "../elsewhere", "/etc", "repo-9/../..", f"deep/{PLAN_DIRECTORY}/x", ""]
+        "entry",
+        ["..", "../elsewhere", "/etc", "repo-9/../..", f"deep/{COMPOSE_PLAN_DIRECTORY}/x", ""],
     )
     def test_it_refuses_anything_that_is_not_inside_its_root(self, entry, tmp_path):
         with pytest.raises(ValueError, match="workspace entry"):
