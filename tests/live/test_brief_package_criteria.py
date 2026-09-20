@@ -101,11 +101,35 @@ def test_the_variant_uses_the_package_owned_setting_seed_contract():
 def test_the_two_variants_expect_different_behaviour_shapes():
     """Neither variant's expectation is asserted for the other."""
     behaviour = _behaviour()
-    package_error = BRIEF_PACKAGE_SCENARIO.behaviour_error(behaviour)
+    package_error = BRIEF_PACKAGE_SCENARIO.criterion_error(behaviour)
 
     assert package_error is None
     assert BRIEF_PACKAGE_JOB_NAME != BRIEF_JOB_NAME
     assert behaviour.arguments != {}
     # The digest variant's expectation, applied to this behaviour, refuses it —
     # which is why it is stated per variant and not once for both.
-    assert BRIEF_DIGEST_SCENARIO.behaviour_error(behaviour) is not None
+    assert BRIEF_DIGEST_SCENARIO.criterion_error(behaviour) is not None
+
+
+def test_each_variant_hands_the_run_evidence_the_expectation_it_was_judged_on():
+    """One expectation, applied twice: by the fixture, then by the artifact.
+
+    The evidence document used to spell the digest variant's job name and
+    arguments itself, which is why a green `mega-brief-package` run was called
+    red (`issue:62bc9840e23a44c2098b`). It now reads what the scenario declared,
+    and this is that declaration being the same terms the fixture refuses on.
+    """
+    assert BRIEF_DIGEST_SCENARIO.expected_criterion == {
+        "name": BRIEF_JOB_NAME,
+        "required_arguments": [],
+        "allows_other_arguments": False,
+    }
+    assert BRIEF_PACKAGE_SCENARIO.expected_criterion == {
+        "name": BRIEF_PACKAGE_JOB_NAME,
+        "required_arguments": [BRIEF_PACKAGE_JOB_ARGUMENT],
+        "allows_other_arguments": True,
+    }
+    # Only the variant that asks something of its deployment owes the package
+    # route it read off it.
+    assert "package_route" in BRIEF_PACKAGE_SCENARIO.evidence_obligations
+    assert "package_route" not in BRIEF_DIGEST_SCENARIO.evidence_obligations

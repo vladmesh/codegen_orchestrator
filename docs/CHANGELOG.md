@@ -5,6 +5,13 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- Run evidence judges the Product Brief facts the run's own scenario declares it owes, so a green
+  `mega-brief-package` run is green and carries its deployment's package route (`issue:62bc9840e23a44c2098b`).
+- The level-1 evidence reports the Product Brief it confirmed instead of "this is not a Product Brief scenario".
+- A `pytest.skip` outside the paid class of the level-1 module, and a stand budget stated in the docs or the
+  runner that disagrees with `shared/stand_deadlines.py`, now fail an offline check; `mega-brief`'s stale
+  281-minute cap and the runner's 297-minute job-cap comment were the drift they found.
+- `docs/TESTING.md` says what level 1 proves and what it cannot catch, with the suite's own test count and cap.
 - The level-1 run proves after cleanup that no container, image repository, workspace, Redis key, GitHub
   repository or PO conversation row of it is left, and names a kind it could not check instead of passing it.
 - The run takes back the PO checkpoint rows it added to the shared fixture thread, scoped by a snapshot taken

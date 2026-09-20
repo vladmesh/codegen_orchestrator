@@ -60,7 +60,12 @@ from pipeline_helpers import (
     wait_story_completed,
     wait_undeploy_run,
 )
-from run_evidence import RunEvidenceCollector, emit_run_evidence
+from run_evidence import (
+    BRIEF_EXPECTED_CRITERION_CTX_KEY,
+    BRIEF_OBLIGATIONS_CTX_KEY,
+    RunEvidenceCollector,
+    emit_run_evidence,
+)
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.application import ApplicationStatus
@@ -169,8 +174,13 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
             "modules": ["backend"],
             "qa_agent_type_requested": os.environ.get("LIVE_QA_AGENT_TYPE"),
             "qa_requires_executor": True,
-            "brief_scenario": True,
             "brief_variant": scenario.name,
+            # What this variant's run owes its evidence document, and what it
+            # asked the architect for — declared here, before the run can fail,
+            # so the artifact judges the run against its own contract instead
+            # of one variant's job name.
+            BRIEF_OBLIGATIONS_CTX_KEY: list(scenario.evidence_obligations),
+            BRIEF_EXPECTED_CRITERION_CTX_KEY: scenario.expected_criterion,
         }
         begin_brief_productive_window(ctx, productive_seconds=scenario.productive_seconds)
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
@@ -243,7 +253,7 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                     )
                     yield ctx
                     return
-                behaviour_error = scenario.behaviour_error(behaviours[0])
+                behaviour_error = scenario.criterion_error(behaviours[0])
                 if behaviour_error is not None:
                     ctx["brief_acceptance_error"] = behaviour_error
                     yield ctx

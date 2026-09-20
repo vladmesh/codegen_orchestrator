@@ -1,3 +1,4 @@
+import ast
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -6100,3 +6101,49 @@ def test_an_unreadable_scaffolder_log_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(pipeline_helpers.subprocess, "run", explode)
 
     assert pipeline_helpers.last_scaffolder_event("project-1") == "unreadable (OSError)"
+
+
+# ── The level-1 suite may not skip ──────────────────────────────────────
+#
+# The free deterministic lifecycle is allowed to fail and not allowed to be
+# absent. A `pytest.skip` inside it hides a phase that did not happen — a failed
+# deploy would take the QA assertions with it and the suite would report green
+# — which is why every exit of the level-1 phases raises naming its own phase
+# instead (`_level1_brief_plan_and_engineering`, `_extension`). The paid
+# `TestFullPipelineLLM` class is the one place a skip is legitimate: its
+# assertions are about an agent's output and a cell that never got one has
+# nothing to judge.
+LEVEL1_SUITE_MODULE = Path(__file__).with_name("test_full_pipeline.py")
+SKIPPABLE_SUITE_CLASS = "TestFullPipelineLLM"
+
+
+def _skip_call_lines(tree: ast.AST) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "skip"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pytest"
+    ]
+
+
+def test_only_the_paid_class_of_the_level1_module_may_skip():
+    """No `pytest.skip` outside the paid class, so none can hide a failed phase."""
+    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
+    paid = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == SKIPPABLE_SUITE_CLASS
+    ]
+    assert len(paid) == 1, f"{SKIPPABLE_SUITE_CLASS} is not a class of {LEVEL1_SUITE_MODULE.name}"
+    paid_skips = set(_skip_call_lines(paid[0]))
+
+    offending = sorted(set(_skip_call_lines(tree)) - paid_skips)
+
+    assert not offending, (
+        f"{LEVEL1_SUITE_MODULE.name} calls pytest.skip outside {SKIPPABLE_SUITE_CLASS} at "
+        f"line(s) {offending}: a skipped level-1 assertion reports a phase that never ran as "
+        "one that was fine. Raise naming the phase instead."
+    )

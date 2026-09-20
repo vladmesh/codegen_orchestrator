@@ -157,8 +157,12 @@ MATRIX_RUNNER_TIMEOUT_SECONDS = (
 # reserve outside the mega-brief runner so GitHub never kills pytest's finally.
 STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
 STAND_JOB_RESERVE_SECONDS = 480
-# 360 minutes covers 45m provisioning + 10m workflow reserve + 297m maximum
-# Product Brief runner + an 8m job reserve. The matrix path is smaller.
+# 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
+# runner path + an 8m job reserve. The longest path is the matrix (274m); the
+# Product Brief runners are 76m and 96m, and `mega-noop` is 171m. Every one of
+# those is checked against this cap in `scripts/tests/test_stand_run.py`, and
+# `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
+# in this comment are the constants below.
 # Lifecycle cleanup has its own bounded workflow job because jobs cannot share
 # one timeout.
 STAND_JOB_TIMEOUT_MINUTES = 360

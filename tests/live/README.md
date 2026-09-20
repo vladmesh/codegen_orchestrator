@@ -50,8 +50,8 @@ JUnit metadata, logs, and run directories always record the canonical name.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
-| `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 281 min | derived worst case: initial lifecycle, two repairs plus one retry, post-deploy checks, 10m evidence/cleanup margin |
-| `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 281 min | derived worst case as `mega-brief`, with the kit install inside the engineering budget |
+| `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
+| `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
 | `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
 The local target names reflect that same contract:
@@ -141,10 +141,11 @@ path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, t
 this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes. The LLM pipeline
 remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because its project is backend-only — one
 module, so one module's scaffold bound — and it does not yet run the new lifecycle
-acceptance. `mega-brief` has a 281-minute cap: 93m pre-follow-up lifecycle, up to 153m under the
-harness settings-seed ceiling (two manifest repairs plus one convergent retry), 25m post-follow-up
-lifecycle, and a 10m evidence/cleanup margin inside pytest. `mega-brief-package` runs the same
-lifecycle under a longer productive window — 65 minutes, then a 15-minute cleanup grace — because
+acceptance. `mega-brief` stops its productive work at 50 minutes on the fixture's own clock and
+then gets a 10-minute cleanup grace before the runner kills the process group — the two are
+`MEGA_BRIEF_PRODUCTIVE_SECONDS` and `MEGA_BRIEF_HARD_STOP_SECONDS`, and the grace is their
+difference, not a third number. `mega-brief-package` runs the same lifecycle under a longer
+productive window — 65 minutes, then a 15-minute cleanup grace — because
 its engineering turn obtains the kit, builds the package wheel, installs it with `kit add` and
 regenerates the product contract before any of its own work starts. A recreate's readiness wait and the QA executor switch that follows it are separately
 limited to three minutes each; runner preflight and final sweep are each five minutes.
@@ -156,7 +157,7 @@ control-plane bootstrap measured about seven minutes. It now uses a stand-only m
 whose expected 2–3 minute duration is pending live confirmation; that expectation does not change
 the overall provisioning budget. The matrix runner is bounded at 274 minutes (`5m preflight + 4 ×
 (60m cell + 3m readiness + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict
-41-minute reserve over provisioning plus that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
+31-minute reserve over provisioning, the 10-minute pre-provisioning reserve and that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
 jobs do not share an outer timeout.
 
 ### Invariant map and first-iteration baseline
@@ -325,6 +326,23 @@ limit. `tests/live/test_run_evidence.py` covers the whole schema offline;
 `tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.
+
+**The Product Brief block is what the run's own scenario owes.** `brief.obligations` names the
+facts this run is judged on, and only those can make the verdict red. A paid confirmed-brief
+variant owes the whole durable chain — confirmation, coverage, admission, the Architect criterion,
+the settings readback and the deploy seed, and the job central QA fired; `mega-brief-package` owes
+its deployment's `package_route` on top of it, because reading the active-package contract and the
+generated job registry off the deployment is what entitles the run to claim the package path was
+taken. The free level-1 lifecycle confirms a Product Brief through the released PO tools on every
+run, so it owes that confirmation and is red without it; it publishes no Architect criterion and
+its deterministic QA fires no product job, so it owes neither and the document says so instead of
+the flat "this is not a Product Brief scenario" it used to answer to all seven fields.
+
+The Architect criterion is judged against the expectation the *scenario declared*
+(`BriefScenario.expected_criterion`) — the same terms its fixture refuses the run on — rather than
+against one variant's job name. Stand run 34243255594 is why: `mega-brief-package` passed every
+test, deployed, fired `reminders.tick` and was called red by an artifact that demanded
+`multilingual_digest` (`issue:62bc9840e23a44c2098b`).
 
 ## Naming the failure
 

@@ -1150,7 +1150,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 19
+    assert EVIDENCE_SCHEMA_VERSION == 20
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1865,7 +1865,13 @@ def _brief_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
         deploy_outcome=DeployOutcome.SUCCESS.value,
         final_app_status=ApplicationStatus.RUNNING.value,
         qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
-        brief_scenario=True,
+        brief_variant="mega-brief",
+        brief_obligations=list(run_evidence.PAID_BRIEF_OBLIGATIONS),
+        brief_expected_criterion={
+            "name": "multilingual_digest",
+            "required_arguments": [],
+            "allows_other_arguments": False,
+        },
         brief_id="brief-1",
         brief_read={
             "id": "brief-1",
@@ -2138,6 +2144,245 @@ def test_brief_scenario_job_evidence_must_match_the_architect_criterion(
         and "job_evidence" in reason["detail"]
         for reason in artifact["verdict"]["reasons"]
     )
+
+
+def _package_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A completed green `mega-brief-package` run, as its fixture leaves the context.
+
+    The same durable chain as the digest variant, on the variant's own contract:
+    the criterion is `reminders.tick` with the `at` argument the package's
+    `jobs_schema` declares, and the deployment's own generated artifacts say the
+    capability is the kit package.
+    """
+    ctx = _brief_scenario_ctx(
+        collector,
+        brief_variant="mega-brief-package",
+        brief_obligations=[*run_evidence.PAID_BRIEF_OBLIGATIONS, "package_route"],
+        brief_expected_criterion={
+            "name": "reminders.tick",
+            "required_arguments": ["at"],
+            "allows_other_arguments": True,
+        },
+        brief_acceptance={
+            "criterion": {
+                "name": "reminders.tick",
+                "arguments": {"at": "2999-01-01T00:00:00Z"},
+                "observable": (
+                    "GET /reminders?user_ref=owner-e2e shows that reference's reminder in "
+                    "state emitted"
+                ),
+            }
+        },
+        brief_job_evidence={
+            "command_id": "qa-qa-1-reminders.tick",
+            "name": "reminders.tick",
+            "arguments": {"at": "2999-01-01T00:00:00Z"},
+            "fired_by_product": PROJECT_ID,
+            "fired_by_run": "qa-1",
+            "dispatch_status": "dispatched",
+            "accepted_at": "2026-09-08T10:02:00+00:00",
+            "dispatched_at": "2026-09-08T10:02:01+00:00",
+        },
+        brief_package_route={
+            "package": "reminders",
+            "version": "0.2.0",
+            "manifest_sha256": "a" * 64,
+            "behaviour": "reminders.tick",
+            "declared_by": "package:reminders",
+            "read_from": [
+                "services/backend/src/generated/active_packages.py",
+                "services/backend/src/generated/job_registry.py",
+            ],
+        },
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_a_green_package_brief_run_is_green_and_carries_its_package_route(tmp_path):
+    """The defect `issue:62bc9840e23a44c2098b` was opened for, offline.
+
+    Stand run 34243255594 passed every test of this suite and was called red,
+    because the acceptance capture demanded the *digest* variant's job name and
+    the package facts the suite asserts never reached the document.
+    """
+    collector = collector_for(FakeDocker())
+    collector.capture()
+
+    artifact = build_artifact(_package_scenario_ctx(collector), root=tmp_path)
+
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.GREEN.value
+    assert artifact["verdict"]["reasons"] == []
+    brief = artifact["brief"]
+    assert brief["variant"] == "mega-brief-package"
+    assert brief["acceptance"]["value"]["name"] == "reminders.tick"
+    assert brief["package_route"] == {
+        "status": "captured",
+        "value": {
+            "package": "reminders",
+            "version": "0.2.0",
+            "manifest_sha256": "a" * 64,
+            "behaviour": "reminders.tick",
+            "declared_by": "package:reminders",
+            "read_from": [
+                "services/backend/src/generated/active_packages.py",
+                "services/backend/src/generated/job_registry.py",
+            ],
+        },
+        "reason": None,
+    }
+
+
+def test_a_package_run_that_could_not_read_its_deployment_is_red_with_that_reason(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    del ctx["brief_package_route"]
+    ctx["brief_deployment_error"] = (
+        "the deployed product's kit package contract could not be read: the probe of the "
+        "deployment exited 1. The product did not take the package route, so this suite "
+        "proves nothing about it."
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["package_route"]["reason"] == ctx["brief_deployment_error"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in artifact["verdict"]["reasons"]] == [
+        run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+    ]
+    assert "package_route" in artifact["verdict"]["reasons"][0]["detail"]
+
+
+def test_a_package_route_declaring_another_behaviour_than_the_criterion_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    ctx["brief_package_route"] = {**ctx["brief_package_route"], "behaviour": "reminders.sweep"}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["package_route"]["status"] == CaptureStatus.MISSED.value
+    assert "reminders.sweep" in artifact["brief"]["package_route"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def test_the_digest_variant_still_refuses_a_criterion_carrying_arguments(tmp_path):
+    """The variant-aware expectation is the fixture's, not a looser one."""
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    ctx["brief_acceptance"]["criterion"]["arguments"] = {"at": "2999-01-01T00:00:00Z"}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["acceptance"]["status"] == CaptureStatus.MISSED.value
+    assert "arguments {}" in artifact["brief"]["acceptance"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def test_a_package_criterion_missing_its_required_argument_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    ctx["brief_acceptance"]["criterion"]["arguments"] = {}
+    ctx["brief_job_evidence"]["arguments"] = {}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["acceptance"]["status"] == CaptureStatus.MISSED.value
+    assert "'at'" in artifact["brief"]["acceptance"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def _level1_brief_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A completed level-1 run: a brief confirmed with no model, deterministic QA."""
+    ctx = base_ctx(
+        collector,
+        agent_type="noop",
+        qa_requires_executor=False,
+        qa_agent_type_requested=None,
+        qa_agent_type=None,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        brief_variant="mega-noop",
+        brief_obligations=list(run_evidence.LEVEL1_BRIEF_OBLIGATIONS),
+        brief_id="brief-1",
+        brief_read={
+            "id": "brief-1",
+            "confirmed_at": "2026-09-20T10:00:00+00:00",
+            "content": {
+                "language": "ru",
+                "must_requirements": [{"id": "level1_command", "text": "Бот отвечает"}],
+            },
+        },
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_the_level1_run_reports_the_brief_it_confirmed_and_stays_green(tmp_path):
+    """Level 1 confirms a Product Brief on every run, so the document says so.
+
+    It used to answer "this is not a Product Brief scenario" to all seven
+    fields, which was the opposite of what the run did.
+    """
+    collector = collector_for(FakeDocker())
+    collector.capture()
+
+    artifact = build_artifact(_level1_brief_ctx(collector), root=tmp_path)
+
+    brief = artifact["brief"]
+    assert brief["required"] is True
+    assert brief["variant"] == "mega-noop"
+    assert brief["obligations"] == ["confirmed"]
+    assert brief["confirmed"]["value"]["id"] == "brief-1"
+    assert brief["confirmed"]["value"]["confirmed_at"] == "2026-09-20T10:00:00+00:00"
+    for fact in ("acceptance", "job_evidence", "package_route"):
+        assert brief[fact]["status"] == CaptureStatus.MISSED.value
+        assert "is not a Product Brief scenario" not in brief[fact]["reason"]
+        assert "mega-noop" in brief[fact]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.GREEN.value
+
+
+def test_a_level1_run_without_its_confirmed_brief_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _level1_brief_ctx(collector)
+    del ctx["brief_read"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in artifact["verdict"]["reasons"]] == [
+        run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+    ]
+
+
+def test_a_run_whose_scenario_confirms_no_brief_owes_nothing_and_says_so(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = base_ctx(collector, task_status=TaskStatus.DONE)
+
+    brief = build_artifact(ctx, root=tmp_path)["brief"]
+
+    assert brief["required"] is False
+    assert brief["obligations"] == []
+    assert all(
+        "confirms no Product Brief" in brief[fact]["reason"] for fact in run_evidence.BRIEF_FACTS
+    )
+
+
+def test_an_unknown_brief_obligation_is_refused_rather_than_ignored(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _level1_brief_ctx(collector, brief_obligations=["confirmed", "telepathy"])
+
+    with pytest.raises(ValueError, match="telepathy"):
+        build_artifact(ctx, root=tmp_path)
 
 
 def test_the_artifact_names_the_debug_dumps_this_run_wrote(codex_docker, tmp_path):
