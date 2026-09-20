@@ -46,7 +46,7 @@ logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
-_MERGE_PENDING_STATES = {"unknown", "unstable", "behind", "blocked"}
+_MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
 
 
 def _parse_github_timestamp(value: object) -> datetime | None:
@@ -548,10 +548,11 @@ async def _park_story_for_merge_refusal(
     mergeable_state: object,
     detail: str,
     log: structlog.stdlib.BoundLogger,
+    reason_code: str = "github_app_merge_refused",
 ) -> None:
     """Persist and announce GitHub's refusal before leaving ``pr_review``."""
     reason = {
-        "reason": "github_app_merge_refused",
+        "reason": reason_code,
         "pr_number": pr_number,
         "mergeable_state": mergeable_state,
         "detail": detail,
@@ -603,11 +604,43 @@ async def _merge_open_pr_without_auto_merge(
     recorded with owner and administrator notices instead of being retried as a
     warning forever.
     """
+    pr_number = pull_request["number"]
+    if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=pull_request.get("mergeable_state"),
+            detail="GitHub closed the pull request without merging it",
+            reason_code="github_pull_request_closed_unmerged",
+            log=log,
+        )
+        return None
     if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
         return pull_request
 
-    pr_number = pull_request["number"]
     mergeable_state = pull_request.get("mergeable_state")
+    if mergeable_state == "behind":
+        try:
+            await github.update_pull_request_branch(owner, repo_name, pr_number)
+        except Exception as exc:
+            detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+            await _park_story_for_merge_refusal(
+                api_client,
+                redis_client,
+                story_id=story_id,
+                project_id=project_id,
+                pr_number=pr_number,
+                mergeable_state=mergeable_state,
+                detail=detail,
+                reason_code="github_app_update_branch_refused",
+                log=log,
+            )
+            return None
+        log.info("poll_merged_app_branch_update_requested", pr_number=pr_number)
+        return pull_request
     if mergeable_state in _MERGE_PENDING_STATES:
         log.info(
             "poll_merged_app_merge_waiting_for_checks",

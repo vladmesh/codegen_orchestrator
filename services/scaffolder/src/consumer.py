@@ -296,6 +296,9 @@ async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) ->
         repository = await github.get_repo(org, msg.project_name)
         if getattr(repository, "allow_auto_merge", None) is not True:
             raise RuntimeError("GitHub read-back reported allow_auto_merge=false")
+        if "repo_auto_merge_verification" in project_config:
+            project_config.pop("repo_auto_merge_verification")
+            await api.update_project_config(msg.project_id, project_config)
         log.info("repo_auto_merge_verified")
     except Exception as exc:
         error = redact_diagnostic(exc)

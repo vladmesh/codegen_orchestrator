@@ -319,6 +319,28 @@ class TestProcessScaffoldJob:
         notify.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_repo_auto_merge_success_clears_a_prior_failure_mark(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_api.get_project.return_value = _make_project(
+            config={"repo_auto_merge_verification": {"status": "failed", "error": "old"}}
+        )
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            assert (await process_scaffold_job(valid_job_data, mock_redis))["status"] == "success"
+
+        assert (
+            "repo_auto_merge_verification" not in mock_api.update_project_config.await_args.args[1]
+        )
+
+    @pytest.mark.asyncio
     async def test_branch_protection_not_called_on_failure(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):

@@ -624,6 +624,22 @@ async def test_merge_pull_request_success(authed_client):
 
 
 @pytest.mark.asyncio
+async def test_update_pull_request_branch_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/pulls/42/update-branch").mock(
+                return_value=httpx.Response(202, json={"message": "Updating pull request branch."})
+            )
+
+            result = await authed_client.update_pull_request_branch(owner, repo, 42)
+
+            assert result["message"] == "Updating pull request branch."
+            assert route.called
+
+
+@pytest.mark.asyncio
 async def test_close_pull_request_success(authed_client):
     owner, repo = "my-org", "my-repo"
 
