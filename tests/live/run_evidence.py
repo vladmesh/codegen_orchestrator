@@ -300,8 +300,56 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      merge commit, and every engineering Run of the story. Each is a capture,
 #      so an unread one says why. `developer_instructions` covers both stories'
 #      attempts, because an attempt is the run's and not one story's.
-EVIDENCE_SCHEMA_VERSION = 19
+# v20: the Product Brief section is what the run's own scenario *owes*, named
+#      fact by fact in `brief.obligations`, instead of one boolean for a single
+#      variant. So the level-1 lifecycle — which confirms a brief through the
+#      released PO tools on every run — reports that brief instead of "this is
+#      not a Product Brief scenario", the Architect criterion is judged against
+#      the expectation the run's own variant declared rather than against one
+#      hard-coded job name, and a variant that establishes the kit package route
+#      from its deployment carries those facts in `brief.package_route`. The
+#      verdict counts exactly the facts the scenario owes.
+EVIDENCE_SCHEMA_VERSION = 20
 EVIDENCE_KIND = "worker_failure_attribution"
+
+#: Every Product Brief fact this document can carry, in the order it is written.
+#: A scenario declares which of them its run owes on `ctx["brief_obligations"]`,
+#: and only those are collected and only those can make the verdict red.
+BRIEF_FACTS = (
+    "confirmed",
+    "coverage",
+    "admission",
+    "acceptance",
+    "settings_readback",
+    "settings_seed",
+    "job_evidence",
+    "package_route",
+)
+
+#: What a paid confirmed-brief variant owes: the whole durable chain from the
+#: frozen brief to the job central QA fired against the deployed product.
+PAID_BRIEF_OBLIGATIONS = (
+    "confirmed",
+    "coverage",
+    "admission",
+    "acceptance",
+    "settings_readback",
+    "settings_seed",
+    "job_evidence",
+)
+
+#: What a variant that has to establish the kit package route owes on top of it.
+PACKAGE_BRIEF_OBLIGATION = "package_route"
+
+#: What the free level-1 lifecycle owes. It confirms a Product Brief through the
+#: released PO tools and no model is asked anything, so the confirmation is a
+#: fact of every run; it publishes no Architect acceptance criterion and its
+#: deterministic QA fires no product job, so those are not facts it can owe.
+LEVEL1_BRIEF_OBLIGATIONS = ("confirmed",)
+
+#: Where a run declares the two things above about its own brief scenario.
+BRIEF_OBLIGATIONS_CTX_KEY = "brief_obligations"
+BRIEF_EXPECTED_CRITERION_CTX_KEY = "brief_expected_criterion"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
 # here and a tail read there are the same size of thing.
@@ -2790,8 +2838,21 @@ def failure_summary(
     }
 
 
-def _brief_not_required_capture(name: str) -> Capture:
-    return Capture.missed(f"this is not a Product Brief scenario, so {name} is not required")
+def _brief_not_required_capture(ctx: dict, name: str) -> Capture:
+    """Why this run does not owe one brief fact — which is not one answer.
+
+    A run whose scenario confirms no Product Brief at all owes none of them; a
+    run whose scenario confirms one owes the facts *that* scenario can produce
+    and no others, and saying so names the scenario. The level-1 lifecycle is
+    the reason this distinction exists: it confirms a brief on every run and
+    fires no job, and "this is not a Product Brief scenario" was false about
+    both halves.
+    """
+    variant = ctx.get("brief_variant")
+    if not ctx.get(BRIEF_OBLIGATIONS_CTX_KEY):
+        return Capture.missed(f"this scenario confirms no Product Brief, so {name} is not required")
+    named = f"the {variant} scenario" if variant else "this scenario"
+    return Capture.missed(f"{named} does not prove {name}, so it is not required of this run")
 
 
 def _brief_confirmed_capture(ctx: dict) -> Capture:
@@ -3020,24 +3081,53 @@ def _brief_settings_seed_capture(ctx: dict, readback: Capture) -> Capture:
     )
 
 
-def _brief_acceptance_capture(ctx: dict) -> Capture:
+def _brief_acceptance_capture(ctx: dict) -> Capture:  # noqa: PLR0911 - one reason per unmet term
+    """The Architect criterion, judged against *this variant's* expectation.
+
+    The expectation is the run's own — `brief_expected_criterion`, written by
+    the scenario that drove the run and made of the same terms the fixture
+    refused the run on. It used to be the digest variant's job name spelled
+    here, which made a green `mega-brief-package` run red for publishing the
+    `reminders.tick` criterion its own contract asks for
+    (`issue:62bc9840e23a44c2098b`).
+    """
+    expected = ctx.get(BRIEF_EXPECTED_CRITERION_CTX_KEY)
+    if not isinstance(expected, dict) or not expected.get("name"):
+        return Capture.missed(
+            "this run declared no expected Architect criterion, so nothing says which "
+            "scheduled behaviour its contract asked for"
+        )
     acceptance = ctx.get("brief_acceptance")
     criterion = acceptance.get("criterion") if isinstance(acceptance, dict) else None
     if not isinstance(criterion, dict):
+        if isinstance(error := ctx.get("brief_acceptance_error"), str) and error:
+            return Capture.missed(error)
         return Capture.missed(
             "the Architect parsed scheduled acceptance criterion was not retained"
         )
     name = criterion.get("name")
     arguments = criterion.get("arguments")
     observable = criterion.get("observable")
-    if name != "multilingual_digest":
+    if name != expected["name"]:
         return Capture.missed(
-            f"the Architect criterion must name exactly 'multilingual_digest', got {name!r}"
+            f"the Architect criterion must name exactly {expected['name']!r}, got {name!r}"
         )
-    if arguments != {}:
+    if not isinstance(arguments, dict):
         return Capture.missed(
-            "the Architect criterion for 'multilingual_digest' must have arguments {}, got "
+            f"the Architect criterion for {name!r} carries no readable arguments object: "
             f"{arguments!r}"
+        )
+    required = set(expected.get("required_arguments") or ())
+    missing = sorted(required - set(arguments))
+    if missing:
+        return Capture.missed(
+            f"the Architect criterion for {name!r} lacks the required argument(s) "
+            f"{', '.join(repr(one) for one in missing)}: got {arguments!r}"
+        )
+    if not expected.get("allows_other_arguments") and set(arguments) != required:
+        wanted = "{}" if not required else f"exactly the argument(s) {', '.join(sorted(required))}"
+        return Capture.missed(
+            f"the Architect criterion for {name!r} must have arguments {wanted}, got {arguments!r}"
         )
     if not isinstance(observable, str) or not observable:
         return Capture.missed("the Architect criterion has no observable")
@@ -3113,37 +3203,120 @@ def _brief_job_evidence_capture(ctx: dict, acceptance: Capture) -> Capture:
     )
 
 
-def brief_evidence(ctx: dict) -> dict:
-    """Evidence only the named Product Brief live scenario is obliged to collect."""
-    required = bool(ctx.get("brief_scenario"))
-    if not required:
-        return {
-            "required": False,
-            "confirmed": _brief_not_required_capture("confirmation").as_dict(),
-            "coverage": _brief_not_required_capture("coverage").as_dict(),
-            "admission": _brief_not_required_capture("admission").as_dict(),
-            "acceptance": _brief_not_required_capture("acceptance criterion").as_dict(),
-            "settings_readback": _brief_not_required_capture("settings readback").as_dict(),
-            "settings_seed": _brief_not_required_capture("deploy settings seed").as_dict(),
-            "job_evidence": _brief_not_required_capture("job evidence").as_dict(),
+#: What each brief fact is called in the reason a run that does not owe it gives.
+BRIEF_FACT_NAMES = {
+    "confirmed": "the Product Brief confirmation",
+    "coverage": "coverage",
+    "admission": "admission",
+    "acceptance": "an Architect acceptance criterion",
+    "settings_readback": "the settings readback",
+    "settings_seed": "the deploy settings seed",
+    "job_evidence": "job evidence",
+    "package_route": "the kit package route of its deployment",
+}
+
+
+def _brief_package_route_capture(ctx: dict, acceptance: Capture) -> Capture:
+    """What the *deployment* said about the kit package the capability is.
+
+    The suite already refuses to spend a QA turn on a deployment that cannot
+    show this (`pipeline_helpers.record_package_route`), and
+    `test_the_deployed_product_carries_the_kit_package` asserts it — but until
+    now none of it reached the artifact, so a green package run could not be
+    audited from the document it wrote. The facts are the package, its version,
+    the manifest digest, the behaviour the product's own registry attributes to
+    it and the generated files that were read.
+    """
+    facts = ctx.get("brief_package_route")
+    if not isinstance(facts, dict):
+        if isinstance(error := ctx.get("brief_deployment_error"), str) and error:
+            return Capture.missed(error)
+        return Capture.missed(
+            "the deployed product's kit package contract was never read by this run"
+        )
+    required_fields = ("package", "version", "manifest_sha256", "behaviour", "declared_by")
+    absent = [
+        field
+        for field in required_fields
+        if not isinstance(facts.get(field), str) or not facts[field]
+    ]
+    if absent:
+        return Capture.missed("the deployment's package route facts lack: " + ", ".join(absent))
+    expected_declarer = f"package:{facts['package']}"
+    if facts["declared_by"] != expected_declarer:
+        return Capture.missed(
+            f"the deployment attributes {facts['behaviour']!r} to {facts['declared_by']!r}, "
+            f"not to {expected_declarer!r}"
+        )
+    if acceptance.is_captured and facts["behaviour"] != acceptance.value["name"]:
+        return Capture.missed(
+            f"the deployment's package declares {facts['behaviour']!r} while the Architect "
+            f"criterion this run was judged on is {acceptance.value['name']!r}"
+        )
+    read_from = facts.get("read_from")
+    if not isinstance(read_from, list) or not all(isinstance(one, str) for one in read_from):
+        return Capture.missed(
+            "the deployment's package route facts do not say which artifacts were read"
+        )
+    return Capture.captured(
+        {
+            "package": facts["package"],
+            "version": facts["version"],
+            "manifest_sha256": facts["manifest_sha256"],
+            "behaviour": facts["behaviour"],
+            "declared_by": facts["declared_by"],
+            "read_from": list(read_from),
         }
+    )
+
+
+def brief_obligations(ctx: dict) -> tuple[str, ...]:
+    """The brief facts this run's own scenario owes, in document order."""
+    declared = ctx.get(BRIEF_OBLIGATIONS_CTX_KEY) or ()
+    unknown = sorted(set(declared) - set(BRIEF_FACTS))
+    if unknown:
+        raise ValueError(f"unknown Product Brief obligation(s): {', '.join(unknown)}")
+    return tuple(fact for fact in BRIEF_FACTS if fact in set(declared))
+
+
+def brief_evidence(ctx: dict) -> dict:
+    """The Product Brief facts this run's scenario owes, each one collected.
+
+    What is owed is the scenario's declaration and not this module's guess: the
+    paid variants owe the whole durable chain and the package variant owes its
+    deployment's package route on top of it, while the free level-1 lifecycle
+    confirms a brief through the released PO tools and owes that confirmation.
+    A fact the scenario does not owe is written with the stated reason it is
+    not required, and only an owed one can make the verdict red.
+    """
+    owed = brief_obligations(ctx)
     confirmed = _brief_confirmed_capture(ctx)
     coverage = _brief_coverage_capture(ctx, confirmed)
-    admission = _brief_admission_capture(ctx, confirmed, coverage)
     acceptance = _brief_acceptance_capture(ctx)
     settings = _brief_settings_readback_capture(ctx, confirmed)
-    settings_seed = _brief_settings_seed_capture(ctx, settings)
-    job = _brief_job_evidence_capture(ctx, acceptance)
-    return {
-        "required": True,
-        "confirmed": confirmed.as_dict(),
-        "coverage": coverage.as_dict(),
-        "admission": admission.as_dict(),
-        "acceptance": acceptance.as_dict(),
-        "settings_readback": settings.as_dict(),
-        "settings_seed": settings_seed.as_dict(),
-        "job_evidence": job.as_dict(),
+    collected = {
+        "confirmed": confirmed,
+        "coverage": coverage,
+        "admission": _brief_admission_capture(ctx, confirmed, coverage),
+        "acceptance": acceptance,
+        "settings_readback": settings,
+        "settings_seed": _brief_settings_seed_capture(ctx, settings),
+        "job_evidence": _brief_job_evidence_capture(ctx, acceptance),
+        "package_route": _brief_package_route_capture(ctx, acceptance),
     }
+    evidence = {
+        "required": bool(owed),
+        "variant": ctx.get("brief_variant"),
+        "obligations": list(owed),
+    }
+    for fact in BRIEF_FACTS:
+        capture = (
+            collected[fact]
+            if fact in owed
+            else _brief_not_required_capture(ctx, BRIEF_FACT_NAMES[fact])
+        )
+        evidence[fact] = capture.as_dict()
+    return evidence
 
 
 def verdict(
@@ -3170,8 +3343,13 @@ def verdict(
     silence: a combination that spent a subscription and cannot show which agent
     ran is red, and the reason it is red is stated together with the control
     plane's account of the stage that stopped it. The free deterministic route
-    starts no such container by design, so its verdict is what it always was —
-    the run's own failure and nothing else.
+    starts no such container by design, so no executor evidence is asked of it.
+
+    Brief evidence is red exactly where the run's own scenario declared it owes
+    a fact and the fact is missed. A scenario that owes nothing — an LLM run
+    with no brief — has no brief reason available to it at all, and the free
+    level-1 route, which confirms a Product Brief on every run, is red when that
+    confirmation is missing and never for a fact it does not produce.
     """
     paid = is_paid_run(ctx)
     reasons: list[dict] = []
@@ -3220,28 +3398,18 @@ def verdict(
                     "control_plane_reason": reason.as_dict(),
                 }
             )
-    if brief["required"]:
-        for name in (
-            "confirmed",
-            "coverage",
-            "admission",
-            "acceptance",
-            "settings_readback",
-            "settings_seed",
-            "job_evidence",
-        ):
-            capture = brief[name]
-            if capture["status"] == CaptureStatus.MISSED.value:
-                reasons.append(
-                    {
-                        "code": VerdictReason.BRIEF_EVIDENCE_MISSED.value,
-                        "detail": (
-                            f"the required Product Brief {name} evidence is missed: "
-                            f"{capture['reason']}"
-                        ),
-                        "control_plane_reason": reason.as_dict(),
-                    }
-                )
+    for name in brief["obligations"]:
+        capture = brief[name]
+        if capture["status"] == CaptureStatus.MISSED.value:
+            reasons.append(
+                {
+                    "code": VerdictReason.BRIEF_EVIDENCE_MISSED.value,
+                    "detail": (
+                        f"the required Product Brief {name} evidence is missed: {capture['reason']}"
+                    ),
+                    "control_plane_reason": reason.as_dict(),
+                }
+            )
     return {
         "paid": paid,
         "status": (Verdict.RED if reasons else Verdict.GREEN).value,

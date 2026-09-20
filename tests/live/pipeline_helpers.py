@@ -72,9 +72,13 @@ import po_checkpoints
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
+    BRIEF_OBLIGATIONS_CTX_KEY,
     ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY,
+    LEVEL1_BRIEF_OBLIGATIONS,
     LOG_TAIL_LINES,
     LOG_TAIL_MAX_CHARS,
+    PACKAGE_BRIEF_OBLIGATION,
+    PAID_BRIEF_OBLIGATIONS,
     TARGET_SNAPSHOT_FILENAME,
     TASK_ACCEPTANCE_CRITERIA_CTX_KEY,
     TASK_DESCRIPTIONS_CTX_KEY,
@@ -267,6 +271,10 @@ BACKEND_ONLY_MODULES = ["backend"]
 # this module list and the token binding below are one decision, not two.
 LEVEL1_MODULES = ["backend", "tg_bot"]
 LEVEL1_PROJECT_DESCRIPTION = "Pipeline E2E test - level-1 Telegram bot product"
+#: What the level-1 scenario is called in its own evidence document — the name
+#: of the stand suite that runs it, the same way a paid brief variant is named
+#: after the suite it is the target of.
+LEVEL1_BRIEF_VARIANT = "mega-noop"
 LEVEL1_BACKEND_TASK_TITLE = "Level-1 marker endpoint and product setting"
 LEVEL1_BOT_TASK_TITLE = "Level-1 Telegram command handler"
 #: The extension story's one task — the second story of the same project.
@@ -548,29 +556,15 @@ def record_package_route(ctx: dict) -> str | None:
     return None
 
 
-def _digest_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
-    """The digest variant's own expectation: a behaviour that takes no arguments."""
-    if behaviour.arguments != {}:
-        return (
-            f"Architect declared unexpected arguments for {BRIEF_JOB_NAME}: {behaviour.arguments}"
-        )
-    return None
-
-
 def _package_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
-    """The package variant's own expectation: `at`, and an observable QA can bind.
+    """The package variant's own expectation beyond its arguments.
 
-    The second half is the reason this variant exists.  Central QA passes a
+    The observable is the reason this variant exists.  Central QA passes a
     package behaviour row only on a post-fire HTTP read of a route the criterion's
     observable *names*; an observable naming no route is not bindable and fails
     by design.  Judged here, against the binder itself, a criterion that could
     never pass stops the run before it is paid for rather than after.
     """
-    if BRIEF_PACKAGE_JOB_ARGUMENT not in behaviour.arguments:
-        return (
-            f"Architect declared {BRIEF_PACKAGE_JOB_NAME} without the required "
-            f"{BRIEF_PACKAGE_JOB_ARGUMENT!r} argument: {behaviour.arguments}"
-        )
     read = f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}"
     if not observation_answers(behaviour.observable, "http_get", read):
         return (
@@ -617,9 +611,16 @@ class BriefScenario:
     #: The scheduled behaviour the architect must publish for this contract.
     job_name: str
     productive_seconds: int
-    #: What else that behaviour owes beyond its name.  Each variant states its
-    #: own; neither is asserted for the other.
-    behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None]
+    #: The argument names that behaviour must declare, and whether it may
+    #: declare others.  These are data rather than a predicate because the run
+    #: evidence has to judge the *same* expectation the fixture refused the run
+    #: on: it used to spell the digest variant's job name and arguments itself,
+    #: and called a green package run red (`issue:62bc9840e23a44c2098b`).
+    job_argument_names: frozenset[str]
+    job_allows_other_arguments: bool
+    #: What else that behaviour owes beyond its name and arguments.  Each
+    #: variant states its own, or `None` when it owes nothing further.
+    behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None] | None
     #: What this variant requires of the *deployed* product before QA judges it,
     #: read from the deployment itself.  Returns the reason the run is red, or
     #: `None`.  A variant that requires nothing of the deployment's shape says
@@ -629,6 +630,45 @@ class BriefScenario:
     @property
     def requirement_ids(self) -> set[str]:
         return {requirement["id"] for requirement in self.must_requirements}
+
+    @property
+    def expected_criterion(self) -> dict:
+        """What the architect owes this contract, as the evidence reads it."""
+        return {
+            "name": self.job_name,
+            "required_arguments": sorted(self.job_argument_names),
+            "allows_other_arguments": self.job_allows_other_arguments,
+        }
+
+    @property
+    def evidence_obligations(self) -> tuple[str, ...]:
+        """Which Product Brief facts a run of this variant owes its artifact.
+
+        Every confirmed-brief variant owes the whole durable chain; one that
+        asks something of the *deployment* owes the package route it read off
+        it, because that read is what entitles the run to claim the package
+        path was taken at all.
+        """
+        if self.deployment_check is None:
+            return PAID_BRIEF_OBLIGATIONS
+        return (*PAID_BRIEF_OBLIGATIONS, PACKAGE_BRIEF_OBLIGATION)
+
+    def criterion_error(self, behaviour: ScheduledBehaviourCriterion) -> str | None:
+        """Everything this variant requires of the behaviour the architect published."""
+        missing = sorted(self.job_argument_names - set(behaviour.arguments))
+        if missing:
+            return (
+                f"Architect declared {self.job_name} without the required "
+                f"{', '.join(repr(one) for one in missing)} argument: {behaviour.arguments}"
+            )
+        if not self.job_allows_other_arguments and set(behaviour.arguments) != set(
+            self.job_argument_names
+        ):
+            return (
+                f"Architect declared unexpected arguments for {self.job_name}: "
+                f"{behaviour.arguments}"
+            )
+        return self.behaviour_error(behaviour) if self.behaviour_error is not None else None
 
 
 BRIEF_DIGEST_SCENARIO = BriefScenario(
@@ -671,7 +711,11 @@ BRIEF_DIGEST_SCENARIO = BriefScenario(
     settings_description="The digest is produced in Russian and English.",
     job_name=BRIEF_JOB_NAME,
     productive_seconds=BRIEF_PRODUCTIVE_DEADLINE_SECONDS,
-    behaviour_error=_digest_behaviour_error,
+    # The digest behaviour takes no arguments at all, and nothing else is owed
+    # of it beyond that.
+    job_argument_names=frozenset(),
+    job_allows_other_arguments=False,
+    behaviour_error=None,
     # The digest product is deliberately package-free, so its deployment owes
     # this check nothing and is asked nothing.
     deployment_check=None,
@@ -724,6 +768,11 @@ BRIEF_PACKAGE_SCENARIO = BriefScenario(
     settings_description="Reminders are recorded for the configured user reference.",
     job_name=BRIEF_PACKAGE_JOB_NAME,
     productive_seconds=BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS,
+    # The package's `jobs_schema` declares `at` as required; whether the
+    # architect spells further arguments beside it is not this variant's
+    # business, and never was.
+    job_argument_names=frozenset({BRIEF_PACKAGE_JOB_ARGUMENT}),
+    job_allows_other_arguments=True,
     behaviour_error=_package_behaviour_error,
     deployment_check=record_package_route,
 )
@@ -1227,6 +1276,14 @@ async def create_level1_bot_project(
     )
     ctx["level1_marker"] = marker
     ctx["level1_change_set_paths"] = change_sets.paths
+    # The level-1 lifecycle confirms a Product Brief through the released PO
+    # tools on every run, so its evidence document owes that confirmation and
+    # is red without it. It publishes no Architect criterion and its
+    # deterministic QA fires no product job, so it owes neither of those: the
+    # artifact used to answer "this is not a Product Brief scenario" to all of
+    # them, which was false about the first and true only by accident.
+    ctx["brief_variant"] = LEVEL1_BRIEF_VARIANT
+    ctx[BRIEF_OBLIGATIONS_CTX_KEY] = list(LEVEL1_BRIEF_OBLIGATIONS)
     # The product contract this run's story is planned against. Minted from the
     # same marker as the change sets, so the setting the user confirms is the
     # one the backend manifest declares and the value is this run's alone.
