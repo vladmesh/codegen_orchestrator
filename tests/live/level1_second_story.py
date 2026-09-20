@@ -121,15 +121,61 @@ CHECKOUT_COMPLETE_EVENT = "checkout_branch_complete"
 CHECKOUT_FAILED_EVENT = "checkout_branch_failed"
 
 
-def _log_records(log_text: str) -> list[dict]:
-    """Every JSON record in a `docker compose logs` capture, in order.
+#: A structlog record rendered by `ConsoleRenderer` instead of `JSONRenderer`:
+#: `<timestamp> [<level>] <event>   key=value key=value`. The worker-manager
+#: process never calls `shared.log_config.setup_logging`, so the container's
+#: `LOG_FORMAT=json` never reaches structlog and its *default* configuration —
+#: console renderer, `%Y-%m-%d %H:%M:%S` timestamper — is what writes every line
+#: of that container. Reading JSON alone therefore saw nothing at all in the
+#: manager's log, whatever the read covered.
+_CONSOLE_RECORD = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?)\s+\[\s*(?P<level>[a-zA-Z]+)\s*\]\s+"
+    r"(?P<event>[^\s=]+)(?P<fields>\s.*)?$"
+)
+#: One `key=value` of a console record. A value is bare, or quoted the way
+#: `repr` quotes a string that has spaces in it.
+_CONSOLE_FIELD = re.compile(r"(?P<key>[A-Za-z_][\w.]*)=(?P<value>'[^']*'|\"[^\"]*\"|\S*)")
+#: The compose stream prefix (`worker-manager-1  | `) and the colour codes the
+#: console renderer writes when it thinks it is on a terminal.
+_COMPOSE_PREFIX = re.compile(r"^[A-Za-z0-9_.-]+\s*\|\s?")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
-    Compose prefixes each line with the service name, so the record starts at
-    the first `{"` — the same reading `record_settings_seed_brief_log` makes of
-    the deploy consumer's log.
+
+def _console_record(line: str) -> dict | None:
+    """One console-rendered structlog line as the record it states, or None."""
+    match = _CONSOLE_RECORD.match(line)
+    if match is None:
+        return None
+    record: dict = {"timestamp": match["timestamp"], "event": match["event"]}
+    for field in _CONSOLE_FIELD.finditer(match["fields"] or ""):
+        value = field["value"]
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        record[field["key"]] = value
+    return record
+
+
+def _log_records(log_text: str) -> list[dict]:
+    """Every structlog record in a `docker compose logs` capture, in order.
+
+    Both renderings, because one capture can hold both: the services that call
+    `shared.log_config.setup_logging` honour `LOG_FORMAT=json`, and the ones
+    that do not — the worker-manager among them — get structlog's default
+    console renderer. A reader that knows only JSON reports the second kind as
+    an empty log, which is indistinguishable from a manager that logged nothing
+    and is exactly how stand-e2e run 35475905032 read a checkout it had written.
+
+    Compose prefixes each line with the service name, so the prefix is stripped
+    before either reading is attempted.
     """
     records = []
-    for line in log_text.splitlines():
+    for raw in log_text.splitlines():
+        line = _COMPOSE_PREFIX.sub("", _ANSI.sub("", raw), count=1).strip()
+        console = _console_record(line)
+        if console is not None:
+            records.append(console)
+            continue
         start = line.find('{"')
         if start < 0:
             continue
@@ -151,6 +197,27 @@ def _log_moment(record: dict) -> datetime | None:
         return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def manager_log_coverage(log_text: str) -> dict:
+    """What a capture of the manager's log actually covers, as facts.
+
+    Read alongside `checkout_records` so the run's evidence can tell the two
+    empty answers apart. A capture that holds records and names no checkout of
+    this branch says the manager logged none; a capture that holds no record at
+    all says nothing about the manager and is reported as unreadable instead of
+    as an absence. `records` is the number that decides that, and the window is
+    there so a reader can see the capture spans the run rather than a slice of
+    it.
+    """
+    records = _log_records(log_text)
+    moments = [moment for moment in map(_log_moment, records) if moment is not None]
+    return {
+        "lines": len(log_text.splitlines()),
+        "records": len(records),
+        "first_record_at": moments[0].isoformat() if moments else None,
+        "last_record_at": moments[-1].isoformat() if moments else None,
+    }
 
 
 def checkout_records(log_text: str, *, branch: str) -> list[dict]:
@@ -202,7 +269,16 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
         attempt["completed_at"] = record.get("timestamp")
         attempt["failed"] = event == CHECKOUT_FAILED_EVENT
         started = _log_moment({"timestamp": attempt["started_at"]})
-        if started is not None and moment is not None:
+        # Both ends have to be readable *and* comparable. The two renderings
+        # stamp differently — the JSON one carries an offset, the console one
+        # does not — so a pair that straddles them is left without a duration
+        # rather than subtracted into a wrong number; `checkout_mismatches`
+        # then says the duration is unreadable, which is the truth.
+        if (
+            started is not None
+            and moment is not None
+            and (started.tzinfo is None) == (moment.tzinfo is None)
+        ):
             attempt["duration_seconds"] = round((moment - started).total_seconds(), 3)
     return attempts
 

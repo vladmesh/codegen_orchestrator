@@ -3718,6 +3718,11 @@ def second_story(ctx: dict) -> dict:
             }
         ).as_dict(),
         "brief_revisions": captured("level1_brief_revisions"),
+        # Stated next to the checkout it comes from: a `first_checkout` of `[]`
+        # means the manager logged no checkout of this branch inside a read whose
+        # own coverage is here to be seen, and a read that could not tell is a
+        # `missed` first_checkout with the reason instead.
+        "manager_log_read": captured("manager_log_read", "manager_log_read_error"),
         "first_checkout": captured("first_checkout", "first_checkout_error"),
         "manager_checkout_script": captured(
             "manager_checkout_script", "manager_checkout_script_error"

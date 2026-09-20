@@ -49,7 +49,12 @@ from level1_change_set import (
     build_level1_extension_change_set,
     level1_command_description,
 )
-from level1_second_story import checkout_records, deploy_path_record, workspace_assignments
+from level1_second_story import (
+    checkout_records,
+    deploy_path_record,
+    manager_log_coverage,
+    workspace_assignments,
+)
 from live_harness import (
     TERMINAL_RUN_STATUSES,
     CleanupError,
@@ -5050,6 +5055,8 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         # What only the second story can show
         "first_checkout",
         "first_checkout_error",
+        "manager_log_read",
+        "manager_log_read_error",
         "workspace_assignments",
         "manager_checkout_script",
         "manager_checkout_script_error",
@@ -5165,10 +5172,26 @@ def begin_level1_extension_story(ctx: dict) -> None:
     ctx["po_input_cursor"] = po_input_cursor()
 
 
-#: How much of the manager's log the first-checkout read covers. The checkout
-#: happens when the story's worker is created and is read once engineering has
-#: settled, so this spans one story's worth of manager chatter.
-MANAGER_LOG_TAIL_LINES = 5000
+#: What the first-checkout read of the manager's log is bounded by, stated for
+#: the evidence artifact as well as for the reader here.
+#:
+#: `docker compose logs` with no `--tail` returns every line the container has
+#: written since it started, so the bound is the manager container's own
+#: lifetime. The stand is provisioned for the run and its manager is started
+#: before the first story exists, so every line this run's manager wrote is
+#: inside that bound by construction.
+#:
+#: Why it cannot be outgrown the way `--tail=5000` was: there is no line count
+#: in it. A count is a promise about how *quiet* the run will be, and a second
+#: story doubles the chatter that has to fit under it; a bound made of the
+#: container's start moves with the container, so no amount of logging can push
+#: a line of this run outside it. The only thing that could is the daemon's log
+#: rotation, and no compose file here configures a logging driver or a
+#: `max-size`, so the container keeps its whole log.
+MANAGER_LOG_BOUND = (
+    "every line the worker-manager container has written since it started "
+    "(docker compose logs with no --tail)"
+)
 #: The branch name the manager's checkout script is read back for. Any story
 #: branch would do — the script is built the same way for all of them — and
 #: using this run's makes the recorded text the text this run's checkout ran.
@@ -5228,18 +5251,35 @@ def record_first_checkout(ctx: dict) -> None:
     branch = story_branch_name(ctx["story_id"])
     try:
         result = subprocess.run(
-            ["docker", "compose", "logs", f"--tail={MANAGER_LOG_TAIL_LINES}", "worker-manager"],
+            ["docker", "compose", "logs", "--no-color", "worker-manager"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
             cwd=ORCHESTRATOR_ROOT,
         )
     except Exception as error:  # noqa: BLE001 - an unreadable log is a stated reason
-        ctx["first_checkout_error"] = f"the manager's log could not be read: {type(error).__name__}"
+        reason = f"the manager's log could not be read: {type(error).__name__}"
+        ctx["manager_log_read_error"] = reason
+        ctx["first_checkout_error"] = reason
         return
     if result.returncode != 0:
+        reason = f"docker compose logs worker-manager exited {result.returncode}"
+        ctx["manager_log_read_error"] = reason
+        ctx["first_checkout_error"] = reason
+        return
+    coverage = manager_log_coverage(result.stdout)
+    ctx["manager_log_read"] = {"bound": MANAGER_LOG_BOUND, **coverage}
+    ctx["manager_log_read_error"] = None
+    if not coverage["records"]:
+        # The capture came back, and nothing in it is a record the manager
+        # wrote. That is a statement about this read, not about the manager, so
+        # it is reported as unreadable rather than as an empty list of
+        # checkouts: "we could not tell" and "the manager logged none" are
+        # different answers and only one of them is evidence about the platform.
         ctx["first_checkout_error"] = (
-            f"docker compose logs worker-manager exited {result.returncode}"
+            f"the manager's log was read ({MANAGER_LOG_BOUND}) but none of its "
+            f"{coverage['lines']} lines parsed as a record, so whether the manager logged a "
+            f"checkout of {branch} cannot be told from it"
         )
         return
     ctx["first_checkout"] = checkout_records(result.stdout, branch=branch)

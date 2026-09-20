@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-20
+
+- The harness reads the worker-manager's log in both structlog renderings and from the container's start rather
+  than a line tail, and an unparsable capture is reported as unreadable instead of as no checkout.
+
 ## 2026-09-19
 
 - A temporary-access capability redeploy no longer seeds the brief's settings, so a proved revoke stops being
