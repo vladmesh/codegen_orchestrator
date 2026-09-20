@@ -8,6 +8,8 @@ import subprocess
 import structlog
 import yaml
 
+from shared.worker_compose import worker_compose_project
+
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
     RESOURCE_IDENTITY_POLICY,
@@ -285,7 +287,7 @@ class ComposeRunner:
         if not effective_cwd.is_dir():
             raise ValueError(f"Compose cwd does not exist: {effective_cwd}")
 
-        project_name = f"worker_{worker_id}"
+        project_name = worker_compose_project(worker_id)
         plan_directory = self._plan_directory(worker_id)
 
         subcommand = self._subcommand(args)
@@ -391,7 +393,7 @@ class ComposeRunner:
         }
         environment["HOST_UID"] = "1000"
         environment["HOST_GID"] = "1000"
-        project_name = f"worker_{worker_id}"
+        project_name = worker_compose_project(worker_id)
         return ComposeInvocation(
             command=[
                 str(_DOCKER_EXECUTABLE),

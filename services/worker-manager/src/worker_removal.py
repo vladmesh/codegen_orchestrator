@@ -23,7 +23,7 @@ from shared.diagnostics import redact_diagnostic
 from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
 
-from . import qa_egress, workspace as workspace_mod
+from . import garbage_collector as gc, qa_egress, workspace as workspace_mod
 from .compose_runner import ComposeRunner
 from .config import settings
 from .container_config import TRANSCRIPT_MOUNT
@@ -390,6 +390,13 @@ class WorkerRemoval:
                         )
                 except Exception as e:  # noqa: BLE001 — Compose cleanup must fall through to Docker cleanup
                     logger.warning("compose_down_failed", worker_id=worker_id, error=str(e))
+                # `down -v` removes the plan's services and nothing else. The
+                # one-shot containers `docker compose run` creates — the
+                # generated product's `make test-integration` — carry the same
+                # project label and survived it, for 7+ hours and then across a
+                # whole project teardown (`issue:868e40fc0377b0dabb77`). The
+                # label is what finds them, so the label is what removes them.
+                await gc.remove_worker_compose_residue(self.docker, worker_id)
 
             # Read while Docker can still describe the container, but do not
             # publish removal evidence until `remove_container` succeeds.

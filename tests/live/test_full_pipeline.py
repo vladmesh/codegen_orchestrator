@@ -63,7 +63,7 @@ from pipeline_helpers import (
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     begin_level1_extension_story,
-    cleanup_all,
+    cleanup_and_prove,
     configured_qa_executor,
     create_level1_bot_project,
     create_level1_confirmed_brief,
@@ -85,8 +85,10 @@ from pipeline_helpers import (
     record_level1_product_evidence,
     record_level1_scripted_path,
     record_manager_checkout_script,
+    record_no_intervention,
     record_noop_settlement_evidence,
     record_qa_run,
+    record_run_po_cursor,
     record_settings_seed_brief_log,
     record_story_branch_ahead,
     record_story_branch_base,
@@ -116,6 +118,7 @@ import pytest
 import pytest_asyncio
 import run_evidence
 from run_evidence import CaptureStatus, RunEvidenceCollector, emit_run_evidence
+import run_intervention
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -148,9 +151,16 @@ async def _pipeline_run(
             # The fixture user is registered by the service, then touched as
             # itself: registration is promo-gated for a named actor.
             await ensure_test_user(api, api_internal)
+            # Captured before the project exists, so the run's PO history
+            # starts at the first thing this run could possibly have published.
+            # A cursor taken any later would exclude a park from a phase before
+            # it, which is the one thing this history has to be able to see.
+            run_po_cursor = po_input_cursor()
             ctx = await create_project(api, api_internal)
+            record_run_po_cursor(ctx, run_po_cursor)
             async with cleanup_guard(
-                lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
+                lambda: cleanup_and_prove(api_internal, api_observer, ctx),
+                manifest=ctx["manifest"],
             ):
                 # One artifact per combination, written before teardown removes
                 # the containers it is collected from. The collector needs one
@@ -187,6 +197,10 @@ async def _pipeline_run(
                     # for the deployment on the target host and for the QA Run a
                     # phase that raised never looked for, so both are read here.
                     await record_terminal_stage_evidence(api_internal, ctx)
+                    # Before teardown: cleanup XDELs this run's PO entries, and
+                    # the PO history is where a park that was later recovered
+                    # is still recorded.
+                    await record_no_intervention(api_internal, ctx)
                     evidence_pass(ctx)
                     emit_run_evidence(ctx)
 
@@ -1483,6 +1497,27 @@ class TestFullPipeline:
             == []
         )
         assert pipeline["deployed_url"] not in notification["text"]
+
+    async def test_no_story_of_this_run_ever_waited_for_a_person(self, pipeline):
+        """Zero intervention, asserted from durable history rather than the ending.
+
+        Both stories ended `completed`, and that is precisely why the terminal
+        state cannot answer this: a story that parked in `waiting_human_review`
+        or was quarantined and then recovered ends `completed` too, and
+        `quarantine_reason` is cleared on the way out. What survives a recovery
+        is the owner notification the park published onto `po:input`, read from
+        a cursor this run captured before its project existed.
+
+        The state of every story of the project is read as the second source,
+        for a park whose notification never reached the stream, and a source
+        that could not be read fails this the same way a park would — an
+        unreadable history is not a history of no parks.
+        """
+        proof = pipeline["no_intervention"]
+        asked = {check["kind"]: check for check in proof["checks"]}
+        assert sorted(asked) == sorted(run_intervention.INTERVENTION_KINDS), proof
+        assert pipeline["no_intervention_error"] is None, pipeline["no_intervention_error"]
+        assert [check["outcome"] for check in proof["checks"]] == ["absent", "absent"], proof
 
 
 class TestFullPipelineLLM:

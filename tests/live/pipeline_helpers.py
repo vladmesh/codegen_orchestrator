@@ -89,6 +89,8 @@ from run_evidence import (
     qa_run_facts,
     target_snapshot_requirement,
 )
+import run_intervention
+import run_residue
 from settings_seed_followup import (
     KEEP_WAITING,
     WaitOutcome,
@@ -166,6 +168,10 @@ AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
+# The API as a container on the internal network reaches it. Everything the
+# harness runs inside `langgraph` addresses it this way, including the
+# residue probe's SSH-target resolution.
+INTERNAL_API_URL = "http://api:8000"
 # The template the live suite scaffolds from when nothing overrides it: the production
 # pin itself, read from `scripts/system_configs.yaml` through `scripts.template_pin`, so
 # the suite scaffolds from what a deployed orchestrator scaffolds from and no copy of the
@@ -6058,12 +6064,218 @@ async def fence_owned_work(api_internal: httpx.AsyncClient, ctx: dict) -> None:
     await wait_for_owned_runs(api_internal, ctx)
 
 
-async def cleanup_all(
+# ── The run's two proofs about itself ────────────────────────────────────
+#
+# One is taken before teardown and one after it, and the order is forced: the
+# zero-intervention proof reads the PO history this run's own teardown is about
+# to XDEL its entries out of, and the residue proof asks questions that are only
+# meaningful once the removals have happened.
+
+
+def record_run_po_cursor(ctx: dict, cursor: str) -> None:
+    """Give this run the place in the PO history its history is read from.
+
+    The cursor is captured by the caller *before* the project exists, and only
+    recorded here, because there is no context to record it on until then. Taken
+    at the top of a run rather than per story: the question the Definition of
+    Done asks is about the run, and a cursor taken one phase later would
+    silently exclude a park from the phase before it.
+    """
+    ctx["run_po_input_cursor"] = cursor
+
+
+async def record_no_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Prove, before teardown, that no story of this run ever waited for a person.
+
+    Before teardown for one concrete reason: cleanup XDELs the PO stream entries
+    this run owns, and the stream is where the durable history of a park lives.
+    Read afterwards, the strongest source would have been deleted by the thing
+    that is supposed to be proven harmless.
+
+    The verdict is recorded rather than raised, so the artifact holds it whatever
+    else the run did; `test_full_pipeline` is what fails the run on it.
+    """
+    stories: list[dict] = []
+    stories_error: BaseException | None = None
+    try:
+        response = await api_internal.get("/api/stories/", params={"project_id": ctx["project_id"]})
+        response.raise_for_status()
+        stories = response.json()
+    except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable check
+        stories_error = exc
+
+    def state() -> list[dict]:
+        if stories_error is not None:
+            raise stories_error
+        return stories
+
+    ops = run_intervention.InterventionOps(
+        history=lambda: [
+            event.model_dump(mode="json") for event in po_events_after(_require_run_po_cursor(ctx))
+        ],
+        state=state,
+    )
+    proof = run_intervention.prove_no_intervention(
+        ops,
+        run_intervention.RunStories(
+            project_id=str(ctx["project_id"]),
+            story_ids=tuple(str(story["id"]) for story in stories),
+        ),
+        subject=f"run {ctx['manifest'].run_id}",
+    )
+    ctx["no_intervention"] = proof.as_dict()
+    ctx["no_intervention_error"] = "; ".join(proof.failures) or None
+
+
+def _require_run_po_cursor(ctx: dict) -> str:
+    cursor = ctx.get("run_po_input_cursor")
+    if cursor is None:
+        raise RuntimeError(
+            "this run captured no PO cursor, so its intervention history cannot be read"
+        )
+    return cursor
+
+
+def run_inventory(ctx: dict) -> run_residue.RunInventory:
+    """What this run owns, read from its manifest and never from a live listing."""
+    manifest = ctx["manifest"]
+    by_kind: dict[str, list] = {}
+    for resource in manifest.resources:
+        by_kind.setdefault(resource.kind, []).append(resource)
+    deployments = by_kind.get("server_deployment", [])
+    handles = {
+        resource.metadata["server_handle"]
+        for resource in deployments
+        if resource.metadata.get("server_handle")
+    }
+    return run_residue.RunInventory(
+        run_id=manifest.run_id,
+        project_id=str(ctx.get("project_id") or ""),
+        repo_id=str(ctx.get("repo_id") or ""),
+        repo_name=str(ctx.get("repo_name") or ""),
+        story_ids=tuple(
+            str(story_id)
+            for story_id in dict.fromkeys(
+                [ctx.get("story_id"), (ctx.get("level1_extension") or {}).get("story_id")]
+            )
+            if story_id
+        ),
+        worker_ids=tuple(resource.identifier for resource in by_kind.get("worker", [])),
+        registry_repositories=tuple(
+            resource.identifier for resource in by_kind.get("registry_repository", [])
+        ),
+        stack_names=tuple(resource.identifier for resource in deployments),
+        # Only when every owned deploy resolved to the same target. A mixed or
+        # unresolved set is asked of every managed target instead, exactly as
+        # the teardown clears every one of them.
+        server_handle=next(iter(handles))
+        if len(handles) == 1 and len(handles) == len(deployments)
+        else None,
+    )
+
+
+#: The project-scoped Redis keys this run creates and nothing else removes: the
+#: fences teardown itself raises, and the workspace bookkeeping a worker leaves.
+#: They expire on their own, which is enough for the platform and not enough for
+#: "after cleanup there is nothing left" — so they are released here, by name,
+#: before the proof asks whether any key still names this run.
+PROJECT_SCOPED_RUN_KEYS = (
+    "live:scaffold:cancelled:{project_id}",
+    "live:scaffold:leases:{project_id}",
+    "live:work:cancelled:{project_id}",
+    "live:work:leases:{project_id}",
+    "live:work:failed:{project_id}",
+    "workspace:lock:{project_id}",
+    "workspace:{project_id}:failure_count",
+)
+
+
+def release_project_fences(ctx: dict) -> None:
+    """Drop the fences this run's own teardown raised, once nothing needs them.
+
+    Last, deliberately. Every one of these is what stops a consumer from
+    creating a new resource for this project while teardown runs, so releasing
+    one earlier would reopen the door the removals have just walked through.
+    """
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return
+    _redis_command(
+        "UNLINK", *[key.format(project_id=project_id) for key in PROJECT_SCOPED_RUN_KEYS]
+    )
+    _redis_command("SREM", "workspace:active_projects", str(project_id))
+
+
+async def cleanup_and_prove(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
     ctx: dict,
 ) -> None:
-    """Delete owned resources using an unscoped internal run observer."""
+    """Clean this run up, and only then ask whether anything of it is left.
+
+    The proof is here and not inside `cleanup_all` because the two make
+    different claims and are used by different callers. `cleanup_all` removes
+    what a run owns and verifies each removal, and the harness contract suite
+    drives it with fakes and no stack behind it. This asks the further question
+    the Definition of Done asks — "is anything of this run left anywhere" — of
+    every kind including the ones no removal touches, and it can only be asked
+    of a real installation.
+    """
+    database = await cleanup_all(api_internal, api_observer, ctx)
+    release_project_fences(ctx)
+    prove_nothing_left(ctx, database)
+
+
+def prove_nothing_left(
+    ctx: dict,
+    database: db_teardown.TeardownReport | None,
+) -> None:
+    """Remove the run's workspaces, then prove every kind of residue is absent.
+
+    The one removal that happens here rather than earlier is the workspace: a
+    developer worker's checkout is deliberately preserved across its own
+    teardown so the next attempt reuses it, so nothing else in a run's lifetime
+    ever takes it away. Everything else has already been removed by the steps
+    above, and this is only the proof that they were.
+
+    Raises `CleanupError` naming every kind that is not proven absent — a
+    leftover by name, and a kind that could not be checked as the kind it is.
+    """
+    inventory = run_inventory(ctx)
+    ops, remove_workspaces = run_residue.host_residue_ops(ORCHESTRATOR_ROOT, INTERNAL_API_URL)
+    entries = inventory.workspace_entries()
+    workspace_removal_error: str | None = None
+    if entries:
+        try:
+            remove_workspaces(entries)
+        except Exception as exc:  # noqa: BLE001 — the proof below is what judges the outcome
+            workspace_removal_error = f"workspace removal failed: {type(exc).__name__}: {exc}"
+    proof = run_residue.prove_run_residue(
+        ops,
+        inventory,
+        database_check=run_residue.database_check_from(database),
+        notes=[workspace_removal_error] if workspace_removal_error else [],
+    )
+    ctx["run_residue"] = proof.as_dict()
+    if proof.failures:
+        raise CleanupError(
+            f"run {inventory.run_id} left resources behind: " + "; ".join(proof.failures)
+        )
+
+
+async def cleanup_all(
+    api_internal: httpx.AsyncClient,
+    api_observer: httpx.AsyncClient | None,
+    ctx: dict,
+) -> db_teardown.TeardownReport | None:
+    """Delete owned resources using an unscoped internal run observer.
+
+    Answers with the database teardown's own report — the proof for the database
+    kind that cards 1311 and 1313 built — so `cleanup_and_prove` can carry it
+    into the run's residue proof instead of asking the database a second time.
+    A run that owns no project has none, which is the honest answer to a
+    question that was never put.
+    """
     errors: list[str] = []
 
     try:
@@ -6108,9 +6320,13 @@ async def cleanup_all(
             errors.append(f"GitHub repository: {exc}")
 
     # 5. DB records (API delete doesn't cascade to stories/tasks, use SQL)
+    # The report and the raise are both kept: they are this run's proof for the
+    # database kind, and the residue proof below carries whichever one happened
+    # rather than asking the database a second time in its own words.
+    database_report: db_teardown.TeardownReport | None = None
     if "project_id" in ctx:
         try:
-            _cleanup_db(ctx["project_id"])
+            database_report = _cleanup_db(ctx["project_id"])
         except Exception as exc:
             errors.append(f"database project: {exc}")
 
@@ -6166,6 +6382,7 @@ async def cleanup_all(
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors))
     manifest_path = ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
     manifest_path.unlink(missing_ok=True)
+    return database_report
 
 
 def _psql(sql: str) -> db_teardown.SqlResult:
@@ -6211,7 +6428,7 @@ def _psql(sql: str) -> db_teardown.SqlResult:
     )
 
 
-def _cleanup_db(project_id: str) -> None:
+def _cleanup_db(project_id: str) -> db_teardown.TeardownReport:
     """Delete the project's rows, and prove from the catalog that none survived.
 
     The list of tables is not written down anywhere: `db_teardown` derives it
@@ -6222,7 +6439,7 @@ def _cleanup_db(project_id: str) -> None:
     exists, and a row that survives anyway is raised by table, key and
     constraint rather than as a psql error string.
     """
-    db_teardown.teardown_project(project_id, _psql)
+    return db_teardown.teardown_project(project_id, _psql)
 
 
 # ── Debug dump ───────────────────────────────────────────────────────────

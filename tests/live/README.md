@@ -518,6 +518,56 @@ level-1 grant deploy had written a `users_grant_intents` row referencing its `de
 and that table was in nobody's list. `tests/live/test_db_teardown.py` holds both properties offline,
 against this schema's own metadata (`shared/tests/project_cleanup.py::metadata_catalog_payload`).
 
+## The run proves it left nothing, and needed nobody
+
+Two proofs the level-1 lifecycle takes about itself, both built on `run_proof.py` — one question,
+one source, three answers: **absent** (asked and found nothing), **leftover** (asked and found
+things), **unaskable** (could not ask). The third is the point. An unreachable target, an unreadable
+registry or a Redis that refused the query fails the run naming the kind it could not check, never
+passes it quietly; this is the distinction card 1318 had to add when an unreadable manager log was
+rendering as an empty log. Every probe therefore raises on a non-answer — a non-zero exit, a missing
+marker, an unparseable payload — instead of returning an empty finding list, and a kind that no
+check answered at all is reported as *unasked* and fails too, so the proof cannot shrink by losing a
+probe.
+
+**Nothing left** (`run_residue.py`, asked by `cleanup_and_prove` after `cleanup_all` succeeds). One
+question per kind the Definition of Done names: containers on the control host *and* on the target,
+image repositories in the registry, workspaces, Redis keys, the GitHub repository, the PO checkpoint
+thread, and the database rows. This asks about *kinds*, not about removals, which is what makes it
+different from the verification each removal already does — a kind nothing removes is invisible to
+those. Two such kinds exist today:
+
+- The one-shot containers `docker compose run` creates inside a worker's bounded compose plan.
+  `docker compose down -v` removes the plan's services and not these, and exited
+  `*-integration-tests-run-*` containers survived a completed story on production for 7+ hours and
+  then survived a whole project teardown (`issue:868e40fc0377b0dabb77`). They carry no
+  `com.codegen.run.id`, so the run-label query cannot see them; they are asked for by the label
+  Compose does stamp, the worker's own project name. Worker-manager now removes them too, in the
+  worker's teardown and in the orphan collector (`shared/worker_compose.py`).
+- The project workspace. A developer worker's checkout is deliberately preserved across its own
+  teardown so the next attempt reuses it, so nothing ever took it away when the project went;
+  `shared/live_harness_workspaces.py` removes the run's entries inside worker-manager and reads the
+  filesystem back.
+
+The database kind is **not re-asked**: `cleanup_all` hands the residue proof the `TeardownReport`
+that the catalog-derived teardown above already produced, so the one place that knows how to ask the
+database stays the only place that asks it. The one Redis key a clean run keeps is
+`worker:evidence:removed:<run id>` — the removal records are evidence and expire on their own TTL —
+and it is excluded by name, with the reason in the proof's notes.
+
+**Nobody needed** (`run_intervention.py`, recorded before teardown). No story of the run ever entered
+`waiting_human_review`, `waiting_user_secret` or a quarantine. *Ever*: a story that parked and was
+then recovered ends `completed` and has its `quarantine_reason` cleared, so the terminal state
+cannot answer this. What survives the recovery is the owner notification the park published onto
+`po:input`, read from a cursor the run captures before its project exists — which is why this runs
+ahead of teardown, since teardown XDELs the run's own stream entries. The stories' current state is
+read as the second source, for a park whose notification never reached the stream.
+
+Offline coverage for both, kind by kind, is in `tests/live/test_run_residue.py` and
+`tests/live/test_run_intervention.py`; the pieces outside `tests/live` are in
+`shared/tests/test_run_residue_probes.py` and
+`services/worker-manager/tests/unit/test_compose_residue.py`.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a
