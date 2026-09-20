@@ -78,11 +78,13 @@ The two modes treat the product's hooks in opposite ways, on purpose:
   ``services/worker-manager/src/git_ops.py`` already uses — and never writes
   ``core.hooksPath`` into the workspace config.
 
-Before the scripted commit the script adds the worker's own injected files to
-``.git/info/exclude`` (``/CLAUDE.md``, ``/TASK.md``, ``/REPORT.md``), because the
-product's ``pre-commit`` hook runs ``git add -A`` and would otherwise publish
-orchestrator-internal instruction files into the product repository. ``info/exclude`` is
-workspace-local, so this changes nothing in the product kit.
+Before the scripted commit the script adds the orchestrator's own injected paths to
+``.git/info/exclude``, because the product's ``pre-commit`` hook runs ``git add -A`` and
+would otherwise publish orchestrator-internal files into the product repository.
+``info/exclude`` is workspace-local, so this changes nothing in the product kit. The set
+is not written here: ``worker_wrapper.injected_paths`` defines it once for the wrapper's
+exclude writer, its publish guard and this script, and the script — which runs in a
+separate process, built from a string — receives the same lines as data.
 
 Failure reporting
 -----------------
@@ -105,9 +107,10 @@ lint and spec checks on every commit. Plain metadata git calls keep 60 s.
 
 from dataclasses import dataclass
 
+from ..injected_paths import EXCLUDE_HEADER, EXCLUDE_LINES
 from .base import AgentRunner
 
-_SCRIPT = r'''
+_SCRIPT_TEMPLATE = r'''
 import json
 import os
 import re
@@ -118,12 +121,14 @@ WORKSPACE = "/workspace"
 TASK_FILENAME = "TASK.md"
 CHANGE_SET_MARKER = "codegen-change-set"
 CHANGE_SET_SENTINEL = "codegen-change-set v1"
+EXCLUDE_HEADER = __EXCLUDE_HEADER__
 DIRECTIVE = "@@ "
 OPERATIONS = ("create", "replace", "append")
 RESULT_URL = "http://127.0.0.1:9090/result"
 
-# Injected by the worker manager, never part of the product repository.
-WORKER_INTERNAL_FILES = ("/CLAUDE.md", "/TASK.md", "/REPORT.md")
+# Injected by the orchestrator, never part of the product repository. Compiled in
+# from worker_wrapper.injected_paths, which is the one definition of the set.
+WORKER_INTERNAL_FILES = __WORKER_INTERNAL_FILES__
 
 # Per process, never written into the workspace config: the scripted path needs the
 # product's hooks, so the fallback may not disable them for anybody but itself.
@@ -330,7 +335,7 @@ def exclude_worker_internal_files(workspace):
         with open(path, "a", encoding="utf-8") as handle:
             if existing and not existing.endswith("\n"):
                 handle.write("\n")
-            handle.write("# worker-internal, injected by the manager; never the product's\n")
+            handle.write(EXCLUDE_HEADER + "\n")
             handle.write("\n".join(missing) + "\n")
     except OSError as error:
         raise StepFailed("exclude", 1, str(error), "ExcludeWriteFailed")
@@ -460,6 +465,11 @@ def main(workspace=WORKSPACE):
 if __name__ == "__main__":
     raise SystemExit(main())
 '''
+
+
+_SCRIPT = _SCRIPT_TEMPLATE.replace("__WORKER_INTERNAL_FILES__", repr(list(EXCLUDE_LINES))).replace(
+    "__EXCLUDE_HEADER__", repr(EXCLUDE_HEADER)
+)
 
 
 @dataclass

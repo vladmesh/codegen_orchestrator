@@ -1,3 +1,5 @@
+from shared.constants import WorkerWorkspace
+
 from .base import AgentConfig
 
 
@@ -13,7 +15,9 @@ class ClaudeCodeAgent(AgentConfig):
         return []
 
     def get_instruction_path(self) -> str:
-        return "/workspace/CLAUDE.md"
+        # The product kit ships no CLAUDE.md, so this file is the orchestrator's
+        # alone. The wrapper keeps it out of the product's commits.
+        return f"/workspace/{WorkerWorkspace.CLAUDE_INSTRUCTIONS}"
 
     def get_agent_command(self) -> str:
         # --dangerously-skip-permissions is required for autonomous execution

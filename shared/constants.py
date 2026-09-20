@@ -66,3 +66,33 @@ class Provisioning:
         "DEFAULT_OS_TEMPLATE",
         "kvm-ubuntu-24.04-gpt-x86_64",
     )
+
+
+class WorkerWorkspace:
+    """The names the orchestrator injects into a worker's product checkout.
+
+    A worker works inside a checkout of a scaffolded product, and every file in
+    it belongs to the product's Copier kit. These are the only names the
+    orchestrator adds, and they exist in one place because two sides have to
+    agree on them: worker-manager writes the instruction and task files into the
+    container, and the wrapper keeps exactly this set out of the product's
+    history (`worker_wrapper.injected_paths`).
+    """
+
+    #: Claude Code reads this by itself, and the product kit ships no CLAUDE.md.
+    CLAUDE_INSTRUCTIONS = "CLAUDE.md"
+    #: Codex and Droid read `AGENTS.md` by themselves, but in a scaffolded
+    #: product that file is a *tracked* kit template. The orchestrator's own
+    #: instructions therefore go to a file of its own, and the turn prompt names
+    #: it; the product's AGENTS.md stays exactly as the kit wrote it.
+    AGENT_INSTRUCTIONS = "WORKER_INSTRUCTIONS.md"
+    #: The current task, written by worker-manager and rewritten each turn.
+    TASK = "TASK.md"
+    #: The worker's report for the turn, read and removed by the wrapper.
+    REPORT = "REPORT.md"
+    #: The agent's own running notes, asked for by the developer instructions.
+    PROGRESS = "PROGRESS.md"
+    #: Story-level context and the archive of finished tasks.
+    STORY_DIR = ".story"
+    #: Marks a checkout whose venvs have been repointed at /workspace.
+    VENV_SENTINEL = ".venv_paths_fixed"

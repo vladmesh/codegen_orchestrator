@@ -14,6 +14,7 @@ import textwrap
 from types import SimpleNamespace
 
 import pytest
+from worker_wrapper.injected_paths import EXCLUDE_LINES, offending_paths
 from worker_wrapper.runners.noop import NoopRunner
 
 SENTINEL = "codegen-change-set v1"
@@ -512,8 +513,14 @@ class TestScriptedRunAgainstRealProductHooks:
         # The kit's `make setup` ends by enabling the hooks; that is the step the runner
         # has to run rather than simulate.
         (workspace / "Makefile").write_text("setup:\n\t@git config core.hooksPath .githooks\n")
-        # Injected by the worker manager for AgentType.NOOP, not the product's content.
-        (workspace / "CLAUDE.md").write_text("# orchestrator instructions\n")
+        # Injected by the orchestrator for AgentType.NOOP, not the product's content.
+        # One of every kind in the set: the two instruction files, the turn's own
+        # documents, the agent's notes, the venv sentinel and the story archive.
+        for name in ("CLAUDE.md", "WORKER_INSTRUCTIONS.md", "PROGRESS.md", "REPORT.md"):
+            (workspace / name).write_text("# orchestrator internal\n")
+        (workspace / ".venv_paths_fixed").write_text("")
+        (workspace / ".story" / "old_tasks").mkdir(parents=True)
+        (workspace / ".story" / "STORY.md").write_text("# story\n")
         (workspace / "TASK.md").write_text(change_set("@@ create pkg/new.py\nbody\n"))
         return remote, workspace
 
@@ -539,10 +546,17 @@ class TestScriptedRunAgainstRealProductHooks:
         assert namespace["main"](str(workspace)) == 0
 
         committed = _git(remote, "show", "--name-only", "--format=", "HEAD").split()
-        assert "CLAUDE.md" not in committed
-        assert "TASK.md" not in committed
+        assert "pkg/new.py" in committed
+        assert offending_paths(committed) == [], "no injected path may reach the product"
         assert (workspace / "CLAUDE.md").exists(), "excluded, not deleted"
-        assert "/CLAUDE.md" in (workspace / ".git/info/exclude").read_text()
+        exclude = (workspace / ".git/info/exclude").read_text()
+        assert all(line in exclude for line in EXCLUDE_LINES)
+
+    def test_the_excluded_set_is_the_packages_one(self, tmp_path):
+        """The script carries the set as data; it does not keep a second copy of it."""
+        namespace = load_script()
+
+        assert namespace["WORKER_INTERNAL_FILES"] == list(EXCLUDE_LINES)
 
     def test_the_exclude_rule_is_written_once(self, tmp_path):
         namespace = load_script()
