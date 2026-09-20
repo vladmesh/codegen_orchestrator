@@ -224,6 +224,44 @@ class TestASourceThatCouldNotAnswer:
         assert proof.failures
 
 
+def run_ctx() -> dict:
+    """The context one run's intervention proof is recorded on."""
+    return {
+        "project_id": PROJECT,
+        "manifest": SimpleNamespace(run_id="run-1"),
+        "run_po_input_cursor": "0-0",
+    }
+
+
+def api_of(handler) -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(handler))
+
+
+def story_handler(notification: httpx.Response):
+    """One completed story, and whatever the owner-notification route answers."""
+    asked: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.path)
+        if request.url.path == "/api/stories/":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": STORY,
+                        "status": StoryStatus.COMPLETED.value,
+                        "quarantine_reason": None,
+                    }
+                ],
+            )
+        return notification
+
+    return handle, asked
+
+
+NO_PARK = httpx.Response(404, json={"detail": "not found"})
+
+
 class TestTheStateSourceReadsARouteThatCarriesTheField:
     """`StoryRead` has no `owner_notification`, so the listing can never answer.
 
@@ -235,38 +273,9 @@ class TestTheStateSourceReadsARouteThatCarriesTheField:
     the contract rather than a detail of one reading of the code.
     """
 
-    @staticmethod
-    def _ctx() -> dict:
-        return {
-            "project_id": PROJECT,
-            "manifest": SimpleNamespace(run_id="run-1"),
-            "run_po_input_cursor": "0-0",
-        }
-
-    @staticmethod
-    def _client(handler) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(handler))
-
-    @staticmethod
-    def _handler(notification: httpx.Response):
-        asked: list[str] = []
-
-        def handle(request: httpx.Request) -> httpx.Response:
-            asked.append(request.url.path)
-            if request.url.path == "/api/stories/":
-                return httpx.Response(
-                    200,
-                    json=[
-                        {
-                            "id": STORY,
-                            "status": StoryStatus.COMPLETED.value,
-                            "quarantine_reason": None,
-                        }
-                    ],
-                )
-            return notification
-
-        return handle, asked
+    _ctx = staticmethod(run_ctx)
+    _client = staticmethod(api_of)
+    _handler = staticmethod(story_handler)
 
     @pytest.mark.asyncio
     async def test_it_asks_the_per_story_owner_notification_route(self):
@@ -311,3 +320,87 @@ class TestTheStateSourceReadsARouteThatCarriesTheField:
         )
         assert state["outcome"] == "unaskable"
         assert ctx["no_intervention_error"]
+
+
+class TestTheProofIsTakenBeforeAnythingReadsIt:
+    """The ordering, driven rather than described.
+
+    `record_no_intervention` was called from the pipeline fixture's `finally`,
+    and a module-scoped generator fixture runs that at *teardown* — after the
+    last test that used it. So the proof was written to the context strictly
+    after every assertion about it had already run, and
+    `test_no_story_of_this_run_ever_waited_for_a_person` failed
+    `KeyError: 'no_intervention'` on stand run 35486586267 while the run itself
+    had parked nothing. An assertion that always raises `KeyError` asserts
+    nothing, exactly like a kind that is always `unaskable`.
+
+    `with_pre_teardown_proofs` is that ordering as one drivable thing: whatever
+    it yields already carries every proof `PRE_TEARDOWN_PROOF_KEYS` names.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_context_a_test_receives_already_carries_the_proof(self):
+        handle, _asked = story_handler(NO_PARK)
+        ctx = run_ctx()
+
+        async def phases():
+            assert "no_intervention" not in ctx
+            yield ctx
+
+        received: list[dict] = []
+        async with api_of(handle) as api:
+            async for value in pipeline_helpers.with_pre_teardown_proofs(
+                phases(), api, ctx, command=_no_po_events
+            ):
+                received.append(dict(value))
+
+        assert received, "the phases' context never reached the caller"
+        proof = received[0]["no_intervention"]
+        assert sorted(check["kind"] for check in proof["checks"]) == sorted(INTERVENTION_KINDS)
+        assert received[0]["no_intervention_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_every_key_the_fixture_promises_is_recorded(self):
+        """The promise is the tuple, so a proof added to it cannot be forgotten."""
+        handle, _asked = story_handler(NO_PARK)
+        ctx = run_ctx()
+        async with api_of(handle) as api:
+            await pipeline_helpers.record_pre_teardown_proofs(api, ctx, command=_no_po_events)
+
+        for key in pipeline_helpers.PRE_TEARDOWN_PROOF_KEYS:
+            assert key in ctx, key
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_reached_the_tests_still_records_it(self):
+        """The `finally` path: a phase raised, and the artifact still gets the proof."""
+        handle, _asked = story_handler(NO_PARK)
+        ctx = run_ctx()
+        async with api_of(handle) as api:
+            await pipeline_helpers.record_pre_teardown_proofs(api, ctx, command=_no_po_events)
+
+        assert ctx["no_intervention"]["subject"] == "run run-1"
+
+    @pytest.mark.asyncio
+    async def test_the_second_call_keeps_the_proof_the_first_one_took(self):
+        """Idempotent, because both the yield and the `finally` ask for it.
+
+        The first answer is the one taken while the run's own history was still
+        whole, so a later call must not re-ask and must not overwrite it.
+        """
+        handle, asked = story_handler(NO_PARK)
+        ctx = run_ctx()
+        async with api_of(handle) as api:
+            async for _ in pipeline_helpers.with_pre_teardown_proofs(
+                _one_yield(ctx), api, ctx, command=_no_po_events
+            ):
+                pass
+            taken = ctx["no_intervention"]
+            after_first = list(asked)
+            await pipeline_helpers.record_pre_teardown_proofs(api, ctx, command=_no_po_events)
+
+        assert ctx["no_intervention"] is taken
+        assert asked == after_first
+
+
+async def _one_yield(ctx: dict):
+    yield ctx

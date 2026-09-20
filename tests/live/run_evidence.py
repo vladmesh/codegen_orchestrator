@@ -166,6 +166,7 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
+from run_proof import ProofCheck, ProofOutcome
 import structlog
 from suite_outcome import failed_tests, session_exit_status, suite_failed
 
@@ -309,7 +310,12 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      hard-coded job name, and a variant that establishes the kit package route
 #      from its deployment carries those facts in `brief.package_route`. The
 #      verdict counts exactly the facts the scenario owes.
-EVIDENCE_SCHEMA_VERSION = 20
+# v21: the run's two proofs about itself — zero intervention and no residue —
+#      are carried in `proofs`, each with its outcome, its checks in the words
+#      their source was asked in, and the reason for any kind that could not be
+#      asked. Before this a run that failed one of them left a reader nothing to
+#      read: stand run 35486586267 failed both and the document named neither.
+EVIDENCE_SCHEMA_VERSION = 21
 EVIDENCE_KIND = "worker_failure_attribution"
 
 #: Every Product Brief fact this document can carry, in the order it is written.
@@ -3760,6 +3766,87 @@ def combination_label(ctx: dict) -> str:
     return f"worker-{worker}-qa-{qa}"
 
 
+PROOFS_NOTE = (
+    "The two proofs the run takes about itself. The zero-intervention proof is "
+    "taken before teardown, because cleanup deletes the PO history it reads; the "
+    "residue proof is taken after it, because its questions are only meaningful "
+    "once the removals have happened — so the residue section is filled by the "
+    "finalising write, not by the early crash-safety copy. Each check carries "
+    "the question in the words its source was asked it in, its outcome, and — "
+    "when the outcome is `unaskable` — the reason the source could not answer. "
+    "Stand run 35486586267 failed on both proofs and neither appeared here at "
+    "all, so its reader had a red run and no sentence about why."
+)
+
+#: Each proof a run takes about itself: the context key it is recorded under,
+#: and what its absence from the context means. A proof that was never taken is
+#: a stated absence here — never a blank and never an empty proof, which would
+#: read as a proof that found nothing.
+PROOF_SECTIONS: dict[str, tuple[str, str]] = {
+    "intervention": (
+        "no_intervention",
+        "this run recorded no zero-intervention proof, so nothing asked whether "
+        "any story of it ever waited for a person",
+    ),
+    "residue": (
+        "run_residue",
+        "this run recorded no residue proof: cleanup did not reach the point "
+        "where it asks whether anything of the run is left",
+    ),
+}
+
+
+def _proof_check(check: dict) -> ProofCheck:
+    """One recorded check, back in the type that knows how to judge it.
+
+    The verdict is `ProofCheck.failure`'s and not a second copy of it written
+    here: the document says what the proof said, in the proof's own words.
+    """
+    return ProofCheck(
+        kind=check["kind"],
+        question=check["question"],
+        outcome=ProofOutcome(check["outcome"]),
+        findings=tuple(check.get("findings") or ()),
+        unaskable_reason=check.get("unaskable_reason"),
+    )
+
+
+def proof_capture(ctx: dict, key: str, missing: str) -> Capture:
+    """One proof as the artifact carries it: its verdict, then its checks.
+
+    `outcome` is the reader's first line — `proven` only when every kind was
+    asked and answered with nothing — and `failures` is the same sentence the
+    run was failed with, so a reader does not have to re-derive it from the
+    checks below it.
+    """
+    proof = ctx.get(key)
+    if not isinstance(proof, dict) or not proof:
+        return Capture.missed(missing)
+    failures = [
+        failure
+        for failure in (_proof_check(check).failure() for check in proof.get("checks", []))
+        if failure is not None
+    ]
+    return Capture.captured(
+        {
+            **proof,
+            "outcome": "proven" if not failures else "unproven",
+            "failures": failures,
+        }
+    )
+
+
+def run_proofs(ctx: dict) -> dict:
+    """Both proofs, each with its outcome and the reason for any it could not take."""
+    return {
+        "note": PROOFS_NOTE,
+        **{
+            name: proof_capture(ctx, key, missing).as_dict()
+            for name, (key, missing) in PROOF_SECTIONS.items()
+        },
+    }
+
+
 def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None = None) -> dict:
     """Assemble the whole artifact for one combination from the run's context."""
     root = root if root is not None else orchestrator_root()
@@ -3844,6 +3931,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "developer_instructions": developer_instructions(ctx, records),
         "workers": retain_worker_bodies(ctx, records),
         "capture_errors": collector.errors,
+        "proofs": run_proofs(ctx),
         "privacy": PRIVACY_STATEMENT,
     }
 

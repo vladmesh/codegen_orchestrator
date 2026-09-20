@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- The PO checkpoint presence query answers with a row rather than a rendered boolean, so the run's residue
+  proof asks its `po_checkpoint_thread` kind instead of reporting it unaskable on every run.
+- The run's zero-intervention proof is taken before the pipeline fixture hands its context to the tests, so the
+  assertion about it reads a proof instead of raising `KeyError` on every run.
+- The run-evidence document carries both of the run's proofs about itself, each with its outcome and with the
+  reason for any kind that could not be asked, so a red run explains itself without being re-run.
 - Run evidence judges the Product Brief facts the run's own scenario declares it owes, so a green
   `mega-brief-package` run is green and carries its deployment's package route (`issue:62bc9840e23a44c2098b`).
 - The level-1 evidence reports the Product Brief it confirmed instead of "this is not a Product Brief scenario".

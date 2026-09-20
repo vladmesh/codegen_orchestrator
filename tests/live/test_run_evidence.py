@@ -1,9 +1,14 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
+import live_harness
 from live_harness import OwnershipManifest
+import pipeline_helpers
 import pytest
 import run_evidence
 from run_evidence import (
@@ -34,6 +39,8 @@ from run_evidence import (
     role_from_worker_id,
     write_artifact,
 )
+import run_intervention
+import run_residue
 import suite_outcome
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -47,6 +54,7 @@ from shared.live_harness_cleanup import (
     MERGE_BASE_IS_HEAD_REFERENCE,
     MERGE_BASE_REFERENCE,
     PRE_MERGE_DEFAULT_HEAD_REFERENCE,
+    RESIDUE_FINDINGS_KEY,
 )
 
 pytestmark = pytest.mark.needs_no_api_credential
@@ -1150,7 +1158,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 20
+    assert EVIDENCE_SCHEMA_VERSION == 21
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1246,6 +1254,18 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     assert artifact["qa"]["state"] == QAExercise.NOT_EXERCISED.value
     assert artifact["capture_errors"] == []
+    # v21: a run that took neither proof says so for each of them, by name. The
+    # run this replaces failed both and the document mentioned neither.
+    assert artifact["proofs"]["intervention"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": run_evidence.PROOF_SECTIONS["intervention"][1],
+    }
+    assert artifact["proofs"]["residue"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": run_evidence.PROOF_SECTIONS["residue"][1],
+    }
     assert "redact_diagnostic" in artifact["privacy"]
 
     worker = artifact["workers"][0]
@@ -4491,3 +4511,138 @@ def test_the_level1_assertion_fails_when_the_criteria_were_never_read(workspace,
     failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
     assert len(failures) == 1
     assert "was never read by this run" in failures[0]
+
+
+# ── The run's two proofs about itself, in the document a reader has ──────
+#
+# Stand run 35486586267 failed on both of them and the artifact it wrote named
+# neither: no residue section, no intervention section, and `capture_errors`
+# empty. The reason the run was red existed only in the suite's stderr, which is
+# not evidence anybody keeps. These drive the real recorders — the ones the live
+# fixture calls — and then read the document.
+
+
+def _proofs_ctx(collector, **overrides) -> dict:
+    return base_ctx(
+        collector,
+        manifest=SimpleNamespace(run_id=RUN_ID, resources=[]),
+        **overrides,
+    )
+
+
+def _clean_residue_ops():
+    return run_residue.ResidueOps(
+        run_labelled_containers=lambda _run: [],
+        compose_project_containers=lambda _project: [],
+        off_host_residue=lambda _inventory: {
+            kind: {RESIDUE_FINDINGS_KEY: []}
+            for kind in ("github_repository", "registry_repositories", "target_containers")
+        },
+        workspace_entries=lambda _entries: [],
+        redis_keys=lambda _patterns: [],
+        story_worker_bindings=lambda _stories: [],
+        po_checkpoint_rows=lambda _inventory: [],
+    )
+
+
+def _record_residue(monkeypatch, ctx: dict, ops) -> None:
+    """Drive the real residue recorder, whatever it ends up proving."""
+    monkeypatch.setattr(run_residue, "host_residue_ops", lambda *_args: (ops, lambda _entries: []))
+    try:
+        pipeline_helpers.prove_nothing_left(ctx, object())
+    except live_harness.CleanupError:
+        pass
+
+
+async def _record_intervention(ctx: dict, notification: httpx.Response) -> None:
+    """Drive the real zero-intervention recorder against a fake control plane."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/stories/":
+            return httpx.Response(
+                200,
+                json=[{"id": "story-1", "status": "completed", "quarantine_reason": None}],
+            )
+        return notification
+
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handle)
+    ) as api:
+        await pipeline_helpers.record_no_intervention(api, ctx, command=lambda *_args: [])
+
+
+class TestBothProofsExplainThemselvesInTheArtifact:
+    def test_a_proven_run_carries_both_verdicts_and_every_question_asked(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        ctx = _proofs_ctx(
+            collector_for(codex_docker),
+            run_po_input_cursor="0-0",
+            po_thread_id="po-chat-999000001",
+            po_checkpoint_snapshot={"checkpoints": ["|1f0-aaa"]},
+        )
+        asyncio.run(_record_intervention(ctx, httpx.Response(404, json={"detail": "none"})))
+        _record_residue(monkeypatch, ctx, _clean_residue_ops())
+
+        proofs = build_artifact(ctx, root=tmp_path)["proofs"]
+
+        for name in ("intervention", "residue"):
+            section = proofs[name]
+            assert section["status"] == CaptureStatus.CAPTURED.value, section
+            assert section["value"]["outcome"] == "proven"
+            assert section["value"]["failures"] == []
+        assert {check["kind"] for check in proofs["residue"]["value"]["checks"]} == set(
+            run_residue.RESIDUE_KINDS
+        )
+        assert {check["kind"] for check in proofs["intervention"]["value"]["checks"]} == set(
+            run_intervention.INTERVENTION_KINDS
+        )
+
+    def test_a_kind_that_could_not_be_asked_carries_its_reason(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        """The residue failure of run 35486586267, as the document would hold it."""
+        ctx = _proofs_ctx(
+            collector_for(codex_docker),
+            po_thread_id="po-chat-999000001",
+            po_checkpoint_snapshot=None,
+            po_checkpoint_snapshot_error="PoCheckpointError: reading the tables failed",
+        )
+        _record_residue(monkeypatch, ctx, _clean_residue_ops())
+
+        residue = build_artifact(ctx, root=tmp_path)["proofs"]["residue"]["value"]
+        po = next(check for check in residue["checks"] if check["kind"] == "po_checkpoint_thread")
+        assert residue["outcome"] == "unproven"
+        assert po["outcome"] == "unaskable"
+        assert "reading the tables failed" in po["unaskable_reason"]
+        assert any("po_checkpoint_thread" in failure for failure in residue["failures"])
+
+    def test_a_park_the_run_owns_is_named_in_the_document(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        ctx = _proofs_ctx(collector_for(codex_docker), run_po_input_cursor="0-0")
+        asyncio.run(
+            _record_intervention(
+                ctx,
+                httpx.Response(
+                    200,
+                    json={"event": "story_blocked", "state": "owed", "story_id": "story-1"},
+                ),
+            )
+        )
+
+        intervention = build_artifact(ctx, root=tmp_path)["proofs"]["intervention"]["value"]
+        assert intervention["outcome"] == "unproven"
+        assert any("waiting_human_review" in failure for failure in intervention["failures"])
+
+    def test_a_proof_that_was_never_taken_says_so_rather_than_reading_as_clean(
+        self, codex_docker, tmp_path
+    ):
+        """The shape of run 35486586267's document: neither section existed at all."""
+        proofs = build_artifact(_proofs_ctx(collector_for(codex_docker)), root=tmp_path)["proofs"]
+
+        for name in ("intervention", "residue"):
+            section = proofs[name]
+            assert section["status"] == CaptureStatus.MISSED.value
+            assert section["value"] is None
+            assert section["reason"] == run_evidence.PROOF_SECTIONS[name][1]
