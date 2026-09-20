@@ -140,13 +140,51 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 |------|----------------|-------|----------|----------------|
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
-| Full | `test-live-mega-noop` | ~3 | ~7-10 min | Deploy, infra, full pipeline end-to-end |
+| Full (level 1) | `test-live-mega-noop` | 37 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy |
 
 **Key properties**:
 - Module-scoped async fixtures share one pipeline run across tests per tier
 - Auto-cleanup: GitHub repos, server containers, DB records (SQL cascade), port allocations
 - Debug dump: captures context + last 30 lines of docker logs on failure
 - Queue flush at fixture start prevents stale message pollution
+
+### What level 1 proves — and what it does not
+
+`mega-noop` (`tests/live/test_full_pipeline.py::TestFullPipeline`) is the free deterministic
+lifecycle: **no model is asked anything, at any stage**. The PO document is a constant
+(`tests/live/level1_brief.py`) driven through the released PO tools, the plan is admitted through
+the architect's own coverage routes by the harness, the developer is the scripted `NoopRunner`, and
+QA is the deterministic health-only observation. Its budget is the ledger in
+`shared/stand_deadlines.py`, whose entries are the waits themselves; the 155-minute cap is derived
+from them and stated in `tests/live/README.md`.
+
+It proves, on real services and a real deployment: a user that registered itself through the
+product's own front door — a Telegram id nobody has used, a promo code minted through the internal
+API and redeemed by that named actor, and the engineering budget policy that redemption armed, which
+every paid admission of the run is then judged against; a two-module bot product whose token is bound
+through the product route; a Product Brief confirmed and frozen through `present_product_brief` /
+`confirm_product_brief` / `create_story`, released only by the one admission step, and planned by
+nothing but this run; two ordered scripted engineering Tasks on one reused Story worker; the
+generated product's own CI, the merged deploy and the settings seed the confirmed brief asked for,
+read back off the deployment; deterministic QA, the completed Story, the durable owner
+notification a *bot* product's owner is owed; then **a second story on the same project** in the
+workspace the first left behind, with its own corrected brief revision, its own deploy through the
+PR poller and its own completion message; an explicit undeploy; and finally the two proofs the run
+takes about itself — that it left nothing behind and that no story of it ever waited for a person.
+
+It cannot catch anything that only a model does. There is no developer agent turn, so no prompt,
+no instruction injection, no agent-written diff, no runner step a real agent takes (`make
+test-integration`, and the one-shot compose containers it leaves behind, are a real developer's
+path, not this one) and no transcript to judge. There is no Architect turn, so nothing here shows
+that a real architect plans a brief, covers its requirements or publishes a usable acceptance
+criterion. There is no QA executor turn, so no product behaviour is judged by a model: the QA gate
+accepts `/health` answering and nothing else. It says nothing about executor selection, paid-run
+admission of a model call, provider cost or transcript retention beyond the noop settlement rows it
+asserts. Those are the paid suites' subject: `mega-llm` for one developer and one QA executor pair,
+`mega-brief` for the Architect-planned brief with a real developer and central QA,
+`mega-brief-package` for the same path onto the kit package route, and `matrix` for all four pairs.
+A level-1 run that is green therefore says the platform works end to end without a model — never
+that the product a model would have built is good.
 
 ## Integration Test Architecture
 

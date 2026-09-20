@@ -32,6 +32,7 @@ PIPELINE_REQUIRED_KEYS = {
     "supervisor.qa_max_fix_attempts",
     "supervisor.resource_wait_timeout_minutes",
     "supervisor.resource_wait_metrics_freshness_seconds",
+    "supervisor.qa_handoff_target_held_max_minutes",
     "supervisor.temporary_access_ttl_minutes",
     "supervisor.temporary_access_grant_stale_minutes",
     "supervisor.temporary_access_max_grant_attempts",

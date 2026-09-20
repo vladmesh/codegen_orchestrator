@@ -154,6 +154,11 @@
   category: supervisor
   description: "Minutes a queued QA run may sit unstarted before the supervisor finishes its handoff from the stored plan"
 
+- key: supervisor.qa_handoff_target_held_max_minutes
+  value: 4
+  category: supervisor
+  description: "Minutes a QA handoff may keep being refused by a live grant on its target before the QA run is failed with the holder named"
+
 - key: supervisor.temporary_access_ttl_minutes
   value: 60
   category: supervisor

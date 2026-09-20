@@ -1,3 +1,4 @@
+import ast
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -6397,3 +6398,181 @@ def test_an_unreadable_scaffolder_log_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(pipeline_helpers.subprocess, "run", explode)
 
     assert pipeline_helpers.last_scaffolder_event("project-1") == "unreadable (OSError)"
+
+
+# ── The level-1 suite may not skip ──────────────────────────────────────
+#
+# The free deterministic lifecycle is allowed to fail and not allowed to be
+# absent. A `pytest.skip` inside it hides a phase that did not happen — a failed
+# deploy would take the QA assertions with it and the suite would report green
+# — which is why every exit of the level-1 phases raises naming its own phase
+# instead (`_level1_brief_plan_and_engineering`, `_extension`). The paid
+# `TestFullPipelineLLM` class is the one place a skip is legitimate: its
+# assertions are about an agent's output and a cell that never got one has
+# nothing to judge.
+LEVEL1_SUITE_MODULE = Path(__file__).with_name("test_full_pipeline.py")
+SKIPPABLE_SUITE_CLASS = "TestFullPipelineLLM"
+
+
+def _skip_call_lines(tree: ast.AST) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "skip"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pytest"
+    ]
+
+
+def test_only_the_paid_class_of_the_level1_module_may_skip():
+    """No `pytest.skip` outside the paid class, so none can hide a failed phase."""
+    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
+    paid = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == SKIPPABLE_SUITE_CLASS
+    ]
+    assert len(paid) == 1, f"{SKIPPABLE_SUITE_CLASS} is not a class of {LEVEL1_SUITE_MODULE.name}"
+    paid_skips = set(_skip_call_lines(paid[0]))
+
+    offending = sorted(set(_skip_call_lines(tree)) - paid_skips)
+
+    assert not offending, (
+        f"{LEVEL1_SUITE_MODULE.name} calls pytest.skip outside {SKIPPABLE_SUITE_CLASS} at "
+        f"line(s) {offending}: a skipped level-1 assertion reports a phase that never ran as "
+        "one that was fine. Raise naming the phase instead."
+    )
+
+
+# ── A recording the tests read may not happen at teardown ────────────────
+#
+# The pipeline fixture is a module-scoped generator, so everything in its
+# `finally` runs at *teardown* — after the last test that used it. That is the
+# right moment for a recording only the artifact reads, and the wrong one for a
+# recording an assertion reads: on stand run 35486586267
+# `test_no_story_of_this_run_ever_waited_for_a_person` raised
+# `KeyError: 'no_intervention'` because the proof it asserts was taken there.
+# An assertion that always raises `KeyError` asserts nothing, exactly like a
+# proof kind that is always `unaskable`.
+#
+# So the rule, kind by kind: a context key written by the fixture's `finally` is
+# artifact-only unless `PRE_TEARDOWN_PROOF_KEYS` declares it, and a declared one
+# is also recorded before the context reaches the tests.
+
+PIPELINE_HELPERS_MODULE = Path(pipeline_helpers.__file__)
+PIPELINE_FIXTURE = "_pipeline_run"
+
+
+def _function_nodes(tree: ast.AST) -> dict[str, ast.AST]:
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    return {
+        call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+
+
+def _ctx_keys_written(name: str, functions: dict[str, ast.AST], seen: set[str]) -> set[str]:
+    """Every `ctx["…"] = …` this helper makes, following the helpers it calls."""
+    if name in seen or name not in functions:
+        return set()
+    seen.add(name)
+    node = functions[name]
+    written = {
+        target.slice.value
+        for target in ast.walk(node)
+        if isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "ctx"
+        and isinstance(target.ctx, ast.Store)
+        and isinstance(target.slice, ast.Constant)
+    }
+    for called in _called_names(node):
+        written |= _ctx_keys_written(called, functions, seen)
+    return written
+
+
+def _teardown_recorded_keys() -> set[str]:
+    suite = _function_nodes(ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8")))
+    helpers = _function_nodes(ast.parse(PIPELINE_HELPERS_MODULE.read_text(encoding="utf-8")))
+    finals = [
+        node.finalbody
+        for node in ast.walk(suite[PIPELINE_FIXTURE])
+        if isinstance(node, ast.Try) and node.finalbody
+    ]
+    assert finals, f"{PIPELINE_FIXTURE} has no teardown block to judge"
+    keys: set[str] = set()
+    for body in finals:
+        for statement in body:
+            for called in _called_names(statement):
+                keys |= _ctx_keys_written(called, helpers, set())
+    return keys
+
+
+def _keys_the_level1_tests_read() -> set[str]:
+    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pipeline"
+            and isinstance(node.slice, ast.Constant)
+        ):
+            read.add(node.slice.value)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pipeline"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            read.add(node.args[0].value)
+    return read
+
+
+def test_the_teardown_records_something_and_the_tests_read_something():
+    """Both halves of the rule below have subjects, so it cannot pass vacuously."""
+    assert _teardown_recorded_keys(), "no teardown recording was found to judge"
+    assert _keys_the_level1_tests_read(), "no fixture key was found to be read"
+
+
+def test_no_assertion_reads_a_key_the_fixture_records_only_at_teardown():
+    read = _keys_the_level1_tests_read()
+    recorded_late = _teardown_recorded_keys()
+    declared = set(pipeline_helpers.PRE_TEARDOWN_PROOF_KEYS)
+
+    offending = sorted((read & recorded_late) - declared)
+
+    assert not offending, (
+        f"{LEVEL1_SUITE_MODULE.name} asserts about {offending}, which the fixture's teardown "
+        "is the first thing to record — so the assertion reads a context the key is not on "
+        "yet and raises KeyError on every run. Record it through "
+        "`with_pre_teardown_proofs` before the context reaches the tests, and declare it in "
+        "`PRE_TEARDOWN_PROOF_KEYS`."
+    )
+
+
+def test_the_declared_pre_teardown_proofs_are_taken_before_the_tests_see_the_context():
+    """`_pipeline_run` hands the phases through the wrapper that records them."""
+    suite = _function_nodes(ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8")))
+    loops = [node for node in ast.walk(suite[PIPELINE_FIXTURE]) if isinstance(node, ast.AsyncFor)]
+    assert loops, f"{PIPELINE_FIXTURE} yields nothing to the tests"
+    for loop in loops:
+        assert isinstance(loop.iter, ast.Call), ast.dump(loop.iter)
+        assert isinstance(loop.iter.func, ast.Name)
+        assert loop.iter.func.id == "with_pre_teardown_proofs", (
+            f"{PIPELINE_FIXTURE} yields the phases directly, so a proof recorded in its "
+            "`finally` reaches the tests too late to be asserted"
+        )

@@ -98,6 +98,35 @@ its stated reason instead of its input, exactly as the service-tail branch of
 the redacted text, and a body that hits it says in the artifact that it was
 truncated and at what limit.
 
+**What the developer was told.** Every run — paid or free — retains, for every
+engineering attempt, the two documents the control plane put in front of that
+attempt's agent: the ``TASK.md`` worker-manager injected into the attempt's
+workspace and, where the attempt has one, the ``.story/STORY.md`` worker-wrapper
+wrote beside it. They are read off the host side of the container's own
+``/workspace`` bind mount, on the passes this run already takes, so nothing is
+held open and teardown does not move; a document those passes could not reach
+before the container was removed is reported unread rather than waited for.
+
+An attempt is an engineering **task** of the run, not a container. A story's
+worker is reused across its tasks (``run_evidence``'s own ``run.attempts``
+counts containers, which is a different number), the developer workspace belongs
+to a *repository* rather than to an attempt, and worker-wrapper rewrites
+``/workspace/TASK.md`` at the start of every turn — so the file one attempt was
+given is destroyed in place by the next. Therefore every pass keeps what it
+read: the readings of a document are accumulated, distinct by the digest of
+their own bytes, and nothing already read is ever dropped. A reading is then
+attributed to an attempt by the task's own description appearing in it — the
+text ``build_feature_task`` writes into ``TASK.md`` under "What To Do" verbatim —
+and the story document by the reading written closest to it, since
+``_prepare_workspace`` writes both in the same turn.
+
+``developer_instructions`` presents that attempt by attempt and answers, in
+``complete``, whether anything is missing: a missed capture naming every gap, so
+the section cannot read as complete while a document is unread. It also states
+per attempt whether the captured ``TASK.md`` quotes that task's acceptance
+criteria verbatim, which ``attempts_not_quoting_acceptance_criteria`` is the
+suite's own assertion over.
+
 **What ``failure`` and ``verdict`` claim, and what they do not.**
 ``run_failure`` answers one question — did this *combination* succeed — from
 three sources: pytest's per-test reports, pytest's own exit status, and the
@@ -128,6 +157,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -136,6 +166,7 @@ from typing import TypedDict
 
 from brief_telemetry import evidence as brief_telemetry_evidence
 from live_harness import resolve_repo_root
+from run_proof import ProofCheck, ProofOutcome
 import structlog
 from suite_outcome import failed_tests, session_exit_status, suite_failed
 
@@ -253,8 +284,78 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      the diff of the branch it produced (`branch_diff`) — each a capture, each
 #      redacted on the stand host and bounded by FAILURE_RETENTION_MAX_CHARS. A
 #      combination that completed carries none of the three.
-EVIDENCE_SCHEMA_VERSION = 17
+# v18: every engineering attempt carries what the developer was actually told —
+#      the `TASK.md` worker-manager injected into its workspace and, where it has
+#      one, the `.story/STORY.md` beside it — on the worker record's `documents`
+#      and, attempt by attempt, in `developer_instructions`. A document that could
+#      not be read says which kind of not-here it is and why, and
+#      `developer_instructions.complete` is a missed capture naming every gap, so
+#      the section cannot read as complete while one is unread. Each attempt also
+#      states whether the captured `TASK.md` quotes its task's acceptance criteria
+#      verbatim.
+# v19: a lifecycle that runs a *second story on the same project* retains it as
+#      its own section — the brief revision the correction opened, the manager's
+#      first `checkout_branch` of the story branch with the duration it took as a
+#      number, where the branch was cut from and what that base contains, which
+#      deploy path created the deploy Run, the project's own CI runs for the
+#      merge commit, and every engineering Run of the story. Each is a capture,
+#      so an unread one says why. `developer_instructions` covers both stories'
+#      attempts, because an attempt is the run's and not one story's.
+# v20: the Product Brief section is what the run's own scenario *owes*, named
+#      fact by fact in `brief.obligations`, instead of one boolean for a single
+#      variant. So the level-1 lifecycle — which confirms a brief through the
+#      released PO tools on every run — reports that brief instead of "this is
+#      not a Product Brief scenario", the Architect criterion is judged against
+#      the expectation the run's own variant declared rather than against one
+#      hard-coded job name, and a variant that establishes the kit package route
+#      from its deployment carries those facts in `brief.package_route`. The
+#      verdict counts exactly the facts the scenario owes.
+# v21: the run's two proofs about itself — zero intervention and no residue —
+#      are carried in `proofs`, each with its outcome, its checks in the words
+#      their source was asked in, and the reason for any kind that could not be
+#      asked. Before this a run that failed one of them left a reader nothing to
+#      read: stand run 35486586267 failed both and the document named neither.
+EVIDENCE_SCHEMA_VERSION = 21
 EVIDENCE_KIND = "worker_failure_attribution"
+
+#: Every Product Brief fact this document can carry, in the order it is written.
+#: A scenario declares which of them its run owes on `ctx["brief_obligations"]`,
+#: and only those are collected and only those can make the verdict red.
+BRIEF_FACTS = (
+    "confirmed",
+    "coverage",
+    "admission",
+    "acceptance",
+    "settings_readback",
+    "settings_seed",
+    "job_evidence",
+    "package_route",
+)
+
+#: What a paid confirmed-brief variant owes: the whole durable chain from the
+#: frozen brief to the job central QA fired against the deployed product.
+PAID_BRIEF_OBLIGATIONS = (
+    "confirmed",
+    "coverage",
+    "admission",
+    "acceptance",
+    "settings_readback",
+    "settings_seed",
+    "job_evidence",
+)
+
+#: What a variant that has to establish the kit package route owes on top of it.
+PACKAGE_BRIEF_OBLIGATION = "package_route"
+
+#: What the free level-1 lifecycle owes. It confirms a Product Brief through the
+#: released PO tools and no model is asked anything, so the confirmation is a
+#: fact of every run; it publishes no Architect acceptance criterion and its
+#: deterministic QA fires no product job, so those are not facts it can owe.
+LEVEL1_BRIEF_OBLIGATIONS = ("confirmed",)
+
+#: Where a run declares the two things above about its own brief scenario.
+BRIEF_OBLIGATIONS_CTX_KEY = "brief_obligations"
+BRIEF_EXPECTED_CRITERION_CTX_KEY = "brief_expected_criterion"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
 # here and a tail read there are the same size of thing.
@@ -291,6 +392,37 @@ WORKER_TYPE_LABEL = f"{WorkerLabel.TYPE.value}=worker"
 # The container side of the transcript bind mount
 # (worker-manager container_config.TRANSCRIPT_MOUNT).
 TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
+
+# The container side of the workspace bind mount, and the two documents the
+# control plane puts inside it to tell a developer what to do. worker-manager
+# injects the task content at `/workspace/TASK.md` (manager.py
+# `_inject_worker_materials`) and worker-wrapper writes the story context to
+# `/workspace/.story/STORY.md` (wrapper.py `_write_story_md`). Both are read
+# here off the host side of that same bind mount, exactly as the transcript is.
+WORKSPACE_MOUNT = "/workspace"
+TASK_DOCUMENT = "TASK.md"
+STORY_DOCUMENT = ".story/STORY.md"
+# What "what the developer was told" is, for one engineering attempt. TASK.md is
+# required — an engineering attempt that was told nothing is not a thing that can
+# have happened — while STORY.md is written only for story-scoped work, so an
+# attempt without one is a stated absence and not a gap.
+ENGINEERING_DOCUMENTS = (TASK_DOCUMENT, STORY_DOCUMENT)
+REQUIRED_ENGINEERING_DOCUMENTS = frozenset({TASK_DOCUMENT})
+
+NO_WORKSPACE_MOUNT_REASON = (
+    f"the container declares no {WORKSPACE_MOUNT} bind mount, so what this attempt "
+    "was told cannot be read from the host"
+)
+QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON = (
+    "a QA executor is not an engineering attempt: it is given a probe command, not "
+    "the task and story documents a developer is told to work from"
+)
+DOCUMENTS_REMOVED_WITH_CONTAINER_REASON = (
+    "the container was removed before any evidence pass read its workspace, and the "
+    "removal record worker-manager writes carries no workspace document. Nothing here "
+    "holds a container open to change that: the capture reads what the passes the run "
+    "already takes can reach, and says so when they could not reach this"
+)
 
 # The bounded, redacted snapshot the workflow takes from the *target* host when
 # this artifact says the deployed URL stopped answering after a successful
@@ -439,6 +571,44 @@ class RoleEvidence(StrEnum):
     # ids are minted `qa-{request_id[:12]}` (clients/qa_worker.py) and developer
     # ids `dev-{repo}-{request_id[:8]}` (clients/worker_spawner.py).
     WORKER_ID = "worker_id_prefix"
+
+
+class DocumentStatus(StrEnum):
+    """What became of one document an engineering attempt was given.
+
+    Four states, and they never merge into three. "This attempt was given no
+    STORY.md" and "this attempt's STORY.md could not be read" are different
+    findings about the run, and an artifact that spells both `missed` cannot be
+    asked whether it is complete.
+    """
+
+    # The body is here, redacted and bounded like every other retained body.
+    CAPTURED = "captured"
+    # The workspace was read and this document is not in it. For STORY.md that
+    # is an ordinary fact about a non-story attempt; for TASK.md it is a gap,
+    # because `REQUIRED_ENGINEERING_DOCUMENTS` says so.
+    ABSENT = "absent"
+    # The document exists or may exist and this run could not read it, with the
+    # reason. Always a gap.
+    UNREADABLE = "unreadable"
+    # This worker is not an engineering attempt at all, so there is no document
+    # of this kind for it to have been given.
+    NOT_APPLICABLE = "not_applicable"
+
+
+class CriteriaCheck(StrEnum):
+    """Whether one attempt's TASK.md quotes its task's acceptance criteria."""
+
+    # The task's acceptance criteria appear in the captured TASK.md verbatim.
+    QUOTED = "quoted"
+    # The task carries acceptance criteria and the captured TASK.md does not
+    # carry them verbatim — or carries no TASK.md at all. The one failing state.
+    NOT_QUOTED = "not_quoted"
+    # The task carries no acceptance criteria, so there is nothing to quote.
+    NO_CRITERIA = "no_criteria"
+    # This run never read the task, so what TASK.md would have to quote is not
+    # known here. Claiming either answer would be an invention.
+    CRITERIA_UNREAD = "criteria_unread"
 
 
 class TerminalState(StrEnum):
@@ -917,6 +1087,167 @@ def _transcript_evidence(inspected: dict, worker_id: str) -> dict:
     }
 
 
+def _document(name: str, path: str | None, status: DocumentStatus, reason: str | None) -> dict:
+    """One document of one workspace, as the pass that just looked at it found it."""
+    return {
+        "name": name,
+        "path": path,
+        "status": status.value,
+        "reason": reason,
+        "readings": [],
+    }
+
+
+def _unread_document(
+    name: str, status: DocumentStatus, reason: str, path: str | None = None
+) -> dict:
+    """A document that is not here, saying which kind of not-here it is and why."""
+    return _document(name, path, status, reason)
+
+
+def _workspace_document(source: str, name: str, *, now: datetime) -> dict:
+    """Read one document off the host side of this container's workspace mount.
+
+    What comes back is this pass's reading, not the attempt's answer. A worker
+    container is reused across the tasks of one story and rewrites
+    `/workspace/TASK.md` at the start of every turn, so a single reading is one
+    observation of a file that changes; the readings are accumulated across the
+    run's passes and attributed to attempts afterwards.
+    """
+    path = f"{source}/{name}"
+    try:
+        stat = Path(path).stat()
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _unread_document(
+            name,
+            DocumentStatus.ABSENT,
+            f"{path} does not exist: this workspace holds no {name}",
+            path,
+        )
+    except (OSError, UnicodeDecodeError) as error:
+        return _unread_document(
+            name,
+            DocumentStatus.UNREADABLE,
+            f"{path} could not be read from the harness host: {type(error).__name__}",
+            path,
+        )
+    modified_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    body = _retained_body(text, {"path": path, "modified_at": modified_at})
+    if not body.is_captured:
+        return _unread_document(name, DocumentStatus.UNREADABLE, body.reason or "", path)
+    entry = _document(name, path, DocumentStatus.CAPTURED, None)
+    entry["readings"] = [
+        {
+            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+            "modified_at": modified_at,
+            "first_seen_at": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "body": body.as_dict(),
+        }
+    ]
+    return entry
+
+
+def _workspace_documents(inspected: dict, role: WorkerRole, now: datetime) -> dict:
+    """What this container's workspace holds now, document by document.
+
+    This reads host files under the bind mount the container already declares.
+    It starts nothing, holds nothing open and asks the container for nothing, so
+    it neither extends a worker's life nor moves teardown: a document this run's
+    existing passes could not reach before the container was removed is reported
+    unread rather than waited for.
+    """
+    if role is not WorkerRole.DEVELOPER:
+        return {
+            name: _unread_document(
+                name, DocumentStatus.NOT_APPLICABLE, QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    source = next(
+        (
+            mount["Source"]
+            for mount in inspected["Mounts"] or []
+            if mount.get("Destination") == WORKSPACE_MOUNT
+        ),
+        None,
+    )
+    if source is None:
+        return {
+            name: _unread_document(name, DocumentStatus.UNREADABLE, NO_WORKSPACE_MOUNT_REASON)
+            for name in ENGINEERING_DOCUMENTS
+        }
+    if not Path(source).is_dir():
+        return {
+            name: _unread_document(
+                name,
+                DocumentStatus.UNREADABLE,
+                f"{source} is not a readable directory on the harness host, so nothing "
+                "this run's attempts were told can be read from their workspace",
+                f"{source}/{name}",
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    return {name: _workspace_document(source, name, now=now) for name in ENGINEERING_DOCUMENTS}
+
+
+def _unread_documents(role: WorkerRole, reason: str) -> dict:
+    """Every document of a worker whose workspace nothing can be read from."""
+    if role is not WorkerRole.DEVELOPER:
+        return {
+            name: _unread_document(
+                name, DocumentStatus.NOT_APPLICABLE, QA_IS_NOT_AN_ENGINEERING_ATTEMPT_REASON
+            )
+            for name in ENGINEERING_DOCUMENTS
+        }
+    return {
+        name: _unread_document(name, DocumentStatus.UNREADABLE, reason)
+        for name in ENGINEERING_DOCUMENTS
+    }
+
+
+def _merged_readings(previous: list[dict], current: list[dict]) -> list[dict]:
+    """Every distinct thing one document has been while this run watched it.
+
+    Distinct by the digest of its own bytes, so a document read unchanged on ten
+    passes is one reading with a widened window, and a turn that rewrote it is a
+    second reading. Nothing already read is ever dropped: the reading of what one
+    attempt was told is destroyed by the next attempt's write, so a pass that
+    saw it is the only place it exists.
+    """
+    readings = {reading["digest"]: dict(reading) for reading in previous}
+    for reading in current:
+        known = readings.get(reading["digest"])
+        if known is None:
+            readings[reading["digest"]] = dict(reading)
+            continue
+        known["last_seen_at"] = max(known["last_seen_at"], reading["last_seen_at"])
+    return sorted(
+        readings.values(), key=lambda reading: (reading["first_seen_at"], reading["digest"])
+    )
+
+
+def _merged_documents(previous: dict, current: dict) -> dict:
+    """Fold one pass's look at the workspace into what this run has already read.
+
+    The status is the latest pass's — it describes the workspace now — while the
+    readings are cumulative, because what an earlier attempt was told is no
+    longer in the directory to be read again.
+    """
+    documents = {}
+    for name in ENGINEERING_DOCUMENTS:
+        before = previous["documents"].get(name)
+        now = current["documents"].get(name)
+        if before is None or now is None:
+            documents[name] = now if now is not None else before
+            continue
+        entry = dict(now)
+        entry["readings"] = _merged_readings(before["readings"], now["readings"])
+        documents[name] = entry
+    return documents
+
+
 def capture_worker(probe: ContainerProbe, listed: ListedWorker, *, now: datetime) -> dict:
     """Collect one dynamic worker's evidence from a live or exited container.
 
@@ -970,6 +1301,7 @@ def capture_worker(probe: ContainerProbe, listed: ListedWorker, *, now: datetime
         "exit_code": exit_code.as_dict(),
         "log_tail": log_tail.as_dict(),
         "transcript": _transcript_evidence(inspected, listed.worker_id),
+        "documents": _workspace_documents(inspected, role, now),
         "captured_at": now.isoformat(),
     }
 
@@ -1002,6 +1334,7 @@ def _absent_worker(
             "host_dir": Capture.missed(reason).as_dict(),
             "files": Capture.missed(reason).as_dict(),
         },
+        "documents": _unread_documents(role, reason),
         "captured_at": now.isoformat(),
     }
 
@@ -1063,6 +1396,7 @@ def removed_worker_record(evidence: RemovedWorkerEvidence) -> dict:
             else Capture.missed(log_tail.missed_reason)
         ).as_dict(),
         "transcript": transcript,
+        "documents": _unread_documents(role, DOCUMENTS_REMOVED_WITH_CONTAINER_REASON),
         "captured_at": evidence.removed_at,
     }
 
@@ -1192,16 +1526,22 @@ class RunEvidenceCollector:
         """
         worker_id = record["worker_id"]
         existing = self._records.get(worker_id)
-        if existing is not None and _has_exit_code(existing):
-            return
-        if existing is None or _has_exit_code(record):
+        if existing is None:
             self._records[worker_id] = record
             return
-        # The remover could not read the ending either. Keep what the live
-        # observation saw and state the loss in the remover's own words.
-        self._records[worker_id] = _lost_race(
-            existing, self._clock(), reason=record["exit_code"]["reason"]
-        )
+        if _has_exit_code(existing):
+            kept = dict(existing)
+        elif _has_exit_code(record):
+            kept = dict(record)
+        else:
+            # The remover could not read the ending either. Keep what the live
+            # observation saw and state the loss in the remover's own words.
+            kept = _lost_race(existing, self._clock(), reason=record["exit_code"]["reason"])
+        # Whichever ending wins, a document an earlier pass read off the
+        # container's workspace is kept: the remover's record carries none, and
+        # the workspace it was read from is gone.
+        kept["documents"] = _merged_documents(existing, record)
+        self._records[worker_id] = kept
 
     def note_error(self, message: str) -> None:
         """Record a collection failure raised outside this collector."""
@@ -1305,13 +1645,18 @@ class RunEvidenceCollector:
             self._records[record["worker_id"]] = record
             return
         if _has_exit_code(existing) and not _has_exit_code(record):
-            return
-        if existing["container_present"] and not record["container_present"]:
+            kept = dict(existing)
+        elif existing["container_present"] and not record["container_present"]:
             # The container was there and is not any more. What was read of it
             # is worth more than a bare "removed", so keep it and state the loss.
-            self._records[record["worker_id"]] = _lost_race(existing, self._clock())
-            return
-        self._records[record["worker_id"]] = record
+            kept = _lost_race(existing, self._clock())
+        else:
+            kept = dict(record)
+        # A later pass reads the *next* attempt's document out of the same
+        # shared workspace directory, so what this attempt was told is kept from
+        # the pass that read it while this container held it.
+        kept["documents"] = _merged_documents(existing, record)
+        self._records[record["worker_id"]] = kept
 
 
 def classify_outcome(ctx: dict) -> tuple[TerminalState, FailureKind]:
@@ -2499,8 +2844,21 @@ def failure_summary(
     }
 
 
-def _brief_not_required_capture(name: str) -> Capture:
-    return Capture.missed(f"this is not a Product Brief scenario, so {name} is not required")
+def _brief_not_required_capture(ctx: dict, name: str) -> Capture:
+    """Why this run does not owe one brief fact — which is not one answer.
+
+    A run whose scenario confirms no Product Brief at all owes none of them; a
+    run whose scenario confirms one owes the facts *that* scenario can produce
+    and no others, and saying so names the scenario. The level-1 lifecycle is
+    the reason this distinction exists: it confirms a brief on every run and
+    fires no job, and "this is not a Product Brief scenario" was false about
+    both halves.
+    """
+    variant = ctx.get("brief_variant")
+    if not ctx.get(BRIEF_OBLIGATIONS_CTX_KEY):
+        return Capture.missed(f"this scenario confirms no Product Brief, so {name} is not required")
+    named = f"the {variant} scenario" if variant else "this scenario"
+    return Capture.missed(f"{named} does not prove {name}, so it is not required of this run")
 
 
 def _brief_confirmed_capture(ctx: dict) -> Capture:
@@ -2729,24 +3087,53 @@ def _brief_settings_seed_capture(ctx: dict, readback: Capture) -> Capture:
     )
 
 
-def _brief_acceptance_capture(ctx: dict) -> Capture:
+def _brief_acceptance_capture(ctx: dict) -> Capture:  # noqa: PLR0911 - one reason per unmet term
+    """The Architect criterion, judged against *this variant's* expectation.
+
+    The expectation is the run's own — `brief_expected_criterion`, written by
+    the scenario that drove the run and made of the same terms the fixture
+    refused the run on. It used to be the digest variant's job name spelled
+    here, which made a green `mega-brief-package` run red for publishing the
+    `reminders.tick` criterion its own contract asks for
+    (`issue:62bc9840e23a44c2098b`).
+    """
+    expected = ctx.get(BRIEF_EXPECTED_CRITERION_CTX_KEY)
+    if not isinstance(expected, dict) or not expected.get("name"):
+        return Capture.missed(
+            "this run declared no expected Architect criterion, so nothing says which "
+            "scheduled behaviour its contract asked for"
+        )
     acceptance = ctx.get("brief_acceptance")
     criterion = acceptance.get("criterion") if isinstance(acceptance, dict) else None
     if not isinstance(criterion, dict):
+        if isinstance(error := ctx.get("brief_acceptance_error"), str) and error:
+            return Capture.missed(error)
         return Capture.missed(
             "the Architect parsed scheduled acceptance criterion was not retained"
         )
     name = criterion.get("name")
     arguments = criterion.get("arguments")
     observable = criterion.get("observable")
-    if name != "multilingual_digest":
+    if name != expected["name"]:
         return Capture.missed(
-            f"the Architect criterion must name exactly 'multilingual_digest', got {name!r}"
+            f"the Architect criterion must name exactly {expected['name']!r}, got {name!r}"
         )
-    if arguments != {}:
+    if not isinstance(arguments, dict):
         return Capture.missed(
-            "the Architect criterion for 'multilingual_digest' must have arguments {}, got "
+            f"the Architect criterion for {name!r} carries no readable arguments object: "
             f"{arguments!r}"
+        )
+    required = set(expected.get("required_arguments") or ())
+    missing = sorted(required - set(arguments))
+    if missing:
+        return Capture.missed(
+            f"the Architect criterion for {name!r} lacks the required argument(s) "
+            f"{', '.join(repr(one) for one in missing)}: got {arguments!r}"
+        )
+    if not expected.get("allows_other_arguments") and set(arguments) != required:
+        wanted = "{}" if not required else f"exactly the argument(s) {', '.join(sorted(required))}"
+        return Capture.missed(
+            f"the Architect criterion for {name!r} must have arguments {wanted}, got {arguments!r}"
         )
     if not isinstance(observable, str) or not observable:
         return Capture.missed("the Architect criterion has no observable")
@@ -2822,37 +3209,120 @@ def _brief_job_evidence_capture(ctx: dict, acceptance: Capture) -> Capture:
     )
 
 
-def brief_evidence(ctx: dict) -> dict:
-    """Evidence only the named Product Brief live scenario is obliged to collect."""
-    required = bool(ctx.get("brief_scenario"))
-    if not required:
-        return {
-            "required": False,
-            "confirmed": _brief_not_required_capture("confirmation").as_dict(),
-            "coverage": _brief_not_required_capture("coverage").as_dict(),
-            "admission": _brief_not_required_capture("admission").as_dict(),
-            "acceptance": _brief_not_required_capture("acceptance criterion").as_dict(),
-            "settings_readback": _brief_not_required_capture("settings readback").as_dict(),
-            "settings_seed": _brief_not_required_capture("deploy settings seed").as_dict(),
-            "job_evidence": _brief_not_required_capture("job evidence").as_dict(),
+#: What each brief fact is called in the reason a run that does not owe it gives.
+BRIEF_FACT_NAMES = {
+    "confirmed": "the Product Brief confirmation",
+    "coverage": "coverage",
+    "admission": "admission",
+    "acceptance": "an Architect acceptance criterion",
+    "settings_readback": "the settings readback",
+    "settings_seed": "the deploy settings seed",
+    "job_evidence": "job evidence",
+    "package_route": "the kit package route of its deployment",
+}
+
+
+def _brief_package_route_capture(ctx: dict, acceptance: Capture) -> Capture:
+    """What the *deployment* said about the kit package the capability is.
+
+    The suite already refuses to spend a QA turn on a deployment that cannot
+    show this (`pipeline_helpers.record_package_route`), and
+    `test_the_deployed_product_carries_the_kit_package` asserts it — but until
+    now none of it reached the artifact, so a green package run could not be
+    audited from the document it wrote. The facts are the package, its version,
+    the manifest digest, the behaviour the product's own registry attributes to
+    it and the generated files that were read.
+    """
+    facts = ctx.get("brief_package_route")
+    if not isinstance(facts, dict):
+        if isinstance(error := ctx.get("brief_deployment_error"), str) and error:
+            return Capture.missed(error)
+        return Capture.missed(
+            "the deployed product's kit package contract was never read by this run"
+        )
+    required_fields = ("package", "version", "manifest_sha256", "behaviour", "declared_by")
+    absent = [
+        field
+        for field in required_fields
+        if not isinstance(facts.get(field), str) or not facts[field]
+    ]
+    if absent:
+        return Capture.missed("the deployment's package route facts lack: " + ", ".join(absent))
+    expected_declarer = f"package:{facts['package']}"
+    if facts["declared_by"] != expected_declarer:
+        return Capture.missed(
+            f"the deployment attributes {facts['behaviour']!r} to {facts['declared_by']!r}, "
+            f"not to {expected_declarer!r}"
+        )
+    if acceptance.is_captured and facts["behaviour"] != acceptance.value["name"]:
+        return Capture.missed(
+            f"the deployment's package declares {facts['behaviour']!r} while the Architect "
+            f"criterion this run was judged on is {acceptance.value['name']!r}"
+        )
+    read_from = facts.get("read_from")
+    if not isinstance(read_from, list) or not all(isinstance(one, str) for one in read_from):
+        return Capture.missed(
+            "the deployment's package route facts do not say which artifacts were read"
+        )
+    return Capture.captured(
+        {
+            "package": facts["package"],
+            "version": facts["version"],
+            "manifest_sha256": facts["manifest_sha256"],
+            "behaviour": facts["behaviour"],
+            "declared_by": facts["declared_by"],
+            "read_from": list(read_from),
         }
+    )
+
+
+def brief_obligations(ctx: dict) -> tuple[str, ...]:
+    """The brief facts this run's own scenario owes, in document order."""
+    declared = ctx.get(BRIEF_OBLIGATIONS_CTX_KEY) or ()
+    unknown = sorted(set(declared) - set(BRIEF_FACTS))
+    if unknown:
+        raise ValueError(f"unknown Product Brief obligation(s): {', '.join(unknown)}")
+    return tuple(fact for fact in BRIEF_FACTS if fact in set(declared))
+
+
+def brief_evidence(ctx: dict) -> dict:
+    """The Product Brief facts this run's scenario owes, each one collected.
+
+    What is owed is the scenario's declaration and not this module's guess: the
+    paid variants owe the whole durable chain and the package variant owes its
+    deployment's package route on top of it, while the free level-1 lifecycle
+    confirms a brief through the released PO tools and owes that confirmation.
+    A fact the scenario does not owe is written with the stated reason it is
+    not required, and only an owed one can make the verdict red.
+    """
+    owed = brief_obligations(ctx)
     confirmed = _brief_confirmed_capture(ctx)
     coverage = _brief_coverage_capture(ctx, confirmed)
-    admission = _brief_admission_capture(ctx, confirmed, coverage)
     acceptance = _brief_acceptance_capture(ctx)
     settings = _brief_settings_readback_capture(ctx, confirmed)
-    settings_seed = _brief_settings_seed_capture(ctx, settings)
-    job = _brief_job_evidence_capture(ctx, acceptance)
-    return {
-        "required": True,
-        "confirmed": confirmed.as_dict(),
-        "coverage": coverage.as_dict(),
-        "admission": admission.as_dict(),
-        "acceptance": acceptance.as_dict(),
-        "settings_readback": settings.as_dict(),
-        "settings_seed": settings_seed.as_dict(),
-        "job_evidence": job.as_dict(),
+    collected = {
+        "confirmed": confirmed,
+        "coverage": coverage,
+        "admission": _brief_admission_capture(ctx, confirmed, coverage),
+        "acceptance": acceptance,
+        "settings_readback": settings,
+        "settings_seed": _brief_settings_seed_capture(ctx, settings),
+        "job_evidence": _brief_job_evidence_capture(ctx, acceptance),
+        "package_route": _brief_package_route_capture(ctx, acceptance),
     }
+    evidence = {
+        "required": bool(owed),
+        "variant": ctx.get("brief_variant"),
+        "obligations": list(owed),
+    }
+    for fact in BRIEF_FACTS:
+        capture = (
+            collected[fact]
+            if fact in owed
+            else _brief_not_required_capture(ctx, BRIEF_FACT_NAMES[fact])
+        )
+        evidence[fact] = capture.as_dict()
+    return evidence
 
 
 def verdict(
@@ -2879,8 +3349,13 @@ def verdict(
     silence: a combination that spent a subscription and cannot show which agent
     ran is red, and the reason it is red is stated together with the control
     plane's account of the stage that stopped it. The free deterministic route
-    starts no such container by design, so its verdict is what it always was —
-    the run's own failure and nothing else.
+    starts no such container by design, so no executor evidence is asked of it.
+
+    Brief evidence is red exactly where the run's own scenario declared it owes
+    a fact and the fact is missed. A scenario that owes nothing — an LLM run
+    with no brief — has no brief reason available to it at all, and the free
+    level-1 route, which confirms a Product Brief on every run, is red when that
+    confirmation is missing and never for a fact it does not produce.
     """
     paid = is_paid_run(ctx)
     reasons: list[dict] = []
@@ -2929,33 +3404,357 @@ def verdict(
                     "control_plane_reason": reason.as_dict(),
                 }
             )
-    if brief["required"]:
-        for name in (
-            "confirmed",
-            "coverage",
-            "admission",
-            "acceptance",
-            "settings_readback",
-            "settings_seed",
-            "job_evidence",
-        ):
-            capture = brief[name]
-            if capture["status"] == CaptureStatus.MISSED.value:
-                reasons.append(
-                    {
-                        "code": VerdictReason.BRIEF_EVIDENCE_MISSED.value,
-                        "detail": (
-                            f"the required Product Brief {name} evidence is missed: "
-                            f"{capture['reason']}"
-                        ),
-                        "control_plane_reason": reason.as_dict(),
-                    }
-                )
+    for name in brief["obligations"]:
+        capture = brief[name]
+        if capture["status"] == CaptureStatus.MISSED.value:
+            reasons.append(
+                {
+                    "code": VerdictReason.BRIEF_EVIDENCE_MISSED.value,
+                    "detail": (
+                        f"the required Product Brief {name} evidence is missed: {capture['reason']}"
+                    ),
+                    "control_plane_reason": reason.as_dict(),
+                }
+            )
     return {
         "paid": paid,
         "status": (Verdict.RED if reasons else Verdict.GREEN).value,
         "reasons": reasons,
     }
+
+
+#: Where the harness puts each engineering task's own text, keyed by task id.
+#: `task_descriptions` is what the control plane built that task's `TASK.md`
+#: around (`build_feature_task` writes it under "## What To Do" verbatim), and it
+#: is how a reading of a rewritten workspace file is attributed to the attempt it
+#: belonged to. `task_acceptance_criteria` is what that `TASK.md` has to quote.
+TASK_DESCRIPTIONS_CTX_KEY = "task_descriptions"
+TASK_ACCEPTANCE_CRITERIA_CTX_KEY = "task_acceptance_criteria"
+
+#: Every engineering task of the *run*, in the order it was planned, for a run
+#: whose lifecycle has more than one story. `task_ids` is one story's roster —
+#: the level-1 lifecycle swaps it when it moves to the project's second story —
+#: and the attempts below are the run's, so a run that ran two stories records
+#: the union here and this is preferred over the current story's roster.
+ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY = "engineering_attempt_task_ids"
+
+DEVELOPER_INSTRUCTIONS_NOTE = (
+    "What the developer was actually told, attempt by attempt. An attempt here is "
+    "one engineering task of this run, not one container and not one story: a "
+    "story's worker is reused across its tasks and rewrites /workspace/TASK.md at "
+    "the start of every turn, and a lifecycle that runs a second story on the same "
+    "project hands that same workspace to a second worker — so `run.attempts` "
+    "(developer containers) and the attempts below are different counts of "
+    "different things. Each pass this run already takes reads "
+    "the workspace, and every distinct thing a document has been is kept, because "
+    "the next turn destroys the previous one in place. A reading is attributed to "
+    "an attempt by the task's own description appearing in it, and the story "
+    "document by the reading written closest to it. Every attempt's document is "
+    "either captured or carries the stated reason it is not, and `complete` is a "
+    "missed capture naming every gap — so this section cannot read as complete "
+    "while a document is missing. `acceptance_criteria` states, per attempt, "
+    "whether the captured TASK.md quotes that task's acceptance criteria verbatim."
+)
+
+NO_ATTEMPT_DESCRIPTION_REASON = (
+    "task {task_id} was never read by this run, so the text its TASK.md was built "
+    "around is not known here and no reading could be attributed to it"
+)
+NO_MATCHING_READING_REASON = (
+    "none of the {count} reading(s) this run took of TASK.md carries task {task_id}'s "
+    "own description, so what that attempt was told is not in this artifact"
+)
+NO_TASK_READING_REASON = "this run read no TASK.md at all for task {task_id}: {detail}"
+NO_STORY_READING_REASON = "this run read no .story/STORY.md while its attempts ran: {detail}"
+STORY_NOT_WRITTEN_REASON = (
+    "the workspace holds no .story/STORY.md: this attempt was given no story document"
+)
+
+
+def _attempt_task_ids(ctx: dict) -> list[str]:
+    """The engineering tasks of this run, which is what its attempts are.
+
+    The run's own roster when it has one — a lifecycle with two stories records
+    it, because each story's `task_ids` is only that story's — and otherwise the
+    current story's, which is every other run.
+    """
+    task_ids = [
+        task_id
+        for task_id in (ctx.get(ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY) or ctx.get("task_ids") or [])
+        if task_id
+    ]
+    if task_ids:
+        return task_ids
+    return [ctx["task_id"]] if ctx.get("task_id") else []
+
+
+def _developer_records(records: list[dict]) -> list[dict]:
+    return [record for record in records if record["role"] == WorkerRole.DEVELOPER.value]
+
+
+def _all_readings(records: list[dict], name: str) -> list[dict]:
+    """Every distinct reading of one document, across every developer container."""
+    return [
+        {**reading, "worker_id": record["worker_id"], "container": record["container"]}
+        for record in records
+        for reading in record["documents"][name]["readings"]
+    ]
+
+
+def _unread_detail(records: list[dict], name: str) -> str:
+    """Why no reading of one document exists, in the words of every container."""
+    reasons = sorted(
+        {
+            f"{record['worker_id']}: {record['documents'][name]['reason']}"
+            for record in records
+            if record["documents"][name]["reason"]
+        }
+    )
+    return "; ".join(reasons) if reasons else "no developer container was observed at all"
+
+
+def _attempt_task_document(
+    ctx: dict, task_id: str, records: list[dict], readings: list[dict]
+) -> dict:
+    """The TASK.md this attempt was given, or the stated reason it is not here."""
+    description = ((ctx.get(TASK_DESCRIPTIONS_CTX_KEY) or {}).get(task_id) or "").strip()
+    if not description:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_ATTEMPT_DESCRIPTION_REASON.format(task_id=task_id),
+        )
+    if not readings:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_TASK_READING_REASON.format(
+                task_id=task_id, detail=_unread_detail(records, TASK_DOCUMENT)
+            ),
+        )
+    matched = [reading for reading in readings if description in reading["body"]["value"]["text"]]
+    if not matched:
+        return _unread_document(
+            TASK_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_MATCHING_READING_REASON.format(count=len(readings), task_id=task_id),
+        )
+    # A reading that carries only this task's description is the unambiguous one.
+    # Nothing in the control plane puts a sibling's description in a task's
+    # document today — the story context lists titles and statuses only — so this
+    # costs nothing; it is here so that a document which did carry two would be
+    # attributed to the one it is *about* rather than to whichever came last.
+    others = [
+        other.strip()
+        for other_id, other in (ctx.get(TASK_DESCRIPTIONS_CTX_KEY) or {}).items()
+        if other_id != task_id and (other or "").strip()
+    ]
+    unique = [
+        reading
+        for reading in matched
+        if not any(other in reading["body"]["value"]["text"] for other in others)
+    ]
+    chosen = (unique or matched)[-1]
+    entry = _document(TASK_DOCUMENT, chosen["body"]["value"]["path"], DocumentStatus.CAPTURED, None)
+    entry["readings"] = [chosen]
+    return entry
+
+
+def _attempt_story_document(records: list[dict], readings: list[dict], task_document: dict) -> dict:
+    """The story document written closest to the TASK.md this attempt was given.
+
+    worker-wrapper writes both at the start of a turn, one after the other, so
+    "closest by write time" is the same turn's story context and not a guess
+    across turns. An attempt outside a story has none at all, which is a fact
+    about the attempt rather than a gap in the evidence.
+    """
+    if not readings:
+        statuses = {record["documents"][STORY_DOCUMENT]["status"] for record in records}
+        if statuses and statuses <= {DocumentStatus.ABSENT.value}:
+            return _unread_document(STORY_DOCUMENT, DocumentStatus.ABSENT, STORY_NOT_WRITTEN_REASON)
+        return _unread_document(
+            STORY_DOCUMENT,
+            DocumentStatus.UNREADABLE,
+            NO_STORY_READING_REASON.format(detail=_unread_detail(records, STORY_DOCUMENT)),
+        )
+    if task_document["readings"]:
+        anchor = datetime.fromisoformat(task_document["readings"][0]["modified_at"])
+        chosen = min(
+            readings,
+            key=lambda reading: abs(datetime.fromisoformat(reading["modified_at"]) - anchor),
+        )
+    else:
+        chosen = readings[-1]
+    entry = _document(
+        STORY_DOCUMENT, chosen["body"]["value"]["path"], DocumentStatus.CAPTURED, None
+    )
+    entry["readings"] = [chosen]
+    return entry
+
+
+def _acceptance_criteria_check(ctx: dict, task_id: str, task_document: dict) -> dict:
+    """Whether this attempt's TASK.md quotes its task's acceptance criteria verbatim.
+
+    Verbatim means the task's own text, whole: the criteria are searched for as
+    one exact substring of the captured document, so a paraphrase, a reflowed
+    copy or a prefix of them does not answer. `format_acceptance_criteria`
+    (services/langgraph/src/nodes/developer_tasks.py) writes them into TASK.md
+    stripped and otherwise untouched, which is what makes the exact check the
+    right one rather than a generous one.
+    """
+    known = ctx.get(TASK_ACCEPTANCE_CRITERIA_CTX_KEY) or {}
+    if task_id not in known:
+        return {
+            "status": CriteriaCheck.CRITERIA_UNREAD.value,
+            "task_id": task_id,
+            "detail": (
+                f"task {task_id} was never read by this run, so its acceptance criteria "
+                "are not known here and nothing is claimed about them"
+            ),
+        }
+    criteria = (known[task_id] or "").strip()
+    if not criteria:
+        return {
+            "status": CriteriaCheck.NO_CRITERIA.value,
+            "task_id": task_id,
+            "detail": f"task {task_id} carries no acceptance criteria, so TASK.md quotes none",
+        }
+    if task_document["status"] != DocumentStatus.CAPTURED.value:
+        return {
+            "status": CriteriaCheck.NOT_QUOTED.value,
+            "task_id": task_id,
+            "detail": (
+                f"task {task_id} carries acceptance criteria and its {TASK_DOCUMENT} is "
+                f"{task_document['status']}, so the evidence does not carry them "
+                f"verbatim: {task_document['reason']}"
+            ),
+        }
+    body = task_document["readings"][0]["body"]["value"]
+    if criteria in body["text"]:
+        return {
+            "status": CriteriaCheck.QUOTED.value,
+            "task_id": task_id,
+            "detail": (
+                f"all {len(criteria)} characters of task {task_id}'s acceptance criteria "
+                f"appear in {body['path']} verbatim"
+            ),
+        }
+    return {
+        "status": CriteriaCheck.NOT_QUOTED.value,
+        "task_id": task_id,
+        "detail": (
+            f"task {task_id}'s acceptance criteria ({len(criteria)} characters) do not "
+            f"appear in the captured {body['path']} ({body['characters']} characters) as "
+            "one exact substring: what the developer was told is a paraphrase, a partial "
+            "copy or nothing"
+        ),
+    }
+
+
+def _document_gap(task_id: str, entry: dict) -> str | None:
+    """The gap one document of one attempt leaves, or None when it leaves none."""
+    if entry["status"] == DocumentStatus.CAPTURED.value:
+        return None
+    if (
+        entry["status"] == DocumentStatus.ABSENT.value
+        and entry["name"] not in REQUIRED_ENGINEERING_DOCUMENTS
+    ):
+        return None
+    return f"attempt {task_id}: {entry['name']} is {entry['status']}: {entry['reason']}"
+
+
+def developer_instructions(ctx: dict, records: list[dict]) -> dict:
+    """What every engineering attempt of this run was told, and whether all of it is here."""
+    developers = _developer_records(records)
+    task_readings = _all_readings(developers, TASK_DOCUMENT)
+    story_readings = _all_readings(developers, STORY_DOCUMENT)
+    attempts = []
+    gaps: list[str] = []
+    for task_id in _attempt_task_ids(ctx):
+        task_document = _attempt_task_document(ctx, task_id, developers, task_readings)
+        story_document = _attempt_story_document(developers, story_readings, task_document)
+        attempts.append(
+            {
+                "attempt_id": task_id,
+                "documents": {
+                    TASK_DOCUMENT: task_document,
+                    STORY_DOCUMENT: story_document,
+                },
+                "acceptance_criteria": _acceptance_criteria_check(ctx, task_id, task_document),
+            }
+        )
+        gaps += [
+            gap
+            for entry in (task_document, story_document)
+            if (gap := _document_gap(task_id, entry)) is not None
+        ]
+    if gaps:
+        complete = Capture.missed(
+            f"{len(gaps)} document(s) of this run's {len(attempts)} engineering attempt(s) "
+            f"are not in this artifact: {'; '.join(gaps)}"
+        )
+    else:
+        complete = Capture.captured(
+            {
+                "attempts": len(attempts),
+                "documents": sorted(
+                    f"{attempt['attempt_id']}/{name}"
+                    for attempt in attempts
+                    for name in ENGINEERING_DOCUMENTS
+                    if attempt["documents"][name]["status"] == DocumentStatus.CAPTURED.value
+                ),
+            }
+        )
+    return {
+        "note": DEVELOPER_INSTRUCTIONS_NOTE,
+        "complete": complete.as_dict(),
+        "attempts": attempts,
+        # The whole ledger, without the bodies the attempts above already carry:
+        # every distinct thing each document was while this run watched it, so a
+        # reader can see a reading that was taken and attributed to no attempt.
+        "workspace_readings": {
+            name: [
+                {key: value for key, value in reading.items() if key != "body"}
+                for reading in _all_readings(developers, name)
+            ]
+            for name in ENGINEERING_DOCUMENTS
+        },
+    }
+
+
+def attempts_not_quoting_acceptance_criteria(instructions: dict) -> list[str]:
+    """Every attempt whose TASK.md does not carry its task's criteria verbatim.
+
+    The conditional reading of criterion 3 — "for every engineering attempt that
+    has acceptance criteria" — so an attempt whose task carries none is not
+    counted. That is the right question for a scenario whose tasks genuinely may
+    have no criteria, and the wrong one for a scenario that is supposed to have
+    them: an empty list here cannot tell "every attempt quoted them" from
+    "nobody asked for anything". A caller that means the second reading asserts
+    on `attempts_without_quoted_acceptance_criteria` instead.
+    """
+    return [
+        attempt["acceptance_criteria"]["detail"]
+        for attempt in instructions["attempts"]
+        if attempt["acceptance_criteria"]["status"] == CriteriaCheck.NOT_QUOTED.value
+    ]
+
+
+def attempts_without_quoted_acceptance_criteria(instructions: dict) -> list[str]:
+    """Every attempt that does not *demonstrate* its criteria quoted verbatim.
+
+    Anything but `QUOTED` is here, which is what makes this assertable: an
+    attempt whose task carries no acceptance criteria fails, and so does one
+    whose criteria this run never read. An empty list is therefore two claims at
+    once — every engineering attempt of the run *has* acceptance criteria, and
+    the document that attempt's developer was actually handed quotes them word
+    for word — and it cannot be satisfied by a run that asked for nothing.
+    """
+    return [
+        attempt["acceptance_criteria"]["detail"]
+        for attempt in instructions["attempts"]
+        if attempt["acceptance_criteria"]["status"] != CriteriaCheck.QUOTED.value
+    ]
 
 
 def combination_label(ctx: dict) -> str:
@@ -2965,6 +3764,87 @@ def combination_label(ctx: dict) -> str:
         "health" if not ctx.get("qa_requires_executor") else "unknown"
     )
     return f"worker-{worker}-qa-{qa}"
+
+
+PROOFS_NOTE = (
+    "The two proofs the run takes about itself. The zero-intervention proof is "
+    "taken before teardown, because cleanup deletes the PO history it reads; the "
+    "residue proof is taken after it, because its questions are only meaningful "
+    "once the removals have happened — so the residue section is filled by the "
+    "finalising write, not by the early crash-safety copy. Each check carries "
+    "the question in the words its source was asked it in, its outcome, and — "
+    "when the outcome is `unaskable` — the reason the source could not answer. "
+    "Stand run 35486586267 failed on both proofs and neither appeared here at "
+    "all, so its reader had a red run and no sentence about why."
+)
+
+#: Each proof a run takes about itself: the context key it is recorded under,
+#: and what its absence from the context means. A proof that was never taken is
+#: a stated absence here — never a blank and never an empty proof, which would
+#: read as a proof that found nothing.
+PROOF_SECTIONS: dict[str, tuple[str, str]] = {
+    "intervention": (
+        "no_intervention",
+        "this run recorded no zero-intervention proof, so nothing asked whether "
+        "any story of it ever waited for a person",
+    ),
+    "residue": (
+        "run_residue",
+        "this run recorded no residue proof: cleanup did not reach the point "
+        "where it asks whether anything of the run is left",
+    ),
+}
+
+
+def _proof_check(check: dict) -> ProofCheck:
+    """One recorded check, back in the type that knows how to judge it.
+
+    The verdict is `ProofCheck.failure`'s and not a second copy of it written
+    here: the document says what the proof said, in the proof's own words.
+    """
+    return ProofCheck(
+        kind=check["kind"],
+        question=check["question"],
+        outcome=ProofOutcome(check["outcome"]),
+        findings=tuple(check.get("findings") or ()),
+        unaskable_reason=check.get("unaskable_reason"),
+    )
+
+
+def proof_capture(ctx: dict, key: str, missing: str) -> Capture:
+    """One proof as the artifact carries it: its verdict, then its checks.
+
+    `outcome` is the reader's first line — `proven` only when every kind was
+    asked and answered with nothing — and `failures` is the same sentence the
+    run was failed with, so a reader does not have to re-derive it from the
+    checks below it.
+    """
+    proof = ctx.get(key)
+    if not isinstance(proof, dict) or not proof:
+        return Capture.missed(missing)
+    failures = [
+        failure
+        for failure in (_proof_check(check).failure() for check in proof.get("checks", []))
+        if failure is not None
+    ]
+    return Capture.captured(
+        {
+            **proof,
+            "outcome": "proven" if not failures else "unproven",
+            "failures": failures,
+        }
+    )
+
+
+def run_proofs(ctx: dict) -> dict:
+    """Both proofs, each with its outcome and the reason for any it could not take."""
+    return {
+        "note": PROOFS_NOTE,
+        **{
+            name: proof_capture(ctx, key, missing).as_dict()
+            for name, (key, missing) in PROOF_SECTIONS.items()
+        },
+    }
 
 
 def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None = None) -> dict:
@@ -2982,6 +3862,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
     worker_executed = collector.executed_worker_agent().as_dict()
     qa = qa_cell(ctx)
     brief = brief_evidence(ctx)
+    records = collector.records()
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "kind": EVIDENCE_KIND,
@@ -3014,6 +3895,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "task_id": ctx.get("task_id"),
         },
         "generated_product_timeline": generated_product_timeline(ctx),
+        "second_story": second_story(ctx),
         "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
@@ -3046,9 +3928,72 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "qa": qa,
         "brief": brief,
         "brief_telemetry": brief_telemetry_evidence(ctx),
-        "workers": retain_worker_bodies(ctx, collector.records()),
+        "developer_instructions": developer_instructions(ctx, records),
+        "workers": retain_worker_bodies(ctx, records),
         "capture_errors": collector.errors,
+        "proofs": run_proofs(ctx),
         "privacy": PRIVACY_STATEMENT,
+    }
+
+
+SECOND_STORY_NOTE = (
+    "The second story of the same project, on the workspace the first one left "
+    "behind. Five of the seven regressions sprint:1445 found by hand lived only "
+    "here, and none of them is visible in a story's success: a second story can "
+    "deploy, pass QA and complete while its first checkout was retried, its "
+    "branch was cut from a stale workspace HEAD, or its deploy went through the "
+    "initial-owner grant instead of the PR poller. So each fact below is the "
+    "observation itself — the checkout's duration in seconds, the base commit "
+    "and what it contains, the Run id and the path that minted it — and not a "
+    "verdict about it."
+)
+
+
+def second_story(ctx: dict) -> dict:
+    """What this run's second story did, fact by fact, or a stated absence."""
+    extension = ctx.get("level1_extension")
+    if not isinstance(extension, dict) or not extension:
+        return {
+            "note": SECOND_STORY_NOTE,
+            "ran": Capture.missed("this run ran no second story").as_dict(),
+        }
+
+    def captured(key: str, error_key: str | None = None) -> dict:
+        if key in extension:
+            return Capture.captured(extension[key]).as_dict()
+        reason = extension.get(error_key) if error_key else None
+        return Capture.missed(reason or f"{key} was never recorded by this run").as_dict()
+
+    return {
+        "note": SECOND_STORY_NOTE,
+        "ran": Capture.captured(
+            {
+                "story_id": extension.get("story_id"),
+                "task_ids": extension.get("task_ids"),
+                "task_status": str(extension.get("task_status")),
+            }
+        ).as_dict(),
+        "brief_revisions": captured("level1_brief_revisions"),
+        # Stated next to the checkout it comes from: a `first_checkout` of `[]`
+        # means the manager logged no checkout of this branch inside a read whose
+        # own coverage is here to be seen, and a read that could not tell is a
+        # `missed` first_checkout with the reason instead.
+        "manager_log_read": captured("manager_log_read", "manager_log_read_error"),
+        "first_checkout": captured("first_checkout", "first_checkout_error"),
+        "manager_checkout_script": captured(
+            "manager_checkout_script", "manager_checkout_script_error"
+        ),
+        "branch_base": captured("story_branch_base_probe", "story_branch_base_error"),
+        "ci_runs": captured("story_ci_runs", "story_ci_runs_error"),
+        "engineering_runs": captured("story_engineering_runs", "story_engineering_runs_error"),
+        "deploy_path": captured("deploy_path", "deploy_run_error"),
+        "deploy_outcome": captured("deploy_outcome", "deploy_outcome_error"),
+        "product_probe": captured(
+            "level1_extension_endpoint_probe", "level1_extension_endpoint_probe_error"
+        ),
+        "qa": captured("qa_result"),
+        "story_terminal": captured("story_terminal", "story_terminal_error"),
+        "owner_notification": captured("owner_notification", "owner_notification_error"),
     }
 
 

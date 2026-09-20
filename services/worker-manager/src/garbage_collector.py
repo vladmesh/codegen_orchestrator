@@ -13,6 +13,12 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
 from shared.redis import decode_redis_fields, decode_redis_value
+from shared.worker_compose import (
+    COMPOSE_ONEOFF_LABEL,
+    COMPOSE_PROJECT_LABEL,
+    worker_compose_project_filter,
+    worker_id_of_compose_project,
+)
 
 from . import qa_egress, workspace as workspace_mod
 from .config import settings
@@ -120,9 +126,119 @@ async def garbage_collect_orphaned_resources(
                     error=str(e),
                 )
 
+    # Before the networks, because a leftover compose container is attached to
+    # the worker's dev network and would refuse its removal.
+    await _collect_orphaned_compose_containers(docker, known_ids, protected_ids)
     await _collect_orphaned_network_resources(docker, known_ids, protected_ids)
 
     logger.info("orphan_gc_complete")
+
+
+async def remove_worker_compose_residue(docker: DockerClientWrapper, worker_id: str) -> list[str]:
+    """Remove every container the worker's bounded compose plan still owns.
+
+    `docker compose down -v` removes the services of the plan. It does not
+    remove the one-shot containers `docker compose run` creates — the generated
+    product's `make test-integration` is exactly that shape — and two of them
+    survived a completed story on production for 7+ hours, then survived a full
+    project teardown as well (`issue:868e40fc0377b0dabb77`).
+
+    So the teardown stops asking the plan and asks Docker: everything carrying
+    this worker's `com.docker.compose.project` label belongs to this worker,
+    whether `up` or `run` created it, and whether it is running or exited.
+
+    Reports what it removed and raises nothing: a container that will not go is
+    logged, because one stuck sidecar must not stop a worker's teardown.
+    """
+    try:
+        containers = await docker.list_containers(
+            filters=worker_compose_project_filter(worker_id), all=True
+        )
+    except Exception as e:  # noqa: BLE001 — an unavailable listing must not stop the teardown
+        logger.error("compose_residue_list_failed", worker_id=worker_id, error=str(e))
+        return []
+
+    removed: list[str] = []
+    for container in containers:
+        try:
+            await docker.remove_container(container.name, force=True, v=True)
+        except Exception as e:  # noqa: BLE001 — one container must not stop the sweep
+            logger.error(
+                "compose_residue_remove_failed",
+                worker_id=worker_id,
+                container=container.name,
+                error=str(e),
+            )
+            continue
+        removed.append(container.name)
+        logger.info(
+            "compose_residue_removed",
+            worker_id=worker_id,
+            container=container.name,
+            one_off=container.labels.get(COMPOSE_ONEOFF_LABEL),
+        )
+    return removed
+
+
+async def _collect_orphaned_compose_containers(
+    docker: DockerClientWrapper, known_ids: set[str], protected_ids: set[str]
+) -> None:
+    """Sweep worker compose plans whose worker Redis no longer knows.
+
+    The worker's own teardown removes its plan's containers, but a one-shot
+    container outlives a teardown that never ran at all — a crashed manager, or
+    the project deletion `issue:868e40fc0377b0dabb77` records these surviving.
+    Nothing else lists them: they carry no `com.codegen.*` label, only Compose's
+    own, so the worker-scoped orphan sweep above never sees them.
+
+    A live container is kept, exactly as it is above: Redis having lost a worker
+    is not evidence that what it is still running is garbage.
+    """
+    try:
+        containers = await docker.list_containers(
+            filters={"label": COMPOSE_PROJECT_LABEL}, all=True
+        )
+    except Exception as e:  # noqa: BLE001 — unavailable compose inventory must not stop GC
+        logger.error("orphan_gc_list_compose_failed", error=str(e))
+        return
+
+    # Two passes, and the first one is why: a plan's live service may be listed
+    # after its exited sidecar, and a single pass would have removed the sidecar
+    # out from under a worker that is still running. Protection is decided for
+    # the whole plan before anything of it is taken.
+    owned: list[tuple[str, object]] = []
+    for container in containers:
+        project = container.labels.get(COMPOSE_PROJECT_LABEL) or ""
+        worker_id = worker_id_of_compose_project(project)
+        if not worker_id or worker_id in known_ids:
+            continue
+        if _is_live(container):
+            protected_ids.add(worker_id)
+            logger.info(
+                "orphan_gc_keeping_compose_container",
+                worker_id=worker_id,
+                container=container.name,
+                container_state=container.status,
+            )
+            continue
+        owned.append((worker_id, container))
+
+    for worker_id, container in owned:
+        if worker_id in protected_ids:
+            logger.info(
+                "orphan_gc_keeping_compose_container",
+                worker_id=worker_id,
+                container=container.name,
+                container_state=container.status,
+            )
+            continue
+        logger.info(
+            "orphan_gc_removing_compose_container", worker_id=worker_id, container=container.name
+        )
+        try:
+            await docker.remove_container(container.name, force=True, v=True)
+        except Exception as e:  # noqa: BLE001 — one container must not stop the sweep
+            logger.error("orphan_gc_remove_compose_failed", container=container.name, error=str(e))
 
 
 async def _collect_orphaned_network_resources(

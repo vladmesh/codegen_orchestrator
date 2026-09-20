@@ -9,9 +9,44 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   through the internal API and redeemed by that named actor — instead of a promo-bypassing fixture user.
 - Live teardown takes the run's own user as a second root, so its budget policy, reservations, redeemed code
   and admission audits are deleted and proven gone; the ledger and the `users` row are declared retained.
+- The PO checkpoint presence query answers with a row rather than a rendered boolean, so the run's residue
+  proof asks its `po_checkpoint_thread` kind instead of reporting it unaskable on every run.
+- The run's zero-intervention proof is taken before the pipeline fixture hands its context to the tests, so the
+  assertion about it reads a proof instead of raising `KeyError` on every run.
+- The run-evidence document carries both of the run's proofs about itself, each with its outcome and with the
+  reason for any kind that could not be asked, so a red run explains itself without being re-run.
+- Run evidence judges the Product Brief facts the run's own scenario declares it owes, so a green
+  `mega-brief-package` run is green and carries its deployment's package route (`issue:62bc9840e23a44c2098b`).
+- The level-1 evidence reports the Product Brief it confirmed instead of "this is not a Product Brief scenario".
+- A `pytest.skip` outside the paid class of the level-1 module, and a stand budget stated in the docs or the
+  runner that disagrees with `shared/stand_deadlines.py`, now fail an offline check; `mega-brief`'s stale
+  281-minute cap and the runner's 297-minute job-cap comment were the drift they found.
+- `docs/TESTING.md` says what level 1 proves and what it cannot catch, with the suite's own test count and cap.
+- The level-1 run proves after cleanup that no container, image repository, workspace, Redis key, GitHub
+  repository or PO conversation row of it is left, and names a kind it could not check instead of passing it.
+- The run takes back the PO checkpoint rows it added to the shared fixture thread, scoped by a snapshot taken
+  before it started, so the thread is left as the run found it rather than deleted or silently kept.
+- The run asserts from its durable PO history that no story ever entered `waiting_human_review`,
+  `waiting_user_secret` or a quarantine, so a park that was later recovered still fails the run.
+- Worker-manager removes the one-shot `docker compose run` containers of a worker's bounded plan, which
+  `docker compose down -v` left on the host (`issue:868e40fc0377b0dabb77`).
+- The harness reads the worker-manager's log in both structlog renderings and from the container's start rather
+  than a line tail, and an unparsable capture is reported as unreadable instead of as no checkout.
 
 ## 2026-09-19
 
+- A temporary-access capability redeploy no longer seeds the brief's settings, so a proved revoke stops being
+  recorded as failed and the previous story's grant stops holding the target against the next story's QA.
+- A QA handoff refused the target retries on the next tick instead of waiting out the recovery window, and past
+  a bound fails the run naming the holder, so the story reaches a verdict rather than sitting in TESTING.
+- The level-1 lifecycle runs a second story on the same project, from a corrected brief revision through the
+  released PO tools, and asserts what only it can show: checkout duration, branch base, deploy path, hooks.
+- The `mega-noop` ledger is built from the wait constants the harness imports from it, not from copies, so the
+  suite cap covers the deploy Run's image-publication bound instead of understating it by 1800 seconds.
+- The level-1 plan creates its two tasks with the acceptance criteria QA checks them by, keyed on the run's
+  marker, so the run's verbatim assertion over each attempt's TASK.md has something it can fail on.
+- Run evidence keeps the `TASK.md` and `.story/STORY.md` of every engineering attempt, keyed by task and
+  gap-by-gap honest, and the suite asserts each attempt's TASK.md quotes its acceptance criteria verbatim.
 - The live deployment assertion reads `service_deployments` as the deploy log it is: the newest record is
   selected, and more records than the project's deploys is still refused as the same deploy written twice.
 - The stand sweep deletes through the catalog-derived plan `tests/live/db_teardown.py` builds, keeping its own

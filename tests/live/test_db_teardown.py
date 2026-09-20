@@ -431,7 +431,7 @@ def test_the_retained_rows_are_reported_by_table_key_and_count(monkeypatch):
     database = _run_user_database()
     monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
 
-    retention = pipeline_helpers._cleanup_db(PROJECT_ID, RUN_TELEGRAM_ID)
+    retention = pipeline_helpers._cleanup_db(PROJECT_ID, RUN_TELEGRAM_ID).retention_report
 
     assert f"users: 1 row(s), id={RUN_USER_ROW}" in retention
     assert f"engineering_attempt_ledger: 1 row(s), id={LEDGER_ROW}" in retention
@@ -495,7 +495,7 @@ def test_a_run_without_its_own_user_tears_down_exactly_as_before(monkeypatch):
     database = _grant_path_database()
     monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
 
-    assert pipeline_helpers._cleanup_db(PROJECT_ID) == ""
+    assert pipeline_helpers._cleanup_db(PROJECT_ID).retention_report == ""
     assert "users" not in database.deleted_tables
     assert "FROM users WHERE" not in database.queries[-1]
 

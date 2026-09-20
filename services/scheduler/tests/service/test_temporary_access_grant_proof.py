@@ -13,10 +13,15 @@ import uuid
 import httpx
 import pytest
 
-from shared.contracts.dto.run_result import DeployRunResult, DeploySkipReason, QABlockerCategory
+from shared.contracts.dto.run_result import (
+    DeployRunResult,
+    DeploySkipReason,
+    QABlockerCategory,
+    QARunResult,
+)
 from shared.contracts.dto.temporary_access import TemporaryAccessRevokeReason, TemporaryAccessStatus
 from shared.contracts.queues.deploy import DeployOutcome
-from shared.contracts.queues.qa import QAMessage
+from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import QA_QUEUE
 from shared.redis import RedisStreamClient
 from shared.tests.ssh_key_fixtures import fleet_private_key
@@ -244,3 +249,137 @@ async def test_confirmed_grant_releases_qa_exactly_once(async_client, api_client
     assert grant["status"] == TemporaryAccessStatus.GRANTED.value
     assert grant["qa_dispatched_at"] is not None
     assert await _qa_messages_for(redis_client, qa_run_id) == 1
+
+
+async def _qa_run_on(client: _API, project_id: str, application_id: int) -> str:
+    """A second paid QA run on the same project and the same deployed application."""
+    admitted = await client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": f"qa-second-{uuid.uuid4().hex[:8]}",
+            "type": "qa",
+            "project_id": project_id,
+            "run_metadata": {"application_id": application_id},
+        },
+    )
+    assert admitted.status_code == httpx.codes.OK, admitted.text
+    # A denied admission would be a shared paid-run ceiling, not this contract.
+    assert admitted.json()["admission"]["outcome"] == "admitted", admitted.text
+    return admitted.json()["run_id"]
+
+
+async def _finish_qa_run(client: _API, qa_run_id: str) -> None:
+    """The QA verdict that ends the first story and releases its access."""
+    settled = await client.patch(
+        f"/api/runs/{qa_run_id}",
+        json={
+            "status": "completed",
+            "result": QARunResult(qa_outcome=QAOutcome.PASSED, summary="health only").model_dump(
+                mode="json"
+            ),
+        },
+    )
+    assert settled.status_code == httpx.codes.OK, settled.text
+
+
+async def _settle_grant_through_to_granted(
+    async_client, api_client, redis_client, project_id: str, application_id: int, qa_run_id: str
+) -> None:
+    await _start_grant(api_client, redis_client, project_id, application_id, qa_run_id)
+    grant = await _grant(async_client, qa_run_id)
+    await _complete_operation(async_client, grant["grant_run_id"], application_id, None)
+    await supervise_temporary_access(api_client, redis_client)
+    assert (await _grant(async_client, qa_run_id))["status"] == TemporaryAccessStatus.GRANTED.value
+
+
+@pytest.mark.asyncio
+async def test_the_second_story_gets_access_once_the_first_story_released_its_grant(
+    async_client, api_client, redis_client
+):
+    """The sequence stand-e2e run 35470184817 could not get through.
+
+    The first story's QA had long since passed, and its grant still held
+    application 1 when the second story's handoff asked for the same target, so
+    that handoff was refused and the story sat in TESTING until the harness gave
+    up. Here the first grant walks its whole lifecycle on the real API — granted,
+    QA terminal, cleanup proved, `REVOKED` — and the second story's handoff then
+    has to get through.
+    """
+    project_id, application_id, first_qa_run_id = await _target_with_qa_run(async_client)
+    await _settle_grant_through_to_granted(
+        async_client, api_client, redis_client, project_id, application_id, first_qa_run_id
+    )
+
+    # The first story is over: its QA reached a verdict.
+    await _finish_qa_run(async_client, first_qa_run_id)
+    await supervise_temporary_access(api_client, redis_client)
+    first = await _grant(async_client, first_qa_run_id)
+    assert first["status"] == TemporaryAccessStatus.REVOKING.value
+    assert first["revoke_reason"] == TemporaryAccessRevokeReason.RUN_TERMINAL.value
+
+    # The capability revoke proves the access inactive, and nothing else about
+    # that redeploy may turn the proof into a failure.
+    await _complete_operation(async_client, first["revoke_run_id"], application_id, None)
+    await supervise_temporary_access(api_client, redis_client)
+    assert (await _grant(async_client, first_qa_run_id))[
+        "status"
+    ] == TemporaryAccessStatus.REVOKED.value
+
+    second_qa_run_id = await _qa_run_on(async_client, project_id, application_id)
+    await _start_grant(api_client, redis_client, project_id, application_id, second_qa_run_id)
+
+    second = await _grant(async_client, second_qa_run_id)
+    assert second["status"] == TemporaryAccessStatus.GRANTING.value
+    assert second["target_application_id"] == application_id
+    assert second["id"] != first["id"]
+
+    # Leave no queued paid run behind: the ceiling this suite shares is global.
+    await _finish_qa_run(async_client, second_qa_run_id)
+
+
+@pytest.mark.asyncio
+async def test_a_live_first_grant_still_refuses_the_second_story(
+    async_client, api_client, redis_client
+):
+    """The 409 guard stays: two live grants on one application are still refused."""
+    project_id, application_id, first_qa_run_id = await _target_with_qa_run(async_client)
+    await _settle_grant_through_to_granted(
+        async_client, api_client, redis_client, project_id, application_id, first_qa_run_id
+    )
+
+    second_qa_run_id = await _qa_run_on(async_client, project_id, application_id)
+    refused = await grant_temporary_access(
+        api_client,
+        redis_client,
+        project_id=project_id,
+        target_application_id=application_id,
+        target_base_url=TARGET_URL,
+        head_sha=HEAD_SHA,
+        qa_message=QAMessage(
+            project_id=project_id,
+            initiating_run_id=f"deploy-{second_qa_run_id}",
+            telegram_chat_id="",
+            deployed_url=TARGET_URL,
+            application_id=application_id,
+            acceptance_criteria="the bot answers /start",
+            run_id=second_qa_run_id,
+        ),
+    )
+
+    assert refused is None
+    # No second record exists, and the first is untouched and still live.
+    assert (
+        await async_client.get(
+            "/api/temporary-access-grants/", params={"qa_run_id": second_qa_run_id}
+        )
+    ).json() == []
+    assert (await _grant(async_client, first_qa_run_id))[
+        "status"
+    ] == TemporaryAccessStatus.GRANTED.value
+    # Inside its bound the refusal settles nothing: the QA run stays queued.
+    second_run = (await async_client.get(f"/api/runs/{second_qa_run_id}")).json()
+    assert second_run["status"] == "queued"
+
+    # Leave no queued paid run behind: the ceiling this suite shares is global.
+    await _finish_qa_run(async_client, second_qa_run_id)
+    await _finish_qa_run(async_client, first_qa_run_id)
