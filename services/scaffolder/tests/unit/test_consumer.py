@@ -70,6 +70,7 @@ def mock_github():
     gh = AsyncMock()
     gh.get_org_token.return_value = "ghs_fake"  # noqa: S106
     gh.create_repo.return_value = MagicMock(id=1177997641)
+    gh.get_repo.return_value = MagicMock(allow_auto_merge=True)
     return gh
 
 
@@ -261,6 +262,61 @@ class TestProcessScaffoldJob:
 
         assert result["status"] == "success"
         mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
+
+    @pytest.mark.asyncio
+    async def test_repo_auto_merge_is_read_back_after_enabling(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+        mock_github.get_repo.return_value = MagicMock(allow_auto_merge=True)
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_github.enable_repo_auto_merge.assert_awaited_once_with(
+            "project-factory-organization", "my-project"
+        )
+        mock_github.get_repo.assert_awaited_once_with("project-factory-organization", "my-project")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "enable_side_effect, allow_auto_merge",
+        [(RuntimeError("GitHub refused auto-merge"), True), (None, False)],
+    )
+    async def test_repo_auto_merge_verification_failure_is_durable_and_alerted(
+        self,
+        valid_job_data,
+        mock_redis,
+        mock_api,
+        mock_github,
+        enable_side_effect,
+        allow_auto_merge,
+    ):
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+        mock_github.enable_repo_auto_merge.side_effect = enable_side_effect
+        mock_github.get_repo.return_value = MagicMock(allow_auto_merge=allow_auto_merge)
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings", return_value=MagicMock()),
+            patch("src.consumer.notify_admins_best_effort", new_callable=AsyncMock) as notify,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        failure_config = mock_api.update_project_config.await_args_list[-1].args[1]
+        assert failure_config["repo_auto_merge_verification"]["status"] == "failed"
+        notify.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_branch_protection_not_called_on_failure(

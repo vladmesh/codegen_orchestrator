@@ -334,7 +334,10 @@ async def complete_stories(
                 pr_node_id=pr_node_id,
                 log=log,
             ):
-                log.warning("story_auto_merge_failed", pr_number=pr_number)
+                # The PR poller re-reads this PR after checks settle. It either
+                # merges through the App or parks a GitHub refusal with notices;
+                # this creation tick deliberately owns neither decision.
+                log.info("story_auto_merge_deferred_to_poller", pr_number=pr_number)
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets
