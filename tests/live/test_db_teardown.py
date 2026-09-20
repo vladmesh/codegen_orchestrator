@@ -14,9 +14,11 @@ import json
 import db_teardown
 from db_teardown import SqlResult, TeardownError
 from db_teardown_fake import FakeDatabase
+from live_harness import run_user_sweep_predicate
 import pipeline_helpers
 import pytest
 
+from shared import live_contour
 from shared.tests.project_cleanup import metadata_catalog_payload
 
 pytestmark = pytest.mark.needs_no_api_credential
@@ -517,7 +519,27 @@ def _sweep_module():
     return module
 
 
-def _sweep_against(database: FakeDatabase, monkeypatch) -> object:
+def _sweep_plan(module):
+    """The plan the sweep's own roots derive, read back through `db_teardown`.
+
+    The predicates come from the sweep, not from this test: the point is the
+    order the derivation puts its two roots in, not a second copy of them.
+    """
+    catalog = db_teardown.parse_catalog(metadata_catalog_payload())
+    roots = [db_teardown.Root(table="projects", predicate=module._build_conditions())]
+    roots.append(db_teardown.Root(table="users", predicate=run_user_sweep_predicate()))
+    return catalog, db_teardown.build_plan(catalog, roots=roots)
+
+
+def _sweep_against(database: FakeDatabase, monkeypatch, *, contour: str = "stand") -> object:
+    """The sweep, running in a contour. The stand unless a test says otherwise.
+
+    The contour is not decoration here: it decides both which titles the sweep
+    names and whether it takes a `users` root at all, and the sweep reads it
+    once at import — so it is selected the way the shell selects it, before the
+    module is loaded.
+    """
+    monkeypatch.setenv(live_contour.CONTOUR_ENV, contour)
     module = _sweep_module()
     monkeypatch.setattr(module, "run_cmd", database.subprocess_run)
     return module
@@ -577,12 +599,13 @@ def test_a_grant_intent_no_longer_refuses_the_sweep(monkeypatch):
 
 
 def test_the_sweep_owns_run_registered_users_through_the_same_plan(monkeypatch):
-    """The sweep's second root: every user the harness could have registered.
+    """The sweep's second root: the users this harness registered itself.
 
     A run registers before it creates a project, so a run that died in between
     owns a user, a code and a policy and no project at all — nothing the title
-    prefixes can find. The Telegram-id range is the harness's own naming, like
-    the prefixes, so this addresses the harness's residue and nothing else.
+    prefixes can find. What makes that root addressable is the username the
+    harness writes, the way a title prefix is written by the harness; the id
+    band narrows it but grants no ownership on its own.
     """
     database = FakeDatabase(
         owned={"projects": ["project-1"], "users": [RUN_USER_ROW], "promo_codes": ["71"]},
@@ -595,7 +618,52 @@ def test_the_sweep_owns_run_registered_users_through_the_same_plan(monkeypatch):
     sql = database.delete_sql
     assert "DELETE FROM promo_codes WHERE redeemed_by_user_id IN (SELECT id FROM users" in sql
     assert "telegram_id BETWEEN 970000000 AND 970999999" in sql
+    assert "username LIKE 'live_run_%'" in sql
     assert "DELETE FROM users " not in sql
+    # The claim the project-only sweep used to make as `deleted[-1] == "projects"`,
+    # in the form the second root leaves true: the plan still ends at a root, and
+    # the root it ends at is the retained one, after everything that hangs off it.
+    _, sweep_plan = _sweep_plan(module)
+    assert [step.table for step in sweep_plan][-1] == "users"
+    assert "users" not in database.deleted_tables
+
+
+def test_a_users_row_the_harness_did_not_name_is_not_swept(monkeypatch):
+    """A real account inside the id band is not this harness's residue.
+
+    Telegram issues account ids; the harness only picks a band to register in,
+    so the band alone selects strangers too. The username it writes is the
+    predicate that is genuinely its own, and both halves are required — a row
+    that matches only the band is left where it is.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    module = _sweep_against(database, monkeypatch)
+
+    module.clean_database()
+
+    for statement in database.delete_sql.split("\n"):
+        if "FROM users" in statement:
+            assert "username LIKE 'live_run_%'" in statement
+
+
+def test_the_production_sweep_takes_no_user_root_at_all(monkeypatch):
+    """Production is swept exactly as it was before the registration door.
+
+    `make test-live-clean` runs this sweep with `LIVE_CONTOUR` unset, which is
+    the prod contour — the one that "holds real users' data" and creates no
+    live runs. There is no run-owned user there to collect, so the sweep names
+    `users` only in the one statement it always did: the fixture id.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    module = _sweep_against(database, monkeypatch, contour="prod")
+
+    module.clean_database()
+
+    assert not module.CONTOUR.allows_live_runs
+    assert "SELECT id FROM users WHERE" not in database.delete_sql
+    assert "DELETE FROM users WHERE" not in database.delete_sql
+    assert "telegram_id BETWEEN" not in database.delete_sql
+    assert "DELETE FROM users WHERE telegram_id = 999000001" in database.queries[-1]
 
 
 def test_the_sweep_still_removes_the_reusable_fixture_user_after_the_projects(monkeypatch):

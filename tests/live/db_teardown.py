@@ -461,10 +461,16 @@ def _unlinking_tables(catalog: Catalog, tables: Iterable[str]) -> set[str]:
 
     A foreign key with `SET NULL` or `CASCADE` into the closure is the schema's
     own instruction for teardown, and it outranks a column name. That is what
-    keeps `engineering_budget_reservations` — whose `project_id` is deliberately
-    `ON DELETE SET NULL`, and whose `story_id` happens to carry no key — out of
-    the plan, while `service_deployments`, whose only unlinking key points at
-    `servers` outside the closure, stays in it.
+    keeps `engineering_budget_reservations` out of a *project*-rooted plan: its
+    `project_id` is deliberately `ON DELETE SET NULL` and its `story_id` carries
+    no key, so a project going away is not the schema's reason to delete it.
+    `service_deployments`, whose only unlinking key points at `servers` outside
+    the closure, stays in the plan by the same rule.
+
+    This is per closure, not per table. Add the run's user as a root and the same
+    reservations table is reached by its `user_id`, whose key refuses the parent
+    delete (NO ACTION) and is therefore not an instruction to unlink — so it
+    joins the plan and is deleted, which is what a run-owned user requires.
     """
     inside = set(tables)
     return {

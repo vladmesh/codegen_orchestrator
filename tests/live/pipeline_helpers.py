@@ -63,6 +63,7 @@ from live_harness import (
     new_run_telegram_id,
     resolve_repo_root,
     run_created_at,
+    run_user_username,
 )
 from package_route import (
     PACKAGE_ROUTE_ARTIFACTS,
@@ -2037,7 +2038,7 @@ async def register_run_owner(
             USER_UPSERT_ROUTE,
             json={
                 "telegram_id": telegram_id,
-                "username": f"live_run_{telegram_id}",
+                "username": run_user_username(telegram_id),
                 "first_name": "Live",
                 "last_name": "Run",
                 "promo_code": code,

@@ -23,14 +23,21 @@ TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 #
 # A level-1 run walks the product's own registration door: a Telegram id nobody
 # has used before, a promo code minted for it, and a registration that redeems
-# the code. The id is therefore the only thing that tells a run's own user apart
-# from a real customer and from the fixture user the other suites still share,
-# so it is minted from a range that belongs to the harness and to nothing else —
-# the same idea as the contour's project title prefixes, and the reason the
-# stand sweep can address a run-owned user left behind by a run that died before
-# it had a project to be found by.
+# the code. The id is drawn from a band the harness keeps to, so that two
+# concurrent runs on one database do not collide and so that a run's own user is
+# recognisable at a glance.
+#
+# The band is *not* ownership. Telegram chooses account ids, not this harness:
+# a nine-digit id in this range is an ordinary Telegram account and may belong
+# to a real customer. The only thing the harness genuinely writes is the
+# username it registers under, so that — and not the band — is what a sweep may
+# select on. See `run_user_sweep_predicate`.
 RUN_USER_TELEGRAM_ID_MIN = 970_000_000
 RUN_USER_TELEGRAM_ID_MAX = 970_999_999
+
+#: The username `register_run_owner` registers its user under. Written by the
+#: harness and by nothing else, which is what makes it a safe sweep predicate.
+RUN_USER_USERNAME_PREFIX = "live_run_"
 
 
 def new_run_telegram_id() -> int:
@@ -47,14 +54,30 @@ def new_run_telegram_id() -> int:
     )
 
 
-def run_user_range_predicate() -> str:
-    """The SQL that selects every user the harness could have registered.
+def run_user_username(telegram_id: int) -> str:
+    """The username this harness registers a run-owned user under."""
+    return f"{RUN_USER_USERNAME_PREFIX}{telegram_id}"
 
-    The stand sweep's selection, next to its title prefixes: it addresses the
-    harness's own range and can therefore never name the fixture user, a real
-    customer, or production's users — it does not know their ids.
+
+def run_user_sweep_predicate() -> str:
+    """The SQL that selects users this harness demonstrably registered itself.
+
+    The stand sweep's second selection, next to its title prefixes. Both halves
+    are needed and only the second is ownership: the id band keeps the harness's
+    runs apart from each other, but Telegram hands out ids and a real account
+    can sit anywhere in it, so the band alone would be a blind range delete. The
+    username is written by `register_run_owner` and by nothing else in this
+    system — the same kind of naming as a contour's project title prefix — so a
+    row matching both is residue of this harness and a row matching only the
+    band is left alone.
+
+    Even so, the sweep applies this root only in a contour that owns live runs;
+    production is swept exactly as it was before the registration door existed.
     """
-    return f"telegram_id BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX}"
+    return (
+        f"telegram_id BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX} "
+        f"AND username LIKE '{RUN_USER_USERNAME_PREFIX}%'"
+    )
 
 
 def run_created_at(run: dict) -> datetime:

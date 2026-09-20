@@ -523,8 +523,8 @@ named.
 
 **The run's user is a row the level-1 run owns, and it is a second root.** The level-1 run registers
 itself through the product's door — `register_run_owner` mints a promo code and redeems it at a
-Telegram id from the harness's own range (`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) — so the
-rows that hang off that user without hanging off its project are the run's residue:
+fresh Telegram id from the band the harness registers in
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) — so the rows that hang off that user without hanging off its project are the run's residue:
 `engineering_budget_policies`, `engineering_budget_reservations`, the `promo_codes` row it redeemed,
 `work_admission_audits`, its `rag_*` dialogue rows. They join the closure because the *root* does,
 not because anyone listed them; `work_admission_audits.user_id` carries no foreign key at all and is
@@ -550,11 +550,33 @@ row for its Telegram id plus the ledger rows of its own engineering attempts —
 fails the teardown. It is a stated rule, not a swallowed error: no trigger is disabled and no schema
 or product contract changes to accommodate it (whether it should is issue:792460b9934c749050ce).
 
-The stand sweep carries the same second root, selected by the harness's Telegram-id range rather
-than by one id. That is the backstop for a run that died between registering and creating its
-project: such a run owns a user, a code and a policy and no project at all, so nothing the title
-prefixes select could ever find it. The range is the harness's own naming, like the contour's title
-prefixes, so the sweep cannot name the fixture user, a real customer or production's users.
+The stand sweep carries the same second root, selected by what the harness wrote rather than by one
+id. That is the backstop for a run that died between registering and creating its project: such a
+run owns a user, a code and a policy and no project at all, so nothing the title prefixes select
+could ever find it.
+
+Two things bound that root, and the distinction between them matters. The Telegram id band
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) is where runs register, but it is **not** ownership:
+Telegram issues account ids and a real customer can hold one anywhere inside it, so selecting on the
+band alone would be a blind range delete over strangers' budgets, codes, audits and dialogue rows.
+What the harness genuinely owns is the *username* it registers under — `live_run_<telegram id>`,
+written by `register_run_owner` and by nothing else — the same kind of naming as a contour's project
+title prefix. `run_user_sweep_predicate()` requires both, so a row inside the band that the harness
+did not name is left where it is.
+
+On top of that, the sweep takes the user root **only in a contour that owns live runs**. `make
+test-live-clean` runs the sweep with `LIVE_CONTOUR` unset, which is the prod contour — the one whose
+refusal says it "holds real users' data". Nothing registers run-owned users there, so the production
+sweep keeps exactly the regime it had before the registration door existed: projects by title
+prefix, plus the single fixture-user statement, and no user root at all.
+
+Two bounds this backstop does not cover, stated rather than implied. A registration that mints a
+code and is then refused (the criterion-5 path) raises before the run has a user, so its unredeemed
+`promo_codes` row is reachable by neither teardown path — `redeemed_by_user_id` is NULL — and stays
+as one unusable row per refused registration; the run fails loudly, so an operator sees it. And a
+run that dies after registering but before its project exists has no per-run teardown at all
+(`cleanup_guard` is installed after `create_project`), so its user's rows depend entirely on this
+sweep.
 
 The proof is the same plan read back. Every key the run owns is recorded *before* the deletes and
 asked for again afterwards, so the check still answers once the project row is gone; anything that

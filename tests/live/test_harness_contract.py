@@ -20,11 +20,13 @@ from live_harness import (
     LIVE_NO_CLEANUP_ENV,
     RUN_USER_TELEGRAM_ID_MAX,
     RUN_USER_TELEGRAM_ID_MIN,
+    RUN_USER_USERNAME_PREFIX,
     CleanupError,
     OwnedResource,
     OwnershipManifest,
     cleanup_guard,
     resolve_repo_root,
+    run_user_sweep_predicate,
 )
 import pipeline_helpers
 from pipeline_helpers import (
@@ -5775,6 +5777,32 @@ async def test_the_registered_id_is_fresh_and_is_not_the_fixture_user(monkeypatc
     assert first.telegram_id != second.telegram_id
     # The code is a one-time credential and never reaches the artifact.
     assert "promo_code" not in first.as_evidence()
+
+
+@pytest.mark.asyncio
+async def test_the_registration_writes_the_name_the_sweep_selects_on(monkeypatch):
+    """The sweep's ownership claim is a name this registration writes.
+
+    The id band is not ownership — Telegram issues account ids and a real
+    account can sit anywhere in it — so what makes a `users` row addressable as
+    this harness's residue is the username it registers under. These two have to
+    stay the same string, or the backstop sweep either misses the run's user or
+    reaches for rows nobody here wrote.
+    """
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    body, _ = api.upserts[0]
+    assert body["username"] == f"live_run_{owner.telegram_id}"
+    predicate = run_user_sweep_predicate()
+    assert f"username LIKE '{RUN_USER_USERNAME_PREFIX}%'" in predicate
+    assert body["username"].startswith(RUN_USER_USERNAME_PREFIX)
+    assert f"BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX}" in predicate
 
 
 @pytest.mark.asyncio
