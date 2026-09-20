@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- A worker turn writes nothing the product tracks: worker-mode compose runs through a `DOCKER_COMPOSE`
+  stand-in outside the checkout, and the agent's instructions go to `WORKER_INSTRUCTIONS.md`, not `AGENTS.md`.
+- The paths a turn injects are defined once and kept out of the product's history by `.git/info/exclude`
+  plus a publish guard that refuses to push a commit carrying one and names it.
 - The level-1 live run walks the product's registration door — a fresh Telegram id, a promo code minted
   through the internal API and redeemed by that named actor — instead of a promo-bypassing fixture user.
 - Live teardown takes the run's own user as a second root, so its budget policy, reservations, redeemed code

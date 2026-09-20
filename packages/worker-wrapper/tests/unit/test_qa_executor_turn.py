@@ -86,7 +86,7 @@ class TestWhatAQaTurnSkips:
             patch.object(wrapper, "_prepare_workspace", new_callable=AsyncMock),
             patch.object(wrapper, "_check_workspace_ready") as preflight,
             patch.object(wrapper, "_fix_venv_paths") as venv,
-            patch.object(wrapper, "_inject_makefile_overrides") as makefile,
+            patch.object(wrapper, "_install_compose_proxy") as compose_proxy,
             patch.object(wrapper, "execute_agent", new_callable=AsyncMock),
             patch.object(wrapper, "_read_worker_report", return_value=None),
             patch.object(wrapper, "_archive_task") as archive,
@@ -96,7 +96,7 @@ class TestWhatAQaTurnSkips:
 
         preflight.assert_not_called()
         venv.assert_not_called()
-        makefile.assert_not_called()
+        compose_proxy.assert_not_called()
         archive.assert_not_called()
 
     async def test_a_developer_turn_still_runs_every_one_of_them(self):
@@ -106,7 +106,7 @@ class TestWhatAQaTurnSkips:
             patch.object(wrapper, "_prepare_workspace", new_callable=AsyncMock),
             patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")) as preflight,
             patch.object(wrapper, "_fix_venv_paths") as venv,
-            patch.object(wrapper, "_inject_makefile_overrides") as makefile,
+            patch.object(wrapper, "_install_compose_proxy") as compose_proxy,
             patch.object(wrapper, "execute_agent", new_callable=AsyncMock),
             patch.object(wrapper, "_read_worker_report", return_value=None),
             patch.object(wrapper, "_archive_task") as archive,
@@ -116,7 +116,7 @@ class TestWhatAQaTurnSkips:
 
         preflight.assert_called_once()
         venv.assert_called_once()
-        makefile.assert_called_once()
+        compose_proxy.assert_called_once()
         archive.assert_called_once()
 
     async def test_a_qa_executor_is_not_auto_resumed(self):
@@ -157,7 +157,7 @@ class TestWhatAQaTurnSkips:
 
         async def execute_agent(_data):
             nonlocal submitted_verdict
-            assert (workspace / "AGENTS.md").read_text() == "# QA executor"
+            assert (workspace / "WORKER_INSTRUCTIONS.md").read_text() == "# QA executor"
             assert (workspace / "TASK.md").read_text() == "test the deployment"
             assert (workspace / "qa").is_file()
             submitted_verdict = {"pass": True, "checks": [], "summary": "ready"}
@@ -174,7 +174,7 @@ class TestWhatAQaTurnSkips:
             await asyncio.sleep(0)
             assert not leased.is_set()
 
-            (workspace / "AGENTS.md").write_text("# QA executor")
+            (workspace / "WORKER_INSTRUCTIONS.md").write_text("# QA executor")
             await asyncio.sleep(0)
             assert not leased.is_set()
 

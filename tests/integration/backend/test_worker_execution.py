@@ -112,8 +112,9 @@ class TestWorkerExecution:
 
         container = docker_client.containers.get(f"worker-{worker_id}")
 
-        # Check AGENTS.md (not CLAUDE.md)
-        exit_code, _ = container.exec_run("cat /workspace/AGENTS.md")
+        # Codex reads its instructions from WORKER_INSTRUCTIONS.md, never from the
+        # product's own tracked AGENTS.md, and never from CLAUDE.md.
+        exit_code, _ = container.exec_run("cat /workspace/WORKER_INSTRUCTIONS.md")
         assert exit_code == 0
 
         exit_code, _ = container.exec_run("ls /workspace/CLAUDE.md")

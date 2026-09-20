@@ -158,7 +158,7 @@ class WorkerConfig(BaseModel):
     # into a deployment is the QA runtime's typed capability endpoint.
     worker_type: Literal["developer", "qa"]
     agent_type: AgentType  # Which AI agent to use
-    instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
+    instructions: str  # Content for the agent's instruction file (WorkerWorkspace)
     task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)
     allowed_commands: list[str]  # ["project.*", "engineering.start"]
     capabilities: list[WorkerCapability]  # ["git", "copier"]

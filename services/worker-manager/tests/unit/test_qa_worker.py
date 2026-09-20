@@ -170,7 +170,8 @@ class TestAQaExecutorNeedsNoRepository:
         instructions = base64.b64encode(b"# QA executor").decode()
         task = base64.b64encode(b"run the regression test").decode()
         assert any(
-            "/workspace/AGENTS.md" in command and instructions in command for command in commands
+            "/workspace/WORKER_INSTRUCTIONS.md" in command and instructions in command
+            for command in commands
         )
         assert any("/workspace/TASK.md" in command and task in command for command in commands)
 
@@ -436,7 +437,7 @@ class TestTheOneCommandItIsGiven:
             ):
                 await asyncio.sleep(0)
 
-            assert (workspace / "AGENTS.md").read_text() == "# QA executor"
+            assert (workspace / "WORKER_INSTRUCTIONS.md").read_text() == "# QA executor"
             assert (workspace / "TASK.md").read_text() == "run the regression test"
             assert (workspace / "qa").is_file()
             assert (workspace / "qa").stat().st_mode & 0o111
@@ -452,8 +453,8 @@ class TestTheOneCommandItIsGiven:
             return MagicMock(id="container-id")
 
         async def exec_in_container(container_id, command, **kwargs):
-            if "/workspace/AGENTS.md" in command:
-                (workspace / "AGENTS.md").write_text("# QA executor")
+            if "/workspace/WORKER_INSTRUCTIONS.md" in command:
+                (workspace / "WORKER_INSTRUCTIONS.md").write_text("# QA executor")
             elif "/workspace/TASK.md" in command:
                 (workspace / "TASK.md").write_text("run the regression test")
             elif QA_PROBE_PATH in command:

@@ -11,7 +11,7 @@ class TestClaudeCodeAgent:
         assert commands == []
 
     def test_get_instruction_path_returns_claude_md(self):
-        """Claude uses CLAUDE.md for instructions."""
+        """Claude uses CLAUDE.md, which the product kit does not ship."""
         assert ClaudeCodeAgent().get_instruction_path() == "/workspace/CLAUDE.md"
 
     def test_get_agent_command_includes_dangerously_skip(self):
@@ -26,13 +26,14 @@ class TestFactoryDroidAgent:
         commands = FactoryDroidAgent().get_install_commands()
         assert commands == []
 
-    def test_get_instruction_path_returns_agents_md(self):
-        """Factory uses AGENTS.md for instructions."""
-        assert FactoryDroidAgent().get_instruction_path() == "/workspace/AGENTS.md"
+    def test_instructions_never_overwrite_the_products_agents_md(self):
+        """AGENTS.md is a tracked kit file; the orchestrator's instructions get their own."""
+        assert FactoryDroidAgent().get_instruction_path() == "/workspace/WORKER_INSTRUCTIONS.md"
 
 
 class TestCodexAgent:
-    def test_uses_agents_md_and_codex_exec(self):
+    def test_uses_its_own_instruction_file_and_codex_exec(self):
+        """Not the product's AGENTS.md: overwriting it put the orchestrator in the product."""
         agent = CodexAgent()
-        assert agent.get_instruction_path() == "/workspace/AGENTS.md"
+        assert agent.get_instruction_path() == "/workspace/WORKER_INSTRUCTIONS.md"
         assert agent.get_agent_command() == "codex exec"
