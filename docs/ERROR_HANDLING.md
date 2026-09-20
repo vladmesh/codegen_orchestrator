@@ -47,6 +47,27 @@ Timeouts to prevent the system from hanging.
 | **Ansible Provisioning** | 15 min | Kill Process, Fail Task |
 | **Developer Worker Task** | 30 min | Kill Container, Fail Task (or Retry if supported) |
 
+### Story Wait Age Bounds
+
+No Story state waits for ever in silence. One map in
+`services/scheduler/src/tasks/supervisor/state_age.py::STATE_AGE_BOUNDS` gives every waiting state
+a threshold and the moment its age is measured from, and one watchdog applies all of them; a new
+bounded state is an entry plus its config key, never another timeout branch.
+
+| State | Config key | Default | Age measured from | Ending |
+|-------|-----------|---------|-------------------|--------|
+| `deploying` | `supervisor.deploy_wait_max_minutes` | 30 min | the in-flight deploy Run's `created_at` | human review |
+| `testing` | `supervisor.qa_wait_max_minutes` | 60 min | the in-flight QA Run's `created_at` | human review |
+| `pr_review` | `supervisor.pr_review_wait_max_minutes` | 240 min | the pull request's `updated_at` on GitHub | human review |
+| `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the deploy Run that asked for the secrets | fail |
+
+On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
+anchor, and its owner is told through the durable seam in the mandated order (record, transition,
+deliver, administrators). The transition is what makes it idempotent: an expired story leaves the
+status the watchdog scans. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
+still owns the wait for a merged commit's images and always ends it; the `pr_review` bound is an
+order of magnitude longer, so it never takes a story that bound already governs.
+
 ---
 
 ## 4. Propagation Flow

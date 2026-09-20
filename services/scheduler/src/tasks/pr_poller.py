@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
 import os
@@ -27,6 +26,7 @@ from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 
 from .. import startup
+from ._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ._recipients import resolve_project_recipient
 from .image_publication import (
     DEFAULT_BRANCH,
@@ -37,7 +37,6 @@ from .image_publication import (
     image_publication_for_commit,
 )
 from .owner_notifications import deliver_owed_notification, owe_story_owner_notification
-from .story_completion import _parse_owner_repo
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -47,16 +46,6 @@ logger = structlog.get_logger(__name__)
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
-
-
-def _parse_github_timestamp(value: object) -> datetime | None:
-    """A GitHub `...Z` timestamp as an aware datetime, or None when unusable."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _ci_failure_limit() -> int:

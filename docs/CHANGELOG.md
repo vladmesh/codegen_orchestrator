@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- `deploying`, `testing`, `pr_review` and the wait for a user secret each get a configured age bound applied by
+  one watchdog, so an expired wait is parked or failed with a typed reason and its owner is told.
 - The PR fallback updates an out-of-date branch for another CI pass, and parks a refused update or closed-unmerged
   pull request with its durable owner and administrator notices instead of leaving review indefinitely.
 - Scaffolding verifies repository auto-merge and alerts on refusal; the PR poller merges green fallback PRs or

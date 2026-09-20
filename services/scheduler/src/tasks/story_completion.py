@@ -14,6 +14,7 @@ from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
+from ._github_refs import _parse_owner_repo
 from ._recipients import resolve_project_recipient
 from .story_worker_teardown import finalize_story_worker_teardown
 from .supervisor.common import STORY_HUMAN_REVIEW_ACTION
@@ -26,22 +27,6 @@ logger = structlog.get_logger(__name__)
 #: The classification a story carries when GitHub refused its pull request
 #: because the story branch holds no commit of its own.
 STORY_NO_COMMITS_REASON = "story_branch_has_no_commits"
-
-
-def _parse_owner_repo(git_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub git_url.
-
-    Handles both HTTPS and token-based URLs:
-    - https://github.com/org/repo
-    - https://x-access-token:TOKEN@github.com/org/repo.git
-    """
-    # Strip .git suffix and trailing slashes
-    url = git_url.rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
-    # Take last two path segments
-    parts = url.split("/")
-    return parts[-2], parts[-1]
 
 
 def _validate_current_cycle_pr(pr: object, *, branch: str, branch_sha: str) -> dict:
