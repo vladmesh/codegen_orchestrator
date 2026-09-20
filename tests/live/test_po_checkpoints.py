@@ -41,8 +41,20 @@ def failing(message: str = "could not connect to server") -> SqlResult:
     return SqlResult(returncode=2, stdout="", stderr=message)
 
 
-ALL_PRESENT = rows("".join(f"{table}\tt\n" for table in ROW_IDENTITY))
-NONE_PRESENT = rows("".join(f"{table}\tf\n" for table in ROW_IDENTITY))
+#: What psql prints for `presence_sql`. A present table contributes its row; an
+#: absent one contributes nothing at all, because its `WHERE` selects no row —
+#: which is why this fake can be trusted where the previous one could not. The
+#: old presence question ended in a rendered boolean, and the old fake answered
+#: `t` because the code compared to `t`; the database answers `true`, so the
+#: check was false everywhere and the fake agreed with the code instead of with
+#: psql. Nothing here depends on a rendering any more.
+ALL_PRESENT = rows("".join(f"{table}\t{po_checkpoints.PRESENT}\n" for table in ROW_IDENTITY))
+NONE_PRESENT = rows("")
+
+#: The rendering the real database produced for the question that was asked
+#: before this card: `(… IS NOT NULL)::text`. It must never again be read as an
+#: answer — least of all as "no table".
+BOOLEAN_RENDERINGS = ("t", "f", "true", "false")
 
 
 class FakeDb:
@@ -158,3 +170,30 @@ class TestParsing:
             assert f"to_regclass('{SCHEMA}.{table}')" in sql
         assert checkpointer_present(FakeDb()) is True
         assert checkpointer_present(FakeDb(presence=NONE_PRESENT)) is False
+
+    def test_a_table_that_is_not_there_answers_with_no_row_rather_than_a_value(self):
+        """Existence is carried by the row, so no rendering can be misread.
+
+        The defect this replaces: the question ended in `(… IS NOT NULL)::text`
+        and the answer was compared to `'t'`. PostgreSQL renders that cast
+        `true`, so the comparison was false for every table of every database —
+        `snapshot` answered `None` on every run and the residue proof reported
+        the PO kind as one it could not ask, on stand run 35486586267 and on
+        every run before it.
+        """
+        sql = presence_sql()
+        assert "::text" not in sql
+        for table in ROW_IDENTITY:
+            assert (
+                f"SELECT '{table}', '{po_checkpoints.PRESENT}' "
+                f"WHERE to_regclass('{SCHEMA}.{table}') IS NOT NULL"
+            ) in sql
+
+    @pytest.mark.parametrize("rendering", BOOLEAN_RENDERINGS)
+    def test_a_rendered_boolean_is_unreadable_and_never_an_absence(self, rendering):
+        """An answer this module does not recognise raises; it is not "no table"."""
+        answered = rows("".join(f"{table}\t{rendering}\n" for table in ROW_IDENTITY))
+        with pytest.raises(PoCheckpointError, match="only 'present' is an answer"):
+            checkpointer_present(FakeDb(presence=answered))
+        with pytest.raises(PoCheckpointError, match="only 'present' is an answer"):
+            snapshot(THREAD, FakeDb(presence=answered))

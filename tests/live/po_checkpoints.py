@@ -83,6 +83,34 @@ NO_CHECKPOINTER = (
     "so no checkpoint row of this run can exist"
 )
 
+#: Said of a *run start* with no checkpoint table. It is not the same statement
+#: as `NO_CHECKPOINTER` above, which is about the moment the residue is asked:
+#: with no table at the start, nothing pre-existed on the thread, so the empty
+#: snapshot is the true one and every row found later is this run's. Recording
+#: that is what keeps the kind askable instead of turning a perfectly good
+#: answer into "this run fixed no snapshot".
+NO_CHECKPOINTER_AT_START = (
+    "the PO checkpointer had created no table when this run started, so nothing "
+    "pre-existed on the thread and every row on it now appeared during this run"
+)
+
+#: The one word a present table answers with. The presence question is asked so
+#: that an absent table returns **no row at all**, and a present one returns
+#: this token — nothing about the answer depends on how a value is rendered.
+#:
+#: That is not a style choice, it is the repair of the defect stand run
+#: 35486586267 hit. The question used to be
+#: `SELECT '<table>', (to_regclass(...) IS NOT NULL)::text`, and it was read by
+#: comparing the second field to `'t'`. psql prints a *boolean column* as `t`,
+#: but this one is cast to `text` first, and PostgreSQL's boolean-to-text cast
+#: renders `true`. So the comparison was false for every table of every
+#: database that has ever existed: `checkpointer_present` returned False always,
+#: `snapshot` answered `None` always, and the residue kind was `unaskable` on
+#: every run — the same tautology as the `thread_id = <run id>` predicate this
+#: module was written to replace, wearing the other label. The offline fake
+#: answered `t` because the code said `t`, so nothing caught it.
+PRESENT = "present"
+
 
 class PoCheckpointError(AssertionError):
     """The PO checkpoint rows could not be read, removed or proven gone."""
@@ -112,15 +140,21 @@ def _text_array(values: Iterable[str]) -> str:
 
 
 def presence_sql() -> str:
-    """Ask whether the checkpointer has ever created its tables here.
+    """Ask which of the checkpointer's tables this database has.
 
     `to_regclass` rather than a `SELECT` against the table, because a missing
     table makes a query fail, and a failed query is how a kind that could not be
     checked is told apart from one that found nothing.
+
+    The existence is carried by **whether a row comes back**, and the one field
+    that does come back is a fixed word this module wrote itself. A question
+    whose answer is a rendered value is a question whose answer a driver, a
+    server version or a psql flag can change under it, and that is exactly how
+    this check came to be false on every database (see `PRESENT`).
     """
     parts = [
-        f"SELECT {sql_literal(table)}, "
-        f"(to_regclass({sql_literal(f'{SCHEMA}.{table}')}) IS NOT NULL)::text"
+        f"SELECT {sql_literal(table)}, {sql_literal(PRESENT)} "
+        f"WHERE to_regclass({sql_literal(f'{SCHEMA}.{table}')}) IS NOT NULL"
         for table in ROW_IDENTITY
     ]
     return "\nUNION ALL\n".join(parts) + ";"
@@ -195,9 +229,21 @@ def _require(result: SqlResult, doing: str) -> str:
 
 
 def checkpointer_present(run_sql: RunSql) -> bool:
-    """Whether any checkpoint table exists in this database at all."""
+    """Whether any checkpoint table exists in this database at all.
+
+    A row means the table is there. An answer this module does not recognise is
+    **raised**, never read as an absence: "the database said something else" and
+    "the checkpointer has no tables" are different facts, and the run that
+    conflated them reported a proof it had never taken.
+    """
     rows = parse_rows(_require(run_sql(presence_sql()), "reading the PO checkpoint tables"))
-    return any(present == "t" for _table, present in rows)
+    unreadable = sorted({answer for _table, answer in rows if answer != PRESENT})
+    if unreadable:
+        raise PoCheckpointError(
+            "the PO checkpoint presence query answered "
+            f"{unreadable} where only {PRESENT!r} is an answer this can read"
+        )
+    return bool(rows)
 
 
 def snapshot(thread_id: str, run_sql: RunSql) -> dict[str, list[str]] | None:

@@ -5,7 +5,7 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -6145,16 +6145,24 @@ class RunPoPosition:
     will write to and everything already on it. The thread is
     `po-chat-<the harness's Telegram id>` — a fixture every live run on the
     contour shares — so the run owns the difference, not the thread.
-    `checkpoint_snapshot` is `None` when the snapshot could not be taken, and
-    `snapshot_error` then says why: the residue proof reports that kind as one
-    it could not ask, which is what the version of the check that asked
-    `thread_id = <run id>` should have said instead of `absent`.
+
+    Three outcomes, and they are three fields rather than one `None`, because
+    that conflation is what stand run 35486586267 failed on:
+
+    * a snapshot was taken — `checkpoint_snapshot` holds it;
+    * the database has no checkpoint table yet — the snapshot is the empty one,
+      which is the *true* one (nothing pre-existed), and `snapshot_note` says
+      so, so the residue kind stays askable;
+    * the read failed — `checkpoint_snapshot` is `None` and `snapshot_error`
+      says why, and the residue proof reports that kind as one it could not ask,
+      naming the reason rather than only the consequence.
     """
 
     input_cursor: str
     thread_id: str
     checkpoint_snapshot: dict[str, list[str]] | None
     snapshot_error: str | None = None
+    snapshot_note: str | None = None
 
 
 def capture_run_po_position() -> RunPoPosition:
@@ -6163,19 +6171,31 @@ def capture_run_po_position() -> RunPoPosition:
     A snapshot that cannot be taken is recorded as a reason rather than raised:
     failing a run at its first second because a read failed would be worse than
     running it and reporting one kind as unaskable, which is what happens.
+
+    A database with no checkpoint table is not that case. It is an answer: no
+    row pre-existed, so the empty snapshot is correct and the run keeps the
+    difference it needs. Recording it as "no snapshot" is what turned a kind
+    that could be asked into a kind that could not.
     """
     thread = po_thread_id(str(TEST_TELEGRAM_ID))
+    cursor = po_input_cursor()
     try:
         snapshot = po_checkpoints.snapshot(thread, _psql)
-        error = None
     except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable kind
-        snapshot, error = None, f"{type(exc).__name__}: {exc}"
-    return RunPoPosition(
-        input_cursor=po_input_cursor(),
-        thread_id=thread,
-        checkpoint_snapshot=snapshot,
-        snapshot_error=error,
-    )
+        return RunPoPosition(
+            input_cursor=cursor,
+            thread_id=thread,
+            checkpoint_snapshot=None,
+            snapshot_error=f"{type(exc).__name__}: {exc}",
+        )
+    if snapshot is None:
+        return RunPoPosition(
+            input_cursor=cursor,
+            thread_id=thread,
+            checkpoint_snapshot={},
+            snapshot_note=po_checkpoints.NO_CHECKPOINTER_AT_START,
+        )
+    return RunPoPosition(input_cursor=cursor, thread_id=thread, checkpoint_snapshot=snapshot)
 
 
 def record_run_po_position(ctx: dict, position: RunPoPosition) -> None:
@@ -6191,6 +6211,7 @@ def record_run_po_position(ctx: dict, position: RunPoPosition) -> None:
     ctx["po_thread_id"] = position.thread_id
     ctx["po_checkpoint_snapshot"] = position.checkpoint_snapshot
     ctx["po_checkpoint_snapshot_error"] = position.snapshot_error
+    ctx["po_checkpoint_snapshot_note"] = position.snapshot_note
 
 
 async def _story_with_owed_notification(api_internal: httpx.AsyncClient, story: dict) -> dict:
@@ -6261,6 +6282,54 @@ async def record_no_intervention(
     ctx["no_intervention_error"] = "; ".join(proof.failures) or None
 
 
+#: Every proof taken before teardown that an assertion — not only a reader of
+#: the artifact — has to be able to read. Each one is recorded once, on the
+#: context, under the name the assertion asks for it by.
+PRE_TEARDOWN_PROOF_KEYS = ("no_intervention", "no_intervention_error")
+
+
+async def record_pre_teardown_proofs(
+    api_internal: httpx.AsyncClient, ctx: dict, *, command: Callable[..., object] = _redis_json
+) -> None:
+    """Take the run's pre-teardown proofs once, before anything reads them.
+
+    These used to be taken in the pipeline fixture's `finally`, and that is a
+    later moment than it reads: a module-scoped generator fixture runs its
+    `finally` at *teardown*, which pytest does after the last test that used it.
+    So every assertion about a proof recorded there read a context the proof was
+    not on yet, and
+    `test_no_story_of_this_run_ever_waited_for_a_person` failed
+    `KeyError: 'no_intervention'` on stand run 35486586267 — not because no
+    story ever waited for a person, but because nothing had asked yet.
+
+    Idempotent, because it is called from both places that need it: before the
+    fixture hands the context to the tests, and from the `finally` for a run
+    that raised before it ever got there. The first answer is the one kept — it
+    is the one taken while the run's own history was still whole.
+    """
+    if all(key in ctx for key in PRE_TEARDOWN_PROOF_KEYS):
+        return
+    await record_no_intervention(api_internal, ctx, command=command)
+
+
+async def with_pre_teardown_proofs(
+    phases: AsyncIterator[dict],
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    command: Callable[..., object] = _redis_json,
+) -> AsyncIterator[dict]:
+    """Yield the run's context only once its pre-teardown proofs are on it.
+
+    The ordering rule of the fixture, in one place that can be driven offline:
+    whatever the phases yield reaches a test with every proof
+    `PRE_TEARDOWN_PROOF_KEYS` names already recorded on it.
+    """
+    async for value in phases:
+        await record_pre_teardown_proofs(api_internal, ctx, command=command)
+        yield value
+
+
 def _require_run_po_cursor(ctx: dict) -> str:
     cursor = ctx.get("run_po_input_cursor")
     if cursor is None:
@@ -6307,6 +6376,7 @@ def run_inventory(ctx: dict) -> run_residue.RunInventory:
         else None,
         po_thread_id=str(ctx.get("po_thread_id") or ""),
         po_checkpoint_snapshot=ctx.get("po_checkpoint_snapshot"),
+        po_checkpoint_snapshot_error=ctx.get("po_checkpoint_snapshot_error"),
     )
 
 
@@ -6407,7 +6477,13 @@ def prove_nothing_left(
         except Exception as exc:  # noqa: BLE001 — the proof below is what judges the outcome
             workspace_removal_error = f"workspace removal failed: {type(exc).__name__}: {exc}"
     notes = [
-        note for note in (workspace_removal_error, ctx.get("po_checkpoint_snapshot_error")) if note
+        note
+        for note in (
+            workspace_removal_error,
+            ctx.get("po_checkpoint_snapshot_error"),
+            ctx.get("po_checkpoint_snapshot_note"),
+        )
+        if note
     ]
     proof = run_residue.prove_run_residue(
         ops,

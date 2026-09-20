@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pipeline_helpers
 import po_checkpoints
 import pytest
 from run_proof import NEVER_ASKED, ProofFailed, ProofOutcome, prove as prove_questions
@@ -373,3 +374,142 @@ class TestTheDatabaseKindIsTheTeardownsOwnVerdict:
         check = database_check_from(None)
         assert check.outcome is ProofOutcome.UNASKABLE
         assert "asked the database" in check.unaskable_reason
+
+
+class FakePsql:
+    """psql as `pipeline_helpers._psql` invokes it: SQL on stdin, tuples out.
+
+    It answers `po_checkpoints`' own statements, so the capture below is driven
+    through the real presence question, the real snapshot query and the real
+    parser rather than through a restatement of them.
+
+    The presence answer is produced the way the database produces it: a table
+    this fake does not have contributes **no row**, because its `WHERE` selects
+    none. That is the whole repair. The previous fake answered `t` for a present
+    table and `f` for an absent one — the renderings the *code* expected — while
+    PostgreSQL renders the cast in the old query `true`. So the fake agreed with
+    the code, the code disagreed with the database, and the PO checkpoint kind
+    was `unaskable` on every run until stand run 35486586267 said so out loud.
+    """
+
+    def __init__(self, *, tables: tuple[str, ...] = tuple(po_checkpoints.ROW_IDENTITY), rows=()):
+        self.tables = tables
+        self.rows = list(rows)
+        self.statements: list[str] = []
+
+    def subprocess_run(self, argv, **kwargs):
+        self.statements.append(kwargs["input"])
+        return SimpleNamespace(returncode=0, stdout=self._answer(kwargs["input"]), stderr="")
+
+    def _answer(self, sql: str) -> str:
+        if "to_regclass" in sql:
+            return "".join(
+                f"{table}\t{po_checkpoints.PRESENT}\n"
+                for table in po_checkpoints.ROW_IDENTITY
+                if table in self.tables and f"to_regclass('{po_checkpoints.SCHEMA}.{table}')" in sql
+            )
+        return "".join(f"{table}\t{identity}\n" for table, identity in self.rows)
+
+
+class RefusingPsql:
+    """A psql that could not run at all: the one case that is unaskable."""
+
+    REASON = "could not connect to server: Connection refused"
+
+    def subprocess_run(self, argv, **kwargs):
+        return SimpleNamespace(returncode=2, stdout="", stderr=self.REASON)
+
+
+def _capture(monkeypatch, psql) -> dict:
+    """Drive the run's real PO capture against `psql`, and record it on a context."""
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", psql.subprocess_run)
+    monkeypatch.setattr(pipeline_helpers, "po_input_cursor", lambda: "1700000000000-0")
+    ctx: dict = {}
+    pipeline_helpers.record_run_po_position(ctx, pipeline_helpers.capture_run_po_position())
+    return ctx
+
+
+def _po_check(ctx: dict, *, rows: list[str] | None = None):
+    """The residue proof's PO kind, for the position this context recorded."""
+    inventory = replace(
+        INVENTORY,
+        po_thread_id=ctx["po_thread_id"],
+        po_checkpoint_snapshot=ctx["po_checkpoint_snapshot"],
+        po_checkpoint_snapshot_error=ctx["po_checkpoint_snapshot_error"],
+    )
+    ops = clean_ops(po_checkpoint_rows=lambda _inventory: rows if rows is not None else [])
+    proof = prove_run_residue(
+        ops,
+        inventory,
+        database_check=database_check_from(object()),
+        notes=[
+            note
+            for note in (
+                ctx["po_checkpoint_snapshot_error"],
+                ctx["po_checkpoint_snapshot_note"],
+            )
+            if note
+        ],
+    )
+    return proof, check_for(proof, "po_checkpoint_thread")
+
+
+class TestTheRunTakesThePoSnapshotItsProofNeeds:
+    """Criterion 1: the kind has to be askable on an ordinary run.
+
+    A kind that is `unaskable` on every run is the same defect as one that is
+    `absent` on every run — it reports on nothing. Stand run 35486586267 was the
+    first to say so, and the reason was a presence query whose answer no
+    database could give.
+    """
+
+    def test_an_ordinary_run_fixes_a_snapshot_and_the_kind_is_asked(self, monkeypatch):
+        psql = FakePsql(rows=[("checkpoints", "|1f0-aaa")])
+        ctx = _capture(monkeypatch, psql)
+
+        assert ctx["po_checkpoint_snapshot"] == {"checkpoints": ["|1f0-aaa"]}
+        assert ctx["po_checkpoint_snapshot_error"] is None
+        assert ctx["po_checkpoint_snapshot_note"] is None
+
+        _proof, check = _po_check(ctx)
+        assert check.outcome is ProofOutcome.ABSENT
+
+    def test_a_row_this_run_added_is_still_named_a_leftover(self, monkeypatch):
+        """Askable is not lenient: the snapshot is what makes a leftover visible."""
+        ctx = _capture(monkeypatch, FakePsql(rows=[("checkpoints", "|1f0-aaa")]))
+        _proof, check = _po_check(ctx, rows=["langgraph.checkpoints row |1f0-bbb"])
+        assert check.outcome is ProofOutcome.LEFTOVER
+        assert check.findings == ("langgraph.checkpoints row |1f0-bbb",)
+
+    def test_no_checkpoint_table_at_the_start_is_an_answer_not_a_missing_snapshot(
+        self, monkeypatch
+    ):
+        """Nothing pre-existed, so the empty snapshot is the true one.
+
+        This was read as "this run fixed no snapshot" and made the kind
+        unaskable, which is the opposite of what it means: with no table there
+        is nothing to tell this run's rows apart from, because there are no
+        other rows.
+        """
+        ctx = _capture(monkeypatch, FakePsql(tables=()))
+
+        assert ctx["po_checkpoint_snapshot"] == {}
+        assert ctx["po_checkpoint_snapshot_error"] is None
+        assert ctx["po_checkpoint_snapshot_note"] == po_checkpoints.NO_CHECKPOINTER_AT_START
+
+        proof, check = _po_check(ctx)
+        assert check.outcome is ProofOutcome.ABSENT
+        assert po_checkpoints.NO_CHECKPOINTER_AT_START in proof.notes
+
+    def test_a_read_that_failed_is_unaskable_and_names_what_failed(self, monkeypatch):
+        """The one case that must stay red — and it now says why, in the check."""
+        ctx = _capture(monkeypatch, RefusingPsql())
+
+        assert ctx["po_checkpoint_snapshot"] is None
+        assert RefusingPsql.REASON in ctx["po_checkpoint_snapshot_error"]
+
+        proof, check = _po_check(ctx)
+        assert check.outcome is ProofOutcome.UNASKABLE
+        assert NO_PO_SNAPSHOT in check.unaskable_reason
+        assert RefusingPsql.REASON in check.unaskable_reason
+        assert proof.failures, "an unaskable kind still fails the run"

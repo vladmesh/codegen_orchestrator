@@ -86,8 +86,8 @@ from pipeline_helpers import (
     record_level1_product_evidence,
     record_level1_scripted_path,
     record_manager_checkout_script,
-    record_no_intervention,
     record_noop_settlement_evidence,
+    record_pre_teardown_proofs,
     record_qa_run,
     record_run_po_position,
     record_settings_seed_brief_log,
@@ -114,6 +114,7 @@ from pipeline_helpers import (
     wait_service_deployment,
     wait_story_completed,
     wait_undeploy_run,
+    with_pre_teardown_proofs,
 )
 import pytest
 import pytest_asyncio
@@ -181,15 +182,24 @@ async def _pipeline_run(
                     ],
                 )
                 try:
-                    async for value in _pipeline_phases(
-                        api,
+                    # The proofs an assertion reads are taken before the context
+                    # reaches the tests, never in the `finally` below: pytest
+                    # runs a module fixture's teardown after the last test that
+                    # used it, so a proof recorded there is recorded too late to
+                    # be asserted at all.
+                    async for value in with_pre_teardown_proofs(
+                        _pipeline_phases(
+                            api,
+                            api_internal,
+                            api_observer,
+                            ctx,
+                            engineering_timeout=engineering_timeout,
+                            debug_prefix=debug_prefix,
+                            lifecycle_undeploy=lifecycle_undeploy,
+                            require_story_commit=require_story_commit,
+                        ),
                         api_internal,
-                        api_observer,
                         ctx,
-                        engineering_timeout=engineering_timeout,
-                        debug_prefix=debug_prefix,
-                        lifecycle_undeploy=lifecycle_undeploy,
-                        require_story_commit=require_story_commit,
                     ):
                         yield value
                 finally:
@@ -201,8 +211,10 @@ async def _pipeline_run(
                     await record_terminal_stage_evidence(api_internal, ctx)
                     # Before teardown: cleanup XDELs this run's PO entries, and
                     # the PO history is where a park that was later recovered
-                    # is still recorded.
-                    await record_no_intervention(api_internal, ctx)
+                    # is still recorded. Idempotent — a run that reached the
+                    # yield above has already taken these, and a run that raised
+                    # before it takes them here so the artifact still holds them.
+                    await record_pre_teardown_proofs(api_internal, ctx)
                     evidence_pass(ctx)
                     emit_run_evidence(ctx)
 

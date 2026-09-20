@@ -116,6 +116,12 @@ NO_PO_SNAPSHOT = (
     "on the shared fixture thread cannot be told from the rows that were already there"
 )
 
+#: Said when nothing recorded *why* the snapshot is missing. A reason is what a
+#: reader of a red run repairs the run with, so its absence is itself named
+#: rather than left as a blank: run 35486586267 failed on this kind and the
+#: artifact carried no sentence about why.
+NO_PO_SNAPSHOT_REASON = "and nothing recorded why the snapshot is missing"
+
 
 #: Said of a kind whose subject list is empty. The question was put and nothing
 #: came back, which is a pass — but a pass that no state of the *world* could
@@ -156,6 +162,9 @@ class RunInventory:
     #: shares. See `po_checkpoints`.
     po_thread_id: str = ""
     po_checkpoint_snapshot: dict[str, list[str]] | None = None
+    #: Why the snapshot above is `None`, when it is. Carried so the unaskable
+    #: check names the read that failed and not only the consequence.
+    po_checkpoint_snapshot_error: str | None = None
 
     def workspace_entries(self) -> list[str]:
         """The workspace root's children this run owns, in creation order of kind.
@@ -293,6 +302,13 @@ def _redis_keys(ops: ResidueOps, inventory: RunInventory) -> list[str]:
     return findings
 
 
+def _no_snapshot_reason(inventory: RunInventory) -> str:
+    """Why this run has no snapshot, in the words of whatever failed to take it."""
+    if not inventory.po_thread_id:
+        return "this run recorded no PO thread id"
+    return inventory.po_checkpoint_snapshot_error or NO_PO_SNAPSHOT_REASON
+
+
 def _po_checkpoint_thread(ops: ResidueOps, inventory: RunInventory, notes: list[str]) -> list[str]:
     """The PO checkpoint rows this run added to its thread, or why it cannot say.
 
@@ -305,7 +321,7 @@ def _po_checkpoint_thread(ops: ResidueOps, inventory: RunInventory, notes: list[
     during the run and survived cleanup are named.
     """
     if not inventory.po_thread_id or inventory.po_checkpoint_snapshot is None:
-        raise RunResidueError(NO_PO_SNAPSHOT)
+        raise RunResidueError(f"{NO_PO_SNAPSHOT} ({_no_snapshot_reason(inventory)})")
     rows = ops.po_checkpoint_rows(inventory)
     if rows is None:
         notes.append(po_checkpoints.NO_CHECKPOINTER)
