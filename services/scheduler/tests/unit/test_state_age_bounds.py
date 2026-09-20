@@ -17,6 +17,7 @@ import pytest
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
+from src.tasks.supervisor.common import USER_SECRET_REQUESTED_AT_KEY
 from src.tasks.supervisor.state_age import (
     STATE_AGE_BOUND_REASON,
     STATE_AGE_BOUNDS,
@@ -343,12 +344,23 @@ async def test_an_unreadable_pull_request_never_ends_a_wait(api_client, redis_cl
 # --- waiting_user_secret --------------------------------------------------
 
 
-def _waiting_secret_run(*, asked_at: datetime):
+def _waiting_secret_run(*, asked_at: datetime | None, consumer_wrote_at: datetime):
+    """The deploy Run of a secret wait.
+
+    `consumer_wrote_at` is when the deploy consumer recorded the missing keys —
+    the run's own timestamps, in another process. `asked_at` is when the
+    scheduler published the request to the owner, stamped in run_metadata; None
+    is a story that entered the wait before the stamp existed. The two are
+    deliberately different in these tests: the gap between them is the whole
+    point of the stamp.
+    """
+    metadata = {} if asked_at is None else {USER_SECRET_REQUESTED_AT_KEY: asked_at.isoformat()}
     return _make_run(
         id="deploy-secret-source",
         status=RunStatus.COMPLETED,
-        created_at=asked_at - timedelta(minutes=5),
-        updated_at=asked_at,
+        created_at=consumer_wrote_at - timedelta(minutes=5),
+        updated_at=consumer_wrote_at,
+        run_metadata=metadata,
         result={
             "deploy_outcome": "waiting_for_user_secret",
             "missing_user_secrets": [{"key": "STRIPE_KEY", "description": "Stripe secret key"}],
@@ -362,7 +374,8 @@ async def test_an_unanswered_secret_request_fails_the_story_once(api_client, red
         StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
     )
     api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(USER_SECRET_BOUND_MINUTES + 60)
+        asked_at=_ago(USER_SECRET_BOUND_MINUTES + 60),
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES + 65),
     )
 
     counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
@@ -388,7 +401,8 @@ async def test_a_secret_request_just_under_the_bound_is_left_alone(api_client, r
         StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
     )
     api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(USER_SECRET_BOUND_MINUTES - 60)
+        asked_at=_ago(USER_SECRET_BOUND_MINUTES - 60),
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES - 55),
     )
 
     counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
@@ -398,6 +412,79 @@ async def test_a_secret_request_just_under_the_bound_is_left_alone(api_client, r
     deliver.assert_not_awaited()
     notify.assert_not_awaited()
     api_client.fail_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_request_the_scheduler_only_just_sent_is_not_expired_by_an_old_run(
+    api_client, redis_client
+):
+    """The gap between the deploy consumer and the ask is the user's time, not theirs.
+
+    The consumer recorded the missing keys long ago and the scheduler was behind;
+    the owner was asked a minute ago. Measuring from the run would fail them for
+    not answering a question they had only just received.
+    """
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
+    )
+    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
+        asked_at=_ago(1),
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 3),
+    )
+
+    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0}
+    owe.assert_not_awaited()
+    deliver.assert_not_awaited()
+    notify.assert_not_awaited()
+    api_client.fail_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_old_request_is_expired_even_when_the_run_was_written_recently(
+    api_client, redis_client
+):
+    """The reverse gap: the stamp is what the bound measures, not the run."""
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
+    )
+    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
+        asked_at=_ago(USER_SECRET_BOUND_MINUTES + 60),
+        consumer_wrote_at=_ago(2),
+    )
+
+    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 1}
+    assert owe.await_args.kwargs["event"] is OwnerNotificationEvent.STORY_FAILED
+    api_client.fail_story.assert_awaited_once_with("story-1")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_wait_that_predates_the_stamp_is_adopted_rather_than_failed(
+    api_client, redis_client
+):
+    """A live story parked before this bound existed keeps its full window."""
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
+    )
+    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
+        asked_at=None,
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 5),
+    )
+
+    counts, owe, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0}
+    owe.assert_not_awaited()
+    api_client.fail_story.assert_not_awaited()
+    stamped = api_client.update_run.await_args.args[1]["run_metadata"]
+    assert USER_SECRET_REQUESTED_AT_KEY in stamped
+    adopted = datetime.fromisoformat(stamped[USER_SECRET_REQUESTED_AT_KEY])
+    assert (datetime.now(UTC) - adopted).total_seconds() < 60
 
 
 # --- no double ending -----------------------------------------------------

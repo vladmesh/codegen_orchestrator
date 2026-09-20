@@ -59,11 +59,13 @@ bounded state is an entry plus its config key, never another timeout branch.
 | `deploying` | `supervisor.deploy_wait_max_minutes` | 30 min | the in-flight deploy Run's `created_at` | human review |
 | `testing` | `supervisor.qa_wait_max_minutes` | 60 min | the in-flight QA Run's `created_at` | human review |
 | `pr_review` | `supervisor.pr_review_wait_max_minutes` | 240 min | the pull request's `updated_at` on GitHub | human review |
-| `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the deploy Run that asked for the secrets | fail |
+| `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the stamped moment the owner was asked (`run_metadata.user_secret_requested_at`) | fail |
 
 On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
 anchor, and its owner is told through the durable seam in the mandated order (record, transition,
-deliver, administrators). The transition is what makes it idempotent: an expired story leaves the
+deliver, administrators). Each default's provenance is recorded in its
+`scripts/system_configs.yaml` description and beside its map entry, so a bound can be retuned
+against the timing it was derived from. The transition is what makes it idempotent: an expired story leaves the
 status the watchdog scans. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
 still owns the wait for a merged commit's images and always ends it; the `pr_review` bound is an
 order of magnitude longer, so it never takes a story that bound already governs.

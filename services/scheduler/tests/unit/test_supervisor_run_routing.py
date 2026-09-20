@@ -1412,6 +1412,40 @@ class TestSuperviseDeployingStories:
         assert "TELEGRAM_BOT_TOKEN" in fields["text"]
         assert "Telegram bot token" in fields["text"]
 
+    @pytest.mark.asyncio
+    async def test_entering_the_wait_stamps_when_the_owner_was_asked(
+        self, api_client, redis_client
+    ):
+        """The age bound on this wait measures from the ask, so the ask is recorded.
+
+        The deploy consumer wrote the missing keys in another process at an
+        earlier moment; only this tick knows when the owner was actually asked.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor.common import USER_SECRET_REQUESTED_AT_KEY
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=555)
+
+        await supervise_deploying_stories(api_client, redis_client)
+
+        stamped = [
+            call
+            for call in api_client.update_run.call_args_list
+            if USER_SECRET_REQUESTED_AT_KEY in call[0][1].get("run_metadata", {})
+        ]
+        assert len(stamped) == 1
+        asked_at = datetime.fromisoformat(
+            stamped[0][0][1]["run_metadata"][USER_SECRET_REQUESTED_AT_KEY]
+        )
+        assert (datetime.now(UTC) - asked_at).total_seconds() < 60
+
 
 class TestSuperviseWaitingUserSecretStories:
     """Poll WAITING_USER_SECRET stories; re-deploy once the secret is saved."""

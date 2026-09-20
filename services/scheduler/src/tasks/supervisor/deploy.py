@@ -70,6 +70,7 @@ from ..owner_notifications import (
 )
 from .common import (
     STORY_HUMAN_REVIEW_ACTION,
+    USER_SECRET_REQUESTED_AT_KEY,
     _admissible_target_exists,
     _fail_story_on_invalid_result,
     _notify_admin_failure,
@@ -1368,6 +1369,12 @@ async def _handle_deploy_waiting_user_secret(
     so the story leaves the DEPLOYING set this branch polls and cannot be asked
     again on a later tick. supervise_waiting_user_secret_stories only checks for the
     secret's arrival; it never re-sends the request.
+
+    The moment of the ask is stamped on the run, because this tick is the only
+    place that knows it. The deploy consumer wrote the missing keys in another
+    process at an earlier moment, and the gap between the two is exactly as long
+    as this scheduler is behind — so the bound on the wait is measured from the
+    stamp written here, never from the run's own timestamps.
     """
     missing = run.result.missing_user_secrets
     log.info(
@@ -1377,6 +1384,7 @@ async def _handle_deploy_waiting_user_secret(
     )
 
     await api_client.wait_user_secret_story(story_id)
+    await _stamp_user_secret_request(api_client, run, log)
 
     try:
         await _request_user_secret_via_po(
@@ -1386,6 +1394,29 @@ async def _handle_deploy_waiting_user_secret(
         # The story is already parked; a failed PO publish must not re-raise and
         # cause a second request next tick. It is a one-shot best-effort nudge.
         log.warning("waiting_user_secret_request_failed", story_id=story_id, exc_info=True)
+
+
+async def _stamp_user_secret_request(
+    api_client: SchedulerAPIClient,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Record when the owner was asked, before the asking is attempted.
+
+    Written first so the wait is bounded from the moment the platform committed
+    to asking, whether or not the PO publish that follows lands — a lost nudge
+    must not leave the wait unanchored. The API merges `run_metadata`, so this
+    adds a key and rewrites nothing. Best-effort: if it fails, the story is
+    already parked and the watchdog adopts its own first observation instead,
+    which only ever lengthens the wait.
+    """
+    try:
+        await api_client.update_run(
+            run.id,
+            {"run_metadata": {USER_SECRET_REQUESTED_AT_KEY: datetime.now(UTC).isoformat()}},
+        )
+    except Exception:
+        log.warning("waiting_user_secret_stamp_failed", run_id=run.id, exc_info=True)
 
 
 async def _request_user_secret_via_po(

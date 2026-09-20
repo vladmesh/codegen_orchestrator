@@ -20,11 +20,15 @@ which any unrelated write moves:
   and QA supervisors on the same tick. A re-dispatch is a *new* Run, so the
   bound restarts exactly when the platform genuinely started over, and nothing
   else can reset it.
-* ``waiting_user_secret`` — the deploy Run that reported the missing secrets,
-  measured from the moment its result was written. The request to the user is
-  emitted on that same tick, by `_handle_deploy_waiting_user_secret`, and the
-  resume path creates a new Run rather than touching this one, so the run's last
-  write is the moment the user was asked and nothing moves it afterwards.
+* ``waiting_user_secret`` — the moment the owner was asked, stamped on the
+  deploy Run by the tick that published the request
+  (`USER_SECRET_REQUESTED_AT_KEY`). Not the run's own timestamps: those are the
+  deploy consumer's, written in another process when it gave up on the missing
+  keys, and the scheduler reaches the ask only on a later tick — a gap that is
+  exactly as long as the scheduler is behind, which is the condition this card
+  exists for. Measuring from them could fail an owner for not answering a
+  question that had not been asked yet. The resume path creates a new Run rather
+  than touching this one, so the stamp is written once and never moves.
 * ``pr_review`` — the pull request's own ``updated_at`` on GitHub. It lives
   outside this process, so it survives a tick restart; it moves when the pull
   request moves (a push, an update-branch, the merge) and not when something
@@ -63,7 +67,11 @@ if TYPE_CHECKING:
 from ... import startup
 from .._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ..owner_notifications import deliver_owed_notification, owe_story_owner_notification
-from .common import STORY_HUMAN_REVIEW_ACTION, _parse_datetime
+from .common import (
+    STORY_HUMAN_REVIEW_ACTION,
+    USER_SECRET_REQUESTED_AT_KEY,
+    _parse_datetime,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -162,7 +170,17 @@ async def _qa_run_anchor(
 async def _user_secret_request_anchor(
     api_client: SchedulerAPIClient, story: StoryDTO, _github: GitHubAppClient
 ) -> datetime | None:
-    """When the user was asked for the secrets this story is still missing."""
+    """When the owner was asked for the secrets this story is still missing.
+
+    Read from the stamp `_handle_deploy_waiting_user_secret` writes when it
+    publishes the request. A story that entered the wait before that stamp
+    existed — or whose stamp write was lost — has none, and a missing stamp must
+    never shorten the wait, so this adopts its own first observation as the
+    anchor and writes it down. The practical effect on a story that has been
+    waiting for days is that its bound starts now: it gets a full, fresh window
+    from the moment the platform first looked, which is the only length this
+    process can honestly defend, and nothing is asked of the user again.
+    """
     log = logger.bind(story_id=story.id)
     try:
         run = await api_client.get_latest_run_by_story(story.id, run_type=RunType.DEPLOY.value)
@@ -171,11 +189,15 @@ async def _user_secret_request_anchor(
         return None
     if run is None or run.result is None or not run.result.missing_user_secrets:
         return None
-    # The ask is published on the tick that wrote this result, and nothing
-    # writes to this run again while the story waits, so the run's last write is
-    # the moment of the ask. A run that has never been written since creation
-    # cannot be carrying a result, so there is nothing to invent here.
-    return _parse_datetime(run.updated_at) if run.updated_at else None
+    stamp = (run.run_metadata or {}).get(USER_SECRET_REQUESTED_AT_KEY)
+    if stamp:
+        return _parse_datetime(stamp)
+    adopted = datetime.now(UTC)
+    await api_client.update_run(
+        run.id, {"run_metadata": {USER_SECRET_REQUESTED_AT_KEY: adopted.isoformat()}}
+    )
+    log.info("state_age_bound_user_secret_anchor_adopted", run_id=run.id)
+    return adopted
 
 
 async def _pull_request_anchor(
@@ -246,6 +268,9 @@ def _user_secret_owner_text(threshold_minutes: int) -> str:
 #: restated here.
 STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
     StateAgeBound(
+        # 30 min: `stand_deadlines.DEPLOY_TIMEOUT` (420 s) plus
+        # `DEPLOY_OUTCOME_TIMEOUT` (120 s) is a live deploy Run, ~9 min; the
+        # default is a generous multiple of that for a slow host.
         status=StoryStatus.DEPLOYING,
         config_key="supervisor.deploy_wait_max_minutes",
         anchor="deploy_run_created_at",
@@ -254,6 +279,9 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         owner_text=_deploy_owner_text,
     ),
     StateAgeBound(
+        # 60 min: `stand_deadlines.QA_RUN_TIMEOUT` is 300 s, and the identity a
+        # QA run borrows is revoked at `supervisor.temporary_access_ttl_minutes`
+        # (60), past which the run cannot test anything anyway.
         status=StoryStatus.TESTING,
         config_key="supervisor.qa_wait_max_minutes",
         anchor="qa_run_created_at",
@@ -262,6 +290,11 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         owner_text=_qa_owner_text,
     ),
     StateAgeBound(
+        # 240 min: the gate's own ceiling for merge to deploy Run is
+        # `stand_deadlines.DEPLOY_RUN_TIMEOUT` (1320 s, which already contains
+        # the 900 s image window), and CI before the merge sits inside
+        # `ENGINEERING_TIMEOUT` (420 s). Ten times that ceiling absorbs a queued
+        # GitHub Actions and still surfaces a stuck story the same day.
         status=StoryStatus.PR_REVIEW,
         config_key="supervisor.pr_review_wait_max_minutes",
         anchor="github_pull_request_updated_at",
@@ -270,6 +303,9 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         owner_text=_pr_review_owner_text,
     ),
     StateAgeBound(
+        # 1440 min: a wait on a person, so it takes the number the pipeline
+        # already uses for its other wait on one,
+        # `supervisor.resource_wait_timeout_minutes`.
         status=StoryStatus.WAITING_USER_SECRET,
         config_key="supervisor.user_secret_wait_max_minutes",
         anchor="user_secret_requested_at",
@@ -299,7 +335,13 @@ async def supervise_state_age_bounds(
                 project_id=str(story.project_id),
                 status=bound.status.value,
             )
-            anchor = await bound.resolve_anchor(api_client, story, github)
+            try:
+                anchor = await bound.resolve_anchor(api_client, story, github)
+            except Exception:
+                # Without an anchor there is no bound to apply, and one story's
+                # unreadable evidence must not stop the rest of the sweep.
+                log.exception("state_age_bound_anchor_failed")
+                continue
             if anchor is None:
                 continue
             age = _age_minutes(anchor)

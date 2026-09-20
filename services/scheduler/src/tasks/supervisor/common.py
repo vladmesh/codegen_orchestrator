@@ -24,6 +24,15 @@ logger = structlog.get_logger(__name__)
 
 STORY_HUMAN_REVIEW_ACTION = "human-review"
 
+#: When the project owner was asked for the secrets a deploy is missing.
+#: Written into the `run_metadata` of the deploy Run that carries the missing
+#: keys, by the tick that publishes the request, and read by the age bound on
+#: `waiting_user_secret`. It has to be its own stamp: the run's own timestamps
+#: are the deploy consumer's, written in another process before the scheduler
+#: had asked anybody anything, so a scheduler that is behind would otherwise
+#: measure the user's time from a moment they knew nothing about.
+USER_SECRET_REQUESTED_AT_KEY = "user_secret_requested_at"  # noqa: S105
+
 
 def _qa_handoff_recovery_minutes() -> int:
     return startup.get_config().get_int("supervisor.qa_handoff_recovery_minutes")
