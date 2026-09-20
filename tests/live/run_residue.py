@@ -447,6 +447,13 @@ def database_check_from(report) -> ProofCheck:
     them, raising by table, key and constraint. That is already the proof for
     this kind, so it is neither re-asked nor re-implemented here.
 
+    **The rows the plan declares it cannot delete are named, not hidden.** The
+    append-only attempt ledger and the `users` row it points at are retained by
+    a rule of the plan, and the teardown already failed if the retained set was
+    anything other than exactly this run's own. They are not residue, so the
+    kind stays `absent`; they are also not nothing, so the question carries them
+    by table, key and count and a reader sees what stayed and why.
+
     **Where this kind can go red, and where it cannot.** It goes red in
     `cleanup_all`, loudly and before this proof is reached: a surviving row
     fails the teardown, so by the time the residue proof runs the answer is
@@ -456,7 +463,7 @@ def database_check_from(report) -> ProofCheck:
     rewrite it") rather than an accident, and the check carries what was
     actually proven so a reader is not asked to take the label on trust.
     """
-    question = "db_teardown.residue_sql over the closure derived from pg_constraint"
+    question = "db_teardown.proof_sql over the closure derived from pg_constraint"
     if report is None:
         return ProofCheck(
             kind="database_rows",
@@ -469,12 +476,16 @@ def database_check_from(report) -> ProofCheck:
         )
     tables = getattr(report, "tables", [])
     owned = getattr(report, "owned_keys", {})
+    asked = (
+        f"{question}: {len(tables)} table(s), "
+        f"{sum(len(keys) for keys in owned.values())} owned key(s) read back"
+    )
+    retained = getattr(report, "retention_report", "")
+    if retained:
+        asked = f"{asked}; retained by the plan's declared rule: {retained}"
     return ProofCheck(
         kind="database_rows",
-        question=(
-            f"{question}: {len(tables)} table(s), "
-            f"{sum(len(keys) for keys in owned.values())} owned key(s) read back"
-        ),
+        question=asked,
         outcome=ProofOutcome.ABSENT,
     )
 

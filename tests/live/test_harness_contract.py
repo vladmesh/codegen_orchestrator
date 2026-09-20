@@ -18,11 +18,15 @@ from db_teardown_fake import FakeDatabase
 import httpx
 from live_harness import (
     LIVE_NO_CLEANUP_ENV,
+    RUN_USER_TELEGRAM_ID_MAX,
+    RUN_USER_TELEGRAM_ID_MIN,
+    RUN_USER_USERNAME_PREFIX,
     CleanupError,
     OwnedResource,
     OwnershipManifest,
     cleanup_guard,
     resolve_repo_root,
+    run_user_sweep_predicate,
 )
 import pipeline_helpers
 from pipeline_helpers import (
@@ -1952,7 +1956,9 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
     monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", lambda repo: None)
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id, run_user_telegram_id=None: None
+    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == f"/api/projects/{ctx['project_id']}":
@@ -2697,7 +2703,9 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
     )
     monkeypatch.setattr(
-        pipeline_helpers, "_cleanup_db", lambda project_id: events.append("database")
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: events.append("database"),
     )
 
     transport = httpx.MockTransport(handler)
@@ -2766,7 +2774,11 @@ async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeyp
     monkeypatch.setattr(
         pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
     )
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: events.append("db"))
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: events.append("db"),
+    )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
@@ -2813,7 +2825,11 @@ async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch,
     monkeypatch.setattr(
         pipeline_helpers, "cleanup_github_repo", lambda repo: external.append("github")
     )
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: external.append("db"))
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: external.append("db"),
+    )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
@@ -3303,7 +3319,9 @@ async def test_cleanup_cancels_unowned_project_runs_through_internal_client(monk
     monkeypatch.setattr(pipeline_helpers, "cleanup_server_container", cleanup_server)
     monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id, run_user_telegram_id=None: None
+    )
 
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
@@ -5569,6 +5587,313 @@ def test_a_contained_branch_with_no_merge_commit_names_what_it_could_not_recover
 
     assert probe["reference"] == "c0ffee"
     assert probe["reference_kind"] == live_harness_cleanup.MERGE_BASE_IS_HEAD_REFERENCE
+
+
+# ── The registration door the level-1 run walks through ──────────────────
+#
+# The fixture user is a row the harness made for itself. This run's user is a
+# customer: a Telegram id nobody has used, a code minted through the internal
+# API, and a registration that redeems it. These hold the sequence and its
+# refusals without a stack — the stand proves the product does it, this proves
+# the harness asks for it and never quietly asks for anything else.
+
+
+REGISTERED_USER_ID = 4242
+
+
+class _DoorApi:
+    """The three routes a registration touches, and a record of who asked."""
+
+    def __init__(
+        self,
+        *,
+        existing_user: bool = False,
+        mint_status: int = 201,
+        upsert_response: tuple[int, dict] | None = None,
+        policy: dict | None = None,
+        balance: dict | None = None,
+    ) -> None:
+        self.existing_user = existing_user
+        self.mint_status = mint_status
+        self.upsert_response = upsert_response
+        self.policy = policy
+        self.balance = balance
+        self.minted: list[dict] = []
+        self.upserts: list[tuple[dict, httpx.Headers]] = []
+
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self._handle)
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/users/by-telegram/"):
+            if self.existing_user:
+                return httpx.Response(200, json={"id": 7, "telegram_id": 999})
+            return httpx.Response(404, json={"detail": "User not found"})
+        if path == pipeline_helpers.PROMO_BATCH_ROUTE:
+            body = json.loads(request.content)
+            self.minted.append(body)
+            if self.mint_status != 201:
+                return httpx.Response(self.mint_status, json={"detail": "refused"})
+            return httpx.Response(
+                201,
+                json=[
+                    {
+                        "id": 1,
+                        "code": "LEVEL1-CODE",
+                        "credits_microusd": body["credits_microusd"],
+                        "attempt_reservation_microusd": body["attempt_reservation_microusd"],
+                        "redeemed_by_user_id": None,
+                        "redeemed_at": None,
+                        "created_at": "2026-09-20T00:00:00Z",
+                    }
+                ],
+            )
+        if path == pipeline_helpers.USER_UPSERT_ROUTE:
+            body = json.loads(request.content)
+            self.upserts.append((body, request.headers))
+            if self.upsert_response is not None:
+                status_code, payload = self.upsert_response
+                return httpx.Response(status_code, json=payload)
+            return httpx.Response(
+                200,
+                json={
+                    "id": REGISTERED_USER_ID,
+                    "telegram_id": body["telegram_id"],
+                    "username": body.get("username"),
+                    "first_name": body.get("first_name"),
+                    "last_name": body.get("last_name"),
+                    "is_admin": False,
+                    "last_seen": "2026-09-20T00:00:00Z",
+                    "created_at": "2026-09-20T00:00:00Z",
+                    "updated_at": "2026-09-20T00:00:00Z",
+                },
+            )
+        if path.endswith("/balance"):
+            return httpx.Response(200, json=self.balance)
+        if path.startswith("/api/engineering-budget-policies/"):
+            return httpx.Response(200, json=self.policy)
+        raise AssertionError(f"the registration door asked for {path}")
+
+
+def _door_clients(api: _DoorApi, monkeypatch):
+    """The internal client and the named-user factory, both on one transport."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    transport = api.transport()
+
+    def factory(telegram_id: int) -> httpx.AsyncClient:
+        return pipeline_helpers.api_client_as_named_user(
+            telegram_id, base_url="http://test", transport=transport
+        )
+
+    internal = pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=transport
+    )
+    return internal, factory
+
+
+def _armed_policy(
+    *,
+    user_id: int = REGISTERED_USER_ID,
+    limit: int = pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD,
+    reservation: int = pipeline_helpers.LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+    enforcement: str = "enforced",
+    state: str = "enabled",
+) -> dict:
+    return {
+        "user_id": user_id,
+        "enforcement": enforcement,
+        "policy": {
+            "user_id": user_id,
+            "limit_microusd": limit,
+            "attempt_reservation_microusd": reservation,
+            "state": state,
+            "version": 1,
+        },
+    }
+
+
+def _fresh_balance(credits: int = pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD) -> dict:
+    return {
+        **_armed_policy(),
+        "known_spend_microusd": 0,
+        "active_held_microusd": 0,
+        "unknown_final_held_microusd": 0,
+        "available_microusd": credits,
+        "remaining_microusd": credits,
+        "exhausted": False,
+        "unknown_cost_attempt_count": 0,
+        "incomplete_coverage": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_run_registers_by_redeeming_a_code_it_minted_for_itself(monkeypatch):
+    """Mint, then redeem as the named actor. Nothing else creates this user."""
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    assert api.minted == [
+        {
+            "quantity": 1,
+            "credits_microusd": pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD,
+            "attempt_reservation_microusd": (
+                pipeline_helpers.LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD
+            ),
+        }
+    ]
+    body, headers = api.upserts[0]
+    assert len(api.upserts) == 1
+    assert body["promo_code"] == "LEVEL1-CODE"
+    # The redemption is made BY the new actor: `_requires_promo` exempts only a
+    # service acting for itself, so a registration that named nobody would have
+    # bypassed the door entirely.
+    assert headers[pipeline_helpers.USER_AUTH_HEADER] == str(owner.telegram_id)
+    assert owner.user_id == REGISTERED_USER_ID
+    assert owner.credits_microusd == pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD
+
+
+@pytest.mark.asyncio
+async def test_the_registered_id_is_fresh_and_is_not_the_fixture_user(monkeypatch):
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        first = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+        second = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    for owner in (first, second):
+        assert owner.telegram_id != pipeline_helpers.TEST_TELEGRAM_ID
+        assert RUN_USER_TELEGRAM_ID_MIN <= owner.telegram_id <= RUN_USER_TELEGRAM_ID_MAX
+    assert first.telegram_id != second.telegram_id
+    # The code is a one-time credential and never reaches the artifact.
+    assert "promo_code" not in first.as_evidence()
+
+
+@pytest.mark.asyncio
+async def test_the_registration_writes_the_name_the_sweep_selects_on(monkeypatch):
+    """The sweep's ownership claim is a name this registration writes.
+
+    The id band is not ownership — Telegram issues account ids and a real
+    account can sit anywhere in it — so what makes a `users` row addressable as
+    this harness's residue is the username it registers under. These two have to
+    stay the same string, or the backstop sweep either misses the run's user or
+    reaches for rows nobody here wrote.
+    """
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    body, _ = api.upserts[0]
+    assert body["username"] == f"live_run_{owner.telegram_id}"
+    predicate = run_user_sweep_predicate()
+    assert f"username LIKE '{RUN_USER_USERNAME_PREFIX}%'" in predicate
+    assert body["username"].startswith(RUN_USER_USERNAME_PREFIX)
+    assert f"BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX}" in predicate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "code"),
+    [(403, "promo_code_required"), (404, "promo_code_not_found"), (409, "promo_code_redeemed")],
+)
+async def test_a_refused_registration_names_the_phase_and_does_not_fall_back(
+    monkeypatch, status_code, code
+):
+    """The three refusals the route has, and the exit the run never takes.
+
+    The internal service could create this user naming nobody, and the run would
+    then go on to assert a paid admission about a user that walked through no
+    door. So a refusal ends the run, naming its phase and the API's own verdict.
+    """
+    api = _DoorApi(upsert_response=(status_code, {"detail": {"code": code}}))
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            await pipeline_helpers.register_run_owner(api_internal, named_client_factory=factory)
+
+    assert refused.value.phase == "registration"
+    assert code in str(refused.value)
+    # One attempt, by the named actor. No retry, and nothing as the service.
+    assert len(api.upserts) == 1
+    assert pipeline_helpers.USER_AUTH_HEADER in api.upserts[0][1]
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_is_already_taken_refuses_before_a_code_is_minted(monkeypatch):
+    api = _DoorApi(existing_user=True)
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            await pipeline_helpers.register_run_owner(api_internal, named_client_factory=factory)
+
+    assert refused.value.phase == "registration"
+    assert "is not fresh" in str(refused.value)
+    assert api.minted == []
+
+
+@pytest.mark.asyncio
+async def test_the_policy_the_redemption_armed_carries_the_codes_own_credits(monkeypatch):
+    api = _DoorApi(policy=_armed_policy(), balance=_fresh_balance())
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+        budget = await pipeline_helpers.verify_run_owner_budget_policy(api_internal, owner)
+
+    assert budget["policy"]["enforcement"] == "enforced"
+    assert budget["policy"]["policy"]["state"] == "enabled"
+    assert budget["policy"]["policy"]["limit_microusd"] == owner.credits_microusd
+    assert budget["balance"]["remaining_microusd"] == owner.credits_microusd
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (_armed_policy(enforcement="unlimited"), "unlimited"),
+        (_armed_policy(state="disabled"), "disabled"),
+        (_armed_policy(limit=1), "carried"),
+    ],
+)
+async def test_a_policy_that_is_not_the_promos_fails_the_registration_phase(
+    monkeypatch, policy, expected
+):
+    """An unenforced or differently-armed policy is a refusal, not a warning.
+
+    `unlimited` is exactly what the fixture user had — no policy row at all —
+    and it is the thing this card removes from level 1, so it may never read as
+    a pass.
+    """
+    api = _DoorApi(policy=policy, balance=_fresh_balance())
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            owner = await pipeline_helpers.register_run_owner(
+                api_internal, named_client_factory=factory
+            )
+            await pipeline_helpers.verify_run_owner_budget_policy(api_internal, owner)
+
+    assert refused.value.phase == "registration"
+    assert expected in str(refused.value)
 
 
 # ── Level-1 Telegram-bot product ─────────────────────────────────────────

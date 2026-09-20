@@ -425,7 +425,9 @@ def _capture(monkeypatch, psql) -> dict:
     monkeypatch.setattr(pipeline_helpers.subprocess, "run", psql.subprocess_run)
     monkeypatch.setattr(pipeline_helpers, "po_input_cursor", lambda: "1700000000000-0")
     ctx: dict = {}
-    pipeline_helpers.record_run_po_position(ctx, pipeline_helpers.capture_run_po_position())
+    pipeline_helpers.record_run_po_position(
+        ctx, pipeline_helpers.capture_run_po_position(pipeline_helpers.TEST_TELEGRAM_ID)
+    )
     return ctx
 
 

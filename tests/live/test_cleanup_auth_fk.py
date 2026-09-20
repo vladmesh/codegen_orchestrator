@@ -149,7 +149,9 @@ async def test_port_allocation_lookup_uses_internal_auth(monkeypatch):
     monkeypatch.setattr(pipeline_helpers, "cleanup_server_container", lambda ctx: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id, run_user_telegram_id=None: None
+    )
 
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")

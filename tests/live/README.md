@@ -27,7 +27,9 @@ than passing it: it would prove nothing about a stack the manifest says may exis
 
 Cleanup is part of the test result. Every delete command must succeed and each owned resource must
 then be observed as absent. A delete or verification error fails the run, including when the test
-body already failed.
+body already failed. The one exception is stated rather than tolerated: the database rows the schema
+itself refuses to delete are declared retained, proven still there and reported — see **Database
+teardown, derived from the catalog**.
 
 Scaffold stream deletion is not treated as cancellation. Each execution atomically checks the
 project cancel marker and registers its own expiring lease before external work. Concurrent or
@@ -48,7 +50,7 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | a user registered through the product's own door — a fresh Telegram id, a promo code minted through the internal API and redeemed by that named actor, and the engineering budget policy the code arms; one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
@@ -489,12 +491,15 @@ is not.
 
 ## Database teardown, derived from the catalog
 
-The rows a run leaves behind are removed by `tests/live/db_teardown.py`, which is given one fact —
-the project id — and reads the rest out of `pg_constraint`. Starting at that project's row it walks
-*incoming* foreign keys, so what the run owns is what the keys say points at it, and it follows only
+The rows a run leaves behind are removed by `tests/live/db_teardown.py`, which is given the run's
+roots — its project id, and the Telegram id of the user it registered when it has one — and reads
+the rest out of `pg_constraint`. Starting at those rows it walks *incoming* foreign keys, so what
+the run owns is what the keys say points at it, and it follows only
 the edges the database would refuse (`NO ACTION`, `RESTRICT`); a child the schema removes or unlinks
-by itself (`CASCADE`, `SET NULL`) is neither deleted here nor expected to be gone, which is why the
-append-only `engineering_attempt_ledger` survives a teardown untouched; a table reachable only
+by itself (`CASCADE`, `SET NULL`) is neither deleted here nor expected to be gone, which is why
+`engineering_attempt_ledger` is outside a project-rooted closure (it FKs `runs`, `projects`,
+`stories` and `tasks` with `SET NULL`) and enters a user-rooted one, where it is retained rather
+than deleted — see the retention rule below; a table reachable only
 through a `CASCADE` edge is out of the plan for the same reason, and when one appears the database
 refuses the delete and the error names the constraint, so the gap is loud rather than silent. The
 deletion order is the
@@ -516,13 +521,62 @@ one — a table the schema unlinks with its own `ON DELETE SET NULL` key into th
 deliberately-retained `engineering_budget_reservations`, is left alone however its other columns are
 named.
 
-**The run's user is not a row the run owns — today.** `ensure_test_user` reuses one fixture user at a
-fixed `TEST_TELEGRAM_ID` for every run, so teardown must not delete it, and rows that hang off that
-user without hanging off the project (`engineering_budget_policies`, `promo_codes`,
-`work_admission_audits`) are outside the closure on purpose. That is the regime this code is in. The
-sprint's **registration door** item replaces the fixture with a fresh Telegram id per run; when it
-lands, the user becomes run-owned and teardown has to delete it and prove it gone, which is a change
-to the roots of the plan, not to its mechanism.
+**The run's user is a row the level-1 run owns, and it is a second root.** The level-1 run registers
+itself through the product's door — `register_run_owner` mints a promo code and redeems it at a
+fresh Telegram id from the band the harness registers in
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) — so the rows that hang off that user without hanging off its project are the run's residue:
+`engineering_budget_policies`, `engineering_budget_reservations`, the `promo_codes` row it redeemed,
+`work_admission_audits`, its `rag_*` dialogue rows. They join the closure because the *root* does,
+not because anyone listed them; `work_admission_audits.user_id` carries no foreign key at all and is
+covered by the same denormalized-column derivation as `service_deployments.project_id`.
+
+A root's predicate is the caller's subject and nothing widens it. `projects.owner_id` points at
+`users`, so the user root reaches the project root — that edge orders the two (a project goes before
+its owner) and selects nothing, which is why a run deletes the project it named rather than every
+project its owner happens to have.
+
+The other suites — scaffold, engineering, brief, LLM — still share one fixture user at a fixed
+`TEST_TELEGRAM_ID`. Their teardown passes no user predicate, so there is no user root, and their
+regime is unchanged: the fixture is nobody's to delete and nothing hanging off it joins the closure.
+
+**Two of the run's own rows cannot be deleted, and the plan says so rather than trying.**
+`engineering_attempt_ledger` is append-only by the trigger
+`engineering_attempt_ledger_append_only`, and its `user_id` foreign key is `NO ACTION`, so the run's
+`users` row cannot go either while its attempts exist. Both are declared in
+`db_teardown.RETENTION_RULES`: no `DELETE` is issued for them, they are inventoried before the
+deletes and read back by predicate afterwards, and teardown reports them by table, key and count.
+The retained set has to be *exactly* the declared one — for a run's own teardown, exactly one `users`
+row for its Telegram id plus the ledger rows of its own engineering attempts — and anything else
+fails the teardown. It is a stated rule, not a swallowed error: no trigger is disabled and no schema
+or product contract changes to accommodate it (whether it should is issue:792460b9934c749050ce).
+
+The stand sweep carries the same second root, selected by what the harness wrote rather than by one
+id. That is the backstop for a run that died between registering and creating its project: such a
+run owns a user, a code and a policy and no project at all, so nothing the title prefixes select
+could ever find it.
+
+Two things bound that root, and the distinction between them matters. The Telegram id band
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) is where runs register, but it is **not** ownership:
+Telegram issues account ids and a real customer can hold one anywhere inside it, so selecting on the
+band alone would be a blind range delete over strangers' budgets, codes, audits and dialogue rows.
+What the harness genuinely owns is the *username* it registers under — `live_run_<telegram id>`,
+written by `register_run_owner` and by nothing else — the same kind of naming as a contour's project
+title prefix. `run_user_sweep_predicate()` requires both, so a row inside the band that the harness
+did not name is left where it is.
+
+On top of that, the sweep takes the user root **only in a contour that owns live runs**. `make
+test-live-clean` runs the sweep with `LIVE_CONTOUR` unset, which is the prod contour — the one whose
+refusal says it "holds real users' data". Nothing registers run-owned users there, so the production
+sweep keeps exactly the regime it had before the registration door existed: projects by title
+prefix, plus the single fixture-user statement, and no user root at all.
+
+Two bounds this backstop does not cover, stated rather than implied. A registration that mints a
+code and is then refused (the criterion-5 path) raises before the run has a user, so its unredeemed
+`promo_codes` row is reachable by neither teardown path — `redeemed_by_user_id` is NULL — and stays
+as one unusable row per refused registration; the run fails loudly, so an operator sees it. And a
+run that dies after registering but before its project exists has no per-run teardown at all
+(`cleanup_guard` is installed after `create_project`), so its user's rows depend entirely on this
+sweep.
 
 The proof is the same plan read back. Every key the run owns is recorded *before* the deletes and
 asked for again afterwards, so the check still answers once the project row is gone; anything that
@@ -586,21 +640,27 @@ those. Two such kinds exist today:
 
 - The PO conversation rows. The thread is `po_thread_id(telegram_chat_id)` → `po-chat-<chat id>`
   (`shared/contracts/queues/po.py`), the only value the PO consumer passes as a checkpoint thread id,
-  and the harness's Telegram id is a **fixture every live run shares** — so the thread is not the
-  run's to delete, but the rows that appear on it while the run runs are. `po_checkpoints.py` takes a
-  snapshot of the thread before the project exists, removes the difference after cleanup, and asks
-  the same predicate again; the thread is left exactly as the run found it, head checkpoint and
-  channel versions intact. Without that snapshot the kind is reported as one that *could not be
-  asked* — never as absent. The bound this leaves is stated there: "appeared during this run" is the
-  run's rows only while no other run writes to the same thread at the same time, which the stand's
-  one-suite-at-a-time schedule holds and which card 1314's run-owned Telegram identity would remove
-  as a question entirely.
+  and it is composed from the chat id the PO tools are invoked with — so `capture_run_po_position`
+  is given the actor, never assuming one. For a level-1 run that actor is the user the run
+  registered for itself, so the thread is the run's own and nothing else has ever written to it; for
+  a run that shares the fixture user the thread is a **fixture every live run shares**, not the
+  run's to delete, while the rows that appear on it during the run still are. One mechanism serves
+  both: `po_checkpoints.py` takes a snapshot of the thread before the project exists, removes the
+  difference after cleanup, and asks the same predicate again; the thread is left exactly as the run
+  found it, head checkpoint and channel versions intact. Without that snapshot the kind is reported
+  as one that *could not be asked* — never as absent. The bound the shared case leaves is stated
+  there: "appeared during this run" is the run's rows only while no other run writes to the same
+  thread at the same time, which the stand's one-suite-at-a-time schedule holds. Level 1's own
+  registered identity removes that question for level 1 entirely; the suites that still share the
+  fixture keep it.
 
 The database kind is **not re-asked**: `cleanup_all` hands the residue proof the `TeardownReport`
 that the catalog-derived teardown above already produced, so the one place that knows how to ask the
 database stays the only place that asks it, and the check carries the tables and key count it
-proved. That kind goes red in `cleanup_all` — before this proof is reached — which is the card's
-instruction rather than an accident, and is said so in `database_check_from`. The one Redis key a
+proved — and, when the plan retained rows, those by table, key and count too, so the one `users` row
+and the ledger rows a level-1 run leaves by declared rule are named in the proof rather than hidden
+behind the word `absent`. That kind goes red in `cleanup_all` — before this proof is reached — which
+is the card's instruction rather than an accident, and is said so in `database_check_from`. The one Redis key a
 clean run keeps is `worker:evidence:removed:<run id>` — the removal records are evidence and expire
 on their own TTL — and it is excluded by name, with the reason in the proof's notes.
 

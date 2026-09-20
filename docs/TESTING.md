@@ -140,7 +140,7 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 |------|----------------|-------|----------|----------------|
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
-| Full (level 1) | `test-live-mega-noop` | 35 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy |
+| Full (level 1) | `test-live-mega-noop` | 37 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy |
 
 **Key properties**:
 - Module-scoped async fixtures share one pipeline run across tests per tier
@@ -158,7 +158,10 @@ QA is the deterministic health-only observation. Its budget is the ledger in
 `shared/stand_deadlines.py`, whose entries are the waits themselves; the 155-minute cap is derived
 from them and stated in `tests/live/README.md`.
 
-It proves, on real services and a real deployment: a two-module bot product whose token is bound
+It proves, on real services and a real deployment: a user that registered itself through the
+product's own front door — a Telegram id nobody has used, a promo code minted through the internal
+API and redeemed by that named actor, and the engineering budget policy that redemption armed, which
+every paid admission of the run is then judged against; a two-module bot product whose token is bound
 through the product route; a Product Brief confirmed and frozen through `present_product_brief` /
 `confirm_product_brief` / `create_story`, released only by the one admission step, and planned by
 nothing but this run; two ordered scripted engineering Tasks on one reused Story worker; the

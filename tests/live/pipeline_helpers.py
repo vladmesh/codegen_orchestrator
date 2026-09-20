@@ -60,8 +60,10 @@ from live_harness import (
     CleanupError,
     OwnershipManifest,
     cleanup_on_error,
+    new_run_telegram_id,
     resolve_repo_root,
     run_created_at,
+    run_user_username,
 )
 from package_route import (
     PACKAGE_ROUTE_ARTIFACTS,
@@ -103,6 +105,7 @@ from settings_seed_followup import (
     observed,
     resolve_wait_pass,
 )
+import structlog
 
 from scripts.template_pin import TEMPLATE_PIN
 
@@ -117,6 +120,7 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionOutcome,
     EngineeringBudgetAdmissionRead,
+    EngineeringBudgetPolicyState,
     EngineeringBudgetReservationState,
 )
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
@@ -164,6 +168,8 @@ from shared.stand_deadlines import (
     UNDEPLOY_TIMEOUT,
     scaffold_budget_seconds,
 )
+
+logger = structlog.get_logger()
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -841,22 +847,40 @@ def internal_headers() -> dict[str, str]:
     return {"X-Internal-Key": require_internal_api_key()}
 
 
-# ── API clients: the three kinds, each built in exactly one place ────────
+# ── API clients: the four kinds, each built in exactly one place ─────────
 #
-# Every live client is one of these three, and the name of the factory says
+# Every live client is one of these four, and the name of the factory says
 # which. Nothing outside this section composes auth headers: a call site that
 # assembles its own is how the mega ended up with a client that authenticated as
 # nobody.
 
 
-def api_client_as_test_user(**kwargs) -> httpx.AsyncClient:
-    """Acts ON BEHALF OF the harness test user.
+def api_client_as_named_user(telegram_id: int, **kwargs) -> httpx.AsyncClient:
+    """Acts ON BEHALF OF one named Telegram actor, whoever it is.
 
     Both credentials, and both are needed: the internal key is what gets past the
     global auth gate (``require_authenticated_caller``), while X-Telegram-ID is
     what the request is judged as (``resolve_actor``). The key does not deputize
     the named user — a request naming a non-admin user is still that non-admin
-    user. This is the client for the product path: projects, stories, tasks.
+    user.
+
+    This is the factory a run-owned user is reached through: the level-1 run
+    registers a fresh Telegram id through the product's promo door and then
+    drives the whole product path as that user.
+    """
+    return _api_client(
+        {**internal_headers(), USER_AUTH_HEADER: str(telegram_id)},
+        **kwargs,
+    )
+
+
+def api_client_as_test_user(**kwargs) -> httpx.AsyncClient:
+    """Acts ON BEHALF OF the harness fixture user shared by every run.
+
+    The client for the suites that still share one fixture user — the scaffold,
+    engineering, brief and LLM paths. The level-1 suite does not use it: it
+    registers its own user and reaches the API through
+    ``api_client_as_named_user``.
     """
     return _api_client({**internal_headers(), **AUTH_HEADERS}, **kwargs)
 
@@ -1012,15 +1036,20 @@ def docker_exec_python_module(
 async def ensure_test_user(
     api: httpx.AsyncClient, api_internal: httpx.AsyncClient | None = None
 ) -> None:
-    """Ensure the harness's fixture user exists, then touch it as that user.
+    """Ensure the shared fixture user exists, then touch it as that user.
 
     Registration is promo-gated: `_requires_promo` exempts only a service acting
-    for itself, so a request naming `X-Telegram-ID` must redeem a code. The
-    harness user is a fixture, not a customer walking through the product door,
-    so when `api_internal` is given it is created by the internal service naming
-    nobody. Updating an existing user needs no code, which is why the user-client
-    call below still stands: it is what proves the product client's header
-    composition is accepted by the auth gate.
+    for itself, so a request naming `X-Telegram-ID` must redeem a code. This user
+    is a fixture, not a customer walking through the product door, so when
+    `api_internal` is given it is created by the internal service naming nobody.
+    Updating an existing user needs no code, which is why the user-client call
+    below still stands: it is what proves the product client's header composition
+    is accepted by the auth gate.
+
+    The level-1 suite no longer comes here. It walks the door itself —
+    `register_run_owner` mints a code and redeems it at a fresh Telegram id — so
+    the fixture belongs to the scaffold, engineering, brief and LLM paths alone,
+    and it is nobody's to delete: every one of those runs shares it.
 
     `api_internal` is optional so the header-composition contract test can drive
     this function with one fake transport and no server behind it.
@@ -1084,6 +1113,7 @@ async def create_pipeline_project(
     task_description: str,
     modules: list[str],
     detailed_spec: str | None = None,
+    run_owner: "RunOwner | None" = None,
 ) -> dict:
     """Create project + repository for one live pipeline variant. Returns ctx dict.
 
@@ -1128,6 +1158,11 @@ async def create_pipeline_project(
 
     manifest.own("project", project_id)
     ctx = {
+        # Whoever `api` names owns this project, so the run's own user — when it
+        # has one — is recorded here before anything else can fail. Teardown
+        # reads it from the first moment the context exists, which is also the
+        # first moment a failed run has rows to clean up.
+        "run_owner": run_owner,
         "project_id": project_id,
         "project_title": project_title,
         "project_name": project_name,
@@ -1239,7 +1274,7 @@ async def bind_product_bot_token(api: httpx.AsyncClient, ctx: dict, token: str) 
 
 
 async def create_level1_bot_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, run_owner: "RunOwner | None" = None
 ) -> dict:
     """Create the level-1 Telegram-bot product: two modules, a bot, two change sets.
 
@@ -1273,6 +1308,7 @@ async def create_level1_bot_project(
         task_title=LEVEL1_BACKEND_TASK_TITLE,
         task_description=change_sets.backend_task_description(),
         modules=LEVEL1_MODULES,
+        run_owner=run_owner,
     )
     ctx["level1_marker"] = marker
     ctx["level1_change_set_paths"] = change_sets.paths
@@ -1315,7 +1351,7 @@ async def create_level1_bot_project(
 
 
 async def create_llm_backend_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, run_owner: "RunOwner | None" = None
 ) -> dict:
     """Create project + repository for the live LLM backend pipeline.
 
@@ -1335,6 +1371,7 @@ async def create_llm_backend_project(
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=llm_backend_task_description(marker),
         modules=BACKEND_ONLY_MODULES,
+        run_owner=run_owner,
     )
     ctx["health_marker"] = marker
     ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
@@ -1867,6 +1904,230 @@ class Level1PhaseFailed(RuntimeError):
         self.reason = reason
 
 
+# ── The registration door ────────────────────────────────────────────────
+#
+# A level-1 run is a customer walking through the product's front door, not a
+# fixture: a Telegram id nobody has used, a promo code minted through the
+# internal API for this run alone, and a registration that redeems it. That is
+# the only way this run's user comes to exist — `_requires_promo` exempts a
+# service acting for itself, and the run deliberately does not take that exit,
+# because an internal registration would prove the harness can create a row and
+# nothing about the door a real first user comes through.
+
+#: What the code this run mints carries, and therefore exactly what the policy
+#: its redemption arms has to hold. Generous against the two scripted noop
+#: attempts the run makes — each holds `attempt_reservation_microusd` and
+#: settles as unknown-cost, so the limit must cover both with room left — and
+#: finite, so the run proves an *enforced* policy rather than an absent one.
+LEVEL1_PROMO_CREDITS_MICROUSD = 50_000_000
+LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD = 1_000_000
+
+PROMO_BATCH_ROUTE = "/api/promo-codes/batch"
+USER_UPSERT_ROUTE = "/api/users/upsert"
+ENGINEERING_BUDGET_POLICY_ROUTE = "/api/engineering-budget-policies/{user_id}"
+
+
+@dataclass(frozen=True)
+class RunOwner:
+    """The user one run registered for itself, and the code that paid for it.
+
+    Carried through the run because two later things need it: every product
+    call is made as this user, and teardown owns the rows that hang off it.
+    """
+
+    telegram_id: int
+    user_id: int
+    promo_code: str
+    credits_microusd: int
+    attempt_reservation_microusd: int
+
+    def as_evidence(self) -> dict:
+        """What the run records about its own registration; never the code itself.
+
+        The promo code is a one-time credential. It is spent by the time this is
+        written, but a spent credential in an artifact is still a credential in
+        an artifact, so the evidence names the user and the values, not the code.
+        """
+        return {
+            "telegram_id": self.telegram_id,
+            "user_id": self.user_id,
+            "credits_microusd": self.credits_microusd,
+            "attempt_reservation_microusd": self.attempt_reservation_microusd,
+        }
+
+
+def require_run_owner(ctx: dict) -> RunOwner:
+    """This run's own registered user, or a refusal naming the registration phase."""
+    owner = ctx.get("run_owner")
+    if owner is None:
+        raise Level1PhaseFailed(
+            "registration",
+            "this run has no registered owner, so it cannot act as the user that owns its "
+            "project; the level-1 run registers one through the promo door before it creates "
+            "anything",
+        )
+    return owner
+
+
+def _registration_detail(response: httpx.Response) -> str:
+    """The API's own verdict on a refused registration, in its own words.
+
+    `_promo_error` answers a machine-readable `{"detail": {"code": ...}}` —
+    `promo_code_required`, `promo_code_not_found`, `promo_code_redeemed` — and
+    that code is the useful half of a refusal. Anything else is reported as the
+    body it actually was.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip()
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict) and "code" in detail:
+        return str(detail["code"])
+    return json.dumps(detail if detail is not None else payload)
+
+
+async def register_run_owner(
+    api_internal: httpx.AsyncClient,
+    *,
+    named_client_factory: Callable[[int], httpx.AsyncClient] = api_client_as_named_user,
+) -> RunOwner:
+    """Mint a code and register this run's user by redeeming it. Or refuse.
+
+    Every exit that is not "a user was created by a redemption" raises
+    `Level1PhaseFailed("registration", ...)`. There is deliberately no second
+    attempt and no other route: the internal service could register this id
+    naming nobody, and a run that quietly did so would go on to assert a paid
+    admission about a user that never walked through the door it is here to
+    exercise. A refusal names its phase; a fallback would name nothing.
+
+    `named_client_factory` is how the client for the new actor is built, and it
+    is a parameter for the same reason `ensure_test_user` takes an optional
+    internal client: the offline regression drives this whole sequence — mint,
+    redeem, read back — against one transport with no server behind it.
+    """
+    telegram_id = new_run_telegram_id()
+    taken = await api_internal.get(f"/api/users/by-telegram/{telegram_id}")
+    if taken.status_code != httpx.codes.NOT_FOUND:
+        raise Level1PhaseFailed(
+            "registration",
+            f"Telegram id {telegram_id} is not fresh: /api/users/by-telegram answered "
+            f"{taken.status_code}, so this run would have adopted a user it did not register",
+        )
+    minted = await api_internal.post(
+        PROMO_BATCH_ROUTE,
+        json={
+            "quantity": 1,
+            "credits_microusd": LEVEL1_PROMO_CREDITS_MICROUSD,
+            "attempt_reservation_microusd": LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+        },
+    )
+    if minted.status_code != httpx.codes.CREATED:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{PROMO_BATCH_ROUTE} answered {minted.status_code}: {_registration_detail(minted)}",
+        )
+    batch = minted.json()
+    if len(batch) != 1:
+        raise Level1PhaseFailed(
+            "registration", f"{PROMO_BATCH_ROUTE} minted {len(batch)} codes for a batch of one"
+        )
+    code = batch[0]["code"]
+    async with named_client_factory(telegram_id) as api_user:
+        registered = await api_user.post(
+            USER_UPSERT_ROUTE,
+            json={
+                "telegram_id": telegram_id,
+                "username": run_user_username(telegram_id),
+                "first_name": "Live",
+                "last_name": "Run",
+                "promo_code": code,
+            },
+        )
+    if registered.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{USER_UPSERT_ROUTE} refused the promo registration of {telegram_id} with "
+            f"{registered.status_code}: {_registration_detail(registered)}. The run registers "
+            "no other way — an internal-service registration would redeem no code and arm "
+            "no policy",
+        )
+    user = registered.json()
+    if user.get("telegram_id") != telegram_id or user.get("is_admin"):
+        raise Level1PhaseFailed(
+            "registration",
+            f"{USER_UPSERT_ROUTE} returned {user.get('telegram_id')} "
+            f"(is_admin={user.get('is_admin')}) for a redemption of {telegram_id}",
+        )
+    return RunOwner(
+        telegram_id=telegram_id,
+        user_id=user["id"],
+        promo_code=code,
+        credits_microusd=LEVEL1_PROMO_CREDITS_MICROUSD,
+        attempt_reservation_microusd=LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+    )
+
+
+async def verify_run_owner_budget_policy(api_internal: httpx.AsyncClient, owner: RunOwner) -> dict:
+    """The policy the redemption armed is enabled, and carries the promo's credits.
+
+    Two reads, because they answer two different questions. The lookup says the
+    policy exists and is *enforced* — an absent policy reads `unlimited`, which
+    is what the fixture user had and what this card removes from level 1. The
+    balance says the arming is the promo's: the whole grant is still available,
+    nothing has been spent, and the account is not exhausted.
+    """
+    route = ENGINEERING_BUDGET_POLICY_ROUTE.format(user_id=owner.user_id)
+    lookup_response = await api_internal.get(route)
+    if lookup_response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{route} answered {lookup_response.status_code}: "
+            f"{_registration_detail(lookup_response)}",
+        )
+    lookup = lookup_response.json()
+    policy = lookup.get("policy")
+    if lookup.get("enforcement") != "enforced" or policy is None:
+        raise Level1PhaseFailed(
+            "registration",
+            f"user {owner.user_id} registered with a promo code but its engineering budget "
+            f"policy is {lookup.get('enforcement')}: {policy}",
+        )
+    if policy.get("state") != EngineeringBudgetPolicyState.ENABLED.value:
+        raise Level1PhaseFailed(
+            "registration",
+            f"the policy of user {owner.user_id} is {policy.get('state')}, not "
+            f"{EngineeringBudgetPolicyState.ENABLED.value}",
+        )
+    armed = (policy.get("limit_microusd"), policy.get("attempt_reservation_microusd"))
+    carried = (owner.credits_microusd, owner.attempt_reservation_microusd)
+    if armed != carried:
+        raise Level1PhaseFailed(
+            "registration",
+            f"the policy of user {owner.user_id} arms {armed}, but the code it redeemed "
+            f"carried {carried} (limit, attempt reservation) in microusd",
+        )
+    balance_response = await api_internal.get(f"{route}/balance")
+    if balance_response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{route}/balance answered {balance_response.status_code}: "
+            f"{_registration_detail(balance_response)}",
+        )
+    balance = balance_response.json()
+    if (
+        balance.get("known_spend_microusd") != 0
+        or balance.get("remaining_microusd") != owner.credits_microusd
+        or balance.get("exhausted")
+    ):
+        raise Level1PhaseFailed(
+            "registration",
+            f"the freshly armed balance of user {owner.user_id} is not the promo's credits: "
+            f"{balance}",
+        )
+    return {"policy": lookup, "balance": balance}
+
+
 #: How long the brief is watched for the story bind `create_story` performs, so
 #: the claim below lands between that bind and the architect message it
 #: publishes. It is a handful of API round trips, not work.
@@ -1891,12 +2152,15 @@ def po_tool_config(ctx: dict) -> dict:
     """The LangGraph config the released PO tools are invoked with.
 
     The chat id is the identity every PO tool composes its `X-Telegram-ID`
-    header from, so it is the harness user — the owner of this project.
+    header from, so it is this run's own owner — the user that registered
+    through the promo door and owns this project. Read from the context rather
+    than from a constant: a tool acting as anyone else would be acting as a user
+    who does not own what it is asked to change.
     """
     return {
         "configurable": {
             "thread_id": ctx["manifest"].run_id,
-            "telegram_chat_id": str(TEST_TELEGRAM_ID),
+            "telegram_chat_id": str(require_run_owner(ctx).telegram_id),
             "project_creation_identity": {
                 "project_id": ctx["project_id"],
                 "initiating_run_id": ctx["manifest"].run_id,
@@ -6165,8 +6429,15 @@ class RunPoPosition:
     snapshot_note: str | None = None
 
 
-def capture_run_po_position() -> RunPoPosition:
+def capture_run_po_position(telegram_id: int) -> RunPoPosition:
     """Fix this run's place in PO's history and conversation state.
+
+    The actor is named rather than assumed. PO composes its checkpoint thread
+    from the chat id its tools are invoked with, so the thread to snapshot is
+    the one belonging to the user this run will act as — its own registered
+    user for a level-1 run, the shared fixture for a run that has none. Reading
+    the fixture's thread for a run that never writes to it would pass the
+    residue kind while the run's real rows stayed behind.
 
     A snapshot that cannot be taken is recorded as a reason rather than raised:
     failing a run at its first second because a read failed would be worse than
@@ -6177,7 +6448,7 @@ def capture_run_po_position() -> RunPoPosition:
     difference it needs. Recording it as "no snapshot" is what turned a kind
     that could be asked into a kind that could not.
     """
-    thread = po_thread_id(str(TEST_TELEGRAM_ID))
+    thread = po_thread_id(str(telegram_id))
     cursor = po_input_cursor()
     try:
         snapshot = po_checkpoints.snapshot(thread, _psql)
@@ -6560,8 +6831,12 @@ async def cleanup_all(
     # rather than asking the database a second time in its own words.
     database_report: db_teardown.TeardownReport | None = None
     if "project_id" in ctx:
+        owner = ctx.get("run_owner")
         try:
-            database_report = _cleanup_db(ctx["project_id"])
+            database_report = _cleanup_db(
+                ctx["project_id"],
+                owner.telegram_id if owner is not None else None,
+            )
         except Exception as exc:
             errors.append(f"database project: {exc}")
 
@@ -6663,18 +6938,40 @@ def _psql(sql: str) -> db_teardown.SqlResult:
     )
 
 
-def _cleanup_db(project_id: str) -> db_teardown.TeardownReport:
-    """Delete the project's rows, and prove from the catalog that none survived.
+def _cleanup_db(
+    project_id: str, run_user_telegram_id: int | None = None
+) -> db_teardown.TeardownReport:
+    """Delete the run's rows, and prove from the catalog what went and what stayed.
 
     The list of tables is not written down anywhere: `db_teardown` derives it
-    from the foreign keys that point at this project's rows, deletes in the
-    order those keys imply, and then asks the database for the exact keys it
-    owned. A new table referencing a run — `users_grant_intents` was the one
-    that stranded run 35441716423 — is in the plan the moment its foreign key
-    exists, and a row that survives anyway is raised by table, key and
-    constraint rather than as a psql error string.
+    from the foreign keys that point at this run's rows, deletes in the order
+    those keys imply, and then asks the database for the exact keys it owned. A
+    new table referencing a run — `users_grant_intents` was the one that
+    stranded run 35441716423 — is in the plan the moment its foreign key exists,
+    and a row that survives anyway is raised by table, key and constraint rather
+    than as a psql error string.
+
+    A run that registered its own user names it here, and the plan then owns the
+    rows that hang off that user as well — its budget policy, its reservations,
+    the code it redeemed, its admission audits. Two of them it cannot delete and
+    says so: the append-only attempt ledger and, because the ledger names it, the
+    `users` row itself. Those are retained by declared rule and read back, and
+    anything other than exactly one user row plus this run's own ledger rows
+    fails the teardown. The returned report carries that retention by table, key
+    and count, and the residue proof reads it from there rather than asking the
+    database a second time in its own words.
     """
-    return db_teardown.teardown_project(project_id, _psql)
+    report = db_teardown.teardown_project(
+        project_id, _psql, run_user_telegram_id=run_user_telegram_id
+    )
+    if report.retention_report:
+        logger.info(
+            "database teardown kept the rows its plan declares undeletable",
+            selection=report.selection,
+            retained=report.retained,
+            retained_report=report.retention_report,
+        )
+    return report
 
 
 # ── Debug dump ───────────────────────────────────────────────────────────

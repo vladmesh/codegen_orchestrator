@@ -22,6 +22,7 @@ _LIVE_HELPERS = os.path.join(ORCHESTRATOR_ROOT, "tests", "live")
 if _LIVE_HELPERS not in sys.path:
     sys.path.insert(0, _LIVE_HELPERS)
 import db_teardown  # noqa: E402
+from live_harness import run_user_sweep_predicate  # noqa: E402
 
 from shared.live_contour import current_contour  # noqa: E402
 from shared.live_harness_cleanup import (  # noqa: E402
@@ -571,13 +572,15 @@ def _teardown_psql(sql: str) -> db_teardown.SqlResult:
 
 
 def clean_database():
-    """Delete the rows of the projects this sweep selected, from the catalog.
+    """Delete the rows of the projects and run-owned users this sweep selected.
 
     No table is listed here. The selection is this sweep's own — the contour's
-    title prefixes, the same predicate every other phase selects by — and
-    everything after it is derived: `db_teardown` reads `pg_constraint`, builds
-    the closure of rows that hang off those projects, deletes in the order the
-    keys imply and then asks the database for the exact keys it recorded.
+    title prefixes, and, where the contour owns live runs, the users this
+    harness registered under its own username — and everything after it is
+    derived: `db_teardown` reads
+    `pg_constraint`, builds the closure of rows that hang off those roots,
+    deletes in the order the keys imply and then asks the database for the exact
+    keys it recorded.
 
     The hand-written list that used to stand here is the defect card 1311 fixed
     in the other teardown path and this one kept: it did not know about
@@ -587,26 +590,44 @@ def clean_database():
     referenced` and left its project on the stand. A list goes stale in that
     direction silently; a derivation covers the next such table the moment its
     foreign key exists.
+
+    The user root is what makes this sweep the backstop for a level-1 run that
+    died before it had a project — the registration happens first, so a run can
+    own a user, a promo code and a budget policy and no project at all. It
+    selects on the username the harness itself writes (`live_run_<id>`), inside
+    the id band the harness registers in: the username is this system's own
+    naming, the way a contour's title prefix is, and the band alone is not —
+    Telegram hands out account ids and a real customer can hold one anywhere in
+    it, so a band-only predicate would be a blind range delete.
+
+    And it is applied only where live runs are created. In a contour that does
+    not own them — production — the sweep keeps exactly the regime it had before
+    the registration door existed: projects by title prefix, and no `users` root
+    at all. Nothing registers run-owned users there, so there is nothing of this
+    kind to sweep, and a sweep pointed at real users' rows is not a risk worth
+    carrying for an empty set.
     """
+    user_predicate = run_user_sweep_predicate() if CONTOUR.allows_live_runs else None
     try:
         report = db_teardown.teardown_selection(
-            _build_conditions(), _teardown_psql, selection=", ".join(PROJECT_PREFIXES)
+            _build_conditions(),
+            _teardown_psql,
+            selection=", ".join(PROJECT_PREFIXES),
+            user_predicate=user_predicate,
         )
     except db_teardown.TeardownError as exc:
         raise CleanupFailure(f"database cleanup failed: {exc}") from exc
 
-    # The synthetic test user is a fixture reused by every run, not residue of
-    # one, and the attempt ledger that references it is append-only by design —
-    # a database rule refuses to delete from it, and rightly so. So the user goes
-    # only while nothing points at it; once a run has recorded an attempt, the
+    # The shared fixture user is a different thing from a run-owned one: every
+    # run of the other suites reuses it, so it is nobody's residue and it is not
+    # a root above. It goes only while nothing points at it — the attempt ledger
+    # that references it is append-only by design, a database rule refuses to
+    # delete from it, and rightly so — so once a run has recorded an attempt the
     # row stays and the next run reuses it.
     #
     # Deleting the user unconditionally made the whole sweep raise, and a raising
     # sweep is not a partial one: every phase after the database went unrun and
     # its residue stayed on the stand.
-    #
-    # It is its own statement, after the projects: the derived plan follows only
-    # incoming references, so a project's owner is never inside the closure.
     user_result = _teardown_psql(
         "DELETE FROM users WHERE telegram_id = 999000001 "
         "AND NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger l WHERE l.user_id = users.id);"
@@ -614,6 +635,7 @@ def clean_database():
     if user_result.returncode != 0:
         raise CleanupFailure(f"database cleanup failed: {user_result.stderr.strip()}")
     print(f"Database cleaned ({len(report.tables)} tables derived from the catalog).")
+    print(f"Retained by rule: {report.retention_report or 'nothing'}.")
 
 
 def clean_redis_queues(project_ids):

@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- The level-1 live run walks the product's registration door — a fresh Telegram id, a promo code minted
+  through the internal API and redeemed by that named actor — instead of a promo-bypassing fixture user.
+- Live teardown takes the run's own user as a second root, so its budget policy, reservations, redeemed code
+  and admission audits are deleted and proven gone; the ledger and the `users` row are declared retained.
+- The stand sweep's user root selects on the `live_run_` username the harness writes, not on a Telegram-id band
+  alone, and is taken only in a contour that owns live runs, so a production sweep names no real user's rows.
 - The PO checkpoint presence query answers with a row rather than a rendered boolean, so the run's residue
   proof asks its `po_checkpoint_thread` kind instead of reporting it unaskable on every run.
 - The run's zero-intervention proof is taken before the pipeline fixture hands its context to the tests, so the
