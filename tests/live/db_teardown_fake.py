@@ -3,9 +3,11 @@
 The offline live group drives `db_teardown` end to end against this: the
 foreign-key catalog is the project's own schema (`metadata_catalog_payload`,
 read off `shared.models`), the inventory answers with the keys a run owns, and
-the residue pass answers with whatever the test says survived. So a test can
-say "this run's deploy wrote a grant intent" or "one row was deliberately left"
-and read back exactly what the stand would have been told.
+the proof pass answers with whatever the test says is still there afterwards —
+residue on a table the plan emptied, and the declared rows on a table the plan
+retains. So a test can say "this run's deploy wrote a grant intent", "one row
+was deliberately left" or "the run's user and its two ledger rows are still
+there" and read back exactly what the stand would have been told.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ class FakeDatabase:
         *,
         catalog_payload: str | None = None,
         owned: Mapping[str, Sequence[str]] | None = None,
+        # What the database answers *after* the deletes: residue on a table the
+        # plan emptied, and the rows still there on a table the plan retains.
+        # One question is asked, so one answer is given.
         residue: Sequence[tuple[str, str]] = (),
         delete_result: SqlResult | None = None,
     ) -> None:

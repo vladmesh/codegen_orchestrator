@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import secrets
 
 import structlog
 
@@ -17,6 +18,43 @@ logger = structlog.get_logger()
 # .live-manifests/ still records them for later `make test-live-clean`.
 LIVE_NO_CLEANUP_ENV = "LIVE_NO_CLEANUP"
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+# ── The Telegram ids a run registers itself at ───────────────────────────
+#
+# A level-1 run walks the product's own registration door: a Telegram id nobody
+# has used before, a promo code minted for it, and a registration that redeems
+# the code. The id is therefore the only thing that tells a run's own user apart
+# from a real customer and from the fixture user the other suites still share,
+# so it is minted from a range that belongs to the harness and to nothing else —
+# the same idea as the contour's project title prefixes, and the reason the
+# stand sweep can address a run-owned user left behind by a run that died before
+# it had a project to be found by.
+RUN_USER_TELEGRAM_ID_MIN = 970_000_000
+RUN_USER_TELEGRAM_ID_MAX = 970_999_999
+
+
+def new_run_telegram_id() -> int:
+    """A Telegram id for this run's own user, inside the harness's range.
+
+    Random rather than sequential: runs are concurrent and share one database,
+    and nothing here may depend on having read the table first. A collision is
+    not silently tolerated — the caller registers through the product's door and
+    a taken id makes that registration refuse, which is a refusal naming its
+    phase rather than a run quietly adopting somebody else's user.
+    """
+    return RUN_USER_TELEGRAM_ID_MIN + secrets.randbelow(
+        RUN_USER_TELEGRAM_ID_MAX - RUN_USER_TELEGRAM_ID_MIN + 1
+    )
+
+
+def run_user_range_predicate() -> str:
+    """The SQL that selects every user the harness could have registered.
+
+    The stand sweep's selection, next to its title prefixes: it addresses the
+    harness's own range and can therefore never name the fixture user, a real
+    customer, or production's users — it does not know their ids.
+    """
+    return f"telegram_id BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX}"
 
 
 def run_created_at(run: dict) -> datetime:

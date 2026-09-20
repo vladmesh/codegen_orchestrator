@@ -30,19 +30,27 @@ from level1_brief import (
     level1_settings_value,
 )
 from level1_change_set import LEVEL1_SETTING_KEY
-from live_harness import cleanup_guard
+from live_harness import (
+    RUN_USER_TELEGRAM_ID_MAX,
+    RUN_USER_TELEGRAM_ID_MIN,
+    cleanup_guard,
+)
 from pipeline_helpers import (
     DEPLOY_OUTCOME_TIMEOUT,
     DEPLOY_RUN_TIMEOUT,
     DEPLOY_TIMEOUT,
     ENGINEERING_TIMEOUT,
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
+    LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+    LEVEL1_PROMO_CREDITS_MICROUSD,
     LLM_ENGINEERING_TIMEOUT,
     QA_RUN_TIMEOUT,
+    TEST_TELEGRAM_ID,
     Level1PhaseFailed,
     ScaffoldDidNotComplete,
     admit_level1_plan,
     api_client_as_internal_service,
+    api_client_as_named_user,
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     cleanup_all,
@@ -68,11 +76,13 @@ from pipeline_helpers import (
     record_settings_seed_brief_log,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
+    register_run_owner,
     request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
     verify_level1_plan_is_this_runs_alone,
     verify_linear_noop_story_completion,
+    verify_run_owner_budget_policy,
     verify_undeploy_residue,
     wait_application_not_deployed,
     wait_deploy,
@@ -91,6 +101,7 @@ import pytest_asyncio
 from run_evidence import RunEvidenceCollector, emit_run_evidence
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetPolicyState
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -107,20 +118,36 @@ async def _pipeline_run(
     debug_prefix: str,
     lifecycle_undeploy: bool = False,
     require_story_commit: bool = False,
+    registration_door: bool = False,
 ):
-    """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
-    async with api_client_as_test_user() as api:
-        # Deploy runs belong to no user, and list_runs hides unowned runs from the
-        # non-admin harness user, so they are observed through a client that
-        # authenticates only as an internal service and names no user.
-        async with (
-            api_client_as_unscoped_observer() as api_observer,
-            api_client_as_internal_service() as api_internal,
-        ):
-            # The fixture user is registered by the service, then touched as
-            # itself: registration is promo-gated for a named actor.
-            await ensure_test_user(api, api_internal)
-            ctx = await create_project(api, api_internal)
+    """Full pipeline: scaffold → engineering → deploy. Yields context for assertions.
+
+    Two ways in, and the difference is the point. The level-1 run walks the
+    product's registration door: a Telegram id nobody has used, a promo code
+    minted for this run, a registration that redeems it and a budget policy the
+    code arms — and the whole product path is then driven as that user. The
+    paid LLM path still shares the fixture user, which is created by the
+    internal service naming nobody and belongs to no run.
+    """
+    # Deploy runs belong to no user, and list_runs hides unowned runs from a
+    # non-admin user, so they are observed through a client that authenticates
+    # only as an internal service and names no user.
+    async with (
+        api_client_as_unscoped_observer() as api_observer,
+        api_client_as_internal_service() as api_internal,
+    ):
+        if registration_door:
+            # Before anything exists: a refusal here costs nothing, and the
+            # phases after it are all about this user's product.
+            run_owner = await register_run_owner(api_internal)
+            owner_client = api_client_as_named_user(run_owner.telegram_id)
+        else:
+            run_owner = None
+            owner_client = api_client_as_test_user()
+        async with owner_client as api:
+            if run_owner is None:
+                await ensure_test_user(api, api_internal)
+            ctx = await create_project(api, api_internal, run_owner)
             async with cleanup_guard(
                 lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
             ):
@@ -280,6 +307,27 @@ async def _record_level1_settings_seed_evidence(ctx: dict, deploy_result) -> Non
     ctx["level1_settings_readback"] = await read_product_setting(ctx, key=LEVEL1_SETTING_KEY)
 
 
+async def _record_registration_door(api_internal, ctx: dict, *, debug_prefix: str) -> None:
+    """What this run's own registration bought, before anything spends it.
+
+    The run's user exists only because a promo code minted for this run was
+    redeemed at a fresh Telegram id, and the policy that redemption armed is
+    what every paid admission after this is judged against. So it is read back
+    here, at the top of the phases, while the balance is still the whole grant.
+    A run that has no user of its own — the paid LLM path, which shares the
+    fixture user — has no door to read and is left alone.
+    """
+    run_owner = ctx.get("run_owner")
+    if run_owner is None:
+        return
+    ctx["run_owner_registration"] = run_owner.as_evidence()
+    try:
+        ctx["run_owner_budget"] = await verify_run_owner_budget_policy(api_internal, run_owner)
+    except Level1PhaseFailed as failure:
+        dump_debug(ctx, f"{debug_prefix}-{failure.phase}")
+        raise
+
+
 async def _pipeline_phases(
     api,
     api_internal,
@@ -294,6 +342,9 @@ async def _pipeline_phases(
     """The pipeline phases themselves, so evidence can wrap every exit from them."""
     if ctx.get("qa_requires_executor"):
         ctx["qa_agent_type"] = configured_qa_executor()
+
+    # Phase 0: the registration door, read back.
+    await _record_registration_door(api_internal, ctx, debug_prefix=debug_prefix)
 
     # Phase 1: Scaffold. A scaffold that does not reach `active` raises here,
     # naming its own phase, so it cannot be reported to the test session as an
@@ -443,6 +494,7 @@ async def pipeline():
         engineering_timeout=ENGINEERING_TIMEOUT,
         debug_prefix="full-level1",
         lifecycle_undeploy=True,
+        registration_door=True,
     ):
         yield ctx
 
@@ -595,6 +647,38 @@ class TestFullPipeline:
         assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed, app_status: {pipeline.get('final_app_status')}"
         )
+
+    async def test_the_run_registered_its_own_user_through_the_product_door(self, pipeline):
+        """A fresh Telegram id, a code minted for this run, and a redemption.
+
+        The fixture user is gone from level 1: this run's user exists only
+        because a promo code minted through the internal API was redeemed at an
+        id nobody had used. Nothing here can pass for a run that fell back to an
+        internal-service registration — that path redeems no code, and the
+        policy assertion below is about the code's own values.
+        """
+        registration = pipeline.get("run_owner_registration")
+        assert registration, "the level-1 run recorded no registration of its own"
+        assert (
+            RUN_USER_TELEGRAM_ID_MIN <= registration["telegram_id"] <= RUN_USER_TELEGRAM_ID_MAX
+        ), registration
+        assert registration["telegram_id"] != TEST_TELEGRAM_ID, registration
+        assert registration["user_id"] == pipeline["run_owner"].user_id
+
+    async def test_the_promo_armed_an_enabled_engineering_budget_policy(self, pipeline):
+        """The credits the code carried are the credits the policy arms."""
+        budget = pipeline.get("run_owner_budget")
+        assert budget, "the level-1 run read back no engineering budget policy"
+        lookup = budget["policy"]
+        assert lookup["enforcement"] == "enforced", lookup
+        policy = lookup["policy"]
+        assert policy["state"] == EngineeringBudgetPolicyState.ENABLED.value, policy
+        assert policy["user_id"] == pipeline["run_owner"].user_id
+        assert policy["limit_microusd"] == LEVEL1_PROMO_CREDITS_MICROUSD
+        assert policy["attempt_reservation_microusd"] == LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD
+        assert budget["balance"]["remaining_microusd"] == LEVEL1_PROMO_CREDITS_MICROUSD
+        assert budget["balance"]["known_spend_microusd"] == 0
+        assert budget["balance"]["exhausted"] is False
 
     async def test_noop_paid_admission_and_settlement_are_durable(self, pipeline):
         """Every deterministic engineering attempt retains its paid-work evidence."""

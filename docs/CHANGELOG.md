@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-20
+
+- The level-1 live run walks the product's registration door — a fresh Telegram id, a promo code minted
+  through the internal API and redeemed by that named actor — instead of a promo-bypassing fixture user.
+- Live teardown takes the run's own user as a second root, so its budget policy, reservations, redeemed code
+  and admission audits are deleted and proven gone; the ledger and the `users` row are declared retained.
+
 ## 2026-09-19
 
 - The live deployment assertion reads `service_deployments` as the deploy log it is: the newest record is

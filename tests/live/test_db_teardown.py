@@ -34,13 +34,17 @@ REFUSAL_STDERR = (
 )
 
 
-def _plan(payload: str | None = None):
+RUN_TELEGRAM_ID = 970_000_777
+RUN_USER_ROW = "4242"
+LEDGER_ROW = "0a4a4d0e-0000-4000-8000-000000000001"
+
+
+def _plan(payload: str | None = None, *, user_predicate: str | None = None):
     catalog = db_teardown.parse_catalog(payload or metadata_catalog_payload())
-    plan = db_teardown.build_plan(
-        catalog,
-        root_table="projects",
-        root_predicate=f"id::text = '{PROJECT_ID}'",
-    )
+    roots = [db_teardown.Root(table="projects", predicate=f"id::text = '{PROJECT_ID}'")]
+    if user_predicate is not None:
+        roots.append(db_teardown.Root(table="users", predicate=user_predicate))
+    plan = db_teardown.build_plan(catalog, roots=roots)
     return catalog, plan
 
 
@@ -351,6 +355,151 @@ def test_residue_is_asked_for_by_the_keys_the_run_owned(monkeypatch):
     assert database.queries.index(residue_query) > database.queries.index(database.delete_sql)
 
 
+# ── the user a run registers for itself ──────────────────────────────────
+
+
+def _run_user_database(**kwargs) -> FakeDatabase:
+    """A run that walked the registration door and then did two noop attempts."""
+    owned = {
+        "projects": [PROJECT_ID],
+        "users": [RUN_USER_ROW],
+        "engineering_attempt_ledger": [LEDGER_ROW],
+        "engineering_budget_policies": [RUN_USER_ROW],
+        "promo_codes": ["71"],
+        "work_admission_audits": ["audit-1"],
+    }
+    kwargs.setdefault(
+        "residue", [("users", RUN_USER_ROW), ("engineering_attempt_ledger", LEDGER_ROW)]
+    )
+    return FakeDatabase(owned=owned, **kwargs)
+
+
+def test_a_run_owned_user_brings_the_rows_that_hang_off_it_into_the_closure():
+    """The tables card 1311's reviewer named, in the plan because the root is.
+
+    None of them hangs off the project, so a project-rooted plan cannot see
+    them: the budget policy, the reservations, the code the registration
+    redeemed and the admission audits belong to the *user*. Extending the roots
+    is what reaches them; nothing about the derivation changed.
+    """
+    _, plan = _plan(user_predicate=f"telegram_id = {RUN_TELEGRAM_ID}")
+    tables = [step.table for step in plan]
+
+    assert "engineering_budget_policies" in tables
+    assert "engineering_budget_reservations" in tables
+    assert "promo_codes" in tables
+    assert "work_admission_audits" in tables
+    # `work_admission_audits.user_id` carries no foreign key at all, so it is in
+    # the plan by the same derivation that covers `service_deployments`.
+    audits = next(step for step in plan if step.table == "work_admission_audits")
+    assert "no foreign key" in audits.belongs_because()
+    assert tables[-1] == "users"
+
+
+def test_the_user_root_does_not_widen_the_project_it_tears_down():
+    """`projects.owner_id` reaches the project root from the user one.
+
+    That edge orders the two roots — a project goes before its owner — and it
+    must not select anything: a run deletes the project it named, never every
+    project its owner happens to have.
+    """
+    _, plan = _plan(user_predicate=f"telegram_id = {RUN_TELEGRAM_ID}")
+    projects = next(step for step in plan if step.table == "projects")
+
+    assert projects.predicate == f"id::text = '{PROJECT_ID}'"
+    assert projects.is_root
+
+
+def test_the_ledger_and_the_user_are_declared_retained_not_deleted():
+    """Neither delete is issued, because the plan already knows it is refused.
+
+    The trigger stays and the foreign key stays: the plan states the rule
+    instead of writing a statement it expects to fail and ignoring the error.
+    """
+    _, plan = _plan(user_predicate=f"telegram_id = {RUN_TELEGRAM_ID}")
+    retained = {step.table for step in plan if step.retained}
+    sql = db_teardown.delete_sql(plan)
+
+    assert retained == {"users", "engineering_attempt_ledger"}
+    assert "DELETE FROM users " not in sql
+    assert "DELETE FROM engineering_attempt_ledger " not in sql
+    assert "DELETE FROM engineering_budget_policies WHERE" in sql
+    assert "DELETE FROM promo_codes WHERE" in sql
+
+
+def test_the_retained_rows_are_reported_by_table_key_and_count(monkeypatch):
+    database = _run_user_database()
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
+
+    retention = pipeline_helpers._cleanup_db(PROJECT_ID, RUN_TELEGRAM_ID)
+
+    assert f"users: 1 row(s), id={RUN_USER_ROW}" in retention
+    assert f"engineering_attempt_ledger: 1 row(s), id={LEDGER_ROW}" in retention
+    assert "append-only" in retention
+    # The retained tables are asked for by predicate, not by key: a row that
+    # appeared since the inventory has to be catchable.
+    proof_query = database.queries[-1]
+    assert f"FROM users WHERE telegram_id = {RUN_TELEGRAM_ID}" in proof_query
+
+
+def test_a_retained_set_that_is_not_the_declared_one_fails_the_teardown(monkeypatch):
+    """A second user row under this run's predicate is not something to report.
+
+    The run registered one user. Two answering means teardown addressed rows it
+    did not create, and a teardown that cannot say which rows are its own has
+    not proven anything about residue.
+    """
+    database = _run_user_database(
+        residue=[
+            ("users", RUN_USER_ROW),
+            ("users", "9999"),
+            ("engineering_attempt_ledger", LEDGER_ROW),
+        ]
+    )
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
+
+    with pytest.raises(TeardownError) as excinfo:
+        pipeline_helpers._cleanup_db(PROJECT_ID, RUN_TELEGRAM_ID)
+
+    message = str(excinfo.value)
+    assert "not the rows its plan declared" in message
+    assert "users: 2 row(s)" in message
+
+
+def test_a_row_hanging_off_the_run_user_is_named_when_it_survives(monkeypatch):
+    """The residue proof covers the user's rows exactly as it covers the project's."""
+    database = _run_user_database(
+        residue=[
+            ("users", RUN_USER_ROW),
+            ("engineering_attempt_ledger", LEDGER_ROW),
+            ("promo_codes", "71"),
+        ]
+    )
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
+
+    with pytest.raises(TeardownError) as excinfo:
+        pipeline_helpers._cleanup_db(PROJECT_ID, RUN_TELEGRAM_ID)
+
+    message = str(excinfo.value)
+    assert "promo_codes: id=71" in message
+    assert "promo_codes.redeemed_by_user_id → users.id" in message
+
+
+def test_a_run_without_its_own_user_tears_down_exactly_as_before(monkeypatch):
+    """The suites that share the fixture user are untouched by all of this.
+
+    No user root means no user closure: the fixture user, the rows that hang off
+    it and the append-only ledger are all outside the plan, which is the regime
+    those runs are still in.
+    """
+    database = _grant_path_database()
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
+
+    assert pipeline_helpers._cleanup_db(PROJECT_ID) == ""
+    assert "users" not in database.deleted_tables
+    assert "FROM users WHERE" not in database.queries[-1]
+
+
 # ── the stand sweep deletes through the same derivation ──────────────────
 
 SWEEP_RUN_ID = "deploy-grant-71672573103249b09aaf4cb3dbdf2a54"
@@ -389,7 +538,9 @@ def test_the_sweep_deletes_through_the_derived_plan(monkeypatch):
 
     sql = database.delete_sql
     deleted = database.deleted_tables
-    assert deleted[-1] == "projects"
+    # Everything that hangs off a project goes before it. `projects` is no
+    # longer the last statement of all, because the sweep has a second root: the
+    # rows that hang off a run-owned user rather than off its project.
     assert "title LIKE" in sql
     # The catalog's order, not a person's: children before the parents they hang off.
     assert deleted.index("port_allocations") < deleted.index("applications")
@@ -425,13 +576,34 @@ def test_a_grant_intent_no_longer_refuses_the_sweep(monkeypatch):
     assert SWEEP_RUN_ID in residue_query
 
 
-def test_the_sweep_still_removes_the_reusable_test_user_after_the_projects(monkeypatch):
-    """The sweep's own selection and its fixture user are kept.
+def test_the_sweep_owns_run_registered_users_through_the_same_plan(monkeypatch):
+    """The sweep's second root: every user the harness could have registered.
 
-    The derived plan follows incoming references only, so a project's owner is
-    never inside the closure. The user is therefore its own statement, issued
-    after the projects and only while the append-only attempt ledger points at
-    nothing.
+    A run registers before it creates a project, so a run that died in between
+    owns a user, a code and a policy and no project at all — nothing the title
+    prefixes can find. The Telegram-id range is the harness's own naming, like
+    the prefixes, so this addresses the harness's residue and nothing else.
+    """
+    database = FakeDatabase(
+        owned={"projects": ["project-1"], "users": [RUN_USER_ROW], "promo_codes": ["71"]},
+        residue=[("users", RUN_USER_ROW)],
+    )
+    module = _sweep_against(database, monkeypatch)
+
+    module.clean_database()
+
+    sql = database.delete_sql
+    assert "DELETE FROM promo_codes WHERE redeemed_by_user_id IN (SELECT id FROM users" in sql
+    assert "telegram_id BETWEEN 970000000 AND 970999999" in sql
+    assert "DELETE FROM users " not in sql
+
+
+def test_the_sweep_still_removes_the_reusable_fixture_user_after_the_projects(monkeypatch):
+    """The shared fixture user is not run-owned, so it is not a root.
+
+    It is reused by every run of the other suites rather than being one run's
+    residue, so it stays its own statement, issued after the derived plan and
+    only while the append-only attempt ledger points at nothing.
     """
     database = FakeDatabase(owned={"projects": ["project-1"]})
     module = _sweep_against(database, monkeypatch)

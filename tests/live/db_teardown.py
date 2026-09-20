@@ -12,12 +12,27 @@ later; it is gone too, and both teardown paths now start here.
 Nothing here restates the schema. The plan is derived from `pg_constraint`:
 
 **What belongs to the run is what the foreign keys say belongs to it.** Starting
-at `projects WHERE <the caller's predicate>` — one run's project id for a run's
-own teardown, the contour's title prefixes for the stand sweep, and nothing else
-differs between them — the plan walks *incoming* foreign keys, the rows that
-point at a row the run owns, and never outgoing ones, so a project's owner, its
-server and every other row the project merely refers to are outside the closure
-and are never touched.
+at the caller's *roots* — `projects WHERE <predicate>`, one run's project id for
+a run's own teardown and the contour's title prefixes for the stand sweep, plus
+`users WHERE <predicate>` once the run registers its own user — the plan walks
+*incoming* foreign keys, the rows that point at a row the run owns, and never
+outgoing ones, so a server, and every other row the closure merely refers to,
+stays outside it and is never touched.
+
+**A root's predicate is the caller's subject and nothing widens it.** A root
+reached from another root — `projects.owner_id` points at `users`, so the user
+root reaches the project one — contributes an ordering edge and no predicate:
+the run deletes the project it named, never every project its owner happens to
+have. That is why extending the roots cannot widen what a teardown addresses.
+
+**Some rows the run owns cannot be deleted, and that is a rule of the plan.**
+`engineering_attempt_ledger` is append-only by a database trigger, and its
+`user_id` foreign key is `NO ACTION`, so the run's `users` row cannot go either
+while its attempts exist. Both are declared retained in `RETENTION_RULES`: they
+are inventoried, never deleted, and read back afterwards to prove the retained
+set is *exactly* the declared one. A retained row is reported by table, key and
+count; a retained set that is anything else fails the teardown. It is a stated
+rule, not a swallowed error — no trigger is disabled and no schema is changed.
 
 **Only the edges the database would refuse are followed.** `confdeltype` says
 what Postgres does when the parent goes: `CASCADE` removes the child itself,
@@ -54,11 +69,13 @@ topological order of that closure; a cycle between two tables is raised by name
 rather than guessed at.
 
 **The proof is the same plan read back.** `inventory_sql` records every key the
-run owns *before* the deletes, and `residue_sql` asks for those exact keys again
-afterwards. A row that survived is reported as its table, its key and the
+run owns *before* the deletes, and `proof_sql` asks afterwards — for those exact
+keys on the tables that had to go, and by predicate on the tables the plan
+retains. A row that survived a delete is reported as its table, its key and the
 constraint by which it belongs to the run — so the next table that starts
 referencing a run is caught by name here, rather than by the next stand run
-failing its teardown.
+failing its teardown — and a retained set that is not exactly what the plan
+declared fails for the same reason.
 """
 
 from __future__ import annotations
@@ -73,6 +90,25 @@ import re
 # parent delete while a child row is still there; the rest resolve themselves,
 # so a child reached only through them is neither deleted nor expected to be.
 REFUSING_DELETE_RULES: Mapping[str, str] = {"a": "NO ACTION", "r": "RESTRICT"}
+
+# The tables whose rows this schema will not let a teardown delete, and why.
+# Declared here so the plan can state the rule and prove it, rather than issuing
+# a delete it knows will be refused and swallowing the error. Nothing about the
+# database changes to accommodate them: the trigger stays, the foreign key stays.
+RETENTION_RULES: Mapping[str, str] = {
+    "engineering_attempt_ledger": (
+        "append-only by the trigger engineering_attempt_ledger_append_only, which raises "
+        "'engineering_attempt_ledger is append-only' on any DELETE"
+    ),
+    "users": (
+        "named by this run's retained ledger rows through engineering_attempt_ledger.user_id, "
+        "whose foreign key is NO ACTION, so the database refuses the delete while they exist"
+    ),
+}
+
+# The table a run's own registration row lives in. Naming it is what makes the
+# run-owned user a root; everything that hangs off it is still derived.
+USER_ROOT_TABLE = "users"
 
 CATALOG_SQL = """
 SELECT json_build_object(
@@ -217,6 +253,19 @@ class Catalog:
 
 
 @dataclass(frozen=True)
+class Root:
+    """One subject the plan starts from: a table and the rows of it the caller owns.
+
+    A teardown has one root per kind of thing a run creates directly — its
+    project, and, since the level-1 run walks the product's registration door,
+    the user it registered. Everything else is derived from these.
+    """
+
+    table: str
+    predicate: str
+
+
+@dataclass(frozen=True)
 class PlanStep:
     """One table of the closure, with the predicate that selects the run's rows."""
 
@@ -226,12 +275,23 @@ class PlanStep:
     key_name: str
     predicate: str
     # The references by which this table's rows belong to the run, foreign key
-    # or denormalized column. Empty for the root.
+    # or denormalized column. A root may carry them too — the user root reaches
+    # the project one — but they order the plan rather than select its rows.
     via: tuple[Reference, ...] = ()
+    is_root: bool = False
+
+    @property
+    def retained(self) -> bool:
+        """Is this a table the plan declares it will not delete from?"""
+        return self.table in RETENTION_RULES
+
+    @property
+    def retained_because(self) -> str:
+        return RETENTION_RULES[self.table]
 
     def belongs_because(self) -> str:
-        if not self.via:
-            return "the run owns it directly"
+        if self.is_root or not self.via:
+            return f"the selection names it directly ({self.predicate})"
         return "; ".join(reference.describe() for reference in self.via)
 
 
@@ -246,12 +306,19 @@ class TeardownReport:
     selection: str
     tables: list[str] = field(default_factory=list)
     owned_keys: dict[str, list[str]] = field(default_factory=dict)
+    # What the plan declared it would not delete, read back after the deletes:
+    # table -> the keys still there. Empty unless the selection has a root whose
+    # closure reaches a table in `RETENTION_RULES`.
+    retained: dict[str, list[str]] = field(default_factory=dict)
+    retention_report: str = ""
 
     def as_dict(self) -> dict:
         return {
             "selection": self.selection,
             "tables": list(self.tables),
             "owned_keys": {table: list(keys) for table, keys in sorted(self.owned_keys.items())},
+            "retained": {table: list(keys) for table, keys in sorted(self.retained.items())},
+            "retention_report": self.retention_report,
         }
 
 
@@ -411,13 +478,13 @@ def _unlinking_tables(catalog: Catalog, tables: Iterable[str]) -> set[str]:
 
 def _walk(
     catalog: Catalog,
-    root_table: str,
+    root_tables: Sequence[str],
     denormalized: Sequence[DenormalizedReference],
     excluded: Iterable[str],
 ) -> dict[str, list[Reference]]:
-    """One pass to a fixpoint over both kinds of reference."""
-    refused = set(excluded)
-    incoming: dict[str, list[Reference]] = {root_table: []}
+    """One pass to a fixpoint over both kinds of reference, from every root."""
+    refused = set(excluded) - set(root_tables)
+    incoming: dict[str, list[Reference]] = {table: [] for table in root_tables}
 
     def reach(child: str, reference: Reference) -> bool:
         if child in refused:
@@ -435,13 +502,13 @@ def _walk(
             for fk in catalog.refusing_children(table):
                 changed |= reach(fk.child_table, fk)
         for reference in denormalized:
-            if reference.parent_table in incoming and reference.child_table != root_table:
+            if reference.parent_table in incoming and reference.child_table not in root_tables:
                 changed |= reach(reference.child_table, reference)
     return incoming
 
 
-def _reachable(catalog: Catalog, root_table: str) -> dict[str, tuple[Reference, ...]]:
-    """Every table the root's rows are reached from, with the references that reach it.
+def _reachable(catalog: Catalog, root_tables: Sequence[str]) -> dict[str, tuple[Reference, ...]]:
+    """Every table the roots' rows are reached from, with the references that reach it.
 
     Two kinds of reference, one walk: a foreign key the database would refuse,
     and a denormalized column it would not. A denormalized table is a seed of
@@ -450,16 +517,19 @@ def _reachable(catalog: Catalog, root_table: str) -> dict[str, tuple[Reference, 
 
     A table pulled in by a column name alone is dropped again when the schema
     has an unlinking key of its own into the closure, and the exclusion set only
-    grows, so the outer loop terminates.
+    grows, so the outer loop terminates. A root is never dropped: it is the
+    caller's subject, not something a column name reached.
     """
     denormalized = denormalized_references(catalog)
     excluded: set[str] = set()
     while True:
-        incoming = _walk(catalog, root_table, denormalized, excluded)
+        incoming = _walk(catalog, root_tables, denormalized, excluded)
         by_name_only = {
             table
             for table, edges in incoming.items()
-            if edges and all(isinstance(edge, DenormalizedReference) for edge in edges)
+            if edges
+            and table not in root_tables
+            and all(isinstance(edge, DenormalizedReference) for edge in edges)
         }
         found = excluded | (by_name_only & _unlinking_tables(catalog, incoming))
         if found == excluded:
@@ -475,7 +545,7 @@ def _reachable(catalog: Catalog, root_table: str) -> dict[str, tuple[Reference, 
 
 
 def _deletion_order(
-    incoming: Mapping[str, tuple[Reference, ...]], root_table: str
+    incoming: Mapping[str, tuple[Reference, ...]], root_tables: Sequence[str]
 ) -> tuple[str, ...]:
     """Children before parents, ties broken by name so the plan is reproducible."""
     dependents: dict[str, int] = dict.fromkeys(incoming, 0)
@@ -501,20 +571,34 @@ def _deletion_order(
             "the references between these tables form a cycle, so no deletion order exists: "
             + ", ".join(stuck)
         )
-    if order[-1] != root_table:
-        raise TeardownError(f"deletion order ends at {order[-1]!r} rather than {root_table!r}")
+    if order[-1] not in root_tables:
+        raise TeardownError(
+            f"deletion order ends at {order[-1]!r} rather than at one of the roots "
+            + ", ".join(repr(table) for table in root_tables)
+        )
     return tuple(order)
 
 
-def build_plan(catalog: Catalog, *, root_table: str, root_predicate: str) -> tuple[PlanStep, ...]:
-    """The ordered closure of rows the run owns, derived from the catalog alone."""
-    incoming = _reachable(catalog, root_table)
-    order = _deletion_order(incoming, root_table)
-    predicates: dict[str, str] = {root_table: root_predicate}
+def build_plan(catalog: Catalog, *, roots: Sequence[Root]) -> tuple[PlanStep, ...]:
+    """The ordered closure of rows the run owns, derived from the catalog alone.
+
+    A root keeps the predicate its caller brought. An edge that reaches a root
+    from another root — `projects.owner_id` reaches the project root from the
+    user one — therefore orders the two and widens neither: a run deletes the
+    project it named, not every project its owner has.
+    """
+    if not roots:
+        raise TeardownError("a teardown plan needs at least one root to start from")
+    root_tables = tuple(root.table for root in roots)
+    if len(set(root_tables)) != len(root_tables):
+        raise TeardownError("two roots name the same table: " + ", ".join(root_tables))
+    incoming = _reachable(catalog, root_tables)
+    order = _deletion_order(incoming, root_tables)
+    predicates: dict[str, str] = {root.table: root.predicate for root in roots}
     # Parents first, so a child's predicate can quote the predicate that selects
     # the parent rows it hangs off.
     for table in reversed(order):
-        if table == root_table:
+        if table in predicates:
             continue
         predicates[table] = " OR ".join(
             _edge_predicate(reference, predicates[reference.parent_table])
@@ -530,14 +614,22 @@ def build_plan(catalog: Catalog, *, root_table: str, root_predicate: str) -> tup
                 key_name=name,
                 predicate=predicates[table],
                 via=incoming[table],
+                is_root=table in root_tables,
             )
         )
     return tuple(steps)
 
 
 def delete_sql(plan: Sequence[PlanStep]) -> str:
-    """One transaction: either the whole closure goes, or nothing does."""
-    statements = [f"DELETE FROM {step.table} WHERE {step.predicate};" for step in plan]
+    """One transaction: either the whole deletable closure goes, or nothing does.
+
+    A retained table is skipped rather than attempted: the plan says up front
+    that the database will not let it go, so a `DELETE` here would be a
+    statement written to fail and an error written to be ignored.
+    """
+    statements = [
+        f"DELETE FROM {step.table} WHERE {step.predicate};" for step in plan if not step.retained
+    ]
     return "BEGIN;\n" + "\n".join(statements) + "\nCOMMIT;"
 
 
@@ -551,10 +643,23 @@ def inventory_sql(plan: Sequence[PlanStep]) -> str:
     return "\nUNION ALL\n".join(selects) + ";"
 
 
-def residue_sql(plan: Sequence[PlanStep], owned: Mapping[str, Sequence[str]]) -> str:
-    """Ask for exactly the keys the run owned. Anything answered is residue."""
+def proof_sql(plan: Sequence[PlanStep], owned: Mapping[str, Sequence[str]]) -> str:
+    """What is left, in one question, asked the way each table has to be asked.
+
+    A deleted table is asked for exactly the keys the run owned, because the
+    parent row that selected them is gone by now and the predicate would answer
+    nothing; anything that answers is residue. A retained table is asked by its
+    predicate instead — the plan claims the run's rows are *still there and are
+    only these*, and a key list could never catch a row that appeared since.
+    """
     selects = []
     for step in plan:
+        if step.retained:
+            selects.append(
+                f"SELECT {sql_literal(step.table)} AS tbl, {step.key_expression} AS rowkey "
+                f"FROM {step.table} WHERE {step.predicate}"
+            )
+            continue
         keys = owned.get(step.table) or ()
         if not keys:
             continue
@@ -631,6 +736,49 @@ def format_residue(grouped: Mapping[str, Sequence[str]], plan: Sequence[PlanStep
     return "; ".join(lines)
 
 
+def format_retained(grouped: Mapping[str, Sequence[str]], plan: Sequence[PlanStep]) -> str:
+    """The retained rows, by table, key and count, with the rule that retains them."""
+    steps = {step.table: step for step in plan}
+    lines = []
+    for table in sorted(grouped):
+        keys = sorted(grouped[table])
+        step = steps[table]
+        lines.append(
+            f"{table}: {len(keys)} row(s), {step.key_name}={', '.join(keys)} "
+            f"[retained because it is {step.retained_because}]"
+        )
+    return "; ".join(lines) if lines else "nothing"
+
+
+def _retention_failure(
+    retained: Mapping[str, Sequence[str]],
+    expected: Mapping[str, Sequence[str]],
+    plan: Sequence[PlanStep],
+    expected_users: int | None,
+) -> str | None:
+    """Is what survived exactly what the plan said it would retain, and no more?
+
+    Two ways this fails and both matter. A retained table that answers with rows
+    the inventory did not name means the run reached somebody else's rows, or
+    wrote more of its own while teardown ran. A retained table that answers with
+    fewer means something deleted rows the plan declared undeletable — the
+    trigger or the foreign key is not what this plan was built on any more.
+    """
+    if dict(retained) != dict(expected):
+        return (
+            "the rows this teardown retained are not the rows its plan declared: retained "
+            + format_retained(retained, plan)
+            + " / declared "
+            + format_retained(expected, plan)
+        )
+    if expected_users is not None and len(retained.get(USER_ROOT_TABLE, ())) != expected_users:
+        return (
+            f"this run registered one user, so teardown must retain exactly {expected_users} "
+            f"{USER_ROOT_TABLE} row; it retained " + format_retained(retained, plan)
+        )
+    return None
+
+
 def _require(result: SqlResult, what: str) -> str:
     if result.returncode != 0:
         raise TeardownError(f"{what}: {result.stderr.strip() or result.stdout.strip()}")
@@ -642,45 +790,83 @@ def load_catalog(run_sql: RunSql) -> Catalog:
 
 
 def teardown_selection(
-    root_predicate: str, run_sql: RunSql, *, selection: str | None = None
+    root_predicate: str,
+    run_sql: RunSql,
+    *,
+    selection: str | None = None,
+    user_predicate: str | None = None,
+    expected_retained_users: int | None = None,
 ) -> TeardownReport:
-    """Delete the rows of every project a predicate selects, and prove they are gone.
+    """Delete the rows a selection owns, and prove what went and what stayed.
 
-    The predicate is the only thing a caller brings. One run's teardown names
+    The predicates are the only thing a caller brings. One run's teardown names
     one project id; the stand sweep names the projects its contour's title
-    prefixes match. Everything after that — which tables belong to the
-    selection, in which order they go and which keys are read back — is derived
-    from the catalog for both, so neither can go stale on its own schedule.
+    prefixes match. `user_predicate` adds the second root — the user a run
+    registered for itself — and a caller that has none is exactly the regime
+    before the registration door: the fixture user every run shares is nobody's
+    to delete, so it is not a root and nothing hanging off it joins the closure.
+    Everything after the predicates — which tables belong to the selection, in
+    which order they go, which are retained and which keys are read back — is
+    derived from the catalog for both paths, so neither can go stale on its own
+    schedule.
 
     Raises `TeardownError` — naming the table and the constraint — rather than
     reporting a clean teardown it cannot demonstrate.
     """
     catalog = load_catalog(run_sql)
-    plan = build_plan(catalog, root_table="projects", root_predicate=root_predicate)
+    roots = [Root(table="projects", predicate=root_predicate)]
+    if user_predicate is not None:
+        roots.append(Root(table=USER_ROOT_TABLE, predicate=user_predicate))
+    plan = build_plan(catalog, roots=roots)
     owned = group_rows(
         parse_rows(_require(run_sql(inventory_sql(plan)), "reading the rows this run owns"))
     )
     deletion = run_sql(delete_sql(plan))
     if deletion.returncode != 0:
         raise TeardownError(describe_failure(deletion.stderr, plan, catalog))
-    residue_query = residue_sql(plan, owned)
-    if residue_query:
+    retained_tables = {step.table for step in plan if step.retained}
+    retained: dict[str, list[str]] = {}
+    proof_query = proof_sql(plan, owned)
+    if proof_query:
         left = group_rows(
-            parse_rows(_require(run_sql(residue_query), "proving this run's rows are gone"))
+            parse_rows(_require(run_sql(proof_query), "proving this run's rows are gone"))
         )
-        if left:
+        residue = {table: keys for table, keys in left.items() if table not in retained_tables}
+        if residue:
             raise TeardownError(
-                "database rows of this run survived teardown: " + format_residue(left, plan)
+                "database rows of this run survived teardown: " + format_residue(residue, plan)
             )
+        retained = {table: sorted(keys) for table, keys in left.items() if table in retained_tables}
+        declared = {table: sorted(owned[table]) for table in retained_tables if owned.get(table)}
+        failure = _retention_failure(retained, declared, plan, expected_retained_users)
+        if failure is not None:
+            raise TeardownError(failure)
     return TeardownReport(
         selection=selection if selection is not None else root_predicate,
         tables=[step.table for step in plan],
         owned_keys=owned,
+        retained=retained,
+        retention_report=format_retained(retained, plan) if retained_tables else "",
     )
 
 
-def teardown_project(project_id: str, run_sql: RunSql) -> TeardownReport:
-    """Delete one project's rows and prove that none of them survived."""
+def teardown_project(
+    project_id: str, run_sql: RunSql, *, run_user_telegram_id: int | None = None
+) -> TeardownReport:
+    """Delete one run's rows and prove that only the declared ones survived.
+
+    A run that registered its own user names it here by Telegram id — the one
+    fact the run knows about it before the API answers — and teardown then owns
+    that user's rows too, retaining exactly the one `users` row and the ledger
+    rows of this run's own engineering attempts.
+    """
+    user_predicate = (
+        None if run_user_telegram_id is None else f"telegram_id = {int(run_user_telegram_id)}"
+    )
     return teardown_selection(
-        f"id::text = {sql_literal(project_id)}", run_sql, selection=project_id
+        f"id::text = {sql_literal(project_id)}",
+        run_sql,
+        selection=project_id,
+        user_predicate=user_predicate,
+        expected_retained_users=None if user_predicate is None else 1,
     )
