@@ -90,6 +90,11 @@ class OwnerNotification(BaseModel):
     task_id: str | None = None
     state: OwnerNotificationState
     owed_at: datetime
+    #: When the owner audience was marked delivered: the moment `po:input`
+    #: accepted the event. `None` until then, and on every record delivered
+    #: before this field existed. A wait that is measured from the owner having
+    #: been told reads this, never `owed_at` — owing is not telling.
+    delivered_at: datetime | None = None
     #: Delivery attempts already spent. Bounded by the producer.
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.

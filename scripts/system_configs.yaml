@@ -170,14 +170,14 @@
   description: "Minutes a story may sit in 'testing' on one unfinished QA run before human review (derived: QA_RUN_TIMEOUT 300s in shared/stand_deadlines.py, capped at supervisor.temporary_access_ttl_minutes, past which the borrowed test identity is gone)"
 
 - key: supervisor.pr_review_wait_max_minutes
-  value: 240
+  value: 220
   category: supervisor
-  description: "Minutes a story may sit in 'pr_review' without its pull request moving before human review (derived: ten times DEPLOY_RUN_TIMEOUT 1320s in shared/stand_deadlines.py, which already contains the 900s image-publication window)"
+  description: "Minutes a story may sit in 'pr_review' without its pull request moving before human review (derived: ten times DEPLOY_RUN_TIMEOUT 1320s in shared/stand_deadlines.py = 13200s = 220 min; that ceiling already contains the 900s image-publication window)"
 
 - key: supervisor.user_secret_wait_max_minutes
   value: 1440
   category: supervisor
-  description: "Minutes a story may wait for user-supplied secrets before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
+  description: "Minutes a story may wait, after its secret request was delivered to the owner, before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
 
 - key: supervisor.temporary_access_ttl_minutes
   value: 60

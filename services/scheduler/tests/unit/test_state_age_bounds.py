@@ -9,25 +9,39 @@ that needed its own entry point would be visible here as a second call.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from _run_routing_factories import _make_repo, _make_run, _make_story
 import pytest
+import structlog
 
+from shared.contracts.dto.owner_notification import (
+    OWNER_NOTIFICATION_KEY,
+    OwnerNotification,
+    OwnerNotificationState,
+)
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
-from src.tasks.supervisor.common import USER_SECRET_REQUESTED_AT_KEY
+from src.tasks.owner_notifications import supervise_owed_owner_notifications
+from src.tasks.supervisor.deploy import (
+    _handle_deploy_waiting_user_secret,
+    owe_user_secret_request,
+)
 from src.tasks.supervisor.state_age import (
     STATE_AGE_BOUND_REASON,
     STATE_AGE_BOUNDS,
+    USER_SECRET_REQUEST_UNDELIVERED_REASON,
     supervise_state_age_bounds,
 )
 
 DEPLOY_BOUND_MINUTES = 30
 QA_BOUND_MINUTES = 60
-PR_REVIEW_BOUND_MINUTES = 240
+PR_REVIEW_BOUND_MINUTES = 220
 USER_SECRET_BOUND_MINUTES = 1440
+
+logger = structlog.get_logger(__name__)
 
 
 def _ago(minutes: float) -> datetime:
@@ -342,149 +356,401 @@ async def test_an_unreadable_pull_request_never_ends_a_wait(api_client, redis_cl
 
 
 # --- waiting_user_secret --------------------------------------------------
+#
+# The clock of this wait starts only when the ask is delivered to the owner, and
+# the ask is a durable owner-notification record on the deploy Run that found the
+# secrets missing. These tests drive the real seam — owe, deliver, the recovery
+# sweep — against a small stateful double of the API and Redis, so each state of
+# that record is reached the way production reaches it, not asserted into place.
 
 
-def _waiting_secret_run(*, asked_at: datetime | None, consumer_wrote_at: datetime):
-    """The deploy Run of a secret wait.
+class _SecretWait:
+    """The API and Redis a secret wait touches, holding their state across ticks."""
 
-    `consumer_wrote_at` is when the deploy consumer recorded the missing keys —
-    the run's own timestamps, in another process. `asked_at` is when the
-    scheduler published the request to the owner, stamped in run_metadata; None
-    is a story that entered the wait before the stamp existed. The two are
-    deliberately different in these tests: the gap between them is the whole
-    point of the stamp.
-    """
-    metadata = {} if asked_at is None else {USER_SECRET_REQUESTED_AT_KEY: asked_at.isoformat()}
-    return _make_run(
-        id="deploy-secret-source",
-        status=RunStatus.COMPLETED,
-        created_at=consumer_wrote_at - timedelta(minutes=5),
-        updated_at=consumer_wrote_at,
-        run_metadata=metadata,
-        result={
-            "deploy_outcome": "waiting_for_user_secret",
-            "missing_user_secrets": [{"key": "STRIPE_KEY", "description": "Stripe secret key"}],
-        },
-    )
+    RUN_ID = "deploy-secret-source"
+
+    def __init__(
+        self,
+        *,
+        story_status: str = "waiting_user_secret",
+        consumer_wrote_at: datetime,
+        owner_telegram_id: int | None = 900000555,
+        record: dict | None = None,
+    ):
+        self.story_status = story_status
+        self.consumer_wrote_at = consumer_wrote_at
+        self.run_metadata: dict = {} if record is None else {OWNER_NOTIFICATION_KEY: record}
+        self.quarantine_reason: dict | None = None
+        self.published: list[dict] = []
+        self.publish_fails = False
+
+        api = AsyncMock()
+        api.get_stories_by_status.side_effect = self._stories
+        api.get_latest_run_by_story.side_effect = self._latest_run
+        api.update_run.side_effect = self._update_run
+        api.get_story.side_effect = self._story
+        api.update_story.side_effect = self._update_story
+        api.fail_story.side_effect = self._fail_story
+        api.wait_user_secret_story.side_effect = self._wait_user_secret_story
+        api.list_runs_owing_owner_notification.side_effect = self._runs_owing
+        api.list_stories_owing_owner_notification.return_value = []
+        api.get_project.return_value = SimpleNamespace(owner_id=555)
+        api.get_user.return_value = SimpleNamespace(telegram_id=owner_telegram_id)
+        self.api = api
+
+        redis = AsyncMock()
+        redis.publish_flat.side_effect = self._publish
+        self.redis = redis
+
+    # -- the API, as far as a secret wait reads and writes it --
+
+    def _story_dto(self):
+        return _make_story(status=self.story_status, quarantine_reason=self.quarantine_reason)
+
+    async def _stories(self, status):
+        return [self._story_dto()] if status == self.story_status else []
+
+    def run(self):
+        return _make_run(
+            id=self.RUN_ID,
+            status=RunStatus.COMPLETED,
+            created_at=self.consumer_wrote_at - timedelta(minutes=5),
+            updated_at=self.consumer_wrote_at,
+            run_metadata=dict(self.run_metadata),
+            result={
+                "deploy_outcome": "waiting_for_user_secret",
+                "missing_user_secrets": [{"key": "STRIPE_KEY", "description": "Stripe secret key"}],
+            },
+        )
+
+    async def _latest_run(self, story_id, run_type=None):
+        return self.run()
+
+    async def _update_run(self, run_id, data):
+        self.run_metadata = {**self.run_metadata, **data.get("run_metadata", {})}
+
+    async def _story(self, story_id):
+        return self._story_dto()
+
+    async def _update_story(self, story_id, data):
+        self.quarantine_reason = data.get("quarantine_reason", self.quarantine_reason)
+        return self._story_dto()
+
+    async def _fail_story(self, story_id):
+        self.story_status = "failed"
+        return self._story_dto()
+
+    async def _wait_user_secret_story(self, story_id):
+        self.story_status = "waiting_user_secret"
+        return self._story_dto()
+
+    async def _runs_owing(self, *, limit):
+        record = self.record()
+        return [self.run()] if record is not None and record.owed else []
+
+    async def _publish(self, stream, fields):
+        if self.publish_fails:
+            raise ConnectionError("po:input is unavailable")
+        self.published.append(fields)
+
+    # -- what the tests read --
+
+    def record(self) -> OwnerNotification | None:
+        stored = self.run_metadata.get(OWNER_NOTIFICATION_KEY)
+        return None if stored is None else OwnerNotification.model_validate(stored)
+
+    def set_record(self, **update) -> None:
+        record = self.record().model_copy(update=update)
+        self.run_metadata[OWNER_NOTIFICATION_KEY] = record.model_dump(mode="json")
+
+    async def enter_the_wait(self) -> None:
+        """What `supervise_deploying_stories` does with this Run's outcome."""
+        await _handle_deploy_waiting_user_secret(
+            self.api,
+            self.redis,
+            "story-1",
+            "00000000-0000-0000-0000-000000000001",
+            self.run(),
+            logger.bind(story_id="story-1"),
+        )
+
+    async def sweep_owed_notifications(self) -> None:
+        await supervise_owed_owner_notifications(self.api, self.redis)
+
+
+def _ask_record(state: OwnerNotificationState, **fields) -> dict:
+    """An ask record in one settled or owed state, as the seam would have left it."""
+    return OwnerNotification(
+        event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+        text="Ask the user for STRIPE_KEY.",
+        story_id="story-1",
+        project_id="00000000-0000-0000-0000-000000000001",
+        terminal_status=StoryStatus.WAITING_USER_SECRET,
+        state=state,
+        **fields,
+    ).model_dump(mode="json")
+
+
+def _asks_published(world: _SecretWait) -> int:
+    return sum(1 for fields in world.published if fields["event"] == "story_waiting_user_secret")
+
+
+@pytest.fixture(autouse=True)
+def _quiet_recipient_alerts():
+    """An unaddressable owner alerts administrators from the recipient lookup."""
+    with patch("src.tasks._recipients.notify_admins_best_effort", new_callable=AsyncMock):
+        yield
 
 
 @pytest.mark.asyncio
-async def test_an_unanswered_secret_request_fails_the_story_once(api_client, redis_client):
-    api_client.get_stories_by_status.side_effect = _stories_by_status(
-        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
-    )
-    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(USER_SECRET_BOUND_MINUTES + 60),
-        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES + 65),
+async def test_a_request_delivered_just_now_is_not_expired_by_an_old_run():
+    """Gap one: the consumer wrote the run long ago; the owner was told a minute ago.
+
+    `owed_at` is old too — owing is not telling, so it must not be the anchor.
+    """
+    world = _SecretWait(
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 3),
+        record=_ask_record(
+            OwnerNotificationState.DELIVERED,
+            owed_at=_ago(USER_SECRET_BOUND_MINUTES * 3),
+            delivered_at=_ago(1),
+            attempts=2,
+        ),
     )
 
-    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+    counts, owe, _deliver, notify = await _run_watchdog(world.api, world.redis)
+
+    assert counts == {"parked": 0, "failed": 0}
+    assert world.story_status == "waiting_user_secret"
+    owe.assert_not_awaited()
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_old_delivered_request_fails_the_story_once_even_if_the_run_is_recent():
+    """Gap two: the bound measures from the delivery, not from the run."""
+    world = _SecretWait(
+        consumer_wrote_at=_ago(2),
+        record=_ask_record(
+            OwnerNotificationState.DELIVERED,
+            owed_at=_ago(USER_SECRET_BOUND_MINUTES + 61),
+            delivered_at=_ago(USER_SECRET_BOUND_MINUTES + 60),
+            attempts=1,
+        ),
+    )
+
+    counts, owe, deliver, notify = await _run_watchdog(world.api, world.redis)
 
     assert counts == {"parked": 0, "failed": 1}
-    reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+    reason = world.quarantine_reason
     assert reason["reason"] == STATE_AGE_BOUND_REASON
     assert reason["status"] == "waiting_user_secret"
-    assert reason["anchor"] == "user_secret_requested_at"
+    assert reason["anchor"] == "user_secret_request_delivered_at"
     assert reason["ending"] == "fail"
     owe.assert_awaited_once()
     assert owe.await_args.kwargs["event"] is OwnerNotificationEvent.STORY_FAILED
     assert owe.await_args.kwargs["terminal_status"] is StoryStatus.FAILED
-    api_client.fail_story.assert_awaited_once_with("story-1")
-    api_client.transition_story.assert_not_awaited()
+    world.api.fail_story.assert_awaited_once_with("story-1")
+    world.api.transition_story.assert_not_awaited()
     deliver.assert_awaited_once()
     notify.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_a_secret_request_just_under_the_bound_is_left_alone(api_client, redis_client):
-    api_client.get_stories_by_status.side_effect = _stories_by_status(
-        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
-    )
-    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(USER_SECRET_BOUND_MINUTES - 60),
-        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES - 55),
+async def test_a_delivered_request_just_under_the_bound_is_left_alone():
+    world = _SecretWait(
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 2),
+        record=_ask_record(
+            OwnerNotificationState.DELIVERED,
+            owed_at=_ago(USER_SECRET_BOUND_MINUTES - 59),
+            delivered_at=_ago(USER_SECRET_BOUND_MINUTES - 60),
+            attempts=1,
+        ),
     )
 
-    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+    counts, owe, deliver, notify = await _run_watchdog(world.api, world.redis)
 
     assert counts == {"parked": 0, "failed": 0}
     owe.assert_not_awaited()
     deliver.assert_not_awaited()
     notify.assert_not_awaited()
-    api_client.fail_story.assert_not_awaited()
+    world.api.fail_story.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_a_request_the_scheduler_only_just_sent_is_not_expired_by_an_old_run(
-    api_client, redis_client
-):
-    """The gap between the deploy consumer and the ask is the user's time, not theirs.
+async def test_entering_the_wait_owes_the_ask_before_the_transition_and_delivers_it():
+    """The seam's mandated order: owe, transition, deliver."""
+    world = _SecretWait(story_status="deploying", consumer_wrote_at=_ago(30))
+    trace: list[tuple[str, ...]] = []
+    write_run, transition = world._update_run, world._wait_user_secret_story
 
-    The consumer recorded the missing keys long ago and the scheduler was behind;
-    the owner was asked a minute ago. Measuring from the run would fail them for
-    not answering a question they had only just received.
+    async def traced_write(run_id, data):
+        trace.append(("record", data["run_metadata"][OWNER_NOTIFICATION_KEY]["state"]))
+        await write_run(run_id, data)
+
+    async def traced_transition(story_id):
+        trace.append(("transition",))
+        return await transition(story_id)
+
+    world.api.update_run.side_effect = traced_write
+    world.api.wait_user_secret_story.side_effect = traced_transition
+
+    await world.enter_the_wait()
+
+    assert trace == [("record", "owed"), ("transition",), ("record", "delivered")]
+    record = world.record()
+    assert record.state is OwnerNotificationState.DELIVERED
+    assert record.delivered_at is not None
+    assert (datetime.now(UTC) - record.delivered_at).total_seconds() < 60
+    assert _asks_published(world) == 1
+    assert "STRIPE_KEY" in world.published[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_publish_starts_the_clock_only_at_its_later_delivery():
+    """The ask is owed, the publish fails, and the story waits with no clock.
+
+    However old the owed record grows, nothing expires. The recovery sweep then
+    delivers it, and the clock starts at that delivery — not at the owe, and not
+    at the consumer's write.
     """
-    api_client.get_stories_by_status.side_effect = _stories_by_status(
-        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
+    world = _SecretWait(
+        story_status="deploying", consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 4)
     )
-    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(1),
-        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 3),
-    )
+    world.publish_fails = True
 
-    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+    await world.enter_the_wait()
 
+    assert world.story_status == "waiting_user_secret"
+    assert world.record().state is OwnerNotificationState.OWED
+    assert world.record().delivered_at is None
+    assert _asks_published(world) == 0
+    # The owed record ages far past the bound while delivery is still failing.
+    world.set_record(owed_at=_ago(USER_SECRET_BOUND_MINUTES * 3))
+
+    counts, owe, _deliver, _notify = await _run_watchdog(world.api, world.redis)
     assert counts == {"parked": 0, "failed": 0}
     owe.assert_not_awaited()
-    deliver.assert_not_awaited()
-    notify.assert_not_awaited()
-    api_client.fail_story.assert_not_awaited()
+
+    world.publish_fails = False
+    swept_at = datetime.now(UTC)
+    await world.sweep_owed_notifications()
+
+    record = world.record()
+    assert record.state is OwnerNotificationState.DELIVERED
+    assert record.delivered_at >= swept_at
+    assert _asks_published(world) == 1
+    counts, owe, _deliver, _notify = await _run_watchdog(world.api, world.redis)
+    assert counts == {"parked": 0, "failed": 0}
+    owe.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_an_old_request_is_expired_even_when_the_run_was_written_recently(
-    api_client, redis_client
-):
-    """The reverse gap: the stamp is what the bound measures, not the run."""
-    api_client.get_stories_by_status.side_effect = _stories_by_status(
-        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
-    )
-    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=_ago(USER_SECRET_BOUND_MINUTES + 60),
-        consumer_wrote_at=_ago(2),
+async def test_an_unaddressable_owner_is_never_failed_as_unanswered():
+    world = _SecretWait(
+        story_status="deploying",
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 4),
+        owner_telegram_id=None,
     )
 
-    counts, owe, deliver, notify = await _run_watchdog(api_client, redis_client)
+    await world.enter_the_wait()
+    assert world.record().state is OwnerNotificationState.UNADDRESSABLE
+    world.set_record(owed_at=_ago(USER_SECRET_BOUND_MINUTES * 3))
 
-    assert counts == {"parked": 0, "failed": 1}
-    assert owe.await_args.kwargs["event"] is OwnerNotificationEvent.STORY_FAILED
-    api_client.fail_story.assert_awaited_once_with("story-1")
-    deliver.assert_awaited_once()
+    first, owe, _deliver, notify = await _run_watchdog(world.api, world.redis)
+    second, owe_again, _deliver_again, notify_again = await _run_watchdog(world.api, world.redis)
+
+    assert first == second == {"parked": 0, "failed": 0}
+    assert world.story_status == "waiting_user_secret"
+    world.api.fail_story.assert_not_awaited()
+    owe.assert_not_awaited()
+    owe_again.assert_not_awaited()
+    reason = world.quarantine_reason
+    assert reason["reason"] == USER_SECRET_REQUEST_UNDELIVERED_REASON
+    assert reason["delivery_state"] == "unaddressable"
+    assert reason["run_id"] == _SecretWait.RUN_ID
+    # Named once, not every tick.
+    notify.assert_awaited_once()
+    notify_again.assert_not_awaited()
+    assert _asks_published(world) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_ask_is_never_failed_as_unanswered():
+    world = _SecretWait(
+        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 4),
+        record=_ask_record(
+            OwnerNotificationState.ABANDONED,
+            owed_at=_ago(USER_SECRET_BOUND_MINUTES * 3),
+            attempts=3,
+            detail="ConnectionError: po:input is unavailable",
+        ),
+    )
+
+    counts, owe, _deliver, notify = await _run_watchdog(world.api, world.redis)
+
+    assert counts == {"parked": 0, "failed": 0}
+    world.api.fail_story.assert_not_awaited()
+    owe.assert_not_awaited()
+    assert world.quarantine_reason["reason"] == USER_SECRET_REQUEST_UNDELIVERED_REASON
+    assert world.quarantine_reason["delivery_state"] == "abandoned"
     notify.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_a_wait_that_predates_the_stamp_is_adopted_rather_than_failed(
-    api_client, redis_client
-):
-    """A live story parked before this bound existed keeps its full window."""
-    api_client.get_stories_by_status.side_effect = _stories_by_status(
-        StoryStatus.WAITING_USER_SECRET, [_make_story(status="waiting_user_secret")]
-    )
-    api_client.get_latest_run_by_story.return_value = _waiting_secret_run(
-        asked_at=None,
-        consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 5),
-    )
+async def test_a_wait_entered_before_the_ask_was_durable_is_asked_exactly_once():
+    """A live story with no ask record is asked now, and never again."""
+    world = _SecretWait(consumer_wrote_at=_ago(USER_SECRET_BOUND_MINUTES * 5))
 
-    counts, owe, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+    first, owe, _deliver, _notify = await _run_watchdog(world.api, world.redis)
+    second, owe_again, _deliver_again, _notify_again = await _run_watchdog(world.api, world.redis)
 
-    assert counts == {"parked": 0, "failed": 0}
+    assert first == second == {"parked": 0, "failed": 0}
+    assert _asks_published(world) == 1
+    record = world.record()
+    assert record.event is OwnerNotificationEvent.STORY_WAITING_USER_SECRET
+    assert record.state is OwnerNotificationState.DELIVERED
+    assert (datetime.now(UTC) - record.delivered_at).total_seconds() < 60
+    world.api.fail_story.assert_not_awaited()
     owe.assert_not_awaited()
-    api_client.fail_story.assert_not_awaited()
-    stamped = api_client.update_run.await_args.args[1]["run_metadata"]
-    assert USER_SECRET_REQUESTED_AT_KEY in stamped
-    adopted = datetime.fromisoformat(stamped[USER_SECRET_REQUESTED_AT_KEY])
-    assert (datetime.now(UTC) - adopted).total_seconds() < 60
+    owe_again.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_crash_between_owe_and_transition_still_asks_once():
+    """The retried entry finds the owed record and delivers it; nothing is owed twice."""
+    world = _SecretWait(story_status="deploying", consumer_wrote_at=_ago(30))
+    await owe_user_secret_request(
+        world.api,
+        world.run(),
+        "story-1",
+        "00000000-0000-0000-0000-000000000001",
+        logger.bind(story_id="story-1"),
+    )
+    owed_at = world.record().owed_at
+
+    await world.enter_the_wait()
+
+    record = world.record()
+    assert record.owed_at == owed_at
+    assert record.state is OwnerNotificationState.DELIVERED
+    assert _asks_published(world) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_secret_that_arrives_before_delivery_voids_the_ask():
+    """The owner is not asked for a secret the story no longer waits on."""
+    world = _SecretWait(story_status="deploying", consumer_wrote_at=_ago(30))
+    world.publish_fails = True
+    await world.enter_the_wait()
+    assert world.record().state is OwnerNotificationState.OWED
+
+    world.story_status = "deploying"  # the secret was saved and the deploy resumed
+    world.publish_fails = False
+    await world.sweep_owed_notifications()
+
+    assert world.record().state is OwnerNotificationState.VOIDED
+    assert _asks_published(world) == 0
 
 
 # --- no double ending -----------------------------------------------------

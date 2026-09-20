@@ -20,15 +20,16 @@ which any unrelated write moves:
   and QA supervisors on the same tick. A re-dispatch is a *new* Run, so the
   bound restarts exactly when the platform genuinely started over, and nothing
   else can reset it.
-* ``waiting_user_secret`` — the moment the owner was asked, stamped on the
-  deploy Run by the tick that published the request
-  (`USER_SECRET_REQUESTED_AT_KEY`). Not the run's own timestamps: those are the
-  deploy consumer's, written in another process when it gave up on the missing
-  keys, and the scheduler reaches the ask only on a later tick — a gap that is
-  exactly as long as the scheduler is behind, which is the condition this card
-  exists for. Measuring from them could fail an owner for not answering a
-  question that had not been asked yet. The resume path creates a new Run rather
-  than touching this one, so the stamp is written once and never moves.
+* ``waiting_user_secret`` — the moment the request for the secrets was
+  *delivered* to the owner, read from the durable owner-notification record of
+  the ask (``delivered_at``) and from nowhere else. The invariant is that the
+  clock starts only when the owner has been told, so every state of that record
+  has one meaning here: delivered starts the clock; owed means delivery is still
+  being retried and the clock has not started; unaddressable or abandoned means
+  the owner was never asked, so the story is never failed as unanswered; and no
+  ask record at all (a wait entered before the ask went through the seam) is
+  asked now, once, and its clock starts at that delivery. Not the run's own
+  timestamps, and not ``owed_at``: those are moments *before* anybody was told.
 * ``pr_review`` — the pull request's own ``updated_at`` on GitHub. It lives
   outside this process, so it survives a tick restart; it moves when the pull
   request moves (a push, an update-branch, the merge) and not when something
@@ -55,6 +56,7 @@ from pydantic import ValidationError
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.owner_notification import OwnerNotificationState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -66,17 +68,29 @@ if TYPE_CHECKING:
 
 from ... import startup
 from .._github_refs import _parse_github_timestamp, _parse_owner_repo
-from ..owner_notifications import deliver_owed_notification, owe_story_owner_notification
-from .common import (
-    STORY_HUMAN_REVIEW_ACTION,
-    USER_SECRET_REQUESTED_AT_KEY,
-    _parse_datetime,
+from ..owner_notifications import (
+    deliver_owed_notification,
+    owe_story_owner_notification,
+    read_owner_notification,
 )
+from .common import STORY_HUMAN_REVIEW_ACTION, _parse_datetime
+from .deploy import deliver_user_secret_request, owe_user_secret_request
 
 logger = structlog.get_logger(__name__)
 
 #: The typed reason a story carries when one of these bounds ended its wait.
 STATE_AGE_BOUND_REASON = "state_wait_age_bound_exceeded"
+
+#: The typed reason a `waiting_user_secret` story carries when its request never
+#: reached the owner. It names the undelivered request, not a timeout: the clock
+#: of this wait never started, so nothing about it expired.
+USER_SECRET_REQUEST_UNDELIVERED_REASON = "user_secret_request_undelivered"  # noqa: S105
+
+#: Ask-record states in which the owner was never told and never will be through
+#: this path. The seam has already told administrators about each.
+_UNDELIVERED_ASK_STATES = frozenset(
+    {OwnerNotificationState.UNADDRESSABLE, OwnerNotificationState.ABANDONED}
+)
 
 #: A Run in one of these statuses is still a wait. A terminal Run is an outcome
 #: the deploy/QA supervisors route on the same tick, never something to bound.
@@ -107,10 +121,17 @@ _OWNER_EVENT_BY_ENDING: dict[WaitEnding, OwnerNotificationEvent] = {
     WaitEnding.FAIL: OwnerNotificationEvent.STORY_FAILED,
 }
 
-AnchorResolver = Callable[
-    ["SchedulerAPIClient", StoryDTO, GitHubAppClient],
-    Awaitable[datetime | None],
-]
+
+@dataclass(frozen=True)
+class _Sweep:
+    """What one pass of the watchdog gives every anchor resolver."""
+
+    api_client: SchedulerAPIClient
+    redis_client: RedisStreamClient
+    github: GitHubAppClient
+
+
+AnchorResolver = Callable[[_Sweep, StoryDTO], Awaitable[datetime | None]]
 
 
 @dataclass(frozen=True)
@@ -155,32 +176,33 @@ async def _in_flight_run_anchor(
     return _parse_datetime(run.created_at)
 
 
-async def _deploy_run_anchor(
-    api_client: SchedulerAPIClient, story: StoryDTO, _github: GitHubAppClient
-) -> datetime | None:
-    return await _in_flight_run_anchor(api_client, story, RunType.DEPLOY)
+async def _deploy_run_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+    return await _in_flight_run_anchor(sweep.api_client, story, RunType.DEPLOY)
 
 
-async def _qa_run_anchor(
-    api_client: SchedulerAPIClient, story: StoryDTO, _github: GitHubAppClient
-) -> datetime | None:
-    return await _in_flight_run_anchor(api_client, story, RunType.QA)
+async def _qa_run_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+    return await _in_flight_run_anchor(sweep.api_client, story, RunType.QA)
 
 
-async def _user_secret_request_anchor(
-    api_client: SchedulerAPIClient, story: StoryDTO, _github: GitHubAppClient
-) -> datetime | None:
-    """When the owner was asked for the secrets this story is still missing.
+async def _user_secret_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+    """When the request for the missing secrets was delivered to the owner.
 
-    Read from the stamp `_handle_deploy_waiting_user_secret` writes when it
-    publishes the request. A story that entered the wait before that stamp
-    existed — or whose stamp write was lost — has none, and a missing stamp must
-    never shorten the wait, so this adopts its own first observation as the
-    anchor and writes it down. The practical effect on a story that has been
-    waiting for days is that its bound starts now: it gets a full, fresh window
-    from the moment the platform first looked, which is the only length this
-    process can honestly defend, and nothing is asked of the user again.
+    Resolved from the ask's owner-notification record alone — the record on the
+    deploy Run that reported the missing keys, which is the record of exactly
+    this wait. Only a delivered ask has an anchor; every other state answers
+    None, so the story cannot expire, and two of them act:
+
+    * no ask record — a wait entered before the ask went through the seam. It is
+      owed and delivered now, once; `owe_user_secret_request` returns the record
+      already there on every later tick, so it is never owed a second time;
+    * unaddressable / abandoned — the owner was never told. The story carries a
+      typed reason naming the undelivered request, written once, and an
+      administrator is told the wait will not end on its own.
+
+    An owed record needs nothing from here: the owner-notification sweep selects
+    owed Run records whatever their story's status and retries them.
     """
+    api_client = sweep.api_client
     log = logger.bind(story_id=story.id)
     try:
         run = await api_client.get_latest_run_by_story(story.id, run_type=RunType.DEPLOY.value)
@@ -189,21 +211,74 @@ async def _user_secret_request_anchor(
         return None
     if run is None or run.result is None or not run.result.missing_user_secrets:
         return None
-    stamp = (run.run_metadata or {}).get(USER_SECRET_REQUESTED_AT_KEY)
-    if stamp:
-        return _parse_datetime(stamp)
-    adopted = datetime.now(UTC)
-    await api_client.update_run(
-        run.id, {"run_metadata": {USER_SECRET_REQUESTED_AT_KEY: adopted.isoformat()}}
+    project_id = str(story.project_id)
+    log = log.bind(run_id=run.id)
+    record = read_owner_notification(run)
+
+    if record is None or record.state is OwnerNotificationState.VOIDED:
+        record = await owe_user_secret_request(api_client, run, story.id, project_id, log)
+        log.info("state_age_bound_user_secret_request_owed_for_existing_wait")
+        await deliver_user_secret_request(api_client, sweep.redis_client, run, record, log)
+        return None
+    if record.event is not OwnerNotificationEvent.STORY_WAITING_USER_SECRET:
+        # Only the ask is ever owed on a Run whose outcome is a secret wait; any
+        # other record here is a defect. Never expire on it, and say so loudly.
+        log.error("state_age_bound_user_secret_run_carries_other_record", po_event=record.event)
+        return None
+    if record.state is OwnerNotificationState.DELIVERED:
+        if record.delivered_at is None:
+            log.error("state_age_bound_user_secret_delivered_without_moment")
+            return None
+        return _parse_datetime(record.delivered_at)
+    if record.state in _UNDELIVERED_ASK_STATES:
+        await _record_undelivered_request(sweep, story, run.id, record.state, record.detail, log)
+    return None
+
+
+async def _record_undelivered_request(  # noqa: PLR0913 — one undelivered ask's evidence
+    sweep: _Sweep,
+    story: StoryDTO,
+    run_id: str,
+    state: OwnerNotificationState,
+    detail: str | None,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Name, once, a secret wait whose request never reached its owner.
+
+    The story stays in `waiting_user_secret`: its only other transition is to
+    fail it, and failing an owner for not answering a request they never got is
+    the one message this bound must never send. It still resumes the moment the
+    secrets are saved — by the owner through another channel, or by an operator
+    — and the reason and notice below tell an operator it will not end alone.
+    """
+    reason = story.quarantine_reason or {}
+    if (
+        reason.get("reason") == USER_SECRET_REQUEST_UNDELIVERED_REASON
+        and reason.get("run_id") == run_id
+    ):
+        return
+    undelivered = {
+        "reason": USER_SECRET_REQUEST_UNDELIVERED_REASON,
+        "status": StoryStatus.WAITING_USER_SECRET.value,
+        "run_id": run_id,
+        "delivery_state": state.value,
+        "detail": detail,
+    }
+    log.error("state_age_bound_user_secret_request_undelivered", **undelivered)
+    await sweep.api_client.update_story(story.id, {"quarantine_reason": undelivered})
+    await notify_admins_best_effort(
+        f"Story {story.id} is waiting for user secrets, but the request never reached its "
+        f"owner ({state.value}: {detail}). The wait has no clock and will not end on its "
+        "own: save the secrets for the owner, or fail the story.",
+        level="error",
+        story_id=story.id,
+        project_id=str(story.project_id),
     )
-    log.info("state_age_bound_user_secret_anchor_adopted", run_id=run.id)
-    return adopted
 
 
-async def _pull_request_anchor(
-    api_client: SchedulerAPIClient, story: StoryDTO, github: GitHubAppClient
-) -> datetime | None:
+async def _pull_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
     """When this story's pull request last moved, as GitHub records it."""
+    api_client, github = sweep.api_client, sweep.github
     log = logger.bind(story_id=story.id)
     if not story.pr_number:
         return None
@@ -290,11 +365,10 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         owner_text=_qa_owner_text,
     ),
     StateAgeBound(
-        # 240 min: the gate's own ceiling for merge to deploy Run is
-        # `stand_deadlines.DEPLOY_RUN_TIMEOUT` (1320 s, which already contains
-        # the 900 s image window), and CI before the merge sits inside
-        # `ENGINEERING_TIMEOUT` (420 s). Ten times that ceiling absorbs a queued
-        # GitHub Actions and still surfaces a stuck story the same day.
+        # 220 min: ten times `stand_deadlines.DEPLOY_RUN_TIMEOUT` (1320 s, the
+        # gate's own ceiling for merge to deploy Run, which already contains the
+        # 900 s image window): 10 * 1320 s / 60 = 220. Absorbs a queued GitHub
+        # Actions and still surfaces a stuck story the same day.
         status=StoryStatus.PR_REVIEW,
         config_key="supervisor.pr_review_wait_max_minutes",
         anchor="github_pull_request_updated_at",
@@ -308,7 +382,7 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         # `supervisor.resource_wait_timeout_minutes`.
         status=StoryStatus.WAITING_USER_SECRET,
         config_key="supervisor.user_secret_wait_max_minutes",
-        anchor="user_secret_requested_at",
+        anchor="user_secret_request_delivered_at",
         ending=WaitEnding.FAIL,
         resolve_anchor=_user_secret_request_anchor,
         owner_text=_user_secret_owner_text,
@@ -325,7 +399,7 @@ async def supervise_state_age_bounds(
     Returns the number of stories parked and failed by the bounds this tick.
     """
     counts = {"parked": 0, "failed": 0}
-    github = GitHubAppClient()
+    sweep = _Sweep(api_client=api_client, redis_client=redis_client, github=GitHubAppClient())
 
     for bound in STATE_AGE_BOUNDS:
         threshold = _threshold_minutes(bound)
@@ -336,7 +410,7 @@ async def supervise_state_age_bounds(
                 status=bound.status.value,
             )
             try:
-                anchor = await bound.resolve_anchor(api_client, story, github)
+                anchor = await bound.resolve_anchor(sweep, story)
             except Exception:
                 # Without an anchor there is no bound to apply, and one story's
                 # unreadable evidence must not stop the rest of the sweep.

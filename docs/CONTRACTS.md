@@ -308,6 +308,11 @@ one audit is `refusal_evidence_ambiguous`, any mismatch is `stale_attempt_fence`
 and none of them mutates anything. Admission also refuses a task or story that
 already carries a park with `infrastructure_parked` before any attempt id is minted.
 
+`OwnerNotification.delivered_at` is set by the seam in the same write that marks the owner
+audience `delivered`, and is `None` before that and on records delivered before the field
+existed. A wait measured from the owner having been told — the `waiting_user_secret` age bound —
+reads it, never `owed_at`.
+
 `OwnerNotification` carries an optional administrator audience (`admin_text`,
 `admin_state`, `admin_attempts`, `admin_detail`) settled independently of the
 owner through the same record, selection and bounded retries. Released records

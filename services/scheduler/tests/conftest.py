@@ -54,7 +54,7 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.resource_wait_timeout_minutes": 60,
         "supervisor.deploy_wait_max_minutes": 30,
         "supervisor.qa_wait_max_minutes": 60,
-        "supervisor.pr_review_wait_max_minutes": 240,
+        "supervisor.pr_review_wait_max_minutes": 220,
         "supervisor.user_secret_wait_max_minutes": 1440,
         "supervisor.resource_wait_metrics_freshness_seconds": 300,
         "supervisor.qa_handoff_target_held_max_minutes": 4,
