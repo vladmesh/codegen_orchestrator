@@ -65,6 +65,18 @@ PACKAGE_CONTRACT_ABSENT_MARKER = "PACKAGE_CONTRACT_ABSENT:"
 PACKAGE_CONTRACT_MAX_BYTES = GENERATED_CONTRACT_READ_LIMIT
 QA_DOCKER_WRAPPER = "/usr/local/bin/qa-docker"
 
+# The run-scoped residue probe. One marker, one payload, one exec: the three
+# kinds the Definition of Done names outside the control host — the deployment
+# target, the image registry and the GitHub repository — are all read from this
+# container, and reading them one at a time would be three docker execs and
+# three SSH key fetches for the same answer.
+RUN_RESIDUE_MARKER = "RUN_RESIDUE:"
+# Each kind reports its own outcome, because "asked and found nothing" and
+# "could not ask" have to stay apart per kind: an unreadable registry must not
+# render the target scan as unaskable, and it must never render it as clean.
+RESIDUE_ERROR_KEY = "error"
+RESIDUE_FINDINGS_KEY = "findings"
+
 
 class _CleanupServerPolicyAdapter:
     """Adapt an API server DTO to the authoritative provisioning policy."""
@@ -581,6 +593,40 @@ def build_remote_residue_command(prefixes: list[str], service_base: str = "/opt/
     return shlex.join(["sh", "-c", script])
 
 
+def build_remote_run_residue_command(
+    stack_names: list[str], service_base: str = "/opt/services"
+) -> str:
+    """Build one run's residue inventory on its deployment target.
+
+    The counterpart of `build_remote_residue_command`, scoped to the exact stack
+    names one run owns rather than to the contour's prefixes: this answers the
+    Definition of Done's "no container on the target", including containers that
+    exited, and the service directory the deploy wrote.
+
+    Anchored on the stack name *and* on the separator Compose puts after it —
+    a container of a stack is `<stack>-<service>-<n>` — so a run owning
+    `live-test-9` is not failed by a neighbouring `live-test-90-…`. Tolerant of
+    the dash Docker may have replaced with an underscore, the same tolerance the
+    prefix sweep needs and for the same reason.
+
+    Reports, never deletes, and **fails rather than reporting an empty host**: a
+    `docker ps` that could not run exits non-zero here, so an unreachable daemon
+    reaches the caller as a kind that could not be checked instead of as a
+    target with nothing on it.
+    """
+    base = service_base.rstrip("/")
+    pattern = "|".join(tolerant_prefix_pattern(name) for name in stack_names)
+    paths = " ".join(shlex.quote(f"{base}/{name}") for name in stack_names)
+    script = (
+        "names=$(docker ps -a --format '{{.Names}}') || exit 1; "
+        f"printf '%s\\n' \"$names\" | grep -E {shlex.quote(f'^({pattern})[-_]')} "
+        "| sed 's/^/container /'; "
+        f"ls -1d {paths} 2>/dev/null | sed 's/^/directory /'; "
+        "exit 0"
+    )
+    return shlex.join(["sh", "-c", script])
+
+
 def build_remote_package_contract_command(
     project_name: str, paths: list[str], docker_wrapper: str = QA_DOCKER_WRAPPER
 ) -> str:
@@ -651,6 +697,130 @@ async def read_package_contracts(
             f"ssh exited {result.returncode}: {result.stderr.strip()[:300]}"
         )
     return result.stdout
+
+
+async def _github_repository_residue(*, owner: str, repo: str) -> dict[str, Any]:
+    """Whether the run's GitHub repository is still there, read and never assumed.
+
+    `cleanup_github_repo` verifies its own delete, but a removal that verifies
+    itself is not the same claim as "after the whole teardown, nothing of this
+    run is on GitHub": this asks again, from outside the delete, which is what
+    the Definition of Done names.
+    """
+    gh = GitHubAppClient()
+    token = await gh.get_org_token(owner)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
+        )
+    if resp.status_code == HTTP_NOT_FOUND:
+        return {RESIDUE_FINDINGS_KEY: []}
+    if resp.status_code == HTTP_OK:
+        return {RESIDUE_FINDINGS_KEY: [f"repository {owner}/{repo}"]}
+    # Neither answer. A 403, a 500 or a rate limit says nothing about the
+    # repository, and saying "absent" for it is exactly the reading card 1318
+    # removed from the manager log.
+    return {RESIDUE_ERROR_KEY: f"GET repos/{owner}/{repo} answered {resp.status_code}"}
+
+
+async def _registry_repositories_residue(repositories: list[str]) -> dict[str, Any]:
+    """Whether any image repository this run published still has a live tag."""
+    try:
+        base, username, password = _registry_credentials()
+    except RuntimeError as error:
+        return {RESIDUE_ERROR_KEY: str(error)}
+    headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
+    findings: list[str] = []
+    async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:
+        for repository in repositories:
+            listing = await client.get(f"{base}/v2/{repository}/tags/list")
+            if listing.status_code == HTTP_NOT_FOUND:
+                continue
+            if listing.status_code != HTTP_OK:
+                return {
+                    RESIDUE_ERROR_KEY: (
+                        f"GET /v2/{repository}/tags/list answered {listing.status_code}"
+                    )
+                }
+            for tag in listing.json().get("tags") or []:
+                manifest = await client.get(
+                    f"{base}/v2/{repository}/manifests/{tag}", headers=headers
+                )
+                if manifest.status_code == HTTP_NOT_FOUND:
+                    continue
+                if manifest.status_code != HTTP_OK:
+                    return {
+                        RESIDUE_ERROR_KEY: (
+                            f"GET /v2/{repository}/manifests/{tag} answered {manifest.status_code}"
+                        )
+                    }
+                findings.append(f"{repository}:{tag}")
+    return {RESIDUE_FINDINGS_KEY: findings}
+
+
+async def _target_residue(
+    *, stack_names: list[str], api_url: str, server_handle: str | None
+) -> dict[str, Any]:
+    """What is left of this run's deployment on the target host itself.
+
+    Asked of every managed target when the manifest names no resolved host, for
+    the same reason the teardown clears every one: a write-ahead deploy record
+    knows its stack name and not yet its host, and a scan of the wrong host
+    finds nothing and proves nothing.
+    """
+    if not stack_names:
+        return {RESIDUE_FINDINGS_KEY: []}
+    try:
+        targets = await _resolve_ssh_targets(api_url, server_handle)
+    except Exception as error:  # noqa: BLE001 — an unresolvable target is unaskable, not clean
+        return {RESIDUE_ERROR_KEY: f"target resolution failed: {type(error).__name__}: {error}"}
+    remote_cmd = build_remote_run_residue_command(stack_names)
+    findings: list[str] = []
+    for destination, key, handle in targets:
+        try:
+            result = _run_over_ssh(destination, key, remote_cmd, "", timeout=60)
+        except subprocess.SubprocessError as error:
+            return {RESIDUE_ERROR_KEY: f"{handle}: ssh failed: {type(error).__name__}"}
+        if result.returncode != 0:
+            return {
+                RESIDUE_ERROR_KEY: (
+                    f"{handle}: residue scan exited {result.returncode}: "
+                    f"{result.stderr.strip()[:300]}"
+                )
+            }
+        findings += [
+            f"{handle}: {line.strip()}" for line in result.stdout.splitlines() if line.strip()
+        ]
+    return {RESIDUE_FINDINGS_KEY: findings}
+
+
+async def probe_run_residue(
+    *,
+    owner: str,
+    repo: str,
+    repositories: list[str],
+    stack_names: list[str],
+    api_url: str,
+    server_handle: str | None = None,
+    marker: str = RUN_RESIDUE_MARKER,
+) -> dict[str, Any]:
+    """Read the three off-host kinds after a run's teardown, each on its own terms.
+
+    One invocation for three kinds, because all three are read from this
+    container and each of them alone would cost another docker exec. They stay
+    three answers: a kind that could not be read carries its own `error`, so one
+    unreadable source can neither hide nor be hidden by the others.
+    """
+    payload = {
+        "github_repository": await _github_repository_residue(owner=owner, repo=repo),
+        "registry_repositories": await _registry_repositories_residue(repositories),
+        "target_containers": await _target_residue(
+            stack_names=stack_names, api_url=api_url, server_handle=server_handle
+        ),
+    }
+    print(marker + json.dumps(payload, sort_keys=True))
+    return payload
 
 
 async def _resolve_cleanup_targets(
@@ -856,6 +1026,17 @@ async def _run(args: argparse.Namespace) -> None:
                 paths=args.path,
             )
         )
+    elif args.command == "run-residue":
+        # stdout is the proof itself: the live suite parses what this prints,
+        # and a missing payload is a kind that could not be checked.
+        await probe_run_residue(
+            owner=args.owner,
+            repo=args.repo,
+            repositories=args.repository or [],
+            stack_names=args.stack_name or [],
+            api_url=args.api_url,
+            server_handle=args.server_handle,
+        )
     elif args.command == "server-diagnostics":
         # stdout is the snapshot itself: the live suite redacts and retains what
         # this prints, so nothing else may be written to it.
@@ -924,6 +1105,14 @@ def _parser() -> argparse.ArgumentParser:
     package_contract.add_argument("--server-handle")
     package_contract.add_argument("--api-url", required=True)
     package_contract.add_argument("--path", action="append", required=True)
+
+    run_residue = sub.add_parser("run-residue")
+    run_residue.add_argument("--owner", required=True)
+    run_residue.add_argument("--repo", required=True)
+    run_residue.add_argument("--repository", action="append")
+    run_residue.add_argument("--stack-name", action="append")
+    run_residue.add_argument("--server-handle")
+    run_residue.add_argument("--api-url", required=True)
 
     diagnostics = sub.add_parser("server-diagnostics")
     diagnostics.add_argument("--project-name", required=True)
