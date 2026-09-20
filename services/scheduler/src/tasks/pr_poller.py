@@ -46,6 +46,7 @@ logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
+_MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
 
 
 def _parse_github_timestamp(value: object) -> datetime | None:
@@ -537,6 +538,201 @@ async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each pa
     return True
 
 
+async def _park_story_for_merge_refusal(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    pr_number: int,
+    mergeable_state: object,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+    reason_code: str = "github_app_merge_refused",
+) -> None:
+    """Persist and announce GitHub's refusal before leaving ``pr_review``."""
+    reason = {
+        "reason": reason_code,
+        "pr_number": pr_number,
+        "mergeable_state": mergeable_state,
+        "detail": detail,
+    }
+    log.error("poll_merged_app_merge_refused", **reason)
+    await api_client.update_story(story_id, {"quarantine_reason": reason})
+    owed = await owe_story_owner_notification(
+        api_client,
+        story_id,
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=(
+            "The platform could not merge the finished pull request, so the story is "
+            f"waiting for a specialist. Reason: {detail}."
+        ),
+        project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        log=log,
+    )
+    await api_client.transition_story(story_id, "human-review")
+    await deliver_owed_notification(
+        api_client, redis_client, story_id, owed, log, story_record=True
+    )
+    await notify_admins_best_effort(
+        f"GitHub App could not merge PR #{pr_number} for story {story_id}: {detail}",
+        level="error",
+        story_id=story_id,
+        project_id=project_id,
+        pr_number=pr_number,
+        mergeable_state=mergeable_state,
+    )
+
+
+async def _merge_open_pr_without_auto_merge(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pull_request: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    """Merge a green PR only when GitHub did not accept an auto-merge request.
+
+    Pending and CI-blocked PRs stay in the poll set for their normal next tick.
+    A refusal observed from GitHub is terminal for this automatic path, so it is
+    recorded with owner and administrator notices instead of being retried as a
+    warning forever.
+    """
+    pr_number = pull_request["number"]
+    if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=pull_request.get("mergeable_state"),
+            detail="GitHub closed the pull request without merging it",
+            reason_code="github_pull_request_closed_unmerged",
+            log=log,
+        )
+        return None
+    if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
+        return pull_request
+
+    mergeable_state = pull_request.get("mergeable_state")
+    if mergeable_state == "behind":
+        try:
+            await github.update_pull_request_branch(owner, repo_name, pr_number)
+        except Exception as exc:
+            detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+            await _park_story_for_merge_refusal(
+                api_client,
+                redis_client,
+                story_id=story_id,
+                project_id=project_id,
+                pr_number=pr_number,
+                mergeable_state=mergeable_state,
+                detail=detail,
+                reason_code="github_app_update_branch_refused",
+                log=log,
+            )
+            return None
+        log.info("poll_merged_app_branch_update_requested", pr_number=pr_number)
+        return pull_request
+    if mergeable_state in _MERGE_PENDING_STATES:
+        log.info(
+            "poll_merged_app_merge_waiting_for_checks",
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+        )
+        return pull_request
+    if mergeable_state != "clean":
+        detail = f"GitHub reported mergeable_state={mergeable_state!r}"
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    try:
+        merge = await github.merge_pull_request(owner, repo_name, pr_number)
+    except Exception as exc:
+        detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    if merge.get("merged") is not True:
+        detail = str(merge.get("message") or "GitHub did not confirm that the pull request merged")
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    try:
+        return await github.get_pull_request(owner, repo_name, pr_number)
+    except Exception:
+        # GitHub confirmed the merge, but the immediately-following REST read
+        # is not yet usable. A later tick observes the merged PR; do not turn a
+        # confirmed merge into a human-review park because of that read failure.
+        log.exception("poll_merged_app_merge_readback_failed", pr_number=pr_number)
+        return None
+
+
+async def _current_pull_request(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    """Read the current PR and take the one fallback action this poller owns."""
+    try:
+        pull_request = await github.get_pull_request(owner, repo_name, pr_number)
+    except Exception:
+        log.exception("poll_merged_github_error", pr_number=pr_number)
+        return None
+    return await _merge_open_pr_without_auto_merge(
+        api_client,
+        github,
+        redis_client,
+        story_id=story_id,
+        project_id=project_id,
+        owner=owner,
+        repo_name=repo_name,
+        pull_request=pull_request,
+        log=log,
+    )
+
+
 async def poll_merged_prs(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -577,13 +773,18 @@ async def poll_merged_prs(
             log.warning("poll_merged_no_pr_number")
             continue
 
-        try:
-            pr_data = await github.get_pull_request(owner, repo_name, story.pr_number)
-        except Exception:
-            log.exception("poll_merged_github_error", pr_number=story.pr_number)
-            continue
-
-        if not pr_data.get("merged_at"):
+        pr_data = await _current_pull_request(
+            api_client,
+            github,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            owner=owner,
+            repo_name=repo_name,
+            pr_number=story.pr_number,
+            log=log,
+        )
+        if pr_data is None or not pr_data.get("merged_at"):
             continue
 
         merged_pr = pr_data

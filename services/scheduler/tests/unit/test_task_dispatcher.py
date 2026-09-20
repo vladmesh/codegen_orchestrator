@@ -1383,6 +1383,40 @@ class TestCompleteStories:
         api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
+    async def test_auto_merge_refusal_persists_pr_for_the_poller_handoff(
+        self, api_client, redis_client
+    ):
+        from src.tasks.task_dispatcher import complete_stories
+
+        story = _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        api_client.get_stories_by_status.return_value = [story]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(project_id=PROJ_ID)
+        github = AsyncMock()
+        github.get_ref_sha.return_value = STORY_HEAD_SHA
+        github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_new",
+            "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
+        }
+        github.enable_auto_merge.return_value = False
+
+        with (
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch(
+                "src.tasks.story_completion.finalize_story_worker_teardown",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            assert await complete_stories(api_client, redis_client) == 1
+
+        api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 42})
+        api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("run_status", [RunStatus.QUEUED, RunStatus.RUNNING])
     async def test_does_not_complete_while_deploy_fix_engineering_run_is_live(
         self, api_client, redis_client, run_status

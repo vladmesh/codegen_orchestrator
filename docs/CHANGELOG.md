@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-20
 
+- The PR fallback updates an out-of-date branch for another CI pass, and parks a refused update or closed-unmerged
+  pull request with its durable owner and administrator notices instead of leaving review indefinitely.
+- Scaffolding verifies repository auto-merge and alerts on refusal; the PR poller merges green fallback PRs or
+  parks a GitHub refusal with durable owner and administrator notifications instead of leaving review stalled.
 - A worker turn writes nothing the product tracks: worker-mode compose runs through a `DOCKER_COMPOSE`
   stand-in outside the checkout, and the agent's instructions go to `WORKER_INSTRUCTIONS.md`, not `AGENTS.md`.
 - The paths a turn injects are defined once and kept out of the product's history by `.git/info/exclude`

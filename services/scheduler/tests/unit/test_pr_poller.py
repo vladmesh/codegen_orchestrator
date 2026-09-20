@@ -306,6 +306,193 @@ async def test_skips_unmerged_pr(mock_gh_cls):
 
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_app_merges_open_pr_without_auto_merge_after_green_checks(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
+    gh.get_pull_request.side_effect = [
+        {
+            "number": 42,
+            "state": "open",
+            "merged_at": None,
+            "auto_merge": None,
+            "mergeable_state": "clean",
+            "head": {"sha": "a" * 40},
+        },
+        {
+            "number": 42,
+            "state": "closed",
+            "merged_at": "2026-09-20T21:18:00Z",
+            "merge_commit_sha": "e" * 40,
+            "head": {"sha": "a" * 40},
+        },
+    ]
+    gh.merge_pull_request.return_value = {"merged": True, "sha": "e" * 40}
+
+    assert await poll_merged_prs(api, redis) == 1
+
+    gh.merge_pull_request.assert_awaited_once_with("org", "my-repo", 42)
+    api.transition_story.assert_awaited_once_with("story-1", "deploy")
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_open_pr_without_auto_merge_waits_while_checks_are_pending(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "unknown",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.merge_pull_request.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_behind_open_pr_updates_branch_and_waits_for_rerun(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "behind",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.update_pull_request_branch.assert_awaited_once_with("org", "my-repo", 42)
+    gh.merge_pull_request.assert_not_awaited()
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_behind_branch_update_refusal_parks_once(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "behind",
+        "head": {"sha": "a" * 40},
+    }
+    gh.update_pull_request_branch.side_effect = RuntimeError("Update branch conflict")
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_app_update_branch_refused"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_closed_unmerged_pr_parks_once(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "closed",
+        "merged_at": None,
+        "auto_merge": None,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_pull_request_closed_unmerged"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_app_merge_refusal_parks_and_notifies(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "clean",
+        "head": {"sha": "a" * 40},
+    }
+    gh.merge_pull_request.return_value = {"merged": False, "message": "Branch is protected"}
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_app_merge_refused"
+    assert reason["detail"] == "Branch is protected"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     """QA fix cycle: story has pr_number=5 (the fix PR).
     Old PR #3 is also merged on same branch — but we only look at #5.
