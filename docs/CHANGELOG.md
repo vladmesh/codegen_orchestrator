@@ -6,7 +6,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-20
 
 - The level-1 run proves after cleanup that no container, image repository, workspace, Redis key, GitHub
-  repository or PO checkpoint thread of it is left, and names a kind it could not check instead of passing it.
+  repository or PO conversation row of it is left, and names a kind it could not check instead of passing it.
+- The run takes back the PO checkpoint rows it added to the shared fixture thread, scoped by a snapshot taken
+  before it started, so the thread is left as the run found it rather than deleted or silently kept.
 - The run asserts from its durable PO history that no story ever entered `waiting_human_review`,
   `waiting_user_secret` or a quarantine, so a park that was later recovered still fails the run.
 - Worker-manager removes the one-shot `docker compose run` containers of a worker's bounded plan, which

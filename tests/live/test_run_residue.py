@@ -10,10 +10,14 @@ the manager log.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
+
+import po_checkpoints
 import pytest
 from run_proof import NEVER_ASKED, ProofFailed, ProofOutcome, prove as prove_questions
 from run_residue import (
-    NO_CHECKPOINTER,
+    NO_PO_SNAPSHOT,
     RESIDUE_KINDS,
     RETAINED_EVIDENCE_KEY,
     ResidueOps,
@@ -23,6 +27,7 @@ from run_residue import (
     prove_run_residue,
     residue_questions,
     unexpected_keys,
+    vacuity_notes,
 )
 
 from shared.live_harness_cleanup import RESIDUE_ERROR_KEY, RESIDUE_FINDINGS_KEY
@@ -48,6 +53,8 @@ INVENTORY = RunInventory(
     registry_repositories=("live-test-9/backend",),
     stack_names=("live-test-9-abc",),
     server_handle="server-1",
+    po_thread_id="po-chat-999000001",
+    po_checkpoint_snapshot={"checkpoints": ["|1f0-aaa"]},
 )
 
 
@@ -70,7 +77,7 @@ def clean_ops(**overrides) -> ResidueOps:
         "workspace_entries": lambda _entries: [],
         "redis_keys": lambda _patterns: [],
         "story_worker_bindings": lambda _stories: [],
-        "po_checkpoint_rows": lambda _thread: [],
+        "po_checkpoint_rows": lambda _inventory: [],
     }
     return ResidueOps(**{**defaults, **overrides})
 
@@ -183,10 +190,15 @@ class TestALeftoverIsNamed:
             f"{STORY_WORKERS_KEY} still binds {STORY} -> {WORKER}",
         )
 
-    def test_a_po_checkpoint_thread(self):
-        ops = clean_ops(po_checkpoint_rows=lambda thread: [f"3 row(s) for thread {thread}"])
+    def test_a_po_checkpoint_row_this_run_added_to_the_shared_thread(self):
+        """The rows the run added, not the thread: the thread is a fixture."""
+        ops = clean_ops(
+            po_checkpoint_rows=lambda inventory: [
+                f"langgraph.checkpoints row |1f0-bbb of thread {inventory.po_thread_id}"
+            ]
+        )
         assert check_for(prove(ops), "po_checkpoint_thread").findings == (
-            f"3 row(s) for thread {RUN}",
+            "langgraph.checkpoints row |1f0-bbb of thread po-chat-999000001",
         )
 
     def test_a_database_row_keeps_the_teardowns_own_words(self):
@@ -286,9 +298,83 @@ class TestWhatTheProofAsksAbout:
         assert unexpected_keys([retained], RUN) == []
 
     def test_a_database_with_no_checkpointer_is_an_absence_with_a_reason(self):
-        proof = prove(clean_ops(po_checkpoint_rows=lambda _thread: None))
+        proof = prove(clean_ops(po_checkpoint_rows=lambda _inventory: None))
         assert outcome(proof, "po_checkpoint_thread") is ProofOutcome.ABSENT
-        assert NO_CHECKPOINTER in proof.notes
+        assert po_checkpoints.NO_CHECKPOINTER in proof.notes
+
+    def test_a_run_with_no_checkpoint_snapshot_could_not_ask_at_all(self):
+        """The defect this kind was rebuilt for: it used to report `absent`.
+
+        Without a snapshot of the shared fixture thread there is no way to tell
+        this run's conversation rows from the ones that were already there, so
+        the kind has not been asked — and saying `absent` for it is exactly the
+        tautological pass criterion 3 forbids.
+        """
+        blind = replace(INVENTORY, po_checkpoint_snapshot=None)
+        proof = prove_run_residue(clean_ops(), blind, database_check=database_check_from(object()))
+        check = check_for(proof, "po_checkpoint_thread")
+        assert check.outcome is ProofOutcome.UNASKABLE
+        assert NO_PO_SNAPSHOT in check.unaskable_reason
+
+    def test_the_po_question_names_the_thread_the_consumer_actually_writes(self):
+        """`po-chat-<telegram id>`, never a run id: nothing checkpoints under one."""
+        question = check_for(prove(clean_ops()), "po_checkpoint_thread").question
+        assert "po-chat-999000001" in question
+        assert RUN not in question
 
     def test_one_off_containers_are_told_apart_by_the_name_compose_gives_them(self):
         assert one_off_containers([ONE_OFF, "worker-dev-1", "stack-backend-1"]) == [ONE_OFF]
+
+
+class TestAGreenProofSaysWhichKindsAskedAboutNothing:
+    """A kind with an empty subject passes whatever the installation does.
+
+    That is the general shape of the defect the PO checkpoint kind had: not a
+    probe that failed, but a question no reachable state could answer yes to.
+    The proof cannot refuse to run for it — a scaffold-only run genuinely owns
+    no stack — so it says so in its notes instead, and a reader of a green run
+    can tell a proven absence from a vacuous one.
+    """
+
+    def test_a_run_that_owns_nothing_names_every_vacuous_kind(self):
+        empty = RunInventory(
+            run_id=RUN,
+            po_thread_id="po-chat-1",
+            po_checkpoint_snapshot={},
+        )
+        proof = prove_run_residue(clean_ops(), empty, database_check=database_check_from(object()))
+
+        assert proof.failures == []
+        vacuous = {note.split(":", 1)[0] for note in proof.notes if "asked about nothing" in note}
+        assert vacuous == {
+            "control_host_containers",
+            "target_containers",
+            "registry_repositories",
+            "workspaces",
+        }
+
+    def test_a_run_that_owns_its_kinds_says_nothing_of_the_sort(self):
+        proof = prove(clean_ops())
+        assert [note for note in proof.notes if "asked about nothing" in note] == []
+
+    def test_vacuity_is_reported_per_kind_not_for_the_whole_proof(self):
+        """One empty kind must not make the others look unasked."""
+        without_registry = replace(INVENTORY, registry_repositories=())
+        notes = vacuity_notes(without_registry)
+        assert len(notes) == 1
+        assert notes[0].startswith("registry_repositories:")
+
+
+class TestTheDatabaseKindIsTheTeardownsOwnVerdict:
+    def test_a_report_carries_what_it_actually_proved(self):
+        report = SimpleNamespace(
+            tables=["projects", "stories"], owned_keys={"stories": ["s1", "s2"]}
+        )
+        check = database_check_from(report)
+        assert check.outcome is ProofOutcome.ABSENT
+        assert "2 table(s), 2 owned key(s)" in check.question
+
+    def test_no_report_is_a_kind_that_was_never_asked_of_the_database(self):
+        check = database_check_from(None)
+        assert check.outcome is ProofOutcome.UNASKABLE
+        assert "asked the database" in check.unaskable_reason

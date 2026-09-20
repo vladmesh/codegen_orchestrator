@@ -26,8 +26,17 @@ platform itself.
 
 **The state is read too, as the second source and not the first.** A park whose
 notification could not be published leaves no history entry, so the current
-status and `quarantine_reason` of each of the run's stories are asked as well.
-Either source naming a story fails the run.
+status, the `quarantine_reason` and the *owed* `owner_notification` of each of
+the run's stories are asked as well. Either source naming a story fails the run.
+
+The notification is read through `GET /api/stories/{id}/owner-notification` and
+not out of the story listing, because `StoryRead` — the list route's response
+model — has no `owner_notification` field, so FastAPI drops it and the read
+would be `{}` on every story forever. That was the second half of the same
+defect as the PO thread id: a source that looks like a check and asserts
+nothing. `services/api/src/infrastructure_park.py` writes that record in state
+`OWED` and leaves delivery to a later publisher, which is exactly the park the
+history source cannot see.
 
 **And a source that cannot answer is not a source that said no.** Both reads go
 through `run_proof.ask`, so a Redis that refused the range or an API that would
@@ -47,13 +56,32 @@ from shared.contracts.vocab import OwnerNotificationEvent
 #: The two things this proof asks, and the two sources it asks them of.
 INTERVENTION_KINDS = ("intervention_history", "intervention_state")
 
+#: A quarantine has no status of its own: it is a `quarantine_reason` on a story
+#: the platform also parks for a person.
+A_QUARANTINE = "a quarantine"
+
 #: The owner notifications that mean the platform stopped and asked a person.
 #: Keyed by event, valued by the thing the Definition of Done calls it, so a red
 #: run says "waiting_human_review", which is the vocabulary the card is in.
+#:
+#: This is not a list somebody remembered. Every entry is an event whose
+#: producer publishes it while landing a story in one of the states the
+#: Definition of Done names, and
+#: `test_run_intervention.py::test_every_park_that_owes_a_dod_terminal_status_is_here`
+#: reads `services/` for `terminal_status=StoryStatus.WAITING_*` and fails when
+#: a producer appears that is not here. `story_impossible_capacity` and
+#: `task_impossible_capacity` are in the set because of that scan:
+#: `supervisor/deploy.py` and `supervisor/liveness.py` both park the story in
+#: `waiting_human_review` under them, and the first version of this list missed
+#: both.
 INTERVENTION_EVENTS: Mapping[str, str] = {
     OwnerNotificationEvent.STORY_BLOCKED.value: StoryStatus.WAITING_HUMAN_REVIEW.value,
+    OwnerNotificationEvent.STORY_QUARANTINED.value: A_QUARANTINE,
+    OwnerNotificationEvent.STORY_IMPOSSIBLE_CAPACITY.value: (
+        StoryStatus.WAITING_HUMAN_REVIEW.value
+    ),
+    OwnerNotificationEvent.TASK_IMPOSSIBLE_CAPACITY.value: (StoryStatus.WAITING_HUMAN_REVIEW.value),
     OwnerNotificationEvent.STORY_WAITING_USER_SECRET.value: StoryStatus.WAITING_USER_SECRET.value,
-    OwnerNotificationEvent.STORY_QUARANTINED.value: "a quarantine",
 }
 
 #: The statuses the Definition of Done names, for the second source. A story
@@ -107,6 +135,11 @@ def interventions_in_state(stories: Iterable[Mapping]) -> list[str]:
     `owner_notification` is the notice the park owed — which is still on the row
     when the publish never happened, and is exactly the case the history source
     cannot see.
+
+    `owner_notification` has to be put there by the caller from the story's own
+    internal route: the list route's response model does not carry it. A caller
+    that cannot read it must raise rather than pass a story without it, or this
+    becomes the third check that asserts nothing again.
     """
     found: list[str] = []
     for story in stories:

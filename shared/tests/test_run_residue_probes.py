@@ -63,7 +63,8 @@ class TestTheRemoteRunResidueScan:
         fake_docker = tmp_path / "bin"
         fake_docker.mkdir()
         (fake_docker / "docker").write_text(
-            "#!/bin/sh\nprintf 'live_test-9-abc-backend-1\\nunrelated-1\\n'\n"
+            "#!/bin/sh\nprintf 'live_test-9-abc-backend-1\\nunrelated-1\\n"
+            "live-test-9-abcdef-backend-1\\n'\n"
         )
         (fake_docker / "docker").chmod(0o755)
 
@@ -78,7 +79,9 @@ class TestTheRemoteRunResidueScan:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.splitlines() == [
-            # The dash Docker replaced with an underscore is still this run's.
+            # The dash Docker replaced with an underscore is still this run's;
+            # a neighbouring stack whose name merely starts the same is not,
+            # because the match is anchored on the separator Compose adds.
             "container live_test-9-abc-backend-1",
             f"directory {base}/live-test-9-abc",
         ]

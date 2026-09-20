@@ -202,13 +202,29 @@ async def _collect_orphaned_compose_containers(
         logger.error("orphan_gc_list_compose_failed", error=str(e))
         return
 
+    # Two passes, and the first one is why: a plan's live service may be listed
+    # after its exited sidecar, and a single pass would have removed the sidecar
+    # out from under a worker that is still running. Protection is decided for
+    # the whole plan before anything of it is taken.
+    owned: list[tuple[str, object]] = []
     for container in containers:
         project = container.labels.get(COMPOSE_PROJECT_LABEL) or ""
         worker_id = worker_id_of_compose_project(project)
         if not worker_id or worker_id in known_ids:
             continue
-        if worker_id in protected_ids or _is_live(container):
+        if _is_live(container):
             protected_ids.add(worker_id)
+            logger.info(
+                "orphan_gc_keeping_compose_container",
+                worker_id=worker_id,
+                container=container.name,
+                container_state=container.status,
+            )
+            continue
+        owned.append((worker_id, container))
+
+    for worker_id, container in owned:
+        if worker_id in protected_ids:
             logger.info(
                 "orphan_gc_keeping_compose_container",
                 worker_id=worker_id,

@@ -63,6 +63,7 @@ from pipeline_helpers import (
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     begin_level1_extension_story,
+    capture_run_po_position,
     cleanup_and_prove,
     configured_qa_executor,
     create_level1_bot_project,
@@ -88,7 +89,7 @@ from pipeline_helpers import (
     record_no_intervention,
     record_noop_settlement_evidence,
     record_qa_run,
-    record_run_po_cursor,
+    record_run_po_position,
     record_settings_seed_brief_log,
     record_story_branch_ahead,
     record_story_branch_base,
@@ -152,12 +153,13 @@ async def _pipeline_run(
             # itself: registration is promo-gated for a named actor.
             await ensure_test_user(api, api_internal)
             # Captured before the project exists, so the run's PO history
-            # starts at the first thing this run could possibly have published.
-            # A cursor taken any later would exclude a park from a phase before
-            # it, which is the one thing this history has to be able to see.
-            run_po_cursor = po_input_cursor()
+            # starts at the first thing this run could possibly have published
+            # and its checkpoint snapshot at the first row it could have
+            # written. Either taken later would exclude a park, or a
+            # conversation row, from the phase before it.
+            run_po_position = capture_run_po_position()
             ctx = await create_project(api, api_internal)
-            record_run_po_cursor(ctx, run_po_cursor)
+            record_run_po_position(ctx, run_po_position)
             async with cleanup_guard(
                 lambda: cleanup_and_prove(api_internal, api_observer, ctx),
                 manifest=ctx["manifest"],

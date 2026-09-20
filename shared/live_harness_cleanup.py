@@ -603,9 +603,11 @@ def build_remote_run_residue_command(
     Definition of Done's "no container on the target", including containers that
     exited, and the service directory the deploy wrote.
 
-    Anchored on the stack name, not merely containing it, and tolerant of the
-    dash Docker may have replaced with an underscore — the same tolerance the
-    prefix sweep needs, for the same reason.
+    Anchored on the stack name *and* on the separator Compose puts after it —
+    a container of a stack is `<stack>-<service>-<n>` — so a run owning
+    `live-test-9` is not failed by a neighbouring `live-test-90-…`. Tolerant of
+    the dash Docker may have replaced with an underscore, the same tolerance the
+    prefix sweep needs and for the same reason.
 
     Reports, never deletes, and **fails rather than reporting an empty host**: a
     `docker ps` that could not run exits non-zero here, so an unreachable daemon
@@ -617,7 +619,7 @@ def build_remote_run_residue_command(
     paths = " ".join(shlex.quote(f"{base}/{name}") for name in stack_names)
     script = (
         "names=$(docker ps -a --format '{{.Names}}') || exit 1; "
-        f"printf '%s\\n' \"$names\" | grep -E {shlex.quote(f'^({pattern})')} "
+        f"printf '%s\\n' \"$names\" | grep -E {shlex.quote(f'^({pattern})[-_]')} "
         "| sed 's/^/container /'; "
         f"ls -1d {paths} 2>/dev/null | sed 's/^/directory /'; "
         "exit 0"

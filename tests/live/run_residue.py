@@ -29,6 +29,19 @@ rendering as an empty log, and the probes below are written to preserve it: each
 raises on a non-answer — a non-zero exit, a missing marker, an unparseable
 payload — rather than returning an empty finding list.
 
+**A question no state could answer yes to is not a passing question either.**
+Three outcomes are only worth having if a reader can trust them, and the way
+this proof failed review the first time was not a probe that broke: it was a
+kind asking `thread_id = <run id>` when nothing in the system ever writes a
+checkpoint under a run id, and rendering that as `absent` on every run. Two
+things answer that now. `po_checkpoints` asks about the thread the PO consumer
+really writes — and about the rows *this run* added to it, since the thread is a
+fixture every run shares — and refuses to answer at all without the snapshot
+that makes the difference knowable. And `vacuity_notes` names, in a green
+proof's own notes, every kind whose subject list was empty: a run that owns no
+stack passes `target_containers` whatever the target does, and a reader is told
+so rather than left to assume otherwise.
+
 **The database half is read, not rewritten.** Cards 1311 and 1313 derived the
 closure from `pg_constraint`, gave the run's teardown and the stand sweep the
 same `teardown_selection`, and made a surviving row name its table, key and
@@ -45,6 +58,7 @@ import json
 from pathlib import Path
 import subprocess
 
+import po_checkpoints
 from run_proof import (
     Proof,
     ProofCheck,
@@ -91,20 +105,24 @@ RESIDUE_KINDS = (
 #: Excluded by name rather than by pattern, so the exception stays one key.
 RETAINED_EVIDENCE_KEY = "worker:evidence:removed:{run_id}"
 
-#: What the PO conversation state lives in. LangGraph's Postgres checkpointer
-#: writes these three tables in its own schema, outside the `public` schema the
-#: database closure is derived from — which is exactly why the Definition of
-#: Done names the PO checkpoint thread separately from the database rows.
-PO_CHECKPOINT_SCHEMA = "langgraph"
-PO_CHECKPOINT_TABLES = ("checkpoints", "checkpoint_writes", "checkpoint_blobs")
-
-#: Said when the checkpointer has never been set up in this database. It is an
-#: absence, not an unreadable source: with no table there is no thread, and the
-#: note says so rather than letting a reader wonder which of the two it was.
-NO_CHECKPOINTER = (
-    "the PO checkpointer has created no table in this database, "
-    "so no checkpoint thread of this run can exist"
+#: Said of a run that never fixed its place on the PO thread. Without that
+#: snapshot there is no way to tell this run's checkpoint rows from the rows the
+#: fixture chat already carried, so the kind cannot be asked at all — and saying
+#: so is the whole difference between this version and the one that asked
+#: `thread_id = <run id>` and matched nothing on every run.
+NO_PO_SNAPSHOT = (
+    "this run fixed no PO checkpoint snapshot before it started, so its own rows "
+    "on the shared fixture thread cannot be told from the rows that were already there"
 )
+
+
+#: Said of a kind whose subject list is empty. The question was put and nothing
+#: came back, which is a pass — but a pass that no state of the *world* could
+#: have turned red, because the run named nothing of that kind to ask about.
+#: A reader of a green proof is told which of its kinds were vacuous, so
+#: "absent" never has to be trusted blind. This is the general form of the
+#: defect that made the PO checkpoint kind a tautology.
+NOTHING_TO_ASK_ABOUT = "{kind}: asked about nothing — {why}"
 
 
 class RunResidueError(AssertionError):
@@ -130,6 +148,13 @@ class RunInventory:
     registry_repositories: tuple[str, ...] = ()
     stack_names: tuple[str, ...] = ()
     server_handle: str | None = None
+    #: The PO conversation thread this run wrote to — `po-chat-<telegram id>`,
+    #: the key the PO consumer actually checkpoints under — and the identity of
+    #: every row that was already on it when the run started. The run owns the
+    #: difference, not the thread: the Telegram id is a fixture every live run
+    #: shares. See `po_checkpoints`.
+    po_thread_id: str = ""
+    po_checkpoint_snapshot: dict[str, list[str]] | None = None
 
     def workspace_entries(self) -> list[str]:
         """The workspace root's children this run owns, in creation order of kind.
@@ -210,9 +235,9 @@ class ResidueOps:
     redis_keys: Callable[[list[str]], list[str]]
     #: The workers these stories are still bound to, if any.
     story_worker_bindings: Callable[[list[str]], list[str]]
-    #: PO checkpoint rows for this run's thread, or None if there is no
-    #: checkpointer in this database at all.
-    po_checkpoint_rows: Callable[[str], list[str] | None]
+    #: PO checkpoint rows that appeared on this run's thread while it ran, or
+    #: None if there is no checkpointer in this database at all.
+    po_checkpoint_rows: Callable[[RunInventory], list[str] | None]
 
 
 def _off_host(ops: ResidueOps, inventory: RunInventory) -> Callable[[str], list[str]]:
@@ -274,18 +299,54 @@ def _redis_keys(ops: ResidueOps, inventory: RunInventory) -> list[str]:
 
 
 def _po_checkpoint_thread(ops: ResidueOps, inventory: RunInventory, notes: list[str]) -> list[str]:
-    """This run's PO thread, or an absence the note explains.
+    """The PO checkpoint rows this run added to its thread, or why it cannot say.
 
-    `None` is the answer for a database whose PO checkpointer has never created
-    a table. That is genuinely an absence — with no table there is no thread —
-    but it is a different absence from an empty table, so it is said out loud in
-    the proof's notes rather than silently collapsed into the other one.
+    Three outcomes, and keeping them apart is the point. A run with no snapshot
+    **raises**: it cannot tell its own rows from the ones the shared fixture
+    chat already carried, so the kind could not be asked — and the version of
+    this check that asked `thread_id = <run id>` was that case wearing an
+    `absent` label. A database with no checkpoint table answers `None`, which is
+    an absence with a reason said out loud in the notes. Rows that appeared
+    during the run and survived cleanup are named.
     """
-    rows = ops.po_checkpoint_rows(inventory.run_id)
+    if not inventory.po_thread_id or inventory.po_checkpoint_snapshot is None:
+        raise RunResidueError(NO_PO_SNAPSHOT)
+    rows = ops.po_checkpoint_rows(inventory)
     if rows is None:
-        notes.append(NO_CHECKPOINTER)
+        notes.append(po_checkpoints.NO_CHECKPOINTER)
         return []
     return list(rows)
+
+
+#: Why each kind is vacuous when its subject list is empty. A kind not here has
+#: a subject that always exists — the run id, the project, the PO thread — so it
+#: is never asked about nothing.
+VACUOUS_WHEN_EMPTY: dict[str, str] = {
+    "control_host_containers": (
+        "this run recorded no worker, so the compose-project half of the question "
+        "named no project (the run-label half was still asked)"
+    ),
+    "target_containers": "this run recorded no deployed stack, so no target was scanned",
+    "registry_repositories": "this run recorded no image repository",
+    "workspaces": "this run recorded no workspace entry",
+    "redis_keys": "this run named no identity to scan Redis for",
+}
+
+
+def vacuity_notes(inventory: RunInventory) -> list[str]:
+    """Name every kind this run had nothing to ask about."""
+    subjects = {
+        "control_host_containers": inventory.worker_ids,
+        "target_containers": inventory.stack_names,
+        "registry_repositories": inventory.registry_repositories,
+        "workspaces": inventory.workspace_entries(),
+        "redis_keys": inventory.redis_patterns(),
+    }
+    return [
+        NOTHING_TO_ASK_ABOUT.format(kind=kind, why=VACUOUS_WHEN_EMPTY[kind])
+        for kind, named in subjects.items()
+        if not named
+    ]
 
 
 def residue_questions(ops: ResidueOps, inventory: RunInventory, notes: list[str]) -> list[Question]:
@@ -335,8 +396,9 @@ def residue_questions(ops: ResidueOps, inventory: RunInventory, notes: list[str]
         Question(
             kind="po_checkpoint_thread",
             question=(
-                f"SELECT thread_id FROM {PO_CHECKPOINT_SCHEMA}.{{{','.join(PO_CHECKPOINT_TABLES)}}}"
-                f" WHERE thread_id = {inventory.run_id!r}"
+                f"rows of thread {inventory.po_thread_id!r} in "
+                f"{po_checkpoints.SCHEMA}.{{{','.join(po_checkpoints.ROW_IDENTITY)}}} that were "
+                "not there when this run started"
             ),
             probe=lambda: _po_checkpoint_thread(ops, inventory, notes),
         ),
@@ -351,7 +413,7 @@ def prove_run_residue(
     notes: Sequence[str] = (),
 ):
     """Ask every kind, and answer the database kind with the proof it already has."""
-    observed: list[str] = []
+    observed: list[str] = list(vacuity_notes(inventory))
     proof = prove(
         f"run {inventory.run_id}",
         residue_questions(ops, inventory, observed),
@@ -369,12 +431,19 @@ def prove_run_residue(
 def database_check_from(report) -> ProofCheck:
     """Carry the database teardown's own verdict into this proof unchanged.
 
-    `db_teardown` reads every key it owned back out of the catalog and raises
-    naming the table, the key and the constraint. That is already the proof for
-    this kind, so it is neither re-asked nor re-implemented here: a report is an
-    absence, and no report is a kind that could not be checked — either the run
-    owned no project, or the teardown raised, and a teardown that raised has
-    already failed the run in its own words before this proof is reached.
+    `db_teardown` derives the closure from `pg_constraint`, records every key
+    the run owns before the deletes and asks for those exact keys again after
+    them, raising by table, key and constraint. That is already the proof for
+    this kind, so it is neither re-asked nor re-implemented here.
+
+    **Where this kind can go red, and where it cannot.** It goes red in
+    `cleanup_all`, loudly and before this proof is reached: a surviving row
+    fails the teardown, so by the time the residue proof runs the answer is
+    settled. Inside this proof the kind can therefore only be `absent` or —
+    for a run that reached no teardown report at all — `unaskable`. That is the
+    card's instruction ("the database half is already proven — read it, do not
+    rewrite it") rather than an accident, and the check carries what was
+    actually proven so a reader is not asked to take the label on trust.
     """
     question = "db_teardown.residue_sql over the closure derived from pg_constraint"
     if report is None:
@@ -387,7 +456,16 @@ def database_check_from(report) -> ProofCheck:
                 "has asked the database"
             ),
         )
-    return ProofCheck(kind="database_rows", question=question, outcome=ProofOutcome.ABSENT)
+    tables = getattr(report, "tables", [])
+    owned = getattr(report, "owned_keys", {})
+    return ProofCheck(
+        kind="database_rows",
+        question=(
+            f"{question}: {len(tables)} table(s), "
+            f"{sum(len(keys) for keys in owned.values())} owned key(s) read back"
+        ),
+        outcome=ProofOutcome.ABSENT,
+    )
 
 
 # --- The real reads, over the CLIs the live harness has ----------------------
@@ -398,11 +476,15 @@ class _HostCli:
     """Docker, Redis and psql as the live harness reaches them: subprocesses.
 
     The harness drives the stack from the control host and has neither a Docker
-    SDK nor a Redis client, exactly as `run_cleanup._DockerCli` describes.
+    SDK nor a Redis client, exactly as `run_cleanup._DockerCli` describes. The
+    one exception is SQL: the caller already owns a psql runner that feeds
+    statements on stdin, and this module borrows it rather than growing a second
+    one with a different ceiling on statement size.
     """
 
     root: Path
     api_url: str
+    run_sql: po_checkpoints.RunSql
     timeout: int = 60
 
     def _run(self, args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
@@ -523,51 +605,22 @@ class _HostCli:
                 bindings.append(f"{story_id} -> {worker}")
         return bindings
 
-    def po_checkpoint_rows(self, thread_id: str) -> list[str] | None:
-        """Rows of this run's PO thread, or None when there is no checkpointer.
+    def po_checkpoint_rows(self, inventory: RunInventory) -> list[str] | None:
+        """The PO checkpoint rows this run added to its thread, or None for no table.
 
-        Asked table by table through `to_regclass`, so a database where the PO
-        consumer has never run answers "there is no such table" — an absence
-        with a reason — instead of failing the query and rendering as a kind
-        that could not be checked.
+        Delegated to `po_checkpoints`, which owns the predicate, and run through
+        the caller's own psql runner — the one that feeds SQL on stdin. The
+        snapshot of a long-lived fixture thread is far past the 128 KiB Linux
+        puts on one argv element, and a `-c` form would have failed the proof
+        with a bare `OSError` exactly on the busy contours it matters most on.
         """
-        rows: list[str] = []
-        present = False
-        for table in PO_CHECKPOINT_TABLES:
-            qualified = f"{PO_CHECKPOINT_SCHEMA}.{table}"
-            exists = self._psql(f"SELECT to_regclass('{qualified}') IS NOT NULL;").strip()
-            if exists != "t":
-                continue
-            present = True
-            count = self._psql(
-                f"SELECT count(*) FROM {qualified} WHERE thread_id = '{thread_id}';"
-            ).strip()
-            if count and count != "0":
-                rows.append(f"{count} row(s) in {qualified} for thread {thread_id}")
-        return rows if present else None
-
-    def _psql(self, sql: str) -> str:
-        return self._compose(
-            "db",
-            [
-                "psql",
-                "-U",
-                "postgres",
-                "-d",
-                "orchestrator",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-t",
-                "-A",
-                "-c",
-                sql,
-            ],
-            timeout=30,
+        return po_checkpoints.residue(
+            inventory.po_thread_id, inventory.po_checkpoint_snapshot, self.run_sql
         )
 
 
 def host_residue_ops(
-    root: Path, api_url: str
+    root: Path, api_url: str, run_sql: po_checkpoints.RunSql
 ) -> tuple[ResidueOps, Callable[[list[str]], list[str]]]:
     """The proof's reads, and the one write cleanup needs, over the real stack.
 
@@ -576,7 +629,7 @@ def host_residue_ops(
     take the workspaces away, which nothing else does — belongs to the caller's
     cleanup step, before the proof asks whether they are gone.
     """
-    cli = _HostCli(root=root, api_url=api_url)
+    cli = _HostCli(root=root, api_url=api_url, run_sql=run_sql)
     ops = ResidueOps(
         run_labelled_containers=cli.run_labelled_containers,
         compose_project_containers=cli.compose_project_containers,

@@ -68,6 +68,7 @@ from package_route import (
     package_route_facts,
     unreadable_package_route,
 )
+import po_checkpoints
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
@@ -127,7 +128,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.queues.deploy import LIFECYCLE_ACTIONS, DeployOutcome
-from shared.contracts.queues.po import POSystemEvent
+from shared.contracts.queues.po import POSystemEvent, po_thread_id
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
@@ -6072,19 +6073,96 @@ async def fence_owned_work(api_internal: httpx.AsyncClient, ctx: dict) -> None:
 # meaningful once the removals have happened.
 
 
-def record_run_po_cursor(ctx: dict, cursor: str) -> None:
-    """Give this run the place in the PO history its history is read from.
+@dataclass(frozen=True)
+class RunPoPosition:
+    """Where a run stands in PO's two durable stores before it does anything.
 
-    The cursor is captured by the caller *before* the project exists, and only
-    recorded here, because there is no context to record it on until then. Taken
-    at the top of a run rather than per story: the question the Definition of
-    Done asks is about the run, and a cursor taken one phase later would
-    silently exclude a park from the phase before it.
+    Both halves are captured before the project exists, because both answer a
+    question about what *this* run caused and neither can be reconstructed
+    afterwards.
+
+    `input_cursor` is the last `po:input` id, so the run's own park
+    notifications are exactly the entries after it.
+
+    `thread_id` and `checkpoint_snapshot` are the PO conversation thread the run
+    will write to and everything already on it. The thread is
+    `po-chat-<the harness's Telegram id>` — a fixture every live run on the
+    contour shares — so the run owns the difference, not the thread.
+    `checkpoint_snapshot` is `None` when the snapshot could not be taken, and
+    `snapshot_error` then says why: the residue proof reports that kind as one
+    it could not ask, which is what the version of the check that asked
+    `thread_id = <run id>` should have said instead of `absent`.
     """
-    ctx["run_po_input_cursor"] = cursor
+
+    input_cursor: str
+    thread_id: str
+    checkpoint_snapshot: dict[str, list[str]] | None
+    snapshot_error: str | None = None
 
 
-async def record_no_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+def capture_run_po_position() -> RunPoPosition:
+    """Fix this run's place in PO's history and conversation state.
+
+    A snapshot that cannot be taken is recorded as a reason rather than raised:
+    failing a run at its first second because a read failed would be worse than
+    running it and reporting one kind as unaskable, which is what happens.
+    """
+    thread = po_thread_id(str(TEST_TELEGRAM_ID))
+    try:
+        snapshot = po_checkpoints.snapshot(thread, _psql)
+        error = None
+    except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable kind
+        snapshot, error = None, f"{type(exc).__name__}: {exc}"
+    return RunPoPosition(
+        input_cursor=po_input_cursor(),
+        thread_id=thread,
+        checkpoint_snapshot=snapshot,
+        snapshot_error=error,
+    )
+
+
+def record_run_po_position(ctx: dict, position: RunPoPosition) -> None:
+    """Give this run the PO position its two proofs are read against.
+
+    Captured by the caller before the project exists and only recorded here,
+    because there is no context to record it on until then. Taken at the top of
+    a run rather than per story: the question the Definition of Done asks is
+    about the run, and a position taken one phase later would silently exclude a
+    park from the phase before it.
+    """
+    ctx["run_po_input_cursor"] = position.input_cursor
+    ctx["po_thread_id"] = position.thread_id
+    ctx["po_checkpoint_snapshot"] = position.checkpoint_snapshot
+    ctx["po_checkpoint_snapshot_error"] = position.snapshot_error
+
+
+async def _story_with_owed_notification(api_internal: httpx.AsyncClient, story: dict) -> dict:
+    """One story, with the park notice its own row may still owe.
+
+    Read through `/api/stories/{id}/owner-notification` because the list route's
+    response model is `list[StoryRead]` and `StoryRead` has no
+    `owner_notification` field — FastAPI drops it, so reading it out of the
+    listing is a check that can never fire. A story with no record answers 404,
+    which is the absence; any other refusal raises, so an unreadable source
+    reaches the proof as a kind that could not be asked.
+    """
+    response = await api_internal.get(f"/api/stories/{story['id']}/owner-notification")
+    if response.status_code == httpx.codes.NOT_FOUND:
+        return {**story, "owner_notification": None}
+    response.raise_for_status()
+    return {**story, "owner_notification": response.json()}
+
+
+async def _run_stories_for_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> list[dict]:
+    """Every story of this run's project, each carrying its owed park notice."""
+    response = await api_internal.get("/api/stories/", params={"project_id": ctx["project_id"]})
+    response.raise_for_status()
+    return [await _story_with_owed_notification(api_internal, story) for story in response.json()]
+
+
+async def record_no_intervention(
+    api_internal: httpx.AsyncClient, ctx: dict, *, command: Callable[..., object] = _redis_json
+) -> None:
     """Prove, before teardown, that no story of this run ever waited for a person.
 
     Before teardown for one concrete reason: cleanup XDELs the PO stream entries
@@ -6098,9 +6176,7 @@ async def record_no_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> 
     stories: list[dict] = []
     stories_error: BaseException | None = None
     try:
-        response = await api_internal.get("/api/stories/", params={"project_id": ctx["project_id"]})
-        response.raise_for_status()
-        stories = response.json()
+        stories = await _run_stories_for_intervention(api_internal, ctx)
     except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable check
         stories_error = exc
 
@@ -6111,7 +6187,8 @@ async def record_no_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> 
 
     ops = run_intervention.InterventionOps(
         history=lambda: [
-            event.model_dump(mode="json") for event in po_events_after(_require_run_po_cursor(ctx))
+            event.model_dump(mode="json")
+            for event in po_events_after(_require_run_po_cursor(ctx), command=command)
         ],
         state=state,
     )
@@ -6171,6 +6248,8 @@ def run_inventory(ctx: dict) -> run_residue.RunInventory:
         server_handle=next(iter(handles))
         if len(handles) == 1 and len(handles) == len(deployments)
         else None,
+        po_thread_id=str(ctx.get("po_thread_id") or ""),
+        po_checkpoint_snapshot=ctx.get("po_checkpoint_snapshot"),
     )
 
 
@@ -6223,7 +6302,25 @@ async def cleanup_and_prove(
     """
     database = await cleanup_all(api_internal, api_observer, ctx)
     release_project_fences(ctx)
+    remove_run_po_checkpoints(ctx)
     prove_nothing_left(ctx, database)
+
+
+def remove_run_po_checkpoints(ctx: dict) -> None:
+    """Take back the PO conversation rows this run added to the fixture thread.
+
+    The thread itself is not removed and must not be: its key is the harness's
+    fixture Telegram id, which every live run on the contour shares. What is
+    removed is the difference between what the thread carries now and what it
+    carried when this run captured its snapshot, which leaves the thread exactly
+    as the run found it. A run with no snapshot removes nothing, and the residue
+    proof then reports the kind as one it could not ask.
+    """
+    thread = ctx.get("po_thread_id")
+    if not thread or ctx.get("po_checkpoint_snapshot") is None:
+        return
+    left = po_checkpoints.remove_run_rows(thread, ctx["po_checkpoint_snapshot"], _psql)
+    ctx["po_checkpoint_removal"] = {"thread_id": thread, "left": left}
 
 
 def prove_nothing_left(
@@ -6242,7 +6339,9 @@ def prove_nothing_left(
     leftover by name, and a kind that could not be checked as the kind it is.
     """
     inventory = run_inventory(ctx)
-    ops, remove_workspaces = run_residue.host_residue_ops(ORCHESTRATOR_ROOT, INTERNAL_API_URL)
+    ops, remove_workspaces = run_residue.host_residue_ops(
+        ORCHESTRATOR_ROOT, INTERNAL_API_URL, _psql
+    )
     entries = inventory.workspace_entries()
     workspace_removal_error: str | None = None
     if entries:
@@ -6250,11 +6349,14 @@ def prove_nothing_left(
             remove_workspaces(entries)
         except Exception as exc:  # noqa: BLE001 — the proof below is what judges the outcome
             workspace_removal_error = f"workspace removal failed: {type(exc).__name__}: {exc}"
+    notes = [
+        note for note in (workspace_removal_error, ctx.get("po_checkpoint_snapshot_error")) if note
+    ]
     proof = run_residue.prove_run_residue(
         ops,
         inventory,
         database_check=run_residue.database_check_from(database),
-        notes=[workspace_removal_error] if workspace_removal_error else [],
+        notes=notes,
     )
     ctx["run_residue"] = proof.as_dict()
     if proof.failures:

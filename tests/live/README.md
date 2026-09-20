@@ -530,6 +530,15 @@ marker, an unparseable payload — instead of returning an empty finding list, a
 check answered at all is reported as *unasked* and fails too, so the proof cannot shrink by losing a
 probe.
 
+**And a question no reachable state could answer yes to is not a passing question either.** That is
+the same defect one level up, and it is how the first version of this proof failed review: the PO
+checkpoint kind asked `thread_id = <run id>` when nothing in the repository ever checkpoints under a
+run id, so it reported `absent` on every possible run. Two things answer it now. The PO kind asks
+the thread the consumer really writes (below), and refuses to answer without the snapshot that makes
+the run's own rows knowable. And `run_residue.vacuity_notes` names, in a green proof's own notes,
+every kind whose subject list was empty — a run that owns no deployed stack passes
+`target_containers` whatever is on the target, and a reader is told so instead of trusting the label.
+
 **Nothing left** (`run_residue.py`, asked by `cleanup_and_prove` after `cleanup_all` succeeds). One
 question per kind the Definition of Done names: containers on the control host *and* on the target,
 image repositories in the registry, workspaces, Redis keys, the GitHub repository, the PO checkpoint
@@ -544,28 +553,61 @@ those. Two such kinds exist today:
   `com.codegen.run.id`, so the run-label query cannot see them; they are asked for by the label
   Compose does stamp, the worker's own project name. Worker-manager now removes them too, in the
   worker's teardown and in the orphan collector (`shared/worker_compose.py`).
+
+  **A level-1 run creates none of these**, and the assertion is made anyway because the Definition of
+  Done names them. The level-1 developer path is the scripted `NoopRunner`, whose only product step
+  is `make setup` (`packages/worker-wrapper/src/worker_wrapper/runners/noop.py`), and `make setup` in
+  the pinned kit runs `uv sync`, `framework.generate` and `ruff` — no `docker compose` at all.
+  `make test-integration` is run only by a real developer agent, which
+  `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` tells to; that is the path the
+  issue's production evidence comes from, and the fix is for it.
 - The project workspace. A developer worker's checkout is deliberately preserved across its own
   teardown so the next attempt reuses it, so nothing ever took it away when the project went;
   `shared/live_harness_workspaces.py` removes the run's entries inside worker-manager and reads the
   filesystem back.
 
+- The PO conversation rows. The thread is `po_thread_id(telegram_chat_id)` → `po-chat-<chat id>`
+  (`shared/contracts/queues/po.py`), the only value the PO consumer passes as a checkpoint thread id,
+  and the harness's Telegram id is a **fixture every live run shares** — so the thread is not the
+  run's to delete, but the rows that appear on it while the run runs are. `po_checkpoints.py` takes a
+  snapshot of the thread before the project exists, removes the difference after cleanup, and asks
+  the same predicate again; the thread is left exactly as the run found it, head checkpoint and
+  channel versions intact. Without that snapshot the kind is reported as one that *could not be
+  asked* — never as absent. The bound this leaves is stated there: "appeared during this run" is the
+  run's rows only while no other run writes to the same thread at the same time, which the stand's
+  one-suite-at-a-time schedule holds and which card 1314's run-owned Telegram identity would remove
+  as a question entirely.
+
 The database kind is **not re-asked**: `cleanup_all` hands the residue proof the `TeardownReport`
 that the catalog-derived teardown above already produced, so the one place that knows how to ask the
-database stays the only place that asks it. The one Redis key a clean run keeps is
-`worker:evidence:removed:<run id>` — the removal records are evidence and expire on their own TTL —
-and it is excluded by name, with the reason in the proof's notes.
+database stays the only place that asks it, and the check carries the tables and key count it
+proved. That kind goes red in `cleanup_all` — before this proof is reached — which is the card's
+instruction rather than an accident, and is said so in `database_check_from`. The one Redis key a
+clean run keeps is `worker:evidence:removed:<run id>` — the removal records are evidence and expire
+on their own TTL — and it is excluded by name, with the reason in the proof's notes.
 
 **Nobody needed** (`run_intervention.py`, recorded before teardown). No story of the run ever entered
 `waiting_human_review`, `waiting_user_secret` or a quarantine. *Ever*: a story that parked and was
 then recovered ends `completed` and has its `quarantine_reason` cleared, so the terminal state
 cannot answer this. What survives the recovery is the owner notification the park published onto
 `po:input`, read from a cursor the run captures before its project exists — which is why this runs
-ahead of teardown, since teardown XDELs the run's own stream entries. The stories' current state is
-read as the second source, for a park whose notification never reached the stream.
+ahead of teardown, since teardown XDELs the run's own stream entries. Which events count is not a
+list somebody maintained: every park owes its owner a notice through
+`owe_owner_notification(..., terminal_status=StoryStatus.WAITING_*)`, and
+`test_run_intervention.py` reads `services/` for that call shape and fails when a producer appears
+that `INTERVENTION_EVENTS` does not know. That scan is what added `story_impossible_capacity` and
+`task_impossible_capacity`, both of which park a story in `waiting_human_review`.
 
-Offline coverage for both, kind by kind, is in `tests/live/test_run_residue.py` and
-`tests/live/test_run_intervention.py`; the pieces outside `tests/live` are in
-`shared/tests/test_run_residue_probes.py` and
+The stories' current state is the second source, for a park whose notification never reached the
+stream: status, `quarantine_reason`, and the still-owed `owner_notification`. That last one is read
+through `GET /api/stories/{id}/owner-notification` and **not** out of the story listing, because
+`StoryRead` does not declare the field and FastAPI drops it — reading it from the listing was a
+third check that asserted nothing, and `test_run_intervention.py` now drives the real helper against
+a fake transport so the route it asks is part of the contract.
+
+Offline coverage for both, kind by kind, is in `tests/live/test_run_residue.py`,
+`tests/live/test_po_checkpoints.py` and `tests/live/test_run_intervention.py`; the pieces outside
+`tests/live` are in `shared/tests/test_run_residue_probes.py` and
 `services/worker-manager/tests/unit/test_compose_residue.py`.
 
 ## Bot access revocation

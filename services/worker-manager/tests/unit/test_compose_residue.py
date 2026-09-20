@@ -121,3 +121,24 @@ class TestTheOrphanCollector:
         await _collect_orphaned_compose_containers(client, known_ids=set(), protected_ids=set())
 
         client.remove_container.assert_not_awaited()
+
+    async def test_a_live_service_listed_after_its_exited_sidecar_still_protects_it(self):
+        """Protection is decided for the whole plan before anything is taken.
+
+        A single pass over the listing would have removed the exited sidecar and
+        only then learned that the plan's own service is still running.
+        """
+        client = docker(
+            [
+                container(ONE_OFF, project=worker_compose_project(WORKER)),
+                container(
+                    "worker_dev-db-1", project=worker_compose_project(WORKER), status="running"
+                ),
+            ]
+        )
+        protected: set[str] = set()
+
+        await _collect_orphaned_compose_containers(client, known_ids=set(), protected_ids=protected)
+
+        client.remove_container.assert_not_awaited()
+        assert protected == {WORKER}
