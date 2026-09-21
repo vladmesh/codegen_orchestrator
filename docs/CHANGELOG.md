@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- Deploy cleanup also prunes dangling images after the build cache, so classic image stores do not
+  grow on every rebuilt `:local` tag while worker-cleanup failures still surface.
 - Deploy cleanup keeps the last distinct worker image generation, tolerates Docker conflicts, and always prunes cache;
   control-host inventory creation no longer disrupts health checks or provider discovery.
 - Deploy cleanup retains the recorded worker release and its predecessor, removes stale worker generations safely,

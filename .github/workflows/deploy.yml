@@ -486,6 +486,9 @@ jobs:
             # Older cache can still be reused if Docker retains it; this bounds what
             # this cleanup deliberately keeps, rather than proving cache isolation.
             docker builder prune --all --force --filter until=24h
+            # Rebuilt :local tags can leave their replaced images dangling on the
+            # classic image store. Docker keeps images named by containers.
+            docker image prune -f
             if [ "${cleanup_status}" -ne 0 ]; then
               exit "${cleanup_status}"
             fi
