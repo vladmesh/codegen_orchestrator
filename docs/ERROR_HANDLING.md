@@ -47,6 +47,37 @@ Timeouts to prevent the system from hanging.
 | **Ansible Provisioning** | 15 min | Kill Process, Fail Task |
 | **Developer Worker Task** | 30 min | Kill Container, Fail Task (or Retry if supported) |
 
+### Story Wait Age Bounds
+
+No Story state waits for ever in silence. One map in
+`services/scheduler/src/tasks/supervisor/state_age.py::STATE_AGE_BOUNDS` gives every waiting state
+a threshold and the moment its age is measured from, and one watchdog applies all of them; a new
+bounded state is an entry plus its config key, never another timeout branch.
+
+| State | Config key | Default | Age measured from | Ending |
+|-------|-----------|---------|-------------------|--------|
+| `deploying` | `supervisor.deploy_wait_max_minutes` | 30 min | the in-flight deploy Run's `created_at` | human review |
+| `testing` | `supervisor.qa_wait_max_minutes` | 60 min | the in-flight QA Run's `created_at` | human review |
+| `pr_review` | `supervisor.pr_review_wait_max_minutes` | 220 min | the pull request's `updated_at` on GitHub | human review |
+| `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the ask's owner-notification record: its `delivered_at` | fail |
+
+On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
+anchor, and its owner is told through the durable seam in the mandated order (record, transition,
+deliver, administrators). Each default's provenance is recorded in its
+`scripts/system_configs.yaml` description and beside its map entry, so a bound can be retuned
+against the timing it was derived from. The transition is what makes it idempotent: an expired story leaves the
+status the watchdog scans. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
+still owns the wait for a merged commit's images and always ends it; the `pr_review` bound is an
+order of magnitude longer, so it never takes a story that bound already governs.
+
+The secret wait's clock starts only when the request for the secrets is delivered to the owner.
+The ask is itself a durable owner notification (`story_waiting_user_secret`) on the deploy Run
+that reported the missing keys, owed before the transition and retried by the recovery sweep
+while it is owed. An ask that settles `unaddressable` or `abandoned` never starts the clock: the
+story is not failed, it carries `quarantine_reason.reason = user_secret_request_undelivered`, and
+administrators are told it will not end on its own. A wait entered before the ask was durable is
+asked once, and its clock starts at that delivery.
+
 ---
 
 ## 4. Propagation Flow

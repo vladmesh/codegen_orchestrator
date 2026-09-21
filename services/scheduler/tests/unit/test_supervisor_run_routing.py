@@ -1390,6 +1390,9 @@ class TestSuperviseDeployingStories:
             result=_WAITING_SECRET_RESULT,
         )
         api_client.get_project.return_value = SimpleNamespace(owner_id=555)
+        # The ask is a durable owner notification now, and the seam publishes it
+        # only once the story reads back in the status the transition put it in.
+        api_client.get_story.return_value = _make_story(id="story-1", status="waiting_user_secret")
 
         result = await supervise_deploying_stories(api_client, redis_client)
 

@@ -52,6 +52,7 @@ from .story_completion import (
 from .supervisor import (
     supervise_deploying_stories,
     supervise_failed_tasks,
+    supervise_state_age_bounds,
     supervise_stuck_stories,
     supervise_stuck_tasks,
     supervise_testing_stories,
@@ -478,6 +479,10 @@ async def task_dispatcher_loop() -> None:
                 # run before the story had been routed, turning a passed product
                 # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
+                # Last of the story supervisors on purpose: every routing above
+                # has had this tick's chance to move a story on, so a wait this
+                # watchdog ends is one nothing else was going to end.
+                state_age = await supervise_state_age_bounds(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
                 terminal_workers = await reconcile_terminal_story_workers(api_client, redis_client)
                 gave_up_workers = await reconcile_gave_up_attempt_workers(api_client, redis_client)
@@ -511,6 +516,8 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("completed", 0)
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
+                    + state_age["parked"]
+                    + state_age["failed"]
                     + temporary_access.get("dispatched", 0)
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
@@ -541,6 +548,11 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
+                        # Waits that ran out of time rather than ending on
+                        # their own: parked for a specialist, or failed where
+                        # the wait was on somebody outside the platform.
+                        state_age_parked=state_age["parked"],
+                        state_age_failed=state_age["failed"],
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),

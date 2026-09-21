@@ -284,14 +284,16 @@ async def _settle(
     detail: str | None = None,
     attempts: int | None = None,
     story_record: bool = False,
+    delivered_at: datetime | None = None,
 ) -> OwnerNotification:
-    settled = record.model_copy(
-        update={
-            "state": state,
-            "detail": detail,
-            "attempts": record.attempts if attempts is None else attempts,
-        }
-    )
+    update = {
+        "state": state,
+        "detail": detail,
+        "attempts": record.attempts if attempts is None else attempts,
+    }
+    if delivered_at is not None:
+        update["delivered_at"] = delivered_at
+    settled = record.model_copy(update=update)
     await _write(api_client, source_id, settled, story_record=story_record)
     return settled
 
@@ -660,6 +662,7 @@ async def _deliver_to_owner(
         state=OwnerNotificationState.DELIVERED,
         attempts=attempts,
         story_record=story_record,
+        delivered_at=datetime.now(UTC),
     )
     log.info(
         "owner_notification_delivered",
