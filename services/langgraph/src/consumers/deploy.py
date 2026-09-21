@@ -412,9 +412,7 @@ async def _claim_deploy_job(
             project_id=project_id,
             run_status=start.run_status.value,
         )
-        return DeployTerminal(
-            live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
-        )
+        return DeployTerminal(live_work_settled({"status": "cancelled", "reason": "run_cancelled"}))
 
     return None
 
@@ -522,9 +520,9 @@ async def _load_deploy_base(
             json={
                 "status": RunStatus.FAILED.value,
                 "error_message": error_msg,
-                "result": DeployRunResult(
-                    deploy_outcome=DeployOutcome.GIVE_UP
-                ).model_dump(mode="json"),
+                "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                    mode="json"
+                ),
             },
         )
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": error_msg}))
@@ -550,9 +548,7 @@ async def _allocate_deploy_resources(
     try:
         alloc_result = await _allocate_resources(msg.project_id, base.project)
     except AllocationError as error:
-        return DeployTerminal(
-            await _record_infrastructure_wait(msg.task_id, msg.project_id, error)
-        )
+        return DeployTerminal(await _record_infrastructure_wait(msg.task_id, msg.project_id, error))
 
     if isinstance(alloc_result, str):
         await api_client.patch(
@@ -565,9 +561,7 @@ async def _allocate_deploy_resources(
                 ).model_dump(mode="json"),
             },
         )
-        return DeployTerminal(
-            live_work_unsettled({"status": "failed", "error": alloc_result})
-        )
+        return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
 
     try:
         env_overrides = _effective_env_overrides(base.project, msg.env_overrides)
@@ -766,8 +760,7 @@ async def _route_deploy_result(
 
     if result.get("missing_user_secrets"):
         missing = [
-            MissingUserSecret.model_validate(entry)
-            for entry in result.get("missing_user_secrets")
+            MissingUserSecret.model_validate(entry) for entry in result.get("missing_user_secrets")
         ]
         missing_keys = [secret.key for secret in missing]
         logger.info("deploy_job_missing_secrets", task_id=msg.task_id, missing=missing_keys)
@@ -898,9 +891,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_type=type(error).__name__,
             exc_info=True,
         )
-        return (
-            await _deploy_failure_terminal(msg, redis, str(error))
-        ).response
+        return (await _deploy_failure_terminal(msg, redis, str(error))).response
     finally:
         await redis.redis.delete(lock_key)
 
