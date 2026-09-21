@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
-- Telegram QA probes retain follow-up replies and edits through a quiet window, so callback progress
-  notices cannot hide a bot's final answer.
+- Telegram QA probes retain reply and edit state through their deadline, including treating a reply
+  deleted before then as silent, so progress notices cannot hide the final answer.
 
 ## 2026-09-20
 

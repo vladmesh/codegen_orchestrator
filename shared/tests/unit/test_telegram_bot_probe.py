@@ -448,7 +448,7 @@ def test_generated_callback_collects_an_interim_and_later_answer(monkeypatch):
     monkeypatch.setenv("TELETHON_SESSION", "session")
     monkeypatch.setenv("TELETHON_API_ID", "123")
     monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3))
+    ticks = iter((0, 0, 1, 3, 10))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
@@ -545,7 +545,7 @@ def test_generated_callback_keeps_polling_until_an_interim_edit_is_final(monkeyp
     monkeypatch.setenv("TELETHON_SESSION", "session")
     monkeypatch.setenv("TELETHON_API_ID", "123")
     monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3))
+    ticks = iter((0, 0, 1, 3, 10))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
@@ -614,7 +614,7 @@ def test_generated_message_collects_a_later_photo_reply(monkeypatch):
     monkeypatch.setenv("TELETHON_SESSION", "session")
     monkeypatch.setenv("TELETHON_API_ID", "123")
     monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 1, 3))
+    ticks = iter((0, 0, 1, 3, 10))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
@@ -632,7 +632,7 @@ def test_generated_message_collects_a_later_photo_reply(monkeypatch):
     assert evidence["replies"][1]["media_type"] == "MessageMediaPhoto"
 
 
-def test_generated_message_stops_after_a_quiet_window_not_the_full_deadline(monkeypatch):
+def test_generated_message_keeps_polling_to_the_deadline_after_one_reply(monkeypatch):
     reply = type(
         "Message",
         (),
@@ -674,9 +674,10 @@ def test_generated_message_stops_after_a_quiet_window_not_the_full_deadline(monk
     monkeypatch.setenv("TELETHON_SESSION", "session")
     monkeypatch.setenv("TELETHON_API_ID", "123")
     monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 2))
+    ticks = iter((0, 0, 1, 3, 10))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    sleeps: list[int] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
 
     stdout = StringIO()
     with redirect_stdout(stdout):
@@ -688,7 +689,71 @@ def test_generated_message_stops_after_a_quiet_window_not_the_full_deadline(monk
     evidence = parse_bot_probe_result(stdout.getvalue())
 
     assert evidence["replies"][0]["text"] == "One answer"
-    assert FakeClient.instance.reply_reads == 2
+    assert FakeClient.instance.reply_reads == 3
+    assert sleeps == [1, 1, 1]
+
+
+def test_generated_message_collects_a_reply_well_after_the_old_quiet_window(monkeypatch):
+    def bot_message(identifier, text):
+        return type(
+            "Message",
+            (),
+            {
+                "id": identifier,
+                "out": False,
+                "raw_text": text,
+                "message": text,
+                "media": None,
+                "reply_markup": None,
+            },
+        )()
+
+    interim = bot_message(11, "Working on it")
+    answer = bot_message(12, "Your career reading")
+
+    class FakeClient:
+        def __init__(self, *_args):
+            self.reply_reads = 0
+
+        def start(self):
+            return None
+
+        def get_entity(self, _username):
+            return "fortune-bot"
+
+        def send_message(self, _bot, _message):
+            return type("Sent", (), {"id": 10})()
+
+        def get_messages(self, _bot, *, min_id, limit):
+            assert (min_id, limit) == (10, 10)
+            self.reply_reads += 1
+            replies = ([interim], [interim], [interim], [answer, interim])
+            return replies[self.reply_reads - 1]
+
+        def disconnect(self):
+            return None
+
+    _install_telethon(monkeypatch, FakeClient)
+    monkeypatch.setenv("TELETHON_SESSION", "session")
+    monkeypatch.setenv("TELETHON_API_ID", "123")
+    monkeypatch.setenv("TELETHON_API_HASH", "hash")
+    ticks = iter((0, 0, 1, 3, 10, 15))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exec(  # noqa: S102 - generated probe source
+            build_bot_message_script("fortune_bot", "/reading", wait_seconds=15),
+            {"__name__": "telegram_probe_script"},
+        )
+
+    evidence = parse_bot_probe_result(stdout.getvalue())
+
+    assert [reply["text"] for reply in evidence["replies"]] == [
+        "Working on it",
+        "Your career reading",
+    ]
 
 
 def test_generated_message_keeps_the_newest_replies_at_the_evidence_bound(monkeypatch):
@@ -733,7 +798,7 @@ def test_generated_message_keeps_the_newest_replies_at_the_evidence_bound(monkey
     monkeypatch.setenv("TELETHON_SESSION", "session")
     monkeypatch.setenv("TELETHON_API_ID", "123")
     monkeypatch.setenv("TELETHON_API_HASH", "hash")
-    ticks = iter((0, 0, 2))
+    ticks = iter((0, 0, 2, 10))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 

@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 
-# How long the bot is given to answer before the probe reports silence.
+# Overall deadline for collecting the bot's final visible state after a probe.
 TELEGRAM_REPLY_TIMEOUT = 15
-# Once a bot starts answering, leave this much room for follow-up messages or
-# edits before returning its final visible state.
-TELEGRAM_REPLY_QUIET_WINDOW = 2
+# Retain the change-detection loop while collecting through the overall deadline
+# once the bot has started replying.
+TELEGRAM_REPLY_QUIET_WINDOW = TELEGRAM_REPLY_TIMEOUT
 MAX_REPLIES = 10
 # The child gets connection and teardown room beyond its answer-collection
 # deadline. Keep this larger than TELEGRAM_REPLY_TIMEOUT.
