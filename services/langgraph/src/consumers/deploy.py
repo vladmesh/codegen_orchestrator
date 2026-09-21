@@ -556,9 +556,9 @@ async def _allocate_deploy_resources(
             json={
                 "status": RunStatus.FAILED.value,
                 "error_message": alloc_result,
-                "result": DeployRunResult(
-                    deploy_outcome=DeployOutcome.GIVE_UP
-                ).model_dump(mode="json"),
+                "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                    mode="json"
+                ),
             },
         )
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
