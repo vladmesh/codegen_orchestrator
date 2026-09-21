@@ -193,14 +193,19 @@ _TERMINAL_FAILURE_OUTCOMES = frozenset(
         DeployOutcome.HEAD_SHA_MISSING,
     }
 )
-_ROUTED_DEPLOY_OUTCOMES = frozenset(
-    {
-        DeployOutcome.SUCCESS,
-        DeployOutcome.SETTINGS_SEED_FAILED,
-        DeployOutcome.WAITING_INFRASTRUCTURE,
-        DeployOutcome.WAITING_FOR_USER_SECRET,
-    }
-) | _CODE_FIX_OUTCOMES | _RETRY_OUTCOMES | _TERMINAL_FAILURE_OUTCOMES
+_ROUTED_DEPLOY_OUTCOMES = (
+    frozenset(
+        {
+            DeployOutcome.SUCCESS,
+            DeployOutcome.SETTINGS_SEED_FAILED,
+            DeployOutcome.WAITING_INFRASTRUCTURE,
+            DeployOutcome.WAITING_FOR_USER_SECRET,
+        }
+    )
+    | _CODE_FIX_OUTCOMES
+    | _RETRY_OUTCOMES
+    | _TERMINAL_FAILURE_OUTCOMES
+)
 
 
 def _empty_deploy_supervision_counts() -> dict[str, int]:
@@ -310,11 +315,7 @@ async def _route_deploy_outcome(
         handed_off = await _handle_deploy_success_story(
             api_client, redis_client, story_id, project_id, run, result, log
         )
-        return (
-            DeploySupervisorAction.TESTED
-            if handed_off
-            else DeploySupervisorAction.FAILED
-        )
+        return DeploySupervisorAction.TESTED if handed_off else DeploySupervisorAction.FAILED
 
     if outcome in _CODE_FIX_OUTCOMES:
         dispatched = await _handle_deploy_code_fix(
@@ -327,11 +328,7 @@ async def _route_deploy_outcome(
             _code_fix_description(result.error_details or "unknown deploy error"),
             log,
         )
-        return (
-            DeploySupervisorAction.REDISPATCHED
-            if dispatched
-            else DeploySupervisorAction.FAILED
-        )
+        return DeploySupervisorAction.REDISPATCHED if dispatched else DeploySupervisorAction.FAILED
 
     if outcome in _RETRY_OUTCOMES:
         _log_redeploy_reason(outcome, run, log)
