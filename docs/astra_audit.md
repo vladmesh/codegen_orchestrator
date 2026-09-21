@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at 3e63bfb30e47b04a1087f377c21f1b6cb6a63fb8 (after PR #555)  
+Audited branch: main at 798e06a66a2d7de982af8e0e17d6efcd198f3869 (after PR #557)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -31,10 +31,10 @@ Of the original sixteen H/M/L findings:
 This refresh adds three findings:
 
 - **M9 — new since the old audit:** executor-profile health now mirrors private Codex/Claude credential formats closely enough that updating a pinned CLI carries adapter-maintenance risk.
-- **M10 — partially complete:** PR #554 removed the server-sync complexity exemption, and PR #555 decomposed the LangGraph deploy consumer into explicit typed phases; only scheduler `supervise_deploying_stories` remains complexity-exempt.
+- **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-So the current actionable set is one High finding, four Medium findings and four Low findings. The completed original work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, three Medium findings and four Low findings. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -51,14 +51,15 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #553 removed the production undeploy dependency on `shared.live_harness_cleanup`, moved the shared cleanup primitive to `shared.deployment_cleanup`, and added a service-source import boundary guard.
 - PR #554 decomposed server-list reconciliation into typed per-provider-server outcomes plus explicit discovery, missing-server and notification phases, removing the `_sync_server_list` complexity suppression.
 - PR #555 decomposed `process_deploy_job` into explicit claim, access-validation, resource-preparation, precheck, execution and typed result-routing phases, removing its C901/PLR0911/PLR0912/PLR0915 suppression while keeping the queue/result and teardown boundaries intact.
+- PR #557 decomposed scheduler `supervise_deploying_stories` into thin selection/aggregation, per-story run-state gating and closed `DeployOutcome` routing, removing its C901/PLR0912/PLR0915 suppression and adding structural outcome-coverage guards.
 
-These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1 and the remaining M10 deploy hotspots still deserve attention even though many individual failure cases are better than before. PR #553 closed the M2 production-to-harness dependency; PR #554 completed the server-sync slice of M10.
+These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency.
 
 ---
 
 # Current finding matrix
 
-| ID | Severity | Status on 2026-09-21 | Current conclusion |
+| ID | Severity | Status on 2026-09-22 | Current conclusion |
 |---|---|---|---|
 | H1 | High | Partial | Three scheduler services exist, but scheduler-pipeline still has one ordered dispatcher/supervisor/reconciliation cycle and one cycle failure boundary. |
 | H2 | High | Complete | System config is canonical for PO summarization tuning; retired numeric env plumbing remains absent. |
@@ -73,7 +74,7 @@ These changes mostly harden correctness. They also make a few existing coordinat
 | M7 | Medium | Open | ConfigStore still serves an unbounded last-known value after source failure; policy is global rather than key-classified. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
 | M9 | Medium | New | Worker-manager mirrors detailed private executor credential/profile formats, especially Codex auth.json/serde_json behavior. |
-| M10 | Medium | Partial | PRs #554 and #555 removed the server-sync and LangGraph deploy-consumer exemptions; only scheduler deploy supervision still opts out of complexity/branch/statement limits. |
+| M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
 | L3 | Low | Open | Several long-lived external client classes still instantiate a fresh httpx.AsyncClient per request/batch. |
@@ -283,78 +284,63 @@ Do not replace these checks with permissive parsing.
 
 ---
 
-## M10. Core orchestration still bypasses function complexity gates
+## M10. Core orchestration complexity exemptions are removed
 
 **Severity:** Medium  
 **Removal safety:** 3/5  
 **Removal simplicity:** 2/5  
-**Status:** Partially complete via PR #554.
+**Status:** Complete via PRs #554, #555 and #557.
 
 ### Current evidence
 
-PR #554 completed the server-sync hotspot. `_sync_server_list` now aggregates a closed typed
+PR #554 completed the server-sync hotspot. `_sync_server_list` aggregates a closed typed
 `ProviderServerOutcome` from one-server reconciliation and delegates discovery, missing-server
 marking and managed-server notifications to explicit phases. Its C901/PLR0912/PLR0915 suppression
 is gone.
 
-PR #555 completed the LangGraph deploy-consumer hotspot. `process_deploy_job` now delegates to
+PR #555 completed the LangGraph deploy-consumer hotspot. `process_deploy_job` delegates to
 explicit claim, access-validation, resource-preparation, precheck, execution and typed
 result-routing phases. Its C901/PLR0911/PLR0912/PLR0915 suppression is gone, and a structural
 regression test keeps the entrypoint thin and suppression-free.
 
-One deploy state machine still explicitly suppresses the rules that would normally flag a large
-decision surface:
+PR #557 completed the scheduler deploy-supervisor hotspot. `supervise_deploying_stories` now owns
+only story selection and aggregate counting. Per-story run-state gating lives in
+`_supervise_deploying_story`, terminal outcome routing lives in `_route_deploy_outcome`, and one
+`DeploySupervisorAction` represents the externally visible effect of one story in one tick.
 
-- services/scheduler/src/tasks/supervisor/deploy.py::supervise_deploying_stories — C901, PLR0912, PLR0915;
+The scheduler regression coverage now asserts that the public supervisor entrypoint stays free of
+local complexity suppression and that `_ROUTED_DEPLOY_OUTCOMES == frozenset(DeployOutcome)`, so a
+new deploy outcome cannot silently arrive without a supervisor route.
 
-The remaining supervisor module is still substantial at roughly 1,613 lines.
+None of the three orchestration hotspots identified by M10 now carries the complexity/branch/
+statement suppressions that motivated this finding.
 
-This does not undo H4. H4 was about worker services inheriting the repository lint policy. M10 is
-a separate observation that some central orchestration code opts out of the most relevant
-complexity checks locally.
+### What the completed sequence proved
 
-### What PRs #554 and #555 proved
+The three refactors used the same boundary pattern without changing ownership semantics:
 
-The server-sync refactor kept `_sync_server_list` as the orchestration boundary while making one
-provider row resolve to a typed outcome. Existing discovery, allowlist promotion/demotion, stable
-provider identity, legacy collision refusal, missing-server marking and provider-outage behavior
-remain covered by unit/service/integration tests.
+- keep the public orchestration entrypoint;
+- turn one unit of work into a closed typed outcome/action;
+- delegate side effects to existing focused handlers;
+- aggregate or route only after the typed boundary;
+- keep a structural regression test around the new seam.
 
-The deploy-consumer refactor kept `process_deploy_job` as the worker entrypoint and preserved its
-queue/result contract plus the outer cancellation/teardown exception boundary, while moving the
-large decision surface into explicit bounded phases. Existing deploy lock, lifecycle, access-grant,
-precheck, missing-secret, success/failure and teardown behavior remained covered by the repository's
-unit, service and integration suites.
+Existing server discovery/allowlist behavior, deploy queue/result and teardown contracts, story
+transitions, retry budgets, infrastructure refusal handling, durable owner notifications,
+user-secret waits and QA handoff behavior remain covered by unit, service and integration tests.
 
-Both PRs passed the full required CI gate, including Ruff, unit tests, offline live regressions,
-service tests, integration tests, template compatibility and production service-image entrypoint
-imports. PR #554 merged as `b13d5976ffc88a3b172ff2e4e00481b16d408223`; PR #555 merged as
-`3e63bfb30e47b04a1087f377c21f1b6cb6a63fb8`.
+All three PRs passed the full required CI gate, including Ruff, unit tests, offline live
+regressions, applicable service/integration tests, template compatibility and production
+service-image entrypoint imports. PR #554 merged as
+`b13d5976ffc88a3b172ff2e4e00481b16d408223`; PR #555 merged as
+`3e63bfb30e47b04a1087f377c21f1b6cb6a63fb8`; PR #557 merged as
+`798e06a66a2d7de982af8e0e17d6efcd198f3869`.
 
-### Why the remainder still matters
+### Retention guidance
 
-The remaining scheduler supervisor encodes story transitions, retry budgets and typed failure
-routes. Its high branch/statement counts make it easier to introduce a path that:
-
-- skips a durable transition;
-- spends a retry twice;
-- loses a notification;
-- conflates refusal with failure;
-- becomes difficult to exercise in isolation.
-
-### Recommendation
-
-Keep the PR #554 pattern: refactor by state transition, not arbitrary helper extraction.
-
-For the remaining scheduler supervisor:
-
-1. identify the closed set of routing outcomes already represented by `DeployOutcome` and supervisor-local actions;
-2. map each outcome to a small handler with explicit inputs;
-3. keep `supervise_deploying_stories` as selection/dispatch;
-4. move focused tests to the handlers plus one routing/coverage test;
-5. remove the complexity suppression only when the state machine is actually simpler.
-
-This should remain one bounded PR rather than being combined with H1 scheduler-pipeline decomposition.
+Keep these typed routing seams and structural guards. If one of the orchestration entrypoints grows
+again, split by state transition or outcome rather than reintroducing local complexity suppressions.
+This finding needs no further cleanup task.
 
 ---
 
@@ -583,13 +569,12 @@ These are small and should not alter product state-machine semantics.
 
 Each item can be delivered incrementally without a rewrite.
 
-## Phase 3 — state-machine decomposition
+## Phase 3 — scheduler boundary decomposition
 
-1. **M10:** server-sync and the LangGraph deploy consumer are complete; take the remaining scheduler deploy supervisor and apply the same typed-outcome decomposition pattern.
-2. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
-3. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
+1. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
+2. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
-H1 should be the architectural destination, but it should not be the first large refactor attempted from this audit.
+M10 is complete. H1 is now the remaining architectural destination, and it should still be approached one responsibility at a time rather than as a scheduler rewrite.
 
 ---
 
@@ -603,7 +588,6 @@ The remaining debt is concentrated rather than diffuse:
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows and ConfigStore policy remain;
 - **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
-- **complexity exemptions:** server-sync and LangGraph deploy consumption are back under normal limits; one scheduler deploy supervisor remains exempt;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
 The next cleanup should continue the repository's existing direction: preserve typed contracts and durable evidence, then make ownership boundaries match them. The evidence does not support a rewrite.
