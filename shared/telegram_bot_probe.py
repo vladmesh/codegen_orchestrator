@@ -18,9 +18,9 @@ import json
 
 # Overall deadline for collecting the bot's final visible state after a probe.
 TELEGRAM_REPLY_TIMEOUT = 15
-# Retain the change-detection loop while collecting through the overall deadline
-# once the bot has started replying.
-TELEGRAM_REPLY_QUIET_WINDOW = TELEGRAM_REPLY_TIMEOUT
+# Bound polling against the shared QA account while still reading exactly at the
+# collection deadline.
+TELEGRAM_POLL_INTERVAL = 2
 MAX_REPLIES = 10
 # The child gets connection and teardown room beyond its answer-collection
 # deadline. Keep this larger than TELEGRAM_REPLY_TIMEOUT.
@@ -104,7 +104,7 @@ def build_bot_message_script(
         "import os\n"
         "import time\n"
         f"MAX_REPLIES = {MAX_REPLIES}\n"
-        f"REPLY_QUIET_WINDOW = {TELEGRAM_REPLY_QUIET_WINDOW}\n"
+        f"POLL_INTERVAL = {TELEGRAM_POLL_INTERVAL}\n"
         "from telethon.sync import TelegramClient\n"
         "from telethon.sessions import StringSession\n"
         + _script_helpers()
@@ -127,19 +127,14 @@ def build_bot_message_script(
         "    result['delivered'] = True\n"
         f"    deadline = time.monotonic() + {wait_seconds}\n"
         "    last_replies = []\n"
-        "    last_activity_at = None\n"
         "    while True:\n"
         "        now = time.monotonic()\n"
         "        result['replies'] = received_replies(client, bot, sent.id)\n"
         "        if result['replies'] != last_replies:\n"
         "            last_replies = result['replies']\n"
-        "            last_activity_at = now\n"
-        "        elif (last_activity_at is not None\n"
-        "              and now - last_activity_at >= REPLY_QUIET_WINDOW):\n"
-        "            break\n"
         "        if now >= deadline:\n"
         "            break\n"
-        "        time.sleep(1)\n"
+        "        time.sleep(min(POLL_INTERVAL, deadline - now))\n"
         "except Exception as exc:\n"
         "    result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
         "finally:\n"
@@ -175,7 +170,7 @@ def build_bot_callback_script(
         "import os\n"
         "import time\n"
         f"MAX_REPLIES = {MAX_REPLIES}\n"
-        f"REPLY_QUIET_WINDOW = {TELEGRAM_REPLY_QUIET_WINDOW}\n"
+        f"POLL_INTERVAL = {TELEGRAM_POLL_INTERVAL}\n"
         "from telethon.sync import TelegramClient\n"
         "from telethon.sessions import StringSession\n"
         "from telethon.tl.functions.messages import GetBotCallbackAnswerRequest\n"
@@ -219,7 +214,6 @@ def build_bot_callback_script(
         f"    deadline = time.monotonic() + {wait_seconds}\n"
         "    last_replies = []\n"
         "    last_post_press_message = pre_press_message\n"
-        "    last_activity_at = None\n"
         "    while True:\n"
         "        now = time.monotonic()\n"
         "        result['replies'] = received_replies(client, bot, reply_baseline)\n"
@@ -232,13 +226,9 @@ def build_bot_callback_script(
         "                or result['post_press_message'] != last_post_press_message):\n"
         "            last_replies = result['replies']\n"
         "            last_post_press_message = result['post_press_message']\n"
-        "            last_activity_at = now\n"
-        "        elif (last_activity_at is not None\n"
-        "              and now - last_activity_at >= REPLY_QUIET_WINDOW):\n"
-        "            break\n"
         "        if now >= deadline:\n"
         "            break\n"
-        "        time.sleep(1)\n"
+        "        time.sleep(min(POLL_INTERVAL, deadline - now))\n"
         "except Exception as exc:\n"
         "    result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
         "finally:\n"

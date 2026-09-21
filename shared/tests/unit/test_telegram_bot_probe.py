@@ -434,7 +434,7 @@ def test_generated_callback_collects_an_interim_and_later_answer(monkeypatch):
                 return [original]
             assert min_id == 7
             self.reply_reads += 1
-            replies = ([interim], [answer, interim], [answer, interim])
+            replies = ([interim], [answer, interim], [answer, interim], [answer, interim])
             return replies[self.reply_reads - 1]
 
         def __call__(self, _request):
@@ -467,6 +467,7 @@ def test_generated_callback_collects_an_interim_and_later_answer(monkeypatch):
 
     evidence = parse_bot_probe_result(stdout.getvalue())
 
+    assert evidence["error"] is None
     assert [reply["text"] for reply in evidence["replies"]] == [
         "Working on it",
         "Your career reading",
@@ -528,7 +529,7 @@ def test_generated_callback_keeps_polling_until_an_interim_edit_is_final(monkeyp
                 if not self.callback_sent:
                     return original
                 self.post_press_reads += 1
-                return (interim, answer, answer)[self.post_press_reads - 1]
+                return (interim, answer, answer, answer)[self.post_press_reads - 1]
             if limit == 1:
                 return [original]
             assert min_id == 7
@@ -564,6 +565,7 @@ def test_generated_callback_keeps_polling_until_an_interim_edit_is_final(monkeyp
 
     evidence = parse_bot_probe_result(stdout.getvalue())
 
+    assert evidence["error"] is None
     assert evidence["post_press_message"]["text"] == "Your career reading"
 
 
@@ -604,7 +606,7 @@ def test_generated_message_collects_a_later_photo_reply(monkeypatch):
         def get_messages(self, _bot, *, min_id, limit):
             assert (min_id, limit) == (10, 10)
             self.reply_reads += 1
-            replies = ([interim], [photo, interim], [photo, interim])
+            replies = ([interim], [photo, interim], [photo, interim], [photo, interim])
             return replies[self.reply_reads - 1]
 
         def disconnect(self):
@@ -627,6 +629,7 @@ def test_generated_message_collects_a_later_photo_reply(monkeypatch):
 
     evidence = parse_bot_probe_result(stdout.getvalue())
 
+    assert evidence["error"] is None
     assert [reply["id"] for reply in evidence["replies"]] == [11, 12]
     assert evidence["replies"][1]["caption"] == "The cards"
     assert evidence["replies"][1]["media_type"] == "MessageMediaPhoto"
@@ -690,7 +693,7 @@ def test_generated_message_keeps_polling_to_the_deadline_after_one_reply(monkeyp
 
     assert evidence["replies"][0]["text"] == "One answer"
     assert FakeClient.instance.reply_reads == 4
-    assert sleeps == [1, 1, 1]
+    assert sleeps == [2, 2, 2]
 
 
 def test_generated_message_collects_a_reply_well_after_the_old_quiet_window(monkeypatch):
@@ -727,7 +730,7 @@ def test_generated_message_collects_a_reply_well_after_the_old_quiet_window(monk
         def get_messages(self, _bot, *, min_id, limit):
             assert (min_id, limit) == (10, 10)
             self.reply_reads += 1
-            replies = ([interim], [interim], [interim], [answer, interim])
+            replies = ([interim], [interim], [interim], [answer, interim], [answer, interim])
             return replies[self.reply_reads - 1]
 
         def disconnect(self):
@@ -750,6 +753,70 @@ def test_generated_message_collects_a_reply_well_after_the_old_quiet_window(monk
 
     evidence = parse_bot_probe_result(stdout.getvalue())
 
+    assert evidence["error"] is None
+    assert [reply["text"] for reply in evidence["replies"]] == [
+        "Working on it",
+        "Your career reading",
+    ]
+
+
+def test_generated_message_honors_an_extended_deadline_without_early_exit(monkeypatch):
+    def bot_message(identifier, text):
+        return type(
+            "Message",
+            (),
+            {
+                "id": identifier,
+                "out": False,
+                "raw_text": text,
+                "message": text,
+                "media": None,
+                "reply_markup": None,
+            },
+        )()
+
+    interim = bot_message(11, "Working on it")
+    answer = bot_message(12, "Your career reading")
+
+    class FakeClient:
+        def __init__(self, *_args):
+            self.reply_reads = 0
+
+        def start(self):
+            return None
+
+        def get_entity(self, _username):
+            return "fortune-bot"
+
+        def send_message(self, _bot, _message):
+            return type("Sent", (), {"id": 10})()
+
+        def get_messages(self, _bot, *, min_id, limit):
+            assert (min_id, limit) == (10, 10)
+            self.reply_reads += 1
+            return [answer, interim] if self.reply_reads == 4 else [interim]
+
+        def disconnect(self):
+            return None
+
+    _install_telethon(monkeypatch, FakeClient)
+    monkeypatch.setenv("TELETHON_SESSION", "session")
+    monkeypatch.setenv("TELETHON_API_ID", "123")
+    monkeypatch.setenv("TELETHON_API_HASH", "hash")
+    ticks = iter((0, 0, 14, 15, 20))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exec(  # noqa: S102 - generated probe source
+            build_bot_message_script("fortune_bot", "/reading", wait_seconds=20),
+            {"__name__": "telegram_probe_script"},
+        )
+
+    evidence = parse_bot_probe_result(stdout.getvalue())
+
+    assert evidence["error"] is None
     assert [reply["text"] for reply in evidence["replies"]] == [
         "Working on it",
         "Your career reading",

@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
-- Telegram QA probes retain reply and edit state through their deadline, including treating a reply
-  deleted before then as silent, so progress notices cannot hide the final answer.
+- Telegram QA probes collect final reply and edit state at a bounded two-second cadence through their
+  deadline, treating replies deleted before then as silent so progress notices cannot hide an answer.
 
 ## 2026-09-20
 
