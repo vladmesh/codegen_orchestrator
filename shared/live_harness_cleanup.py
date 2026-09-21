@@ -18,6 +18,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 from shared.generated_contracts import (
     CONTRACT_ABSENT,
     GENERATED_CONTRACT_READ_LIMIT,
@@ -46,7 +47,6 @@ PRE_MERGE_DEFAULT_HEAD_REFERENCE = "pre_merge_default_head"
 MERGE_BASE_IS_HEAD_REFERENCE = "merge_base_is_head"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
-REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
 # Read-only counterpart of the cleanup script: the live suite's last look at a
 # deployment target before its own teardown removes the containers.
 REMOTE_DIAGNOSTICS_SCRIPT = Path(__file__).with_name("live_harness_remote_diagnostics.sh")
@@ -634,10 +634,6 @@ async def cleanup_registry_repository(*, repository: str) -> None:
             live_tags.append(tag)
         if live_tags:
             raise RuntimeError(f"registry tags remain for {repository}: {live_tags}")
-
-
-def build_remote_cleanup_command(project_name: str, service_base: str = "/opt/services") -> str:
-    return shlex.join(["sh", "-s", "--", project_name, service_base.rstrip("/")])
 
 
 def build_remote_diagnostics_command(project_name: str) -> str:
