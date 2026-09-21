@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- `POST /tasks/{id}/resume` is the one operator retry: fresh iteration, recorded retry budget, story back in
+  progress, so a parked task gets a new run rather than a replayed failure.
 - Deploy cleanup also prunes dangling images after the build cache, so classic image stores do not
   grow on every rebuilt `:local` tag while worker-cleanup failures still surface.
 - Deploy cleanup keeps the last distinct worker image generation, tolerates Docker conflicts, and always prunes cache;

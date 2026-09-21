@@ -1,5 +1,7 @@
 """Task action endpoints — state machine transitions."""
 
+from typing import NoReturn
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,9 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchOutcome,
     EngineeringDispatchRefusal,
 )
+from shared.contracts.dto.engineering_execution import ENGINEERING_INFRASTRUCTURE_KEY
+from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Run, Task, TaskEvent
@@ -25,6 +30,11 @@ from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
 from ..work_admission import abort_paid_run_pre_handoff
 from ._recipients import resolve_project_chat_id
+from ._story_helpers import (
+    _get_story_for_update,
+    _land_on,
+    _validate_transition as _validate_story_transition,
+)
 from ._task_helpers import (
     create_status_event,
     get_task_for_update,
@@ -54,6 +64,19 @@ _OPERATOR_SPAWN_OVERRIDES = [
 #: not an admission condition: it says which hop the route is able to perform,
 #: and it runs before admission so a status it cannot move consumes nothing.
 _SPAWNABLE_FROM = {TaskStatus.BACKLOG, TaskStatus.TODO, TaskStatus.IN_DEV}
+
+
+#: The operator's fresh attempt, as its task events name it.
+RESUME_ACTION = "operator_resume"
+
+#: Story statuses a resumed task's story may be in: parked with it, or already
+#: back in progress because a sibling was resumed first.
+_RESUMABLE_STORY_STATUSES = frozenset(
+    {StoryStatus.WAITING_HUMAN_REVIEW.value, StoryStatus.IN_PROGRESS.value}
+)
+
+#: Statuses of a run whose worker may still hold the story branch.
+_LIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED.value, RunStatus.RUNNING.value})
 
 
 def _refusal_detail(value: str) -> str:
@@ -189,40 +212,183 @@ async def reopen_task(
     return to_read(task)
 
 
+def _refuse_resume(reason: str, message: str) -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"reason": reason, "message": message},
+    )
+
+
+def _fresh_iteration(task: Task, runs: list[Run]) -> int:
+    """The first iteration no engineering run of this task has ever carried.
+
+    An engineering attempt is identified by its iteration: the dispatcher's
+    replay rule (`_prior_attempt` in admission) applies a finished run whose
+    iteration equals the task's current one, because a task a failed transition
+    left in todo owes that outcome. Resuming onto a number past every existing
+    run is what makes the operator's attempt a new one rather than that case —
+    the replay rule has nothing of this iteration to apply, and it keeps firing
+    for the case it exists for.
+    """
+    stamped = [
+        iteration
+        for run in runs
+        if isinstance(iteration := (run.run_metadata or {}).get("iteration"), int)
+    ]
+    return max([task.current_iteration, *stamped]) + 1
+
+
 @action_router.post("/{task_id}/resume", response_model=TaskRead)
 async def resume_task(
     task_id: str,
     body: TaskResume,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
 ) -> TaskRead:
-    """Resume a task from WAITING_HUMAN_REVIEW with admin guidance.
+    """Give a task parked in waiting_human_review one fresh engineering attempt.
 
-    Transitions task WHR -> IN_DEV and creates a 'guidance' event
-    containing the admin's instructions for the next worker attempt.
+    The operator's single retry path. In one transaction, on locked rows:
+
+    - the task goes WHR → backlog → todo on a fresh iteration, so the
+      dispatcher's next tick admits and creates a new run instead of replaying
+      an earlier attempt's outcome;
+    - `max_iterations` is set to that iteration plus `body.retries`, so the
+      retry budget is granted deliberately and recorded, not inferred from
+      `current_iteration` overshooting it;
+    - its story leaves waiting_human_review for in_progress, so the pipeline
+      resumes with the task;
+    - the parked attempts' `failure_metadata` moves onto the audit record;
+    - the operator's guidance is recorded as a note.
+
+    Refused, with a reason, for a task that is not parked, one parked by a typed
+    infrastructure refusal (its own retry clears that evidence), one that still
+    has a live run, or one whose story branch another task's worker holds.
     """
+    # Ladder: Task, then Story, then Run — the order admission and every other
+    # task/story writer take them.
     task = await get_task_for_update(task_id, db)
+    if task.status != TaskStatus.WAITING_HUMAN_REVIEW.value:
+        # 422 like every other hop this router cannot perform from a status.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "reason": "task_not_parked",
+                "message": (
+                    f"The task is '{task.status}'; only a task parked in "
+                    f"'{TaskStatus.WAITING_HUMAN_REVIEW.value}' gets a fresh attempt."
+                ),
+            },
+        )
+    if ENGINEERING_INFRASTRUCTURE_KEY in (task.failure_metadata or {}):
+        _refuse_resume(
+            "infrastructure_parked",
+            "The task is parked by a typed infrastructure refusal; "
+            "POST /stories/{story_id}/retry-infrastructure-attempt clears it.",
+        )
 
-    validate_transition(task.status, TaskStatus.IN_DEV)
+    story = await _get_story_for_update(task.story_id, db) if task.story_id else None
+    if story is not None and story.status not in _RESUMABLE_STORY_STATUSES:
+        _refuse_resume(
+            "story_not_resumable",
+            f"The story is '{story.status}'; only a story in human review or in progress "
+            "takes a resumed task.",
+        )
 
-    old_status = task.status
-    task.status = TaskStatus.IN_DEV
+    siblings: dict[str, str] = {}
+    if story is not None:
+        # Column-only: the siblings' statuses are read, never materialised. Any
+        # admission that could mint a run for one of them holds this task's row
+        # too (the whole roster is its first rung), so none commits while the
+        # lock above is held.
+        siblings = dict(
+            (
+                await db.execute(
+                    select(Task.id, Task.status).where(
+                        Task.story_id == story.id, Task.id != task.id
+                    )
+                )
+            ).all()
+        )
+    runs = list(
+        (
+            await db.scalars(
+                select(Run)
+                .where(
+                    Run.task_id.in_([task.id, *siblings]),
+                    Run.type == RunType.ENGINEERING.value,
+                )
+                .order_by(Run.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    live = [
+        run
+        for run in runs
+        if run.status in _LIVE_RUN_STATUSES
+        and not (run.run_metadata or {}).get("pre_handoff_aborted")
+    ]
+    if any(run.task_id == task.id for run in live):
+        _refuse_resume(
+            EngineeringDispatchRefusal.LIVE_ATTEMPT_IN_FLIGHT.value,
+            "The task still has a live engineering run; it is not parked.",
+        )
+    if live or TaskStatus.IN_DEV.value in siblings.values():
+        _refuse_resume(
+            EngineeringDispatchRefusal.STORY_BUSY.value,
+            "Another task of this story holds the story branch with a live worker.",
+        )
+
+    iteration = _fresh_iteration(task, [run for run in runs if run.task_id == task.id])
+    audit = {
+        "action": RESUME_ACTION,
+        "previous_iteration": task.current_iteration,
+        "previous_max_iterations": task.max_iterations,
+        "iteration": iteration,
+        "max_iterations": iteration + body.retries,
+        "retries": body.retries,
+        # What the parked attempts left behind — a gave-up reason, a resource
+        # wait's start — belongs to them: kept here, and gone from the task, so
+        # nothing reads it as the fresh attempt's own.
+        "previous_failure_metadata": task.failure_metadata,
+    }
+    validate_transition(task.status, TaskStatus.BACKLOG)
+    validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
+    if story is not None and story.status != StoryStatus.IN_PROGRESS.value:
+        _validate_story_transition(story.status, StoryStatus.IN_PROGRESS.value)
+
+    task.status = TaskStatus.BACKLOG.value
     await create_status_event(
-        task, old_status, TaskStatus.IN_DEV, body.actor, {"guidance": body.guidance}, db
+        task, TaskStatus.WAITING_HUMAN_REVIEW, TaskStatus.BACKLOG, body.actor, audit, db
     )
-
-    # Also create a guidance event for the worker to pick up
-    event = TaskEvent(
-        task_id=task.id,
-        event_type=TaskEventType.NOTE.value,
-        actor=body.actor,
-        details={"action": "guidance", "guidance": body.guidance},
+    task.status = TaskStatus.TODO.value
+    await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, audit, db)
+    task.current_iteration = iteration
+    task.max_iterations = iteration + body.retries
+    task.failure_metadata = None
+    db.add(
+        TaskEvent(
+            task_id=task.id,
+            event_type=TaskEventType.NOTE.value,
+            actor=body.actor,
+            iteration=iteration,
+            details={"action": "guidance", "guidance": body.guidance},
+        )
     )
-    db.add(event)
+    if story is not None and story.status != StoryStatus.IN_PROGRESS.value:
+        _land_on(story, StoryStatus.IN_PROGRESS)
 
     await db.commit()
     await db.refresh(task)
 
-    logger.info("task_resumed", task_id=task.id, actor=body.actor)
+    logger.info(
+        "task_resumed",
+        task_id=task.id,
+        story_id=task.story_id,
+        actor=body.actor,
+        iteration=iteration,
+        max_iterations=task.max_iterations,
+    )
     return to_read(task)
 
 

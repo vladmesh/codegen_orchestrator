@@ -447,7 +447,9 @@ def _prior_attempt(
     # before the next tick, and a task a failed transition left in todo must have
     # that outcome applied instead of being dispatched a second time. Runs of
     # earlier iterations are ignored, because a legitimate retry has to be
-    # dispatchable.
+    # dispatchable. The operator's resume is such a retry: it opens an iteration
+    # no run carries (`_fresh_iteration` in the task actions), which is the one
+    # thing that tells it apart from this case.
     for run in attempts:
         if (run.run_metadata or {}).get("iteration") == task.current_iteration:
             return EngineeringDispatchRead(

@@ -301,7 +301,33 @@ If the developer agent encounters an unsolvable problem:
    - User notified via PO ("story_blocked" event)
    - Worker container **NOT** destroyed (admin may inspect)
 5. Task dispatcher skips WHR tasks (not stuck, deliberately paused)
-6. Admin calls `POST /tasks/{id}/resume` with guidance → task back to `in_dev`
+6. Admin calls `POST /tasks/{id}/resume` with guidance → one fresh attempt (see
+   [Operator resume](#operator-resume) below)
+
+### Operator resume
+
+`POST /tasks/{id}/resume` (`guidance`, optional `retries`, default 3) is the one operator action
+that gives a task parked in `waiting_human_review` a fresh engineering attempt — after a gave-up or
+after the supervisor exhausted its retries. In one transaction it:
+
+- moves the task `waiting_human_review → backlog → todo` on a **fresh iteration**, one past every
+  iteration any of its engineering runs carries, so the dispatcher's next tick admits a new run. The
+  replay rule (a finished run of the task's *current* iteration is applied, not re-dispatched) keeps
+  serving the task a failed transition left in `todo`; it has nothing to apply to the fresh iteration;
+- sets `max_iterations` to that iteration plus `retries`, so the new attempt has its own retry
+  budget; both the old and the new values are recorded on the task's status events
+  (`action: operator_resume`), together with the parked attempts' `failure_metadata`, which the task
+  no longer carries;
+- moves the story `waiting_human_review → in_progress`, so the pipeline resumes with the task;
+- records the guidance as a task note.
+
+It is refused with a reason for a task not in `waiting_human_review` (422 `task_not_parked`), one
+parked by a typed infrastructure refusal (409 `infrastructure_parked` — that park is recovered by
+`POST /stories/{id}/retry-infrastructure-attempt`, which keeps `current_iteration`), one with a live
+run (409 `live_attempt_in_flight`), a story whose branch another task's worker holds (409
+`story_busy`), or a story that has ended (409 `story_not_resumable`). Do not patch
+`current_iteration` or re-queue a parked task by hand: that replays old outcomes or leaves the
+attempt without a retry budget.
 
 ### Worker reuse
 
@@ -578,13 +604,12 @@ recently touched first and capped, in the `waiting_stories` section of
 backlog (manual/standalone tasks, not in active story)
 todo → in_dev → in_ci → testing → done
               → blocked (waiting on another task)
-              → waiting_human_review → in_dev (admin resumes with guidance)
-                                     → backlog (admin re-queues)
+              → waiting_human_review → backlog → todo (admin resume: fresh attempt)
                                      → failed / cancelled
               → failed → todo (retry, up to max_iterations)
               → cancelled (sibling of failed task, or manual)
 ```
-`waiting_human_review` — developer hit an unsolvable blocker (missing credentials, contradictory requirements, broken external dependencies). Admin must provide guidance via `POST /tasks/{id}/resume` or re-queue to backlog.
+`waiting_human_review` — developer hit an unsolvable blocker (missing credentials, contradictory requirements, broken external dependencies). The operator's one retry is `POST /tasks/{id}/resume` with guidance: a fresh iteration and retry budget, and the story back in progress (see Operator resume).
 
 ---
 
