@@ -49,6 +49,7 @@ from level1_change_set import (
     build_level1_extension_change_set,
     level1_command_description,
 )
+from level1_merge_artifact import merge_artifact_mismatches
 from level1_second_story import (
     checkout_records,
     deploy_path_record,
@@ -147,6 +148,7 @@ from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
 from shared.live_harness_cleanup import (
     MAIN_HEAD_PROBE_MARKER,
+    MERGE_FILE_SET_PROBE_MARKER,
     STORY_BRANCH_BASE_PROBE_MARKER,
     STORY_BRANCH_DIFF_MARKER,
     STORY_BRANCH_PROBE_MARKER,
@@ -5424,6 +5426,77 @@ def record_level1_scripted_path(ctx: dict) -> None:
     )
 
 
+def probe_merge_file_set(repo_name: str, merge_commit_sha: str) -> dict:
+    """Read one deployed story merge's file set through the stand GitHub App."""
+    result = docker_exec_python_module(
+        "langgraph",
+        "shared.live_harness_cleanup",
+        [
+            "merge-file-set-probe",
+            "--owner",
+            GITHUB_ORG,
+            "--repo",
+            repo_name,
+            "--merge-commit-sha",
+            merge_commit_sha,
+            "--marker",
+            MERGE_FILE_SET_PROBE_MARKER,
+        ],
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"merge file set probe for {repo_name}@{merge_commit_sha} failed: "
+            f"{result.stderr or result.stdout}"
+        )
+    return parse_probe_payload(
+        result.stdout, MERGE_FILE_SET_PROBE_MARKER, subject="merge file set probe"
+    )
+
+
+def record_level1_merge_artifact(ctx: dict) -> bool:
+    """Capture and judge the current level-1 story merge before teardown.
+
+    A deployment Run is the durable fact that names the merge GitHub placed on
+    the product default branch.  Capture it here, immediately after that Run is
+    found and while the stand's App credential can still read the generated
+    repository.  Both the observation and its verdict stay in ``ctx`` so the
+    evidence artifact can explain a red result after teardown deletes the repo.
+    """
+    merge_commit_sha = ctx.get("deploy_merge_commit_sha")
+    observation: dict | None = None
+    if not merge_commit_sha:
+        error = "the deploy run named no merge commit for its changed-file capture"
+    else:
+        try:
+            observation = probe_merge_file_set(ctx["repo_name"], merge_commit_sha)
+        except Exception as caught:  # noqa: BLE001 - evidence must name an unreadable GitHub fact
+            error = (
+                f"the merge file set at {merge_commit_sha} could not be read: "
+                f"{type(caught).__name__}: {caught}"
+            )
+        else:
+            error = None
+            ctx["level1_merge_artifact"] = observation
+
+    parent_contents = (observation or {}).get("parent_file_contents")
+    product_agents_content = (
+        parent_contents.get("AGENTS.md") if isinstance(parent_contents, dict) else None
+    )
+    reasons = merge_artifact_mismatches(
+        observation,
+        expected_paths=ctx["level1_change_set_paths"],
+        product_agents_content=product_agents_content,
+    )
+    if error is not None:
+        reasons = [error, *reasons]
+        ctx["level1_merge_artifact_error"] = error
+    else:
+        ctx["level1_merge_artifact_error"] = None
+    ctx["level1_merge_artifact_verdict"] = {"holds": not reasons, "reasons": reasons}
+    return not reasons
+
+
 # ── The second story of the same project ─────────────────────────────────
 #
 # The level-1 lifecycle runs two stories on one project, and the second one is
@@ -5496,6 +5569,9 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "level1_change_set_paths",
         "level1_scripted_path",
         "level1_scripted_path_error",
+        "level1_merge_artifact",
+        "level1_merge_artifact_error",
+        "level1_merge_artifact_verdict",
         "story_branch",
         "story_branch_compare",
         "story_branch_error",

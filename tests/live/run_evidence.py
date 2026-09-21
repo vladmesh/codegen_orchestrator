@@ -318,7 +318,9 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 # v22: `stage_notices` carries, for each of the run's two stories, the
 #      `story_stage` events its owner was sent while it was in work
 #      (issue:b28d93), or the reason they could not be read.
-EVIDENCE_SCHEMA_VERSION = 22
+# v23: `story_merge_artifacts` carries each level-1 story's merged file set
+#      and the verdict that it contains only the declared product change.
+EVIDENCE_SCHEMA_VERSION = 23
 EVIDENCE_KIND = "worker_failure_attribution"
 
 #: Every Product Brief fact this document can carry, in the order it is written.
@@ -3900,6 +3902,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "generated_product_timeline": generated_product_timeline(ctx),
         "second_story": second_story(ctx),
         "stage_notices": stage_notice_evidence(ctx),
+        "story_merge_artifacts": story_merge_artifact_evidence(ctx),
         "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
@@ -4030,6 +4033,46 @@ def stage_notice_evidence(ctx: dict) -> dict:
     )
     return {
         "note": STAGE_NOTICES_NOTE,
+        "first_story": captured(ctx, "first"),
+        "second_story": second,
+    }
+
+
+STORY_MERGE_ARTIFACT_NOTE = (
+    "The changed paths GitHub reports for each deployed story merge, read before the run "
+    "tears its generated repository down. Each is judged against that story's declared "
+    "level-1 change-set paths and against the old orchestrator Makefile and AGENTS.md edits."
+)
+
+
+def story_merge_artifact_evidence(ctx: dict) -> dict:
+    """Each level-1 story's merge observation and pre-teardown verdict."""
+
+    def captured(source: dict, story: str) -> dict:
+        if "level1_merge_artifact" in source:
+            observation = Capture.captured(source["level1_merge_artifact"]).as_dict()
+        else:
+            reason = source.get("level1_merge_artifact_error") or (
+                f"the {story} story's merge file set was never recorded by this run"
+            )
+            observation = Capture.missed(reason).as_dict()
+        if "level1_merge_artifact_verdict" in source:
+            verdict = Capture.captured(source["level1_merge_artifact_verdict"]).as_dict()
+        else:
+            verdict = Capture.missed("the merge file set was not judged by this run").as_dict()
+        return {"observation": observation, "verdict": verdict}
+
+    extension = ctx.get("level1_extension")
+    second = (
+        captured(extension, "second")
+        if isinstance(extension, dict) and extension
+        else {
+            "observation": Capture.missed("this run ran no second story").as_dict(),
+            "verdict": Capture.missed("this run ran no second story").as_dict(),
+        }
+    )
+    return {
+        "note": STORY_MERGE_ARTIFACT_NOTE,
         "first_story": captured(ctx, "first"),
         "second_story": second,
     }

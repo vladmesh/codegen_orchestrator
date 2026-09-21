@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- Level-1 evidence now captures and judges each merged file set before teardown, proving both stories carry
+  only their declared product changes and no orchestrator-injected path or legacy overwrite.
 - The stand bootstrap masks the VM's automatic apt upgrades and waits for cloud-init before apt/Docker work,
   reconnecting once after an SSH drop or reboot, so first-boot upgrades no longer kill the level-1 run.
 - The scaffolder image now ships `aiohttp` for shared administrator notifications, and CI imports every
