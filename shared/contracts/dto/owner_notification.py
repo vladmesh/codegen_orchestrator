@@ -40,7 +40,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.vocab import OwnerNotificationEvent
+from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEvent
 
 #: JSON key for run-backed terminal notices; completed-story notices live on Story.
 OWNER_NOTIFICATION_KEY = "owner_notification"
@@ -107,6 +107,14 @@ class OwnerNotification(BaseModel):
     admin_state: OwnerNotificationState | None = None
     admin_attempts: int = Field(default=0, ge=0)
     admin_detail: str | None = None
+
+    @model_validator(mode="after")
+    def _event_is_durable(self) -> OwnerNotification:
+        # A progress notice is told once or not at all. Letting it be owed would
+        # hand the recovery sweep a message that is stale by the time it lands.
+        if self.event in NON_DURABLE_OWNER_EVENTS:
+            raise ValueError(f"{self.event} is never an owed owner notification")
+        return self
 
     @model_validator(mode="after")
     def _admin_audience_is_whole(self) -> OwnerNotification:

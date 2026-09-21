@@ -46,6 +46,7 @@ from level1_second_story import (
     product_hook_mismatches,
     workspace_reuse_mismatches,
 )
+from level1_stage_notices import stage_notice_mismatches
 from live_harness import (
     RUN_USER_TELEGRAM_ID_MAX,
     RUN_USER_TELEGRAM_ID_MIN,
@@ -99,6 +100,7 @@ from pipeline_helpers import (
     record_qa_run,
     record_run_po_position,
     record_settings_seed_brief_log,
+    record_stage_notices,
     record_story_branch_ahead,
     record_story_branch_base,
     record_story_ci_runs,
@@ -274,6 +276,8 @@ async def _complete_level1_story(api_internal, ctx: dict, *, debug_prefix: str) 
     ):
         dump_debug(ctx, f"{debug_prefix}-owner-notification")
         return False
+    # Evidence, judged by the tests below: the stages the owner was told.
+    await record_stage_notices(api_internal, ctx)
     if await wait_service_deployment(api_internal, ctx) is None:
         dump_debug(ctx, f"{debug_prefix}-service-deployment")
         return False
@@ -541,14 +545,21 @@ async def _level1_extension_story(
         if await wait_story_completed(api_internal, ctx) is None:
             dump_debug(ctx, f"{debug_prefix}-extension-story-completed")
             raise Level1PhaseFailed("extension_completion", ctx["story_terminal_error"])
-        if (
-            await wait_owner_completion_notification(
-                api_internal, ctx, text_requirement=level1_completion_text_requirement(ctx)
-            )
-            is None
-        ):
-            dump_debug(ctx, f"{debug_prefix}-extension-owner-notification")
-            raise Level1PhaseFailed("extension_completion", ctx["owner_notification_error"])
+        await _level1_extension_owner_told(api_internal, ctx, debug_prefix=debug_prefix)
+
+
+async def _level1_extension_owner_told(api_internal, ctx: dict, *, debug_prefix: str) -> None:
+    """The extension story's owner got its completion message, and its stages are recorded."""
+    if (
+        await wait_owner_completion_notification(
+            api_internal, ctx, text_requirement=level1_completion_text_requirement(ctx)
+        )
+        is None
+    ):
+        dump_debug(ctx, f"{debug_prefix}-extension-owner-notification")
+        raise Level1PhaseFailed("extension_completion", ctx["owner_notification_error"])
+    # Evidence, judged by the tests below: the stages the owner was told.
+    await record_stage_notices(api_internal, ctx)
 
 
 async def _record_registration_door(api_internal, ctx: dict, *, debug_prefix: str) -> None:
@@ -1558,6 +1569,18 @@ class TestFullPipeline:
             "subject_id": None,
             "value": level1_extension_settings_value(pipeline["level1_extension_marker"]),
         }
+
+    async def test_the_owner_was_told_the_first_storys_stages(self, pipeline):
+        """issue:b28d93: every in-work stage announced once on entry, never after the end."""
+        assert pipeline.get("stage_notices_error") is None, pipeline.get("stage_notices_error")
+        assert stage_notice_mismatches(pipeline["stage_notices"]) == []
+
+    async def test_the_owner_was_told_the_extension_storys_stages(self, pipeline):
+        """The second story is announced on its own, not by the first story's notices."""
+        extension = _extension(pipeline)
+        assert extension.get("stage_notices_error") is None, extension.get("stage_notices_error")
+        assert extension["stage_notices"]["story_id"] == extension["story_id"]
+        assert stage_notice_mismatches(extension["stage_notices"]) == []
 
     async def test_the_extension_story_completed_with_a_second_owner_notification(self, pipeline):
         """QA passed, the story completed, and its owner was told — again.

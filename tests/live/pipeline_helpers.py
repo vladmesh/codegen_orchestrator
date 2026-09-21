@@ -140,6 +140,7 @@ from shared.contracts.queues.po import POSystemEvent, po_thread_id
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
@@ -4913,6 +4914,46 @@ async def wait_owner_completion_notification(
     return None
 
 
+#: The stand's own quiet interval: the predicate judges repeats against it.
+STAGE_NOTICE_QUIET_KEY = "supervisor.stage_notice_quiet_minutes"
+
+
+async def record_stage_notices(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
+) -> None:
+    """Record the `story_stage` notices this story left on `po:input`.
+
+    Read after the story's ending, before teardown XDELs this run's PO entries,
+    from the same cursor the completion notification is fenced by. The record is
+    the observation `level1_stage_notices.stage_notice_mismatches` judges; a read
+    that could not be made is recorded as `stage_notices_error` instead.
+    """
+    story_id = ctx["story_id"]
+    try:
+        response = await api_internal.get(f"/api/system-configs/{STAGE_NOTICE_QUIET_KEY}")
+        response.raise_for_status()
+        quiet_minutes = response.json().get("value")
+        events = events_after(ctx["po_input_cursor"])
+    except Exception as error:  # noqa: BLE001 — evidence: say what failed, never raise
+        ctx["stage_notices_error"] = (
+            f"stage notices of story {story_id} could not be read: {type(error).__name__}: {error}"
+        )
+        return
+    ctx["stage_notices"] = {
+        "story_id": story_id,
+        "quiet_minutes": quiet_minutes,
+        "ended_at": (ctx.get("story_terminal") or {}).get("updated_at"),
+        "notices": [
+            event.model_dump(mode="json")
+            for event in events
+            if event.event == OwnerNotificationEvent.STORY_STAGE and event.story_id == story_id
+        ],
+    }
+
+
 async def _project_deploy_runs(api_internal: httpx.AsyncClient, project_id: str) -> list[dict]:
     """Every deploy Run of this project, not only the ones a story owns.
 
@@ -5438,6 +5479,8 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "owner_notification",
         "owner_notification_po_event",
         "owner_notification_error",
+        "stage_notices",
+        "stage_notices_error",
     }
 )
 

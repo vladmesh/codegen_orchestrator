@@ -35,6 +35,7 @@ PIPELINE_REQUIRED_KEYS = {
     "supervisor.qa_wait_max_minutes",
     "supervisor.pr_review_wait_max_minutes",
     "supervisor.user_secret_wait_max_minutes",
+    "supervisor.stage_notice_quiet_minutes",
     "supervisor.resource_wait_metrics_freshness_seconds",
     "supervisor.qa_handoff_target_held_max_minutes",
     "supervisor.temporary_access_ttl_minutes",

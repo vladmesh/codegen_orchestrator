@@ -1158,7 +1158,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 21
+    assert EVIDENCE_SCHEMA_VERSION == 22
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1203,6 +1203,13 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "value": None,
         "reason": "this run ran no second story",
     }
+    # v22: stage notices per story, each one captured or its absence stated.
+    assert artifact["stage_notices"]["first_story"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "the first story's stage notices were never recorded by this run",
+    }
+    assert artifact["stage_notices"]["second_story"]["reason"] == "this run ran no second story"
     assert artifact["discovery"]["run_id"] == RUN_ID
     assert artifact["discovery"]["docker_filters"] == [
         "label=com.codegen.type=worker",

@@ -52,6 +52,7 @@ from .story_completion import (
 from .supervisor import (
     supervise_deploying_stories,
     supervise_failed_tasks,
+    supervise_stage_notices,
     supervise_state_age_bounds,
     supervise_stuck_stories,
     supervise_stuck_tasks,
@@ -483,6 +484,9 @@ async def task_dispatcher_loop() -> None:
                 # has had this tick's chance to move a story on, so a wait this
                 # watchdog ends is one nothing else was going to end.
                 state_age = await supervise_state_age_bounds(api_client, redis_client)
+                # After every supervisor that can move a story on this tick, so
+                # a stage is announced only for a story that is really in it.
+                stage_notices = await supervise_stage_notices(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
                 terminal_workers = await reconcile_terminal_story_workers(api_client, redis_client)
                 gave_up_workers = await reconcile_gave_up_attempt_workers(api_client, redis_client)
@@ -518,6 +522,9 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("failed", 0)
                     + state_age["parked"]
                     + state_age["failed"]
+                    + stage_notices["entered"]
+                    + stage_notices["still_there"]
+                    + stage_notices["unaddressable"]
                     + temporary_access.get("dispatched", 0)
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
@@ -553,6 +560,11 @@ async def task_dispatcher_loop() -> None:
                         # the wait was on somebody outside the platform.
                         state_age_parked=state_age["parked"],
                         state_age_failed=state_age["failed"],
+                        # Owners told which stage their story is at: on entry,
+                        # after a quiet interval, or due with no chat to go to.
+                        stage_notices_entered=stage_notices["entered"],
+                        stage_notices_still_there=stage_notices["still_there"],
+                        stage_notices_unaddressable=stage_notices["unaddressable"],
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),

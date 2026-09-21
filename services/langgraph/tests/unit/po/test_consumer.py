@@ -85,6 +85,7 @@ class TestHandleMessage:
             "story_impossible_capacity",
             "task_resources_resumed",
             "story_requirements_returned",
+            "story_stage",
         ],
     )
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
