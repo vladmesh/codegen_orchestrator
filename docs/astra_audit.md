@@ -1,826 +1,600 @@
 # Astra architecture audit
 
-Date: 2026-09-06  
-Audited branch: `main` (starting around `50d9753ba0b5b94d5edbe43314330d1b52aaddb4`)  
-Scope: architecture, service boundaries, legacy/compatibility code, fallbacks, shims, hidden coupling, operational complexity, and removable technical debt.
+Date: 2026-09-21  
+Audited branch: main at 145d65e5070f121c79e5c9af48bab8294d9c81e2 (after PR #552)  
+Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
+Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
 ## Executive summary
 
-The repository is in better shape than the words `legacy`, `fallback`, and `compatibility` initially suggest. Several important boundaries are deliberate and strong:
+The repository changed substantially after the 2026-09-12 refresh: more than two hundred commits landed on main before this re-audit. The codebase is stronger in several important failure boundaries than it was when this audit was first written:
 
-- service-to-service calls are centralized through the internal API client;
-- Redis stream contracts are typed and shared;
-- worker execution is isolated behind `worker-manager` / `worker-broker`;
-- paid-work admission is centralized rather than reimplemented by consumers;
-- QA capability isolation is unusually explicit and defensive;
-- queue recovery semantics, idempotency, and terminal outcomes are documented instead of being implicit.
+- engineering dispatch admission is increasingly transactional and evidence-driven;
+- pre-agent refusals, infrastructure parks and owner notifications have durable recovery paths;
+- developer workers use repository-scoped GitHub tokens;
+- story-owned and gave-up workers have explicit teardown/reconciliation;
+- temporary QA access has target-scoped admission and an audited operator drain;
+- long-lived story states gained bounded watchdogs and stage notices;
+- generated-product and live-test evidence now checks substantially more residue and artifact boundaries;
+- CI imports production service entrypoints from built images, catching missing runtime dependencies before merge.
 
-At the original audit, the main architectural problem was **not** the number of services: old transition mechanisms and one oversized orchestration process cut across otherwise good boundaries. PR #485 has since separated the scheduler into three services; the ordered pipeline dispatcher remains the substantial H1 follow-up.
+Those improvements do not invalidate the main architectural concern from the original audit. The scheduler process split from PR #485 remains useful, but scheduler-pipeline still owns one large ordered cycle whose sequencing is part of the product contract. That cycle has grown since the last refresh.
 
-The original cleanup priorities, with current progress, are:
+### Current status
 
-1. finish separating the scheduler's ordered dispatcher responsibilities after the three-service split in #485;
-2. choose one source of truth per setting (H2 completed; M7 policy classification remains);
-3. preserve typed GitHub failure semantics (H3 completed);
-4. bring worker services under the root lint policy (H4 completed);
-5. remove lifecycle ownership hacks in `worker-wrapper` (M1 completed);
-6. progressively delete explicit compatibility surfaces once their data/producers are proven gone.
+Of the original sixteen H/M/L findings:
 
-No finding in this pass looks like a **Critical** architectural defect. The highest findings are **High** because they increase blast radius, hide failure, or preserve a substantial island of old behavior.
+- **9 remain complete:** H2, H3, H4, M1, M3, M4, M6, M8 and L1.
+- **H1 remains partially complete.**
+- **6 remain open:** M2, M5, M7 and L2-L4.
 
-## Rating scale
+This refresh adds three findings:
 
-Each cleanup item has three ratings:
+- **M9 — new since the old audit:** executor-profile health now mirrors private Codex/Claude credential formats closely enough that updating a pinned CLI carries adapter-maintenance risk.
+- **M10 — newly identified, but not newly introduced:** several core orchestration functions are explicitly exempt from Ruff complexity/branch/statement limits.
+- **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-- **Severity**: `High`, `Medium`, `Low` — impact of leaving the debt in place.
-- **Removal safety**: `1/5` means deleting/refactoring it is risky without a migration; `5/5` means it is very safe once tests pass.
-- **Removal simplicity**: `1/5` means a substantial architectural migration; `5/5` means a small localized cleanup.
+So the current actionable set is one High finding, five Medium findings and four Low findings. The completed original work should stay completed; no rewrite is justified.
 
-"Removal" means removing the debt, shim, fallback, duplicated responsibility, or compatibility path — not deleting the product feature it currently supports.
+---
 
-## Refresh note — 2026-09-12
+## What changed after the 2026-09-12 refresh
 
-This is a lightweight status refresh, **not** a new deep audit. The 2026-09-12 update checks H1 against merged PR [#485](https://github.com/vladmesh/codegen_orchestrator/pull/485), merge commit `41d9388c`, and L1 against merged PR [#486](https://github.com/vladmesh/codegen_orchestrator/pull/486), merge commit `f9ac3eb8`; other findings retain their 2026-09-09 validation scope. Original evidence below remains historical context, not a claim about current `main`.
+The most architecture-relevant changes since the previous refresh are:
 
-### Completed or materially reduced
+- PRs #487-#490 tightened admission/access, repository-scoped worker credentials, notifications and production resource bounds.
+- PR #491 isolated a broken todo task from the rest of the dispatcher cycle and fixed refusal handling where the initiating id is not a Run.
+- PRs #492-#495 strengthened worker ownership, transactional parking and temporary-access target/drain semantics.
+- PRs #496-#505 added target readiness/finalization evidence and explicit infrastructure recovery.
+- PRs #506-#524 substantially expanded central QA contracts, failure classification and worker lifecycle handling.
+- PRs #525-#552 expanded deterministic/live acceptance evidence, teardown, generated-product isolation, state-age supervision, operator resume and service-image runtime checks.
 
-- **H1 — partially completed in PR #485 (merged 2026-09-12).** The aggregate scheduler is replaced by `scheduler-pipeline`, `scheduler-infrastructure` and `scheduler-maintenance`, using one image with separate required config sets and a shared lifecycle. Native Docker healthchecks and post-seed Compose readiness cover production/stand startup. The ordered dispatcher remains intact; see the H1 progress and follow-up below.
+These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1, M2 and M10 deserve attention even though many individual failure cases are better than before.
 
-- **H2 — completed in PRs #476 and #478 (merged 2026-09-08).** Required `llm.summarization_*` system config is the sole production source for numeric PO summarization tuning. Startup fails on missing/unavailable config and logs effective values. PR #478 also removed the retired numeric env/example/Compose/deploy/stand-workflow wiring and added a guard against its return. `SUMMARIZATION_MODEL` remains process configuration.
-- **H3 — completed in PR #477 (merged 2026-09-08).** GitHub repository/file paths no longer classify errors by matching `"422"` / `"already exists"` in exception text or turn arbitrary failures into empty/missing resources. Expected 404/422 cases are status-driven, 422 repository creation is verified with `get_repo()`, and transport/auth/server/unexpected failures retain failure semantics. The narrow repo-token → org-token deletion fallback was deliberately preserved.
-- **M1 — immediate ownership hack completed in PR #463 (merged 2026-09-07).** The private `_task` / `stop_event` split ownership described below is gone. Revisit only if a richer graceful-stop API is actually needed.
-- **M3 — completed in PR #464 (merged 2026-09-07).** Enabled PO now requires durable checkpoint configuration at startup; `MemorySaver` remains an explicit test construction path rather than a production downgrade.
-- **M4 — completed in PR #483 (merged 2026-09-09).** Run responses no longer project engineering token/cost accounting from the ledger. The legacy Run API/model/admin fields and DB columns are removed; Grafana reads those facts directly from `engineering_attempt_ledger`, and boundary tests forbid restoring the old surface.
+---
 
-- **M6 — completed in PRs #479 and #480 (last merge 2026-09-08).** PR #479 removed private shared-helper re-exports. PR #480 migrated startup, unit/integration tests and live preflight to owner modules, removed the remaining domain/startup/constant compatibility exports, and retained `get_all_tools()` plus the four locally owned utility tools. Boundary tests pin owner imports, the removed exports, and the same 19 tool objects in the same order.
+# Current finding matrix
 
-- **H4 — completed in PR #482 (merged 2026-09-09).** Both worker services now inherit the unchanged root Ruff policy; the local Ruff configs are removed. The migration fixes imports/formatting, extracts launch/Compose/GC phases and preserves exception causes. Narrow documented line exceptions remain for test fixtures, deliberate proxy/PATH boundaries and the two existing launch signatures; there are no new root exclusions or complexity suppressions.
-- **M8 — completed in PR #481 (merged 2026-09-09).** Both frontend Dockerfiles use plain `npm ci`. Existing dependencies and lockfiles already passed normal peer resolution, lint and production build locally and in PR CI, so no dependency updates were needed. Full frontend Docker images were not built in that iteration.
-- **L1 — completed in PR #486 (merged 2026-09-12).** The retired `test-live-mega` compatibility target and `test-live-pipeline` legacy aggregate are removed from the Makefile and `.PHONY`; live/operator docs use canonical named targets, and a regression guard prevents restoring either retired target or its documented command spelling. The already-existing package brief target is now also represented in `.PHONY` and `make help`.
+| ID | Severity | Status on 2026-09-21 | Current conclusion |
+|---|---|---|---|
+| H1 | High | Partial | Three scheduler services exist, but scheduler-pipeline still has one ordered dispatcher/supervisor/reconciliation cycle and one cycle failure boundary. |
+| H2 | High | Complete | System config is canonical for PO summarization tuning; retired numeric env plumbing remains absent. |
+| H3 | High | Complete | GitHub expected failures remain status-driven rather than exception-string/empty-result fallbacks. |
+| H4 | High | Complete | Worker services remain under the root Ruff policy. |
+| M1 | Medium | Complete | The old worker-wrapper private task ownership split is gone. |
+| M2 | Medium | Open; worsened | Production deploy lifecycle still imports shared.live_harness_cleanup, which has grown into a large live-harness/runtime utility module. |
+| M3 | Medium | Complete | Production PO startup requires durable checkpoint configuration; MemorySaver remains an explicit graph/test-capable path rather than the enabled production downgrade. |
+| M4 | Medium | Complete | Run accounting compatibility is gone and the engineering attempt ledger is canonical. |
+| M5 | Medium | Open; safer remediation | Legacy temporary-access columns/branches remain, but operator drain now provides a supported path to eliminate unreconcilable live legacy rows. |
+| M6 | Medium | Complete | PO tools use owner modules; retired compatibility re-exports remain removed. |
+| M7 | Medium | Open | ConfigStore still serves an unbounded last-known value after source failure; policy is global rather than key-classified. |
+| M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
+| M9 | Medium | New | Worker-manager mirrors detailed private executor credential/profile formats, especially Codex auth.json/serde_json behavior. |
+| M10 | Medium | New to audit | Core deploy/server-sync orchestration still opts out of complexity, branch and statement limits at function scope. |
+| L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
+| L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
+| L3 | Low | Open | Several long-lived external client classes still instantiate a fresh httpx.AsyncClient per request/batch. |
+| L4 | Low | Open | AGENTS.md says environment variables never use defaults while shared/config.py intentionally defines safe defaults. |
+| L5 | Low | New | ARCHITECTURE.md still describes retired Run token/cost storage instead of the engineering attempt ledger. |
 
-### Recheck / refresh before implementation
-
-- **H1:** the process split and aggregate-entrypoint deletion are complete. Remaining work is inside `tasks/task_dispatcher.py`: define durable ownership and ordering guarantees before separating dispatch/PR lifecycle, supervision, QA routing and access cleanup. Do not recreate the old aggregate or mechanically apply the original five-process sketch.
-- **M2:** quick check still finds production `deploy_lifecycle.py` importing `shared.live_harness_cleanup`; the boundary smell remains. Recheck the wider `shared/` dependency graph before a large move because recent template/live-harness work may have changed what is genuinely runtime-owned.
-- **M5:** legacy temporary-access columns and `_LEGACY_REMEDIATION` guards still exist. This remains a proof/data-state task; recheck live DB invariants before changing it.
-- **M7 / K4:** ConfigStore last-known-good behavior still exists. H2 makes the policy distinction more important, not less: startup-critical required config can fail fast while some already-running operational reads may still tolerate last-known-good. Classify keys/callers before changing ConfigStore globally.
-- **L2:** the `mega-test` cleanup prefix still exists and still needs the operational resource sweep/proof described below.
-- **L3, L4, K1, K2:** not revalidated in detail in this refresh. Treat their evidence as “recheck before taking”, not as confirmed stale or confirmed current.
-- **K3:** explicitly revalidated while doing H3 and intentionally kept; its narrow 404-driven repository-deletion fallback is still a legitimate exception to the broad no-fallback rule.
-
-The cleanup order below now marks completed iterations explicitly. Of sixteen H/M/L findings, nine are complete (H2, H3, H4, M1, M3, M4, M6, M8, L1), H1 is partially complete, and six others remain open (M2, M5, M7, L2–L4). K1–K4 are conditional retention notes, not four additional deletion tasks.
+K1-K4 below remain retention notes, not additional deletion tasks.
 
 ---
 
 # High severity
 
-## H1. Scheduler process split completed; ordered dispatcher remains
+## H1. Scheduler process split is complete; ordered pipeline ownership is not
 
 **Severity:** High  
-**Removal safety:** 3/5  
-**Removal simplicity:** 1/5
+**Removal safety:** 2/5  
+**Removal simplicity:** 1/5  
+**Status:** Partially complete, still current.
 
-### Progress — 2026-09-12
+### Current evidence
 
-**Partially completed in [PR #485](https://github.com/vladmesh/codegen_orchestrator/pull/485).** The three independently launched services reuse the scheduler image and package:
+PR #485 correctly replaced the aggregate scheduler process with:
 
-| Service | Owned loops |
-|---------|-------------|
-| `scheduler-pipeline` | The existing ordered dispatcher: scaffold, engineering admission, story/PR/CI lifecycle and supervision, including QA and temporary access |
-| `scheduler-infrastructure` | Server sync, health checks, provisioning results and startup provisioning retry |
-| `scheduler-maintenance` | GitHub sync, RAG summarization, analytics and queue cleanup |
+- scheduler-pipeline;
+- scheduler-infrastructure;
+- scheduler-maintenance.
 
-Each validates only its required config keys. All use one failure/cancellation lifecycle; the provisioning consumer lives in its task module and retains its stream, consumer group and PEL recovery semantics. `src/main.py` is removed, and deployment cutover removes the old aggregate container.
+That part of the original finding is closed.
 
-The three services expose native Docker healthchecks backed by process-owned readiness markers. Production and stand recreate only these services after config seeding and wait up to 180 seconds, resetting missing-config restart backoff without recreating dependencies. Missing `LOKI_URL` cannot block Compose parsing or pipeline startup; the analytics loop retains its canonical failure, and full deployment must pass the maintenance healthcheck.
+The remaining scheduler-pipeline entrypoint still runs services/scheduler/src/tasks/task_dispatcher.py::task_dispatcher_loop. On current main that module is about 594 lines and the loop performs, in one ordered tick:
 
-**Validation:** all applicable PR CI checks, including scheduler service and real infra integration with `service_healthy` dependencies, passed at `2bbb4254`; Claude Opus high thermonuclear review approved that exact head in round 3. Local unit/lint and native Docker readiness smoke passed. The final local infra attempts stopped at API startup health before scheduler; CI subsequently passed the full infra flow. No external live stand or production rollout is claimed by this evidence.
+1. scaffold triggering;
+2. engineering dispatch admission/publication;
+3. story completion;
+4. merged-PR handling and CI failure routing;
+5. stuck-story/task and failed-task supervision;
+6. resource/deploy/user-secret supervision;
+7. owed owner-notification recovery;
+8. QA/testing supervision;
+9. state-age watchdogs;
+10. stage notices;
+11. temporary-access cleanup;
+12. terminal and gave-up worker reconciliation.
 
-### Remaining scope and next H1 iteration
+The code comments still document ordering as correctness, not just an implementation preference. In particular, owed notifications are swept before routing that can create new notices, QA routing happens before access cleanup, and stage notices run after state-moving supervisors.
 
-`task_dispatcher_loop()` still owns one sequential cycle and one failure boundary for dispatch, PR/CI, recovery, QA and access cleanup. Splitting the outer process does not close this part of H1.
+The whole tick remains inside one broad dispatcher_cycle_error boundary.
 
-Before extracting independently scheduled pipeline responsibilities, make their ordering guarantees explicit in durable state and test retries/interleavings at the API/Redis boundary. In particular, owed owner notifications are recovered before new QA routing, and QA routing precedes temporary-access cleanup. Preserve those guarantees: the three-service iteration deliberately left the dispatcher body unchanged. This is the next substantial H1 iteration, rather than further renaming or splitting entrypoint files.
+### What improved since 2026-09-12
 
-### Original evidence — before PR #485
+PR #491 prevents one broken todo task from aborting dispatch of all later todo tasks. Later work added transactional parks, worker reconciliation, state-age supervision and stage notices. These are correctness wins.
 
-`services/scheduler/src/main.py` starts all of these in one process:
+They also increased the number of independently meaningful workflows inside the same periodic cycle. task_dispatcher.py grew from roughly 21.6 KB at the previous refresh to roughly 27.1 KB now.
 
-- server sync;
-- GitHub sync;
-- health checker;
-- RAG summarizer;
-- provisioner result listener;
-- task dispatcher;
-- analytics aggregator;
-- queue cleanup.
+### Why it still matters
 
-At the same time, `services/scheduler/src/startup.py` validates a large shared set of keys spanning scheduler, deploy, supervisor, health, and temporary-access policy.
+A process split is only part of the boundary. The remaining cycle still has:
 
-The dispatcher itself (`services/scheduler/src/tasks/task_dispatcher.py`) is also an orchestration bundle. One periodic tick performs scaffold triggering, engineering admission and publication, story completion, PR polling, CI failure routing, stuck story/task supervision, resource waiting, deploy supervision, user-secret supervision, owner-notification recovery, QA routing, and temporary-access cleanup.
+- one clock;
+- one process lifecycle;
+- ordering encoded by call order and comments;
+- latency coupling between unrelated supervisors;
+- a broad cycle-level failure boundary;
+- difficult independent scaling and recovery semantics.
 
-The comments in that function correctly explain subtle ordering constraints, but those comments are also evidence that many independently meaningful workflows share one clock and one failure boundary.
-
-### Original rationale
-
-This creates a large blast radius:
-
-- one process crash restarts unrelated background jobs;
-- one worker cannot be scaled independently;
-- startup config for one concern can prevent unrelated concerns from starting;
-- the dispatcher cycle accumulates ordering dependencies that are difficult to test compositionally;
-- latency of one concern can stretch the cycle time of all later concerns;
-- ownership becomes "scheduler owns everything periodic" instead of following bounded contexts.
-
-The code already has good module boundaries, so the process boundary is lagging behind the code boundary.
-
-### Original recommendation — superseded by the staged split above
-
-Keep the same image initially, but run separate entrypoints/processes for at least:
-
-1. `task-dispatcher` + story completion / PR lifecycle;
-2. `pipeline-supervisor` (stuck/retry/resource/deploy/QA state routing);
-3. `temporary-access-supervisor` + owed owner notifications if ordering still requires them together;
-4. `infrastructure-observers` (server sync / health / provisioning);
-5. `analytics-maintenance` (analytics, RAG summarizer, queue cleanup).
-
-Do **not** begin by creating five new repositories or deployment stacks. First separate runtime ownership while reusing the same package and image.
-
-### Original safe removal path
-
-1. Give each loop its own entrypoint.
-2. Move required config validation next to the process that consumes it.
-3. Preserve current tick ordering inside the pipeline-supervisor process.
-4. Add integration tests for cross-process state transitions.
-5. Only then delete the aggregate `scheduler.main` runner.
-
----
-
-## H2. PO summarization configuration has multiple sources plus a silent broad fallback
-
-**Severity:** High  
-**Removal safety:** 4/5  
-**Removal simplicity:** 4/5
-
-### Evidence
-
-`services/langgraph/src/config/settings.py` contains environment-backed summarization defaults:
-
-- `summarization_max_tokens = 20000`
-- `summarization_trigger_tokens = 70000`
-- `summarization_max_summary_tokens = 2000`
-
-The same values also exist in `.env.example` / compose wiring, while `scripts/system_configs.yaml` defines DB-backed `llm.summarization_*` values (including a different `summarization_max_tokens` value of `50000`).
-
-Then `services/langgraph/src/consumers/po.py` does this:
-
-1. create a `ConfigStore`;
-2. read DB values with Settings values as defaults;
-3. catch **any** exception;
-4. silently use Settings values instead.
-
-The resulting log also reports `settings.summarization_*`, not necessarily the effective DB-backed values that were actually passed to the graph.
-
-### Why it matters
-
-This violates the repository's own stated "fail fast / no speculative fallback" rule and makes production behavior dependent on which configuration source happened to answer.
-
-A typo, API bug, malformed response, auth failure, or programming error in ConfigStore can silently turn into a different summarization policy instead of a visible startup failure.
-
-It also makes it difficult to answer a basic operational question: "what value is canonical?"
+Blindly turning every call into its own loop would be unsafe because some orderings are real contracts.
 
 ### Recommendation
 
-Choose one source of truth.
+Do not start with another mechanical process split.
 
-For production, the cleanest current model is:
+First turn the required ordering into explicit durable facts and tests. A useful decomposition boundary is:
 
-- system config DB is canonical for operational tuning;
-- environment contains only bootstrapping information required to reach the config service;
-- tests may inject explicit values directly.
+1. dispatch / PR lifecycle;
+2. story-state supervision;
+3. owed notification delivery;
+4. QA handoff and verdict routing;
+5. temporary-access and worker cleanup.
 
-Then remove the broad `except Exception` fallback and make missing/invalid required config fail startup.
-
-If local standalone execution truly needs env-only configuration, make it an explicit mode such as `CONFIG_SOURCE=env`, not an automatic fallback.
-
-### Safe removal path
-
-This is relatively safe because compose already starts PO with API connectivity and the repo already has `ConfigStore` startup patterns in scheduler. Add one startup validation test, report the effective values in logs, then delete the fallback chain.
-
----
-
-## H3. GitHub client contains failure-hiding fallbacks that can change semantics
-
-**Severity:** High  
-**Removal safety:** 5/5  
-**Removal simplicity:** 4/5
-
-### Evidence
-
-Several patterns in `shared/clients/github/` conflict with the otherwise contracts-first/fail-fast architecture.
-
-### A. Exception-string parsing
-
-`shared/clients/github/_provisioning.py` handles repo creation idempotency correctly for `httpx.HTTPStatusError`, but then has a second broad branch:
-
-```python
-except Exception as e:
-    if "422" in str(e):
-        ... use existing repo ...
-```
-
-That converts unrelated exceptions whose text happens to contain `422` into "repository already exists".
-
-### B. Failure becomes empty directory
-
-`shared/clients/github/_repos.py::list_repo_files()` returns `[]` on any broad exception after logging a warning.
-
-An empty repository and a failed GitHub call are therefore observationally identical to callers.
-
-### C. File existence probe suppresses arbitrary failures
-
-`create_or_update_file()` catches broad exceptions while checking the existing file SHA and proceeds as though creation may be appropriate.
-
-A transient auth/network/programming failure in the read phase can therefore change an intended update into a create attempt and defer the real error to a later API call.
-
-### Why it matters
-
-These are exactly the kinds of fallback branches the repository's own `AGENTS.md` says to avoid: they hide missing facts and make downstream behavior depend on guessed meaning.
-
-### Recommendation
-
-- Delete exception-string parsing entirely.
-- Catch only concrete `httpx` / GitHub error classes and status codes.
-- Make "not found" a typed normal result where needed.
-- Propagate transport/auth/server failures.
-- Where callers legitimately want best-effort behavior, put that policy at the caller and name it explicitly (`best_effort_list_repo_files`) rather than weakening the shared primitive.
-
-### Note on the org-token fallback
-
-The repo-scoped-token → org-token fallback in `delete_repo()` is different: it is narrow, status-code driven, documented, and corresponds to a real GitHub App installation race for newly created repos. I would **not** remove it just because it contains the word "fallback".
-
----
-
-## H4. `worker-manager` is an intentionally hidden old-code island
-
-**Severity:** High  
-**Removal safety:** 5/5  
-**Removal simplicity:** 2/5
-
-### Evidence
-
-The root `pyproject.toml` pins Ruff below `0.16` and explains why:
-
-> 0.16 ... stops treating services/worker-manager as its own config root, which surfaces 132 real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
-
-`services/worker-manager/pyproject.toml` carries its own minimal Ruff config with a different line length, while the repository root has the actual lint policy.
-
-This is a very useful comment because it clearly identifies deferred debt, but it also means the current toolchain is intentionally configured not to see a substantial set of real problems in one security-sensitive service.
-
-### Why it matters
-
-`worker-manager` owns Docker daemon access, worker creation, host paths, network placement, and agent credentials. It is one of the worst places to preserve a lint/typing/exception-handling blind spot.
-
-The issue is not the Ruff version itself. The issue is that repository quality gates are not uniform across the control-plane service with the highest host privilege.
-
-### Recommendation
-
-Make "Ruff 0.16 cleanup in worker-manager" a bounded migration:
-
-1. run the newer rule set against that subtree;
-2. mechanically fix imports / typing / naive datetime first;
-3. manually review blind `except` and behavior-changing warnings;
-4. remove the service-local Ruff config if it is no longer needed;
-5. remove the root `<0.16` pin.
-
-Do not combine this with product behavior work. The payoff is mostly removing a blind spot from future reviews.
+For every edge that currently depends on call order, define the durable precondition that makes it safe to run independently. Then split one responsibility at a time.
 
 ---
 
 # Medium severity
 
-## M1. `worker-wrapper` lifecycle ownership is split between `main` and `WorkerWrapper`
-
-**Severity:** Medium  
-**Removal safety:** 5/5  
-**Removal simplicity:** 4/5
-
-### Evidence
-
-`packages/worker-wrapper/src/worker_wrapper/main.py` contains a literal `# Hack for now` block.
-
-The entrypoint:
-
-- creates an unused `stop_event`;
-- writes to private `wrapper._task`;
-- cancels that private task from the signal handler;
-- contains comments discussing a missing `stop()` method rather than a settled lifecycle contract.
-
-Meanwhile `WorkerWrapper` already owns `_running`, broker shutdown, and the run loop.
-
-### Why it matters
-
-There are two owners of shutdown state. This makes graceful termination harder to reason about and encourages future callers to depend on private fields.
-
-### Recommendation
-
-Give `WorkerWrapper` a public async lifecycle:
-
-- `start()` / `run()`;
-- `stop()` sets `_running = False` and cancels/interrupts the current wait if necessary;
-- `close()` if resource cleanup needs a separate phase.
-
-The signal handler should call the public stop path, not know about `_task`.
-
-`stop_event` and the hack comments can then disappear.
-
-### Progress
-
-**First iteration completed in PR #463 (merged 2026-09-07).** The concrete ownership hack was removed without broadening shutdown semantics:
-
-- `worker_wrapper.main` now owns a local task for `WorkerWrapper.run()`;
-- SIGTERM/SIGINT cancel that entrypoint-owned task directly;
-- the unused `stop_event`, private `WorkerWrapper._task` state, and temporary hack commentary were removed;
-- existing broker cleanup and agent shutdown behavior were intentionally left unchanged.
-
-This resolves the immediate split task-ownership problem. A public `stop()` / `close()` lifecycle remains a possible follow-up only if graceful-stop semantics beyond task cancellation are needed; it was not required for this first cleanup.
-
----
-
-## M2. `shared/` mixes contracts/runtime libraries with live-test harness machinery
-
-**Severity:** Medium  
-**Removal safety:** 2/5  
-**Removal simplicity:** 1/5
-
-### Evidence
-
-`shared/` is copied or bind-mounted wholesale into many services rather than being a versioned/installable package.
-
-It contains clean cross-service runtime modules (`contracts`, Redis, internal API clients), but also live harness modules such as:
-
-- `shared/live_contour.py`
-- `shared/live_harness_cleanup.py`
-
-`shared/live_harness_cleanup.py` is ~27 KB and is explicitly listed as a deferred offender in `shared/tests/unit/test_internal_api_transport.py`.
-
-More importantly, production `services/langgraph/src/consumers/deploy_lifecycle.py` imports cleanup helpers from a module named `live_harness_cleanup`. That is a boundary smell in both directions: test/harness code is in the runtime shared package, and runtime deploy code consumes it.
-
-### Why it matters
-
-`shared` is effectively a monorepo-wide ambient dependency. Any addition there becomes available everywhere and is copied into multiple images. That weakens service dependency ownership and makes test-only/runtime-only separation difficult to enforce.
-
-### Recommendation
-
-Split by responsibility before considering packaging:
-
-- `shared/contracts/` — DTOs/enums/queue schema only;
-- `shared/runtime/` or equivalent — genuinely shared clients and primitives;
-- `tests/live/harness/` — stand/live test mechanics;
-- move any genuinely reusable remote cleanup primitive out of the test-named module into a runtime lifecycle module, then have the harness import it rather than the reverse.
-
-Only after the dependency graph is clean is it worth deciding whether `shared` should become one or several installable packages.
-
----
-
-## M3. PO checkpointer silently falls back from durable PostgreSQL to `MemorySaver`
-
-**Severity:** Medium  
-**Removal safety:** 5/5  
-**Removal simplicity:** 5/5
-
-### Evidence
-
-`services/langgraph/src/config/settings.py` makes `CHECKPOINT_DATABASE_URL` optional and `services/langgraph/src/agents/po/graph.py` logs a warning then creates `MemorySaver()` when it is absent.
-
-Production compose always supplies a PostgreSQL checkpointer URL.
-
-### Why it matters
-
-A misconfigured PO process can start successfully while silently losing durable conversation state across restart. For a central user-facing coordinator, that is a meaningful semantic downgrade, not a harmless local default.
-
-This also contradicts the general fail-fast project convention.
-
-### Recommendation
-
-Make persistence required at the PO consumer boundary.
-
-If unit tests need memory persistence, pass `MemorySaver` or `checkpoint_database_url=None` explicitly from test construction rather than making production startup accept the downgrade.
-
-### Progress
-
-**Completed in PR #464 (merged 2026-09-07).** The cleanup is intentionally scoped to the production PO startup boundary:
-
-- when PO LLM configuration enables the PO consumer, `CHECKPOINT_DATABASE_URL` is now required before the langgraph background loops start;
-- missing durable persistence raises immediately instead of allowing PO to start with in-memory conversation state;
-- `checkpoint_database_url` remains optional in the shared langgraph `Settings`, because the same process owns non-PO consumers that do not require this checkpointer;
-- explicit `create_po_graph(..., checkpoint_database_url=None)` / `MemorySaver` construction remains available for unit tests;
-- a startup unit test pins the fail-fast behavior.
-
-Production compose already supplies the PostgreSQL URL, so the normal production path is unchanged; the removed behavior is only the silent durability downgrade under misconfiguration. This item is complete.
-
----
-
-## M4. Run observability still projects canonical ledger data back into compatibility fields
+## M2. Runtime and live-harness ownership still leak through shared, and the leak grew
 
 **Severity:** Medium  
 **Removal safety:** 3/5  
-**Removal simplicity:** 3/5
+**Removal simplicity:** 2/5  
+**Status:** Open and more important than in the previous audit.
 
-### Evidence
+### Current evidence
 
-`services/api/src/routers/runs.py::_attach_ledger_compatibility()` explicitly says:
+services/langgraph/src/consumers/deploy_lifecycle.py still imports:
 
-> Expose old Run observability fields as projections of the ledger.
+- REMOTE_CLEANUP_SCRIPT;
+- build_remote_cleanup_command;
 
-It reads `EngineeringAttemptLedger`, then assigns transient `_ledger_*` attributes so old Run response fields continue to appear populated. The comment also says the old DB columns remain only for rolling compatibility and new engineering writes do not populate them.
+from shared.live_harness_cleanup.
+
+That import is on the production undeploy path.
+
+At the same time shared/live_harness_cleanup.py is now roughly 1,230 lines / 52 KB, up from about 36 KB at the previous refresh. It contains a broad mix of concerns: live-run cleanup, GitHub probes, registry cleanup/probes, target selection and acceptance evidence.
+
+The rest of the module is heavily used by tests/live and cleanup scripts, which makes the production import direction backwards: runtime depends on a module whose dominant owner is the harness.
+
+The 2026-09-21 runtime-image fix is related evidence of why ambient shared dependencies matter: the scaffolder image had to add aiohttp for a shared notification import, and CI now imports every production service entrypoint from its built image to catch undeclared transitive dependencies.
 
 ### Why it matters
 
-This is a classic dual-model compatibility surface: the canonical model is already the ledger, but API shape and old columns keep the old representation alive.
+A shared package is useful for stable contracts and small runtime primitives. It becomes dangerous when it is also the home of test-harness orchestration:
 
-Every new use of the old Run fields extends the migration indefinitely.
+- runtime images can acquire dependencies because a harness module grew;
+- test-only refactors can change production importability;
+- ownership is unclear;
+- a large module makes it hard to know what is safe to import into a service image.
 
 ### Recommendation
 
-Treat this as a deletion project with an explicit deadline:
+Extract only the production-owned undeploy primitive first, for example a small shared/runtime cleanup module containing the remote cleanup script/command contract.
 
-1. search API/frontend/tests for old Run token/cost fields;
-2. migrate consumers to a named ledger/attempt view;
-3. add a contract test forbidding new uses of the old fields;
-4. remove `_attach_ledger_compatibility`;
-5. drop old DB columns in Alembic.
+Then move live acceptance/probe/sweep code under a harness-owned package or tests/live support package. Add an import-boundary test that production service modules cannot import harness-owned modules.
 
-Do not remove the projection before verifying admin/dashboard consumers and historical response expectations.
-
-### Progress
-
-**Completed in PR #483 (merged 2026-09-09).** The canonical ledger is now the only engineering token/cost read surface:
-
-- `_attach_ledger_compatibility()` and its transient `_ledger_*` projections are removed;
-- Run read/update schemas, the SQLAlchemy model and the admin frontend no longer expose `input_tokens`, `output_tokens`, `total_tokens` or `cost_usd`;
-- Alembic drops those four retired `runs` columns;
-- Grafana token/cost panels read `engineering_attempt_ledger` directly;
-- service and boundary tests pin the ledger read path and prevent the compatibility surface from returning.
-
+Do not move all 1,230 lines in one PR.
 
 ---
 
-## M5. Temporary-access lifecycle still carries a retired schema and runtime guards
+## M5. Legacy temporary-access schema and runtime branches still exist
+
+**Severity:** Medium  
+**Removal safety:** 3/5  
+**Removal simplicity:** 3/5  
+**Status:** Open, but the safe removal path improved.
+
+### Current evidence
+
+shared/models/temporary_access_grant.py still maps the retired columns as:
+
+- legacy_env_key -> env_key;
+- legacy_subject -> subject.
+
+services/api/src/routers/temporary_access.py still contains:
+
+- _LEGACY_REMEDIATION;
+- _is_legacy();
+- _reject_legacy_record();
+- special behavior for target-less legacy rows.
+
+This is not dead code: a live target-less row still changes API behavior.
+
+### What changed since the old audit
+
+PR #495 narrowed contention to an exact known target and added an audited operator drain. The drain can close either a live legacy row or a properly escalated target-backed revoke failure without manual SQL.
+
+That makes this finding less risky to finish: the repository now has a supported operational escape hatch.
+
+### Recommendation
+
+Treat this as a migration with proof:
+
+1. use the drain path for any remaining live legacy rows;
+2. prove no supported producer can create target-less rows;
+3. decide whether revoked historical rows need to stay queryable;
+4. migrate/archive history if required;
+5. remove legacy runtime branches;
+6. drop env_key and subject in a final schema migration.
+
+The operator drain should survive if it still has a purpose for current target-backed revoke failures; only its legacy branch should disappear.
+
+---
+
+## M7. ConfigStore still has a global, unbounded last-known-good policy
 
 **Severity:** Medium  
 **Removal safety:** 2/5  
-**Removal simplicity:** 3/5
+**Removal simplicity:** 3/5  
+**Status:** Open.
 
-### Evidence
+### Current evidence
 
-`shared/models/temporary_access_grant.py` retains:
+shared/config_store.py::_source_unavailable() returns the last cached value whenever the config API is unreachable, returns malformed data, or answers a non-404 error.
 
-- `legacy_env_key` mapped to old `env_key`;
-- `legacy_subject` mapped to old `subject`.
+Once a key has been cached, this fallback has no maximum stale age. The normal cache TTL decides when to re-read, but it does not bound how old a value may be when the source is broken.
 
-The comment says new records never populate them and they exist only so terminal slot history is readable.
-
-`services/api/src/routers/temporary_access.py` additionally contains:
-
-- `_LEGACY_REMEDIATION`;
-- `_is_legacy()`;
-- `_reject_legacy_record()`;
-- `_reject_live_legacy()`;
-- special list behavior that includes legacy history only for a QA-run lookup.
-
-This is good defensive migration code, but it is still a nontrivial amount of runtime branching for a retired lifecycle.
+The same module also has get_category(), which returns an empty mapping after a request failure. Current code search finds no production caller for get_category(), so that branch is currently mostly dead API surface rather than a production fallback.
 
 ### Why it matters
 
-Unlike a harmless historical column, the old model still affects create/list/get/update semantics and can block new capability-backed grants if a live legacy row exists.
+The repository now has more security, budget, executor and admission policy in system config. Treating every key as equally safe to run stale is too coarse.
+
+A stale polling interval is different from stale admission/security policy.
 
 ### Recommendation
 
-Do **not** blindly delete it. First prove the database invariant:
+Classify config at the call site or schema level:
 
-- no non-revoked target-less grants exist;
-- no supported rollback/version can create them;
-- historical UI/API consumers do not require the old fields.
+- startup-critical / security / admission / budget: fail closed;
+- operational timing / observability: bounded last-known-good may be acceptable.
 
-Then perform a data migration to a final historical representation (or archive/export if history is only operational evidence), remove runtime rejection paths, and drop the old columns.
+If stale reads are retained, give them a maximum staleness bound and a metric/alert. Remove get_category() if no production caller appears.
 
-This is one of the best examples of "legacy that should eventually disappear, but is currently doing useful fail-closed work."
-
----
-
-## M6. `tools.py` keeps backward-compatibility re-exports primarily for old imports and patch targets
-
-**Severity:** Medium  
-**Removal safety:** 4/5  
-**Removal simplicity:** 4/5
-
-### Evidence
-
-`services/langgraph/src/agents/po/tools.py` says it re-exports tools from submodules "for backward compatibility" and explicitly preserves old test patch targets such as:
-
-```python
-patch("src.agents.po.tools._get_api", ...)
-```
-
-The real implementation is already split across `tools_briefs`, `tools_projects`, `tools_shared`, and `tools_stories`.
-
-### Why it matters
-
-The facade makes old import topology part of the de facto API and lets tests pin implementation paths that the production code no longer conceptually owns.
-
-### Recommendation
-
-Keep `get_all_tools()` as the public composition point, but update internal tests/importers to patch/import the real owner modules. Then remove compatibility re-exports that are not part of the intended public surface.
-
-This should be easy to do with code search and is unlikely to affect runtime behavior.
-
-
-### Progress
-
-**Completed in PRs #479 and #480 (last merge 2026-09-08).**
-
-- PR #479 removed `_get_api`, `_get_stream_client`, and `_user_headers` from the aggregate surface.
-- PR #480 moved `init_po_clients` imports to `tools_shared` in the production consumer, tests and live preflight.
-- Domain tools and constants are imported from `tools_projects`, `tools_briefs`, and `tools_stories`; `tools.py` no longer re-exports them or the startup initializer.
-- `get_all_tools()` composes the same 19 tool objects in the same order through owner modules. The four utility tools remain defined in `tools.py`; their names, schemas and behavior are unchanged.
-- Boundary tests reject old caller imports and retired exports and pin composition identity/order. The existing behavioral reminder queue assertion remains.
-- PR #480 CI passed on `cf867e3637ec6d003184afc5b5b891e82cba74ad` before merge (https://github.com/vladmesh/codegen_orchestrator/actions/runs/34292309962).
-
-No compatibility-export cleanup remains under M6. Moving locally owned utility implementations elsewhere would be a separate architectural choice.
+This is a policy split, not a request to globally delete resilience.
 
 ---
 
-## M7. ConfigStore's stale-last-known behavior is a deliberate fallback that conflicts with the global fail-fast doctrine
+## M9. Executor-profile diagnostics mirror private CLI file formats
 
 **Severity:** Medium  
 **Removal safety:** 2/5  
-**Removal simplicity:** 4/5
+**Removal simplicity:** 2/5  
+**Status:** New since the previous audit.
 
-### Evidence
+### Current evidence
 
-`shared/config_store.py::_source_unavailable()` returns an expired cached value when the config API becomes unreachable or returns an invalid response.
+The Codex worker image intentionally pins @openai/codex to 0.144.6, which is good reproducibility.
 
-The docstring makes the policy explicit: already-running callers keep running on their last known value.
+But services/worker-manager/src/codex_auth.py is now roughly 492 lines / 19.5 KB and validates detailed auth/profile structure. It grew from about 2.5 KB at the previous refresh.
+
+services/worker-manager/src/host_profile.py is a new roughly 414-line / 14.9 KB parser layer that deliberately mirrors details of the CLI parser, including:
+
+- duplicate-key rejection;
+- nesting limits;
+- lone-surrogate rejection;
+- integer range handling;
+- floating-point/serde_json behavior;
+- JWT/session expiry extraction.
+
+shared/contracts/dto/executor_diagnostics.py also grew substantially to carry these observations and alert state.
+
+The implementation is careful and well tested. The debt is the coupling, not sloppy code.
 
 ### Why it matters
 
-This behavior may be operationally correct, but it is an exception to `AGENTS.md`'s broad "fail fast / no fallback values" rule.
+The worker manager is now a compatibility adapter for a private on-disk format owned by external CLIs. A CLI update can be semantically compatible for normal use but still break the diagnostic mirror.
 
-The problem is less the code than the policy ambiguity: future contributors cannot know whether "last-known config" is approved resilience or technical debt.
+Because admission may use these diagnostics, drift can refuse healthy executors or admit unusable ones.
 
 ### Recommendation
 
-Pick one of two directions and document it as an invariant:
+Keep the fail-closed diagnostics, but make the compatibility boundary explicit:
 
-- **Fail closed:** no stale reads; config-source failure stops the operation/service.
-- **Last-known-good:** stale reads are explicitly allowed for named operational settings, with a maximum staleness bound and metrics/alerts.
+1. put each CLI format behind a named versioned adapter;
+2. bind the adapter to the exact CLI version installed in the worker image;
+3. maintain fixture files generated/read by that pinned CLI version;
+4. make a CLI version bump fail CI until the corresponding adapter fixtures pass;
+5. prefer an official CLI introspection command if/when one can provide the same facts.
 
-I would prefer the second for polling intervals and health thresholds, but not for security/admission/budget policy. A single ConfigStore policy for both categories is too coarse.
-
-So this item is more likely to be **refined** than simply deleted.
+Do not replace these checks with permissive parsing.
 
 ---
 
-## M8. Frontend builds rely on `npm ci --legacy-peer-deps`
+## M10. Core orchestration still bypasses function complexity gates
 
 **Severity:** Medium  
-**Removal safety:** 4/5  
-**Removal simplicity:** 4/5
+**Removal safety:** 3/5  
+**Removal simplicity:** 2/5  
+**Status:** Newly identified in this refresh; the suppressions already existed on 2026-09-12.
 
-### Evidence
+### Current evidence
 
-Both:
+The root Ruff policy is active, but several important orchestration functions explicitly suppress the rules that would normally flag large decision surfaces:
 
-- `services/admin-frontend/Dockerfile`
-- `services/user-dashboard/Dockerfile`
+- services/scheduler/src/tasks/supervisor/deploy.py::supervise_deploying_stories — C901, PLR0912, PLR0915;
+- services/langgraph/src/consumers/deploy.py::process_deploy_job — C901, PLR0911, PLR0912, PLR0915;
+- services/scheduler/src/tasks/server_sync.py::_sync_server_list — C901, PLR0912, PLR0915.
 
-run:
+The surrounding modules are substantial: deploy supervision is roughly 1,613 lines and the deploy consumer roughly 834 lines.
 
-```dockerfile
-npm ci --legacy-peer-deps
-```
+This does not undo H4. H4 was about worker services inheriting the repository lint policy. M10 is a separate observation that some central orchestration code opts out of the most relevant complexity checks locally.
 
 ### Why it matters
 
-This globally disables peer-dependency enforcement for reproducible production builds. It usually means the lockfile currently encodes a dependency graph that modern npm considers inconsistent.
+These functions encode state machines, retry budgets and typed failure routes. High branch/statement counts make it easier to introduce a path that:
 
-Unlike intentional runtime fallbacks, this is almost pure package-management debt.
+- skips a durable transition;
+- spends a retry twice;
+- loses a notification;
+- conflates refusal with failure;
+- becomes difficult to exercise in isolation.
 
 ### Recommendation
 
-Run plain `npm ci`, inspect the actual peer conflicts, update/replace the offending packages, regenerate the lockfiles, and remove the flag.
+Refactor by state transition, not by arbitrary helper extraction.
 
-Do both frontends in the same cleanup if they share the same dependency cause; otherwise split them.
+For each function:
+
+1. identify the closed set of typed outcomes;
+2. map each outcome to a small handler with explicit inputs;
+3. keep the outer function as selection/dispatch;
+4. move tests to the handlers plus one routing table/coverage test;
+5. remove the complexity suppression only when the state machine is actually simpler.
+
+Take one hotspot per PR.
 
 ---
 
 # Low severity
 
-## L1. Makefile keeps explicitly named compatibility aliases and a legacy aggregate
+## L2. Legacy live-test prefix mega-test remains sweepable
+
+**Severity:** Low  
+**Removal safety:** 4/5  
+**Removal simplicity:** 5/5  
+**Status:** Open.
+
+shared/live_contour.py still declares the production contour with legacy=("mega-test",).
+
+Current code search finds the prefix only in the contour plus cleanup/guard tests, which is a good sign: it does not appear to be a current producer.
+
+The missing step is operational proof that no resource still needs that sweep prefix.
+
+### Recommendation
+
+Run the production-safe inventory/sweep for that prefix, record that it is empty, then delete the legacy tuple entry and its dedicated tests.
+
+---
+
+## L3. Several external clients still create AsyncClient per request
+
+**Severity:** Low  
+**Removal safety:** 4/5  
+**Removal simplicity:** 3/5  
+**Status:** Open.
+
+Confirmed examples on current main include:
+
+- shared/clients/github/_base.py::_make_request();
+- shared/clients/time4vps.py::_request();
+- services/infra-service/src/provisioner/bitlaunch.py::get_server_ip();
+- shared/clients/embedding.py::_generate_batch();
+- shared/clients/registry.py::manifest_digest();
+- shared/clients/infra_client.py health probe helper.
+
+For GitHub and Time4VPS in particular, the class is long-lived conceptually but the connection pool is not.
+
+### Recommendation
+
+Give long-lived client objects one owned AsyncClient with explicit close/context lifecycle. Keep one-shot probes one-shot where lifecycle complexity would cost more than pooling saves.
+
+Do not introduce a process-global HTTP singleton.
+
+---
+
+## L4. Written environment-default policy still contradicts actual safe defaults
+
+**Severity:** Low  
+**Removal safety:** 4/5  
+**Removal simplicity:** 5/5  
+**Status:** Open.
+
+AGENTS.md still says:
+
+- fail fast and do not add fallback values;
+- environment variables — never use default values.
+
+shared/config.py intentionally says its base fields are optional with sensible defaults and provides defaults for service name, log format, log level and default agent type.
+
+Those defaults are not equivalent to silently defaulting a required secret or endpoint. The code is more nuanced than the rule.
+
+### Recommendation
+
+Narrow the convention:
+
+- identity, credentials, connectivity and required production policy: no default;
+- safe presentation/logging/local ergonomics: documented defaults allowed;
+- behavior-changing production policy: explicit env/system config, not a hidden fallback.
+
+This is a documentation fix, not a request to delete useful defaults.
+
+---
+
+## L5. Architecture documentation still describes retired Run accounting
 
 **Severity:** Low  
 **Removal safety:** 5/5  
-**Removal simplicity:** 5/5
+**Removal simplicity:** 5/5  
+**Status:** New finding.
 
-### Evidence
+M4 is complete: engineering token/cost accounting is canonical in engineering_attempt_ledger and the old Run compatibility fields/columns were removed.
 
-`Makefile` contains:
-
-- `test-live-mega` as a "Temporary compatibility alias" for `test-live-mega-noop`;
-- `test-live-pipeline` as a "Legacy aggregate, not a named suite".
-
-`tests/live/README.md` says the legacy aggregate intentionally remains until duplicate coverage is removed later.
+ARCHITECTURE.md still says the runs table stores token/cost effort information. That is now misleading and contradicts the completed M4 migration.
 
 ### Recommendation
 
-This is exactly the kind of shim that should have an expiry condition.
+Update the monitoring section so:
 
-For each alias, identify callers in CI/docs/scripts. When only humans/docs remain, update them and delete the alias. The aggregate can go when duplicate suite coverage is removed.
+- runs owns lifecycle/status/timing/result identity;
+- engineering_attempt_ledger owns engineering token/cost accounting;
+- Grafana reads engineering accounting from the ledger.
 
-No architectural redesign is needed.
-
-### Progress — 2026-09-12
-
-**Completed in [PR #486](https://github.com/vladmesh/codegen_orchestrator/pull/486) (merged 2026-09-12).**
-
-- removed the actual `test-live-mega` compatibility target and `test-live-pipeline` legacy aggregate from the Makefile and `.PHONY`;
-- updated `docs/TESTING.md`, `docs/live-deploy-operations.md`, and `tests/live/README.md` to use canonical named targets;
-- added a regression guard against restoring either retired target or its retired documented command spelling;
-- added the already-existing `test-live-mega-brief-package` target to `.PHONY` and `make help` while normalizing the target inventory.
-
-**Validation:** full CI run `34697654584` passed on head `08a556c`; merged as `f9ac3eb8`.
+This can be a tiny docs-only cleanup.
 
 ---
 
-## L2. Legacy live-test prefix `mega-test` remains sweepable
+# Completed original findings
 
-**Severity:** Low  
-**Removal safety:** 4/5  
-**Removal simplicity:** 5/5
+These findings were spot-checked during the 2026-09-21 refresh and show no regression evidence.
 
-### Evidence
+## H2. PO summarization configuration
 
-`shared/live_contour.py` gives the production contour:
+**Complete — PRs #476 and #478.**
 
-```python
-legacy = ("mega-test",)
-```
+The PO consumer still constructs ConfigStore and validates the required summarization keys. Search finds no return of the retired numeric env plumbing.
 
-The prefix participates in cleanup ownership but not new stand resource creation.
+## H3. GitHub repository failure semantics
 
-### Recommendation
+**Complete — PR #477.**
 
-Query/clean old resources carrying that prefix, confirm no current test producer uses it, then delete the prefix and its tests.
+Expected repository conditions remain typed/status-driven. Keep the narrow deletion race fallback described in K3.
 
-Until that operational check is done, keeping it is cheap and safer than leaking old live-test resources.
+## H4. Worker root lint policy
 
----
+**Complete — PR #482, after #475.**
 
-## L3. External HTTP clients frequently create a new `httpx.AsyncClient` per request
+The worker services remain on the repository Ruff policy. M10 is a distinct issue about local complexity suppressions in orchestration functions, not a regression of H4.
 
-**Severity:** Low  
-**Removal safety:** 4/5  
-**Removal simplicity:** 3/5
+## M1. Worker-wrapper run task ownership
 
-### Evidence
+**Complete — PR #463.**
 
-Examples include:
+The old private task/stop-event ownership hack remains removed.
 
-- `shared/clients/github/_base.py`;
-- `shared/clients/time4vps.py`;
-- `services/infra-service/src/provisioner/bitlaunch.py`;
-- `shared/clients/embedding.py`;
-- `shared/clients/registry.py`.
+## M3. Durable PO checkpointer
 
-Some other clients (`InternalAPIClient`, worker broker) correctly keep a long-lived client.
+**Complete — PR #464.**
 
-### Why it matters
+The reusable graph builder can still construct MemorySaver when no checkpoint URL is supplied, which is useful for explicit tests/standalone construction. Enabled production PO startup requires its durable checkpoint configuration, so this is not the old silent production downgrade.
 
-Per-request clients throw away connection pooling and make timeout/retry/resource ownership inconsistent. This is mostly performance/cleanliness rather than correctness at current scale.
+## M4. Run accounting compatibility
 
-### Recommendation
+**Complete — PR #483.**
 
-Give long-lived client classes one owned `AsyncClient` and an explicit `close()` / async context lifecycle. Do not introduce a global singleton.
+The old projection helper is absent from production code; its name appears only in a regression/boundary test. Engineering accounting belongs to the ledger.
 
----
+## M6. PO tool compatibility re-exports
 
-## L4. Base settings policy and actual defaults are not fully aligned
+**Complete — PRs #479 and #480.**
 
-**Severity:** Low  
-**Removal safety:** 3/5  
-**Removal simplicity:** 3/5
+No new compatibility facade was found in the refresh.
 
-### Evidence
+## M8. Frontend legacy peer dependency bypass
 
-`AGENTS.md` says required environment variables should never have default values and presents this as a broad project convention.
+**Complete — PR #481.**
 
-At the same time, `shared/config.py` intentionally defines defaults for service name, log format, log level, and default agent type, while compose has several `${VAR:-default}` values for agent types, logging, host paths, and optional credentials.
+Search finds no legacy-peer-deps use.
 
-Many of these defaults are reasonable; the issue is that the written rule sounds stronger than the actual architecture.
+## L1. Retired live-test Makefile entrypoints
 
-### Recommendation
+**Complete — PR #486.**
 
-Narrow the rule:
-
-- **required identity/security/connectivity config:** no defaults;
-- **safe local ergonomics / non-security operational config:** defaults allowed if documented;
-- **behavior-changing production policy:** prefer system config or explicit env, not hidden defaults.
-
-This is primarily a documentation/policy cleanup so future "remove all defaults" cards do not accidentally delete useful ergonomics.
+The Makefile does not define the retired targets. Their spellings remain only in comments/guards documenting that they are forbidden.
 
 ---
 
-# Legacy-looking code that should NOT be removed blindly
+# Legacy-looking code that should not be removed blindly
 
-The following items look like exactly the "shim/fallback garbage" this audit was asked to find, but they currently have a defensible purpose.
+## K1. Legacy recipient user_id tombstone
 
-## K1. Legacy `user_id` recipient rejection is a tombstone, not a compatibility decoder
+**Keep for now.**
 
-**Keep for now.**  
-**Eventual removal safety:** 3/5  
-**Eventual removal simplicity:** 4/5
+The special rejection protects a historically ambiguous field from being silently ignored. Remove it only after producer/version/Redis-retention proof shows the old payload cannot appear.
 
-`shared/contracts/recipient.py` does **not** translate old `user_id` payloads into the new format. It rejects them fail-closed, because the field historically meant two different identities and Pydantic would otherwise ignore it as an unknown field.
+## K2. CLAUDE.md compatibility entrypoint
 
-The Redis client / Telegram proactive consumer also alert on this condition.
+**Keep while the external tool discovers repository instructions through it.**
 
-This is a good migration tombstone. Remove it only when all of the following are true:
+It points to the canonical instructions rather than duplicating policy, so its maintenance cost is tiny.
 
-- no old producer version can publish the field;
-- Redis retention/PEL guarantees no old message can still be delivered;
-- rolling downgrade is not supported.
-
-At that point, delete the special alert path and let the ordinary DTO extra-field policy own malformed messages.
-
-## K2. `CLAUDE.md` compatibility entrypoint is a tool-discovery shim
-
-**Keep unless Claude Code no longer needs it.**
-
-`CLAUDE.md` points to canonical `AGENTS.md` and deliberately does not duplicate instructions. That is a low-cost compatibility file at an external tool-discovery boundary, not runtime legacy.
-
-Deleting it would save almost nothing and could make one coding-agent harness stop discovering repository instructions.
-
-## K3. Repo-token → org-token fallback during repository deletion is narrow and evidence-driven
+## K3. Repo-token to org-token fallback during repository deletion
 
 **Keep.**
 
-In `shared/clients/github/_repos.py::delete_repo()`, a repo-scoped installation lookup returning 404 causes a retry with the org installation token. The code explains the concrete race: a newly created repo may exist before repo-scoped installation binding is visible.
+This remains a narrow, status-driven workaround for repository-installation visibility after creation. It is qualitatively different from a broad exception fallback.
 
-This fallback is typed by HTTP status and scoped to one operation. It is qualitatively different from broad exception/string fallbacks elsewhere in the GitHub client.
+## K4. ConfigStore last-known-good
 
-## K4. ConfigStore last-known-good may be worth keeping for non-critical operational tuning
+**Keep selectively, not globally.**
 
-**Do not delete globally without classifying config keys.**
-
-For polling/observability settings, last-known-good is reasonable resilience. For admission, budget, authentication, or security policy it can be dangerous. The cleanup is to make the distinction explicit, not necessarily to eliminate every stale read.
+M7 should make stale policy explicit by config class. Operational timing may reasonably use bounded last-known-good; security/admission/budget policy should not inherit that behavior accidentally.
 
 ---
 
-# Suggested cleanup order
+# Suggested cleanup order from current main
 
-## Phase 1 — safe, localized removals
+## Phase 1 — safe, local cleanup
 
-1. **Completed in PR #477:** remove GitHub exception-string parsing and broad "return empty" behavior.
-2. **Completed in PR #463:** remove the `worker-wrapper` private task-ownership hack; `main` now owns and cancels the run task directly.
-3. **Completed in PR #464:** make PO checkpointer persistence required in the production consumer path while retaining explicit `MemorySaver` construction for tests.
-4. **Completed in PRs #476 and #478:** require system summarization config, log effective values, and remove retired numeric env/deploy wiring.
-5. **Completed in PR #481:** remove the obsolete `--legacy-peer-deps` flag; both current lockfiles already pass plain `npm ci`.
-6. **Completed in PR #486:** remove the obsolete live-test Makefile alias/legacy aggregate, update docs to canonical named targets, and pin their absence with a regression guard.
+1. **L5:** fix ARCHITECTURE.md ledger ownership.
+2. **L4:** make the env-default convention match the actual architecture.
+3. **L2:** perform the legacy mega-test resource proof and delete the prefix if empty.
+4. **L3:** migrate one high-frequency external client to owned connection pooling and establish the lifecycle pattern.
 
-These are high-confidence changes with limited architectural surface.
+These are small and should not alter product state-machine semantics.
 
-## Phase 2 — compatibility deletion with proof
+## Phase 2 — bounded compatibility/layer cleanup
 
-1. **Completed in PR #483:** migrate Run observability consumers to the engineering ledger and drop compatibility projections/columns.
-2. Prove no live target-less temporary-access grants exist, then remove the retired slot lifecycle schema and guards.
-3. Prove no old recipient payload can remain in Redis, then remove the `user_id` tombstone.
-4. Sweep old `mega-test` resources and remove the prefix.
-5. **Completed in PRs #479 and #480:** migrate tests/importers to owner modules and remove PO tool compatibility re-exports.
+1. **M2:** extract the tiny production undeploy primitive out of live_harness_cleanup and add an import-boundary test.
+2. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
+3. **M9:** formalize versioned executor-profile adapters and fixture/version gates.
+4. **M7:** classify stale-safe versus fail-closed system config and bound any retained stale reads.
 
-The important word here is **proof**: these are easy to delete mechanically but unsafe to delete based only on code search.
+Each item can be delivered incrementally without a rewrite.
 
-## Phase 3 — architectural cleanup
+## Phase 3 — state-machine decomposition
 
-1. **H1 partially completed in PR #485:** pipeline, infrastructure and maintenance now have separate entrypoints and config/readiness boundaries. Next, establish durable ordering/ownership guarantees before splitting the remaining dispatcher cycle.
-2. Separate live-test harness code from runtime `shared` code.
-3. **Completed in PR #482 after the Ruff upgrade in #475:** both worker services inherit the root lint policy; local configs are removed and the 464 reported root-rule violations have been addressed, including explicit, narrow exceptions for intentional boundaries.
-4. Normalize long-lived external HTTP client ownership.
+1. **M10:** split one complexity-exempt orchestration function by typed outcome and remove its suppression.
+2. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
+3. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
-This phase reduces future change cost more than it removes current bugs.
+H1 should be the architectural destination, but it should not be the first large refactor attempted from this audit.
 
 ---
 
 # Overall assessment
 
-The codebase is not suffering from uncontrolled legacy accumulation. In fact, the recent architecture shows repeated attempts to replace implicit behavior with typed contracts and durable state.
+The repository is healthier than the original audit snapshot. A large amount of transition residue has been removed, and recent work consistently moves failure handling toward typed outcomes, durable evidence and explicit recovery.
 
-The remaining debt has a recognizable shape:
+The remaining debt is concentrated rather than diffuse:
 
-- **transition residue**: old fields, aliases, tombstones, compatibility projections;
-- **resilience residue**: broad fallbacks that survived earlier iterations even though the repository now prefers typed failure;
-- **process-boundary lag (reduced by #485)**: scheduler services are separate; the ordered pipeline dispatcher still combines several responsibilities;
-- **tooling lag (resolved by #482)**: both worker services now inherit the repository quality gate;
-- **shared-package sprawl**: runtime and test-harness concerns coexist in one ambient dependency tree.
+- **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
+- **module/layer concentration:** live-harness and runtime helpers still share an oversized ambient module;
+- **compatibility residue:** temporary-access legacy rows and ConfigStore policy remain;
+- **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
+- **complexity exemptions:** a few central state machines sit outside normal per-function complexity limits;
+- **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
-The best cleanup strategy is therefore not a rewrite. The repository is already close to the architecture it says it wants. The highest leverage is to **finish migrations that are already half-complete and make the runtime/process boundaries match the code boundaries that already exist**.
+The next cleanup should continue the repository's existing direction: preserve typed contracts and durable evidence, then make ownership boundaries match them. The evidence does not support a rewrite.
