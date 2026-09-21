@@ -44,7 +44,6 @@ from .codex_profile_v01446 import (
     parse_json,
     session_tokens,
 )
-
 from .host_profile import (
     JSON_PARSE_FAILURE,
     LAST_REFRESH_CLOCK_SKEW,
@@ -89,9 +88,9 @@ def inspect_codex_host_session(profile_path: str | None, *, now: datetime) -> Pr
     auth_data = _read_auth(profile)
     if isinstance(auth_data, ProfileInspection):
         return auth_data
-    format_refusal = format_refusal(auth_data)
-    if format_refusal is not None:
-        return unusable(format_refusal)
+    format_error = format_refusal(auth_data)
+    if format_error is not None:
+        return unusable(format_error)
     mode_refusal = auth_mode_refusal(auth_data)
     if mode_refusal is not None:
         return unusable(mode_refusal)
