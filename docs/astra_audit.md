@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-21  
-Audited branch: main at 145d65e5070f121c79e5c9af48bab8294d9c81e2 (after PR #552)  
+Audited branch: main at 44e330a132a394f44229eec8731794a656a12927 (after PR #553)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -24,9 +24,9 @@ Those improvements do not invalidate the main architectural concern from the ori
 
 Of the original sixteen H/M/L findings:
 
-- **9 remain complete:** H2, H3, H4, M1, M3, M4, M6, M8 and L1.
+- **10 remain complete:** H2, H3, H4, M1, M2, M3, M4, M6, M8 and L1.
 - **H1 remains partially complete.**
-- **6 remain open:** M2, M5, M7 and L2-L4.
+- **5 remain open:** M5, M7 and L2-L4.
 
 This refresh adds three findings:
 
@@ -34,7 +34,7 @@ This refresh adds three findings:
 - **M10 — newly identified, but not newly introduced:** several core orchestration functions are explicitly exempt from Ruff complexity/branch/statement limits.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-So the current actionable set is one High finding, five Medium findings and four Low findings. The completed original work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, four Medium findings and four Low findings. The completed original work should stay completed; no rewrite is justified.
 
 ---
 
@@ -48,6 +48,7 @@ The most architecture-relevant changes since the previous refresh are:
 - PRs #496-#505 added target readiness/finalization evidence and explicit infrastructure recovery.
 - PRs #506-#524 substantially expanded central QA contracts, failure classification and worker lifecycle handling.
 - PRs #525-#552 expanded deterministic/live acceptance evidence, teardown, generated-product isolation, state-age supervision, operator resume and service-image runtime checks.
+- PR #553 removed the production undeploy dependency on `shared.live_harness_cleanup`, moved the shared cleanup primitive to `shared.deployment_cleanup`, and added a service-source import boundary guard.
 
 These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1, M2 and M10 deserve attention even though many individual failure cases are better than before.
 
@@ -62,7 +63,7 @@ These changes mostly harden correctness. They also make a few existing coordinat
 | H3 | High | Complete | GitHub expected failures remain status-driven rather than exception-string/empty-result fallbacks. |
 | H4 | High | Complete | Worker services remain under the root Ruff policy. |
 | M1 | Medium | Complete | The old worker-wrapper private task ownership split is gone. |
-| M2 | Medium | Open; worsened | Production deploy lifecycle still imports shared.live_harness_cleanup, which has grown into a large live-harness/runtime utility module. |
+| M2 | Medium | Complete | PR #553 moved the undeploy/recovery primitive to shared.deployment_cleanup and added a guard forbidding production service imports from shared.live_harness*. |
 | M3 | Medium | Complete | Production PO startup requires durable checkpoint configuration; MemorySaver remains an explicit graph/test-capable path rather than the enabled production downgrade. |
 | M4 | Medium | Complete | Run accounting compatibility is gone and the engineering attempt ledger is canonical. |
 | M5 | Medium | Open; safer remediation | Legacy temporary-access columns/branches remain, but operator drain now provides a supported path to eliminate unreconcilable live legacy rows. |
@@ -155,49 +156,6 @@ For every edge that currently depends on call order, define the durable precondi
 ---
 
 # Medium severity
-
-## M2. Runtime and live-harness ownership still leak through shared, and the leak grew
-
-**Severity:** Medium  
-**Removal safety:** 3/5  
-**Removal simplicity:** 2/5  
-**Status:** Open and more important than in the previous audit.
-
-### Current evidence
-
-services/langgraph/src/consumers/deploy_lifecycle.py still imports:
-
-- REMOTE_CLEANUP_SCRIPT;
-- build_remote_cleanup_command;
-
-from shared.live_harness_cleanup.
-
-That import is on the production undeploy path.
-
-At the same time shared/live_harness_cleanup.py is now roughly 1,230 lines / 52 KB, up from about 36 KB at the previous refresh. It contains a broad mix of concerns: live-run cleanup, GitHub probes, registry cleanup/probes, target selection and acceptance evidence.
-
-The rest of the module is heavily used by tests/live and cleanup scripts, which makes the production import direction backwards: runtime depends on a module whose dominant owner is the harness.
-
-The 2026-09-21 runtime-image fix is related evidence of why ambient shared dependencies matter: the scaffolder image had to add aiohttp for a shared notification import, and CI now imports every production service entrypoint from its built image to catch undeclared transitive dependencies.
-
-### Why it matters
-
-A shared package is useful for stable contracts and small runtime primitives. It becomes dangerous when it is also the home of test-harness orchestration:
-
-- runtime images can acquire dependencies because a harness module grew;
-- test-only refactors can change production importability;
-- ownership is unclear;
-- a large module makes it hard to know what is safe to import into a service image.
-
-### Recommendation
-
-Extract only the production-owned undeploy primitive first, for example a small shared/runtime cleanup module containing the remote cleanup script/command contract.
-
-Then move live acceptance/probe/sweep code under a harness-owned package or tests/live support package. Add an import-boundary test that production service modules cannot import harness-owned modules.
-
-Do not move all 1,230 lines in one PR.
-
----
 
 ## M5. Legacy temporary-access schema and runtime branches still exist
 
@@ -494,6 +452,26 @@ The worker services remain on the repository Ruff policy. M10 is a distinct issu
 
 The old private task/stop-event ownership hack remains removed.
 
+## M2. Runtime and live-harness cleanup ownership
+
+**Complete — PR #553.**
+
+The production undeploy path now imports the shared cleanup command/script contract from
+`shared.deployment_cleanup`, while the live harness consumes that same neutral primitive.
+The cleanup policy itself was not duplicated or rewritten.
+
+A repository boundary test now scans `services/*/src/**/*.py` and fails if production
+service code imports `shared.live_harness*`. Production-facing cleanup tests use the
+neutral module as well.
+
+**Validation:** the full required CI gate passed, including Ruff, unit tests, offline live
+regressions, LangGraph service tests, integration tests, shared freshness and production
+service-image entrypoint imports. PR #553 merged as
+`44e330a132a394f44229eec8731794a656a12927`.
+
+The large harness module can still be decomposed internally when useful, but the
+production-to-harness dependency identified by M2 is closed.
+
 ## M3. Durable PO checkpointer
 
 **Complete — PR #464.**
@@ -567,10 +545,9 @@ These are small and should not alter product state-machine semantics.
 
 ## Phase 2 — bounded compatibility/layer cleanup
 
-1. **M2:** extract the tiny production undeploy primitive out of live_harness_cleanup and add an import-boundary test.
-2. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
-3. **M9:** formalize versioned executor-profile adapters and fixture/version gates.
-4. **M7:** classify stale-safe versus fail-closed system config and bound any retained stale reads.
+1. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
+2. **M9:** formalize versioned executor-profile adapters and fixture/version gates.
+3. **M7:** classify stale-safe versus fail-closed system config and bound any retained stale reads.
 
 Each item can be delivered incrementally without a rewrite.
 
@@ -591,7 +568,7 @@ The repository is healthier than the original audit snapshot. A large amount of 
 The remaining debt is concentrated rather than diffuse:
 
 - **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
-- **module/layer concentration:** live-harness and runtime helpers still share an oversized ambient module;
+- **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows and ConfigStore policy remain;
 - **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
 - **complexity exemptions:** a few central state machines sit outside normal per-function complexity limits;
