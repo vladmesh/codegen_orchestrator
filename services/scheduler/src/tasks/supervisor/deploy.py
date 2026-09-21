@@ -371,7 +371,9 @@ def _log_redeploy_reason(
     event = {
         DeployOutcome.CANCELLED: "deploy_supervisor_redeploy_after_cancel",
         DeployOutcome.IMAGES_NOT_PUBLISHED: "deploy_supervisor_redeploy_after_unpublished_images",
-        DeployOutcome.IMAGE_REGISTRY_UNREADABLE: "deploy_supervisor_redeploy_after_unreadable_registry",
+        DeployOutcome.IMAGE_REGISTRY_UNREADABLE: (
+            "deploy_supervisor_redeploy_after_unreadable_registry"
+        ),
     }.get(outcome)
     if event is not None:
         log.info(event, run_id=run.id)
