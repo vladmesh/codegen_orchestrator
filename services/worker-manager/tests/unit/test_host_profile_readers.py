@@ -55,7 +55,7 @@ def test_codex_profile_adapter_version_matches_worker_image_pin():
     dockerfile = (
         ROOT_DIR / "services/worker-manager/images/worker-base-codex/Dockerfile"
     ).read_text()
-    match = re.search(r"^ARG CODEX_CLI_VERSION=(\\S+)$", dockerfile, flags=re.MULTILINE)
+    match = re.search(r"^ARG CODEX_CLI_VERSION=(\S+)$", dockerfile, flags=re.MULTILINE)
 
     assert match is not None
     assert match.group(1) == CODEX_CLI_VERSION
