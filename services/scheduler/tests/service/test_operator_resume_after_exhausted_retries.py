@@ -15,6 +15,7 @@ outcome, and several quiet supervisor ticks.
 
 import uuid
 
+import httpx
 import pytest
 
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -151,62 +152,70 @@ async def test_resume_after_exhausted_retries_starts_one_fresh_attempt(  # noqa:
     assert resumed.is_success, resumed.text
     assert (await api_client.get_story(story_id)).status is StoryStatus.IN_PROGRESS
 
-    # Both ways an old outcome can be applied to a task: the dispatcher's
-    # replay of a finished run (`task_outcome_replayed`) and the supervisor's
-    # replay onto an in_dev task with no live run — the one that re-parked it
-    # in production. Each is observed, not replaced.
-    replayed: list[str] = []
-    dispatcher_replay = task_dispatcher._recover_dispatched_task
-    supervisor_replay = liveness.replay_terminal_attempt
+    try:
+        # Both ways an old outcome can be applied to a task: the dispatcher's
+        # replay of a finished run (`task_outcome_replayed`) and the supervisor's
+        # replay onto an in_dev task with no live run — the one that re-parked it
+        # in production. Each is observed, not replaced.
+        replayed: list[str] = []
+        dispatcher_replay = task_dispatcher._recover_dispatched_task
+        supervisor_replay = liveness.replay_terminal_attempt
 
-    async def observed_dispatcher_replay(api, replayed_task_id, run, log):
-        replayed.append(run.id)
-        await dispatcher_replay(api, replayed_task_id, run, log)
+        async def observed_dispatcher_replay(api, replayed_task_id, run, log):
+            replayed.append(run.id)
+            await dispatcher_replay(api, replayed_task_id, run, log)
 
-    async def observed_supervisor_replay(api, replayed_task_id, run, actor):
-        replayed.append(run.id)
-        await supervisor_replay(api, replayed_task_id, run, actor)
+        async def observed_supervisor_replay(api, replayed_task_id, run, actor):
+            replayed.append(run.id)
+            await supervisor_replay(api, replayed_task_id, run, actor)
 
-    monkeypatch.setattr(task_dispatcher, "_recover_dispatched_task", observed_dispatcher_replay)
-    monkeypatch.setattr(liveness, "replay_terminal_attempt", observed_supervisor_replay)
-    events_before = len(await api_client.get_task_events(task_id))
+        monkeypatch.setattr(task_dispatcher, "_recover_dispatched_task", observed_dispatcher_replay)
+        monkeypatch.setattr(liveness, "replay_terminal_attempt", observed_supervisor_replay)
+        events_before = len(await api_client.get_task_events(task_id))
 
-    for _ in range(3):
-        await _tick(api_client, redis)
+        for _ in range(3):
+            await _tick(api_client, redis)
 
-    assert replayed == []
-    hops = [
-        (event.from_status, event.to_status)
-        for event in (await api_client.get_task_events(task_id))[events_before:]
-        if event.to_status
-    ]
-    # One hop after the operator's: the dispatcher starting the new attempt.
-    assert hops == [(TaskStatus.TODO, TaskStatus.IN_DEV)], hops
+        assert replayed == []
+        hops = [
+            (event.from_status, event.to_status)
+            for event in (await api_client.get_task_events(task_id))[events_before:]
+            if event.to_status
+        ]
+        # One hop after the operator's: the dispatcher starting the new attempt.
+        assert hops == [(TaskStatus.TODO, TaskStatus.IN_DEV)], hops
 
-    runs = await _engineering_runs(api_client, task_id)
-    fresh = [run for run in runs if run.id not in {old.id for old in parked_runs}]
-    assert len(fresh) == 1, runs
-    assert fresh[0].status is RunStatus.QUEUED
-    assert fresh[0].run_metadata["iteration"] == MAX_ITERATIONS + 1
-    # Every earlier run is exactly as it was: nothing of them was applied again.
-    assert {run.id: run.status for run in runs if run.id != fresh[0].id} == {
-        run.id: run.status for run in parked_runs
-    }
+        runs = await _engineering_runs(api_client, task_id)
+        fresh = [run for run in runs if run.id not in {old.id for old in parked_runs}]
+        assert len(fresh) == 1, runs
+        assert fresh[0].status is RunStatus.QUEUED
+        assert fresh[0].run_metadata["iteration"] == MAX_ITERATIONS + 1
+        # Every earlier run is exactly as it was: nothing of them was applied again.
+        assert {run.id: run.status for run in runs if run.id != fresh[0].id} == {
+            run.id: run.status for run in parked_runs
+        }
 
-    task = await api_client.get_task(task_id)
-    assert task.status == TaskStatus.IN_DEV
-    # The fresh attempt has a retry budget of its own, granted on purpose.
-    assert (task.current_iteration, task.max_iterations) == (
-        MAX_ITERATIONS + 1,
-        MAX_ITERATIONS + 1 + MAX_ITERATIONS,
-    )
-    assert (await api_client.get_story(story_id)).status is StoryStatus.IN_PROGRESS
-    published = [message for _, message in redis.messages if message.task_id == fresh[0].id]
-    assert len(published) == 1
+        task = await api_client.get_task(task_id)
+        assert task.status == TaskStatus.IN_DEV
+        # The fresh attempt has a retry budget of its own, granted on purpose.
+        assert (task.current_iteration, task.max_iterations) == (
+            MAX_ITERATIONS + 1,
+            MAX_ITERATIONS + 1 + MAX_ITERATIONS,
+        )
+        assert (await api_client.get_story(story_id)).status is StoryStatus.IN_PROGRESS
+        published = [message for _, message in redis.messages if message.task_id == fresh[0].id]
+        assert len(published) == 1
 
-    # A second resume while that worker holds the branch is refused with a reason.
-    again = await api_client.request(
-        "POST", f"tasks/{task_id}/resume", json={"guidance": "twice", "actor": "admin"}
-    )
-    assert again.status_code == 422, again.text  # noqa: PLR2004
-    assert again.json()["detail"]["reason"] == "task_not_parked"
+        # A second resume while that worker holds the branch is refused with a reason.
+        with pytest.raises(httpx.HTTPStatusError) as refused:
+            await api_client.request(
+                "POST", f"tasks/{task_id}/resume", json={"guidance": "twice", "actor": "admin"}
+            )
+        assert refused.value.response.status_code == 422, refused.value.response.text  # noqa: PLR2004
+        assert refused.value.response.json()["detail"]["reason"] == "task_not_parked"
+    finally:
+        # The fresh attempt holds a paid-work slot until its run ends; end it so
+        # the suites after this one are admitted against an empty stand.
+        for run in await _engineering_runs(api_client, task_id):
+            if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+                await _fail_live_attempt(api_client, task_id)
