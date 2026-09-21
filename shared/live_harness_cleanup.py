@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 from collections.abc import Mapping
 import json
 import os
@@ -35,6 +36,7 @@ STORY_BRANCH_PROBE_MARKER = "STORY_BRANCH_PROBE:"
 STORY_BRANCH_DIFF_MARKER = "STORY_BRANCH_DIFF:"
 STORY_BRANCH_BASE_PROBE_MARKER = "STORY_BRANCH_BASE_PROBE:"
 MAIN_HEAD_PROBE_MARKER = "MAIN_HEAD_PROBE:"
+MERGE_FILE_SET_PROBE_MARKER = "MERGE_FILE_SET_PROBE:"
 # How the `story-branch-diff` probe chose what to compare the branch against.
 # The choice is a fact of the payload rather than an assumption of its reader:
 # a branch whose story has already merged is compared against something else
@@ -475,6 +477,90 @@ async def probe_main_head(
         commit = resp.json()
 
     payload = {"branch": "main", "sha": commit["sha"]}
+    print(marker + json.dumps(payload))
+    return payload
+
+
+async def _file_contents_at(
+    client: httpx.AsyncClient,
+    *,
+    api: str,
+    headers: dict[str, str],
+    path: str,
+    ref: str,
+) -> str | None:
+    """Read one UTF-8 product file at a commit, preserving an absent file as absent."""
+    response = await client.get(f"{api}/contents/{path}", params={"ref": ref}, headers=headers)
+    if response.status_code == HTTP_NOT_FOUND:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
+        raise RuntimeError(f"GitHub returned no base64 content for {path} at {ref}")
+    try:
+        encoded = "".join(payload["content"].split())
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as error:
+        raise RuntimeError(
+            f"GitHub returned unreadable UTF-8 content for {path} at {ref}"
+        ) from error
+
+
+async def probe_merge_file_set(
+    *,
+    owner: str,
+    repo: str,
+    merge_commit_sha: str,
+    marker: str = MERGE_FILE_SET_PROBE_MARKER,
+) -> dict[str, Any]:
+    """Read the paths one story merge changed on the product's default branch.
+
+    The commit endpoint's ``files`` are GitHub's first-parent change set for
+    the deployed merge commit.  The old worker compose proxy and overwritten
+    product instructions are edits, not paths of their own, so their resulting
+    product files are captured beside that set while the App credential still
+    exists.  Nothing here judges the result; the level-1 predicate does.
+    """
+    gh = GitHubAppClient()
+    repository = await gh.get_repo(owner, repo)
+    default_branch = repository.default_branch
+    token = await gh.get_token(owner, repo)
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{owner}/{repo}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        commit_response = await client.get(f"{api}/commits/{merge_commit_sha}", headers=headers)
+        commit_response.raise_for_status()
+        commit = commit_response.json()
+        paths = sorted(file["filename"] for file in commit.get("files", []))
+        parents = [parent["sha"] for parent in commit.get("parents", [])]
+
+        containment = await client.get(
+            f"{api}/compare/{default_branch}...{commit['sha']}", headers=headers
+        )
+        containment.raise_for_status()
+        merged_into_default_branch = containment.json().get("status") in {"identical", "behind"}
+
+        file_contents: dict[str, str | None] = {}
+        for path in ("Makefile", "AGENTS.md"):
+            if path in paths:
+                file_contents[path] = await _file_contents_at(
+                    client, api=api, headers=headers, path=path, ref=commit["sha"]
+                )
+        parent_file_contents: dict[str, str | None] = {}
+        if "AGENTS.md" in paths and parents:
+            parent_file_contents["AGENTS.md"] = await _file_contents_at(
+                client, api=api, headers=headers, path="AGENTS.md", ref=parents[0]
+            )
+
+    payload = {
+        "merge_commit_sha": commit["sha"],
+        "default_branch": default_branch,
+        "merged_into_default_branch": merged_into_default_branch,
+        "parent_shas": parents,
+        "changed_paths": paths,
+        "file_contents": file_contents,
+        "parent_file_contents": parent_file_contents,
+    }
     print(marker + json.dumps(payload))
     return payload
 
@@ -1005,6 +1091,13 @@ async def _run(args: argparse.Namespace) -> None:
         )
     elif args.command == "main-head-probe":
         await probe_main_head(owner=args.owner, repo=args.repo, marker=args.marker)
+    elif args.command == "merge-file-set-probe":
+        await probe_merge_file_set(
+            owner=args.owner,
+            repo=args.repo,
+            merge_commit_sha=args.merge_commit_sha,
+            marker=args.marker,
+        )
     elif args.command == "github-cleanup":
         await cleanup_github_repo(owner=args.owner, repo=args.repo)
     elif args.command == "registry-cleanup":
@@ -1085,6 +1178,12 @@ def _parser() -> argparse.ArgumentParser:
     main_head.add_argument("--owner", required=True)
     main_head.add_argument("--repo", required=True)
     main_head.add_argument("--marker", default=MAIN_HEAD_PROBE_MARKER)
+
+    merge_file_set = sub.add_parser("merge-file-set-probe")
+    merge_file_set.add_argument("--owner", required=True)
+    merge_file_set.add_argument("--repo", required=True)
+    merge_file_set.add_argument("--merge-commit-sha", required=True)
+    merge_file_set.add_argument("--marker", default=MERGE_FILE_SET_PROBE_MARKER)
 
     github = sub.add_parser("github-cleanup")
     github.add_argument("--owner", required=True)

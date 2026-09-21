@@ -92,6 +92,7 @@ from pipeline_helpers import (
     record_first_checkout,
     record_health_probe,
     record_level1_extension_product_evidence,
+    record_level1_merge_artifact,
     record_level1_product_evidence,
     record_level1_scripted_path,
     record_manager_checkout_script,
@@ -412,6 +413,14 @@ async def _level1_lifecycle_tail(
     return await _undeploy_level1_product(api, api_internal, ctx, debug_prefix=debug_prefix)
 
 
+def _require_level1_merge_artifact(ctx: dict, *, phase: str, debug_prefix: str) -> None:
+    """Stop the lifecycle while the captured merge verdict is still readable."""
+    if record_level1_merge_artifact(ctx):
+        return
+    dump_debug(ctx, f"{debug_prefix}-merge-artifact")
+    raise Level1PhaseFailed(phase, "; ".join(ctx["level1_merge_artifact_verdict"]["reasons"]))
+
+
 async def _level1_extension_story(
     api, api_internal, api_observer, ctx: dict, *, debug_prefix: str
 ) -> None:
@@ -485,6 +494,9 @@ async def _level1_extension_story(
             raise Level1PhaseFailed(
                 "extension_deploy", ctx.get("deploy_run_error", "no deploy run appeared")
             )
+        _require_level1_merge_artifact(
+            ctx, phase="extension_deploy", debug_prefix=f"{debug_prefix}-extension"
+        )
         # The scheduler writes the generated product's CI observations onto the
         # story while it waits for the merge commit's images, so they exist by
         # the time a deploy Run does.
@@ -674,6 +686,8 @@ async def _pipeline_phases(
             raise Level1PhaseFailed("deploy", ctx.get("deploy_run_error", "no deploy run appeared"))
         yield ctx
         return
+    if lifecycle_undeploy:
+        _require_level1_merge_artifact(ctx, phase="deploy", debug_prefix=debug_prefix)
     if not record_env_contract(
         ctx,
         ctx["deploy_head_sha"],
