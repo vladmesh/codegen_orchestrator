@@ -925,6 +925,14 @@ def assert_service_image_imports(jobs: dict[str, Any]) -> None:
     condition = "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
     if job.get("if") != condition:
         fail("service image imports must require fast-checks and ci-contract")
+    python = step_by_name(job, "Set up Python")
+    if python.get("uses") != "actions/setup-python@v7":
+        fail("service image imports must set up Python")
+    if python.get("with", {}).get("python-version") != "3.12":
+        fail("service image imports must use Python 3.12")
+    parser = step_by_name(job, "Install Compose parser")
+    if parser.get("run") != "python -m pip install pyyaml==6.0.3":
+        fail("service image imports must install its pinned Compose parser")
     assert_buildx_retry(job)
     step = step_by_id(job, "service-image-imports")
     if step.get("run") != "python scripts/check_service_image_imports.py":
