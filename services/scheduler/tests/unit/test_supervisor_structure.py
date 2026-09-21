@@ -32,9 +32,7 @@ def test_supervisor_is_a_package_with_a_small_runtime_facade():
 def _async_function(source: str, name: str) -> ast.AsyncFunctionDef:
     tree = ast.parse(source)
     return next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name
     )
 
 
@@ -50,14 +48,17 @@ def test_deploy_supervisor_entrypoint_is_selection_and_aggregation_only():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "_supervise_deploying_story" in calls
-    assert not {
-        "_handle_deploy_success_story",
-        "_handle_deploy_code_fix",
-        "_handle_deploy_retry",
-        "_route_refused_deploy",
-        "_handle_deploy_waiting_user_secret",
-        "_handle_deploy_give_up",
-    } & calls
+    assert (
+        not {
+            "_handle_deploy_success_story",
+            "_handle_deploy_code_fix",
+            "_handle_deploy_retry",
+            "_route_refused_deploy",
+            "_handle_deploy_waiting_user_secret",
+            "_handle_deploy_give_up",
+        }
+        & calls
+    )
 
 
 def test_deploy_outcome_router_covers_the_contract():
