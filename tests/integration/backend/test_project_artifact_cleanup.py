@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from uuid import uuid4
 
-from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
+from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 
 
 def _docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
