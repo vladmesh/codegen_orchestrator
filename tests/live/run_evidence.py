@@ -4005,7 +4005,9 @@ STAGE_NOTICES_NOTE = (
     "The story_stage events each story's owner was sent while it was in work, read "
     "off po:input after the story ended: the stage, what it waited on, the "
     "magnitude of the wait and whether it was an entry or a repeat after the quiet "
-    "interval. Recorded as observed; level1_stage_notices judges them."
+    "interval — beside the stages the harness itself sampled the story in and the "
+    "stand's dispatcher interval they are compared at. Recorded as observed; "
+    "level1_stage_notices judges them."
 )
 
 

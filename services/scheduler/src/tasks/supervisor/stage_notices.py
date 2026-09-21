@@ -3,18 +3,29 @@
 A story in work used to be silent between its creation and its ending, while a
 story being repaired sent message after message. Both read the opposite of what
 they mean: silence reads as "it disappeared", a flood as "it is broken". So each
-story in a stage of `STAGE_NOTICE_STATUSES` produces one notice when it is first
-seen in that stage and one more each time it is still there a quiet interval
-after the last one. A notice names the stage (`StoryStatus`), what it waits for
+story in a stage of `STAGE_NOTICE_STATUSES` produces one notice when a sweep
+first observes it in that stage and one more each time it is still there a
+quiet interval after the last one. A notice names the stage (`StoryStatus`), what it waits for
 (`WAITING_ON_BY_STATUS`) and the order of magnitude of the wait, read from the
 state's configured bound in `state_age.STATE_AGE_BOUNDS` — the number that ends
 the wait is the number the owner is told about. A stage no bound covers says so
 (`UNBOUNDED`) instead of inventing one.
 
+**What is announced is the stage the story is observed in, not every entry.**
+The sweep is a scan that runs once per dispatcher tick
+(`scheduler.dispatch_interval_seconds`, 30 s), and that interval is its
+resolution: the owner is told each stage the story is observed in within one
+sweep of observing it, and again after the quiet interval while it stays there.
+A stage entered and left between two sweeps is deliberately not announced — by
+the time a notice could go out the story has already left it, and saying it is
+there would tell the owner something false. A leave-and-return inside one sweep
+is likewise one continuous stay. The stages a person needs to hear about last
+minutes to hours; what the scan cannot see is shorter than half a minute.
+
 Nothing is sent for a story in `STAGE_NOTICE_TERMINAL_STATUSES` or
-`STAGE_NOTICE_OWNER_TOLD_STATUSES`: the sweep never reads the first, and for
-the second it only forgets what it last announced, so a story that comes back
-into work is announced again on entry.
+`STAGE_NOTICE_OWNER_TOLD_STATUSES`. Its marker is forgotten on the first sweep
+that no longer finds it in work, so a story that comes back into work is
+announced again as an entry.
 
 **Not a durable obligation.** The terminal owner-notification seam
 (`tasks/owner_notifications.py`) exists because an ending that is lost is lost
@@ -26,11 +37,18 @@ record and no recovery sweep, and `OwnerNotification` refuses the event outright
 holds the stage last announced and when (`story:stage_notice:<id>`). It lives
 outside the scheduler process, as the architect retry counter does, and Redis
 runs with `appendonly`, so a scheduler restart reads the same marker back and
-neither repeats a notice nor restarts the interval. The interval is measured
-from the marker's `notified_at`, never from the tick or the process start. The
-marker is written *before* the publish: a publish that fails after it costs one
-notice, and the reverse order would let a failed marker write send the same
-notice again on the next tick.
+neither repeats a notice nor restarts the interval, however long the
+scheduler was down. The interval is measured from the marker's `notified_at`,
+never from the tick or the process start. The marker is written *before* the
+publish: a publish that fails after it costs one notice, and the reverse order
+would let a failed marker write send the same notice again on the next tick.
+
+**The marker lives exactly as long as the story is in work.** It has no expiry,
+because any clock would reset the interval after an outage longer than itself.
+Cleanup is exact instead: every marked story id is also in one Redis set
+(`story:stage_notice_marked`), written with the marker in one transaction, and
+each sweep deletes the markers of the ids it no longer finds in any in-work
+stage — terminal, parked on the owner, or gone.
 """
 
 from __future__ import annotations
@@ -43,7 +61,6 @@ from typing import TYPE_CHECKING
 import structlog
 
 from shared.contracts.dto.story import (
-    STAGE_NOTICE_OWNER_TOLD_STATUSES,
     STAGE_NOTICE_STATUSES,
     WAITING_ON_BY_STATUS,
     StoryDTO,
@@ -70,11 +87,9 @@ logger = structlog.get_logger(__name__)
 
 STAGE_NOTICE_KEY_PREFIX = "story:stage_notice:"
 
-#: The marker outlives its story's stay in work by one interval, so a story that
-#: ends is forgotten on its own while one still in work always finds it: every
-#: interval refreshes it. A scheduler outage longer than that turns the next
-#: notice into an `entered` one — never into a second notice inside an interval.
-_MARKER_TTL_INTERVALS = 2
+#: Every story id that carries a marker. The sweep diffs it against the in-work
+#: ids it read, which is what ends a marker instead of an expiry.
+MARKED_STORIES_KEY = "story:stage_notice_marked"
 
 #: What each stage is, in words the owner's PO can relay.
 _STAGE_WORDS: dict[StoryStatus, str] = {
@@ -199,39 +214,55 @@ async def supervise_stage_notices(
     """
     now = now or datetime.now(UTC)
     interval = timedelta(minutes=_quiet_interval_minutes())
-    ttl_seconds = int(interval.total_seconds()) * _MARKER_TTL_INTERVALS
     counts = {"entered": 0, "still_there": 0, "unaddressable": 0}
 
-    # Forget the stage of a story parked on its owner, so coming back into work
-    # is announced as an entry however soon it happens.
-    for status in sorted(STAGE_NOTICE_OWNER_TOLD_STATUSES):
-        for story in await api_client.get_stories_by_status(status):
-            await redis_client.redis.delete(stage_notice_key(story.id))
-
+    # Every in-work stage is read before anything is forgotten: a read that
+    # fails raises out of the sweep, so a partial picture can never be taken for
+    # "these stories left work".
+    in_work: list[StoryDTO] = []
     for status in sorted(STAGE_NOTICE_STATUSES):
-        for story in await api_client.get_stories_by_status(status):
-            log = logger.bind(story_id=story.id, project_id=str(story.project_id), stage=status)
-            # One story's broken notice must not silence the others.
-            try:
-                kind = await _announce(
-                    api_client, redis_client, story, now=now, interval=interval, ttl=ttl_seconds
-                )
-            except Exception:
-                log.exception("stage_notice_failed")
-                continue
-            if kind is not None:
-                counts[kind] += 1
+        in_work.extend(await api_client.get_stories_by_status(status))
+
+    await _forget_stories_out_of_work(redis_client, {story.id for story in in_work})
+
+    for story in in_work:
+        log = logger.bind(story_id=story.id, project_id=str(story.project_id), stage=story.status)
+        # One story's broken notice must not silence the others.
+        try:
+            kind = await _announce(api_client, redis_client, story, now=now, interval=interval)
+        except Exception:
+            log.exception("stage_notice_failed")
+            continue
+        if kind is not None:
+            counts[kind] += 1
     return counts
 
 
-async def _announce(  # noqa: PLR0913 — one story's notice, each input named
+async def _forget_stories_out_of_work(redis_client: RedisStreamClient, in_work: set[str]) -> None:
+    """Delete the marker of every marked story no in-work stage holds any more.
+
+    Terminal and owner-told stories alike: the owner is not told anything more
+    about them, and a story that returns to work is a new entry.
+    """
+    marked = await redis_client.redis.smembers(MARKED_STORIES_KEY)
+    for raw in marked:
+        story_id = raw.decode() if isinstance(raw, bytes) else raw
+        if story_id in in_work:
+            continue
+        async with redis_client.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(stage_notice_key(story_id))
+            pipe.srem(MARKED_STORIES_KEY, story_id)
+            await pipe.execute()
+        logger.info("stage_notice_marker_forgotten", story_id=story_id)
+
+
+async def _announce(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     story: StoryDTO,
     *,
     now: datetime,
     interval: timedelta,
-    ttl: int,
 ) -> str | None:
     stage = story.status
     log = logger.bind(story_id=story.id, project_id=str(story.project_id), stage=stage.value)
@@ -271,11 +302,13 @@ async def _announce(  # noqa: PLR0913 — one story's notice, each input named
         stage_notice=kind,
     )
     # Written first: see the module docstring for why at-most-once is the order.
-    await redis_client.redis.set(
-        stage_notice_key(story.id),
-        StageNoticeMarker(stage=stage, notified_at=now).dumps(),
-        ex=ttl,
-    )
+    # Marker and membership together, so no marker can exist that cleanup misses.
+    async with redis_client.redis.pipeline(transaction=True) as pipe:
+        pipe.set(
+            stage_notice_key(story.id), StageNoticeMarker(stage=stage, notified_at=now).dumps()
+        )
+        pipe.sadd(MARKED_STORIES_KEY, story.id)
+        await pipe.execute()
     if not recipient.is_addressable:
         # The resolver has already alerted administrators; PO would only refuse
         # an event addressed to nobody and alert them a second time.

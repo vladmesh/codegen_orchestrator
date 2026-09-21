@@ -110,6 +110,8 @@ from pipeline_helpers import (
     request_undeploy,
     run_non_llm_qa,
     second_story_scope,
+    start_story_stage_observation,
+    stop_story_stage_observations,
     trigger_scaffold,
     verify_level1_plan_is_this_runs_alone,
     verify_linear_noop_story_completion,
@@ -236,6 +238,9 @@ async def _pipeline_run(
                     ):
                         yield value
                 finally:
+                    # A phase that raised mid-story leaves its stage sampler
+                    # running; nothing may read the API after teardown.
+                    await stop_story_stage_observations(ctx)
                     # Always ahead of cleanup_all, which is what removes the
                     # containers — and removal, not death, is what ends the
                     # readability of a labelled worker. The same deadline holds
@@ -338,6 +343,8 @@ async def _level1_brief_plan_and_engineering(
     except Level1PhaseFailed as failure:
         dump_debug(ctx, f"{debug_prefix}-{failure.phase}")
         raise
+    # The stages the owner must be told about are the ones this run sees.
+    start_story_stage_observation(api_internal, ctx)
 
     await wait_linear_noop_engineering(
         api, api_internal, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
@@ -441,6 +448,7 @@ async def _level1_extension_story(
         except Level1PhaseFailed as failure:
             dump_debug(ctx, f"{debug_prefix}-extension-{failure.phase}")
             raise
+        start_story_stage_observation(api_internal, ctx)
 
         await wait_engineering(
             api, ctx, timeout=ENGINEERING_TIMEOUT, on_poll=lambda: evidence_pass(ctx)

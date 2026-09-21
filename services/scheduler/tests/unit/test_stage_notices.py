@@ -32,6 +32,7 @@ from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
 from src.tasks.supervisor.stage_notices import (
+    MARKED_STORIES_KEY,
     read_stage_notice_marker,
     stage_notice_key,
     supervise_stage_notices,
@@ -295,8 +296,94 @@ async def test_a_restart_neither_repeats_nor_resets_the_interval(api_client, red
     marker = await read_stage_notice_marker(after, STORY_ID)
     assert marker.stage is StoryStatus.IN_PROGRESS
     assert marker.notified_at == _at(QUIET_MINUTES)
-    # Refreshed by every notice, so a story in work never loses it mid-stay.
-    assert await after.redis.ttl(stage_notice_key(STORY_ID)) == 2 * QUIET_MINUTES * 60
+    # No expiry: nothing but the story leaving work ends the marker.
+    assert await after.redis.ttl(stage_notice_key(STORY_ID)) == -1
+
+
+@pytest.mark.asyncio
+async def test_an_outage_longer_than_any_old_expiry_still_owes_the_repeat(
+    api_client, redis_server, stories
+):
+    """Scheduler down three quiet intervals with Redis up: the clock is the last notice.
+
+    The first cut expired the marker after two intervals, so this restart sent
+    `entered` as if the story had just arrived. The due notice is `still_there`.
+    """
+    stories.put(StoryStatus.IN_PROGRESS)
+    before = _redis_client(redis_server)
+    await supervise_stage_notices(api_client, before, now=T0)
+    await before.redis.aclose()
+    # Stand-in for the wall clock passing: an expiring marker would be gone now.
+    await redis_server_time_passes(redis_server, minutes=3 * QUIET_MINUTES)
+
+    after = _redis_client(redis_server)
+    counts = await supervise_stage_notices(api_client, after, now=_at(3 * QUIET_MINUTES))
+    again = await supervise_stage_notices(api_client, after, now=_at(3 * QUIET_MINUTES + 1))
+
+    assert counts == {"entered": 0, "still_there": 1, "unaddressable": 0}
+    assert again == {"entered": 0, "still_there": 0, "unaddressable": 0}
+    kinds = [notice.stage_notice for notice in await _notices(after)]
+    assert kinds == [StoryStageNoticeKind.ENTERED, StoryStageNoticeKind.STILL_THERE]
+
+
+async def redis_server_time_passes(server: FakeServer, *, minutes: float) -> None:
+    """Expire every key whose TTL would have run out in *minutes* of wall time.
+
+    fakeredis expires on its own real clock; the sweep's clock is passed in. So
+    the outage is applied to Redis explicitly: any key carrying a TTL no longer
+    than the outage is removed, exactly as a real Redis would have removed it.
+    """
+    client = aioredis.FakeRedis(server=server, decode_responses=True)
+    for key in await client.keys("*"):
+        ttl = await client.ttl(key)
+        if 0 <= ttl <= minutes * 60:
+            await client.delete(key)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_markers_are_forgotten_exactly_when_their_story_leaves_work(
+    api_client, redis_client, stories
+):
+    stories.put(StoryStatus.TESTING, "story-ending")
+    stories.put(StoryStatus.DEPLOYING, "story-parked")
+    stories.put(StoryStatus.IN_PROGRESS, "story-working")
+    await supervise_stage_notices(api_client, redis_client, now=T0)
+    assert await redis_client.redis.smembers(MARKED_STORIES_KEY) == {
+        "story-ending",
+        "story-parked",
+        "story-working",
+    }
+
+    stories.put(StoryStatus.COMPLETED, "story-ending")
+    stories.put(StoryStatus.WAITING_HUMAN_REVIEW, "story-parked")
+    await supervise_stage_notices(api_client, redis_client, now=_at(1))
+
+    assert await redis_client.redis.smembers(MARKED_STORIES_KEY) == {"story-working"}
+    assert await read_stage_notice_marker(redis_client, "story-ending") is None
+    assert await read_stage_notice_marker(redis_client, "story-parked") is None
+    assert (await read_stage_notice_marker(redis_client, "story-working")).stage is (
+        StoryStatus.IN_PROGRESS
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_forgets_nothing(api_client, redis_client, stories):
+    """A sweep that could not read every in-work stage must not take absence for an ending."""
+    stories.put(StoryStatus.DEPLOYING)
+    await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    async def testing_unreadable(status):
+        if StoryStatus(status) is StoryStatus.TESTING:
+            raise RuntimeError("api unavailable")
+        return await stories.by_status(status)
+
+    api_client.get_stories_by_status.side_effect = testing_unreadable
+    with pytest.raises(RuntimeError):
+        await supervise_stage_notices(api_client, redis_client, now=_at(1))
+
+    assert (await read_stage_notice_marker(redis_client, STORY_ID)).stage is StoryStatus.DEPLOYING
+    assert await redis_client.redis.smembers(MARKED_STORIES_KEY) == {STORY_ID}
 
 
 # ── what the notice is not ───────────────────────────────────────────────

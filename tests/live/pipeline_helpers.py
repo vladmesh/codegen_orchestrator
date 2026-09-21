@@ -55,6 +55,7 @@ from level1_second_story import (
     manager_log_coverage,
     workspace_assignments,
 )
+from level1_stage_notices import extend_stage_spans
 from live_harness import (
     TERMINAL_RUN_STATUSES,
     CleanupError,
@@ -4916,6 +4917,80 @@ async def wait_owner_completion_notification(
 
 #: The stand's own quiet interval: the predicate judges repeats against it.
 STAGE_NOTICE_QUIET_KEY = "supervisor.stage_notice_quiet_minutes"
+#: The stand's dispatcher tick: the resolution the stage-notice sweep promises.
+DISPATCH_INTERVAL_KEY = "scheduler.dispatch_interval_seconds"
+#: Seconds between the harness's own reads of the story's status. Well under
+#: the dispatcher interval, so a stage the sweep must have seen is one the
+#: harness saw too, and for about as long.
+STORY_STAGE_SAMPLE_SECONDS = 5.0
+#: The ctx key of the running sampler; scoped per story, never serialized.
+_STAGE_SAMPLER_KEY = "story_stage_sampler"
+#: Every sampler this run started, so the run's `finally` can stop any a raised
+#: phase left running.
+_STAGE_SAMPLER_TASKS_KEY = "story_stage_sampler_tasks"
+
+
+@dataclass
+class _StoryStageSampler:
+    story_id: str
+    spans: list
+    read_errors: int = 0
+
+
+async def _sample_story_stages(
+    api: httpx.AsyncClient, sampler: _StoryStageSampler, interval: float
+) -> None:
+    while True:
+        try:
+            response = await api.get(f"/api/stories/{sampler.story_id}")
+            response.raise_for_status()
+            extend_stage_spans(sampler.spans, response.json()["status"], datetime.now(UTC))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a missed sample shortens a span, never invents one
+            sampler.read_errors += 1
+        await asyncio.sleep(interval)
+
+
+def start_story_stage_observation(
+    api: httpx.AsyncClient, ctx: dict, *, interval: float = STORY_STAGE_SAMPLE_SECONDS
+) -> None:
+    """Start reading this story's status on the harness's own clock.
+
+    The API keeps no transition history, so what the story went through is
+    observed here, the same way the scheduler's sweep observes it: by reading
+    the status repeatedly. `record_stage_notices` stops it and records the
+    spans as the side the notices are compared with.
+    """
+    sampler = _StoryStageSampler(story_id=ctx["story_id"], spans=[])
+    task = asyncio.create_task(_sample_story_stages(api, sampler, interval))
+    ctx[_STAGE_SAMPLER_KEY] = (sampler, task, interval)
+    ctx.setdefault(_STAGE_SAMPLER_TASKS_KEY, []).append(task)
+
+
+async def _stop_task(task: asyncio.Task) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def stop_story_stage_observations(ctx: dict) -> None:
+    """Stop every sampler still running — a phase that raised leaves one behind."""
+    for task in ctx.pop(_STAGE_SAMPLER_TASKS_KEY, []):
+        await _stop_task(task)
+
+
+async def _finish_story_stage_observation(ctx: dict) -> dict | None:
+    started = ctx.pop(_STAGE_SAMPLER_KEY, None)
+    if started is None:
+        return None
+    sampler, task, interval = started
+    await _stop_task(task)
+    return {
+        "sample_interval_seconds": interval,
+        "read_errors": sampler.read_errors,
+        "spans": sampler.spans,
+    }
 
 
 async def record_stage_notices(
@@ -4924,18 +4999,23 @@ async def record_stage_notices(
     *,
     events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
 ) -> None:
-    """Record the `story_stage` notices this story left on `po:input`.
+    """Record the `story_stage` notices this story left on `po:input`, and its stages.
 
     Read after the story's ending, before teardown XDELs this run's PO entries,
-    from the same cursor the completion notification is fenced by. The record is
-    the observation `level1_stage_notices.stage_notice_mismatches` judges; a read
-    that could not be made is recorded as `stage_notices_error` instead.
+    from the same cursor the completion notification is fenced by. The stages
+    the harness observed the story in are stopped and recorded beside them,
+    with the stand's dispatcher interval: that is what the notices are judged
+    against by `level1_stage_notices.stage_notice_mismatches`. A read that could
+    not be made is recorded as `stage_notices_error` instead.
     """
     story_id = ctx["story_id"]
+    observed = await _finish_story_stage_observation(ctx)
     try:
-        response = await api_internal.get(f"/api/system-configs/{STAGE_NOTICE_QUIET_KEY}")
-        response.raise_for_status()
-        quiet_minutes = response.json().get("value")
+        configs = {}
+        for key in (STAGE_NOTICE_QUIET_KEY, DISPATCH_INTERVAL_KEY):
+            response = await api_internal.get(f"/api/system-configs/{key}")
+            response.raise_for_status()
+            configs[key] = response.json().get("value")
         events = events_after(ctx["po_input_cursor"])
     except Exception as error:  # noqa: BLE001 — evidence: say what failed, never raise
         ctx["stage_notices_error"] = (
@@ -4944,8 +5024,10 @@ async def record_stage_notices(
         return
     ctx["stage_notices"] = {
         "story_id": story_id,
-        "quiet_minutes": quiet_minutes,
+        "quiet_minutes": configs[STAGE_NOTICE_QUIET_KEY],
+        "dispatch_interval_seconds": configs[DISPATCH_INTERVAL_KEY],
         "ended_at": (ctx.get("story_terminal") or {}).get("updated_at"),
+        "observed_stages": observed,
         "notices": [
             event.model_dump(mode="json")
             for event in events
@@ -5481,6 +5563,7 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "owner_notification_error",
         "stage_notices",
         "stage_notices_error",
+        _STAGE_SAMPLER_KEY,
     }
 )
 
