@@ -36,7 +36,7 @@ _CLI_AUTH_MODES = frozenset(
         "bedrockApiKey",
     }
 )
-_RFC3339 = re.compile(r"^\\d{4}-\\d{2}-\\d{2}[Tt ]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:\\d{2})$")
+_RFC3339 = re.compile(\n    r"^\\d{4}-\\d{2}-\\d{2}[Tt ]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([Zz]|[+-]\\d{2}:\\d{2})$"\n)
 _BASE64URL_NO_PAD = re.compile(r"^[A-Za-z0-9_-]+$")
 #: `header.payload.signature`; the pinned parser ignores any further segments.
 _JWT_PARTS = 3
