@@ -50,7 +50,7 @@ The most architecture-relevant changes since the previous refresh are:
 - PRs #525-#552 expanded deterministic/live acceptance evidence, teardown, generated-product isolation, state-age supervision, operator resume and service-image runtime checks.
 - PR #553 removed the production undeploy dependency on `shared.live_harness_cleanup`, moved the shared cleanup primitive to `shared.deployment_cleanup`, and added a service-source import boundary guard.
 
-These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1, M2 and M10 deserve attention even though many individual failure cases are better than before.
+These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1 and M10 still deserve attention even though many individual failure cases are better than before. PR #553 separately closed the M2 production-to-harness dependency.
 
 ---
 
