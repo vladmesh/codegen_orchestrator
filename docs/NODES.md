@@ -76,7 +76,7 @@ incomplete cost coverage without exposing reservation internals.
 - The user is notified through the PO (a `story_blocked` event)
 - The worker container is **not removed** (the admin can inspect it)
 
-To resume: `POST /tasks/{id}/resume` (the admin gives guidance, task WHR → IN_DEV).
+To resume: `POST /tasks/{id}/resume`, the one operator retry — the admin gives guidance, the task goes WHR → `todo` on a fresh iteration with its own retry budget, the story returns to `in_progress`, and the dispatcher starts a new run (see PIPELINE_V2 → Operator resume).
 
 **Output**: code in the repository, pushed to the story branch | Or `GAVE_UP` → the WHR flow
 

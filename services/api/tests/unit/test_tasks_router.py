@@ -962,14 +962,21 @@ async def test_events_for_nonexistent_task():
     assert resp.status_code == 404  # noqa: PLR2004
 
 
-# --- Resume (WAITING_HUMAN_REVIEW → IN_DEV) ---
+# --- Resume (WAITING_HUMAN_REVIEW → a fresh attempt in TODO) ---
 
 
 @pytest.mark.asyncio
 async def test_resume_from_whr():
-    """Resume from waiting_human_review → in_dev with guidance."""
+    """Resume from waiting_human_review → todo on a fresh iteration, with guidance.
+
+    Until card 1328 this route moved the task to in_dev and nothing dispatched
+    it; the operator's retry now lands in todo for the dispatcher to admit.
+    """
     task = _make_task(id="task-whr", status="waiting_human_review")
     session = _mock_session(scalar_one_or_none=task)
+    no_runs = MagicMock()
+    no_runs.all = MagicMock(return_value=[])
+    session.scalars = AsyncMock(return_value=no_runs)
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -982,9 +989,10 @@ async def test_resume_from_whr():
         )
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert task.status == "in_dev"
-    # 2 adds: status_change event + guidance note event
-    assert session.add.call_count == 2  # noqa: PLR2004
+    assert task.status == "todo"
+    assert (task.current_iteration, task.max_iterations) == (1, 4)
+    # 3 adds: WHR → backlog, backlog → todo, and the guidance note
+    assert session.add.call_count == 3  # noqa: PLR2004
 
 
 @pytest.mark.asyncio

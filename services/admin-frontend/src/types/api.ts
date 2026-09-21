@@ -151,6 +151,7 @@ export interface TaskTransition {
 export interface TaskResume {
   guidance: string
   actor?: string
+  retries?: number
 }
 
 export interface SpawnWorkerRequest {

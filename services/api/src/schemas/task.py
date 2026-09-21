@@ -3,7 +3,7 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -65,11 +65,22 @@ class TaskTransition(BaseModel):
     details: dict[str, Any] = {}
 
 
+#: The retries a resumed task gets after its fresh attempt, unless the operator
+#: names another number: the allowance a new task starts with.
+RESUME_RETRY_ALLOWANCE = 3
+
+
 class TaskResume(BaseModel):
-    """Schema for resuming a task from WAITING_HUMAN_REVIEW."""
+    """The operator's one fresh engineering attempt for a parked task.
+
+    `retries` is the budget the new attempt gets on purpose: the task's
+    `max_iterations` becomes the fresh attempt's iteration plus this number, so
+    a failure of the new attempt is retried that many times before it parks again.
+    """
 
     guidance: str
     actor: str = "admin"
+    retries: int = Field(default=RESUME_RETRY_ALLOWANCE, ge=0, le=10)
 
 
 class TaskEventRead(TimestampedDTO):
