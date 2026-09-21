@@ -9,7 +9,7 @@ import yaml
 os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
-from shared.config_store import ConfigStore, ConfigStoreUnavailableError
+from shared.config_store import BoundedStalePolicy, ConfigStore, ConfigStoreUnavailableError
 from src import runtime, startup
 from src.tasks import task_dispatcher
 from src.tasks.supervisor.deploy import _max_deploy_retries
@@ -80,6 +80,53 @@ def test_every_required_key_is_declared_in_the_seed_file():
     assert set(startup.REQUIRED_KEYS) <= declared
 
 
+def test_bounded_stale_keys_are_a_small_explicit_cadence_allowlist():
+    assert startup.BOUNDED_STALE_KEYS == {
+        "scheduler.dispatch_interval_seconds",
+        "scheduler.github_sync_interval",
+        "scheduler.server_sync_interval",
+        "scheduler.server_details_sync_interval",
+        "scheduler.rag_summarizer_poll_interval",
+        "health.metrics_cleanup_interval_seconds",
+    }
+    assert startup.BOUNDED_STALE_KEYS <= set(startup.REQUIRED_KEYS)
+
+    critical_keys = {
+        "deploy.max_deploy_retries",
+        "deploy.max_deploy_fix_attempts",
+        "supervisor.story_max_architect_retries",
+        "supervisor.qa_max_fix_attempts",
+        "supervisor.temporary_access_ttl_minutes",
+        "scheduler.provisioning_stuck_timeout_seconds",
+        "health.consecutive_failure_threshold",
+    }
+    assert not startup.BOUNDED_STALE_KEYS & critical_keys
+
+
+def test_init_config_applies_bounded_stale_only_to_safe_owned_keys(monkeypatch):
+    monkeypatch.setenv("API_BASE_URL", "http://api:8000")
+    store = MagicMock()
+    factory = MagicMock(return_value=store)
+    monkeypatch.setattr(startup, "ConfigStore", factory)
+
+    owned_keys = {
+        "scheduler.dispatch_interval_seconds",
+        "deploy.max_deploy_retries",
+    }
+
+    assert startup.init_config(owned_keys) is store
+
+    factory.assert_called_once_with(
+        "http://api:8000",
+        stale_policies={
+            "scheduler.dispatch_interval_seconds": BoundedStalePolicy(
+                max_age_seconds=startup.BOUNDED_STALE_MAX_AGE_SECONDS
+            )
+        },
+    )
+    store.validate_required.assert_called_once_with(sorted(owned_keys))
+
+
 class _ConfigResponder:
     """Answers the config read the store sends through the shared transport."""
 
@@ -104,12 +151,18 @@ def _config_transport(responder):
     return patch("shared.clients.internal_api.httpx.Client", factory)
 
 
-def test_dispatch_interval_survives_the_config_api_going_away(monkeypatch):
-    """A working loop keeps its last known value while the source is unreachable."""
+def test_dispatch_interval_survives_a_short_config_api_outage(monkeypatch):
+    """A cadence-only key may use its bounded last-known value."""
     responder = _ConfigResponder()
 
     with _config_transport(responder):
-        store = ConfigStore("http://api:8000", cache_ttl=0)
+        store = ConfigStore(
+            "http://api:8000",
+            cache_ttl=0,
+            stale_policies=startup._stale_policies_for(
+                {"scheduler.dispatch_interval_seconds"}
+            ),
+        )
         monkeypatch.setattr(startup, "config", store)
 
         assert task_dispatcher._dispatch_interval() == 30
@@ -118,12 +171,37 @@ def test_dispatch_interval_survives_the_config_api_going_away(monkeypatch):
         assert task_dispatcher._dispatch_interval() == 30
 
 
+def test_deploy_retry_limit_fails_closed_when_config_api_goes_away(monkeypatch):
+    """Behavior-changing retry policy never inherits the cadence fallback."""
+    responder = _ConfigResponder()
+    responder.json_body = {"key": "deploy.max_deploy_retries", "value": 3}
+
+    with _config_transport(responder):
+        store = ConfigStore(
+            "http://api:8000",
+            cache_ttl=0,
+            stale_policies=startup._stale_policies_for({"deploy.max_deploy_retries"}),
+        )
+        monkeypatch.setattr(startup, "config", store)
+
+        assert _max_deploy_retries() == 3
+
+        responder.error = httpx.ConnectError("connection refused")
+        with pytest.raises(ConfigStoreUnavailableError, match="unavailable"):
+            _max_deploy_retries()
+
+
 def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
     responder = _ConfigResponder()
     responder.status_code = 404
 
     with _config_transport(responder):
-        store = ConfigStore("http://api:8000")
+        store = ConfigStore(
+            "http://api:8000",
+            stale_policies=startup._stale_policies_for(
+                {"scheduler.dispatch_interval_seconds"}
+            ),
+        )
         monkeypatch.setattr(startup, "config", store)
 
         with pytest.raises(KeyError, match="not found"):
