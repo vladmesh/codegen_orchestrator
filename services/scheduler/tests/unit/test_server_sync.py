@@ -44,6 +44,111 @@ async def test_get_time4vps_client_returns_client(mock_api_client):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_provider_server_returns_discovered_outcome(
+    mock_api_client, mock_notify_admins
+):
+    provider_server = MagicMock(ip="1.2.3.4", id=1001, domain="new.example")
+    created = ServerDTO(
+        handle="vps-1001",
+        host="new.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.PENDING_SETUP,
+        provider_id="1001",
+        is_managed=True,
+        created_at=datetime.now(UTC),
+    )
+    mock_api_client.create_server = AsyncMock(return_value=created)
+
+    outcome = await server_sync._reconcile_provider_server(
+        provider_server,
+        managed_server_ids={"1001"},
+        inventory=server_sync.ServerInventoryIndex({}, {}, {}),
+    )
+
+    assert outcome.kind is server_sync.ProviderServerOutcomeKind.DISCOVERED
+    assert outcome.discovered_server is created
+    assert outcome.updated is False
+    assert outcome.management_change is None
+    assert outcome.refused_collision_handle is None
+    mock_notify_admins.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_provider_server_returns_management_change_outcome(mock_api_client):
+    provider_server = MagicMock(ip="1.2.3.4", id=1001, domain="existing.example")
+    existing = ServerDTO(
+        handle="vps-1001",
+        host="existing.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.READY,
+        provider="time4vps",
+        provider_id="1001",
+        is_managed=True,
+        created_at=datetime.now(UTC),
+    )
+    mock_api_client.update_server = AsyncMock()
+
+    outcome = await server_sync._reconcile_provider_server(
+        provider_server,
+        managed_server_ids=set(),
+        inventory=server_sync.ServerInventoryIndex(
+            {"vps-1001": existing},
+            {"1.2.3.4": existing},
+            {1001: existing},
+        ),
+    )
+
+    assert outcome.kind is server_sync.ProviderServerOutcomeKind.RECONCILED
+    assert outcome.updated is True
+    assert outcome.management_change == server_sync.ManagementChange(
+        handle="vps-1001",
+        provider_id=1001,
+        was_managed=True,
+        is_managed=False,
+    )
+    assert outcome.discovered_server is None
+    assert outcome.refused_collision_handle is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_provider_server_returns_collision_outcome(
+    mock_api_client, mock_notify_admins
+):
+    provider_server = MagicMock(ip="1.2.3.4", id=1001, domain="provider.example")
+    collision = ServerDTO(
+        handle="legacy",
+        host="legacy.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.READY,
+        provider=None,
+        provider_id=None,
+        is_managed=True,
+        created_at=datetime.now(UTC),
+    )
+    mock_api_client.update_server = AsyncMock()
+
+    outcome = await server_sync._reconcile_provider_server(
+        provider_server,
+        managed_server_ids={"1001"},
+        inventory=server_sync.ServerInventoryIndex(
+            {"legacy": collision},
+            {"1.2.3.4": collision},
+            {},
+        ),
+    )
+
+    assert outcome.kind is server_sync.ProviderServerOutcomeKind.COLLISION_REFUSED
+    assert outcome.updated is True
+    assert outcome.refused_collision_handle == "legacy"
+    assert outcome.discovered_server is None
+    assert outcome.management_change is None
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_sync_server_list_discovers_new_managed(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):

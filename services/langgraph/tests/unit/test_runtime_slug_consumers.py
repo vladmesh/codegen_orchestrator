@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployAction
-from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT
+from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT
 from src.consumers._qa_target import QATarget, QATargetSession, resolve_capabilities
 from src.consumers.deploy import _build_subgraph_input
 from src.consumers.deploy_lifecycle import process_lifecycle_action
