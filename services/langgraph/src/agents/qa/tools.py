@@ -46,7 +46,7 @@ from shared.contracts.dto.run_result import (
 )
 from shared.telegram_access_probe import ProbeRun, run_probe_script
 from shared.telegram_bot_probe import (
-    TELEGRAM_REPLY_TIMEOUT,
+    TELEGRAM_PROBE_PROCESS_TIMEOUT,
     build_bot_callback_script,
     build_bot_message_script,
     parse_bot_probe_result,
@@ -296,7 +296,7 @@ class _TelegramCapability:
         run: ProbeRun = await self._run_probe(
             build_bot_message_script(self._bot_username, message),
             env=self._telethon_env,
-            timeout=TELEGRAM_REPLY_TIMEOUT + 30,
+            timeout=TELEGRAM_PROBE_PROCESS_TIMEOUT,
         )
         return self._parse_result(
             run,
@@ -331,7 +331,7 @@ class _TelegramCapability:
                 button_text=button_text,
             ),
             env=self._telethon_env,
-            timeout=TELEGRAM_REPLY_TIMEOUT + 30,
+            timeout=TELEGRAM_PROBE_PROCESS_TIMEOUT,
         )
         return self._parse_result(
             run,

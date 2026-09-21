@@ -35,6 +35,7 @@ from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
 from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
+from shared.telegram_bot_probe import TELEGRAM_PROBE_PROCESS_TIMEOUT
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
@@ -1010,9 +1011,11 @@ class TestASecondProjectOnTheSameHost:
             bot_username="weather_bot",
         )
         sent: list[str] = []
+        timeouts: list[int] = []
 
         async def probe(script, *, env, timeout):
             sent.append(script)
+            timeouts.append(timeout)
             return SimpleNamespace(
                 exit_status=0,
                 stdout=(
@@ -1035,6 +1038,7 @@ class TestASecondProjectOnTheSameHost:
 
         assert answer["replies"][0]["text"] == "hi"
         assert "@weather_bot" in sent[0]
+        assert timeouts == [TELEGRAM_PROBE_PROCESS_TIMEOUT]
 
     async def test_a_visible_inline_button_is_invoked_only_through_this_run(self, tmp_path):
         from src.agents.qa.tools import build_qa_callables

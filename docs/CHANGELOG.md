@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-21
+
+- Telegram QA probes collect final reply and edit state at a bounded two-second cadence through their
+  deadline, treating replies deleted before then as silent so progress notices cannot hide an answer.
+
 ## 2026-09-20
 
 - `deploying`, `testing`, `pr_review` and the user-secret wait get age bounds from one watchdog; the secret ask is
