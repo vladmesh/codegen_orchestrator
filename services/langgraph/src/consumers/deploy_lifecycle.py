@@ -11,7 +11,7 @@ import asyncssh
 import structlog
 
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
-from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
+from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 
 from ..clients.api import api_client
 from ..runtime_identity import SERVICE_BASE_DIR
