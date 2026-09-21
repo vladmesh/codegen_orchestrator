@@ -351,7 +351,7 @@ async def _deploy_failure_terminal(
     redis: RedisStreamClient,
     error_msg: str,
     *,
-    deploy_outcome: DeployOutcome | None = None,
+    deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     missing_user_secrets: list[MissingUserSecret] | None = None,
 ) -> DeployTerminal:
     """Persist one classified deploy failure and wrap its worker response."""
