@@ -7,7 +7,7 @@ Other modules import `config` and use `config.get_int(...)`.
 from collections.abc import Collection
 import os
 
-from shared.config_store import ConfigStore
+from shared.config_store import BoundedStalePolicy, ConfigStore
 
 # Module-level singleton — initialized by init_config()
 config: ConfigStore | None = None
@@ -71,6 +71,30 @@ REQUIRED_KEYS = sorted(
     PIPELINE_REQUIRED_KEYS | INFRASTRUCTURE_REQUIRED_KEYS | MAINTENANCE_REQUIRED_KEYS
 )
 
+# These values only control how often already-safe work is polled or cleaned up.
+# Let a short config API outage preserve cadence, but do not let the scheduler run
+# indefinitely on an old operator value. Everything not listed here fails closed.
+BOUNDED_STALE_MAX_AGE_SECONDS = 15 * 60
+BOUNDED_STALE_KEYS = frozenset(
+    {
+        "scheduler.dispatch_interval_seconds",
+        "scheduler.github_sync_interval",
+        "scheduler.server_sync_interval",
+        "scheduler.server_details_sync_interval",
+        "scheduler.rag_summarizer_poll_interval",
+        "health.metrics_cleanup_interval_seconds",
+    }
+)
+
+
+def _stale_policies_for(required_keys: Collection[str]) -> dict[str, BoundedStalePolicy]:
+    """Return the bounded-stale policy for safe cadence keys owned by this process."""
+    return {
+        key: BoundedStalePolicy(max_age_seconds=BOUNDED_STALE_MAX_AGE_SECONDS)
+        for key in required_keys
+        if key in BOUNDED_STALE_KEYS
+    }
+
 
 def get_config() -> ConfigStore:
     """Return the initialized scheduler configuration store."""
@@ -92,6 +116,10 @@ def init_config(required_keys: Collection[str]) -> ConfigStore:
     if not api_base_url:
         raise RuntimeError("API_BASE_URL is not set")
 
-    config = ConfigStore(api_base_url)
-    config.validate_required(required_keys)
+    owned_keys = frozenset(required_keys)
+    config = ConfigStore(
+        api_base_url,
+        stale_policies=_stale_policies_for(owned_keys),
+    )
+    config.validate_required(sorted(owned_keys))
     return config
