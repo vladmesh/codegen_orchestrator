@@ -159,9 +159,7 @@ def test_dispatch_interval_survives_a_short_config_api_outage(monkeypatch):
         store = ConfigStore(
             "http://api:8000",
             cache_ttl=0,
-            stale_policies=startup._stale_policies_for(
-                {"scheduler.dispatch_interval_seconds"}
-            ),
+            stale_policies=startup._stale_policies_for({"scheduler.dispatch_interval_seconds"}),
         )
         monkeypatch.setattr(startup, "config", store)
 
@@ -198,9 +196,7 @@ def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
     with _config_transport(responder):
         store = ConfigStore(
             "http://api:8000",
-            stale_policies=startup._stale_policies_for(
-                {"scheduler.dispatch_interval_seconds"}
-            ),
+            stale_policies=startup._stale_policies_for({"scheduler.dispatch_interval_seconds"}),
         )
         monkeypatch.setattr(startup, "config", store)
 
