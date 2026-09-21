@@ -3024,6 +3024,7 @@ name = "scaffolder"
 version = "0.1.0"
 source = { editable = "services/scaffolder" }
 dependencies = [
+    { name = "aiohttp" },
     { name = "cryptography" },
     { name = "httpx" },
     { name = "pgvector" },
@@ -3038,6 +3039,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },

@@ -361,3 +361,10 @@ def test_repo_tree_suffix_named_files_are_covered(gate):
         if not gate.TEST_TREE_SKIP_DIRS.intersection(path.relative_to(gate.ROOT).parts)
     }
     assert suffix_dirs <= gate.discover_test_dirs()
+
+
+def test_service_image_imports_are_required_by_the_ci_gate(gate):
+    """A service module must import from the production image CI builds."""
+    workflow = gate.load_workflow()
+
+    gate.assert_service_image_imports(workflow["jobs"])

@@ -146,6 +146,7 @@ UNPINNED_IMAGE_REFS: dict[str, str] = {}
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
     "fast-checks",
+    "service-image-imports",
     "ci-contract",
     "test-service",
     "test-integration",
@@ -916,6 +917,22 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
         fail("backend Docker-in-Docker job must receive the Buildx retry simulation input")
 
 
+def assert_service_image_imports(jobs: dict[str, Any]) -> None:
+    """Every production service image must import its entry module before merge."""
+    job = require_job(jobs, "service-image-imports")
+    if job.get("needs") != ["fast-checks", "ci-contract"]:
+        fail("service image imports must wait for fast-checks and ci-contract")
+    condition = "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
+    if job.get("if") != condition:
+        fail("service image imports must require fast-checks and ci-contract")
+    assert_buildx_retry(job)
+    step = step_by_id(job, "service-image-imports")
+    if step.get("run") != "python scripts/check_service_image_imports.py":
+        fail("service image imports must run the production-image import check")
+    if step.get("continue-on-error"):
+        fail("service image imports must fail the job they belong to")
+
+
 def assert_buildx_retry(job: dict[str, Any]) -> None:
     step = step_by_name(job, "Set up Docker Buildx with retry")
     if step.get("uses") != "./.github/actions/setup-buildx-with-retry":
@@ -1010,6 +1027,7 @@ def main() -> None:
     assert_test_suite_coverage(jobs)
     assert_pinned_base_images()
     assert_backend_dind_integration(jobs)
+    assert_service_image_imports(jobs)
     assert_template_compatibility(jobs)
     assert_gate(jobs)
     print("CI gate contract ok")
