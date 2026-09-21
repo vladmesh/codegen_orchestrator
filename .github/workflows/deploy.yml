@@ -311,7 +311,13 @@ jobs:
           username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
+            next_source_hash="$(python3 scripts/shared_freshness.py hash)"
+            python3 scripts/rotate_worker_image_records.py \
+              --current-record deployed-worker-images.json \
+              --previous-record previous-deployed-worker-images.json \
+              --next-source-hash "${next_source_hash}"
             GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}' \
             GHCR_OWNER='${{ github.repository_owner }}' \
             WORKER_IMAGE_TAG='${{ github.sha }}' \
@@ -470,4 +476,19 @@ jobs:
           username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            cleanup_status=0
+            python3 scripts/cleanup_worker_images.py \
+              --release-record deployed-worker-images.json \
+              --previous-release-record previous-deployed-worker-images.json || cleanup_status=$?
+            # Keep one day of cache for a fast retry or a recent common build.
+            # Older cache can still be reused if Docker retains it; this bounds what
+            # this cleanup deliberately keeps, rather than proving cache isolation.
+            docker builder prune --all --force --filter until=24h
+            # Rebuilt :local tags can leave their replaced images dangling on the
+            # classic image store. Docker keeps images named by containers.
             docker image prune -f
+            if [ "${cleanup_status}" -ne 0 ]; then
+              exit "${cleanup_status}"
+            fi
