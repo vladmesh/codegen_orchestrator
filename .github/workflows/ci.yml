@@ -156,6 +156,33 @@ jobs:
       - name: Validate CI gate contract
         run: make ci-contract
 
+  service-image-imports:
+    name: Service Image Entrypoint Imports
+    runs-on: ubuntu-latest
+    needs: [fast-checks, ci-contract]
+    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Compose parser
+        run: python -m pip install pyyaml==6.0.3
+
+      - name: Set up Docker Buildx with retry
+        id: buildx
+        uses: ./.github/actions/setup-buildx-with-retry
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+
+      - name: Import every service entrypoint from its production image
+        id: service-image-imports
+        run: python scripts/check_service_image_imports.py
+
   test-service:
     name: Service Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
@@ -538,6 +565,7 @@ jobs:
       - detect-changes
       - fast-checks
       - ci-contract
+      - service-image-imports
       - test-service
       - test-integration
       - template-compatibility
@@ -551,6 +579,7 @@ jobs:
             ["detect-changes"]="${{ needs.detect-changes.result }}"
             ["fast-checks"]="${{ needs.fast-checks.result }}"
             ["ci-contract"]="${{ needs.ci-contract.result }}"
+            ["service-image-imports"]="${{ needs.service-image-imports.result }}"
             ["test-service"]="${{ needs.test-service.result }}"
             ["test-integration"]="${{ needs.test-integration.result }}"
             ["template-compatibility"]="${{ needs.template-compatibility.result }}"

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- The scaffolder image now ships `aiohttp` for shared administrator notifications, and CI imports every
+  production service entrypoint from its built image so undeclared runtime dependencies fail before merge.
 - `POST /tasks/{id}/resume` is the one operator retry: fresh iteration, recorded retry budget, story back in
   progress, so a parked task gets a new run rather than a replayed failure.
 - Deploy cleanup also prunes dangling images after the build cache, so classic image stores do not
