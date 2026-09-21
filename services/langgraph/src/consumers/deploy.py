@@ -904,6 +904,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     finally:
         await redis.redis.delete(lock_key)
 
+
 def main():
     """Entry point for running as module."""
     start_worker(
