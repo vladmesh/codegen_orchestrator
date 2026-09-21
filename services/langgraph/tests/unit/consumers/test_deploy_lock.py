@@ -46,6 +46,8 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/my-project")
         )
+        # A storyless deploy asks the project for its confirmed settings.
+        api.get_project_initial_settings_brief = AsyncMock(return_value=None)
         yield api
 
 

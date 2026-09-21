@@ -42,11 +42,12 @@ Codex is available for developer workers and is the default central exploratory-
 
 ```bash
 codex exec --sandbox danger-full-access \
-  "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
+  "Read TASK.md and WORKER_INSTRUCTIONS.md, then complete the task described in TASK.md."
 ```
 
 The task is in `/workspace/TASK.md`, and the shared developer instructions are
-in `/workspace/AGENTS.md`. The agent must report success or failure through
+in `/workspace/WORKER_INSTRUCTIONS.md` — not in the product's own `AGENTS.md`,
+which is a tracked file of the Copier kit and belongs to the product. The agent must report success or failure through
 `POST http://localhost:9090/result`. CLI stdout and stderr are diagnostics and
 are neither accepted as the business result nor persisted for Codex workers.
 Codex's own sandbox is off because the container already is one, and the two
@@ -59,7 +60,7 @@ Git push. The Docker worker network and the container's own `cap_drop: ALL`,
 `no-new-privileges` and resource limits remain the isolation boundary.
 
 A central QA worker is intentionally different: it receives an empty ephemeral
-non-Git workspace, injected `AGENTS.md` and `TASK.md`, and invokes Codex with
+non-Git workspace, injected `WORKER_INSTRUCTIONS.md` and `TASK.md`, and invokes Codex with
 `--skip-git-repo-check`. Its deployment access is the QA capability endpoint
 only; the target never receives the mounted Codex profile or an API key.
 
@@ -87,6 +88,13 @@ host-session command, intentionally serializing workers that share one profile
 so simultaneous refreshes cannot corrupt `auth.json`. Claude, Factory, and
 noop workers do not receive this mount.
 
+Worker-manager also reads this profile passively for executor diagnostics: token
+presence, the access token's `exp` claim, a refresh-token `exp` only when that
+token is a JWT, and `last_refresh`. It never runs Codex against the profile or a
+copy of it; a copied profile that refreshes rotates the refresh token and breaks
+the real one. Login state, expiry and the administrator alert are described in
+[live-deploy-operations.md](live-deploy-operations.md#log-in-the-production-subscription-executor-profiles).
+
 See the official [authentication](https://learn.chatgpt.com/docs/auth) and
 [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 documentation for the upstream behavior.
@@ -107,7 +115,7 @@ before the project is created.
 1. Worker-manager creates a container from a worker-base image
 2. Mounts the pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — the code is already in place
 3. Worker-manager creates/checks out story feature branch (`story/{story_id}`)
-4. Injects the static instructions from `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → an agent-specific file (`CLAUDE.md` / `AGENTS.md`)
+4. Injects the static instructions from `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → an agent-specific file (`CLAUDE.md` for Claude, `WORKER_INSTRUCTIONS.md` for Codex and Droid). Both names, and every other path a turn writes into the checkout, are defined once in `shared/constants.py::WorkerWorkspace` and kept out of the product's commits by `packages/worker-wrapper/src/worker_wrapper/injected_paths.py`: the wrapper writes them to the workspace-local `.git/info/exclude`, and its publish guard refuses a commit that carries one anyway. Nothing the product tracks — its `Makefile`, `AGENTS.md` or `.gitignore` — is written by a turn; worker-mode compose reaches the proxy through `DOCKER_COMPOSE` instead (`worker_wrapper/compose_proxy.py`).
 5. Injects a dynamic `TASK.md` into `/workspace/TASK.md` with the project-specific task
 6. Starts the coding agent (Claude Code, Droid or Codex) in non-interactive mode
 7. The agent commits and pushes to the feature branch. Worker-wrapper pulls from the current branch (not a hardcoded `main`)

@@ -5,17 +5,18 @@ import hashlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fakeredis import FakeAsyncRedis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from shared.contracts.vocab import WorkerType
+import pytest
 
+from shared.contracts.vocab import WorkerType
 from src.compose_runner import ComposeRunner
 from src.compose_validator import RESOURCE_IDENTITY_POLICY
 from src.routers.compose import router as compose_router
 
-BROKER_TOKEN = "broker-test-token"
+# Dummy credential for mocked authentication.
+BROKER_TOKEN = "broker-test-token"  # noqa: S105
 
 
 def server_records(
@@ -76,7 +77,9 @@ def client(tmp_path):
     )
 
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(return_value=(0, b"services:\n  db:\n    image: postgres:16\n"))
+    docker.exec_in_container = AsyncMock(
+        return_value=(0, b"services:\n  db:\n    image: postgres:16\n")
+    )
 
     redis = server_records()
 
@@ -108,7 +111,9 @@ class TestComposeApi:
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
-            patch("src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]) as mock_run,
+            patch(
+                "src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]
+            ) as mock_run,
         ):
             response = c.post(
                 "/api/worker/worker-123/infra/compose",
@@ -130,7 +135,8 @@ class TestComposeApi:
         infra.mkdir(parents=True)
         (workspace / "Dockerfile").write_text("FROM scratch\n")
         (infra / "compose.base.yml").write_text(
-            "services:\n  app:\n    image: codegen-orchestrator/victim:latest\n    build:\n      context: ..\n"
+            "services:\n  app:\n    image: "
+            "codegen-orchestrator/victim:latest\n    build:\n      context: ..\n"
         )
         (infra / "compose.dev.yml").write_text("services: {}\n")
         app = FastAPI(title="Test Worker Manager")
@@ -155,7 +161,9 @@ class TestComposeApi:
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
-            patch("src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]),
+            patch(
+                "src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]
+            ),
         ):
             response = c.post(
                 "/api/worker/worker-123/infra/compose",
@@ -253,7 +261,14 @@ class TestComposeApi:
     def test_workspace_resolved_from_redis_meta(self, client):
         """When Redis has workspace_path for worker, it should be passed to runner.run()."""
         c, runner, redis = client
-        asyncio.run(redis.hset("worker:meta:worker-123", "workspace_path", "/tmp/workspaces/project-uuid/workspace"))
+        asyncio.run(
+            redis.hset(
+                "worker:meta:worker-123",
+                "workspace_path",
+                # Fixture path; no host temporary file is created.
+                "/tmp/workspaces/project-uuid/workspace",  # noqa: S108
+            )
+        )
         runner.run = AsyncMock(return_value=(0, "ok\n", ""))
 
         response = c.post(
@@ -264,7 +279,8 @@ class TestComposeApi:
         assert response.status_code == 200
         # Verify runner.run was called with workspace_dir from Redis
         call_kwargs = runner.run.call_args
-        assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"
+        # Fixture path; no host temporary file is created.
+        assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"  # noqa: S108
 
     def test_router_delegates_selected_source_and_cwd_to_runner(self, client):
         c, runner, _redis = client
@@ -306,13 +322,17 @@ class TestComposeApi:
         ("env_file", "project_env"),
         [("${EVIL}", "EVIL=../../HOSTSECRET.env\n"), ("${HOME}/HOSTSECRET.env", None)],
     )
-    def test_broker_api_rejects_interpolated_env_file_before_compose_config(self, tmp_path, env_file, project_env):
+    def test_broker_api_rejects_interpolated_env_file_before_compose_config(
+        self, tmp_path, env_file, project_env
+    ):
         workspace = tmp_path / "workspace"
         infra = workspace / "infra"
         infra.mkdir(parents=True)
         if project_env:
             (workspace / ".env").write_text(project_env)
-        (infra / "compose.base.yml").write_text(f"services:\n  db:\n    image: postgres:16\n    env_file: {env_file}\n")
+        (infra / "compose.base.yml").write_text(
+            f"services:\n  db:\n    image: postgres:16\n    env_file: {env_file}\n"
+        )
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
@@ -332,8 +352,12 @@ class TestComposeApi:
         assert "interpolation" in response.json()["detail"]
         mock_run.assert_not_called()
 
-    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
-    def test_broker_api_rejects_label_file_before_compose_or_error_reflection(self, tmp_path, label_file):
+    @pytest.mark.parametrize(
+        "label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"]
+    )
+    def test_broker_api_rejects_label_file_before_compose_or_error_reflection(
+        self, tmp_path, label_file
+    ):
         workspace = tmp_path / "workspace"
         infra = workspace / "infra"
         infra.mkdir(parents=True)
@@ -367,12 +391,15 @@ class TestComposeApi:
             ("cache_to", "type=local,dest=/manager-owned-path"),
         ],
     )
-    def test_broker_api_rejects_build_cache_before_compose_config(self, tmp_path, build_key, cache_value):
+    def test_broker_api_rejects_build_cache_before_compose_config(
+        self, tmp_path, build_key, cache_value
+    ):
         workspace = tmp_path / "workspace"
         infra = workspace / "infra"
         infra.mkdir(parents=True)
         (infra / "compose.base.yml").write_text(
-            f"services:\n  db:\n    build:\n      context: ..\n      {build_key}:\n        - {cache_value}\n"
+            f"services:\n  db:\n    build:\n      context: "
+            f"..\n      {build_key}:\n        - {cache_value}\n"
         )
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
@@ -394,7 +421,9 @@ class TestComposeApi:
         mock_run.assert_not_called()
         assert not (tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
 
-    def test_broker_api_rejects_daemon_global_resource_identity_before_compose_config(self, tmp_path):
+    def test_broker_api_rejects_daemon_global_resource_identity_before_compose_config(
+        self, tmp_path
+    ):
         workspace = tmp_path / "workspace"
         infra = workspace / "infra"
         infra.mkdir(parents=True)
@@ -446,7 +475,9 @@ class TestQaWorkerHasNoComposeAuthority:
         The command does not matter: what is denied is the operation, so no
         future argument-level judgement can reopen it.
         """
-        app, runner = self._app(server_records(worker_type=WorkerType.QA, workspace_path="/workspace"))
+        app, runner = self._app(
+            server_records(worker_type=WorkerType.QA, workspace_path="/workspace")
+        )
 
         with TestClient(app, raise_server_exceptions=True) as c:
             response = c.post(
@@ -476,7 +507,9 @@ class TestQaWorkerHasNoComposeAuthority:
 
     def test_the_request_cannot_talk_its_way_into_being_a_developer(self):
         """The type is read from the server's record, never from the request."""
-        app, runner = self._app(server_records(worker_type=WorkerType.QA, workspace_path="/workspace"))
+        app, runner = self._app(
+            server_records(worker_type=WorkerType.QA, workspace_path="/workspace")
+        )
 
         with TestClient(app, raise_server_exceptions=True) as c:
             response = c.post(
@@ -490,7 +523,9 @@ class TestQaWorkerHasNoComposeAuthority:
 
     def test_a_developer_worker_still_reaches_the_runner(self):
         """The control: the boundary must not break the ordinary pipeline."""
-        app, runner = self._app(server_records(worker_type=WorkerType.DEVELOPER, workspace_path="/workspace"))
+        app, runner = self._app(
+            server_records(worker_type=WorkerType.DEVELOPER, workspace_path="/workspace")
+        )
 
         with TestClient(app, raise_server_exceptions=True) as c:
             response = c.post(

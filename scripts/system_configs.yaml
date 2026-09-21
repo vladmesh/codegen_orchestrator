@@ -4,6 +4,19 @@
 # change made through the typed API survives later deploys. Keys absent from
 # this file are owned by the database alone and are never touched.
 
+# --- admission ---
+# Starting budget an invited user receives when they redeem the promo code the
+# bot mints for them. Zero credits would leave the account admitted nowhere.
+- key: admission.invite_credits_microusd
+  value: 5000000
+  category: admission
+  description: "Credits in micro-USD armed on an invited user's engineering budget ($5)"
+
+- key: admission.invite_attempt_reservation_microusd
+  value: 1000000
+  category: admission
+  description: "Micro-USD held per engineering attempt for an invited user ($1)"
+
 # --- scheduler ---
 - key: work_admission.max_projects_per_user
   value: 3
@@ -140,6 +153,36 @@
   value: 5
   category: supervisor
   description: "Minutes a queued QA run may sit unstarted before the supervisor finishes its handoff from the stored plan"
+
+- key: supervisor.qa_handoff_target_held_max_minutes
+  value: 4
+  category: supervisor
+  description: "Minutes a QA handoff may keep being refused by a live grant on its target before the QA run is failed with the holder named"
+
+- key: supervisor.deploy_wait_max_minutes
+  value: 30
+  category: supervisor
+  description: "Minutes a story may sit in 'deploying' on one unfinished deploy run before human review (derived: DEPLOY_TIMEOUT 420s + DEPLOY_OUTCOME_TIMEOUT 120s in shared/stand_deadlines.py, with headroom for a slow host)"
+
+- key: supervisor.qa_wait_max_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a story may sit in 'testing' on one unfinished QA run before human review (derived: QA_RUN_TIMEOUT 300s in shared/stand_deadlines.py, capped at supervisor.temporary_access_ttl_minutes, past which the borrowed test identity is gone)"
+
+- key: supervisor.pr_review_wait_max_minutes
+  value: 220
+  category: supervisor
+  description: "Minutes a story may sit in 'pr_review' without its pull request moving before human review (derived: ten times DEPLOY_RUN_TIMEOUT 1320s in shared/stand_deadlines.py = 13200s = 220 min; that ceiling already contains the 900s image-publication window)"
+
+- key: supervisor.user_secret_wait_max_minutes
+  value: 1440
+  category: supervisor
+  description: "Minutes a story may wait, after its secret request was delivered to the owner, before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
+
+- key: supervisor.stage_notice_quiet_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a story may stay in one in-work stage after its last stage notice before its owner is told again that it is still there (measured from that notice, kept in Redis)"
 
 - key: supervisor.temporary_access_ttl_minutes
   value: 60

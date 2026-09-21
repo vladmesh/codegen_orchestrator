@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +41,18 @@ class TemporaryAccessRevokeReason(StrEnum):
     GRANT_FAILED = "grant_failed"
 
 
+class TemporaryAccessDrainReason(StrEnum):
+    OPERATOR_DRAIN = "operator_drain"
+
+
+class TemporaryAccessDrainCommand(BaseModel):
+    """Explicit operator acceptance of cleanup that cannot be proved remotely."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal[TemporaryAccessDrainReason.OPERATOR_DRAIN]
+
+
 class TemporaryAccessGrantCreate(BaseModel):
     """The complete immutable identity and target needed to settle QA access."""
 
@@ -69,7 +82,6 @@ class TemporaryAccessGrantUpdate(BaseModel):
     revoke_reason: TemporaryAccessRevokeReason | None = None
     revoke_run_id: str | None = None
     revoke_attempts: int | None = None
-    escalated: bool | None = None
     last_error: str | None = None
 
 
@@ -91,7 +103,7 @@ class TemporaryAccessGrantDTO(TimestampedDTO):
     granted_at: datetime
     qa_dispatched_at: datetime | None = None
     revoked_at: datetime | None = None
-    revoke_reason: TemporaryAccessRevokeReason | None = None
+    revoke_reason: TemporaryAccessRevokeReason | TemporaryAccessDrainReason | None = None
     revoke_run_id: str | None = None
     revoke_attempts: int = 0
     escalated_at: datetime | None = None

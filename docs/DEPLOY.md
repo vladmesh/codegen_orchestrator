@@ -65,7 +65,9 @@ contact a provider, check quota or make a billable model request. `available`
 therefore means the configured local session and Docker/Redis inventory
 reconciled, not that a provider account has capacity. `unavailable` means a
 local configuration/authentication failure; `unknown` means the service cannot
-prove the state. The Settings card never displays paths or credential detail.
+prove the state. `degraded` means a locally stored refresh-credential expiry is
+at or inside 24 hours; new starts are still admitted until it expires. The
+Settings card never displays paths or credential detail.
 Outside the stand contour, paid engineering and QA producers use `host_session`;
 their diagnostics validate the manager-visible read-only mounts
 `/host-claude` and `/host-codex`, while `HOST_CLAUDE_DIR` and
@@ -84,10 +86,37 @@ LK bearer for an administrator and do not supply a conflicting
 `X-Telegram-ID`. An internal key, even with an administrator's Telegram id,
 cannot confirm an unknown snapshot.
 
-For non-stand local recovery, use `claude auth login` to repair the dedicated
-`HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated
-`HOST_CODEX_HOME` profile. Do not point either setting at an operator's ordinary
-home profile. Those profiles are not part of ephemeral stand authentication.
+Snapshot schema `v2` (Redis key `executor:diagnostics:v2`) replaced `v1`
+without a compatibility reader. Deploy API and worker-manager together: a new API
+reads only the v2 key and reports `unknown` until the new worker-manager's
+startup publication, and a stale v1 value expires within its 90-second TTL. No
+manual Redis cleanup is needed.
+
+Each enabled host-session diagnostic carries a credential-free `profile`
+observation: login state, refresh-material state, stored access/session expiry,
+refresh-credential expiry only when the refresh token itself is a JWT, and the
+Codex `last_refresh` stamp. Worker creation refuses exactly the profiles the
+diagnostic marks as lacking usable refresh material. The same diagnostics tick
+owns administrator alerts: one Redis episode per executor
+(`executor:profile-alert:v1:<executor>`) for its whole unhealthy stretch,
+delivered through `deliver_to_admins`, retried with backoff from 60 seconds to
+one hour until every administrator received it, and closed only by a later
+healthy observation. A change such as expiring to expired updates the episode's
+facts without another alert. The Codex reader joins the workers'
+`.codegen-codex.lock` read-only, requires an `auth.json` the pinned CLI can load
+and the ChatGPT `auth_mode`: an API-key or other auth mode is unavailable even
+with retained ChatGPT tokens, and a read that a concurrent refresh could have torn
+is `unknown`, never logged out. A missing lock never counts as uncontended: Codex
+workers create it at startup and the login recipe creates it before logging in. Worker-manager reads
+`TELEGRAM_BOT_TOKEN` and `INTERNAL_API_KEY` from `.env` for that delivery.
+
+For non-stand recovery follow the login recipes in
+[live-deploy-operations.md](live-deploy-operations.md#log-in-the-production-subscription-executor-profiles):
+Claude paste-code login into the dedicated `HOST_CLAUDE_DIR` profile and
+`codex login --device-auth` into the dedicated `HOST_CODEX_HOME` profile. Never
+run either CLI against a copied profile. Do not point either setting at an
+operator's ordinary home profile. Those profiles are not part of ephemeral stand
+authentication.
 
 ### Ephemeral stand authentication
 
@@ -163,7 +192,7 @@ means that no Time4VPS server is managed. Every other newly discovered server is
 provisioning trigger.
 
 The same allowlist is checked again by `infra-service` before either Ansible or reinstall work and
-once more immediately before an OS reinstall. The `is_managed` database flag and the scheduler
+once more immediately before an OS reinstall. The `is_managed` database flag and `scheduler-infrastructure`
 trigger filters are separate guards, so a stale status or a manually published queue message cannot
 by itself authorize provisioning.
 
@@ -178,7 +207,7 @@ To adopt a new blank target:
    an accidentally removed ID preserves the server's prior operational status. For a verified blank
    existing row, explicitly PATCH its status to `pending_setup` to use the non-destructive SSH path.
 4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
-   explicitly through the admin API and watch the provisioning logs. The scheduler keeps that
+   explicitly through the admin API and watch the provisioning logs. `scheduler-infrastructure` keeps that
    persisted intent until infra-service claims it, then infra-service changes the lifecycle status
    to `provisioning` immediately before the guarded reinstall path.
 
@@ -272,16 +301,18 @@ is never passed into coding-worker containers.
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPEN_ROUTER_KEY` | OpenRouter API key |
-| `PO_LLM_MODEL` | PO agent model name |
+| `PO_LLM_MODEL` | PO agent model name (`openai/gpt-5.6-sol`) |
 | `PO_LLM_BASE_URL` | PO agent LLM base URL |
 | `PO_LLM_API_KEY` | PO agent LLM API key |
-| `ARCHITECT_LLM_MODEL` | Architect agent model name |
+| `ARCHITECT_LLM_MODEL` | Architect agent model name (`openai/gpt-5.6-sol`) |
 | `ARCHITECT_LLM_BASE_URL` | Architect agent LLM base URL |
 | `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
-| `SUMMARIZATION_MODEL` | Summarization model name |
-| `SUMMARIZATION_MAX_TOKENS` | Max tokens for summarization |
-| `SUMMARIZATION_TRIGGER_TOKENS` | Token threshold to trigger summarization |
-| `SUMMARIZATION_MAX_SUMMARY_TOKENS` | Max summary output tokens |
+| `SUMMARIZATION_MODEL` | Summarization model name (`anthropic/claude-haiku-4-5`) |
+
+Numeric PO summarization tuning is not environment or secret configuration. Production reads
+`llm.summarization_max_tokens`, `llm.summarization_trigger_tokens`, and
+`llm.summarization_max_summary_tokens` from required system config seeded by
+`scripts/system_configs.yaml`.
 
 The `PO_LLM_*` and `ARCHITECT_LLM_*` triples are all-or-nothing: an agent starts only when
 every var of its group carries a value, so leaving one of the three empty silently keeps that
@@ -691,6 +722,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-o
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
 docker image prune -f
 ```
+
+### What the production overlay adds
+
+`docker-compose.prod.yml` gives every platform container `logging` with the
+json-file driver capped at `max-size: 50m` × `max-file: 5`, so one container's
+logs can never exceed 250 MB on disk — the daemon's default is unbounded. Memory
+limits live in the same overlay as `mem_limit` (compose v2 outside swarm ignores
+`deploy.resources`), sized to leave the host room for the 4 GiB coding worker;
+the four LangGraph agent consumers (`architect`, `engineering-worker`,
+`deploy-worker`, `qa-worker`) are deliberately left unsized until their
+footprint is measured. Every service in `docker-compose.yml` must have an entry
+in the overlay, and `tests/unit/test_production_compose_limits.py` fails if one
+does not.
 
 `worker-manager` and `worker-broker` are one control plane and roll out
 together — which the command above does, and the deploy workflow does the same.

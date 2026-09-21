@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.settings_seed import (
     SETTINGS_SEED_CONVERGENT_FAILURES,
     SettingSeedOutcome,
@@ -76,6 +77,9 @@ class EngineeringRunResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     engineering_status: EngineeringStatus
+    #: Explicit startup evidence. Absent means legacy/unknown and grants no
+    #: infrastructure disposition; malformed pairs are rejected by the model.
+    execution: EngineeringExecutionEvidence | None = None
     #: Why a failed engineering run produced nothing usable, when the failure
     #: has a classification the pipeline routes or a person reads. ``None`` is
     #: the ordinary case: a technical failure whose message is the whole story.
@@ -252,13 +256,30 @@ def deploy_fix_run_id(source_run_id: str, attempt: int) -> str:
     return f"eng-deploy-fix-{source_run_id}-{attempt}"
 
 
+class QAFailedCheckCause(StrEnum):
+    """Closed set of reasons one QA check failed.
+
+    Only `product` is evidence about the product and may reach an engineering
+    fix task. `qa_capability` is a criterion QA has no tool for (an HTTP write,
+    a photo upload); `qa_access` is the product refusing the QA identity.
+    """
+
+    PRODUCT = "product"
+    QA_CAPABILITY = "qa_capability"
+    QA_ACCESS = "qa_access"
+
+
 class QAFailedCheck(BaseModel):
-    """A single failed QA check the scheduler turns into a fix-task line."""
+    """A single failed QA check; only a `product` one becomes a fix-task line."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     detail: str
+    # Stored results written before the cause existed are product failures, as
+    # they were routed then. A new executor verdict without a cause is refused
+    # by the QA runner and never reaches this default.
+    cause: QAFailedCheckCause = QAFailedCheckCause.PRODUCT
 
 
 class QABlockerCategory(StrEnum):
@@ -302,12 +323,40 @@ class QABlockerCategory(StrEnum):
     # which account the server row names as administrative. Nothing here says
     # the QA seat is missing — the run never got to see it.
     QA_IDENTITY_UNREADABLE = "qa_identity_unreadable"
+    # The target's QA harness is not the profile this runtime speaks to: the
+    # server row's readiness receipt is missing or stale, the live `qa-docker`
+    # answers another profile or lacks a verb, or the wrapper refused a verb the
+    # runner sent. Repaired by managed-target reconciliation, never by changing
+    # the product.
+    QA_TARGET_PROFILE_STALE = "qa_target_profile_stale"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"
     # The temporary identity QA tests private bots with: never handed over, or
     # taken back while the run was still using it.
     QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
     QA_ACCESS_EXPIRED = "qa_access_expired"
+    # QA ran and every failed check was a criterion it had no tool for or a
+    # product refusing the QA identity. No product judgement exists, so no fix
+    # attempt may be spent on it.
+    QA_CHECKS_UNVERIFIABLE = "qa_checks_unverifiable"
     UNKNOWN = "unknown"
+
+
+#: Blockers that say the platform's QA harness or its reach into the target
+#: failed — an executor that never reached the capability endpoint, a probe the
+#: target could not perform, a harness that is not the current profile, a host
+#: the run could not take its seat on. The supervisor parks every one of them
+#: for operator recovery with an administrator notice, and never words any of
+#: them to the owner as something wrong with the product.
+QA_HARNESS_BLOCKERS: frozenset[QABlockerCategory] = frozenset(
+    {
+        QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+        QABlockerCategory.QA_PROBE_UNAVAILABLE,
+        QABlockerCategory.QA_TARGET_PROFILE_STALE,
+        QABlockerCategory.SERVER_UNAVAILABLE,
+        QABlockerCategory.QA_IDENTITY_UNREADABLE,
+        QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
+    }
+)
 
 
 class QABlocker(BaseModel):

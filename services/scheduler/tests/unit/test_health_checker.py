@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 # Must set before importing health_checker (module-level config)
 os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
@@ -307,6 +308,45 @@ node_load1 0.5
         assert call_kwargs["incident_type"] == "resource_exhausted"
         assert "disk" in call_kwargs["details"]["resource"]
 
+    @pytest.mark.asyncio
+    async def test_control_host_disk_over_threshold_opens_existing_resource_incident(
+        self, mock_api_client
+    ):
+        """The scheduler container's root filesystem reports its host backing disk."""
+        stat = SimpleNamespace(f_blocks=100, f_bavail=5, f_frsize=1024)
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch("src.tasks.health_checker.os.statvfs", return_value=stat),
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
+        ):
+            from src.tasks.health_checker import _check_control_host_disk
+
+            await _check_control_host_disk(_make_server("control-host", "control-host"))
+
+        assert (
+            mock_api_client.create_incident.call_args.kwargs["incident_type"]
+            == "resource_exhausted"
+        )
+        assert mock_api_client.create_incident.call_args.kwargs["details"]["resource"] == "disk"
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_control_host_disk_under_threshold_keeps_incident_closed(self, mock_api_client):
+        stat = SimpleNamespace(f_blocks=100, f_bavail=15, f_frsize=1024)
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch("src.tasks.health_checker.os.statvfs", return_value=stat),
+        ):
+            from src.tasks.health_checker import _check_control_host_disk
+
+            await _check_control_host_disk(_make_server("control-host", "control-host"))
+
+        mock_api_client.create_incident.assert_not_called()
+
 
 class TestFilterServers:
     """Tests for server filtering logic."""
@@ -373,6 +413,32 @@ class TestAppHealthIntegration:
                 await health_check_worker()
 
         mock_app_probe.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_control_host_creation_failure_does_not_skip_app_probe(
+        self, mock_api_client, monkeypatch
+    ):
+        monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "orchestrator.example")
+        monkeypatch.setenv("ORCHESTRATOR_PUBLIC_IP", "203.0.113.10")
+        mock_api_client.get_servers.return_value = []
+        mock_api_client.create_server.side_effect = RuntimeError("API unavailable")
+
+        class _BreakLoop(Exception):
+            pass
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch(
+                "src.tasks.health_checker.app_health_probe_cycle", new_callable=AsyncMock
+            ) as mock_app_probe,
+            patch("src.tasks.health_checker.asyncio.sleep", side_effect=_BreakLoop),
+        ):
+            from src.tasks.health_checker import health_check_worker
+
+            with pytest.raises(_BreakLoop):
+                await health_check_worker()
+
+        mock_app_probe.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_cleanup_includes_app_health_history(self, mock_api_client):

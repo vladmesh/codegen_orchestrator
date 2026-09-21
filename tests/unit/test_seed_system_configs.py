@@ -219,3 +219,16 @@ def test_api_service_test_overlay_initializes_before_production_defaults():
         "/app/scripts/system_configs.yaml"
     )
     assert "--skip-key work_admission.max_projects_per_user" in source
+
+
+def test_the_production_seed_declares_a_non_zero_invite_budget():
+    """The bot mints invites from these keys; a zero budget admits the user nowhere."""
+    configs = seeder.load_configs(REPO_ROOT / "scripts/system_configs.yaml")
+    values = {config["key"]: config["value"] for config in configs}
+
+    assert values["admission.invite_credits_microusd"] > 0
+    assert values["admission.invite_attempt_reservation_microusd"] > 0
+    assert (
+        values["admission.invite_attempt_reservation_microusd"]
+        <= values["admission.invite_credits_microusd"]
+    )

@@ -2,7 +2,7 @@
 
 Requires a real LLM API key. Run with:
 
-    PO_LLM_MODEL=anthropic/claude-haiku-4-5 \
+    PO_LLM_MODEL=openai/gpt-5.6-sol \
     PO_LLM_BASE_URL=https://openrouter.ai/api/v1 \
     PO_LLM_API_KEY=$OPENROUTER_API_KEY \
     pytest services/langgraph/tests/e2e/test_summarization.py -v -s

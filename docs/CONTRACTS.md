@@ -91,10 +91,14 @@ The reconciler retries only the record's immutable target. Missing or stale gran
 and revoke operation Runs consume their separately recorded, bounded attempt
 budgets. A revoke that exceeds its attempt or unrevoked-time bound receives one
 persisted administrator escalation and never releases or republishes QA access.
-A non-revoked legacy slot record blocks only new capability-backed QA handoffs
-with a non-secret prior-release-drain remediation; it never blocks unrelated
-temporary-access reconciliation or dispatcher work, and terminal legacy history
-remains readable.
+A non-revoked record with a known `(project_id, target_application_id)` blocks
+only a capability-backed QA handoff for that exact target. A target-less legacy
+record blocks no current handoff; it remains fail-closed when read as a current
+capability record, and terminal legacy history remains readable. An internal or
+administrator operator may explicitly drain such an unreconcilable legacy record,
+or a target-backed revoke only after the reconciler persisted its terminal
+`revoke_failed` escalation. That command records acceptance of unproved remote
+cleanup and its resolved actor in the durable work-admission audit.
 
 ### Deploy diagnostic redaction
 
@@ -133,6 +137,7 @@ becomes an immutable terminal fact.
 |---|---|---|
 | paid-run command and outcomes | `shared/contracts/dto/work_admission.py` | `services/api/src/routers/work_admission.py` |
 | engineering dispatch admission | `shared/contracts/dto/engineering_dispatch.py` | `services/api/src/engineering_dispatch_admission.py` |
+| engineering execution boundary and infrastructure recovery | `shared/contracts/dto/engineering_execution.py` | worker-manager, engineering consumer, scheduler supervisor, `routers/_story_actions.py` |
 | Product Brief coverage admission | `shared/contracts/dto/product_brief.py` | `services/api/src/routers/product_briefs.py` |
 | per-user engineering budget policy | `shared/contracts/dto/engineering_budget_policy.py` | `services/api/src/routers/engineering_budget_policies.py` |
 | executor decision snapshot | `shared/contracts/dto/executor_decision.py` | `services/api/src/work_admission.py` |
@@ -214,6 +219,120 @@ control or diagnostic is fail-closed. An administrator may confirm only a
 specific unexpired `unknown` diagnostics snapshot; an internal service cannot
 make that confirmation.
 
+The diagnostics snapshot is schema `v2` under `executor:diagnostics:v2` with a
+90-second TTL; a v1 or otherwise invalid value is typed `unknown`. An enabled
+host-session diagnostic requires exactly one `ExecutorProfileObservation`, and
+its reason code and availability are derived from the observation's closed
+`condition` (`healthy` → `ready`/available, `refresh_expiring` → degraded,
+`refresh_expired`/`refresh_missing`/`logged_out`/`unusable` → unavailable,
+`unverifiable`/`read_contended` → unknown); only a healthy or expiring profile
+defers to `inventory_unreconciled`. Access/session expiry is reported but stays
+renewable while refresh material exists; only a locally proved refresh-credential
+expiry drives `refresh_expiring` (24 hours) and `refresh_expired`. The Codex
+reader, shared by worker creation and diagnostics, observes in a fixed order: a
+stable `auth.json` read that joins the wrapper's `.codegen-codex.lock` (only a
+held shared lock on the stable lock inode is authoritative; a missing lock never
+proves no writer, and a torn read otherwise is `read_contended`, never logged
+out), then the pinned `AuthDotJson`/`TokenData` shape, including both
+`AgentIdentityStorage` variants, parsed no more permissively than `serde_json`
+(a file the CLI cannot load, or a struct stored as an array, is `unusable`).
+Every reader parses JSON through one total boundary, `host_profile.load_json`:
+standard JSON only (never `NaN`, `Infinity` or `-Infinity`), at most 1 MiB of
+strict UTF-8 and nesting at most 127 for every reader, plus, for Codex auth.json
+and JWT claims only, no duplicate keys, lone surrogates or number the pinned
+serde_json 1.0.149 reports as `NumberOutOfRange`; it returns one failure result
+instead of raising. Then comes the authoritative `auth_mode` (anything but the ChatGPT
+subscription mode is `unusable`), and only then ChatGPT token material. The
+worker wrapper creates the lock inode at startup and the login recipe creates it
+before logging in. Timestamps are timezone-aware, each time fact names its
+executor-specific source, and an access-token expiry can never be stored as a
+refresh expiry. Worker-manager's `ExecutorDiagnostics` publisher alone writes the
+snapshot and reconciles `ExecutorProfileAlertEpisode` records, whose delivery
+outcomes are the `AdminDeliveryStatus` values. One episode spans an executor's
+whole unhealthy stretch: later alertable observations update its condition and
+refresh expiry without reopening delivery, `read_contended` neither opens nor
+resolves it, and only a healthy observation deletes it.
+
+`EngineeringExecutionEvidence` is the authoritative boundary for whether an
+engineering agent started. It is exactly either `agent_started` with no refusal,
+or `pre_agent_refused` with one `EngineeringInfrastructureRefusal`. The evidence
+travels in worker status, `AttemptTurnMetadata`, and `EngineeringRunResult` on
+the same Run. Missing, malformed, legacy, or contradictory evidence is not a
+free attempt and must follow the ordinary failure path; consumers never infer
+this fact from prose, tokens, elapsed time, or container presence.
+
+For a valid pre-agent refusal, one exact `EngineeringInfrastructurePark` is
+stored under `engineering_infrastructure` in task `failure_metadata` and, for a
+story-bound task, story `quarantine_reason`. Admission owns
+`executor_unavailable` and `executor_confirmation_required`; the liveness
+supervisor owns post-handoff worker creation refusals. Both preserve
+`current_iteration` and retry accounting.
+
+One API function, `apply_infrastructure_park` (`services/api/src/infrastructure_park.py`),
+writes every park on rows its caller already holds locked (Task, then Story), and
+never commits. It applies the legal audited task hops from `todo`, `in_dev`, or
+`failed`, writes both evidence copies, moves the story to `waiting_human_review`,
+and owes both notice audiences on the story's terminal-notification record. Its
+dispositions are `parked`, the repeat no-op `already_parked`, and
+`ineligible_story` for a terminal or otherwise transition-ineligible story, which
+changes neither row. Different evidence, a half-parked row, a row already in
+human review, or a non-parkable task status is a typed 409.
+
+Admission is the sole linearization point for a paid pre-agent refusal: in the
+same transaction that writes the paid-work `WorkAdmissionAudit`, and under the
+task and story admission locks, it parks with that audit's attempt id, reason and
+message and returns the result as `EngineeringDispatchRead.infrastructure_park`.
+A lost answer therefore leaves a task that is no longer `todo`, and the scheduler
+never parks this refusal again. A standalone task is parked on the task alone.
+
+Admission is also the one place a failed ensure-workspace becomes a park. When the
+locked project row carries `scaffold_error` without `workspace_ready` (the
+scaffolder records it for a failed clone/setup and for an exception in the ensure
+job), rung 3 refuses with `EngineeringDispatchRefusal.WORKSPACE_ENSURE_FAILED` and,
+for a parkable task whose story is not already in human review, parks it as
+`workspace_ensure_failed` with a fresh `ws-` attempt id, a detail naming the
+redacted error, and a `WorkAdmissionAudit` of subject `workspace_ensure` in the same
+transaction. That audit is the only proof the park endpoint accepts for this
+refusal; it proves no other refusal. `retry-infrastructure-attempt` for this
+refusal also removes `scaffold_error`, and nothing else, from `project.config`
+under the project lock, so ensure runs again; a new failure parks again.
+
+The liveness supervisor parks a Run-backed refusal through the internal/admin
+`POST /api/stories/{id}/park-infrastructure-refusal`
+(`EngineeringInfrastructureParkCommand` → `EngineeringInfrastructureParkRead`).
+The command is never authority by itself: the locked refused Run must match task,
+story, typed refusal and the detail derived from it; without a Run, the unique
+committed paid-work audit must match task, story, current iteration, attempt id,
+typed reason and message. A missing proof is `refusal_evidence_missing`, more than
+one audit is `refusal_evidence_ambiguous`, any mismatch is `stale_attempt_fence`,
+and none of them mutates anything. Admission also refuses a task or story that
+already carries a park with `infrastructure_parked` before any attempt id is minted.
+
+`OwnerNotification.delivered_at` is set by the seam in the same write that marks the owner
+audience `delivered`, and is `None` before that and on records delivered before the field
+existed. A wait measured from the owner having been told — the `waiting_user_secret` age bound —
+reads it, never `owed_at`.
+
+`OwnerNotification` carries an optional administrator audience (`admin_text`,
+`admin_state`, `admin_attempts`, `admin_detail`) settled independently of the
+owner through the same record, selection and bounded retries. Released records
+have no such fields and are read as owing administrators nothing, so their owner
+semantics are unchanged; no migration is needed because the record is JSON. The
+owner audience is voided when its terminal status is gone; the administrator
+audience describes a committed event and is delivered regardless.
+
+The administrator audience settles on `shared.notifications.deliver_to_admins`,
+whose `AdminDeliveryResult` carries the configured and successful recipient
+counts, never on `notify_admins` not raising (`send_telegram_message` returns
+`False` for rate limits, non-200 answers and timeouts; `notify_admins` keeps
+returning only the success count for best-effort alerts). No configured
+administrator settles `unaddressable` with the counts as `admin_detail`; all
+configured recipients accepted settles `delivered`; zero or partial success, or
+a raised users-API failure, spends one bounded attempt and stays `owed`, then
+`abandoned` with the detail. A settled audience is never sent again; before
+settlement delivery is at-least-once, because Telegram has no idempotency key,
+so a retry after partial success resends to administrators already reached.
+
 ### The Product Brief coverage-to-dispatch boundary
 
 A Story planned from a confirmed Product Brief is released as a whole, not task
@@ -259,6 +378,20 @@ addresses a requirement as one path segment, so an id carrying `/` would come
 back as a 404 that says nothing about why, and the refusal belongs where the
 revision is opened. Both are additive: `extra="forbid"` stays, ids stay unique,
 and no migration is needed because `content` is a JSON column.
+
+**A brief shows the user how they will use it, in their language.**
+`ProductBriefContent` carries `language` (an ISO 639 code such as `ru`),
+`usage_examples` (each `UsageExample` names a must-requirement id, what the user
+sends and what the product answers), `limitations` (plain-language sentences),
+`MustRequirement.user_facing` (default `true`) and `InitialSetting.description`.
+All default on the read shape, so a brief stored before them still parses. The
+write shape requires a language and a description on every setting, and refuses a
+usage example naming an unknown requirement id and a user-facing requirement with
+no example. `present_product_brief` renders the user-facing message from a
+per-language label table (`ru`, `en`; any other language falls back to `en`),
+shows settings only by their description, and keeps the brief id in the PO-facing
+prefix. A stored revision lacking these fields cannot be confirmed; the PO is told
+to present a correction.
 
 **A brief carries typed initial settings, and never a secret.**
 `ProductBriefContent.initial_settings` is an ordered list of `InitialSetting` —
@@ -307,7 +440,13 @@ header, and appears in no URL, log, error, event, callback, persisted
 diagnostic or LLM-facing text. Writing is idempotent by `(key, scope,
 subject_id)`, so redeploying the same story writes the same values and ends in
 the same state; a story with no brief and a brief with no settings touch
-nothing.
+nothing. A commit deploy whose message names no story — the owner-grant deploy
+of a fresh project is the only deploy such a product gets — reads the project's
+latest confirmed brief carrying `initial_settings` through
+`GET /api/product-briefs/by-project/{project_id}/initial-settings` (newest
+confirmation first; 404 when none) and seeds it the same way. Every seed step
+logs the brief id, settings count and route (`story` or `project`), or that
+there was nothing to seed; never a value or the capability.
 
 For a package-owned product setting, that same successful `POST /settings/set`
 write invokes the installed package's declared idempotent setting seed inside
@@ -544,17 +683,17 @@ are repository-relative.
 
 | Stream / pattern | Group | Message source | Logical producer | Consumer |
 |---|---|---|---|---|
-| `scaffold:queue` | `scaffold-consumers` | `queues/scaffold.py` | scheduler dispatcher | scaffolder |
+| `scaffold:queue` | `scaffold-consumers` | `queues/scaffold.py` | scheduler-pipeline | scaffolder |
 | `architect:queue` | `architect-consumers` | `queues/architect.py` | PO/API story action | architect consumer |
-| `engineering:queue` | `capability-workers` | `queues/engineering.py` | scheduler dispatcher | langgraph engineering consumer |
-| `deploy:queue` | `capability-workers` | `queues/deploy.py` | scheduler or API action | langgraph deploy consumer |
+| `engineering:queue` | `capability-workers` | `queues/engineering.py` | scheduler-pipeline | langgraph engineering consumer |
+| `deploy:queue` | `capability-workers` | `queues/deploy.py` | scheduler-pipeline or API action | langgraph deploy consumer |
 | `qa:queue` | `qa-consumers` | `queues/qa.py` | deploy supervisor or admin action | langgraph QA consumer |
 | `worker:commands` | `worker_manager` | `queues/worker.py` | langgraph | worker-manager |
 | `worker:responses:developer` | response stream | `queues/worker.py` | worker-manager | langgraph |
 | `worker:{worker_id}:input` | broker session | `queues/developer_worker.py` | developer node | worker-wrapper/broker |
 | `worker:{worker_id}:output` | broker session | `queues/developer_worker.py` | worker-wrapper/broker | developer node |
-| `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler | infra-service |
-| `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler, telegram-bot |
+| `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler-infrastructure | infra-service |
+| `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler-infrastructure, telegram-bot |
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
 | `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot |
 | `po:proactive` | `tg-bot-proactive` | `queues/po.py` | PO notification tools | telegram-bot |
@@ -718,6 +857,20 @@ walks a Story through more than one status. Every other caller reports the event
 that happened through a single-hop action; no path in `services/scheduler` or
 `services/langgraph` issues two Story transitions for one story.
 
+The locked infrastructure park,
+`POST /api/stories/{id}/park-infrastructure-refusal`, moves a Story one hop but
+its Task up to two (`todo → in_dev → waiting_human_review`) in the same
+transaction, so no caller sequences task and story status for that park.
+
+The narrow exception is the locked infrastructure recovery transaction,
+`POST /api/stories/{id}/retry-infrastructure-attempt`. It verifies the task and
+story still carry the same exact pre-agent park, settles its refused Run fence
+when one exists, records the legal task hops `waiting_human_review → backlog →
+todo`, clears only that matching park, and restarts the story at `in_progress`
+without changing the iteration. A matching completed audit returns the typed
+`already_retried` no-op; stale evidence, a changed status, a non-infrastructure
+park, or a mismatched Run returns a typed 409 and commits nothing.
+
 **`waiting_on` belongs to the transition, not to the caller.** `stories.waiting_on`
 is a non-nullable typed `StoryWaitingOn` column (migration `c3f7a91d2b48`)
 written only by `_land_on` in `routers/_story_helpers.py` — reached from story
@@ -795,16 +948,46 @@ above names a shared contract import.
 
 | Message / result family | Canonical source | Producers | Consumers | Delivery and ownership rule |
 |---|---|---|---|---|
-| `ScaffoldMessage` | `queues/scaffold.py` | scheduler | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
-| `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler | architect consumer | story identity, not conversational state, drives decomposition |
-| `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
-| `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
+| `ScaffoldMessage` | `queues/scaffold.py` | scheduler-pipeline | scaffolder | scaffold durable state is claimed before work and settled through typed result paths |
+| `ArchitectMessage` | `queues/architect.py` | PO/API and scheduler-pipeline | architect consumer | story identity, not conversational state, drives decomposition |
+| `EngineeringMessage`, `EngineeringResult` | `queues/engineering.py` | scheduler-pipeline | engineering consumer | task id names the immutable paid Run decision; initiating run id fences worker ownership |
+| `DeployMessage`, triggers/actions/outcomes | `queues/deploy.py` | scheduler-pipeline/API | deploy consumer | recipient rule is address xor reason; terminal result belongs to deploy Run owner |
 | `QAMessage`, QA outcomes | `queues/qa.py` | supervisor/admin action | QA consumer | run id names the QA decision; criteria are resolved before publication |
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | developer input/output | `queues/developer_worker.py` | developer node / wrapper | wrapper / developer node | broker request id and single typed accepted output settle a leased turn |
-| provisioning request/result | `queues/provisioner.py` | scheduler / infra-service | infra-service / scheduler and bot | result consumers use their own group semantics |
+| provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |
 | PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
+
+Every developer and QA executor is owned by a project, initiating Run, and
+attempt. Story-scoped engineering and QA producers additionally require and
+carry their real `story_id`; worker-manager writes that value to
+`worker:meta:<id>` and `com.codegen.story.id` before the container exists.
+Released storyless tasks and ad-hoc administrative E2E runs remain explicitly
+run-owned: their message and `WorkerOwnership.story_id` are `None`, and no story
+metadata or Docker label is invented.
+The scheduler reconciles `completed`, `failed`, and `archived` stories every
+supervision tick by rediscovering all matching metadata and publishing the
+canonical `DeleteWorkerCommand`. One scheduler finalizer retains the
+`story:workers` binding until worker-manager has deleted that exact worker's
+status and metadata and released its owner-fenced project lock, then
+compare-deletes only the unchanged binding. A failed publish, incomplete
+removal, or replacement owner remains retryable and blocks handoff. Both
+`complete_stories` PR-review routes and terminal reconciliation use this same
+order before transition or next-story eligibility.
+Canonical teardown also unbinds the story itself: `delete_worker` compare-deletes
+the `story:workers` entry that still names the worker it is removing, before it
+deletes that worker's status and metadata. Reuse requires the same evidence from
+the other side — a binding whose `worker:status:<id>` and `worker:meta:<id>` are
+both absent names a removed worker, so the registry evicts it and the caller
+spawns. A present but unrecognised status stays inconclusive and is still reused.
+
+The owner-fenced `workspace:lock:<project>` is repaired during create only when
+its worker metadata names a story and an authenticated internal API read proves
+that story terminal. Missing ownership, lookup failure, a live story, or a
+replacement lock fails closed and the refusal names both known identities.
+Worker GC likewise requires a terminal worker status plus a container proven
+non-live or absent; a failed Docker inventory is not absence.
 
 For a developer `WorkerCompletedResult`, worker-wrapper is the sole publication
 boundary. It first resolves the reported commit, including an unambiguous
@@ -1175,8 +1358,11 @@ Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 Persist the immutable QA identity and exact deployed-service target before the
 capability operation is dispatched. The post-health deploy worker resolves the
 generated capability only in `secret_values`, then proves grant or revoke with
-the matching access readback. Legacy live records without a target fail closed
-until the preceding release drains them; revoked legacy history remains readable.
+the matching access readback. Legacy live records without a target remain fail-closed
+when a caller tries to hydrate them as capability records, but do not block a
+different target's admission; revoked legacy history remains readable. The target
+lock and partial unique index scope contention to `(project_id,
+target_application_id)`, including a legacy row whose target application is known.
 An id-colliding legacy record is never hydrated as a capability record, while a
 narrow QA-run history lookup still sees it so recovery cannot replay its handoff.
 Cancelled deploy-lock or fence operations are redispatched against their stored
@@ -1187,6 +1373,15 @@ matching in-flight state. Recovery changes that durable operation authority
 before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
 grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
+
+`POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
+boundary. Under the grant row lock it accepts only a live target-less legacy row
+or a complete target-backed row already stamped `revoke_failed` and escalated by
+the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
+writes `revoked`, `revoked_at`, the typed
+`operator_drain` reason, and one actor audit in the same transaction. Equal
+repeats return the settled record without a second audit. It does not prove that
+remote access is absent and cannot override an ordinary current-format lifecycle.
 
 ### QA handoff and restricted access
 
@@ -1281,6 +1476,41 @@ artifact rather than of one that classifies itself as failed. A free
 deterministic run spends no subscription and retains none of them: its
 transcript is named by path and file list only.
 
+**Every run's artifact carries what each engineering attempt was told.** Not
+just a paid one: `developer_instructions` holds, per engineering **task** of the
+run, the `TASK.md` worker-manager injected into that attempt's workspace and,
+where the attempt has one, the `.story/STORY.md` beside it. An attempt is a task,
+not a container — a story's worker is reused across its tasks, so `run.attempts`
+(containers) is a different count — and worker-wrapper rewrites
+`/workspace/TASK.md` at the start of every turn, destroying the previous
+attempt's document in place. So every evidence pass the run already takes reads
+the workspace off the host side of the container's own bind mount and keeps what
+it read, distinct by digest; a reading is attributed to an attempt by that task's
+own description appearing in it, and the story document by the reading written
+closest to it. Nothing holds a container open or moves teardown to make this
+possible: a document no pass reached before removal is reported unread.
+
+A document is `captured`, `absent` (the attempt was given none — ordinary for
+`.story/STORY.md`, a gap for `TASK.md`), `unreadable` (with the reason) or
+`not_applicable` (a QA executor is not an engineering attempt).
+`developer_instructions.complete` is a missed capture naming every gap, so the
+section cannot read as complete while a document is missing. Per attempt,
+`acceptance_criteria` states whether the task's acceptance criteria appear in the
+captured `TASK.md` as one exact substring — `format_acceptance_criteria` writes
+them there stripped and otherwise untouched.
+
+Two helpers read that, and the difference is the assertion:
+`attempts_not_quoting_acceptance_criteria` counts only `not_quoted`, so an
+attempt whose task carries no criteria is not counted — the right question only
+for a scenario whose tasks genuinely may have none.
+`attempts_without_quoted_acceptance_criteria` counts everything that is not
+`quoted`, so an empty list is two claims at once: every engineering attempt *has*
+acceptance criteria, and each attempt's `TASK.md` quotes them. The level-1 live
+suite asserts the second, and `admit_level1_plan` plans both tasks with the
+criteria QA checks them by, keyed on that run's marker — so a `TASK.md` left over
+from another run cannot satisfy the check, and a plan that asked for nothing
+cannot pass it.
+
 Unconditional because the condition could not be evaluated where the artifact
 must be written. A `stand-e2e` run's result is decided outside the pytest
 process and after it — `scripts/stand_run.py` fails a run on a sweep error after
@@ -1331,6 +1561,138 @@ current override, `stand_e2e`, is admitted by the internal provisioning request,
 carried through the queue, and consumed by infra-service for the disposable
 Stand target. It is not inferred from mutable server labels; a replay retains
 the profile that was originally queued.
+
+### Managed target readiness
+
+`shared/qa_target_profile.py` owns the one QA target profile.
+`QA_TARGET_PROFILE_VERSION` is derived from every file of the `qa_identity` role
+with the wrapper's and the defaults' version lines blanked, and a unit test holds
+the constant, both lines and the files together, so any artefact change changes
+the version. `qa-docker version` answers `qa-docker profile=<version> verbs=<...>`;
+`qa-identity-proof` asks it through the QA account's own sudo rule and fails a
+seat that answers anything else, then prints `qa_target_version=<version>`.
+
+The receipt is `servers.qa_target_version` and `servers.qa_target_proved_at`.
+Only `POST /api/servers/{handle}/target-readiness` (`TargetReadinessReport` →
+`TargetReadinessRead`) and the provisioning finalizer below write it;
+`qa_ssh_user`, `provisioning_phase` and PATCH never do.
+Every report carries the `TargetIdentity` it was proved over (`ssh_user`,
+`host`, `public_ip`, stored-key fingerprint); under the server row lock the
+endpoint refuses, with 409 and no change, a verdict whose identity is not the
+row's current one. `PATCH /api/servers/{handle}` locks the row too and clears the
+receipt in the same transaction whenever that identity changes, server-sync
+address updates included.
+
+Readiness owns its own evidence. A not-ready verdict clears the receipt, sets
+`target_readiness_failure_phase`, and creates or updates the one active
+`target_not_ready` incident (its own unique active index); it moves the row to
+`error` only out of an admitting status, recording that status in
+`target_readiness_parked_status`, and leaves any other status as it was.
+`ssh_key_enc` is never touched. A ready verdict writes the receipt, resolves the
+active `target_not_ready` incident and the QA runtime's `step=qa_identity`
+refusals, clears the failure phase, and restores the parked status only while
+the park still owns the row's `error`: any status write — PATCH, attempt reset,
+force rebuild — clears the park's ownership. Other `provisioning_failed`
+episodes and statuses are never overwritten or resolved by readiness.
+
+Every provisioning route cuts over credentials before anything is proved. A
+bootstrap credential — the BitLaunch creation key, existing host access, a
+reinstall's root password — runs only `provision_access.yml`, which installs the
+provisioner's public key. `cut_over_to_generated_key` then runs
+`target_readiness_login.yml` with the generated private key as the row's
+administrative account; the software play runs through that identity, and its
+`QATargetProof` carries that account and key fingerprint. A login that fails is a
+`credential_cutover` provisioning failure that never reaches the success handler,
+and the handler refuses a proof whose fingerprint or account is not the one it
+persists and the row administers.
+
+Fresh, existing-access and reinstall success all end at `POST
+/api/servers/{handle}/provisioning/finalize` (`ProvisioningFinalization` →
+`ProvisioningFinalizationResult`). The command carries the attempt and episode,
+the pre-proof row identity, the exact generated-key identity proved by login and
+the software play, raw generated key material, the complete-phase labels and the
+matching `QATargetReceipt`. The response never carries key material.
+
+The API locks the server row and checks the episode, pre-proof identity, proved
+user/host/address/fingerprint, current profile, exact completion labels, parsed
+key fingerprint and receipt agreement before its first mutation. It then
+encrypts the normalized key, merges the completion labels, records the receipt,
+settles the current provisioning episode and only matching readiness evidence,
+resets the active episode and writes READY in one transaction. A stale fence or
+operator identity edit returns typed `conflict`; malformed or inconsistent
+material is `contained`; neither writes anything. The last successful episode
+fence remains on the row solely to make an exact redelivery `idempotent`; a
+redelivery with different key identity, labels, proof or receipt conflicts.
+There is no worker-side key PATCH, completion-label PATCH, read-back or reset.
+An unknown HTTP outcome leaves the provisioner stream entry unacknowledged;
+before that HTTP call, infra-service stores a delivery-bound copy of the exact
+command under a bounded 24-hour TTL, with the whole envelope encrypted by
+`SecretsCipher`. PEL reclaim checks this record before constructing a
+`ProvisionerNode` and calls only the finalizer with the same attempt, episode,
+identity, key, labels and receipt. A typed definitive result clears the record
+only after its broker result is published and acknowledged; another unknown
+outcome leaves both it and the stream entry pending. Missing,
+expired, unavailable, corrupt or delivery-mismatched replay state records a
+`provisioning_failed` incident and keeps the target non-admitting instead of
+reserving an attempt or rerunning a playbook. Finalizer conflicts after key
+cutover also record that incident without reverting the operator's identity
+edit. Provisioning-failure settlement requires both the finalized episode and
+its pre-proof identity, so success never resolves unrelated or earlier-identity
+evidence.
+
+`shared/server_admission.py` refuses a managed row with `target_not_ready` while
+a readiness failure phase is recorded, and with `qa_target_receipt_missing` or
+`qa_target_receipt_stale`; each is reported as `server_not_provisioned`, never
+capacity, and allocation, the scheduler's resource wait and QA read the same
+predicate and receipt. Server create and SSH key update accept only an
+unencrypted OpenSSH private key with a terminal newline (`shared/ssh_keys.py`),
+parse it before commit, keep the encrypted canonical text and
+`ssh_key_fingerprint`, and refuse with `ssh_key rejected: <reason>` without
+changing the row or echoing key material. A managed row may not be created,
+promoted, moved to a complete software phase or have its key cleared into a
+keyless state
+(`managed_row_requires_admin_key`), except while provisioning owns it and will
+mint the key: `pending_setup`, `provisioning`, `force_rebuild` or `reserved`
+with no complete software phase — the rows provider discovery and allowlist
+adoption create.
+
+`retrofit_qa_identity` reconciles any explicitly managed, phase-complete row
+provisioning does not own, without provider authority: stored key parse →
+`target_readiness_login.yml` (`admin_login`) → `target_readiness_privilege.yml`
+(`privilege_preflight`, non-interactive `become` to uid 0) →
+`qa_identity_retrofit.yml` with no `qa_ssh_user` or profile variable → proof
+version check → receipt. Each step is its own run with its own timeout and the
+first failing run is the phase. `python -m src.provisioner.target_readiness
+--revision <sha>` gives every managed row one outcome after a production deploy
+and exits zero only when every outcome is a recorded `ready` or `not_ready`;
+`in_progress`, `unhandled`, `superseded` and `unrecorded` rows fail it.
+
+A QA harness failure is a typed `QABlocker`, never a product check. A receipt
+rejection refuses before any grant; the runner checks the live wrapper right
+after the one-shot identity connects; a wrapper refusal is
+`qa_target_profile_stale`, and a contract read that ends other than read, absent,
+outside `/app` or over the limit is `qa_target_profile_stale` or
+`qa_probe_unavailable`. `QA_HARNESS_BLOCKERS` park the story in human review with
+an administrator notice naming `recheck-qa` and owner wording that blames no
+product; `qa_target_profile_stale` is operator-recheckable.
+
+Every failed check in an executor verdict carries a `cause`, and the runner refuses
+one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no QA
+tool for the criterion, such as an HTTP write or a photo upload) or `qa_access`
+(the product refused the QA identity). A verdict whose top-level `pass` disagrees
+with its checks (true with any failed check, false with none) is refused the same
+way. A stored `QAFailedCheck` without a cause
+reads as `product`. The supervisor puts only `product` checks into a fix task's
+description and fingerprint and records the rest as `unverified_checks` evidence;
+a FAILED run with no `product` check parks as `qa_checks_unverifiable`, a
+`QA_HARNESS_BLOCKERS` member that is operator-recheckable.
+
+A verdict check may instead be `{"name", "not_applicable": true, "detail"}`, with no
+`pass` or `cause`: an input the transport refused, such as an empty Telegram
+message. It never counts toward `pass` and is never a failed check, but the runner
+keeps it only when paired with a distinct refusal this run's workspace recorded
+(`QAWorkspace.transport_refusals`); an unpaired one becomes a failed `qa_capability`
+check. The prompt forbids the form for an acceptance-criterion check.
 
 ## Source map
 

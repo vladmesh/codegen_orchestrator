@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.models import Run, WorkAdmissionAudit
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 TASK_TEST_TELEGRAM_ID = 999000999
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -92,6 +93,7 @@ async def server_handle(client: AsyncClient, _ensure_project):
                 "handle": handle,
                 "host": "test.example.com",
                 "public_ip": "10.0.0.1",
+                "ssh_key": fleet_private_key(),
                 "ssh_user": "root",
             },
         )
@@ -104,6 +106,14 @@ async def _read_last_message(redis: Redis, stream: str) -> dict:
     assert msgs, f"No messages in {stream}"
     _msg_id, fields = msgs[0]
     return json.loads(fields["data"])
+
+
+async def _create_story(client: AsyncClient, title: str) -> str:
+    response = await client.post(
+        "/api/stories/", json={"project_id": TASK_TEST_PROJECT_ID, "title": title}
+    )
+    assert response.status_code == HTTPStatus.CREATED
+    return response.json()["id"]
 
 
 @pytest.fixture
@@ -180,7 +190,6 @@ class TestSendToArchitect:
 class TestSpawnWorker:
     @pytest.mark.asyncio
     async def test_spawn_from_backlog(self, client, redis, _ensure_project):
-        # Create a task
         resp = await client.post(
             "/api/tasks/",
             json={
@@ -202,10 +211,12 @@ class TestSpawnWorker:
         assert data["task"]["status"] == "in_dev"
         assert data["run"]["type"] == "engineering"
         assert data["run"]["id"].startswith("eng-")
+        assert data["run"]["status"] == "queued"
 
         # Verify message in engineering:queue
         msg = await _read_last_message(redis, "engineering:queue")
         assert msg["planning_task_id"] == task_id
+        assert msg["story_id"] is None
         assert msg["description"] == "custom description"
 
     @pytest.mark.asyncio
@@ -257,10 +268,12 @@ class TestSpawnWorker:
         walk past the dispatchability status. That authority is audited: the run
         it creates says which condition it overrode and who asked.
         """
+        story_id = await _create_story(client, "Overridden spawn story")
         created = await client.post(
             "/api/tasks/",
             json={
                 "project_id": TASK_TEST_PROJECT_ID,
+                "story_id": story_id,
                 "title": "Overridden spawn",
                 "type": "feature",
             },
@@ -544,13 +557,17 @@ class TestRunE2E:
     async def test_run_e2e_on_running_app(self, client, redis, server_handle):
         app_id = await _create_running_app(client, server_handle)
 
-        resp = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        resp = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test"},
+        )
         assert resp.status_code == HTTPStatus.OK
         data = resp.json()
         assert data["run"]["type"] == "qa"
         assert data["run"]["id"].startswith("qa-")
 
         msg = await _read_last_message(redis, "qa:queue")
+        assert msg["story_id"] is None
         assert msg["application_id"] == app_id
         assert "10.0.0.1" in msg["deployed_url"]
         # A repository is seeded with criteria at creation, so QA gets something
@@ -569,11 +586,15 @@ class TestRunE2E:
         """Criteria cleared → rejected before a Run exists, not a run that can only error."""
         rid = await _create_repo(client)
         app_id = await _create_running_app(client, server_handle, repo_id=rid)
+        story_id = await _create_story(client, "QA without criteria")
 
         resp = await client.patch(f"/api/repositories/{rid}", json={"acceptance_criteria": ""})
         assert resp.status_code == HTTPStatus.OK
 
-        resp = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        resp = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test", "story_id": story_id},
+        )
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
         assert "acceptance_criteria" in resp.text
 
@@ -590,6 +611,7 @@ class TestRunE2E:
         from src.routers import applications
 
         app_id = await _create_running_app(client, server_handle)
+        story_id = await _create_story(client, "QA recipient failure")
         before_messages = await redis.xlen("qa:queue")
         monkeypatch.setattr(
             applications,
@@ -597,7 +619,10 @@ class TestRunE2E:
             AsyncMock(side_effect=RuntimeError("chat resolver unavailable")),
         )
 
-        response = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        response = await client.post(
+            f"/api/applications/{app_id}/run-e2e",
+            json={"actor": "test", "story_id": story_id},
+        )
 
         assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
         runs = (await db_session.scalars(select(Run).where(Run.type == "qa"))).all()

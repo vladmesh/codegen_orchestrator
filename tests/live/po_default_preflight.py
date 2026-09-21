@@ -494,7 +494,8 @@ def load_po_tool_boundary(root: Path) -> tuple[Any, Any]:
             sys.path.remove(text)
         sys.path.insert(0, text)
     from src.agents.po import tools_projects
-    from src.agents.po.tools import create_project, init_po_clients
+    from src.agents.po.tools_projects import create_project
+    from src.agents.po.tools_shared import init_po_clients
 
     expected = root / "services" / "langgraph" / "src" / "agents" / "po" / "tools_projects.py"
     if Path(tools_projects.__file__).resolve() != expected.resolve():

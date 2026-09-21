@@ -1,17 +1,25 @@
 import base64
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
+from pathlib import Path
 import secrets
 import time
-from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx
-import structlog
 from redis.asyncio import Redis
+import structlog
+
+from shared.clients.internal_api import InternalAPIClient
 from shared.constants import Timeouts
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -19,17 +27,22 @@ from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields, decode_redis_value
 
-from . import garbage_collector as gc
-from . import git_ops, qa_egress
-from . import workspace as workspace_mod
+from . import garbage_collector as gc, git_ops, qa_egress, workspace as workspace_mod
 from .config import settings
 from .container_config import TRANSCRIPT_MOUNT, WorkerContainerConfig
+from .creation_failure import mark_worker_creation_step, worker_creation_failure_reason
 from .docker_ops import DockerClientWrapper
 from .executor_diagnostics import ExecutorDiagnostics
 from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
 from .worker_removal import QA_WORKER_TYPE, WorkerRemoval
 
 logger = structlog.get_logger()
+
+_MAX_WORKSPACE_FAILURES = 3
+_TERMINAL_STORY_STATUSES = frozenset(
+    {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
+)
+_REJECTED_WORKER_OBSERVATION_SECONDS = 300
 
 # What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
 # network is created and destroyed with its worker but is a separate Docker
@@ -39,6 +52,14 @@ logger = structlog.get_logger()
 # built from — which is exactly what is unrecoverable once the container and its
 # Redis metadata are gone.
 DEV_NETWORK_TYPE_LABEL = "worker-dev-network"
+
+
+class EngineeringWorkerCreationRefusal(RuntimeError):
+    """A worker-manager refusal classified where the failed operation is known."""
+
+    def __init__(self, reason: EngineeringInfrastructureRefusal, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 class WorkerManager:
@@ -90,7 +111,8 @@ class WorkerManager:
             )
             response.raise_for_status()
         await self.redis.hset(
-            f"worker:broker:{worker_id}", mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()}
+            f"worker:broker:{worker_id}",
+            mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()},
         )
 
     async def _unregister_broker_worker(self, worker_id: str) -> None:
@@ -125,7 +147,9 @@ class WorkerManager:
         if for_qa:
             qa_network = settings.QA_EGRESS_NETWORK.strip()
             if not qa_network:
-                raise RuntimeError("QA_EGRESS_NETWORK must name a dedicated internal Docker network")
+                raise RuntimeError(
+                    "QA_EGRESS_NETWORK must name a dedicated internal Docker network"
+                )
             if qa_network == "host":
                 raise RuntimeError("a QA executor cannot use host networking")
             return qa_network, False
@@ -185,7 +209,9 @@ class WorkerManager:
                 mem_limit="64m",
             )
         except Exception as exc:
-            raise RuntimeError(f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}") from exc
+            raise RuntimeError(
+                f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}"
+            ) from exc
 
     async def _stamp_ownership(
         self,
@@ -203,6 +229,7 @@ class WorkerManager:
         cannot be half-written or disagree with the container's labels.
         """
         metadata = ownership.as_redis_meta()
+        metadata["owned_at"] = datetime.now(UTC).isoformat()
         if agent_type is not None and auth_mode is not None:
             metadata.update({"agent_type": agent_type.value, "auth_mode": auth_mode})
         if worker_type is not None:
@@ -245,7 +272,10 @@ class WorkerManager:
         acquired = await self.redis.set(lock_key, worker_id, nx=True)
         if not acquired:
             await self.redis.delete(f"worker:meta:{worker_id}")
-            raise RuntimeError(f"Project {ownership.project_id} workspace lock was taken by a concurrent worker")
+            raise EngineeringWorkerCreationRefusal(
+                EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                f"Project {ownership.project_id} workspace lock was taken by a concurrent worker",
+            )
         await self.redis.sadd("workspace:active_projects", ownership.project_id)
         return ownership.project_id
 
@@ -269,7 +299,9 @@ class WorkerManager:
             # Pre-fence workers have only the old set membership. This path is
             # reached only after Docker removal was confirmed.
             await self.redis.srem("workspace:active_projects", held_project_id)
-            logger.info("legacy_workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
+            logger.info(
+                "legacy_workspace_lock_released", project_id=held_project_id, worker_id=worker_id
+            )
             return
         if owner != worker_id:
             logger.warning(
@@ -294,12 +326,42 @@ class WorkerManager:
         """
         logger.warning("worker_rejected", worker_id=worker_id, error=str(exc))
         await self.redis.set(f"worker:error:{worker_id}", str(exc))
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        reason = (
+            exc.reason
+            if isinstance(exc, EngineeringWorkerCreationRefusal)
+            else EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED
+        )
+        evidence = EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+            infrastructure_refusal=reason,
+        )
+        await self.redis.hset(
+            f"worker:status:{worker_id}",
+            mapping={
+                "status": WorkerStatus.FAILED,
+                **evidence.model_dump(mode="json", exclude_none=True),
+            },
+        )
+        await self.redis.expire(f"worker:error:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
+        await self.redis.expire(f"worker:status:{worker_id}", _REJECTED_WORKER_OBSERVATION_SECONDS)
 
     async def _fail_acquired_worker(self, worker_id: str, exc: Exception) -> None:
         """Publish terminal state and durable teardown intent for an acquired worker."""
-        await self.redis.set(f"worker:error:{worker_id}", str(exc))
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        # The reason, not `str(exc)`: an exception that stringifies to nothing —
+        # a bare timeout is the common one — would otherwise publish an empty
+        # error to the only place the spawner can read one.
+        await self.redis.set(f"worker:error:{worker_id}", worker_creation_failure_reason(exc))
+        evidence = EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
+            infrastructure_refusal=EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED,
+        )
+        await self.redis.hset(
+            f"worker:status:{worker_id}",
+            mapping={
+                "status": WorkerStatus.FAILED,
+                **evidence.model_dump(mode="json", exclude_none=True),
+            },
+        )
         await self.redis.xadd(
             WORKER_COMMANDS,
             {
@@ -309,7 +371,8 @@ class WorkerManager:
             },
         )
 
-    async def create_worker(
+    # Keep the explicit launch boundary stable; options control distinct Docker policies.
+    async def create_worker(  # noqa: PLR0913
         self,
         worker_id: str,
         image: str,
@@ -395,7 +458,9 @@ class WorkerManager:
                     labels={**labels, WorkerLabel.TYPE.value: DEV_NETWORK_TYPE_LABEL},
                 )
 
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STARTING})
+            await self.redis.hset(
+                f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STARTING}
+            )
 
             run_kwargs = container_config.to_docker_run_kwargs(
                 network_name=network_name,
@@ -422,13 +487,18 @@ class WorkerManager:
             await self.redis.hset(f"worker:meta:{worker_id}", mapping=meta)
 
             if publish_ready:
-                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
+                await self.redis.hset(
+                    f"worker:status:{worker_id}",
+                    mapping={"status": WorkerStatus.RUNNING},
+                )
 
             return container.id
 
         except Exception as e:
             logger.error("worker_creation_failed", worker_id=worker_id, error=str(e))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+            await self.redis.hset(
+                f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED}
+            )
             await self.redis.set(f"worker:error:{worker_id}", str(e))
             raise
 
@@ -443,14 +513,18 @@ class WorkerManager:
         """Resume a paused worker."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         await self.docker.unpause_container(container_name)
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
+        await self.redis.hset(
+            f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING}
+        )
         logger.info("worker_resumed", worker_id=worker_id)
 
     # --- Garbage collection (delegated to garbage_collector module) ---
 
     async def garbage_collect_orphaned_resources(self) -> None:
         """Find and remove orphaned containers, networks, and workspaces."""
-        await gc.garbage_collect_orphaned_resources(self.redis, self.docker, delete_worker_fn=self.delete_worker)
+        await gc.garbage_collect_orphaned_resources(
+            self.redis, self.docker, delete_worker_fn=self.delete_worker
+        )
 
     async def garbage_collect_workspaces(self, max_age_hours: int = 35) -> None:
         """Remove project workspaces older than max_age_hours with no active workers."""
@@ -458,7 +532,9 @@ class WorkerManager:
 
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""
-        await gc.garbage_collect_images(self.redis, self.docker, retention_seconds=retention_seconds)
+        await gc.garbage_collect_images(
+            self.redis, self.docker, retention_seconds=retention_seconds
+        )
 
     async def get_worker_status(self, worker_id: str) -> str:
         """Read the status Redis holds; UNKNOWN when it holds none.
@@ -516,7 +592,9 @@ class WorkerManager:
                 agent_type=agent_type,
                 source_hash=source_hash,
             )
-            dockerfile = builder.generate_dockerfile(capabilities=capabilities, agent_type=agent_type)
+            dockerfile = builder.generate_dockerfile(
+                capabilities=capabilities, agent_type=agent_type
+            )
             await self.docker.build_image(
                 dockerfile_content=dockerfile,
                 tag=image_tag,
@@ -544,6 +622,50 @@ class WorkerManager:
             return ClaudeCodeAgent()
         raise ValueError(f"Unknown agent type: {agent_type}")
 
+    def _validate_worker_creation_request(
+        self,
+        *,
+        agent_type: AgentType,
+        auth_mode: str,
+        api_key: str | None,
+        env_vars: dict[str, str],
+        host_claude_dir: str | None,
+        host_codex_home: str | None,
+        is_qa_worker: bool,
+        instructions: str | None,
+        task_content: str | None,
+        repo_id: str | None,
+    ) -> tuple[str, bool, str | None]:
+        """Validate inputs that can refuse creation before worker ownership."""
+        try:
+            self._validate_stand_auth(agent_type, auth_mode, api_key, env_vars)
+            self._validate_host_session(agent_type, auth_mode, host_claude_dir, host_codex_home)
+        except Exception as exc:
+            raise EngineeringWorkerCreationRefusal(
+                EngineeringInfrastructureRefusal.WORKER_PROFILE_UNAVAILABLE,
+                str(exc),
+            ) from exc
+
+        network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
+        if is_qa_worker and (not instructions or not task_content):
+            raise RuntimeError(
+                "a QA executor requires instructions and task_content before it can become ready"
+            )
+        if not is_qa_worker and not repo_id:
+            raise RuntimeError(
+                "repo_id is required — all developer workers must use pre-scaffolded "
+                "workspaces. Ensure scaffolder has run before spawning workers."
+            )
+
+        factory_api_key = None
+        if agent_type == AgentType.FACTORY:
+            factory_api_key = (
+                env_vars.get("FACTORY_API_KEY") or api_key or os.getenv("FACTORY_API_KEY")
+            )
+            if not factory_api_key:
+                raise RuntimeError("FACTORY_API_KEY is not set")
+        return network_name, allow_host_network, factory_api_key
+
     # Statuses that indicate the worker is no longer alive and can be cleaned up
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
@@ -570,7 +692,8 @@ class WorkerManager:
                 return worker_id
         return None
 
-    async def create_worker_with_capabilities(
+    # This command boundary mirrors spawn options; helpers below own each lifecycle phase.
+    async def create_worker_with_capabilities(  # noqa: PLR0913, PLR0917
         self,
         worker_id: str,
         capabilities: list[str],
@@ -612,92 +735,42 @@ class WorkerManager:
         project_id = ownership.project_id
         env_vars = env_vars or {}
         workspace_path = None
-        factory_api_key = None
-        if auth_mode == "stand_token":
-            if agent_type is not AgentType.CLAUDE:
-                raise RuntimeError("stand_token authentication is supported only for Claude workers")
-            if agent_type is AgentType.CLAUDE and (api_key or "ANTHROPIC_API_KEY" in env_vars):
-                raise RuntimeError("ANTHROPIC_API_KEY conflicts with Claude stand_token authentication")
-            supplied = {"CLAUDE_CODE_OAUTH_TOKEN"}.intersection(env_vars)
-            if supplied:
-                raise RuntimeError(
-                    "stand token credentials must be local to worker-manager, not env_vars: "
-                    + ", ".join(sorted(supplied))
-                )
-            failure = next(
-                (
-                    item
-                    for item in self._executor_diagnostics.stand_token_failures()
-                    if item.name == f"{agent_type.value.title()} token"
-                ),
-                None,
-            )
-            if failure is not None:
-                raise RuntimeError(f"stand_token authentication is unavailable: {failure.detail}")
-
         # These checks can refuse a request before it owns metadata, a workspace
         # fence, or a cleanup command. A terminal status still tells the early-
         # ACKed caller to stop polling without manufacturing teardown state.
         held_project_id: str | None = None
+        # The step this creation is in. It is the only thing that says *where* a
+        # failure happened once the command has been ACKed, and an exception
+        # whose message is empty carries nothing else.
+        step = "validate_request"
         try:
-            network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
-
-            if agent_type == AgentType.CODEX and auth_mode == "host_session":
-                from .codex_auth import validate_codex_host_session
-
-                validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
-                validate_codex_host_session(validation_path)
-            if agent_type == AgentType.CLAUDE and auth_mode == "host_session" and host_claude_dir:
-                from .claude_auth import validate_claude_host_session
-
-                validate_claude_host_session(settings.HOST_CLAUDE_VALIDATION_PATH or host_claude_dir)
-
-            if is_qa_worker:
-                if not instructions or not task_content:
-                    raise RuntimeError(
-                        "a QA executor requires instructions and task_content before it can become ready"
-                    )
-            else:
-                if not repo_id:
-                    raise RuntimeError(
-                        "repo_id is required — all developer workers must use pre-scaffolded "
-                        "workspaces. Ensure scaffolder has run before spawning workers."
-                    )
-
-            if agent_type == AgentType.FACTORY:
-                factory_api_key = env_vars.get("FACTORY_API_KEY") or api_key or os.getenv("FACTORY_API_KEY")
-                if not factory_api_key:
-                    raise RuntimeError("FACTORY_API_KEY is not set")
+            network_name, allow_host_network, factory_api_key = (
+                self._validate_worker_creation_request(
+                    agent_type=agent_type,
+                    auth_mode=auth_mode,
+                    api_key=api_key,
+                    env_vars=env_vars,
+                    host_claude_dir=host_claude_dir,
+                    host_codex_home=host_codex_home,
+                    is_qa_worker=is_qa_worker,
+                    instructions=instructions,
+                    task_content=task_content,
+                    repo_id=repo_id,
+                )
+            )
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project
             # but touches no workspace of it, so it neither takes the lock nor is
             # blocked by one — its ownership is a record, not a claim.
             if not is_qa_worker:
-                existing_worker = await self._check_project_lock(project_id)
-                if existing_worker:
-                    raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
-
-                failure_key = f"workspace:{project_id}:failure_count"
-                failure_count = int(await self.redis.get(failure_key) or 0)
-
-                if failure_count >= 3:
-                    raise RuntimeError(
-                        f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}"
-                    )
-
-                workspace_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
-                    settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
-                )
-                if not scaffolded_exists:
-                    raise RuntimeError(
-                        f"Scaffolded workspace not found for repo_id={repo_id} at {workspace_path}. "
-                        "Scaffolder must run first."
-                    )
+                step = "find_developer_workspace"
+                workspace_path = await self._find_developer_workspace(project_id, repo_id)
 
                 # Take the project and, with it, stamp ownership — early, so the
                 # spawner gets worker_id before the image build, and long before
                 # anything can produce a container.
+                step = "acquire_workspace_lock"
                 held_project_id = await self._acquire_workspace_lock(
                     worker_id,
                     ownership,
@@ -709,6 +782,7 @@ class WorkerManager:
                 # A QA executor takes no lock, so nothing gates its ownership:
                 # it is stamped as soon as this is known to be a worker that
                 # will exist, and still before any container of it does.
+                step = "stamp_ownership"
                 await self._stamp_ownership(
                     worker_id,
                     ownership,
@@ -717,6 +791,7 @@ class WorkerManager:
                     worker_type=worker_type,
                 )
         except Exception as exc:
+            mark_worker_creation_step(exc, step)
             # Acquisition is the only thing in the block that takes anything,
             # and it either succeeded or withdrew what it wrote — so the release
             # path is asked with what was actually acquired, not assumed.
@@ -725,10 +800,13 @@ class WorkerManager:
             raise
 
         if not is_qa_worker:
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING})
+            await self.redis.hset(
+                f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING}
+            )
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         try:
+            step = "build_image"
             image_tag = await self.ensure_or_build_image(
                 capabilities=capabilities,
                 base_image=base_image,
@@ -755,43 +833,9 @@ class WorkerManager:
             )
             self._prune_transcripts()
 
-            # A developer worker must be handed the repository the scaffolder
-            # prepared. A QA executor must not be handed a repository at all:
-            # it tests a running deployment as a black box, and a checkout in
-            # its workspace would be an invitation to read implementation for
-            # evidence and something to accidentally leave behind.
-            if is_qa_worker:
-                ws_path = workspace_mod.create_ephemeral_workspace(settings.SCAFFOLDED_WORKSPACE_PATH, worker_id)
-                logger.info("using_ephemeral_qa_workspace", worker_id=worker_id, path=str(ws_path))
-            else:
-                ws_path = workspace_path
-                logger.info(
-                    "using_scaffolded_workspace",
-                    worker_id=worker_id,
-                    repo_id=repo_id,
-                    path=str(ws_path),
-                )
-            config.workspace_host_path = str(ws_path)
+            ws_path = self._set_worker_workspace(config, workspace_path, repo_id)
 
-            broker_token = secrets.token_urlsafe(32)
-            await self._register_broker_worker(worker_id, broker_token, worker_type)
-            container_env = config.to_env_vars(
-                broker_url=settings.WORKER_BROKER_URL,
-                broker_token=broker_token,
-                # The wrapper enforces this shared per-turn limit. Do not let a
-                # worker-manager-only environment variable create a second,
-                # earlier ceiling than the metadata and waiter advertise.
-                subprocess_timeout_seconds=Timeouts.AGENT_TURN,
-            )
-            container_env.update(env_vars)
-            for forbidden in ("WORKER_REDIS_URL", "WORKER_API_URL", "WORKER_MANAGER_URL", "SECRETS_ENCRYPTION_KEY"):
-                container_env.pop(forbidden, None)
-            if factory_api_key is not None:
-                container_env["FACTORY_API_KEY"] = factory_api_key
-
-            github_token = env_vars.get("GITHUB_TOKEN")
-            if github_token:
-                container_env["GH_TOKEN"] = github_token
+            container_env = await self._prepare_worker_env(config, env_vars, factory_api_key)
 
             # The egress policy is put in place before the container that lives
             # under it exists, and it raises rather than degrading: a QA run
@@ -799,6 +843,7 @@ class WorkerManager:
             # told about the proxy is a convenience for its CLI — the boundary
             # is the internal network it is about to be attached to.
             if is_qa_worker:
+                step = "establish_qa_egress"
                 egress = await qa_egress.establish(
                     self.docker,
                     worker_id=worker_id,
@@ -826,6 +871,7 @@ class WorkerManager:
             )
             volumes = config.to_volume_mounts()
 
+            step = "create_container"
             container_id = await self.create_worker(
                 worker_id=worker_id,
                 image=image_tag,
@@ -853,74 +899,27 @@ class WorkerManager:
                 # network — a leftover default, a hand-edited compose, a future
                 # branch here — can reach the deployment directly, so it is
                 # refused before it is given any work.
-                qa_egress.verify_isolation(await self.docker.inspect_container(container_id), network_name)
+                qa_egress.verify_isolation(
+                    await self.docker.inspect_container(container_id), network_name
+                )
 
             if repo_id:
                 await self.redis.hset(f"worker:meta:{worker_id}", "repo_id", repo_id)
 
-            # Git setup: workspace is pre-scaffolded, just refresh git token
-            repo_name = env_vars.get("REPO_NAME")
-            github_token = env_vars.get("GITHUB_TOKEN")
+            step = "checkout_branch" if branch else "prepare_worker_checkout"
+            await self._prepare_worker_checkout(container_id, worker_id, repo_id, env_vars, branch)
 
-            if repo_name and github_token:
-                logger.info(
-                    "refreshing_git_token",
-                    worker_id=worker_id,
-                    repo_id=repo_id,
-                )
-                await git_ops.refresh_git_token(self.docker, container_id, repo_name, github_token, worker_id)
-
-            if branch:
-                await git_ops.checkout_branch(self.docker, container_id, branch, worker_id)
-
-            # Inject instructions AFTER git clone (so instruction file doesn't block clone)
-            if instructions:
-                target_path = agent.get_instruction_path()
-                logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
-
-                encoded = base64.b64encode(instructions.encode()).decode()
-                cmd = (
-                    f'python3 -c "import base64; '
-                    f"open('{target_path}', 'w').write("
-                    f"base64.b64decode('{encoded}').decode())\""
-                )
-
-                exit_code, output = await self.docker.exec_in_container(container_id, cmd)
-                if exit_code != 0:
-                    container_logs = await self.docker.get_container_logs(container_id)
-                    logger.error(
-                        "instruction_injection_failed",
-                        worker_id=worker_id,
-                        error=output,
-                        container_logs=container_logs,
-                    )
-                    raise RuntimeError(f"could not inject {target_path} for {worker_id}: {output}")
-
-            if task_content:
-                task_path = "/workspace/TASK.md"
-                logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
-
-                encoded_task = base64.b64encode(task_content.encode()).decode()
-                cmd = (
-                    f'python3 -c "import base64; '
-                    f"open('{task_path}', 'w').write("
-                    f"base64.b64decode('{encoded_task}').decode())\""
-                )
-
-                exit_code, output = await self.docker.exec_in_container(container_id, cmd)
-                if exit_code != 0:
-                    container_logs = await self.docker.get_container_logs(container_id)
-                    logger.error(
-                        "task_injection_failed",
-                        worker_id=worker_id,
-                        error=output,
-                        container_logs=container_logs,
-                    )
-                    raise RuntimeError(f"could not inject {task_path} for {worker_id}: {output}")
+            step = "inject_worker_materials"
+            await self._inject_worker_materials(
+                container_id, worker_id, agent, instructions, task_content
+            )
 
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id)
-                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
+                await self.redis.hset(
+                    f"worker:status:{worker_id}",
+                    mapping={"status": WorkerStatus.RUNNING},
+                )
                 logger.info("qa_executor_ready", worker_id=worker_id)
 
             return worker_id
@@ -931,12 +930,300 @@ class WorkerManager:
             # or QA setup step fails.  Do not erase the only ownership record
             # or free its checkout here: `delete_worker` is the teardown owner
             # and releases both only after Docker confirms removal.
+            reason = worker_creation_failure_reason(mark_worker_creation_step(exc, step))
             if is_qa_worker:
-                logger.warning("qa_worker_creation_failed", worker_id=worker_id, error=str(exc))
+                logger.warning(
+                    "qa_worker_creation_failed", worker_id=worker_id, error=reason, step=step
+                )
             else:
-                logger.warning("developer_worker_creation_failed", worker_id=worker_id, error=str(exc))
+                logger.warning(
+                    "developer_worker_creation_failed",
+                    worker_id=worker_id,
+                    error=reason,
+                    step=step,
+                )
             await self._fail_acquired_worker(worker_id, exc)
             raise
+
+    async def _prepare_worker_checkout(
+        self,
+        container_id: str,
+        worker_id: str,
+        repo_id: str | None,
+        env_vars: dict[str, str],
+        branch: str | None,
+    ) -> None:
+        """Refresh repository credentials and checkout before injecting turn files."""
+        # Git setup: workspace is pre-scaffolded, just refresh git token
+        repo_name = env_vars.get("REPO_NAME")
+        github_token = env_vars.get("GITHUB_TOKEN")
+
+        if repo_name and github_token:
+            logger.info(
+                "refreshing_git_token",
+                worker_id=worker_id,
+                repo_id=repo_id,
+            )
+            await git_ops.refresh_git_token(
+                self.docker, container_id, repo_name, github_token, worker_id
+            )
+
+        if branch:
+            # A checkout that returns False established neither the branch nor
+            # its upstream. Ignoring it used to let creation continue with the
+            # worker on the wrong branch and no upstream to push to; raising
+            # sends the failure into the `checkout_branch` step record.
+            if not await git_ops.checkout_branch(self.docker, container_id, branch, worker_id):
+                raise RuntimeError(
+                    f"checkout_branch did not establish branch {branch} or its upstream"
+                )
+
+    @staticmethod
+    def _set_worker_workspace(
+        config: WorkerContainerConfig, workspace_path: Path | None, repo_id: str | None
+    ) -> Path:
+        """Keep QA workspaces ephemeral and developer workspaces scaffold-owned."""
+        worker_id = config.worker_id
+        is_qa_worker = config.worker_type == QA_WORKER_TYPE
+        # A developer worker must be handed the repository the scaffolder
+        # prepared. A QA executor must not be handed a repository at all:
+        # it tests a running deployment as a black box, and a checkout in
+        # its workspace would be an invitation to read implementation for
+        # evidence and something to accidentally leave behind.
+        if is_qa_worker:
+            ws_path = workspace_mod.create_ephemeral_workspace(
+                settings.SCAFFOLDED_WORKSPACE_PATH, worker_id
+            )
+            logger.info("using_ephemeral_qa_workspace", worker_id=worker_id, path=str(ws_path))
+        else:
+            ws_path = workspace_path
+            logger.info(
+                "using_scaffolded_workspace",
+                worker_id=worker_id,
+                repo_id=repo_id,
+                path=str(ws_path),
+            )
+        config.workspace_host_path = str(ws_path)
+
+        return ws_path
+
+    def _validate_stand_auth(
+        self, agent_type: AgentType, auth_mode: str, api_key: str | None, env_vars: dict[str, str]
+    ) -> None:
+        """Reject conflicting or unavailable manager-local stand credentials."""
+        if auth_mode == "stand_token":
+            if agent_type is not AgentType.CLAUDE:
+                raise RuntimeError(
+                    "stand_token authentication is supported only for Claude workers"
+                )
+            if agent_type is AgentType.CLAUDE and (api_key or "ANTHROPIC_API_KEY" in env_vars):
+                raise RuntimeError(
+                    "ANTHROPIC_API_KEY conflicts with Claude stand_token authentication"
+                )
+            supplied = {"CLAUDE_CODE_OAUTH_TOKEN"}.intersection(env_vars)
+            if supplied:
+                raise RuntimeError(
+                    "stand token credentials must be local to worker-manager, not env_vars: "
+                    + ", ".join(sorted(supplied))
+                )
+            failure = next(
+                (
+                    item
+                    for item in self._executor_diagnostics.stand_token_failures()
+                    if item.name == f"{agent_type.value.title()} token"
+                ),
+                None,
+            )
+            if failure is not None:
+                raise RuntimeError(f"stand_token authentication is unavailable: {failure.detail}")
+
+    @staticmethod
+    def _validate_host_session(
+        agent_type: AgentType,
+        auth_mode: str,
+        host_claude_dir: str | None,
+        host_codex_home: str | None,
+    ) -> None:
+        """Validate the selected host profile before taking worker ownership."""
+        if agent_type == AgentType.CODEX and auth_mode == "host_session":
+            from .codex_auth import validate_codex_host_session
+
+            validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
+            validate_codex_host_session(validation_path)
+        if agent_type == AgentType.CLAUDE and auth_mode == "host_session" and host_claude_dir:
+            from .claude_auth import validate_claude_host_session
+
+            validate_claude_host_session(settings.HOST_CLAUDE_VALIDATION_PATH or host_claude_dir)
+
+    async def _find_developer_workspace(self, project_id: str, repo_id: str) -> Path:
+        """Check retry eligibility and scaffold existence before acquiring the fence."""
+        existing_worker = await self._check_project_lock(project_id)
+        if existing_worker:
+            try:
+                await self._repair_or_refuse_project_conflict(project_id, existing_worker)
+            except RuntimeError as exc:
+                raise EngineeringWorkerCreationRefusal(
+                    EngineeringInfrastructureRefusal.PROJECT_LOCKED,
+                    str(exc),
+                ) from exc
+
+        failure_key = f"workspace:{project_id}:failure_count"
+        failure_count = int(await self.redis.get(failure_key) or 0)
+
+        if failure_count >= _MAX_WORKSPACE_FAILURES:
+            raise RuntimeError(
+                f"Max retries ({_MAX_WORKSPACE_FAILURES}) exceeded for "
+                f"project {project_id}. Reset with: DEL {failure_key}"
+            )
+
+        workspace_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
+            settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
+        )
+        if not scaffolded_exists:
+            raise RuntimeError(
+                f"Scaffolded workspace not found for "
+                f"repo_id={repo_id} at {workspace_path}. "
+                "Scaffolder must run first."
+            )
+
+        return workspace_path
+
+    async def _lookup_story_status(self, story_id: str) -> StoryStatus:
+        """Read the worker owner's current lifecycle through the authenticated API."""
+        client = InternalAPIClient(settings.API_BASE_URL, timeout=10)
+        try:
+            response = await client.request("GET", f"stories/{story_id}")
+            return StoryStatus(response.json()["status"])
+        finally:
+            await client.close()
+
+    async def _repair_or_refuse_project_conflict(self, project_id: str, worker_id: str) -> None:
+        """Repair only a project fence whose named worker has a terminal story."""
+        meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
+        story_id = meta.get("story_id")
+        if not story_id:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} "
+                "with unknown owning story; legacy ownership must be drained"
+            )
+        try:
+            status = StoryStatus(await self._lookup_story_status(story_id))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} owned by story "
+                f"{story_id}; owner status lookup failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if status not in _TERMINAL_STORY_STATUSES:
+            raise RuntimeError(
+                f"Project {project_id} already has active worker {worker_id} owned by story "
+                f"{story_id} ({status.value})"
+            )
+
+        await self.delete_worker(worker_id, reason="completed")
+        replacement = decode_redis_value(await self.redis.get(f"workspace:lock:{project_id}"))
+        if replacement is not None:
+            replacement_meta = decode_redis_fields(
+                await self.redis.hgetall(f"worker:meta:{replacement}")
+            )
+            replacement_story = replacement_meta.get("story_id", "unknown owning story")
+            raise RuntimeError(
+                f"Project {project_id} remains locked by worker {replacement} owned by story "
+                f"{replacement_story} after terminal owner {worker_id} teardown"
+            )
+        logger.info(
+            "terminal_story_project_lock_repaired",
+            project_id=project_id,
+            worker_id=worker_id,
+            story_id=story_id,
+            story_status=status.value,
+        )
+
+    async def _prepare_worker_env(
+        self, config: WorkerContainerConfig, env_vars: dict[str, str], factory_api_key: str | None
+    ) -> dict[str, str]:
+        """Register broker access and strip control-plane credentials from the worker env."""
+        worker_id = config.worker_id
+        worker_type = config.worker_type
+        broker_token = secrets.token_urlsafe(32)
+        await self._register_broker_worker(worker_id, broker_token, worker_type)
+        container_env = config.to_env_vars(
+            broker_url=settings.WORKER_BROKER_URL,
+            broker_token=broker_token,
+            # The wrapper enforces this shared per-turn limit. Do not let a
+            # worker-manager-only environment variable create a second,
+            # earlier ceiling than the metadata and waiter advertise.
+            subprocess_timeout_seconds=Timeouts.AGENT_TURN,
+        )
+        container_env.update(env_vars)
+        for forbidden in (
+            "WORKER_REDIS_URL",
+            "WORKER_API_URL",
+            "WORKER_MANAGER_URL",
+            "SECRETS_ENCRYPTION_KEY",
+        ):
+            container_env.pop(forbidden, None)
+        if factory_api_key is not None:
+            container_env["FACTORY_API_KEY"] = factory_api_key
+
+        github_token = env_vars.get("GITHUB_TOKEN")
+        if github_token:
+            container_env["GH_TOKEN"] = github_token
+
+        return container_env
+
+    async def _inject_worker_materials(
+        self,
+        container_id: str,
+        worker_id: str,
+        agent,
+        instructions: str | None,
+        task_content: str | None,
+    ) -> None:
+        """Inject turn files after checkout; failures remain fatal before QA readiness."""
+        # Inject instructions AFTER git clone (so instruction file doesn't block clone)
+        if instructions:
+            target_path = agent.get_instruction_path()
+            logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
+
+            encoded = base64.b64encode(instructions.encode()).decode()
+            cmd = (
+                f'python3 -c "import base64; '
+                f"open('{target_path}', 'w').write("
+                f"base64.b64decode('{encoded}').decode())\""
+            )
+
+            exit_code, output = await self.docker.exec_in_container(container_id, cmd)
+            if exit_code != 0:
+                container_logs = await self.docker.get_container_logs(container_id)
+                logger.error(
+                    "instruction_injection_failed",
+                    worker_id=worker_id,
+                    error=output,
+                    container_logs=container_logs,
+                )
+                raise RuntimeError(f"could not inject {target_path} for {worker_id}: {output}")
+
+        if task_content:
+            task_path = "/workspace/TASK.md"
+            logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
+
+            encoded_task = base64.b64encode(task_content.encode()).decode()
+            cmd = (
+                f'python3 -c "import base64; '
+                f"open('{task_path}', 'w').write("
+                f"base64.b64decode('{encoded_task}').decode())\""
+            )
+
+            exit_code, output = await self.docker.exec_in_container(container_id, cmd)
+            if exit_code != 0:
+                container_logs = await self.docker.get_container_logs(container_id)
+                logger.error(
+                    "task_injection_failed",
+                    worker_id=worker_id,
+                    error=output,
+                    container_logs=container_logs,
+                )
+                raise RuntimeError(f"could not inject {task_path} for {worker_id}: {output}")
 
     @staticmethod
     def _qa_backend_setting(agent_type: AgentType) -> str:
@@ -966,7 +1253,9 @@ class WorkerManager:
         )
         exit_code, output = await self.docker.exec_in_container(container_id, cmd)
         if exit_code != 0:
-            raise RuntimeError(f"could not install the QA capability command in {worker_id}: {output}")
+            raise RuntimeError(
+                f"could not install the QA capability command in {worker_id}: {output}"
+            )
         logger.info("qa_probe_installed", worker_id=worker_id, path=QA_PROBE_PATH)
 
     def _prune_transcripts(self) -> None:

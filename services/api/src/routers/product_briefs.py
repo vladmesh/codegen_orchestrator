@@ -305,6 +305,45 @@ async def get_product_brief_by_story(
     return ProductBriefRead.model_validate(brief, from_attributes=True)
 
 
+@router.get("/by-project/{project_id}/initial-settings", response_model=ProductBriefRead)
+async def get_project_initial_settings_brief(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+) -> ProductBriefRead:
+    """The project's latest confirmed brief that carries `initial_settings`.
+
+    A deploy that names no story still owes the product its confirmed settings:
+    newest confirmation first, the latest revision on a tie, and a brief with no
+    settings is skipped rather than chosen.
+    """
+    await _authorize(project_id, x_telegram_id, db, internal, credentials)
+    briefs = (
+        (
+            await db.execute(
+                select(ProductBrief)
+                .where(
+                    ProductBrief.project_id == project_id,
+                    ProductBrief.confirmed_at.is_not(None),
+                )
+                .order_by(ProductBrief.confirmed_at.desc(), ProductBrief.revision.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for brief in briefs:
+        read = ProductBriefRead.model_validate(brief, from_attributes=True)
+        if read.content.initial_settings:
+            return read
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Project {project_id} has no confirmed brief with initial settings",
+    )
+
+
 @router.get("/{brief_id}", response_model=ProductBriefRead)
 async def get_product_brief(
     brief_id: str,

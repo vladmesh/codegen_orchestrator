@@ -63,6 +63,7 @@ from shared.stand_deadlines import (
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
     MEGA_BRIEF_PRODUCTIVE_SECONDS,
+    NOOP_SUITE_TIMEOUT_SECONDS,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,13 +97,10 @@ COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
 _INSIDE_RECREATE_GATE = False
-# The noop lifecycle has 3,680s of explicit waits at its worst case: scaffold,
-# two ordered engineering Tasks, story aggregation, deploy/run/outcome, the
-# bounded public health probe, QA, completed-story/PO delivery, deployment
-# record, undeploy Run and terminal resource release. The cap leaves 820s for
-# manifest teardown and diagnostics; the LLM route does not run this lifecycle
-# acceptance yet. See tests/live/README.md for the ledger.
-NOOP_SUITE_TIMEOUT_SECONDS = 4500
+# The noop lifecycle's cap is not stated here: it is derived in
+# `shared/stand_deadlines.py` from the waits themselves, so the runner, its test
+# and `tests/live/README.md` cannot drift apart again. Since card 1316 the
+# lifecycle runs two stories on one project, which is what moved it.
 LLM_SUITE_TIMEOUT_SECONDS = 3600
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300
@@ -159,8 +157,12 @@ MATRIX_RUNNER_TIMEOUT_SECONDS = (
 # reserve outside the mega-brief runner so GitHub never kills pytest's finally.
 STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
 STAND_JOB_RESERVE_SECONDS = 480
-# 360 minutes covers 45m provisioning + 10m workflow reserve + 297m maximum
-# Product Brief runner + an 8m job reserve. The matrix path is smaller.
+# 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
+# runner path + an 8m job reserve. The longest path is the matrix (274m); the
+# Product Brief runners are 76m and 96m, and `mega-noop` is 171m. Every one of
+# those is checked against this cap in `scripts/tests/test_stand_run.py`, and
+# `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
+# in this comment are the constants below.
 # Lifecycle cleanup has its own bounded workflow job because jobs cannot share
 # one timeout.
 STAND_JOB_TIMEOUT_MINUTES = 360

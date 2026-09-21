@@ -58,6 +58,34 @@ Other tasks in this story (do NOT redo completed work):
 {story_context}"""
 
 
+def format_acceptance_criteria(
+    task_acceptance_criteria: str | None, repository_acceptance_criteria: str | None
+) -> str:
+    """Render what QA checks, verbatim. Empty string when there are no criteria."""
+    sections = []
+    if task_acceptance_criteria and task_acceptance_criteria.strip():
+        sections.append(f"""
+## Acceptance Criteria (QA checks these literally)
+
+QA judges this task by the criteria below, word for word. Every quoted reply,
+message text and value must match exactly, including punctuation and quote
+marks. Do not rephrase them.
+
+{task_acceptance_criteria.strip()}
+""")
+    if repository_acceptance_criteria and repository_acceptance_criteria.strip():
+        sections.append(f"""
+## Post-Deploy QA Checklist (central QA runs all of it after deploy)
+
+After deploy, central QA checks the running application against every line
+below, literally. Your change must keep all of them passing; quoted replies must
+match exactly.
+
+{repository_acceptance_criteria.strip()}
+""")
+    return "".join(sections)
+
+
 def format_env_hints(project_spec: dict) -> str:
     """Format env_hints from project config into a TASK.md section."""
     config = project_spec.get("config") or {}
@@ -92,6 +120,8 @@ def build_create_task(
     project_spec: dict,
     feature_description: str | None = None,
     story_context: str | None = None,
+    task_acceptance_criteria: str | None = None,
+    repository_acceptance_criteria: str | None = None,
 ) -> str:
     """Build task message for new project creation (scaffolded)."""
     modules_str = ",".join(modules)
@@ -135,6 +165,7 @@ Implement the business logic according to the specification above.
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
 - Use existing generated code as foundation
+{format_acceptance_criteria(task_acceptance_criteria, repository_acceptance_criteria)}\
 {format_story_context(story_context)}"""
 
 
@@ -146,6 +177,8 @@ def build_feature_task(
     feature_description: str | None,
     project_spec: dict,
     story_context: str | None = None,
+    task_acceptance_criteria: str | None = None,
+    repository_acceptance_criteria: str | None = None,
 ) -> str:
     """Build task message for feature addition or bug fix."""
     action_label = "Add Feature" if action == "feature" else "Fix Issue"
@@ -163,7 +196,7 @@ def build_feature_task(
 ## What To Do
 
 {task_description}
-
+{format_acceptance_criteria(task_acceptance_criteria, repository_acceptance_criteria)}
 ## Project Context
 
 **Name**: {project_name}
@@ -192,6 +225,8 @@ def build_task_message(
     action: str = "create",
     feature_description: str | None = None,
     story_context: str | None = None,
+    task_acceptance_criteria: str | None = None,
+    repository_acceptance_criteria: str | None = None,
 ) -> str:
     """Build TASK.md content for the developer worker.
 
@@ -210,6 +245,8 @@ def build_task_message(
             feature_description=feature_description,
             project_spec=project_spec,
             story_context=story_context,
+            task_acceptance_criteria=task_acceptance_criteria,
+            repository_acceptance_criteria=repository_acceptance_criteria,
         )
 
     return build_create_task(
@@ -219,4 +256,6 @@ def build_task_message(
         project_spec=project_spec,
         feature_description=feature_description,
         story_context=story_context,
+        task_acceptance_criteria=task_acceptance_criteria,
+        repository_acceptance_criteria=repository_acceptance_criteria,
     )

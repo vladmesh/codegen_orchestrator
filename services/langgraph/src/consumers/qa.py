@@ -38,6 +38,7 @@ from shared.qa_identity import (
     qa_identity_rejection,
     qa_run_identity,
 )
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION, qa_target_receipt_rejection
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
@@ -78,6 +79,7 @@ QA_INFRASTRUCTURE_BLOCKERS = frozenset(
     {
         QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
         QABlockerCategory.QA_PROBE_UNAVAILABLE,
+        QABlockerCategory.QA_TARGET_PROFILE_STALE,
     }
 )
 # The bot-liveness question is asked of the platform API, so a failure to get an
@@ -125,6 +127,9 @@ async def _resolve_server_info(application_id: int, project_name: str) -> QAServ
     # testing. An empty value here is a host that lends no identity, and the
     # caller refuses it — it is never quietly replaced with `ssh_user`.
     rejection = qa_identity_rejection(server)
+    # The same receipt admission reads: a bound application's host that was
+    # never proved, or proved by an older role, is refused before any access.
+    receipt = qa_target_receipt_rejection(server)
     return QAServerInfo(
         server_ip=server.public_ip,
         ssh_user=server.ssh_user,
@@ -134,6 +139,7 @@ async def _resolve_server_info(application_id: int, project_name: str) -> QAServ
         server_handle=app.server_handle,
         allocated_ports=frozenset(allocation["port"] for allocation in app.ports),
         qa_identity_rejection=rejection.value if rejection else "",
+        qa_target_receipt_rejection=receipt.value if receipt else "",
     )
 
 
@@ -376,7 +382,28 @@ async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | No
     )
 
 
-async def _confirmed_initial_settings(story_id: str) -> list[InitialSetting]:
+def _stale_target_profile_blocker(server_info: QAServerInfo) -> QABlocker | None:
+    """Refuse a host whose readiness receipt does not prove the current QA target profile.
+
+    Nothing is journalled here: the receipt is reconciliation's record, and the
+    repair is reconciliation, not another incident written by a QA run.
+    """
+    if not server_info.qa_target_receipt_rejection:
+        return None
+    handle = server_info.server_handle
+    return QABlocker(
+        category=QABlockerCategory.QA_TARGET_PROFILE_STALE,
+        attempted="confirm the target's QA harness is the current profile before issuing access",
+        sent=f"servers.qa_target_version of {handle}",
+        received=(
+            f"{server_info.qa_target_receipt_rejection}: {handle} has no readiness receipt for "
+            f"QA target profile {QA_TARGET_PROFILE_VERSION}; reconcile it with "
+            f"python -m src.provisioner.qa_identity_retrofit {handle}"
+        ),
+    )
+
+
+async def _confirmed_initial_settings(story_id: str | None) -> list[InitialSetting]:
     """The typed settings the user confirmed for this story, or nothing.
 
     Read through the released brief endpoint, exactly as the deploy path reads
@@ -466,6 +493,16 @@ async def _run_exploratory_qa(
             rejection=server_info.qa_identity_rejection,
         )
         return None, missing_identity
+
+    stale_profile = _stale_target_profile_blocker(server_info)
+    if stale_profile:
+        logger.warning(
+            "qa_target_profile_not_proved",
+            server_handle=server_info.server_handle,
+            rejection=server_info.qa_target_receipt_rejection,
+        )
+        await _alert_admins_qa_infrastructure(msg=msg, blocker=stale_profile)
+        return None, stale_profile
 
     executor_decision = await _load_qa_executor_decision(msg.run_id)
     if executor_decision is None:
@@ -826,8 +863,14 @@ async def _handle_qa_fail(
     qa_result: QAResult,
 ) -> dict:
     """Handle QA fail — store FAILED or EXHAUSTED outcome in run."""
+    # An executor's failed check always carries a cause: the runner refuses one
+    # without. Checks the runner produced itself (health GETs, package rows) are
+    # product verdicts and carry none, so they read as the contract's `product`.
     failed_checks = [
-        QAFailedCheck(name=c.get("name", ""), detail=c.get("detail", ""))
+        QAFailedCheck.model_validate(
+            {"name": c.get("name", ""), "detail": c.get("detail", "")}
+            | ({"cause": c["cause"]} if "cause" in c else {})
+        )
         for c in qa_result.checks
         if not c.get("pass", True)
     ]

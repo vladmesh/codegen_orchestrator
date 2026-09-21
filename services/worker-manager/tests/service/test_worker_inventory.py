@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 import os
 import secrets
-from datetime import UTC, datetime, timedelta
 
 import docker
 import httpx
 from redis.asyncio import Redis
+
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from shared.queues import STORY_WORKERS_KEY
 
@@ -23,7 +24,9 @@ async def _write_inventory_records(orphan_id: str, attached_id: str, unknown_id:
     try:
         for worker_id in (orphan_id, attached_id, unknown_id):
             await redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
-            await redis.hset(f"worker:meta:{worker_id}", mapping={"attempt_id": f"attempt-{worker_id}"})
+            await redis.hset(
+                f"worker:meta:{worker_id}", mapping={"attempt_id": f"attempt-{worker_id}"}
+            )
         await redis.hset(STORY_WORKERS_KEY, mapping={f"story-{attached_id}": attached_id})
         now = datetime.now(UTC)
         await redis.hset(

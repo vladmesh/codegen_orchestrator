@@ -1,10 +1,10 @@
 """Fail-closed policy checks for worker-scoped Docker Compose projects."""
 
-import math
-import re
 from dataclasses import dataclass, field
 from hashlib import sha256
+import math
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -151,15 +151,33 @@ RESOURCE_IDENTITY_POLICY = ResourceIdentityPolicy()
 # context and dockerfile plus non-host-capable build args. This table deliberately
 # does not claim to model arbitrary Compose fields outside the supported commands.
 COMPOSE_HOST_CAPABILITY_POLICIES = {
-    "env_file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "extends.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "build.context": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "build.dockerfile": ComposeHostCapabilityPolicy(True, "build context", "static literal only", "workspace"),
-    "build.args": ComposeHostCapabilityPolicy(True, "build execution", "Compose value", "not a host path"),
-    "secrets.*.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "configs.*.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "label_file": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "include": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "env_file": ComposeHostCapabilityPolicy(
+        True, "declaring Compose file", "static literal only", "workspace"
+    ),
+    "extends.file": ComposeHostCapabilityPolicy(
+        True, "declaring Compose file", "static literal only", "workspace"
+    ),
+    "build.context": ComposeHostCapabilityPolicy(
+        True, "declaring Compose file", "static literal only", "workspace"
+    ),
+    "build.dockerfile": ComposeHostCapabilityPolicy(
+        True, "build context", "static literal only", "workspace"
+    ),
+    "build.args": ComposeHostCapabilityPolicy(
+        True, "build execution", "Compose value", "not a host path"
+    ),
+    "secrets.*.file": ComposeHostCapabilityPolicy(
+        True, "declaring Compose file", "static literal only", "workspace"
+    ),
+    "configs.*.file": ComposeHostCapabilityPolicy(
+        True, "declaring Compose file", "static literal only", "workspace"
+    ),
+    "label_file": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
+    "include": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
     "build.dockerfile_inline": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before build execution", "not reached"
     ),
@@ -196,17 +214,27 @@ COMPOSE_HOST_CAPABILITY_POLICIES = {
     "build.privileged": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before build execution", "not reached"
     ),
-    "build.pull": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before build execution", "not reached"),
-    "build.secrets": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.pull": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.secrets": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
     "build.shm_size": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before build execution", "not reached"
     ),
-    "build.ssh": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "build.tags": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before build execution", "not reached"),
+    "build.ssh": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
+    "build.tags": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
     # A Dockerfile stage selector resolves nothing on the manager host and reaches no
     # daemon capability, so it is admitted: the kit's dev and integration Compose files
     # select a `dev` stage while its production Compose declares none.
-    "build.target": ComposeHostCapabilityPolicy(True, "build execution", "Compose value", "not a host path"),
+    "build.target": ComposeHostCapabilityPolicy(
+        True, "build execution", "Compose value", "not a host path"
+    ),
     "build.ulimits": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before build execution", "not reached"
     ),
@@ -226,7 +254,11 @@ _PERMITTED_BUILD_KEYS = frozenset(
 
 
 def _flag_is_set(arg: str, flag: str) -> bool:
-    return arg == flag or arg.startswith(f"{flag}=") or (flag == "-p" and arg.startswith("-p") and arg != "-p")
+    return (
+        arg == flag
+        or arg.startswith(f"{flag}=")
+        or (flag == "-p" and arg.startswith("-p") and arg != "-p")
+    )
 
 
 def _volume_parts(volume: Any) -> tuple[str, str, str]:
@@ -270,15 +302,26 @@ def _validate_volumes(
     for volume in volumes:
         source, target, volume_type = _volume_parts(volume)
         if _is_socket_path(source) or _is_socket_path(target):
-            errors.append(f"Service '{service_name}': Docker or Compose socket mount is not allowed")
+            errors.append(
+                f"Service '{service_name}': Docker or Compose socket mount is not allowed"
+            )
         if volume_type != "bind":
             continue
         if not resolved:
             if source.startswith("/"):
-                errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
+                errors.append(
+                    f"Service '{service_name}': absolute bind "
+                    f"mount source '{source}' is not allowed"
+                )
             continue
-        if not source.startswith("/") or workspace_path is None or not _is_within_workspace(source, workspace_path):
-            errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
+        if (
+            not source.startswith("/")
+            or workspace_path is None
+            or not _is_within_workspace(source, workspace_path)
+        ):
+            errors.append(
+                f"Service '{service_name}': absolute bind mount source '{source}' is not allowed"
+            )
 
 
 def _validate_named_volumes(data: dict[str, Any], errors: list[str]) -> None:
@@ -304,7 +347,9 @@ def _validate_named_volumes(data: dict[str, Any], errors: list[str]) -> None:
             errors.append(f"Volume '{volume_name}': driver_opts are not allowed")
 
 
-def _validate_file_sources(kind: str, definitions: Any, workspace_path: Path | None, errors: list[str]) -> None:
+def _validate_file_sources(
+    kind: str, definitions: Any, workspace_path: Path | None, errors: list[str]
+) -> None:
     if definitions is None:
         return
     if not isinstance(definitions, dict):
@@ -318,12 +363,18 @@ def _validate_file_sources(kind: str, definitions: Any, workspace_path: Path | N
             errors.append(f"{kind.title()} '{name}': external sources are not allowed")
         source = definition.get("file")
         if source and (
-            not isinstance(source, str) or workspace_path is None or not _is_within_workspace(source, workspace_path)
+            not isinstance(source, str)
+            or workspace_path is None
+            or not _is_within_workspace(source, workspace_path)
         ):
-            errors.append(f"{kind.title()} '{name}': file source must remain within the worker workspace")
+            errors.append(
+                f"{kind.title()} '{name}': file source must remain within the worker workspace"
+            )
 
 
-def _validate_build(service_name: str, config: dict[str, Any], workspace_path: Path | None, errors: list[str]) -> None:
+def _validate_build(
+    service_name: str, config: dict[str, Any], workspace_path: Path | None, errors: list[str]
+) -> None:
     build = config.get("build")
     if build is None:
         return
@@ -335,21 +386,38 @@ def _validate_build(service_name: str, config: dict[str, Any], workspace_path: P
     _validate_build_keys(service_name, build, errors)
     context = build.get("context")
     if context and (
-        not isinstance(context, str) or workspace_path is None or not _is_within_workspace(context, workspace_path)
+        not isinstance(context, str)
+        or workspace_path is None
+        or not _is_within_workspace(context, workspace_path)
     ):
-        errors.append(f"Service '{service_name}': build.context must remain within the worker workspace")
+        errors.append(
+            f"Service '{service_name}': build.context must remain within the worker workspace"
+        )
     dockerfile = build.get("dockerfile")
     if dockerfile:
         if not isinstance(dockerfile, str) or workspace_path is None:
-            errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
+            errors.append(
+                f"Service '{service_name}': build.dockerfile "
+                f"must remain within the worker workspace"
+            )
         elif Path(dockerfile).is_absolute():
             if not _is_within_workspace(dockerfile, workspace_path):
-                errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
-        elif not isinstance(context, str) or not _is_within_workspace(str(Path(context) / dockerfile), workspace_path):
-            errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
+                errors.append(
+                    f"Service '{service_name}': build.dockerfile "
+                    f"must remain within the worker workspace"
+                )
+        elif not isinstance(context, str) or not _is_within_workspace(
+            str(Path(context) / dockerfile), workspace_path
+        ):
+            errors.append(
+                f"Service '{service_name}': build.dockerfile "
+                f"must remain within the worker workspace"
+            )
 
 
-def _validate_build_keys(service_name: str, build: dict[str, Any], errors: list[str], *, source: bool = False) -> None:
+def _validate_build_keys(
+    service_name: str, build: dict[str, Any], errors: list[str], *, source: bool = False
+) -> None:
     for key in _unsupported_build_keys(build):
         separator = " " if source else "."
         errors.append(f"Service '{service_name}': build{separator}{key} is not supported")
@@ -407,11 +475,16 @@ def _memory_bytes(value: Any) -> int | None:
     return int(amount * factor) if factor is not None else None
 
 
-def _validate_resource_limits(service_name: str, service_config: dict[str, Any], errors: list[str]) -> None:
+def _validate_resource_limits(
+    service_name: str, service_config: dict[str, Any], errors: list[str]
+) -> None:
     try:
         limits = service_config["deploy"]["resources"]["limits"]
     except (KeyError, TypeError):
-        errors.append(f"Service '{service_name}': deploy.resources.limits with CPU and memory limits is required")
+        errors.append(
+            f"Service '{service_name}': deploy.resources.limits "
+            f"with CPU and memory limits is required"
+        )
         return
     if not isinstance(limits, dict):
         errors.append(f"Service '{service_name}': deploy.resources.limits must be a mapping")
@@ -422,11 +495,15 @@ def _validate_resource_limits(service_name: str, service_config: dict[str, Any],
     except (TypeError, ValueError):
         cpu_limit = 0
     if not math.isfinite(cpu_limit) or cpu_limit <= 0 or cpu_limit > MAX_CPU_LIMIT:
-        errors.append(f"Service '{service_name}': CPU limit must be greater than 0 and at most {MAX_CPU_LIMIT}")
+        errors.append(
+            f"Service '{service_name}': CPU limit must be "
+            f"greater than 0 and at most {MAX_CPU_LIMIT}"
+        )
     memory_limit = _memory_bytes(limits.get("memory"))
     if memory_limit is None or memory_limit > MAX_MEMORY_LIMIT_BYTES:
         errors.append(
-            f"Service '{service_name}': memory limit must be a positive value at most {MAX_MEMORY_LIMIT_BYTES} bytes"
+            f"Service '{service_name}': memory limit must be a "
+            f"positive value at most {MAX_MEMORY_LIMIT_BYTES} bytes"
         )
 
 
@@ -490,7 +567,9 @@ def validate_command(args: list[str]) -> ValidationResult:
     return ValidationResult(valid=not errors, errors=errors)
 
 
-def _source_path(value: Any, project_directory: Path, workspace_path: Path, errors: list[str], label: str) -> None:
+def _source_path(
+    value: Any, project_directory: Path, workspace_path: Path, errors: list[str], label: str
+) -> None:
     if not isinstance(value, str) or not value:
         errors.append(f"{label} must be a non-empty workspace path")
         return
@@ -541,7 +620,11 @@ def _admit_source_directive(
 
 
 def _validate_source_build(
-    service_name: str, config: dict[str, Any], project_directory: Path, workspace_path: Path, errors: list[str]
+    service_name: str,
+    config: dict[str, Any],
+    project_directory: Path,
+    workspace_path: Path,
+    errors: list[str],
 ) -> None:
     build = config.get("build")
     if build is None:
@@ -587,6 +670,66 @@ def _validate_source_build(
     # resolve or execute it.
 
 
+def _validate_service_sources(
+    name: str, service_config: dict, source_base: Path, workspace_path: Path, errors: list[str]
+) -> None:
+    """Admit service-level source paths before Compose resolves any files."""
+    if "env_file" in service_config:
+        _admit_source_directive(
+            "env_file",
+            service_config["env_file"],
+            source_base,
+            workspace_path,
+            errors,
+            f"Service '{name}': env_file",
+            multiple=True,
+        )
+    if "label_file" in service_config:
+        _admit_source_directive(
+            "label_file",
+            service_config["label_file"],
+            source_base,
+            workspace_path,
+            errors,
+            f"Service '{name}': label_file",
+            multiple=True,
+        )
+    extends = service_config.get("extends")
+    if isinstance(extends, dict) and "file" in extends:
+        _admit_source_directive(
+            "extends.file",
+            extends["file"],
+            source_base,
+            workspace_path,
+            errors,
+            f"Service '{name}': extends file",
+        )
+    elif extends is not None and not isinstance(extends, dict):
+        errors.append(f"Service '{name}': extends must be a mapping")
+    _validate_source_build(name, service_config, source_base, workspace_path, errors)
+    credential_spec = service_config.get("credential_spec")
+    if isinstance(credential_spec, dict) and "file" in credential_spec:
+        _admit_source_directive(
+            "credential_spec.file",
+            credential_spec["file"],
+            source_base,
+            workspace_path,
+            errors,
+            f"Service '{name}': credential_spec file",
+        )
+    develop = service_config.get("develop")
+    if isinstance(develop, dict) and "watch" in develop:
+        _admit_source_directive(
+            "develop.watch.path",
+            develop["watch"],
+            source_base,
+            workspace_path,
+            errors,
+            f"Service '{name}': develop watch path",
+            multiple=True,
+        )
+
+
 def validate_compose_file(
     content: str,
     *,
@@ -620,66 +763,19 @@ def validate_compose_file(
             continue
         source_base = project_directory or source_file.parent
         name = str(service_name)
-        if "env_file" in service_config:
-            _admit_source_directive(
-                "env_file",
-                service_config["env_file"],
-                source_base,
-                workspace_path,
-                errors,
-                f"Service '{name}': env_file",
-                multiple=True,
-            )
-        if "label_file" in service_config:
-            _admit_source_directive(
-                "label_file",
-                service_config["label_file"],
-                source_base,
-                workspace_path,
-                errors,
-                f"Service '{name}': label_file",
-                multiple=True,
-            )
-        extends = service_config.get("extends")
-        if isinstance(extends, dict) and "file" in extends:
-            _admit_source_directive(
-                "extends.file",
-                extends["file"],
-                source_base,
-                workspace_path,
-                errors,
-                f"Service '{name}': extends file",
-            )
-        elif extends is not None and not isinstance(extends, dict):
-            errors.append(f"Service '{name}': extends must be a mapping")
-        _validate_source_build(name, service_config, source_base, workspace_path, errors)
-        credential_spec = service_config.get("credential_spec")
-        if isinstance(credential_spec, dict) and "file" in credential_spec:
-            _admit_source_directive(
-                "credential_spec.file",
-                credential_spec["file"],
-                source_base,
-                workspace_path,
-                errors,
-                f"Service '{name}': credential_spec file",
-            )
-        develop = service_config.get("develop")
-        if isinstance(develop, dict) and "watch" in develop:
-            _admit_source_directive(
-                "develop.watch.path",
-                develop["watch"],
-                source_base,
-                workspace_path,
-                errors,
-                f"Service '{name}': develop watch path",
-                multiple=True,
-            )
+        _validate_service_sources(name, service_config, source_base, workspace_path, errors)
 
     if source_file is not None and workspace_path is not None:
         source_base = project_directory or source_file.parent
         if "include" in data:
             _admit_source_directive(
-                "include", data["include"], source_base, workspace_path, errors, "Compose include", multiple=True
+                "include",
+                data["include"],
+                source_base,
+                workspace_path,
+                errors,
+                "Compose include",
+                multiple=True,
             )
         for kind in ("secrets", "configs"):
             definitions = data.get(kind, {})
@@ -704,13 +800,19 @@ def validate_compose_file(
     return ValidationResult(valid=not errors, errors=errors)
 
 
-def validate_effective_compose(data: Any, worker_id: str, workspace_path: Path | None = None) -> ValidationResult:
+def validate_effective_compose(
+    data: Any, worker_id: str, workspace_path: Path | None = None
+) -> ValidationResult:
     """Validate Docker Compose's fully resolved JSON for a container-creating command."""
     if not isinstance(data, dict):
-        return ValidationResult(valid=False, errors=["Resolved Compose configuration must be a mapping"])
+        return ValidationResult(
+            valid=False, errors=["Resolved Compose configuration must be a mapping"]
+        )
     services = data.get("services")
     if not isinstance(services, dict) or not services:
-        return ValidationResult(valid=False, errors=["Resolved Compose configuration must contain services"])
+        return ValidationResult(
+            valid=False, errors=["Resolved Compose configuration must contain services"]
+        )
 
     expected_network = f"dev_proj_{worker_id}"
     errors: list[str] = []
@@ -748,7 +850,9 @@ def validate_effective_compose(data: Any, worker_id: str, workspace_path: Path |
             if service_config.get(unsupported_field):
                 errors.append(f"Service '{name}': {unsupported_field} is not allowed")
         _validate_build(name, service_config, workspace_path, errors)
-        _validate_volumes(name, service_config, errors, workspace_path=workspace_path, resolved=True)
+        _validate_volumes(
+            name, service_config, errors, workspace_path=workspace_path, resolved=True
+        )
         service_networks = service_config.get("networks")
         names = set(service_networks) if isinstance(service_networks, (dict, list)) else set()
         if names != {"default"}:
@@ -768,5 +872,7 @@ def resolve_compose_path(compose_file: str, workspace_path: Path) -> tuple[Path,
             False, [f"Path traversal detected: '{compose_file}' resolves outside workspace"]
         )
     except (OSError, RuntimeError) as exc:
-        return workspace_path, ValidationResult(False, [f"Failed to resolve path '{compose_file}': {exc}"])
+        return workspace_path, ValidationResult(
+            False, [f"Failed to resolve path '{compose_file}': {exc}"]
+        )
     return resolved, ValidationResult(valid=True)

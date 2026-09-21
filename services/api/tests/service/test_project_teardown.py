@@ -27,6 +27,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.telegram import TokenRejectionReason, TokenVerdictStatus
 from shared.contracts.queues.deploy import DeployAction, DeployTrigger
 from shared.queues import DEPLOY_QUEUE
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 OWNER = "100714"
 INTRUDER = "100715"
@@ -194,6 +195,7 @@ async def _server_handle(client: AsyncClient, suffix: str = "") -> str:
                 "handle": handle,
                 "host": f"teardown{suffix}.example.com",
                 "public_ip": "10.0.0.3",
+                "ssh_key": fleet_private_key(),
                 "ssh_user": "root",
             },
         )

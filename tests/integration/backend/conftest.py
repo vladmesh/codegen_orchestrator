@@ -29,6 +29,8 @@ from shared.contracts.queues.worker import (
 )
 from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_MANAGER_GROUP
+from shared.tests.executor_diagnostic_cases import host_profile_for_reason
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -466,7 +468,7 @@ async def api_client():
         await redis_client.set(
             EXECUTOR_DIAGNOSTICS_REDIS_KEY,
             ExecutorDiagnosticSnapshot(
-                schema_version="v1",
+                schema_version="v2",
                 version="backend-integration-test-diagnostics",
                 observed_at=now,
                 expires_at=expiry,
@@ -481,6 +483,7 @@ async def api_client():
                         active_lease_count=0,
                         reason_code="ready",
                         reason="Local authentication and worker inventory are ready.",
+                        profile=host_profile_for_reason("ready"),
                     )
                     for executor in (AgentType.CLAUDE, AgentType.CODEX)
                 ],
@@ -598,11 +601,14 @@ async def seed_task(api_client):
         title: str = "Test Task",
         task_type: str = "feature",
         project_id: str | None = None,
+        story_id: str | None = None,
         status: str = "backlog",
     ) -> dict:
         body = {"title": title, "type": task_type, "status": status}
         if project_id:
             body["project_id"] = project_id
+        if story_id:
+            body["story_id"] = story_id
         resp = await api_client.post("/api/tasks/", json=body)
         assert resp.status_code == 201, f"Failed to seed task: {resp.text}"
         return resp.json()
@@ -631,6 +637,7 @@ async def seed_server(api_client):
             "capacity_ram_mb": capacity_ram_mb,
             "capacity_disk_mb": capacity_disk_mb,
             "is_managed": is_managed,
+            "ssh_key": fleet_private_key(),
         }
         resp = await api_client.post("/api/servers/", json=body)
         assert resp.status_code == 201, f"Failed to seed server: {resp.text}"

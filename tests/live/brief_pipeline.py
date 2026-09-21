@@ -24,8 +24,8 @@ from pipeline_helpers import (
     DEPLOY_TIMEOUT,
     LLM_ENGINEERING_TIMEOUT,
     ORCHESTRATOR_ROOT,
-    QA_RUN_TIMEOUT,
-    SCAFFOLD_TIMEOUT,
+    PO_BRIEF_ID_RE,
+    PO_STORY_ID_RE,
     BriefScenario,
     api_client_as_internal_service,
     api_client_as_test_user,
@@ -60,17 +60,20 @@ from pipeline_helpers import (
     wait_story_completed,
     wait_undeploy_run,
 )
-from run_evidence import RunEvidenceCollector, emit_run_evidence
+from run_evidence import (
+    BRIEF_EXPECTED_CRITERION_CTX_KEY,
+    BRIEF_OBLIGATIONS_CTX_KEY,
+    RunEvidenceCollector,
+    emit_run_evidence,
+)
 
 from shared.contracts.acceptance import parse_scheduled_behaviours
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.stand_deadlines import QA_RUN_TIMEOUT
 
 _PROJECT_ID_RE = re.compile(r"Project created\. ID: ([0-9a-f-]{36}),")
-_BRIEF_ID_RE = re.compile(r"\(id: (brief-[a-f0-9]+)\)")
-_STORY_ID_RE = re.compile(r"Story: (story-[A-Za-z0-9-]+) —")
 
 
 def _po_config(manifest: OwnershipManifest, project_id: str) -> dict:
@@ -96,17 +99,21 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
                 "title": scenario.brief_title,
                 "summary": scenario.brief_summary,
                 "must_requirements": [dict(one) for one in scenario.must_requirements],
+                "language": "en",
+                "usage_examples": [dict(one) for one in scenario.usage_examples],
+                "limitations": list(scenario.limitations),
                 "initial_settings": [
                     {
                         "key": scenario.settings_key,
                         "scope": "product",
                         "value": scenario.settings_value,
+                        "description": scenario.settings_description,
                     }
                 ],
             },
             config=config,
         )
-        match = _BRIEF_ID_RE.search(presented)
+        match = PO_BRIEF_ID_RE.search(presented)
         assert match, f"PO did not present a Product Brief id: {presented}"
         ctx["brief_id"] = match.group(1)
         ctx["brief_requirement_ids"] = scenario.requirement_ids
@@ -128,7 +135,7 @@ async def _po_create_confirmed_story(api, ctx: dict, scenario: BriefScenario) ->
             },
             config=config,
         )
-        match = _STORY_ID_RE.search(created)
+        match = PO_STORY_ID_RE.search(created)
         assert match, f"PO did not create and publish a story: {created}"
         ctx["story_id"] = match.group(1)
 
@@ -167,8 +174,13 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
             "modules": ["backend"],
             "qa_agent_type_requested": os.environ.get("LIVE_QA_AGENT_TYPE"),
             "qa_requires_executor": True,
-            "brief_scenario": True,
             "brief_variant": scenario.name,
+            # What this variant's run owes its evidence document, and what it
+            # asked the architect for — declared here, before the run can fail,
+            # so the artifact judges the run against its own contract instead
+            # of one variant's job name.
+            BRIEF_OBLIGATIONS_CTX_KEY: list(scenario.evidence_obligations),
+            BRIEF_EXPECTED_CRITERION_CTX_KEY: scenario.expected_criterion,
         }
         begin_brief_productive_window(ctx, productive_seconds=scenario.productive_seconds)
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
@@ -216,12 +228,8 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                 await wait_scaffold(
                     api,
                     ctx,
-                    timeout=SCAFFOLD_TIMEOUT,
                     on_poll=lambda: brief_poll(ctx, observed_state="scaffold_pending"),
                 )
-                if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-                    yield ctx
-                    return
 
                 report_brief_stage(ctx, "brief_admission", observed_state="scaffold_active")
                 ctx["po_input_cursor"] = po_input_cursor()
@@ -245,7 +253,7 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                     )
                     yield ctx
                     return
-                behaviour_error = scenario.behaviour_error(behaviours[0])
+                behaviour_error = scenario.criterion_error(behaviours[0])
                 if behaviour_error is not None:
                     ctx["brief_acceptance_error"] = behaviour_error
                     yield ctx

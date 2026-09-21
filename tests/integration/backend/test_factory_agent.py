@@ -70,13 +70,13 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
     assert "FACTORY_API_KEY=sk-test-factory-key" in output.decode()
     assert "ANTHROPIC_API_KEY" not in output.decode()
 
-    # Check instructions path (Factory agent uses AGENTS.md)
-    # AGENTS.md is written by worker-wrapper entrypoint after container starts — retry
+    # Check instructions path: the orchestrator's own file, not the product's AGENTS.md.
+    # It is written after the container starts — retry
     @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_agents_md():
-        ec, out = container.exec_run("cat /workspace/AGENTS.md")
-        assert ec == 0, f"AGENTS.md not found: {out.decode()}"
+    async def wait_for_instructions():
+        ec, out = container.exec_run("cat /workspace/WORKER_INSTRUCTIONS.md")
+        assert ec == 0, f"WORKER_INSTRUCTIONS.md not found: {out.decode()}"
         return out
 
-    output = await wait_for_agents_md()
+    output = await wait_for_instructions()
     assert "Test" in output.decode()

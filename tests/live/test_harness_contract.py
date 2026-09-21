@@ -1,3 +1,4 @@
+import ast
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -13,14 +14,19 @@ from unittest.mock import AsyncMock
 from capability_cleanup import cleanup_owned_capability_messages
 import conftest as live_conftest
 from conftest import create_test_project_context
+from db_teardown_fake import FakeDatabase
 import httpx
 from live_harness import (
     LIVE_NO_CLEANUP_ENV,
+    RUN_USER_TELEGRAM_ID_MAX,
+    RUN_USER_TELEGRAM_ID_MIN,
+    RUN_USER_USERNAME_PREFIX,
     CleanupError,
     OwnedResource,
     OwnershipManifest,
     cleanup_guard,
     resolve_repo_root,
+    run_user_sweep_predicate,
 )
 import pipeline_helpers
 from pipeline_helpers import (
@@ -1368,16 +1374,17 @@ fi
 
 
 def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
-    executed = []
+    """Port allocations hang off applications, not off the project.
 
-    def run(*args, **kwargs):
-        executed.append(args[0][-1])
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+    The relation is now read out of the foreign-key catalog rather than spelled
+    in a delete list, so the fake database answers with this schema's metadata;
+    the relation the test asserts is the same one.
+    """
+    database = FakeDatabase(owned={"projects": ["project-1"]})
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", database.subprocess_run)
     pipeline_helpers._cleanup_db("project-1")
 
-    sql = executed[0]
+    sql = database.delete_sql
     assert "port_allocations WHERE application_id IN" in sql
     assert "port_allocations WHERE project_id" not in sql
     assert sql.index("DELETE FROM port_allocations") < sql.index("DELETE FROM applications")
@@ -1787,6 +1794,7 @@ async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_nam
             agent_type="noop",
             task_title="t",
             task_description="td",
+            modules=pipeline_helpers.BACKEND_ONLY_MODULES,
         )
 
 
@@ -1948,7 +1956,9 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
     monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", lambda repo: None)
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id, run_user_telegram_id=None: None
+    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == f"/api/projects/{ctx['project_id']}":
@@ -2693,7 +2703,9 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
     )
     monkeypatch.setattr(
-        pipeline_helpers, "_cleanup_db", lambda project_id: events.append("database")
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: events.append("database"),
     )
 
     transport = httpx.MockTransport(handler)
@@ -2762,7 +2774,11 @@ async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeyp
     monkeypatch.setattr(
         pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
     )
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: events.append("db"))
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: events.append("db"),
+    )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
@@ -2809,7 +2825,11 @@ async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch,
     monkeypatch.setattr(
         pipeline_helpers, "cleanup_github_repo", lambda repo: external.append("github")
     )
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: external.append("db"))
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "_cleanup_db",
+        lambda project_id, run_user_telegram_id=None: external.append("db"),
+    )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
@@ -3299,7 +3319,9 @@ async def test_cleanup_cancels_unowned_project_runs_through_internal_client(monk
     monkeypatch.setattr(pipeline_helpers, "cleanup_server_container", cleanup_server)
     monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
     monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
-    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id, run_user_telegram_id=None: None
+    )
 
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
@@ -4751,7 +4773,7 @@ def test_a_debug_dump_bounds_the_log_slices_it_embeds(
     assert (
         embedded
         == [pipeline_helpers.LOG_TAIL_MAX_CHARS]
-        + [pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS] * 4
+        + [pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_MAX_CHARS] * 6
     )
     assert [
         "docker",
@@ -4764,7 +4786,7 @@ def test_a_debug_dump_bounds_the_log_slices_it_embeds(
         "compose",
         "logs",
         f"--tail={pipeline_helpers.DEBUG_DUMP_SERVICE_TAIL_LINES}",
-        "scheduler",
+        "scheduler-pipeline",
     ] in commands
 
 
@@ -5565,3 +5587,1020 @@ def test_a_contained_branch_with_no_merge_commit_names_what_it_could_not_recover
 
     assert probe["reference"] == "c0ffee"
     assert probe["reference_kind"] == live_harness_cleanup.MERGE_BASE_IS_HEAD_REFERENCE
+
+
+# ── The registration door the level-1 run walks through ──────────────────
+#
+# The fixture user is a row the harness made for itself. This run's user is a
+# customer: a Telegram id nobody has used, a code minted through the internal
+# API, and a registration that redeems it. These hold the sequence and its
+# refusals without a stack — the stand proves the product does it, this proves
+# the harness asks for it and never quietly asks for anything else.
+
+
+REGISTERED_USER_ID = 4242
+
+
+class _DoorApi:
+    """The three routes a registration touches, and a record of who asked."""
+
+    def __init__(
+        self,
+        *,
+        existing_user: bool = False,
+        mint_status: int = 201,
+        upsert_response: tuple[int, dict] | None = None,
+        policy: dict | None = None,
+        balance: dict | None = None,
+    ) -> None:
+        self.existing_user = existing_user
+        self.mint_status = mint_status
+        self.upsert_response = upsert_response
+        self.policy = policy
+        self.balance = balance
+        self.minted: list[dict] = []
+        self.upserts: list[tuple[dict, httpx.Headers]] = []
+
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self._handle)
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/users/by-telegram/"):
+            if self.existing_user:
+                return httpx.Response(200, json={"id": 7, "telegram_id": 999})
+            return httpx.Response(404, json={"detail": "User not found"})
+        if path == pipeline_helpers.PROMO_BATCH_ROUTE:
+            body = json.loads(request.content)
+            self.minted.append(body)
+            if self.mint_status != 201:
+                return httpx.Response(self.mint_status, json={"detail": "refused"})
+            return httpx.Response(
+                201,
+                json=[
+                    {
+                        "id": 1,
+                        "code": "LEVEL1-CODE",
+                        "credits_microusd": body["credits_microusd"],
+                        "attempt_reservation_microusd": body["attempt_reservation_microusd"],
+                        "redeemed_by_user_id": None,
+                        "redeemed_at": None,
+                        "created_at": "2026-09-20T00:00:00Z",
+                    }
+                ],
+            )
+        if path == pipeline_helpers.USER_UPSERT_ROUTE:
+            body = json.loads(request.content)
+            self.upserts.append((body, request.headers))
+            if self.upsert_response is not None:
+                status_code, payload = self.upsert_response
+                return httpx.Response(status_code, json=payload)
+            return httpx.Response(
+                200,
+                json={
+                    "id": REGISTERED_USER_ID,
+                    "telegram_id": body["telegram_id"],
+                    "username": body.get("username"),
+                    "first_name": body.get("first_name"),
+                    "last_name": body.get("last_name"),
+                    "is_admin": False,
+                    "last_seen": "2026-09-20T00:00:00Z",
+                    "created_at": "2026-09-20T00:00:00Z",
+                    "updated_at": "2026-09-20T00:00:00Z",
+                },
+            )
+        if path.endswith("/balance"):
+            return httpx.Response(200, json=self.balance)
+        if path.startswith("/api/engineering-budget-policies/"):
+            return httpx.Response(200, json=self.policy)
+        raise AssertionError(f"the registration door asked for {path}")
+
+
+def _door_clients(api: _DoorApi, monkeypatch):
+    """The internal client and the named-user factory, both on one transport."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    transport = api.transport()
+
+    def factory(telegram_id: int) -> httpx.AsyncClient:
+        return pipeline_helpers.api_client_as_named_user(
+            telegram_id, base_url="http://test", transport=transport
+        )
+
+    internal = pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=transport
+    )
+    return internal, factory
+
+
+def _armed_policy(
+    *,
+    user_id: int = REGISTERED_USER_ID,
+    limit: int = pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD,
+    reservation: int = pipeline_helpers.LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+    enforcement: str = "enforced",
+    state: str = "enabled",
+) -> dict:
+    return {
+        "user_id": user_id,
+        "enforcement": enforcement,
+        "policy": {
+            "user_id": user_id,
+            "limit_microusd": limit,
+            "attempt_reservation_microusd": reservation,
+            "state": state,
+            "version": 1,
+        },
+    }
+
+
+def _fresh_balance(credits: int = pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD) -> dict:
+    return {
+        **_armed_policy(),
+        "known_spend_microusd": 0,
+        "active_held_microusd": 0,
+        "unknown_final_held_microusd": 0,
+        "available_microusd": credits,
+        "remaining_microusd": credits,
+        "exhausted": False,
+        "unknown_cost_attempt_count": 0,
+        "incomplete_coverage": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_run_registers_by_redeeming_a_code_it_minted_for_itself(monkeypatch):
+    """Mint, then redeem as the named actor. Nothing else creates this user."""
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    assert api.minted == [
+        {
+            "quantity": 1,
+            "credits_microusd": pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD,
+            "attempt_reservation_microusd": (
+                pipeline_helpers.LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD
+            ),
+        }
+    ]
+    body, headers = api.upserts[0]
+    assert len(api.upserts) == 1
+    assert body["promo_code"] == "LEVEL1-CODE"
+    # The redemption is made BY the new actor: `_requires_promo` exempts only a
+    # service acting for itself, so a registration that named nobody would have
+    # bypassed the door entirely.
+    assert headers[pipeline_helpers.USER_AUTH_HEADER] == str(owner.telegram_id)
+    assert owner.user_id == REGISTERED_USER_ID
+    assert owner.credits_microusd == pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD
+
+
+@pytest.mark.asyncio
+async def test_the_registered_id_is_fresh_and_is_not_the_fixture_user(monkeypatch):
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        first = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+        second = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    for owner in (first, second):
+        assert owner.telegram_id != pipeline_helpers.TEST_TELEGRAM_ID
+        assert RUN_USER_TELEGRAM_ID_MIN <= owner.telegram_id <= RUN_USER_TELEGRAM_ID_MAX
+    assert first.telegram_id != second.telegram_id
+    # The code is a one-time credential and never reaches the artifact.
+    assert "promo_code" not in first.as_evidence()
+
+
+@pytest.mark.asyncio
+async def test_the_registration_writes_the_name_the_sweep_selects_on(monkeypatch):
+    """The sweep's ownership claim is a name this registration writes.
+
+    The id band is not ownership — Telegram issues account ids and a real
+    account can sit anywhere in it — so what makes a `users` row addressable as
+    this harness's residue is the username it registers under. These two have to
+    stay the same string, or the backstop sweep either misses the run's user or
+    reaches for rows nobody here wrote.
+    """
+    api = _DoorApi()
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+
+    body, _ = api.upserts[0]
+    assert body["username"] == f"live_run_{owner.telegram_id}"
+    predicate = run_user_sweep_predicate()
+    assert f"username LIKE '{RUN_USER_USERNAME_PREFIX}%'" in predicate
+    assert body["username"].startswith(RUN_USER_USERNAME_PREFIX)
+    assert f"BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX}" in predicate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "code"),
+    [(403, "promo_code_required"), (404, "promo_code_not_found"), (409, "promo_code_redeemed")],
+)
+async def test_a_refused_registration_names_the_phase_and_does_not_fall_back(
+    monkeypatch, status_code, code
+):
+    """The three refusals the route has, and the exit the run never takes.
+
+    The internal service could create this user naming nobody, and the run would
+    then go on to assert a paid admission about a user that walked through no
+    door. So a refusal ends the run, naming its phase and the API's own verdict.
+    """
+    api = _DoorApi(upsert_response=(status_code, {"detail": {"code": code}}))
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            await pipeline_helpers.register_run_owner(api_internal, named_client_factory=factory)
+
+    assert refused.value.phase == "registration"
+    assert code in str(refused.value)
+    # One attempt, by the named actor. No retry, and nothing as the service.
+    assert len(api.upserts) == 1
+    assert pipeline_helpers.USER_AUTH_HEADER in api.upserts[0][1]
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_is_already_taken_refuses_before_a_code_is_minted(monkeypatch):
+    api = _DoorApi(existing_user=True)
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            await pipeline_helpers.register_run_owner(api_internal, named_client_factory=factory)
+
+    assert refused.value.phase == "registration"
+    assert "is not fresh" in str(refused.value)
+    assert api.minted == []
+
+
+@pytest.mark.asyncio
+async def test_the_policy_the_redemption_armed_carries_the_codes_own_credits(monkeypatch):
+    api = _DoorApi(policy=_armed_policy(), balance=_fresh_balance())
+    internal, factory = _door_clients(api, monkeypatch)
+
+    async with internal as api_internal:
+        owner = await pipeline_helpers.register_run_owner(
+            api_internal, named_client_factory=factory
+        )
+        budget = await pipeline_helpers.verify_run_owner_budget_policy(api_internal, owner)
+
+    assert budget["policy"]["enforcement"] == "enforced"
+    assert budget["policy"]["policy"]["state"] == "enabled"
+    assert budget["policy"]["policy"]["limit_microusd"] == owner.credits_microusd
+    assert budget["balance"]["remaining_microusd"] == owner.credits_microusd
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (_armed_policy(enforcement="unlimited"), "unlimited"),
+        (_armed_policy(state="disabled"), "disabled"),
+        (_armed_policy(limit=1), "carried"),
+    ],
+)
+async def test_a_policy_that_is_not_the_promos_fails_the_registration_phase(
+    monkeypatch, policy, expected
+):
+    """An unenforced or differently-armed policy is a refusal, not a warning.
+
+    `unlimited` is exactly what the fixture user had — no policy row at all —
+    and it is the thing this card removes from level 1, so it may never read as
+    a pass.
+    """
+    api = _DoorApi(policy=policy, balance=_fresh_balance())
+    internal, factory = _door_clients(api, monkeypatch)
+
+    with pytest.raises(pipeline_helpers.Level1PhaseFailed) as refused:
+        async with internal as api_internal:
+            owner = await pipeline_helpers.register_run_owner(
+                api_internal, named_client_factory=factory
+            )
+            await pipeline_helpers.verify_run_owner_budget_policy(api_internal, owner)
+
+    assert refused.value.phase == "registration"
+    assert expected in str(refused.value)
+
+
+# ── Level-1 Telegram-bot product ─────────────────────────────────────────
+
+
+LEVEL1_TOKEN = "123456789:AA-level-1-stand-product-bot-token-value"  # noqa: S105 — a fake
+
+
+def _rejected_verdict(reason_code: str) -> dict:
+    return {
+        "status": "rejected",
+        "reason_code": reason_code,
+        "user_message": "Something is already running on this token.",
+        "bot_username": None,
+        "checks": [
+            {"name": "format", "passed": True},
+            {"name": "telegram_poller", "passed": False},
+        ],
+    }
+
+
+def _accepted_verdict() -> dict:
+    return {
+        "status": "ok",
+        "reason_code": None,
+        "user_message": "Token is valid.",
+        "bot_username": "mega_e2e_codegen_bot",
+        "checks": [
+            {"name": "format", "passed": True},
+            {"name": "telegram_get_me", "passed": True},
+            {"name": "telegram_webhook", "passed": True},
+            {"name": "telegram_poller", "passed": True},
+            {"name": "project_uniqueness", "passed": True},
+        ],
+    }
+
+
+def _binding_client(verdict: dict, recorder: list) -> httpx.AsyncClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json=verdict)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+
+
+def test_an_absent_product_bot_token_refuses_the_run_by_name(monkeypatch):
+    """No skip, no late assertion: the run stops and says which secret is missing."""
+    monkeypatch.delenv(pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV, raising=False)
+
+    with pytest.raises(pipeline_helpers.Level1RunRefused) as refusal:
+        pipeline_helpers.require_product_bot_token()
+
+    assert pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV in str(refusal.value)
+    assert "stand-e2e.yml" in str(refusal.value)
+
+
+def test_a_blank_product_bot_token_is_absent_not_a_token(monkeypatch):
+    """The workflow hands every non-level-1 suite an empty value on the same channel."""
+    monkeypatch.setenv(pipeline_helpers.STAND_PRODUCT_BOT_TOKEN_ENV, "   ")
+
+    with pytest.raises(pipeline_helpers.Level1RunRefused):
+        pipeline_helpers.require_product_bot_token()
+
+
+async def test_a_bot_somebody_else_is_polling_refuses_the_run_by_reason():
+    """The binding route's own poller probe is the answer; the suite adds none."""
+    requests: list = []
+    ctx = {"project_id": "project-1"}
+
+    async with _binding_client(_rejected_verdict("poller_active"), requests) as api:
+        with pytest.raises(pipeline_helpers.Level1RunRefused) as refusal:
+            await pipeline_helpers.bind_product_bot_token(api, ctx, LEVEL1_TOKEN)
+
+    assert "poller_active" in str(refusal.value)
+    assert ctx["bot_binding"]["status"] == "rejected"
+    assert "bot_username" not in ctx
+
+
+async def test_the_token_reaches_the_project_only_through_the_telegram_route():
+    """Never as a plain project secret — `/config/secrets` refuses it on purpose."""
+    requests: list = []
+    ctx = {"project_id": "project-1"}
+
+    async with _binding_client(_accepted_verdict(), requests) as api:
+        binding = await pipeline_helpers.bind_product_bot_token(api, ctx, LEVEL1_TOKEN)
+
+    assert [path for path, _ in requests] == ["/api/projects/project-1/telegram/token"]
+    assert requests[0][1] == {"token": LEVEL1_TOKEN}
+    assert binding["bot_username"] == "mega_e2e_codegen_bot"
+    assert ctx["bot_username"] == "mega_e2e_codegen_bot"
+    # The verdict is kept for evidence, and it carries no token.
+    assert LEVEL1_TOKEN not in json.dumps(ctx["bot_binding"])
+
+
+def _residue_client(bot_username: str | None, secret_keys: list[str]) -> httpx.AsyncClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/servers/"):
+            return httpx.Response(200, json=[])
+        if request.url.path.startswith("/api/repositories/"):
+            return httpx.Response(200, json={"bot_username": bot_username})
+        if request.url.path.endswith("/config/secrets/keys"):
+            return httpx.Response(200, json={"keys": secret_keys})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+
+
+def _residue_ctx() -> dict:
+    return {
+        "server_handle": "server-1",
+        "allocation_id": "alloc-1",
+        "application_id": "app-1",
+        "repo_id": "repo-1",
+        "project_id": "project-1",
+        "bot_binding": {"status": "ok", "bot_username": "mega_e2e_codegen_bot"},
+    }
+
+
+async def test_teardown_leaves_the_bot_free_for_the_next_run():
+    ctx = _residue_ctx()
+
+    async with _residue_client(None, ["APP_SECRET_KEY"]) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue["bot_username_released"] is True
+    assert residue["bot_token_released"] is True
+    assert ctx.get("undeploy_residue_error") is None
+
+
+async def test_a_binding_that_outlives_the_undeploy_fails_the_residue_check():
+    """One bot, one stand: a run that keeps it makes the next one unable to start."""
+    ctx = _residue_ctx()
+
+    async with _residue_client("mega_e2e_codegen_bot", ["TELEGRAM_BOT_TOKEN"]) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue is None
+    assert "bound to bot @mega_e2e_codegen_bot" in ctx["undeploy_residue_error"]
+    assert "TELEGRAM_BOT_TOKEN" in ctx["undeploy_residue_error"]
+
+
+async def test_a_run_that_bound_no_bot_keeps_the_residue_check_it_had():
+    """Every other suite calling this helper answers for ports and nothing else."""
+    ctx = _residue_ctx()
+    del ctx["bot_binding"]
+
+    async with _residue_client(None, []) as api:
+        residue = await pipeline_helpers.verify_undeploy_residue(api, ctx)
+
+    assert residue == {
+        "application_id": "app-1",
+        "allocation_id": "alloc-1",
+        "port_allocation_absent": True,
+        "observed_allocations": [],
+    }
+
+
+def test_the_empty_commit_fallback_is_told_apart_from_the_scripted_path(monkeypatch):
+    """An empty commit leaves the branch ahead of main and the diff empty."""
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(
+            story_branch_diff_error=None,
+            story_branch_diff={"head_sha": "c0ffee", "diff": ""},
+        ),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path"]["paths_missing_from_diff"] == ["services/tg_bot/src/menu.py"]
+    assert "fallback path" in ctx["level1_scripted_path_error"]
+
+
+def test_the_scripted_path_is_recognised_from_the_branch_diff(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(
+            story_branch_diff_error=None,
+            story_branch_diff={
+                "head_sha": "c0ffee",
+                "diff": "+++ b/services/tg_bot/src/menu.py\n",
+            },
+        ),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path_error"] is None
+
+
+def test_an_unreadable_branch_diff_is_a_stated_reason_not_a_silent_pass(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "record_story_branch_diff",
+        lambda ctx: ctx.update(story_branch_diff_error="GitHub answered 502"),
+    )
+    ctx = {"level1_change_set_paths": ["services/tg_bot/src/menu.py"]}
+
+    pipeline_helpers.record_level1_scripted_path(ctx)
+
+    assert ctx["level1_scripted_path_error"] == "GitHub answered 502"
+    assert "level1_scripted_path" not in ctx
+
+
+def _gave_up_reason(**failure) -> str:
+    """The reason a scripted step failure really carries, built by the real code.
+
+    The runner POSTs `success=false` with the step it died on; the wrapper folds
+    that into `WorkerBlockedResult.block_reason`; `worker_spawner` hands the same
+    string on as `gave_up_reason`; and `handle_worker_gave_up` stores it verbatim
+    as the planning task's `failure_metadata.reason`. Running the first two links
+    here rather than typing their output out is what keeps this test honest when
+    that format moves.
+    """
+    from worker_wrapper.http_models import ResultRequest, to_worker_result
+
+    return to_worker_result(ResultRequest(success=False, **failure)).block_reason
+
+
+def _diagnostics_for(ctx: dict, *tasks: dict) -> None:
+    """Record each task the way the suite records a task it read from the API."""
+    for task in tasks:
+        pipeline_helpers._record_task_diagnostic(ctx, task)
+
+
+def test_a_failed_engineering_task_names_the_runner_step_it_died_on():
+    """Card 1307's carried finding, read back at the other end of the pipeline.
+
+    Built from the status the control plane really writes: a gave-up sends the
+    planning task to `WAITING_HUMAN_REVIEW` and writes `failure_metadata` there,
+    while the `FAILED` path writes no `failure_metadata` at all. A fixture that
+    paired `FAILED` with a reason described a combination the pipeline never
+    produces, so it could be green while a real red run carried no step name.
+    """
+    reason = _gave_up_reason(
+        reason="noop runner step setup failed",
+        step="setup",
+        error_class="SetupFailed",
+        exit_code=2,
+    )
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None},
+        {
+            "id": "task-2",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": f"Worker gave up: {reason}"},
+        },
+    )
+
+    recorded = pipeline_helpers.record_engineering_failure_steps(ctx)
+
+    assert recorded == {"task-2": {"status": "waiting_human_review", "step": "setup"}}
+    assert ctx["engineering_failure_steps"] == recorded
+    # The park is part of the evidence, not a detail the step name hides: the
+    # sprint's "Zero intervention" item forbids a story reaching this state.
+    assert recorded["task-2"]["status"] == TaskStatus.WAITING_HUMAN_REVIEW.value
+
+
+def test_a_technical_engineering_failure_is_recorded_even_with_no_metadata():
+    """`handle_engineering_failure` writes `FAILED` and no `failure_metadata`.
+
+    That run has no step to name, and the evidence says so rather than staying
+    silent about a task that failed.
+    """
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.FAILED, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "failed", "step": None}
+    }
+
+
+def test_a_failure_that_names_no_step_is_recorded_as_naming_none():
+    """An unnamed failure is reported as unnamed rather than guessed at."""
+    ctx: dict = {}
+    _diagnostics_for(
+        ctx,
+        {
+            "id": "task-1",
+            "status": TaskStatus.WAITING_HUMAN_REVIEW,
+            "failure_metadata": {"reason": "Worker gave up: timeout"},
+        },
+    )
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {
+        "task-1": {"status": "waiting_human_review", "step": None}
+    }
+
+
+def test_a_settled_run_names_no_failed_step():
+    """The green case the suite asserts: nothing unsettled, so nothing recorded."""
+    ctx: dict = {}
+    _diagnostics_for(ctx, {"id": "task-1", "status": TaskStatus.DONE, "failure_metadata": None})
+
+    assert pipeline_helpers.record_engineering_failure_steps(ctx) == {}
+
+
+def test_every_module_of_a_product_owns_its_registry_repository():
+    """A two-module product publishes two images; teardown must own both names."""
+    assert pipeline_helpers.registry_repository("live-x", "backend").endswith("/live-x-backend")
+    assert pipeline_helpers.registry_repository("live-x", "tg_bot").endswith("/live-x-tg-bot")
+
+
+def _trigger_scaffold_with_stubbed_redis(monkeypatch, modules: list[str]):
+    """Drive the scaffold trigger without a Redis container, keeping what it sent."""
+    owned: list[tuple[str, str]] = []
+    published: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        published.append(list(args))
+        return subprocess.CompletedProcess(args, 0, stdout="1-0\n", stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", fake_run)
+    manifest = SimpleNamespace(
+        own=lambda kind, identifier, **extra: owned.append((kind, identifier)),
+        write=lambda path: None,
+        run_id="live-test",
+    )
+    ctx = {
+        "manifest": manifest,
+        "repo_name": "live-x",
+        "project_name": "live-x",
+        "modules": modules,
+        "project_id": "p",
+        "repo_id": "r",
+    }
+
+    pipeline_helpers.trigger_scaffold(ctx)
+
+    return owned, published[0]
+
+
+def test_the_scaffold_trigger_owns_one_registry_repository_per_module(monkeypatch):
+    owned, _ = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend", "tg_bot"])
+
+    assert [identifier for kind, identifier in owned if kind == "registry_repository"] == [
+        pipeline_helpers.registry_repository("live-x", "backend"),
+        pipeline_helpers.registry_repository("live-x", "tg_bot"),
+    ]
+
+
+def test_the_scaffolder_is_asked_for_the_modules_the_project_was_created_with(monkeypatch):
+    """The scaffold message decides what is rendered; the project config alone does not."""
+    _, published = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend", "tg_bot"])
+
+    assert published[published.index("modules") + 1] == "backend,tg_bot"
+
+
+def test_a_backend_only_project_still_scaffolds_exactly_backend(monkeypatch):
+    owned, published = _trigger_scaffold_with_stubbed_redis(monkeypatch, ["backend"])
+
+    assert published[published.index("modules") + 1] == "backend"
+    assert [identifier for kind, identifier in owned if kind == "registry_repository"] == [
+        pipeline_helpers.registry_repository("live-x", "backend")
+    ]
+
+
+# ── The scaffold wait ───────────────────────────────────────────────────────
+# Three properties, exercised offline against a stubbed project read: the budget
+# a project actually gets is derived from the product it is, a scaffold that
+# never reaches `active` fails naming its own phase, and a scaffold the
+# scaffolder has already declared failed is not waited out.
+
+
+class _ScaffoldClock:
+    """A monotonic clock that only advances when the wait sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _scaffold_project_reads(monkeypatch, modules, responses):
+    """Drive `wait_scaffold` over `responses`, one per poll, and count the polls."""
+    clock = _ScaffoldClock()
+    monkeypatch.setattr(pipeline_helpers.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(pipeline_helpers.asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "last_scaffolder_event",
+        lambda project_id: "scaffold_make_setup_start (stubbed)",
+    )
+    polls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        polls.append(str(request.url))
+        payload = responses[min(len(polls) - 1, len(responses) - 1)]
+        return httpx.Response(200, json=payload)
+
+    ctx = {"project_id": "project-1", "modules": list(modules)}
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://test"
+        ) as api:
+            await pipeline_helpers.wait_scaffold(api, ctx)
+
+    return ctx, polls, run
+
+
+def test_the_level1_project_waits_the_budget_its_two_modules_earn(monkeypatch):
+    """The level-1 product's own module list is what sizes its wait.
+
+    Not a restatement of the constant: the wait is driven until it gives up, and
+    what is asserted is how long it actually waited for the modules
+    `create_level1_bot_project` creates the project with.
+    """
+    ctx, polls, run = _scaffold_project_reads(
+        monkeypatch, pipeline_helpers.LEVEL1_MODULES, [{"status": "draft", "config": {}}]
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    waited = len(polls) * pipeline_helpers.SCAFFOLD_POLL_INTERVAL
+    assert waited == 240
+    assert "Waited 240s of a 240s budget for 2 module(s) (backend, tg_bot)" in str(raised.value)
+    assert ctx["scaffold_status"] == "draft"
+
+
+def test_a_one_module_project_keeps_the_shorter_wait(monkeypatch):
+    """The two-module budget is earned, not global: backend-only still gets 120s."""
+    _, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.BACKEND_ONLY_MODULES,
+        [{"status": "draft", "config": {}}],
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    assert len(polls) * pipeline_helpers.SCAFFOLD_POLL_INTERVAL == 120
+    assert "for 1 module(s) (backend)" in str(raised.value)
+
+
+def test_a_scaffold_that_never_reaches_active_fails_naming_its_own_phase(monkeypatch):
+    """The failure names the phase, the wait, the last status and the last event.
+
+    This is the observation run 35406260851 never produced: it reported a
+    downstream assertion about the scripted path instead of the phase that
+    stopped it.
+    """
+    _, _, run = _scaffold_project_reads(
+        monkeypatch, pipeline_helpers.LEVEL1_MODULES, [{"status": "draft", "config": {}}]
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    message = str(raised.value)
+    assert message.startswith("scaffold did not complete for project project-1")
+    assert "the scaffolder recorded no failure" in message
+    assert "Project status: draft" in message
+    assert "Scaffolder's last recorded event: scaffold_make_setup_start (stubbed)" in message
+    assert "engineering" not in message and "scripted" not in message
+
+
+def test_a_recorded_scaffold_error_fails_the_poll_after_it_is_published(monkeypatch):
+    """The scaffolder's own failure signal is not waited out.
+
+    `services/scaffolder/src/consumer.py` writes `scaffold_error` into the
+    project config when a full scaffold fails, and the project read returns it.
+    """
+    _, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.LEVEL1_MODULES,
+        [
+            {"status": "draft", "config": {}},
+            {"status": "draft", "config": {"scaffold_error": "make setup failed: rc=2"}},
+        ],
+    )
+
+    with pytest.raises(pipeline_helpers.ScaffoldDidNotComplete) as raised:
+        asyncio.run(run())
+
+    assert len(polls) == 2
+    message = str(raised.value)
+    assert "scaffold_error='make setup failed: rc=2'" in message
+    assert "Waited 6s of a 240s budget" in message
+
+
+def test_a_scaffold_that_reaches_active_records_it_and_waits_no_longer(monkeypatch):
+    ctx, polls, run = _scaffold_project_reads(
+        monkeypatch,
+        pipeline_helpers.LEVEL1_MODULES,
+        [{"status": "draft", "config": {}}, {"status": "active", "config": {}}],
+    )
+
+    asyncio.run(run())
+
+    assert len(polls) == 2
+    assert ctx["scaffold_status"] == ProjectStatus.ACTIVE
+
+
+def test_the_last_scaffolder_event_is_read_from_this_project_s_own_log_lines(monkeypatch):
+    lines = "\n".join(
+        [
+            "scaffolder | event=scaffold_job_started project_id=other-project",
+            "scaffolder | event=scaffold_copier_start project_id=project-1",
+            "scaffolder | event=scaffold_make_setup_start project_id=project-1",
+            "scaffolder | event=scaffold_job_started project_id=other-project",
+        ]
+    )
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=lines, stderr=""),
+    )
+
+    assert pipeline_helpers.last_scaffolder_event("project-1").startswith(
+        "scaffold_make_setup_start"
+    )
+
+
+def test_an_unreadable_scaffolder_log_is_reported_not_raised(monkeypatch):
+    def explode(*args, **kwargs):
+        raise OSError("no docker here")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", explode)
+
+    assert pipeline_helpers.last_scaffolder_event("project-1") == "unreadable (OSError)"
+
+
+# ── The level-1 suite may not skip ──────────────────────────────────────
+#
+# The free deterministic lifecycle is allowed to fail and not allowed to be
+# absent. A `pytest.skip` inside it hides a phase that did not happen — a failed
+# deploy would take the QA assertions with it and the suite would report green
+# — which is why every exit of the level-1 phases raises naming its own phase
+# instead (`_level1_brief_plan_and_engineering`, `_extension`). The paid
+# `TestFullPipelineLLM` class is the one place a skip is legitimate: its
+# assertions are about an agent's output and a cell that never got one has
+# nothing to judge.
+LEVEL1_SUITE_MODULE = Path(__file__).with_name("test_full_pipeline.py")
+SKIPPABLE_SUITE_CLASS = "TestFullPipelineLLM"
+
+
+def _skip_call_lines(tree: ast.AST) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "skip"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pytest"
+    ]
+
+
+def test_only_the_paid_class_of_the_level1_module_may_skip():
+    """No `pytest.skip` outside the paid class, so none can hide a failed phase."""
+    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
+    paid = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == SKIPPABLE_SUITE_CLASS
+    ]
+    assert len(paid) == 1, f"{SKIPPABLE_SUITE_CLASS} is not a class of {LEVEL1_SUITE_MODULE.name}"
+    paid_skips = set(_skip_call_lines(paid[0]))
+
+    offending = sorted(set(_skip_call_lines(tree)) - paid_skips)
+
+    assert not offending, (
+        f"{LEVEL1_SUITE_MODULE.name} calls pytest.skip outside {SKIPPABLE_SUITE_CLASS} at "
+        f"line(s) {offending}: a skipped level-1 assertion reports a phase that never ran as "
+        "one that was fine. Raise naming the phase instead."
+    )
+
+
+# ── A recording the tests read may not happen at teardown ────────────────
+#
+# The pipeline fixture is a module-scoped generator, so everything in its
+# `finally` runs at *teardown* — after the last test that used it. That is the
+# right moment for a recording only the artifact reads, and the wrong one for a
+# recording an assertion reads: on stand run 35486586267
+# `test_no_story_of_this_run_ever_waited_for_a_person` raised
+# `KeyError: 'no_intervention'` because the proof it asserts was taken there.
+# An assertion that always raises `KeyError` asserts nothing, exactly like a
+# proof kind that is always `unaskable`.
+#
+# So the rule, kind by kind: a context key written by the fixture's `finally` is
+# artifact-only unless `PRE_TEARDOWN_PROOF_KEYS` declares it, and a declared one
+# is also recorded before the context reaches the tests.
+
+PIPELINE_HELPERS_MODULE = Path(pipeline_helpers.__file__)
+PIPELINE_FIXTURE = "_pipeline_run"
+
+
+def _function_nodes(tree: ast.AST) -> dict[str, ast.AST]:
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    return {
+        call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+
+
+def _ctx_keys_written(name: str, functions: dict[str, ast.AST], seen: set[str]) -> set[str]:
+    """Every `ctx["…"] = …` this helper makes, following the helpers it calls."""
+    if name in seen or name not in functions:
+        return set()
+    seen.add(name)
+    node = functions[name]
+    written = {
+        target.slice.value
+        for target in ast.walk(node)
+        if isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "ctx"
+        and isinstance(target.ctx, ast.Store)
+        and isinstance(target.slice, ast.Constant)
+    }
+    for called in _called_names(node):
+        written |= _ctx_keys_written(called, functions, seen)
+    return written
+
+
+def _teardown_recorded_keys() -> set[str]:
+    suite = _function_nodes(ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8")))
+    helpers = _function_nodes(ast.parse(PIPELINE_HELPERS_MODULE.read_text(encoding="utf-8")))
+    finals = [
+        node.finalbody
+        for node in ast.walk(suite[PIPELINE_FIXTURE])
+        if isinstance(node, ast.Try) and node.finalbody
+    ]
+    assert finals, f"{PIPELINE_FIXTURE} has no teardown block to judge"
+    keys: set[str] = set()
+    for body in finals:
+        for statement in body:
+            for called in _called_names(statement):
+                keys |= _ctx_keys_written(called, helpers, set())
+    return keys
+
+
+def _keys_the_level1_tests_read() -> set[str]:
+    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pipeline"
+            and isinstance(node.slice, ast.Constant)
+        ):
+            read.add(node.slice.value)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pipeline"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            read.add(node.args[0].value)
+    return read
+
+
+def test_the_teardown_records_something_and_the_tests_read_something():
+    """Both halves of the rule below have subjects, so it cannot pass vacuously."""
+    assert _teardown_recorded_keys(), "no teardown recording was found to judge"
+    assert _keys_the_level1_tests_read(), "no fixture key was found to be read"
+
+
+def test_no_assertion_reads_a_key_the_fixture_records_only_at_teardown():
+    read = _keys_the_level1_tests_read()
+    recorded_late = _teardown_recorded_keys()
+    declared = set(pipeline_helpers.PRE_TEARDOWN_PROOF_KEYS)
+
+    offending = sorted((read & recorded_late) - declared)
+
+    assert not offending, (
+        f"{LEVEL1_SUITE_MODULE.name} asserts about {offending}, which the fixture's teardown "
+        "is the first thing to record — so the assertion reads a context the key is not on "
+        "yet and raises KeyError on every run. Record it through "
+        "`with_pre_teardown_proofs` before the context reaches the tests, and declare it in "
+        "`PRE_TEARDOWN_PROOF_KEYS`."
+    )
+
+
+def test_the_declared_pre_teardown_proofs_are_taken_before_the_tests_see_the_context():
+    """`_pipeline_run` hands the phases through the wrapper that records them."""
+    suite = _function_nodes(ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8")))
+    loops = [node for node in ast.walk(suite[PIPELINE_FIXTURE]) if isinstance(node, ast.AsyncFor)]
+    assert loops, f"{PIPELINE_FIXTURE} yields nothing to the tests"
+    for loop in loops:
+        assert isinstance(loop.iter, ast.Call), ast.dump(loop.iter)
+        assert isinstance(loop.iter.func, ast.Name)
+        assert loop.iter.func.id == "with_pre_teardown_proofs", (
+            f"{PIPELINE_FIXTURE} yields the phases directly, so a proof recorded in its "
+            "`finally` reaches the tests too late to be asserted"
+        )

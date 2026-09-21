@@ -84,6 +84,8 @@ class TestHandleMessage:
             "task_impossible_capacity",
             "story_impossible_capacity",
             "task_resources_resumed",
+            "story_requirements_returned",
+            "story_stage",
         ],
     )
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
@@ -100,6 +102,35 @@ class TestHandleMessage:
         mock_graph.ainvoke.assert_called_once()
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
         assert f"system_event:{event_type}" in msg.content
+
+    @pytest.mark.asyncio
+    async def test_returned_requirements_event_is_routable_and_deliverable(
+        self, mock_graph, mock_client
+    ):
+        """The architect's non-terminal notice is not dropped and reaches the owner's chat."""
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_REQUIREMENTS_RETURNED,
+            text="- income: Записывает доход\n  reason: Undefined input: free-text income",
+            story_id="story-1",
+            project_id="project-1",
+            telegram_chat_id="user-1",
+        )
+        message = TypeAdapter(POInputMessage).validate_python(notification.model_dump(mode="json"))
+
+        await _handle_message(
+            mock_graph,
+            mock_client,
+            notification.telegram_chat_id,
+            message.model_dump(mode="json"),
+        )
+
+        mock_graph.ainvoke.assert_called_once()
+        content = mock_graph.ainvoke.call_args[0][0]["messages"][0].content
+        assert "system_event:story_requirements_returned" in content
+        assert "Undefined input: free-text income" in content
+        delivered = mock_client.publish_flat.call_args
+        assert delivered.args[0] == "po:proactive"
+        assert delivered.args[1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_budget_denial_quarantine_event_is_routable_and_deliverable(

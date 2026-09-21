@@ -26,6 +26,11 @@ class IncidentType(StrEnum):
     RESOURCE_EXHAUSTED = "resource_exhausted"
     SSL_EXPIRING = "ssl_expiring"
     PROVIDER_API_UNAVAILABLE = "provider_api_unavailable"
+    # Managed-target readiness reconciliation could not prove this target: its
+    # stored key, administrative login, privilege path or QA role. Owned only by
+    # `POST /api/servers/{handle}/target-readiness`, so its park and resolution
+    # never touch another failure's evidence.
+    TARGET_NOT_READY = "target_not_ready"
 
 
 # Incident types that are not tied to a single server. Everything else is

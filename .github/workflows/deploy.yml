@@ -167,11 +167,8 @@ jobs:
             ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
             ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
 
-            # Summarization
+            # Summarization model selection; numeric tuning is seeded as system config below.
             SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
-            SUMMARIZATION_MAX_TOKENS=${{ secrets.SUMMARIZATION_MAX_TOKENS }}
-            SUMMARIZATION_TRIGGER_TOKENS=${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
-            SUMMARIZATION_MAX_SUMMARY_TOKENS=${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
 
             # GitHub
             GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
@@ -314,7 +311,13 @@ jobs:
           username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
+            next_source_hash="$(python3 scripts/shared_freshness.py hash)"
+            python3 scripts/rotate_worker_image_records.py \
+              --current-record deployed-worker-images.json \
+              --previous-record previous-deployed-worker-images.json \
+              --next-source-hash "${next_source_hash}"
             GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}' \
             GHCR_OWNER='${{ github.repository_owner }}' \
             WORKER_IMAGE_TAG='${{ github.sha }}' \
@@ -424,6 +427,48 @@ jobs:
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/system_configs.yaml
 
+      - name: Wait for scheduler services
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ env.DEPLOY_SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose ${{ env.COMPOSE_ARGS }} \
+              up -d --force-recreate --no-deps --wait --wait-timeout 180 \
+              scheduler-pipeline scheduler-infrastructure scheduler-maintenance
+
+      # Every managed deploy target is reconciled to the QA target profile this
+      # revision's `qa_identity` role defines — after the new services are healthy,
+      # before the deploy reports success. The command parses each stored key,
+      # proves the administrative login and privilege path, applies and proves the
+      # role, and records a receipt or a typed not-ready incident per target. It
+      # runs only the login, privilege and retrofit playbooks: no provider
+      # reinstall, no firewall change, no QA or stand run. It exits zero only when
+      # every managed row has a recorded ready or not-ready verdict; a row still
+      # being provisioned, one it cannot handle, or a verdict superseded or not
+      # recorded fails the step, and every row's outcome is listed in its output.
+      - name: Reconcile managed deploy targets
+        if: ${{ inputs.environment == 'production' }}
+        uses: appleboy/ssh-action@v1
+        timeout-minutes: 30
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ env.DEPLOY_SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            deployed=$(git rev-parse HEAD)
+            if [ "${deployed}" != "${{ github.sha }}" ]; then
+              echo "FATAL: ${{ env.DEPLOY_PATH }} is at ${deployed}, not the dispatched ${{ github.sha }}" >&2
+              exit 1
+            fi
+            docker compose ${{ env.COMPOSE_ARGS }} exec -T infra-service \
+              python -m src.provisioner.target_readiness --revision ${{ github.sha }}
+
       - name: Cleanup
         uses: appleboy/ssh-action@v1
         with:
@@ -431,4 +476,19 @@ jobs:
           username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            cleanup_status=0
+            python3 scripts/cleanup_worker_images.py \
+              --release-record deployed-worker-images.json \
+              --previous-release-record previous-deployed-worker-images.json || cleanup_status=$?
+            # Keep one day of cache for a fast retry or a recent common build.
+            # Older cache can still be reused if Docker retains it; this bounds what
+            # this cleanup deliberately keeps, rather than proving cache isolation.
+            docker builder prune --all --force --filter until=24h
+            # Rebuilt :local tags can leave their replaced images dangling on the
+            # classic image store. Docker keeps images named by containers.
             docker image prune -f
+            if [ "${cleanup_status}" -ne 0 ]; then
+              exit "${cleanup_status}"
+            fi

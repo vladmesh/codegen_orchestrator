@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
@@ -38,18 +38,6 @@ class RunBase(BaseModel):
     completed_at: datetime | None = None
     callback_stream: str | None = None
     iteration: int | None = None
-    input_tokens: int | None = Field(
-        default=None, validation_alias=AliasChoices("_ledger_input_tokens", "input_tokens")
-    )
-    output_tokens: int | None = Field(
-        default=None, validation_alias=AliasChoices("_ledger_output_tokens", "output_tokens")
-    )
-    total_tokens: int | None = Field(
-        default=None, validation_alias=AliasChoices("_ledger_total_tokens", "total_tokens")
-    )
-    cost_usd: float | None = Field(
-        default=None, validation_alias=AliasChoices("_ledger_cost_usd", "cost_usd")
-    )
     agent_profile: dict[str, Any] | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
@@ -74,10 +62,6 @@ class RunUpdate(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     iteration: int | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    total_tokens: int | None = None
-    cost_usd: float | None = None
     agent_profile: dict[str, Any] | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None

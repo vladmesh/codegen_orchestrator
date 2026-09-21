@@ -1,9 +1,10 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-import structlog
 from fastapi import FastAPI
 from redis.asyncio import Redis
+import structlog
+
 from shared.redis import RedisStreamClient
 
 from .compose_runner import ComposeRunner
@@ -69,7 +70,9 @@ async def lifespan(app: FastAPI):
     # Start Periodic Tasks
     # GC every hour (3600s)
     gc_task = asyncio.create_task(
-        run_periodic_task(lambda: worker_manager.garbage_collect_images(), interval=3600, name="garbage_collect")
+        run_periodic_task(
+            lambda: worker_manager.garbage_collect_images(), interval=3600, name="garbage_collect"
+        )
     )
 
     # Orphaned resource GC every 30 minutes (1800s)

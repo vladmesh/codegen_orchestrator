@@ -42,6 +42,7 @@ from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from src.agents.qa.tools import build_qa_callables
 from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
@@ -61,7 +62,9 @@ from src.consumers.qa import process_qa_job
 # runtime over loopback because in a test the "container" is this process.
 _RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
 
-OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+)
 ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
 OWN_CONTAINER = "app-backend-1"
@@ -319,6 +322,14 @@ class _FakeTargetConn:
 
     async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
         self.commands.append(command)
+        # The live wrapper is the current QA target profile on this target.
+        if command.endswith("qa-docker version"):
+            verbs = " ".join(sorted(QA_DOCKER_REQUIRED_VERBS))
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=f"qa-docker profile={QA_TARGET_PROFILE_VERSION} verbs={verbs}\n",
+                stderr="",
+            )
         # The revoke script's last line is the count of the run's lines still in
         # the file; a target that answers nothing is residue, not a clean revoke.
         if "grep -c -F" in command:

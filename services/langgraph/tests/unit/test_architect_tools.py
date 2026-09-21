@@ -437,7 +437,11 @@ class TestUpdateAcceptanceCriteriaContract:
         contract = self._contract()
 
         assert "- GET /health returns 200" in contract
-        assert '- POST /api/cities with {"name": "Moscow"} returns 201' in contract
+        # QA has no write tool, so the contract no longer teaches a POST check
+        # (codegen-orchestrator-1290); the write is checked by its GET observable.
+        assert "- GET /api/cities lists Moscow" in contract
+        assert "POST /api/cities" not in contract
+        assert "curl" not in contract
 
     def test_teaches_the_fire_job_form_and_its_rules(self):
         contract = self._contract()

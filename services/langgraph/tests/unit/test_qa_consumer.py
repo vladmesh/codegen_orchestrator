@@ -8,6 +8,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -35,6 +36,7 @@ from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.vocab import AgentType
 from shared.crypto import encrypt_dict
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
     MAX_QA_LOOPS,
@@ -76,6 +78,9 @@ def _server(**overrides) -> ServerDTO:
         "status": "active",
         "is_managed": True,
         "labels": {QA_SSH_USER_LABEL: QA_SSH_USER},
+        # Reconciliation proved the current QA target profile on it.
+        "qa_target_version": QA_TARGET_PROFILE_VERSION,
+        "qa_target_proved_at": datetime.now(UTC),
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
     }
@@ -609,6 +614,39 @@ class TestProcessQAJobFail:
         assert len(run_data["result"]["failed_checks"]) == 1
 
     @pytest.mark.asyncio
+    async def test_qa_fail_carries_each_failed_checks_cause(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import parse_qa_result
+
+        raw = json.dumps(
+            {
+                "pass": False,
+                "checks": [
+                    {"name": "weather", "pass": False, "detail": "404", "cause": "product"},
+                    {
+                        "name": "upload",
+                        "pass": False,
+                        "detail": "no tool",
+                        "cause": "qa_capability",
+                    },
+                    {"name": "health", "pass": True, "detail": "200"},
+                ],
+                "summary": "mixed",
+            }
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = parse_qa_result(raw)
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_failed"
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["failed_checks"] == [
+            {"name": "weather", "detail": "404", "cause": "product"},
+            {"name": "upload", "detail": "no tool", "cause": "qa_capability"},
+        ]
+
+    @pytest.mark.asyncio
     async def test_a_failed_run_keeps_the_executors_own_transcript_on_the_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):
@@ -1030,16 +1068,14 @@ class TestProcessQAJobEdgeCases:
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    async def test_inflight_dedup_uses_application_id_when_no_story(
-        self, mock_api_client, mock_redis
-    ):
-        """Standalone QA (no story_id) uses application_id for inflight dedup."""
+    async def test_inflight_dedup_uses_story_owner(self, mock_api_client, mock_redis):
+        """A story-owned QA run uses that owner for inflight dedup."""
         from src.consumers._qa_runner import QAResult
 
         mock_api_client.get_application.return_value = _application(id=42)
 
         data = {
-            "story_id": "",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",
@@ -1054,11 +1090,9 @@ class TestProcessQAJobEdgeCases:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
             await process_qa_job(data, mock_redis)
 
-        # Inflight key should use application_id, not empty story_id
         set_call = mock_redis.redis.set.call_args
         inflight_key = set_call[0][0]
-        assert "42" in inflight_key
-        assert inflight_key != "qa:inflight:"  # not empty
+        assert "story-1" in inflight_key
 
     @pytest.mark.asyncio
     async def test_qa_runs_the_criteria_from_the_message(self, mock_api_client, mock_redis):
@@ -1070,7 +1104,7 @@ class TestProcessQAJobEdgeCases:
         from src.consumers._qa_runner import QAResult
 
         data = {
-            "story_id": "",
+            "story_id": "story-1",
             "project_id": "proj-1",
             "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",

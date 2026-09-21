@@ -38,6 +38,7 @@ from shared.qa_identity import (
     QAIdentityRejection,
     provisioning_complete_labels,
 )
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from src.consumers._qa_runner import QAResult
 from src.consumers.qa import process_qa_job
 
@@ -75,6 +76,9 @@ def _server(*, provisioned: bool = True, **overrides) -> ServerDTO:
         "status": ServerStatus.ACTIVE,
         "is_managed": True,
         "labels": labels,
+        # Provisioning that finished also proved the current QA target profile.
+        "qa_target_version": QA_TARGET_PROFILE_VERSION if provisioned else None,
+        "qa_target_proved_at": datetime.now(UTC) if provisioned else None,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
     }
@@ -228,6 +232,42 @@ class TestAFreshHostPassesTheOrdinaryPath:
         assert target.qa_ssh_user == QA_SSH_USER
         assert target.ssh_user == "root"
         assert run.await_args.kwargs["fleet_ssh_key"].startswith("-----BEGIN KEY-----")
+        api.record_provisioning_failure.assert_not_awaited()
+
+
+class TestAHostWhoseQAHarnessIsNotProvedIsRefused:
+    """The bound application's host must carry a receipt for the current profile.
+
+    Labels say the account was created; only the receipt says the artefacts QA
+    speaks to are the current ones. Without it the run stops before any access
+    is issued or any executor starts, as a harness blocker an administrator is
+    told about — never as a verdict on the product.
+    """
+
+    @pytest.mark.parametrize(
+        "api",
+        [
+            _server(qa_target_version=None, qa_target_proved_at=None),
+            _server(qa_target_version="0" * len(QA_TARGET_PROFILE_VERSION)),
+        ],
+        indirect=True,
+        ids=["no_receipt", "stale_receipt"],
+    )
+    async def test_the_run_is_blocked_before_any_access_or_executor(self, api, redis, qa_message):
+        with (
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as run,
+            patch("src.consumers.qa.notify_admins_best_effort", new_callable=AsyncMock) as admins,
+        ):
+            result = await process_qa_job(qa_message, redis)
+
+        assert result["status"] == "qa_blocked"
+        assert result["blocker"] == QABlockerCategory.QA_TARGET_PROFILE_STALE.value
+        run.assert_not_awaited()
+        admins.assert_awaited_once()
+        blocker = api.patch.await_args.kwargs["json"]["result"]["blocker"]
+        assert blocker["sent"] == "servers.qa_target_version of vps-267179"
+        assert "qa_identity_retrofit vps-267179" in blocker["received"]
+        # The receipt is reconciliation's record; a QA run journals nothing about it.
         api.record_provisioning_failure.assert_not_awaited()
 
 

@@ -6,10 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionPhase,
+    EngineeringInfrastructureRefusal,
+)
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 
-_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
+_OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1"
+)
 
 
 def _mock_settings():
@@ -34,6 +40,44 @@ def _attempt_recording_stubbed():
 
 
 # ---------- Liveness check ----------
+
+
+class TestWaitUntilReady:
+    @pytest.mark.asyncio
+    async def test_creation_refusal_returns_typed_pre_agent_evidence(self):
+        from src.clients.worker_spawner import _wait_until_ready
+
+        redis = AsyncMock()
+        redis.hgetall.return_value = {
+            b"status": b"FAILED",
+            b"execution_phase": b"pre_agent_refused",
+            b"infrastructure_refusal": b"project_locked",
+        }
+        redis.get.return_value = b"project checkout is held"
+
+        result = await _wait_until_ready(redis, "worker-1", "request-1", timeout=1)
+
+        assert result is not None
+        assert result.execution.execution_phase is EngineeringExecutionPhase.PRE_AGENT_REFUSED
+        assert result.execution.infrastructure_refusal is (
+            EngineeringInfrastructureRefusal.PROJECT_LOCKED
+        )
+
+    @pytest.mark.asyncio
+    async def test_malformed_creation_evidence_grants_no_free_refusal(self):
+        from src.clients.worker_spawner import _wait_until_ready
+
+        redis = AsyncMock()
+        redis.hgetall.return_value = {
+            "status": "FAILED",
+            "execution_phase": "pre_agent_refused",
+        }
+        redis.get.return_value = "creation failed"
+
+        result = await _wait_until_ready(redis, "worker-1", "request-1", timeout=1)
+
+        assert result is not None
+        assert result.execution is None
 
 
 class TestCheckWorkerAlive:
@@ -587,7 +631,7 @@ class TestSpawnResultWorkerId:
             task_content="build it",
             timeout_seconds=5,
             ownership=WorkerOwnership(
-                project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+                story_id="story-1", project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
             ),
         )
 

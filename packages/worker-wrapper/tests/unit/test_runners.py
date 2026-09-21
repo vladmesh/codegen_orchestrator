@@ -110,13 +110,19 @@ class TestNoopRunner:
         assert "reason" in command
         assert "returncode" in command
 
-    def test_failure_result_does_not_include_git_output(self):
+    def test_failure_result_names_the_failing_step(self):
+        """Since card 1307 the failure payload carries the step's stderr, redacted.
+
+        It used to carry no git output at all; a red engineering run then could not
+        say which step failed, which the scripted developer needs it to say.
+        """
         command = " ".join(NoopRunner().build_command(prompt="ignored"))
 
-        assert "failed.stderr" not in command
-        assert "failed.stdout" not in command
+        assert '"step"' in command
         assert '"exit_code"' in command
         assert '"error_class"' in command
+        assert '"stderr": stderr' in command
+        assert "redact(failure.stderr)" in command
 
     def test_failure_result_and_logs_redact_git_output(self, monkeypatch, capsys):
         raw_git_output = "https://token-like-value@example.invalid/repo.git"

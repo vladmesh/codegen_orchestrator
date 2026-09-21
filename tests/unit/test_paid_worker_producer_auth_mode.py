@@ -54,7 +54,12 @@ def test_stand_token_mode_serializes_only_its_non_secret_selector():
         allowed_commands=[],
         capabilities=[],
         auth_mode="stand_token",
-        ownership={"project_id": "project", "run_id": "run", "attempt_id": "attempt"},
+        ownership={
+            "story_id": "story",
+            "project_id": "project",
+            "run_id": "run",
+            "attempt_id": "attempt",
+        },
     )
 
     payload = config.model_dump_json()

@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import secrets
 
 import structlog
 
@@ -17,6 +18,66 @@ logger = structlog.get_logger()
 # .live-manifests/ still records them for later `make test-live-clean`.
 LIVE_NO_CLEANUP_ENV = "LIVE_NO_CLEANUP"
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+# ── The Telegram ids a run registers itself at ───────────────────────────
+#
+# A level-1 run walks the product's own registration door: a Telegram id nobody
+# has used before, a promo code minted for it, and a registration that redeems
+# the code. The id is drawn from a band the harness keeps to, so that two
+# concurrent runs on one database do not collide and so that a run's own user is
+# recognisable at a glance.
+#
+# The band is *not* ownership. Telegram chooses account ids, not this harness:
+# a nine-digit id in this range is an ordinary Telegram account and may belong
+# to a real customer. The only thing the harness genuinely writes is the
+# username it registers under, so that — and not the band — is what a sweep may
+# select on. See `run_user_sweep_predicate`.
+RUN_USER_TELEGRAM_ID_MIN = 970_000_000
+RUN_USER_TELEGRAM_ID_MAX = 970_999_999
+
+#: The username `register_run_owner` registers its user under. Written by the
+#: harness and by nothing else, which is what makes it a safe sweep predicate.
+RUN_USER_USERNAME_PREFIX = "live_run_"
+
+
+def new_run_telegram_id() -> int:
+    """A Telegram id for this run's own user, inside the harness's range.
+
+    Random rather than sequential: runs are concurrent and share one database,
+    and nothing here may depend on having read the table first. A collision is
+    not silently tolerated — the caller registers through the product's door and
+    a taken id makes that registration refuse, which is a refusal naming its
+    phase rather than a run quietly adopting somebody else's user.
+    """
+    return RUN_USER_TELEGRAM_ID_MIN + secrets.randbelow(
+        RUN_USER_TELEGRAM_ID_MAX - RUN_USER_TELEGRAM_ID_MIN + 1
+    )
+
+
+def run_user_username(telegram_id: int) -> str:
+    """The username this harness registers a run-owned user under."""
+    return f"{RUN_USER_USERNAME_PREFIX}{telegram_id}"
+
+
+def run_user_sweep_predicate() -> str:
+    """The SQL that selects users this harness demonstrably registered itself.
+
+    The stand sweep's second selection, next to its title prefixes. Both halves
+    are needed and only the second is ownership: the id band keeps the harness's
+    runs apart from each other, but Telegram hands out ids and a real account
+    can sit anywhere in it, so the band alone would be a blind range delete. The
+    username is written by `register_run_owner` and by nothing else in this
+    system — the same kind of naming as a contour's project title prefix — so a
+    row matching both is residue of this harness and a row matching only the
+    band is left alone.
+
+    Even so, the sweep applies this root only in a contour that owns live runs;
+    production is swept exactly as it was before the registration door existed.
+    """
+    return (
+        f"telegram_id BETWEEN {RUN_USER_TELEGRAM_ID_MIN} AND {RUN_USER_TELEGRAM_ID_MAX} "
+        f"AND username LIKE '{RUN_USER_USERNAME_PREFIX}%'"
+    )
 
 
 def run_created_at(run: dict) -> datetime:

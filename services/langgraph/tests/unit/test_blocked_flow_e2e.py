@@ -46,7 +46,7 @@ class TestBlockedFlowEndToEnd:
         mock_api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/test-repo")
         )
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghp_test")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghp_test")
 
         node = DeveloperNode()
         result = await node.run(
@@ -60,7 +60,7 @@ class TestBlockedFlowEndToEnd:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "executor_decision": ExecutorDecision(
                     attempt_kind=RunType.ENGINEERING,

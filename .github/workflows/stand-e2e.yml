@@ -504,9 +504,6 @@ jobs:
           GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SUMMARIZATION_MODEL: ${{ secrets.SUMMARIZATION_MODEL }}
-          SUMMARIZATION_MAX_TOKENS: ${{ secrets.SUMMARIZATION_MAX_TOKENS }}
-          SUMMARIZATION_TRIGGER_TOKENS: ${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
-          SUMMARIZATION_MAX_SUMMARY_TOKENS: ${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
           GITHUB_APP_PEM_PATH: /opt/secrets/github_app.pem
           HOST_UID: ${{ steps.identity.outputs.runtime_uid }}
           HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
@@ -529,14 +526,17 @@ jobs:
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
               "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
-              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "SUMMARIZATION_MAX_TOKENS",
-              "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS", "LIVE_CONTOUR",
+              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR",
           )
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
           Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
-          Path(".stand-github-app.pem").write_text(os.environ["GH_APP_PRIVATE_KEY"])
+          # Same terminal newline the key files get: a stored secret whose final
+          # newline was eaten otherwise lands on the stand as a truncated PEM.
+          Path(".stand-github-app.pem").write_text(
+              os.environ["GH_APP_PRIVATE_KEY"].rstrip("\n") + "\n"
+          )
           '
 
       - name: Bring up dynamic orchestrator and wait for API
@@ -596,6 +596,8 @@ jobs:
             ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/agent_configs.yaml
+            ${COMPOSE} up -d --force-recreate --no-deps --wait --wait-timeout 180 \
+              scheduler-pipeline scheduler-infrastructure scheduler-maintenance
           '
 
       # The stand's seeded scheduler configuration has to name the same template the
@@ -627,7 +629,10 @@ jobs:
           target_key="${RUNNER_TEMP}/stand-target.key"
           trap 'shred -u "${registration_input}" "${target_key}" || true' EXIT INT TERM
           export REGISTRATION_INPUT_PATH="${registration_input}"
-          export TARGET_KEY_PATH="${target_key}"
+          # The same writer the bootstrap key file uses: the secret's stored
+          # value may have lost its final newline, and a key file without one is
+          # refused by the API (and by OpenSSH) as a truncated paste.
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${target_key}"
           python3 -c '
           import json
           import os
@@ -637,7 +642,6 @@ jobs:
               "target_ip": os.environ["TARGET_IP"],
               "run_tag": os.environ["STAND_RUN_TAG"],
           }) + "\n")
-          Path(os.environ["TARGET_KEY_PATH"]).write_text(os.environ["SSH_PRIVATE_KEY"])
           '
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           tar -C "${RUNNER_TEMP}" -cf - stand-target.json stand-target.key | \
@@ -669,7 +673,7 @@ jobs:
               # worker. The second observer below proves the real probe made
               # the target allocatable; it never stamps freshness itself.
               COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler python -m src.stand_health_probe
+              ${COMPOSE} exec -T -e TARGET_HANDLE="${target_handle}" scheduler-infrastructure python -m src.stand_health_probe
               python3 -m scripts.wait_stand_provisioning --handle "${target_handle}" 2>&1 | \
                 tee -a "${diagnostics_dir}/provisioning-state.jsonl" || wait_status=$?
               if [ "${wait_status}" -eq 0 ]; then
@@ -693,7 +697,7 @@ jobs:
             services_out="${diagnostics_dir}/provisioning-services.log"
             services_partial="${services_out}.partial"
             rm -f "${services_partial}"
-            if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler 2>&1 | \
+            if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
               ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
               python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
@@ -744,6 +748,7 @@ jobs:
           QA: ${{ inputs.qa }}
           TEMPLATE_SOURCE: ${{ inputs.template_source }}
           TEMPLATE_REF: ${{ inputs.template_ref }}
+          STAND_PRODUCT_BOT_TOKEN: ${{ secrets.STAND_PRODUCT_BOT_TOKEN }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
@@ -754,8 +759,21 @@ jobs:
           if [ -n "${TEMPLATE_SOURCE}" ]; then
             template_env=$(printf 'LIVE_TEMPLATE_REPO=%q LIVE_TEMPLATE_REF=%q ' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
           fi
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
+          # The product bot token belongs to the level-1 suite and to nothing
+          # else: it is one bot on one stand, and mega-noop is the only suite
+          # that deploys a Telegram-bot product and binds it. Every other suite
+          # is handed an empty value, and the level-1 helper refuses to start on
+          # one, which is what makes a missing secret a named failure rather than
+          # a run that quietly proves nothing.
+          bot_token=""
+          if [ "${SUITE}" = "mega-noop" ]; then
+            bot_token="${STAND_PRODUCT_BOT_TOKEN}"
+          fi
+          # Over stdin, never in the command line: an ssh argument is visible in
+          # the stand's own process list, the same reason the worker-image step
+          # above pipes its registry token.
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          printf '%s\n' "${bot_token}" | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
 
       # The stand is serialized, so one profile has one writer at a time. Pull a
@@ -896,7 +914,8 @@ jobs:
                 # are piped straight into it, and a run that could not complete
                 # that pipe publishes the stated reason instead of the input.
                 if ${COMPOSE} logs --no-color --tail 300 \
-                     scheduler engineering-worker worker-manager worker-broker api \
+                     scheduler-pipeline scheduler-infrastructure scheduler-maintenance \
+                     engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
                    ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \

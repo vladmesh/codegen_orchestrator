@@ -37,10 +37,10 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.vocab import OwnerNotificationEvent
+from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEvent
 
 #: JSON key for run-backed terminal notices; completed-story notices live on Story.
 OWNER_NOTIFICATION_KEY = "owner_notification"
@@ -90,12 +90,44 @@ class OwnerNotification(BaseModel):
     task_id: str | None = None
     state: OwnerNotificationState
     owed_at: datetime
+    #: When the owner audience was marked delivered: the moment `po:input`
+    #: accepted the event. `None` until then, and on every record delivered
+    #: before this field existed. A wait that is measured from the owner having
+    #: been told reads this, never `owed_at` — owing is not telling.
+    delivered_at: datetime | None = None
     #: Delivery attempts already spent. Bounded by the producer.
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.
     detail: str | None = None
+    #: The administrator audience of the same ending, settled independently of
+    #: the owner. Absent (`None`) on every record written before this audience
+    #: existed and on endings that owe administrators nothing, so a released
+    #: record keeps exactly its owner meaning and never gains an obligation.
+    admin_text: str | None = None
+    admin_state: OwnerNotificationState | None = None
+    admin_attempts: int = Field(default=0, ge=0)
+    admin_detail: str | None = None
+
+    @model_validator(mode="after")
+    def _event_is_durable(self) -> OwnerNotification:
+        # A progress notice is told once or not at all. Letting it be owed would
+        # hand the recovery sweep a message that is stale by the time it lands.
+        if self.event in NON_DURABLE_OWNER_EVENTS:
+            raise ValueError(f"{self.event} is never an owed owner notification")
+        return self
+
+    @model_validator(mode="after")
+    def _admin_audience_is_whole(self) -> OwnerNotification:
+        if (self.admin_text is None) != (self.admin_state is None):
+            raise ValueError("admin_text and admin_state are present together or not at all")
+        return self
 
     @property
     def owed(self) -> bool:
-        """True while somebody still has to publish this message."""
+        """True while somebody still has to publish this message to the owner."""
         return self.state is OwnerNotificationState.OWED
+
+    @property
+    def admin_owed(self) -> bool:
+        """True while administrators still have to be told about this ending."""
+        return self.admin_state is OwnerNotificationState.OWED

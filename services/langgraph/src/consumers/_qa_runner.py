@@ -22,6 +22,7 @@ from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
+    QAFailedCheckCause,
     QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
@@ -33,7 +34,7 @@ from shared.telegram_access_probe import (
     run_probe_script,
 )
 
-from ..agents.qa.acceptance import prepare_central_qa_criteria
+from ..agents.qa.acceptance import CriteriaAdjustment, prepare_central_qa_criteria
 from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.packages import (
     ACTIVE_PACKAGE_CONTRACT,
@@ -69,6 +70,7 @@ from ._qa_target import (
     QAIdentityUnreadableError,
     QATarget,
     QATargetError,
+    QATargetHarnessError,
     new_grant_marker,
     qa_target_grant,
 )
@@ -249,6 +251,13 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
     return qa_result
 
 
+_PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
+_FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
+#: A check the transport could not carry: no `pass`, no `cause`. It counts toward
+#: nothing and is kept only when the runtime recorded the refusal itself.
+_NOT_APPLICABLE_CHECK_FIELDS = frozenset({"name", "not_applicable", "detail"})
+
+
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
     """Fail closed when the agent's result cannot safely drive QA routing."""
     return QAResult(
@@ -261,6 +270,73 @@ def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
             received=raw[:2000],
         ),
     )
+
+
+def _check_shape_error(index: int, check: object, causes: set[str]) -> str | None:
+    """Name what is wrong with one executor check, or None when its shape is valid."""
+    if isinstance(check, dict) and "not_applicable" in check:
+        if check["not_applicable"] is not True or set(check) != _NOT_APPLICABLE_CHECK_FIELDS:
+            return (
+                f"not-applicable check {index} must contain exactly name, "
+                "not_applicable (true), and detail fields"
+            )
+    elif not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
+        return f"check {index} pass must be a boolean"
+    elif check["pass"] and set(check) != _PASSED_CHECK_FIELDS:
+        return f"passed check {index} must contain exactly name, pass, and detail fields"
+    elif not check["pass"] and set(check) != _FAILED_CHECK_FIELDS:
+        return f"failed check {index} must contain exactly name, pass, detail, and cause fields"
+    if not isinstance(check["name"], str) or not check["name"].strip():
+        return f"check {index} name must be a non-empty string"
+    if not isinstance(check["detail"], str) or not check["detail"].strip():
+        return f"check {index} detail must be a non-empty string"
+    if check.get("pass") is False and check["cause"] not in causes:
+        return f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
+    return None
+
+
+def _ground_not_applicable_checks(
+    checks: list[dict], transport_refusals: Sequence[QATelegramProbeEvidence]
+) -> list[dict]:
+    """Keep a not-applicable check only where the runtime refused an input itself.
+
+    The executor's word that a check could not be delivered is not trusted. Each
+    not-applicable check, in order, is paired with a distinct transport refusal
+    this run's workspace recorded (today, `telegram_probe` refusing an empty
+    message), and the refusal it rests on is written onto the check. A check
+    left without one is what it would have been before this form existed: a
+    failed check QA had no tool for, cause `qa_capability`. The pairing is by
+    count, not by check: the prompt forbids the form for an acceptance-criterion
+    check, and the refusal itself is persisted on the run as Telegram evidence.
+    """
+    unused = list(transport_refusals)
+    grounded: list[dict] = []
+    for check in checks:
+        if not check.get("not_applicable"):
+            grounded.append(check)
+            continue
+        if unused:
+            refusal = unused.pop(0)
+            logger.info(
+                "qa_check_not_applicable",
+                check=check["name"],
+                transport_refusal=refusal.attempted,
+            )
+            grounded.append({**check, "transport_refusal": refusal.attempted})
+            continue
+        logger.warning("qa_check_not_applicable_ungrounded", check=check["name"])
+        grounded.append(
+            {
+                "name": check["name"],
+                "pass": False,
+                "detail": (
+                    "reported not applicable, but this run recorded no transport refusal "
+                    f"for it: {check['detail']}"
+                ),
+                "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+            }
+        )
+    return grounded
 
 
 def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
@@ -281,25 +357,34 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     if not isinstance(data["checks"], list):
         return _invalid_qa_payload(raw, "checks must be a list")
 
-    expected_check_fields = {"name", "pass", "detail"}
+    causes = {cause.value for cause in QAFailedCheckCause}
     for index, check in enumerate(data["checks"]):
-        if not isinstance(check, dict) or set(check) != expected_check_fields:
-            return _invalid_qa_payload(
-                raw,
-                f"check {index} must contain exactly name, pass, and detail fields",
-            )
-        if not isinstance(check["name"], str) or not check["name"].strip():
-            return _invalid_qa_payload(raw, f"check {index} name must be a non-empty string")
-        if not isinstance(check["pass"], bool):
-            return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
-        if not isinstance(check["detail"], str) or not check["detail"].strip():
-            return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
+        shape_error = _check_shape_error(index, check, causes)
+        if shape_error:
+            return _invalid_qa_payload(raw, shape_error)
+
+    # A verdict passes only if every check passed. A failure QA had no tool or
+    # no access for is still a failure, and it is parked only when `pass` says so.
+    # A not-applicable check is not a failure; whether it stays one is decided by
+    # the runner's own evidence (`_ground_not_applicable_checks`), not here.
+    any_check_failed = any(check.get("pass") is False for check in data["checks"])
+    if data["pass"] is any_check_failed:
+        return _invalid_qa_payload(
+            raw, "pass must be false exactly when a check failed, whatever its cause"
+        )
 
     return None
 
 
-def parse_qa_result(raw: str) -> QAResult:
-    """Parse raw, fenced, or result-wrapped QA JSON into a QAResult."""
+def parse_qa_result(
+    raw: str, *, transport_refusals: Sequence[QATelegramProbeEvidence] = ()
+) -> QAResult:
+    """Parse raw, fenced, or result-wrapped QA JSON into a QAResult.
+
+    `transport_refusals` are the inputs this run's runtime refused because the
+    transport cannot carry them; only they ground a not-applicable check. With
+    none, every not-applicable check is a failed `qa_capability` check.
+    """
     if not raw or not raw.strip():
         return QAResult(
             passed=False,
@@ -355,9 +440,10 @@ def parse_qa_result(raw: str) -> QAResult:
     if invalid_result:
         return invalid_result
 
+    checks = _ground_not_applicable_checks(data["checks"], transport_refusals)
     return QAResult(
-        passed=data["pass"],
-        checks=data["checks"],
+        passed=not any(check.get("pass") is False for check in checks),
+        checks=checks,
         summary=data["summary"],
         raw=raw,
     )
@@ -889,6 +975,8 @@ def _behaviour_row(
                 "deployment holds no jobs capability for the QA runtime, so no fire could be "
                 "made and the behaviour was never exercised"
             ),
+            # QA had no tool to exercise it: not evidence about the product.
+            cause=QAFailedCheckCause.QA_CAPABILITY,
         )
     fired = workspace.fired_behaviours.get(name)
     if fired is None:
@@ -900,6 +988,8 @@ def _behaviour_row(
                 "deployed product accepted no fire of it in this run, so the behaviour was "
                 "never exercised"
             ),
+            # QA could fire it and the product refused or never received it.
+            cause=QAFailedCheckCause.PRODUCT,
         )
     evidence = workspace.behaviour_evidence.get(name)
     if evidence is not None and evidence.dispatch_status != DISPATCHED:
@@ -1008,6 +1098,8 @@ def apply_package_acceptance(
                         "for any of them, so the behaviour was never exercised. QA fires only "
                         "a name a criterion declared, and never invents one"
                     ),
+                    # A criteria gap leaves QA nothing to fire: not a product verdict.
+                    cause=QAFailedCheckCause.QA_CAPABILITY,
                 )
             )
             continue
@@ -1025,6 +1117,41 @@ def apply_package_acceptance(
         f"pass: {'; '.join(row['name'] for row in failed)}"
     )
     logger.info("qa_package_acceptance_failed", failed=[row["name"] for row in failed])
+    return qa_result
+
+
+def apply_unverifiable_criteria(
+    qa_result: QAResult, unverifiable: Sequence[CriteriaAdjustment]
+) -> QAResult:
+    """Report every criterion QA was not handed as a failed `qa_capability` check.
+
+    The executor never saw these lines, so its verdict says nothing about them;
+    a run that carried one cannot pass as if it had been checked. The cause
+    keeps each one out of any fix task: the supervisor parks a run whose only
+    failures are these, and fixes only the product failures of a mixed run.
+    """
+    if not unverifiable:
+        return qa_result
+    rows = [
+        {
+            "name": f"criterion not verifiable by QA: {adjustment.original.strip()}",
+            "pass": False,
+            "detail": (
+                f"this criterion needs an action outside QA's tools ({adjustment.reason}): QA "
+                "reads HTTP GET routes, sends Telegram text, presses inline buttons and fires "
+                "declared jobs, and nothing else. It was not handed to the executor and was "
+                "not checked; restate it through an observable QA can read"
+            ),
+            "cause": QAFailedCheckCause.QA_CAPABILITY.value,
+        }
+        for adjustment in unverifiable
+    ]
+    already_failed = not qa_result.passed
+    qa_result.checks = [*qa_result.checks, *rows]
+    qa_result.passed = False
+    unchecked = f"{len(rows)} criterion line(s) were not verifiable by QA and were not checked"
+    qa_result.summary = f"{qa_result.summary}; {unchecked}" if already_failed else unchecked
+    logger.info("qa_unverifiable_criteria_reported", criteria=[row["name"] for row in rows])
     return qa_result
 
 
@@ -1197,12 +1324,19 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         submit_verdict=workspace.submit_verdict,
         advertised_host=runtime.capability_host,
     )
+    prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
+    if prepared_criteria.adjustments:
+        logger.info(
+            "qa_platform_owned_criteria_adjusted",
+            qa_run_id=ownership.attempt_id,
+            adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
+        )
     endpoint = await service.start()
     try:
         executor_run, executor_failure, said = await _run_central_executor(
             target=target,
             ownership=ownership,
-            acceptance_criteria=acceptance_criteria,
+            executable_criteria=prepared_criteria.criteria,
             runtime=runtime,
             established_facts=established_facts,
             settings_established=settings_established,
@@ -1211,12 +1345,15 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             timeout=timeout,
         )
         if executor_run is not None:
-            return apply_package_acceptance(
-                _apply_telegram_probe_evidence(
-                    _verdict_of(workspace, service, timeout, said), workspace
+            return apply_unverifiable_criteria(
+                apply_package_acceptance(
+                    _apply_telegram_probe_evidence(
+                        _verdict_of(workspace, service, timeout, said), workspace
+                    ),
+                    acceptance,
+                    workspace,
                 ),
-                acceptance,
-                workspace,
+                prepared_criteria.unverifiable,
             )
     finally:
         await service.stop()
@@ -1250,7 +1387,7 @@ async def _run_central_executor(
     *,
     target: QATarget,
     ownership: WorkerOwnership,
-    acceptance_criteria: str,
+    executable_criteria: str,
     runtime: QARuntimeConfig,
     established_facts: list[str],
     settings_established: bool,
@@ -1265,15 +1402,8 @@ async def _run_central_executor(
     used to return nothing at all. The attempts travel back with the outcome so
     the run they settle retains all of them.
     """
-    prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
-    if prepared_criteria.adjustments:
-        logger.info(
-            "qa_platform_owned_criteria_adjusted",
-            qa_run_id=ownership.attempt_id,
-            adjustments=[adjustment.as_log() for adjustment in prepared_criteria.adjustments],
-        )
     prompt = build_qa_prompt(
-        prepared_criteria.criteria,
+        executable_criteria,
         target.deployed_url,
         target.bot_username,
         established_facts=established_facts,
@@ -1342,7 +1472,7 @@ def _verdict_of(
                 received="the executor finished without submitting a result",
             ),
         )
-    qa_result = parse_qa_result(workspace.verdict)
+    qa_result = parse_qa_result(workspace.verdict, transport_refusals=workspace.transport_refusals)
     qa_result.report = workspace.read_report()
     qa_result.executor_evidence = said.evidence
     return qa_result
@@ -1484,6 +1614,31 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
+            ),
+            _residues(grant, workspace),
+        )
+    except QATargetHarnessError as exc:
+        # The target's harness could not answer as the current profile, or a
+        # probe read could not be performed. Neither is a product verdict, and
+        # neither is `server_unavailable`: the run reached the host and its
+        # identity was established.
+        logger.error(
+            "qa_target_harness_unavailable",
+            server_ip=target.server_ip,
+            category=exc.category.value,
+            attempted=exc.attempted,
+            detail=exc.received,
+        )
+        return _apply_cleanup_residue(
+            QAResult(
+                passed=False,
+                summary=f"QA could not be performed: {exc.received}",
+                blocker=QABlocker(
+                    category=exc.category,
+                    attempted=exc.attempted,
+                    sent=exc.sent,
+                    received=exc.received,
+                ),
             ),
             _residues(grant, workspace),
         )

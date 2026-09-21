@@ -1,7 +1,7 @@
 """Shared helpers for introspection routers."""
 
-import os
 from http import HTTPStatus
+import os
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -74,10 +74,10 @@ def read_file(workspace: Path, file_path: str) -> tuple[str, int]:
 
     try:
         content = resolved.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
         raise HTTPException(
             status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
             detail="Binary file cannot be read as text",
-        )
+        ) from exc
 
     return content, size

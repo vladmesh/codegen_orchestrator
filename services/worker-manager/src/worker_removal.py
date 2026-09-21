@@ -6,8 +6,10 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-import structlog
 from redis.asyncio import Redis
+from redis.exceptions import WatchError
+import structlog
+
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_LINES,
@@ -18,10 +20,10 @@ from shared.contracts.worker_evidence import (
     secret_env_values,
 )
 from shared.diagnostics import redact_diagnostic
+from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
 
-from . import qa_egress
-from . import workspace as workspace_mod
+from . import garbage_collector as gc, qa_egress, workspace as workspace_mod
 from .compose_runner import ComposeRunner
 from .config import settings
 from .container_config import TRANSCRIPT_MOUNT
@@ -55,17 +57,19 @@ class WorkerRemoval:
     def _ownership_from_meta(meta: dict[str, str] | None) -> WorkerOwnership | None:
         """The worker's own ownership, or None if its record does not carry one.
 
-        Every worker is stamped with all three facts before its container can
-        exist, so the None case is a worker whose metadata is already gone —
-        a second delete, or a container the garbage collector adopted. There is
-        nothing to key a run-scoped record by then, and inventing a run to file
-        it under would be worse than saying so in the log.
+        Every worker is stamped with project, run, and attempt before its
+        container can exist. Story-scoped workers also carry a story. The None
+        case is a worker whose required metadata is already gone: a second
+        delete, or a container the garbage collector adopted. There is nothing
+        to key a run-scoped record by then, and inventing a run to file it under
+        would be worse than saying so in the log.
         """
         if not meta:
             return None
         if not all(meta.get(field) for field in ("project_id", "run_id", "attempt_id")):
             return None
         return WorkerOwnership(
+            story_id=meta.get("story_id"),
             project_id=meta["project_id"],
             run_id=meta["run_id"],
             attempt_id=meta["attempt_id"],
@@ -110,7 +114,8 @@ class WorkerRemoval:
                 meta,
                 ownership,
                 reason,
-                f"the container could not be read before it was removed: {type(exc).__name__}: {exc}",
+                f"the container could not be read before it "
+                f"was removed: {type(exc).__name__}: {exc}",
             )
         store = self._store_removal_evidence(evidence)
         try:
@@ -198,7 +203,9 @@ class WorkerRemoval:
                 "the container was still running when it was removed, so it never had an exit code"
             )
         elif state["Status"] == "created":
-            exit_code = RemovalFact.missed("the container was created but never started, so it has no exit code")
+            exit_code = RemovalFact.missed(
+                "the container was created but never started, so it has no exit code"
+            )
         else:
             exit_code = RemovalFact.read(int(state["ExitCode"]))
 
@@ -272,6 +279,47 @@ class WorkerRemoval:
         await self.redis.hset(key, evidence.worker_id, evidence.model_dump_json())
         await self.redis.expire(key, settings.WORKER_REMOVAL_EVIDENCE_TTL_SECONDS)
 
+    async def _clear_story_binding(self, worker_id: str, story_id: str | None) -> None:
+        """Drop this worker's story binding as part of its teardown.
+
+        The story registry is the one pointer that outlives the container, and
+        this method is the only place that knows the worker is going away:
+        `worker:status:<id>` and `worker:meta:<id>` are deleted just below, so
+        once this returns there is nothing left for the registry to learn the
+        worker is dead from. A binding kept past its worker is what sends the
+        next engineering attempt to an input stream with no consumer.
+
+        Compare-and-delete, because a newer worker may already have taken the
+        story over while this teardown ran; that binding belongs to the live
+        worker and is not ours to remove.
+        """
+        if not story_id:
+            return
+        try:
+            async with self.redis.pipeline() as pipe:
+                await pipe.watch(STORY_WORKERS_KEY)
+                bound = await pipe.hget(STORY_WORKERS_KEY, story_id)
+                if isinstance(bound, bytes):
+                    bound = bound.decode()
+                if bound != worker_id:
+                    await pipe.unwatch()
+                    logger.info(
+                        "story_worker_binding_not_ours",
+                        worker_id=worker_id,
+                        story_id=story_id,
+                        bound_worker_id=bound,
+                    )
+                    return
+                pipe.multi()
+                pipe.hdel(STORY_WORKERS_KEY, story_id)
+                await pipe.execute()
+        except WatchError:
+            # The binding was rewritten between the read and the delete, which
+            # means it now names a worker that is not this one.
+            logger.info("story_worker_binding_not_ours", worker_id=worker_id, story_id=story_id)
+            return
+        logger.info("story_worker_binding_cleared", worker_id=worker_id, story_id=story_id)
+
     async def delete_worker(self, worker_id: str, reason: str | None = None) -> None:
         """Stop and remove a worker, its dev network, workspace, and Redis keys."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
@@ -303,7 +351,10 @@ class WorkerRemoval:
             logger.warning(
                 "worker_removal_evidence_unattributable",
                 worker_id=worker_id,
-                error="this worker's metadata names no project, run and attempt to file its ending under",
+                error=(
+                    "this worker's metadata names no project, "
+                    "run and attempt to file its ending under"
+                ),
             )
 
         try:
@@ -339,13 +390,22 @@ class WorkerRemoval:
                         )
                 except Exception as e:  # noqa: BLE001 — Compose cleanup must fall through to Docker cleanup
                     logger.warning("compose_down_failed", worker_id=worker_id, error=str(e))
+                # `down -v` removes the plan's services and nothing else. The
+                # one-shot containers `docker compose run` creates — the
+                # generated product's `make test-integration` — carry the same
+                # project label and survived it, for 7+ hours and then across a
+                # whole project teardown (`issue:868e40fc0377b0dabb77`). The
+                # label is what finds them, so the label is what removes them.
+                await gc.remove_worker_compose_residue(self.docker, worker_id)
 
             # Read while Docker can still describe the container, but do not
             # publish removal evidence until `remove_container` succeeds.
             if ownership is not None:
                 try:
                     evidence_task = asyncio.create_task(
-                        self._read_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                        self._read_removal_evidence(
+                            worker_id, container_name, meta, ownership, reason
+                        )
                     )
                     evidence = await asyncio.wait_for(
                         evidence_task,
@@ -372,7 +432,9 @@ class WorkerRemoval:
                     )
                 except Exception as exc:  # noqa: BLE001 — one container must not stop removal
                     keep_meta = True
-                    logger.warning("worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc))
+                    logger.warning(
+                        "worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc)
+                    )
 
             if dev_network:
                 await self.docker.remove_network(dev_network)
@@ -399,6 +461,11 @@ class WorkerRemoval:
                 elif reason == "completed":
                     await self.redis.delete(failure_key)
 
+        # Before the keys whose absence nobody can interpret: a story bound to
+        # this worker is unbound here, while it is still known that this is a
+        # removal and which worker it is of.
+        await self._clear_story_binding(worker_id, meta.get("story_id") if meta else None)
+
         keys_to_delete = [
             f"worker:status:{worker_id}",
             f"worker:error:{worker_id}",
@@ -412,7 +479,9 @@ class WorkerRemoval:
                 "worker_meta_retained_for_attribution",
                 worker_id=worker_id,
                 run_id=ownership.run_id,
-                error="no removal record could be stored, so the worker keeps its last durable name",
+                error=(
+                    "no removal record could be stored, so the worker keeps its last durable name"
+                ),
             )
         else:
             keys_to_delete.append(f"worker:meta:{worker_id}")

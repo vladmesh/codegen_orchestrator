@@ -88,6 +88,8 @@ class TestCompletedResultPush:
                 side_effect=[
                     git_result(stdout=f"{full_sha}\n"),  # resolve reported SHA
                     git_result(stdout=f"{full_sha}\n"),  # local HEAD
+                    git_result(stdout=f"{full_sha} {'0' * 40}\n"),  # HEAD's parents
+                    git_result(stdout="services/backend/src/app.py\n"),  # the commit's paths
                     git_result(),  # push
                     git_result(stdout=f"{full_sha}\trefs/heads/{branch}\n"),  # remote ref
                 ],
@@ -100,7 +102,7 @@ class TestCompletedResultPush:
         assert error is None
         assert result == WorkerCompletedResult(commit_sha=full_sha, content="Done")
         assert run.call_args_list[0].args[0][3] == "--end-of-options"
-        assert run.call_args_list[2].args[0] == [
+        assert run.call_args_list[4].args[0] == [
             "/usr/bin/git",
             "push",
             "origin",
@@ -126,6 +128,8 @@ class TestCompletedResultPush:
                 side_effect=[
                     git_result(stdout=f"{full_sha}\n"),
                     git_result(stdout=f"{full_sha}\n"),
+                    git_result(stdout=f"{full_sha} {'0' * 40}\n"),
+                    git_result(stdout="services/backend/src/app.py\n"),
                     git_result(returncode=1, stderr="rejected"),
                 ],
             ),
@@ -233,6 +237,8 @@ class TestCompletedResultPush:
                 side_effect=[
                     git_result(stdout=f"{head_sha}\n"),
                     git_result(stdout=f"{head_sha}\n"),
+                    git_result(stdout=f"{head_sha} {'0' * 40}\n"),
+                    git_result(stdout="services/backend/src/app.py\n"),
                     git_result(),
                     git_result(stdout=f"{other_sha}\trefs/heads/{branch}\n"),
                 ],
@@ -244,7 +250,7 @@ class TestCompletedResultPush:
 
         assert result is None
         assert error == f"Worker commit {head_sha} could not be verified on origin/{branch}."
-        assert run.call_args_list[2].args[0][1:3] == ["push", "origin"]
+        assert run.call_args_list[4].args[0][1:3] == ["push", "origin"]
         assert not any("--force" in call.args[0] for call in run.call_args_list)
 
     @pytest.mark.asyncio

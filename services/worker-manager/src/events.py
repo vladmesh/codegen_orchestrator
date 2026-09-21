@@ -12,6 +12,7 @@ from typing import Any
 import docker
 import redis.asyncio as aioredis
 import structlog
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
 from shared.contracts.queues.worker_result import WorkerFailedResult
@@ -137,7 +138,9 @@ class DockerEventsListener:
 
         # 1. Publish error to worker output stream (unblocks _wait_for_response)
         output_stream = f"worker:{worker_id}:output"
-        error_payload = WorkerFailedResult(error=f"Worker container died (exit_code={exit_code})").model_dump_json()
+        error_payload = WorkerFailedResult(
+            error=f"Worker container died (exit_code={exit_code})"
+        ).model_dump_json()
         try:
             await self.redis.xadd(output_stream, {"data": error_payload})
             logger.info("worker_death_published", worker_id=worker_id, stream=output_stream)
@@ -146,6 +149,8 @@ class DockerEventsListener:
 
         # 2. Mark worker status as DEAD so liveness checks also detect it
         try:
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WORKER_DEAD_STATUS})
+            await self.redis.hset(
+                f"worker:status:{worker_id}", mapping={"status": WORKER_DEAD_STATUS}
+            )
         except Exception as e:  # noqa: BLE001 — status repair must not crash event handling
             logger.error("worker_status_update_failed", worker_id=worker_id, error=str(e))

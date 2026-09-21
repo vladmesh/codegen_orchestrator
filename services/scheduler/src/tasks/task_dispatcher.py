@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import httpx
 import structlog
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
@@ -24,6 +25,7 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchRefusal,
     EngineeringDispatchRepair,
 )
+from shared.contracts.dto.engineering_execution import infrastructure_refusal_for_dispatch
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
@@ -33,15 +35,16 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
+from .gave_up_worker_reconciliation import reconcile_gave_up_attempt_workers
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
+    owe_story_owner_notification,
     supervise_owed_owner_notifications,
 )
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
-    _cleanup_story_worker,
     _parse_owner_repo,
     _trigger_next_story,
     complete_stories,
@@ -49,6 +52,8 @@ from .story_completion import (
 from .supervisor import (
     supervise_deploying_stories,
     supervise_failed_tasks,
+    supervise_stage_notices,
+    supervise_state_age_bounds,
     supervise_stuck_stories,
     supervise_stuck_tasks,
     supervise_testing_stories,
@@ -56,6 +61,7 @@ from .supervisor import (
     supervise_waiting_user_secret_stories,
 )
 from .temporary_access import supervise_temporary_access
+from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
@@ -63,7 +69,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "_build_cumulative_context",
-    "_cleanup_story_worker",
     "_parse_owner_repo",
     "_trigger_next_story",
     "complete_stories",
@@ -200,21 +205,22 @@ async def _handle_refusal(
         log.info("task_dispatch_refused", reason=decision.reason.value)
         return
     admission = decision.paid_work.admission
-    if task.story_id and admission.message:
-        source_run = await api_client.get_run(decision.initiating_run_id)
-        owed = await owe_owner_notification(
-            api_client,
-            source_run,
-            event=OwnerNotificationEvent.STORY_QUARANTINED,
-            text=admission.message,
-            story_id=task.story_id,
-            project_id=str(task.project_id),
-            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+    if infrastructure_refusal_for_dispatch(decision.reason) is not None:
+        # Admission already parked this refusal, with its owed notices, in the
+        # transaction that decided it. There is nothing left to sequence here,
+        # and a second park call would only reopen the window that closed.
+        log.info(
+            "task_dispatch_infrastructure_refusal_parked_by_admission",
+            run_id=decision.run_id,
             task_id=task.id,
-            log=log,
+            reason=decision.reason.value,
+            disposition=(
+                decision.infrastructure_park.value if decision.infrastructure_park else None
+            ),
         )
-        await api_client.transition_story(task.story_id, "human-review")
-        await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
+        return
+    if task.story_id and admission.message:
+        await _park_refused_story(api_client, redis_client, task, decision, admission.message, log)
     budget = decision.paid_work.engineering_budget
     await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
     if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
@@ -236,6 +242,76 @@ async def _handle_refusal(
         task_id=task.id,
         reason=decision.reason.value,
     )
+
+
+async def _initiating_run(
+    api_client: SchedulerAPIClient,
+    initiating_run_id: str,
+    log: structlog.BoundLogger,
+) -> RunDTO | None:
+    """The Run this work was initiated by, or None when the id is not a Run's.
+
+    A project created through the PO brief flow carries the id of the request
+    the owner made, not of a Run — nothing was dispatched to produce it. The
+    API answering 404 is the evidence for that, and the only thing it is taken
+    as: any other failure is a failure to find out and is raised.
+    """
+    try:
+        return await api_client.get_run(initiating_run_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != httpx.codes.NOT_FOUND:
+            raise
+        log.info("task_refusal_initiator_is_not_a_run", initiating_run_id=initiating_run_id)
+        return None
+
+
+async def _park_refused_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task: TaskDTO,
+    decision: EngineeringDispatchRead,
+    message: str,
+    log: structlog.BoundLogger,
+) -> None:
+    """Hand the story to a human and tell its owner why it stopped moving.
+
+    Where the durable record lives follows from what initiated the work. A Run
+    keeps its own refusal, as it always has. A story whose initiator is a PO
+    request has no Run to hang one on, so the record goes on the story — the
+    same place the PR poller puts one for an ending nothing dispatched.
+    """
+    source_run = await _initiating_run(api_client, decision.initiating_run_id, log)
+    if source_run is None:
+        owed = await owe_story_owner_notification(
+            api_client,
+            task.story_id,
+            # The event the PO prompt describes for exactly this ending: a
+            # specialist has the story now. `story_quarantined`, which the
+            # run-backed branch below sends, is not in the prompt's list.
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text=message,
+            project_id=str(task.project_id),
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
+        await api_client.transition_story(task.story_id, "human-review")
+        await deliver_owed_notification(
+            api_client, redis_client, task.story_id, owed, log, story_record=True
+        )
+        return
+    owed = await owe_owner_notification(
+        api_client,
+        source_run,
+        event=OwnerNotificationEvent.STORY_QUARANTINED,
+        text=message,
+        story_id=task.story_id,
+        project_id=str(task.project_id),
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        task_id=task.id,
+        log=log,
+    )
+    await api_client.transition_story(task.story_id, "human-review")
+    await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
 
 
 async def _publish_admitted_dispatch(
@@ -341,13 +417,20 @@ async def dispatch_todo_tasks(
             log.exception("task_dispatch_admission_failed")
             continue
 
-        if decision.outcome is EngineeringDispatchOutcome.REFUSED:
-            await _handle_refusal(api_client, redis_client, task, decision, log)
-        elif decision.outcome is EngineeringDispatchOutcome.REPAIR:
-            if await _execute_repair(api_client, task, decision, log):
+        # One task's handling must not end the cycle: the candidates after it
+        # are unrelated work, and a cycle that stops at the first broken task
+        # leaves them in todo for as long as the failure lasts.
+        try:
+            if decision.outcome is EngineeringDispatchOutcome.REFUSED:
+                await _handle_refusal(api_client, redis_client, task, decision, log)
+            elif decision.outcome is EngineeringDispatchOutcome.REPAIR:
+                if await _execute_repair(api_client, task, decision, log):
+                    dispatched += 1
+            elif await _publish_admitted_dispatch(api_client, redis_client, task, decision, log):
                 dispatched += 1
-        elif await _publish_admitted_dispatch(api_client, redis_client, task, decision, log):
-            dispatched += 1
+        except Exception:
+            log.exception("task_dispatch_handling_failed", task_id=task.id)
+            continue
 
     return dispatched
 
@@ -368,7 +451,7 @@ async def task_dispatcher_loop() -> None:
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
                 merged = await poll_merged_prs(api_client, redis_client)
-                await poll_ci_failures(api_client)
+                await poll_ci_failures(api_client, redis_client)
 
                 # Supervisor checks
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
@@ -397,7 +480,16 @@ async def task_dispatcher_loop() -> None:
                 # run before the story had been routed, turning a passed product
                 # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
+                # Last of the story supervisors on purpose: every routing above
+                # has had this tick's chance to move a story on, so a wait this
+                # watchdog ends is one nothing else was going to end.
+                state_age = await supervise_state_age_bounds(api_client, redis_client)
+                # After every supervisor that can move a story on this tick, so
+                # a stage is announced only for a story that is really in it.
+                stage_notices = await supervise_stage_notices(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
+                terminal_workers = await reconcile_terminal_story_workers(api_client, redis_client)
+                gave_up_workers = await reconcile_gave_up_attempt_workers(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -406,6 +498,8 @@ async def task_dispatcher_loop() -> None:
                     stories_completed=completed,
                     scaffolds_triggered=scaffolds,
                     prs_merged=merged,
+                    terminal_workers_requested=terminal_workers,
+                    gave_up_workers_requested=gave_up_workers,
                 )
                 supervisor_active = (
                     stuck_stories.get("retried", 0)
@@ -426,6 +520,11 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("completed", 0)
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
+                    + state_age["parked"]
+                    + state_age["failed"]
+                    + stage_notices["entered"]
+                    + stage_notices["still_there"]
+                    + stage_notices["unaddressable"]
                     + temporary_access.get("dispatched", 0)
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
@@ -456,6 +555,16 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
+                        # Waits that ran out of time rather than ending on
+                        # their own: parked for a specialist, or failed where
+                        # the wait was on somebody outside the platform.
+                        state_age_parked=state_age["parked"],
+                        state_age_failed=state_age["failed"],
+                        # Owners told which stage their story is at: on entry,
+                        # after a quiet interval, or due with no chat to go to.
+                        stage_notices_entered=stage_notices["entered"],
+                        stage_notices_still_there=stage_notices["still_there"],
+                        stage_notices_unaddressable=stage_notices["unaddressable"],
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),

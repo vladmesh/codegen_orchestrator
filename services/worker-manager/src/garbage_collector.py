@@ -1,20 +1,26 @@
 """Garbage collection for orphaned containers, networks, workspaces, and images."""
 
-import os
-import time
 from datetime import datetime
 from http import HTTPStatus
+import os
 from pathlib import Path
+import time
 
-import structlog
 from redis.asyncio import Redis
+import structlog
+
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerLabel
-from shared.redis import decode_redis_fields
+from shared.redis import decode_redis_fields, decode_redis_value
+from shared.worker_compose import (
+    COMPOSE_ONEOFF_LABEL,
+    COMPOSE_PROJECT_LABEL,
+    worker_compose_project_filter,
+    worker_id_of_compose_project,
+)
 
-from . import qa_egress
-from . import workspace as workspace_mod
+from . import qa_egress, workspace as workspace_mod
 from .config import settings
 from .docker_ops import DockerClientWrapper
 
@@ -35,7 +41,9 @@ def _is_live(container) -> bool:
     return container.status in _LIVE_CONTAINER_STATES
 
 
-async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientWrapper, *, delete_worker_fn) -> None:
+async def garbage_collect_orphaned_resources(
+    redis: Redis, docker: DockerClientWrapper, *, delete_worker_fn
+) -> None:
     """Find and remove orphaned containers, networks, and workspaces.
 
     After a crash/OOM, resources may be left behind without corresponding
@@ -55,13 +63,17 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
 
     # --- Orphaned containers ---
     try:
-        containers = await docker.list_containers(filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True)
+        containers = await docker.list_containers(
+            filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True
+        )
+        container_inventory_available = True
     except Exception as e:  # noqa: BLE001 — one unavailable Docker listing must not stop GC
         logger.error("orphan_gc_list_containers_failed", error=str(e))
         containers = []
+        container_inventory_available = False
 
     # Collect live container IDs for reverse check
-    live_container_ids: set[str] = set()
+    containers_by_worker: dict[str, object] = {}
     # Worker ids this sweep refuses to touch although Redis does not know them,
     # because something of theirs is still alive. Everything the sweep tears down
     # alongside a worker is keyed on the same id and is protected with it.
@@ -70,8 +82,8 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
         worker_id = container.labels.get(WorkerLabel.ID.value)
         if not worker_id:
             continue
+        containers_by_worker[worker_id] = container
         if worker_id in known_ids:
-            live_container_ids.add(worker_id)
             continue
         if _is_live(container):
             protected_ids.add(worker_id)
@@ -87,25 +99,152 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
         except Exception as e:  # noqa: BLE001 — one orphan must not stop the sweep
             logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
 
-    # --- Stale Redis entries (Redis says alive, but no container) ---
-    for worker_id in known_ids:
-        if worker_id not in live_container_ids:
-            status = await redis.hget(f"worker:status:{worker_id}", "status")
-            if status and status not in _TERMINAL_STATUSES:
-                logger.warning(
-                    "orphan_gc_stale_redis",
+    # --- Terminal Redis entries whose container is proven non-live or absent ---
+    # A failed Docker inventory is not absence. Keep every Redis record in that
+    # case so a daemon outage can never become permission to tear workers down.
+    if container_inventory_available:
+        for worker_id in known_ids:
+            raw_status = await redis.hget(f"worker:status:{worker_id}", "status")
+            status = decode_redis_value(raw_status)
+            if status not in _TERMINAL_STATUSES:
+                continue
+            container = containers_by_worker.get(worker_id)
+            if container is not None and _is_live(container):
+                continue
+            logger.warning(
+                "orphan_gc_terminal_worker",
+                worker_id=worker_id,
+                redis_status=status,
+                container_state=getattr(container, "status", "absent"),
+            )
+            try:
+                await delete_worker_fn(worker_id)
+            except Exception as e:  # noqa: BLE001 — one stale worker must not stop the sweep
+                logger.error(
+                    "orphan_gc_terminal_cleanup_failed",
                     worker_id=worker_id,
-                    redis_status=status,
+                    error=str(e),
                 )
-                try:
-                    await delete_worker_fn(worker_id)
-                except Exception as e:  # noqa: BLE001 — one stale worker must not stop the sweep
-                    logger.error(
-                        "orphan_gc_stale_cleanup_failed",
-                        worker_id=worker_id,
-                        error=str(e),
-                    )
 
+    # Before the networks, because a leftover compose container is attached to
+    # the worker's dev network and would refuse its removal.
+    await _collect_orphaned_compose_containers(docker, known_ids, protected_ids)
+    await _collect_orphaned_network_resources(docker, known_ids, protected_ids)
+
+    logger.info("orphan_gc_complete")
+
+
+async def remove_worker_compose_residue(docker: DockerClientWrapper, worker_id: str) -> list[str]:
+    """Remove every container the worker's bounded compose plan still owns.
+
+    `docker compose down -v` removes the services of the plan. It does not
+    remove the one-shot containers `docker compose run` creates — the generated
+    product's `make test-integration` is exactly that shape — and two of them
+    survived a completed story on production for 7+ hours, then survived a full
+    project teardown as well (`issue:868e40fc0377b0dabb77`).
+
+    So the teardown stops asking the plan and asks Docker: everything carrying
+    this worker's `com.docker.compose.project` label belongs to this worker,
+    whether `up` or `run` created it, and whether it is running or exited.
+
+    Reports what it removed and raises nothing: a container that will not go is
+    logged, because one stuck sidecar must not stop a worker's teardown.
+    """
+    try:
+        containers = await docker.list_containers(
+            filters=worker_compose_project_filter(worker_id), all=True
+        )
+    except Exception as e:  # noqa: BLE001 — an unavailable listing must not stop the teardown
+        logger.error("compose_residue_list_failed", worker_id=worker_id, error=str(e))
+        return []
+
+    removed: list[str] = []
+    for container in containers:
+        try:
+            await docker.remove_container(container.name, force=True, v=True)
+        except Exception as e:  # noqa: BLE001 — one container must not stop the sweep
+            logger.error(
+                "compose_residue_remove_failed",
+                worker_id=worker_id,
+                container=container.name,
+                error=str(e),
+            )
+            continue
+        removed.append(container.name)
+        logger.info(
+            "compose_residue_removed",
+            worker_id=worker_id,
+            container=container.name,
+            one_off=container.labels.get(COMPOSE_ONEOFF_LABEL),
+        )
+    return removed
+
+
+async def _collect_orphaned_compose_containers(
+    docker: DockerClientWrapper, known_ids: set[str], protected_ids: set[str]
+) -> None:
+    """Sweep worker compose plans whose worker Redis no longer knows.
+
+    The worker's own teardown removes its plan's containers, but a one-shot
+    container outlives a teardown that never ran at all — a crashed manager, or
+    the project deletion `issue:868e40fc0377b0dabb77` records these surviving.
+    Nothing else lists them: they carry no `com.codegen.*` label, only Compose's
+    own, so the worker-scoped orphan sweep above never sees them.
+
+    A live container is kept, exactly as it is above: Redis having lost a worker
+    is not evidence that what it is still running is garbage.
+    """
+    try:
+        containers = await docker.list_containers(
+            filters={"label": COMPOSE_PROJECT_LABEL}, all=True
+        )
+    except Exception as e:  # noqa: BLE001 — unavailable compose inventory must not stop GC
+        logger.error("orphan_gc_list_compose_failed", error=str(e))
+        return
+
+    # Two passes, and the first one is why: a plan's live service may be listed
+    # after its exited sidecar, and a single pass would have removed the sidecar
+    # out from under a worker that is still running. Protection is decided for
+    # the whole plan before anything of it is taken.
+    owned: list[tuple[str, object]] = []
+    for container in containers:
+        project = container.labels.get(COMPOSE_PROJECT_LABEL) or ""
+        worker_id = worker_id_of_compose_project(project)
+        if not worker_id or worker_id in known_ids:
+            continue
+        if _is_live(container):
+            protected_ids.add(worker_id)
+            logger.info(
+                "orphan_gc_keeping_compose_container",
+                worker_id=worker_id,
+                container=container.name,
+                container_state=container.status,
+            )
+            continue
+        owned.append((worker_id, container))
+
+    for worker_id, container in owned:
+        if worker_id in protected_ids:
+            logger.info(
+                "orphan_gc_keeping_compose_container",
+                worker_id=worker_id,
+                container=container.name,
+                container_state=container.status,
+            )
+            continue
+        logger.info(
+            "orphan_gc_removing_compose_container", worker_id=worker_id, container=container.name
+        )
+        try:
+            await docker.remove_container(container.name, force=True, v=True)
+        except Exception as e:  # noqa: BLE001 — one container must not stop the sweep
+            logger.error("orphan_gc_remove_compose_failed", container=container.name, error=str(e))
+
+
+async def _collect_orphaned_network_resources(
+    docker: DockerClientWrapper, known_ids: set[str], protected_ids: set[str]
+) -> None:
+    """Sweep proxies before networks, preserving each live worker's network leg."""
     # --- Orphaned QA egress proxies ---
     # A QA run's proxy holds the second network leg its executor is not allowed
     # to have. If the run's own cleanup never happened, the proxy is exactly the
@@ -155,8 +294,6 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                     await docker.remove_network(name)
                 except Exception as e:  # noqa: BLE001 — one network must not stop the sweep
                     logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
-
-    logger.info("orphan_gc_complete")
 
 
 async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -> None:
@@ -220,7 +357,9 @@ async def _notify_workspace_deleted(repo_id: str) -> None:
     try:
         client = InternalAPIClient(api_url, timeout=10)
         try:
-            resp = await client.request_raw("POST", f"repositories/{repo_id}/notify-workspace-deleted")
+            resp = await client.request_raw(
+                "POST", f"repositories/{repo_id}/notify-workspace-deleted"
+            )
             if resp.status_code == HTTPStatus.OK:
                 logger.info("workspace_gc_notified_api", repo_id=repo_id)
             else:

@@ -30,6 +30,8 @@ def _redis(*, active: WorkerActiveTurn | None = None, status: str | None = "RUNN
     client.redis = AsyncMock()
 
     async def hgetall(key):
+        if key == f"worker:status:{WORKER_ID}" and status:
+            return {"status": status}
         return active.as_redis_fields() if key == active_turn_key(WORKER_ID) and active else {}
 
     async def hget(key, field):

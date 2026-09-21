@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from shared.constants import WorkerWorkspace
 from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerFailedResult,
@@ -20,21 +21,43 @@ from shared.contracts.queues.worker_result import (
 from shared.contracts.vocab import AgentType
 
 from .broker import WorkerBrokerClient
+from .compose_proxy import (
+    COMPOSE_COMMAND_ENV,
+    compose_proxy_supported,
+    install_compose_proxy,
+)
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
+from .injected_paths import instruction_filename, offending_paths, write_git_exclude
 from .observability import extract_effort_metrics, save_transcript
 
 logger = structlog.get_logger(__name__)
 
 
+#: Worker-manager's passive profile reader joins this same lock inode.
+CODEX_PROFILE_LOCK_NAME = ".codegen-codex.lock"
+
+
+def ensure_codex_profile_lock(profile: Path) -> Path:
+    """Create the profile's lock inode, keeping an existing one, before Codex can run.
+
+    Worker-manager never treats a missing lock as proof that no CLI is writing
+    `auth.json`; a profile only reads authoritatively once this inode exists.
+    """
+    if not profile.is_dir():
+        raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
+    lock_path = profile / CODEX_PROFILE_LOCK_NAME
+    with lock_path.open("a", encoding="utf-8"):
+        pass
+    lock_path.chmod(0o600)
+    return lock_path
+
+
 @contextmanager
 def codex_profile_lock(profile: Path):
     """Serialize a full Codex turn sharing one mounted ChatGPT profile."""
-    if not profile.is_dir():
-        raise RuntimeError("CODEX_HOME is not a mounted refreshable Codex profile")
-    lock_path = profile / ".codegen-codex.lock"
+    lock_path = ensure_codex_profile_lock(profile)
     with lock_path.open("a", encoding="utf-8") as lock_file:
-        lock_path.chmod(0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -43,9 +66,9 @@ def codex_profile_lock(profile: Path):
 
 
 WORKSPACE_DIR = "/workspace"
-TASK_MD_PATH = "/workspace/TASK.md"
-STORY_DIR = "/workspace/.story"
-OLD_TASKS_DIR = "/workspace/.story/old_tasks"
+TASK_MD_PATH = f"/workspace/{WorkerWorkspace.TASK}"
+STORY_DIR = f"/workspace/{WorkerWorkspace.STORY_DIR}"
+OLD_TASKS_DIR = f"{STORY_DIR}/old_tasks"
 
 # The central exploratory-QA executor. Every developer-shaped step of a turn is
 # absent for it, and absent deliberately: there is no repository to pull, no
@@ -208,6 +231,20 @@ class WorkerWrapper:
         self._transcript_truncated: bool | None = None
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
+        self._compose_proxy_path: str | None = None
+
+    def _prepare_codex_profile_lock(self) -> None:
+        """Establish the shared profile lock at startup, before any Codex turn runs.
+
+        A missing or unmounted profile is not refused here: each Codex turn's
+        `codex_profile_lock` creates the same lock before the CLI starts and
+        refuses that profile at the point it is needed.
+        """
+        if self.config.agent_type != AgentType.CODEX or self.config.auth_mode != "host_session":
+            return
+        codex_home = os.environ.get("CODEX_HOME")
+        if codex_home and Path(codex_home).is_dir():
+            ensure_codex_profile_lock(Path(codex_home))
 
     @property
     def is_qa_executor(self) -> bool:
@@ -224,6 +261,7 @@ class WorkerWrapper:
         )
 
         try:
+            self._prepare_codex_profile_lock()
             if self.is_qa_executor:
                 await self._await_qa_materials()
             while self._running:
@@ -257,9 +295,8 @@ class WorkerWrapper:
         same files exist, but this local gate also protects the container from a
         direct or prematurely queued turn.
         """
-        instruction_name = "AGENTS.md" if self.config.agent_type == AgentType.CODEX else "CLAUDE.md"
-        instruction_path = Path(WORKSPACE_DIR, instruction_name)
-        task_path = Path(WORKSPACE_DIR, "TASK.md")
+        instruction_path = Path(WORKSPACE_DIR, instruction_filename(self.config.agent_type))
+        task_path = Path(WORKSPACE_DIR, WorkerWorkspace.TASK)
         command_path = Path(WORKSPACE_DIR, "qa")
         while self._running:
             missing = [
@@ -327,7 +364,7 @@ class WorkerWrapper:
 
             # 3c. Worker-mode targets require the proxy because workers have no Docker socket.
             try:
-                self._inject_makefile_overrides()
+                self._install_compose_proxy()
             except RuntimeError as exc:
                 logger.error("workspace_preparation_failed", error=str(exc))
                 await self.broker.submit_output(
@@ -540,6 +577,21 @@ class WorkerWrapper:
                 f"Worker reported commit {result.commit_sha} does not match its local HEAD."
             )
 
+        carried, inspect_error = self._injected_paths_in_commit(head_sha)
+        if inspect_error is not None:
+            return None, inspect_error
+        if carried:
+            logger.error(
+                "worker_commit_carries_injected_paths",
+                worker_id=self.config.worker_id,
+                commit_sha=head_sha,
+                paths=carried,
+            )
+            return None, (
+                f"Worker commit {head_sha} was not published: it carries orchestrator-injected "
+                f"paths that belong to no product: {', '.join(carried)}."
+            )
+
         try:
             pushed = subprocess.run(
                 ["/usr/bin/git", "push", "origin", f"HEAD:refs/heads/{branch}"],
@@ -582,6 +634,43 @@ class WorkerWrapper:
         )
         return result.model_copy(update={"commit_sha": head_sha}), None
 
+    def _injected_paths_in_commit(self, commit_sha: str) -> tuple[list[str], str | None]:
+        """The orchestrator-injected paths the checkout's HEAD commit changes.
+
+        The caller has already established that the reported commit is HEAD, so
+        the revisions here are literals rather than anything the agent chose. A
+        root commit has no parent and its whole tree is the change set. Failing
+        to read the commit is itself a refusal: a commit whose contents cannot be
+        inspected is not one to publish.
+        """
+        try:
+            parents = subprocess.run(  # noqa: S603
+                ["/usr/bin/git", "rev-list", "--parents", "-n", "1", "HEAD"],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if parents.returncode != 0:
+                raise OSError(parents.stderr)
+            names = (
+                ["diff", "--name-only", "HEAD^", "HEAD"]
+                if len(parents.stdout.split()) > 1
+                else ["show", "--pretty=format:", "--name-only", "HEAD"]
+            )
+            changed = subprocess.run(  # noqa: S603
+                ["/usr/bin/git", *names],
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if changed.returncode != 0:
+                raise OSError(changed.stderr)
+        except (OSError, subprocess.TimeoutExpired):
+            return [], f"Worker commit {commit_sha} could not be inspected in its checkout."
+        return offending_paths(changed.stdout.splitlines()), None
+
     @staticmethod
     def _attach_metadata(
         result: WorkerResult,
@@ -610,8 +699,12 @@ class WorkerWrapper:
         return metadata
 
     async def _prepare_workspace(self, data: dict) -> None:
-        """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
+        """Pre-turn setup: exclude injected paths, pull, update TASK.md/STORY.md, clear session."""
         if not self.is_qa_executor:
+            # Before the first orchestrator-authored byte lands in the checkout:
+            # the product's pre-commit hook runs `git add -A`, and this is what
+            # keeps the turn's own files out of the product's commit.
+            write_git_exclude(WORKSPACE_DIR)
             await self._git_pull()
 
         prompt = data.get("prompt")
@@ -861,53 +954,36 @@ class WorkerWrapper:
         except OSError:
             pass
 
-    def _inject_makefile_overrides(self):
-        """Inject Makefile overrides so worker-mode targets use the compose proxy.
+    def _install_compose_proxy(self) -> None:
+        """Route the product's worker-mode compose targets through the wrapper's proxy.
 
-        Workers don't have Docker socket access. The wrapper's HTTP server
-        proxies /infra/compose to worker-manager. This override replaces
-        the template's portless `worker-start` and `worker-stop` recipes with
-        calls to localhost:9090/infra/compose. Local-mode `dev-start` and
-        `dev-stop` keep their published-port semantics and are not aliases.
+        Workers have no Docker socket, so `worker-start` and `worker-stop` can
+        only reach Compose through the HTTP server's /infra/compose. The kit's
+        Makefile runs Compose as `$(DOCKER_COMPOSE)` with a `?=` default, so an
+        environment value wins: the wrapper writes a stand-in program outside the
+        checkout and names it in the agent's environment. Nothing in the product
+        is written, so the turn leaves the Makefile byte-identical.
         """
         makefile = os.path.join(WORKSPACE_DIR, "Makefile")
         if not os.path.isfile(makefile):
             if not os.path.isdir(WORKSPACE_DIR):
                 # Host-side/unit execution has no mounted project workspace.
                 return
-            raise RuntimeError("Makefile is missing; cannot install worker compose proxy overrides")
-
-        override_marker = "# --- orchestrator overrides ---"
-        try:
-            content = open(makefile).read()
-            if override_marker in content:
-                return  # already injected
-
-            override = (
-                f"\n{override_marker}\n"
-                "worker-start:\n"
-                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
-                """-H 'Content-Type: application/json' """
-                """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}')\"; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
-                "\n"
-                "worker-stop:\n"
-                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
-                """-H 'Content-Type: application/json' """
-                """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}')\"; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
-                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
-                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
+            raise RuntimeError("Makefile is missing; cannot install the worker compose proxy")
+        if not compose_proxy_supported(makefile):
+            raise RuntimeError(
+                "Product Makefile does not run Compose through $(DOCKER_COMPOSE); "
+                "worker-mode targets have no way to reach the compose proxy"
             )
-            with open(makefile, "a") as f:
-                f.write(override)
-            logger.info("makefile_overrides_injected")
-        except OSError as exc:
-            raise RuntimeError("Could not write worker compose proxy overrides") from exc
+        self._compose_proxy_path = install_compose_proxy(self.config.http_server_port)
+        logger.info("compose_proxy_installed", path=self._compose_proxy_path)
+
+    def _build_agent_env(self, source: Mapping[str, str] | None = None) -> dict[str, str]:
+        """The agent's environment, including the compose proxy when one is installed."""
+        agent_env = build_agent_subprocess_env(source, qa_executor=self.is_qa_executor)
+        if self._compose_proxy_path:
+            agent_env[COMPOSE_COMMAND_ENV] = self._compose_proxy_path
+        return agent_env
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.
@@ -1158,7 +1234,7 @@ class WorkerWrapper:
             agent_type=self.config.agent_type,
         )
 
-        agent_env = build_agent_subprocess_env(wrapper_env, qa_executor=self.is_qa_executor)
+        agent_env = self._build_agent_env(wrapper_env)
 
         # A refresh-capable profile can be shared by stand cells and production
         # workers. Keep its advisory lock for the entire CLI process so refresh
@@ -1254,7 +1330,7 @@ class WorkerWrapper:
         cmd = runner.build_command(prompt=resume_prompt)
         logger.info("auto_resume_command", cmd=cmd)
 
-        agent_env = build_agent_subprocess_env()
+        agent_env = self._build_agent_env()
 
         try:
             resume_timeout = min(120, self.config.subprocess_timeout_seconds)
@@ -1323,9 +1399,16 @@ class WorkerWrapper:
         if not raw:
             raise ValueError("Task data missing 'content' or 'prompt'")
 
+        instructions = instruction_filename(self.config.agent_type)
         if self.config.agent_type in {AgentType.CLAUDE, AgentType.CODEX}:
-            return "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
-        return raw
+            return (
+                f"Read {WorkerWorkspace.TASK} and {instructions}, "
+                f"then complete the task described in {WorkerWorkspace.TASK}."
+            )
+        # Droid receives the whole task inline, so the only thing it needs told
+        # is where its operating instructions now live: the product's own
+        # AGENTS.md is the product's, and no longer carries them.
+        return f"Read {instructions} first, then complete the task below.\n\n{raw}"
 
     def _read_worker_report(self) -> str | None:
         """Read and delete REPORT.md from workspace.
@@ -1334,7 +1417,7 @@ class WorkerWrapper:
         in the git repo. Deleting after read prevents it from being committed
         by the next task and keeps the workspace clean.
         """
-        report_path = os.path.join(WORKSPACE_DIR, "REPORT.md")
+        report_path = os.path.join(WORKSPACE_DIR, WorkerWorkspace.REPORT)
         if not os.path.isfile(report_path):
             return None
         try:
@@ -1378,12 +1461,10 @@ class WorkerWrapper:
         archive_content = "\n".join(parts)
 
         try:
+            # `.story/` is kept out of the product's commit by the workspace-local
+            # exclude rules written at turn preparation, never by an edit of the
+            # product's own tracked .gitignore.
             os.makedirs(OLD_TASKS_DIR, exist_ok=True)
-
-            # Ensure .story is gitignored
-            gitignore_path = os.path.join(WORKSPACE_DIR, ".gitignore")
-            self._ensure_gitignore_entry(gitignore_path, ".story/")
-
             archive_path = os.path.join(OLD_TASKS_DIR, f"{archive_id}.md")
             with open(archive_path, "w") as f:
                 f.write(archive_content)
@@ -1396,23 +1477,6 @@ class WorkerWrapper:
             )
         except OSError as e:
             logger.warning("task_archive_failed", error=str(e))
-
-    @staticmethod
-    def _ensure_gitignore_entry(gitignore_path: str, entry: str) -> None:
-        """Add entry to .gitignore if not already present."""
-        try:
-            existing = ""
-            if os.path.isfile(gitignore_path):
-                with open(gitignore_path) as f:
-                    existing = f.read()
-
-            if entry not in existing.splitlines():
-                with open(gitignore_path, "a") as f:
-                    if existing and not existing.endswith("\n"):
-                        f.write("\n")
-                    f.write(f"{entry}\n")
-        except OSError:
-            pass  # Best-effort
 
     def _extract_session_id_from_output(self, stdout: str) -> str | None:
         """

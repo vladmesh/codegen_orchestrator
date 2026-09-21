@@ -397,7 +397,7 @@ class TestDeveloperNodeStoryContext:
         """story_context from state flows into task_content sent to worker."""
         from src.clients.worker_spawner import SpawnResult
 
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -420,7 +420,9 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
-            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
+            "ownership": WorkerOwnership(
+                story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+            ),
             "description": "Add endpoint",
             "story_context": "- ~~Create model~~ — done (see .story/old_tasks/)",
             "repo_id": None,
@@ -440,7 +442,7 @@ class TestDeveloperNodeStoryContext:
         """story_md from state flows to request_spawn as keyword argument."""
         from src.clients.worker_spawner import SpawnResult
 
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -464,7 +466,9 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
-            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
+            "ownership": WorkerOwnership(
+                story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+            ),
             "description": "Add endpoint",
             "story_context": None,
             "story_md": story_md_content,

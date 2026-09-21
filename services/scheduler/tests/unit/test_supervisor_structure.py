@@ -13,11 +13,13 @@ def test_supervisor_is_a_package_with_a_small_runtime_facade():
     assert set(supervisor.__all__) == {
         "supervise_deploying_stories",
         "supervise_failed_tasks",
+        "supervise_stage_notices",
+        "supervise_state_age_bounds",
         "supervise_stuck_stories",
         "supervise_stuck_tasks",
         "supervise_testing_stories",
         "supervise_waiting_resource_tasks",
         "supervise_waiting_user_secret_stories",
     }
-    for module in ("common", "handoff", "liveness", "deploy", "qa"):
+    for module in ("common", "handoff", "liveness", "deploy", "qa", "state_age", "stage_notices"):
         assert (SUPERVISOR_ROOT / "supervisor" / f"{module}.py").exists()

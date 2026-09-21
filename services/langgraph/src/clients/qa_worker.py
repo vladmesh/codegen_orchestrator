@@ -151,6 +151,10 @@ async def run_qa_executor(
     created = False
 
     try:
+        # `$` is deliberate: this group exists before the create command below is
+        # published, so worker-manager's reply cannot predate it. WORKER_RESPONSES
+        # is shared by every worker request in flight, and `0` would replay every
+        # other request's retained reply through this group.
         try:
             await redis_client.xgroup_create(WORKER_RESPONSES, group_name, id="$", mkstream=True)
         except redis.ResponseError as exc:
@@ -187,7 +191,12 @@ async def run_qa_executor(
         logger.info("qa_executor_requested", worker_id=worker_id, agent_type=agent_type.value)
 
         ack = await _wait_for_response(
-            redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
+            redis_client,
+            group_name,
+            consumer_id,
+            request_id,
+            CREATION_TIMEOUT,
+            group_start_id="$",
         )
         if not ack:
             raise QAExecutorUnavailable(

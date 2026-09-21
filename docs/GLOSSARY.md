@@ -7,7 +7,7 @@ Single source of terminology for the codegen_orchestrator project.
 ### Service
 A long-lived process. One container = one service.
 
-**Examples:** `api`, `telegram-bot`, `langgraph`, `scheduler`
+**Examples:** `api`, `telegram-bot`, `langgraph`, `scheduler-pipeline`
 
 ### Consumer
 **A role, not a service name.** Any service or component that listens to a Redis queue.
@@ -108,7 +108,7 @@ An entity in the DB that links code to a specific git repository. Every reposito
 The unit of work planning for a developer/agent.
 **Statuses:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (also: `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, `cancelled`)
 `waiting_resources` — the allocator found no current capacity to place the task, but the request fits on at least one managed server. The scheduler checks fresh metrics and automatically returns the task to `todo` without incrementing `current_iteration`; a waiting timeout moves it to `waiting_human_review`.
-`waiting_human_review` — the developer agent reported a blocker through `POST localhost:9090/result` with `{"success": false, "reason": "..."}`. The pipeline is paused until admin intervention (`POST /tasks/{id}/resume`).
+`waiting_human_review` — the developer agent reported a blocker through `POST localhost:9090/result` with `{"success": false, "reason": "..."}`, or the supervisor exhausted `max_iterations`. The pipeline is paused until the operator resumes it with `POST /tasks/{id}/resume` — the one retry path: the task returns to `todo` on a fresh iteration with a retry budget of its own (`retries`, default 3) and the story returns to `in_progress`. A task parked by a typed infrastructure refusal is recovered by `POST /stories/{id}/retry-infrastructure-attempt` instead.
 **Relations:** Story (optional), Repository (NOT NULL), Project.
 **Table:** `tasks`
 
@@ -200,7 +200,7 @@ A Redis Stream for managing Workers.
 - `worker:responses:developer` — responses from worker-manager for Developer workers
 
 ### Story Worker Registry
-The Redis hash `story:workers` — a `story_id → worker_id` mapping. The engineering consumer writes to it after the first spawn and reads it for subsequent tasks in the story. The scheduler clears it when the story completes or fails.
+The Redis hash `story:workers` — a `story_id → worker_id` reuse mapping. The engineering consumer writes it after the first spawn. Worker teardown compare-deletes the binding of the worker it removes, and a binding left naming a worker with neither status nor metadata is evicted on the next lookup. Terminal-story reconciliation retains it as legacy ownership evidence until canonical worker teardown is observed complete.
 
 ### Callback Stream
 A Redis Stream for the progress Events of a specific Run.

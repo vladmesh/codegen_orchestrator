@@ -2,12 +2,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.provisioning_policy import ADMIN_SSH_USER
 
 SSHUser = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]*$")]
+# The exact deployed commit a reconciliation ran from.
+DeployedRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+TARGET_READINESS_DETAIL_MAX = 500
 
 
 class ServerStatus(StrEnum):
@@ -34,6 +37,52 @@ class ServerStatus(StrEnum):
     # Archive
     RESERVED = "reserved"  # Inventory-only; no provisioning is scheduled
     MISSING = "missing"  # Пропал из Time4VPS API
+
+
+class TargetReadinessPhase(StrEnum):
+    """The step of managed-target reconciliation that failed, in execution order.
+
+    Each is its own executed step: a failure — a timeout included — is the step
+    that was running, never a phase read back out of another step's output.
+    """
+
+    SSH_KEY_MISSING = "ssh_key_missing"
+    SSH_KEY_INVALID = "ssh_key_invalid"
+    ADMIN_LOGIN = "admin_login"
+    PRIVILEGE_PREFLIGHT = "privilege_preflight"
+    QA_IDENTITY_ROLE = "qa_identity_role"
+    QA_IDENTITY_PROOF = "qa_identity_proof"
+
+
+class TargetIdentity(BaseModel):
+    """The connection a readiness verdict was proved over.
+
+    A verdict is applied only while the row still has exactly this identity, so
+    a key, account or address change that lands during a reconciliation never
+    receives the old identity's receipt or park. The fingerprint is `None` when
+    the stored key is missing or does not parse.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ssh_user: SSHUser
+    host: str
+    public_ip: str
+    ssh_key_fingerprint: str | None
+
+
+class QATargetReceipt(BaseModel):
+    """A readiness receipt a provisioning success records together with READY.
+
+    The proof comes from the software play; provisioning binds it to the
+    generated-key connection identity in the same API transaction that stores it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_version: str
+    proved_at: datetime
+    identity: TargetIdentity
 
 
 class ServerCreate(BaseModel):
@@ -104,17 +153,45 @@ class ProvisioningAttemptReservationResult(BaseModel):
     episode_id: str | None = None
 
 
-class ProvisioningAttemptReset(BaseModel):
-    """Request to close an episode only when its attempt is still current."""
+class ProvisioningFinalization(BaseModel):
+    """Everything the API needs to commit one provisioning success atomically."""
+
+    model_config = ConfigDict(extra="forbid")
 
     attempt_number: int = Field(gt=0)
     episode_id: str = Field(min_length=1)
+    expected_identity: TargetIdentity
+    proved_identity: TargetIdentity
+    generated_key_fingerprint: str = Field(min_length=1)
+    generated_private_key: str = Field(min_length=1, repr=False)
+    complete_labels: dict[str, str] = Field(min_length=1)
+    qa_target_receipt: QATargetReceipt
+
+    @model_validator(mode="after")
+    def _one_proved_identity(self) -> "ProvisioningFinalization":
+        if self.proved_identity.ssh_key_fingerprint is None:
+            raise ValueError("proved identity requires a generated-key fingerprint")
+        if self.proved_identity.ssh_key_fingerprint != self.generated_key_fingerprint:
+            raise ValueError("generated-key fingerprint must equal proved identity")
+        if self.qa_target_receipt.identity != self.proved_identity:
+            raise ValueError("receipt identity must equal proved identity")
+        return self
 
 
-class ProvisioningAttemptResetResult(BaseModel):
-    """Result of conditionally closing a provisioning attempt episode."""
+class ProvisioningFinalizationDisposition(StrEnum):
+    """The contained result of trying to finalize one provisioning episode."""
 
-    reset: bool
+    FINALIZED = "finalized"
+    IDEMPOTENT = "idempotent"
+    CONFLICT = "conflict"
+    CONTAINED = "contained"
+
+
+class ProvisioningFinalizationResult(BaseModel):
+    """A finalization answer that never contains administrative key material."""
+
+    disposition: ProvisioningFinalizationDisposition
+    reason: str | None = None
     provisioning_attempts: int
     episode_id: str | None = None
 
@@ -154,6 +231,70 @@ class ServerDTO(TimestampedDTO):
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
     provisioning_episode_id: str | None = None
+
+    # Public fingerprint of the stored administrative key; the key itself is
+    # never part of a server response.
+    ssh_key_fingerprint: str | None = None
+    # The QA target readiness receipt: the profile the target last proved, and
+    # when. Written only by target-readiness reconciliation or the atomic
+    # provisioning finalizer — never by a label and never by PATCH.
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+    # The phase of the last readiness failure while it is unrepaired. Set and
+    # cleared only by the readiness endpoint; admission refuses the row while it
+    # is set, whatever its status says.
+    target_readiness_failure_phase: TargetReadinessPhase | None = None
+
+
+def target_identity(server: ServerDTO, ssh_key_fingerprint: str | None) -> TargetIdentity:
+    """The connection identity of this row, with the fingerprint of its stored key."""
+    return TargetIdentity(
+        ssh_user=server.ssh_user,
+        host=server.host,
+        public_ip=server.public_ip,
+        ssh_key_fingerprint=ssh_key_fingerprint,
+    )
+
+
+class TargetReadinessReport(BaseModel):
+    """One reconciliation verdict for one managed target.
+
+    Exactly one shape each way: a ready target carries the profile it proved and
+    when, and names no failed phase; a target that is not ready names the phase
+    that failed and carries no profile, so a failure can never be read as a
+    receipt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+    profile_version: str | None = None
+    proved_at: datetime | None = None
+    phase: TargetReadinessPhase | None = None
+    detail: str = Field(default="", max_length=TARGET_READINESS_DETAIL_MAX)
+    revision: DeployedRevision | None = None
+    identity: TargetIdentity
+
+    @model_validator(mode="after")
+    def _one_verdict(self) -> "TargetReadinessReport":
+        if self.ready:
+            if self.profile_version is None or self.proved_at is None or self.phase is not None:
+                raise ValueError("a ready target carries profile_version and proved_at, no phase")
+        elif self.phase is None or self.profile_version is not None or self.proved_at is not None:
+            raise ValueError("a target that is not ready carries a phase and no receipt")
+        return self
+
+
+class TargetReadinessRead(BaseModel):
+    """What the server row says after a readiness verdict was applied."""
+
+    server_handle: str
+    ready: bool
+    status: ServerStatus
+    qa_target_version: str | None = None
+    qa_target_proved_at: datetime | None = None
+    target_readiness_failure_phase: TargetReadinessPhase | None = None
+    incident_id: int | None = None
 
 
 class ServerMetricsHistoryDTO(BaseModel):

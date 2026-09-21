@@ -10,7 +10,7 @@ os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
 from shared.config_store import ConfigStore, ConfigStoreUnavailableError
-from src import main, startup
+from src import runtime, startup
 from src.tasks import task_dispatcher
 from src.tasks.supervisor.deploy import _max_deploy_retries
 
@@ -131,21 +131,26 @@ def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_startup_retries_config_validation_until_api_is_available(monkeypatch):
+async def test_startup_retries_config_validation_until_api_is_available(monkeypatch, tmp_path):
     attempts = 0
+    marker = tmp_path / "scheduler-ready"
+    marker.write_text("stale-process")
 
-    def validate_configs():
+    def validate_configs(_required_keys):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise ConfigStoreUnavailableError("System config API is unavailable")
 
     async def no_wait(_seconds):
-        return None
+        assert not marker.exists()
 
-    monkeypatch.setattr(main, "_validate_configs", validate_configs)
-    monkeypatch.setattr(main.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(runtime, "READINESS_PATH", marker)
+    monkeypatch.setattr(runtime.startup, "init_config", validate_configs)
+    monkeypatch.setattr(runtime.asyncio, "sleep", no_wait)
 
-    await main.initialize_configs()
+    await runtime.initialize_configs(
+        startup.PIPELINE_REQUIRED_KEYS, service_name="scheduler-pipeline"
+    )
 
     assert attempts == 2

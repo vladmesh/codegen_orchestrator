@@ -19,10 +19,14 @@ from shared.contracts.dto.product_brief import (
     MustRequirement,
     ProductBriefAdmissionOutcome,
     ProductBriefPlanningAttemptOutcome,
+    ProductBriefRead,
+    UsageExample,
 )
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
+from shared.contracts.vocab import OwnerNotificationEvent
+from shared.notifications import notify_admins_best_effort
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
@@ -32,6 +36,7 @@ from ..clients.api import api_client
 from ..config.agent_llm_env import missing_llm_env
 from ..config.settings import get_settings
 from ._base import start_worker, validate_queued_message
+from ._events import publish_story_event
 from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
@@ -46,14 +51,32 @@ SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 PLANNING_HEARTBEAT_INTERVAL = PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS / 3
 
 
+class ReturnedRequirementsNoticeError(RuntimeError):
+    """The owner could not be told which requirements the admitted plan returned.
+
+    Raised out of the job on purpose: the queue entry stays unacknowledged, the
+    consumer reclaims it once it is idle, and the replay publishes the notice
+    again — through the already-decomposed skip or the `ALREADY_ADMITTED` claim.
+    """
+
+
+def _returned_notice_key(brief_id: str, planning_attempt_id: str) -> str:
+    """Set once the owner's `po:input` accepted the notice for this admitted plan."""
+    return f"architect:requirements_returned_notice:{brief_id}:{planning_attempt_id}"
+
+
 @dataclass(frozen=True)
 class _PlanningAttempt:
     """The plan this run owns: which brief, which attempt, what it must dispose of."""
 
+    brief: ProductBriefRead
     brief_id: str
     planning_attempt_id: str
     must_requirements: list[MustRequirement]
     initial_settings: list[InitialSetting]
+    language: str | None
+    usage_examples: list[UsageExample]
+    limitations: list[str]
 
 
 async def _heartbeat_planning_attempt(brief_id: str, planning_attempt_id: str, log) -> None:
@@ -115,7 +138,7 @@ async def _release_planning_attempt(attempt: _PlanningAttempt, log) -> None:
 
 
 async def _claim_planning_attempt(
-    story_id: str, log
+    msg: ArchitectMessage, redis: RedisStreamClient, log
 ) -> tuple[_PlanningAttempt | None, dict | None]:
     """Decide what this run plans under, before the graph is invoked.
 
@@ -124,7 +147,7 @@ async def _claim_planning_attempt(
     run creates no task under an attempt and admits nothing. An `early_result`
     means another architect owns the plan and this run must not touch it.
     """
-    brief = await api_client.get_product_brief_by_story(story_id)
+    brief = await api_client.get_product_brief_by_story(msg.story_id)
     if brief is None:
         return None, None
     if brief.confirmed_at is None:
@@ -148,10 +171,14 @@ async def _claim_planning_attempt(
             log.info("architect_planning_claimed", planning_attempt_id=claim.planning_attempt_id)
             return (
                 _PlanningAttempt(
+                    brief=brief,
                     brief_id=brief.id,
                     planning_attempt_id=claim.planning_attempt_id,
                     must_requirements=list(brief.content.must_requirements),
                     initial_settings=list(brief.content.initial_settings),
+                    language=brief.content.language,
+                    usage_examples=list(brief.content.usage_examples),
+                    limitations=list(brief.content.limitations),
                 ),
                 None,
             )
@@ -172,8 +199,10 @@ async def _claim_planning_attempt(
             # The plan crossed the boundary. Work added to this story now is
             # ordinary work with an ordinary lifecycle, so the run proceeds
             # without an attempt: no task under an attempt, and no second
-            # admission.
+            # admission. The owner may still be owed the notice of what that
+            # plan returned, when the run that admitted it failed to publish it.
             log.info("architect_planning_already_admitted")
+            await _notify_returned_requirements_of_admitted_brief(msg, redis, log, brief)
             return None, None
         case _:
             raise RuntimeError(f"unexpected planning claim outcome: {claim.outcome}")
@@ -222,6 +251,152 @@ async def _admit_plan(attempt: _PlanningAttempt, log) -> dict | None:
     return None
 
 
+def _returned_notice_text(brief: ProductBriefRead, returned: list) -> str:
+    """What PO is told: each returned requirement, the user's words and the reason."""
+    requirements = {r.id: r for r in brief.content.must_requirements}
+    lines = [
+        f"The confirmed Product Brief {brief.id} was planned, but {len(returned)} of its "
+        "must-requirements were returned instead of planned: they will NOT be built in this "
+        "story. The rest of the story is being built."
+    ]
+    if brief.content.language:
+        lines.append(f"User's language: {brief.content.language}.")
+    for row in returned:
+        requirement = requirements.get(row.requirement_id)
+        lines.append(f"- {row.requirement_id}: {requirement.text if requirement else ''}")
+        if requirement and requirement.user_wording:
+            lines.append(f"  the user's words: {requirement.user_wording}")
+        lines.append(f"  reason: {row.returned_reason}")
+    return "\n".join(lines)
+
+
+async def _notify_returned_requirements(  # noqa: PLR0913 — one admitted plan's recipient
+    brief: ProductBriefRead,
+    planning_attempt_id: str,
+    *,
+    story_id: str,
+    project_id: str,
+    telegram_chat_id: str,
+    redis: RedisStreamClient,
+    log,
+) -> None:
+    """Tell the owner, once, which must-requirements the admitted plan returned.
+
+    Nothing is published when the plan returned nothing, or when the marker says
+    `po:input` already accepted this notice. A recipient that never resolved is
+    refused with a log and an admin alert: replaying the job changes nothing.
+    Any other failure raises `ReturnedRequirementsNoticeError`, which leaves the
+    queue entry unacknowledged so the replay publishes it.
+    """
+    key = _returned_notice_key(brief.id, planning_attempt_id)
+    try:
+        rows = await api_client.list_requirement_coverage(brief.id)
+        returned = [
+            row
+            for row in rows
+            if row.planning_attempt_id == planning_attempt_id and row.returned_reason
+        ]
+        if not returned or await redis.redis.exists(key):
+            return
+        returned_ids = [row.requirement_id for row in returned]
+        if not telegram_chat_id:
+            log.error(
+                "architect_requirements_returned_without_recipient",
+                brief_id=brief.id,
+                returned_requirement_ids=returned_ids,
+            )
+            await notify_admins_best_effort(
+                f"Story {story_id}: the architect returned must-requirements "
+                f"{', '.join(returned_ids)} of brief {brief.id}, but the job carries no "
+                "Telegram recipient, so the owner cannot be told; retrying changes nothing",
+                level="error",
+                component="architect",
+                story_id=story_id,
+                project_id=project_id,
+            )
+            return
+        await publish_story_event(
+            redis,
+            telegram_chat_id=telegram_chat_id,
+            event=OwnerNotificationEvent.STORY_REQUIREMENTS_RETURNED,
+            text=_returned_notice_text(brief, returned),
+            story_id=story_id,
+            project_id=project_id,
+        )
+        await redis.redis.set(key, "1")
+    except Exception as e:
+        log.error(
+            "architect_requirements_returned_notice_failed",
+            brief_id=brief.id,
+            planning_attempt_id=planning_attempt_id,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        raise ReturnedRequirementsNoticeError(
+            f"notice of requirements returned by plan {planning_attempt_id} of brief "
+            f"{brief.id} was not published: {e}"
+        ) from e
+    log.info(
+        "architect_requirements_returned_notice_published",
+        brief_id=brief.id,
+        returned_requirement_ids=returned_ids,
+    )
+
+
+async def _notify_returned_requirements_of_admitted_brief(
+    msg: ArchitectMessage, redis: RedisStreamClient, log, brief: ProductBriefRead | None = None
+) -> None:
+    """The replay of the notice, for a run that finds the plan already admitted."""
+    if brief is None:
+        brief = await api_client.get_product_brief_by_story(msg.story_id)
+    if brief is None or brief.coverage_admitted_at is None or brief.planning_attempt_id is None:
+        return
+    await _notify_returned_requirements(
+        brief,
+        brief.planning_attempt_id,
+        story_id=msg.story_id,
+        project_id=msg.project_id,
+        telegram_chat_id=msg.telegram_chat_id,
+        redis=redis,
+        log=log,
+    )
+
+
+async def _notify_returned_requirements_of_plan(
+    planning: _PlanningAttempt | None, msg: ArchitectMessage, redis: RedisStreamClient, log
+) -> None:
+    """The notice for the plan this run just admitted; nothing for a run without one."""
+    if planning is None:
+        return
+    await _notify_returned_requirements(
+        planning.brief,
+        planning.planning_attempt_id,
+        story_id=msg.story_id,
+        project_id=msg.project_id,
+        telegram_chat_id=msg.telegram_chat_id,
+        redis=redis,
+        log=log,
+    )
+
+
+async def _skip_already_decomposed(
+    msg: ArchitectMessage, story_status: StoryStatus, redis: RedisStreamClient, log
+) -> dict | None:
+    """The skip result for an in-progress story that already has tasks, else `None`.
+
+    The replay of a job whose notice failed after admission lands here: the
+    story already moved on, but the owner is still owed the notice.
+    """
+    if story_status != StoryStatus.IN_PROGRESS:
+        return None
+    existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
+    if not existing_tasks:
+        return None
+    log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
+    await _notify_returned_requirements_of_admitted_brief(msg, redis, log)
+    return live_work_settled({"status": "skipped", "reason": "already decomposed"})
+
+
 def _planning_state(attempt: _PlanningAttempt | None) -> dict:
     """The planning identity of this run — the same three keys on every run.
 
@@ -252,15 +427,74 @@ def _requirements_briefing(attempt: _PlanningAttempt | None) -> str:
     """
     if attempt is None:
         return ""
-    listed = "\n".join(f"- {r.id}: {r.text}" for r in attempt.must_requirements)
+    listed = "\n".join(
+        f"- {r.id}: {r.text}"
+        + ("" if r.user_facing else " (not user-facing: the user sends nothing for it)")
+        for r in attempt.must_requirements
+    )
+    language = f" (user's language: {attempt.language})" if attempt.language else ""
     briefing = (
-        "\n\nThis story is backed by a confirmed Product Brief. Its must-requirements are:\n"
+        f"\n\nThis story is backed by a confirmed Product Brief{language}. "
+        "Its must-requirements are:\n"
         f"{listed}\n"
         "Record exactly one disposition for EVERY id above with "
         "record_requirement_coverage — the task that covers it, or the reason it is "
         "returned. Nothing you plan is dispatched until all of them are recorded."
     )
-    return briefing + _settings_briefing(attempt)
+    return (
+        briefing
+        + _usage_briefing(attempt)
+        + _limitations_briefing(attempt)
+        + _settings_briefing(attempt)
+    )
+
+
+def _usage_briefing(attempt: _PlanningAttempt) -> str:
+    """How the user confirmed each requirement is used, grouped by requirement, verbatim.
+
+    Grouped in requirement order rather than in the order the user was shown
+    them, because every group is planned — or returned — as one requirement.
+    Empty for a brief stored before usage examples existed.
+    """
+    if not attempt.usage_examples:
+        return ""
+    order = [r.id for r in attempt.must_requirements]
+    order += [e.requirement_id for e in attempt.usage_examples if e.requirement_id not in order]
+    lines: list[str] = []
+    for requirement_id in dict.fromkeys(order):
+        examples = [e for e in attempt.usage_examples if e.requirement_id == requirement_id]
+        if not examples:
+            continue
+        lines.append(f"[{requirement_id}]")
+        for example in examples:
+            lines.append(f"  - the user sends: {example.user_sends}")
+            lines.append(f"    the product answers: {example.product_answers}")
+    listed = "\n".join(lines)
+    return (
+        "\n\nThe user confirmed how each requirement is used, in their own words:\n"
+        f"{listed}\n"
+        "Plan exactly these uses. Turn every usage example of a requirement you plan into "
+        "its own acceptance criterion stated through what QA can do and ending with "
+        "(requirement <id>); an upload example is checked through its observable or marked "
+        "not QA-verifiable, never dropped. When a requirement's examples and the limitations "
+        "leave an input undefined, return that requirement with returned_reason naming the "
+        "undefined input instead of planning a narrower version. Every task states that the "
+        "product never stores input it does not recognize as a different kind of record: it "
+        "asks the user back what they meant."
+    )
+
+
+def _limitations_briefing(attempt: _PlanningAttempt) -> str:
+    """The limitations and trade-offs the user confirmed, one sentence each."""
+    if not attempt.limitations:
+        return ""
+    listed = "\n".join(f"- {limitation}" for limitation in attempt.limitations)
+    return (
+        "\n\nLimitations and trade-offs the user confirmed:\n"
+        f"{listed}\n"
+        "They are decisions, not gaps: plan within them, and read them when deciding "
+        "whether a requirement's input is settled."
+    )
 
 
 def _settings_briefing(attempt: _PlanningAttempt) -> str:
@@ -371,11 +605,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     # Skip if already in_progress with tasks (duplicate message from supervisor retry)
     # But never skip reopened stories — they need re-decomposition
-    if story_status == StoryStatus.IN_PROGRESS:
-        existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
-        if existing_tasks:
-            log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
-            return live_work_settled({"status": "skipped", "reason": "already decomposed"})
+    skipped = await _skip_already_decomposed(msg, story_status, redis, log)
+    if skipped is not None:
+        return skipped
 
     # Transition to in_progress immediately to prevent supervisor retries
     if story_status == StoryStatus.CREATED:
@@ -408,7 +640,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     planning: _PlanningAttempt | None = None
     try:
-        planning, early_result = await _claim_planning_attempt(msg.story_id, log)
+        planning, early_result = await _claim_planning_attempt(msg, redis, log)
         if early_result is not None:
             return early_result
 
@@ -463,12 +695,20 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             except Exception as e:
                 log.warning("architect_reopened_story_start_failed", error=str(e))
 
+        # Last, after the story moved on: a failure here is replayed, and the
+        # replay must not find a plan that is still waiting to start.
+        await _notify_returned_requirements_of_plan(planning, msg, redis, log)
+
         log.info(
             "architect_job_success",
             message_count=len(result.get("messages", [])),
         )
         return live_work_settled({"status": "success"})
 
+    except ReturnedRequirementsNoticeError:
+        # The plan is admitted and nothing is released again; only the notice is
+        # owed. Leaving the entry unacknowledged is what replays it.
+        raise
     except Exception as e:
         log.error(
             "architect_job_failed",

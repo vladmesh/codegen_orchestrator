@@ -7,11 +7,18 @@ sending raw messages directly to po:proactive.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.temporary_access import (
+    TemporaryAccessGrantDTO,
+    TemporaryAccessRevokeReason,
+    TemporaryAccessStatus,
+)
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from tests.unit.factories import make_project, make_repository, make_run, make_run_start
@@ -53,6 +60,8 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/my-project")
         )
+        # A storyless deploy asks the project for its confirmed settings.
+        api.get_project_initial_settings_brief = AsyncMock(return_value=None)
         yield api
 
 
@@ -242,6 +251,95 @@ async def test_deploy_worker_skips_same_sha_for_running_application(
         for call in mock_api.patch.call_args_list
         if call.args[0] == "runs/deploy-wh-abc"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["grant", "revoke"])
+async def test_temporary_access_operation_never_takes_the_same_sha_shortcut(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph, operation
+):
+    """A capability redeploy of the running commit still reaches the product."""
+    head_sha = "a" * 40
+    now = datetime.now(UTC)
+    grant = TemporaryAccessGrantDTO(
+        id="tempaccess-qa-1",
+        project_id="proj-1",
+        channel="telegram",
+        external_id="8202532144",
+        target_application_id=17,
+        target_base_url="https://exact.example.com",
+        head_sha=head_sha,
+        qa_run_id="qa-1",
+        grant_run_id="deploy-wh-abc" if operation == "grant" else "temporary-access-grant-1",
+        revoke_run_id="deploy-wh-abc" if operation == "revoke" else None,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL if operation == "revoke" else None,
+        qa_message={
+            "story_id": "story-1",
+            "project_id": "proj-1",
+            "initiating_run_id": "deploy-1",
+            "telegram_chat_id": "",
+            "deployed_url": "https://exact.example.com",
+            "application_id": 17,
+            "acceptance_criteria": "bot admission",
+            "run_id": "qa-1",
+        },
+        status=(
+            TemporaryAccessStatus.GRANTING
+            if operation == "grant"
+            else TemporaryAccessStatus.REVOKING
+        ),
+        granted_at=now,
+        created_at=now,
+    )
+    mock_api.get_run = AsyncMock(
+        return_value=make_run(
+            run_metadata={
+                "temporary_access_grant_id": grant.id,
+                "temporary_access_operation": operation,
+            }
+        )
+    )
+    mock_api.get_temporary_access_grant = AsyncMock(return_value=grant)
+    mock_allocations.return_value = {"vps-1:8080": {"application_id": 17, "port": 8080}}
+    mock_api.get = AsyncMock(
+        return_value=[{"application_id": 17, "deployed_sha": head_sha, "result": "success"}]
+    )
+    mock_api.get_application = AsyncMock(
+        return_value=type("Application", (), {"status": ApplicationStatus.RUNNING})()
+    )
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployed_url": "https://exact.example.com",
+            "application_id": 17,
+            "deployment_result": {},
+            "secret_values": {"USERS_GRANT_CAPABILITY": "capability-value"},
+        }
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    with patch("src.consumers.deploy_result_handler.GeneratedServiceGrantClient") as client:
+        client.return_value.grant_and_resolve = AsyncMock(
+            return_value=SimpleNamespace(active=True, failure=None)
+        )
+        client.return_value.revoke_and_resolve = AsyncMock(
+            return_value=SimpleNamespace(active=False, failure=None)
+        )
+        result = await process_deploy_job(_job(), mock_redis)
+
+    assert result.get("reason") != "already_deployed_same_sha"
+    mock_devops_subgraph.ainvoke.assert_awaited_once()
+    applied = getattr(client.return_value, f"{operation}_and_resolve")
+    applied.assert_awaited_once_with(
+        channel="telegram", external_id="8202532144", capability="capability-value"
+    )
+    run_results = [
+        call.kwargs["json"].get("result") or {}
+        for call in mock_api.patch.call_args_list
+        if call.args[0] == "runs/deploy-wh-abc"
+    ]
+    assert all(run_result.get("skipped_reason") is None for run_result in run_results)
+    assert result["status"] == "success"
 
 
 @pytest.mark.asyncio

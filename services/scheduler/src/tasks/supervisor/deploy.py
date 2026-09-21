@@ -17,6 +17,7 @@ from shared.allocation_disposition import (
     may_terminate_story,
     refusal_routing,
 )
+from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
     require_initiating_run,
@@ -49,13 +50,11 @@ from shared.contracts.queues.deploy import (
     DeployTrigger,
 )
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.qa import QAMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import (
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
-    PO_INPUT_QUEUE,
 )
 from shared.redis import RedisStreamClient
 
@@ -1361,13 +1360,19 @@ async def _handle_deploy_waiting_user_secret(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Deploy is blocked on a required user secret — park the story, ask the user once.
+    """Deploy is blocked on a required user secret — park the story, ask the owner once.
 
-    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED). The request is
-    emitted here, on entry to the wait, exactly once: the transition happens first,
-    so the story leaves the DEPLOYING set this branch polls and cannot be asked
-    again on a later tick. supervise_waiting_user_secret_stories only checks for the
-    secret's arrival; it never re-sends the request.
+    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED), and the request
+    goes through the durable owner-notification seam in its mandated order: owe
+    the ask on this Run, transition, deliver. The record is what the wait's age
+    bound reads: its clock starts only when the record says the ask was
+    delivered, so a publish that failed, an owner nobody can reach, or a process
+    that died before asking can never start it.
+
+    Repeating this for the same Run owes nothing new — `owe_owner_notification`
+    returns the record already there — so a tick that retries an entry whose
+    transition was lost cannot ask twice. supervise_waiting_user_secret_stories
+    only checks for the secret's arrival; it never re-sends the request.
     """
     missing = run.result.missing_user_secrets
     log.info(
@@ -1376,62 +1381,73 @@ async def _handle_deploy_waiting_user_secret(
         missing=[m.key for m in missing],
     )
 
+    owed = await owe_user_secret_request(api_client, run, story_id, project_id, log)
     await api_client.wait_user_secret_story(story_id)
-
-    try:
-        await _request_user_secret_via_po(
-            api_client, redis_client, story_id, project_id, missing, log
-        )
-    except Exception:
-        # The story is already parked; a failed PO publish must not re-raise and
-        # cause a second request next tick. It is a one-shot best-effort nudge.
-        log.warning("waiting_user_secret_request_failed", story_id=story_id, exc_info=True)
+    await deliver_user_secret_request(api_client, redis_client, run, owed, log)
 
 
-async def _request_user_secret_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    story_id: str,
-    project_id: str,
-    missing,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask the project owner for the missing secrets, through PO, by key + description.
+def _user_secret_request_text(missing) -> str:
+    """What PO is told to ask the owner, by key and description only.
 
-    Emits a POSystemEvent to po:input; PO composes the human message. The secret
-    `consumers` never leave the resolver — only the key and its description reach
-    the user.
+    The secret `consumers` never leave the resolver — only the key and its
+    description reach the user.
     """
-    recipient = await resolve_project_recipient(
-        api_client, project_id, event="story_waiting_user_secret", story_id=story_id
-    )
-    if not recipient.is_addressable:
-        log.warning("waiting_user_secret_unaddressable", project_id=project_id)
-        return
-
     secret_lines = "\n".join(f"- {m.key}: {m.description}" for m in missing)
-    text = (
+    return (
         "Deployment is paused because the project needs secret(s) only the user can "
         "provide:\n"
         f"{secret_lines}\n"
         "Ask the user for each value and save it. Deployment resumes automatically "
         "once every secret is saved."
     )
-    event = POSystemEvent(
+
+
+async def owe_user_secret_request(
+    api_client: SchedulerAPIClient,
+    run,
+    story_id: str,
+    project_id: str,
+    log: structlog.stdlib.BoundLogger,
+) -> OwnerNotification:
+    """Owe the owner the request for the secrets this Run found missing.
+
+    The record lives on the deploy Run that reported the missing keys, so it is
+    the record of exactly one wait: a story that comes back for a second secret
+    does so on a new Run, with a new record and a new ask. Its `terminal_status`
+    is WAITING_USER_SECRET, so the seam publishes it only while the story is
+    really waiting, and voids it — sending nothing — if the secret arrived and
+    the story moved on first.
+    """
+    return await owe_owner_notification(
+        api_client,
+        run,
         event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
-        text=text,
-        task_id=story_id,
+        text=_user_secret_request_text(run.result.missing_user_secrets),
         story_id=story_id,
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
         project_id=project_id,
+        terminal_status=StoryStatus.WAITING_USER_SECRET,
+        log=log,
     )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info(
-        "waiting_user_secret_requested",
-        story_id=story_id,
-        keys=[m.key for m in missing],
-    )
+
+
+async def deliver_user_secret_request(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    run,
+    record: OwnerNotification,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Spend this tick's attempt on the ask; the recovery sweep owns the rest.
+
+    The record is durable and owed, so a failure here is not a lost message: the
+    owner-notification sweep selects owed Run records whatever their story's
+    status and retries them within the seam's bound. An exception is therefore
+    contained rather than allowed to end this tick for unrelated stories.
+    """
+    try:
+        await deliver_owed_notification(api_client, redis_client, run.id, record, log)
+    except Exception:
+        log.warning("waiting_user_secret_request_delivery_failed", run_id=run.id, exc_info=True)
 
 
 async def supervise_waiting_user_secret_stories(

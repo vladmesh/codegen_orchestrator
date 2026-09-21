@@ -7,9 +7,9 @@ They are reused across multiple worker runs for the same repository.
 from http import HTTPStatus
 from pathlib import Path
 
-import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+import structlog
 
 from ._shared import FileTreeEntry, read_file, walk_workspace
 

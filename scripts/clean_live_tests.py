@@ -15,6 +15,15 @@ if not ORCHESTRATOR_ROOT:
     ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ORCHESTRATOR_ROOT not in sys.path:
     sys.path.insert(0, ORCHESTRATOR_ROOT)
+# The teardown derivation the per-run cleanup already uses. It lives beside the
+# live suite because that is the only other caller; the sweep imports it rather
+# than keeping a second, hand-written delete list of its own.
+_LIVE_HELPERS = os.path.join(ORCHESTRATOR_ROOT, "tests", "live")
+if _LIVE_HELPERS not in sys.path:
+    sys.path.insert(0, _LIVE_HELPERS)
+import db_teardown  # noqa: E402
+from live_harness import run_user_sweep_predicate  # noqa: E402
+
 from shared.live_contour import current_contour  # noqa: E402
 from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
@@ -525,62 +534,15 @@ asyncio.run(cleanup())
         print(res.stderr)
 
 
-def clean_database():
-    conditions = _build_conditions()
-    sub = f"SELECT id FROM projects WHERE {conditions}"  # noqa: S608
-    tables = [
-        "runs",
-        "product_briefs",
-        "tasks",
-        "stories",
-        "brainstorms",
-        "rag_chunks",
-        "rag_documents",
-        "rag_conversation_summaries",
-        "rag_messages",
-        "service_deployments",
-    ]
-    stmts = [
-        f"DELETE FROM task_events WHERE task_id IN ("  # noqa: S608
-        f"SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id "
-        f"WHERE {_build_conditions('p')});",
-        "DELETE FROM requirement_coverages WHERE brief_id IN ("
-        "SELECT b.id FROM product_briefs b "
-        "JOIN projects p ON b.project_id = p.id "
-        f"WHERE {_build_conditions('p')});",
-    ]
-    stmts.extend(f"DELETE FROM {t} WHERE project_id IN ({sub});" for t in tables)  # noqa: S608
-    stmts.append(
-        "DELETE FROM port_allocations WHERE application_id IN "
-        f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
-        f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')});"
-    )
-    # application_health_history FKs applications (NO ACTION), delete it first.
-    stmts.append(
-        "DELETE FROM application_health_history WHERE application_id IN "
-        f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
-        f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')});"
-    )
-    stmts.append(
-        f"DELETE FROM applications WHERE repo_id IN "  # noqa: S608
-        f"(SELECT id FROM repositories WHERE project_id IN ({sub}));"
-    )
-    stmts.append(f"DELETE FROM repositories WHERE project_id IN ({sub});")
-    stmts.append(f"DELETE FROM projects WHERE {conditions};")  # noqa: S608
-    # The synthetic test user is a fixture reused by every run, not residue of
-    # one, and the attempt ledger that references it is append-only by design —
-    # a database rule refuses to delete from it, and rightly so. So the user goes
-    # only while nothing points at it; once a run has recorded an attempt, the
-    # row stays and the next run reuses it.
-    #
-    # Deleting the user unconditionally made the whole sweep raise, and a raising
-    # sweep is not a partial one: every phase after the database went unrun and
-    # its residue stayed on the stand.
-    stmts.append(
-        "DELETE FROM users WHERE telegram_id = 999000001 "
-        "AND NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger l WHERE l.user_id = users.id);"
-    )
-    sql = "\n".join(stmts)
+def _teardown_psql(sql: str) -> db_teardown.SqlResult:
+    """Run one statement batch against the stand's database.
+
+    Same invocation as the per-run teardown (`tests/live/pipeline_helpers._psql`):
+    the batch arrives on stdin, because the residue pass names every key the
+    sweep recorded and one argv element is capped at 128 KiB, and
+    `ON_ERROR_STOP` makes a refused statement end the batch instead of letting
+    the rest of a transaction run against a failed one.
+    """
     result = run_cmd(
         [
             "docker",
@@ -593,13 +555,87 @@ def clean_database():
             "postgres",
             "-d",
             "orchestrator",
-            "-c",
-            sql,
-        ]
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-t",
+            "-A",
+            "-F",
+            "\t",
+            "-f",
+            "-",
+        ],
+        input=sql,
     )
-    if result.returncode != 0:
-        raise CleanupFailure(f"database cleanup failed: {result.stderr.strip()}")
-    print("Database cleaned.")
+    return db_teardown.SqlResult(
+        returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
+    )
+
+
+def clean_database():
+    """Delete the rows of the projects and run-owned users this sweep selected.
+
+    No table is listed here. The selection is this sweep's own — the contour's
+    title prefixes, and, where the contour owns live runs, the users this
+    harness registered under its own username — and everything after it is
+    derived: `db_teardown` reads
+    `pg_constraint`, builds the closure of rows that hang off those roots,
+    deletes in the order the keys imply and then asks the database for the exact
+    keys it recorded.
+
+    The hand-written list that used to stand here is the defect card 1311 fixed
+    in the other teardown path and this one kept: it did not know about
+    `users_grant_intents`, which the level-1 grant deploy writes against
+    `runs.id`, so run 35451082771 swept with
+    `Key (id)=(deploy-grant-71672573103249b09aaf4cb3dbdf2a54) is still
+    referenced` and left its project on the stand. A list goes stale in that
+    direction silently; a derivation covers the next such table the moment its
+    foreign key exists.
+
+    The user root is what makes this sweep the backstop for a level-1 run that
+    died before it had a project — the registration happens first, so a run can
+    own a user, a promo code and a budget policy and no project at all. It
+    selects on the username the harness itself writes (`live_run_<id>`), inside
+    the id band the harness registers in: the username is this system's own
+    naming, the way a contour's title prefix is, and the band alone is not —
+    Telegram hands out account ids and a real customer can hold one anywhere in
+    it, so a band-only predicate would be a blind range delete.
+
+    And it is applied only where live runs are created. In a contour that does
+    not own them — production — the sweep keeps exactly the regime it had before
+    the registration door existed: projects by title prefix, and no `users` root
+    at all. Nothing registers run-owned users there, so there is nothing of this
+    kind to sweep, and a sweep pointed at real users' rows is not a risk worth
+    carrying for an empty set.
+    """
+    user_predicate = run_user_sweep_predicate() if CONTOUR.allows_live_runs else None
+    try:
+        report = db_teardown.teardown_selection(
+            _build_conditions(),
+            _teardown_psql,
+            selection=", ".join(PROJECT_PREFIXES),
+            user_predicate=user_predicate,
+        )
+    except db_teardown.TeardownError as exc:
+        raise CleanupFailure(f"database cleanup failed: {exc}") from exc
+
+    # The shared fixture user is a different thing from a run-owned one: every
+    # run of the other suites reuses it, so it is nobody's residue and it is not
+    # a root above. It goes only while nothing points at it — the attempt ledger
+    # that references it is append-only by design, a database rule refuses to
+    # delete from it, and rightly so — so once a run has recorded an attempt the
+    # row stays and the next run reuses it.
+    #
+    # Deleting the user unconditionally made the whole sweep raise, and a raising
+    # sweep is not a partial one: every phase after the database went unrun and
+    # its residue stayed on the stand.
+    user_result = _teardown_psql(
+        "DELETE FROM users WHERE telegram_id = 999000001 "
+        "AND NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger l WHERE l.user_id = users.id);"
+    )
+    if user_result.returncode != 0:
+        raise CleanupFailure(f"database cleanup failed: {user_result.stderr.strip()}")
+    print(f"Database cleaned ({len(report.tables)} tables derived from the catalog).")
+    print(f"Retained by rule: {report.retention_report or 'nothing'}.")
 
 
 def clean_redis_queues(project_ids):

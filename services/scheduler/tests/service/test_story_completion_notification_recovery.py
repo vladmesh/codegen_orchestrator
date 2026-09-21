@@ -14,6 +14,7 @@ from shared.contracts.queues.po import POSystemEvent, from_flat_fields
 from shared.contracts.queues.qa import QAMessage
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis import RedisStreamClient
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 
 async def _record_running_acceptance_target(
@@ -27,6 +28,7 @@ async def _record_running_acceptance_target(
             "host": "acceptance.test",
             "public_ip": "10.8.0.9",
             "ssh_user": "root",
+            "ssh_key": fleet_private_key(),
         },
     )
     assert server.status_code == httpx.codes.CREATED, server.text
@@ -61,6 +63,7 @@ async def _record_running_acceptance_target(
             "run_metadata": {
                 QA_HANDOFF_KEY: QAHandoffPlan(
                     qa_message=QAMessage(
+                        story_id=story_id,
                         project_id=project_id,
                         initiating_run_id="test-run-1",
                         deployed_url="http://10.8.0.9:8000",
@@ -410,6 +413,7 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
                 "host": "recheck-e2e.test",
                 "public_ip": "10.2.0.9",
                 "ssh_user": "root",
+                "ssh_key": fleet_private_key(),
             },
         )
         assert server.status_code == httpx.codes.CREATED, server.text

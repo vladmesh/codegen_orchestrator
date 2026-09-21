@@ -74,7 +74,9 @@ taken from the default value.
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
-| `scheduler` | Background workers: task dispatcher (scaffold trigger, dispatch unblocked tasks), story completion, pr_poller, supervisor, provisioner trigger and result listener, github_sync, fail-closed Time4VPS server sync, health_checker, app_health_prober, ssl_checker, analytics_aggregator, rag_summarizer, queue_cleanup, temporary_access |
+| `scheduler-pipeline` | One ordered dispatcher cycle: scaffold and engineering admission, story completion, PR/CI, supervisors, owed notifications, QA routing, then temporary-access cleanup. A container of the shared `scheduler` image |
+| `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
+| `scheduler-maintenance` | GitHub project sync, RAG summarization, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
 | `infra-service` | An Ansible runner and SSH operations |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000 (stamping `X-Internal-Key` in, so the browser never holds it), `/wm-api/*` → worker-manager. Basic auth via htpasswd decides who reaches that proxy. Grafana is embedded at `/grafana/` |
 | `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |
@@ -127,7 +129,7 @@ graph TD
 
     API --> |"data"| DB[(PostgreSQL)]
 
-    Dispatcher[Task Dispatcher<br/>scheduler, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
+    Dispatcher[Task Dispatcher<br/>scheduler-pipeline, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
     ScaffoldQueue --> Scaffolder[Scaffolder Service]
     Scaffolder --> |"copier + make setup + git push"| API
     Scaffolder --> |"saves tree, status=scaffolded"| API
@@ -170,7 +172,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │
                        ├──► API (create_project, create_repo, set_secret, create_story, ...)
                        │
-                       │    Task Dispatcher (scheduler, 30s poll)
+                       │    Task Dispatcher (scheduler-pipeline, 30s poll)
                        │      ├──► draft project + stories → XADD scaffold:queue
                        │      │                                │
                        │      │                    Scaffolder Service
@@ -254,7 +256,7 @@ the compactor with `retention_enabled`).
 
 ```
 node_exporter + cadvisor (ports 9100/8080, UFW open only to the orchestrator)
-  → scheduler/health_checker → servers.* and server_metrics_history
+  → scheduler-infrastructure/health_checker → servers.* and server_metrics_history
 ```
 
 The `monitoring` role installs the exporters during provisioning. An existing server is brought to this

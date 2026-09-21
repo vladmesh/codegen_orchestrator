@@ -60,10 +60,53 @@ logger = structlog.get_logger(__name__)
 #: Where the project config carries the revision presented and not yet spent.
 PRODUCT_BRIEF_POINTER_KEY = "product_brief_id"
 
-#: How an unchosen value is shown to the user. Unchanged from the prose
-#: confirmation this flow replaces: the user reads one message and sees which
-#: values nobody has decided yet.
-NOT_SPECIFIED = "not specified"
+#: Every fixed label of the message the user is shown, per language. The user
+#: reads the brief in their own language, so no label may be hard-coded in
+#: English; a language with no table here falls back to `en`.
+LABELS: dict[str, dict[str, str]] = {
+    "en": {
+        "summary": "Summary",
+        "must_requirements": "Must-requirements",
+        "your_words": "your words",
+        "said_in": "said earlier in our conversation",
+        "source": "source",
+        "usage": "How you will use it",
+        "you_send": "You send",
+        "product_answers": "The product answers",
+        "no_interaction": "works without anything sent by you",
+        "limitations": "Limitations and chosen trade-offs",
+        "initial_settings": "Initial settings",
+        "not_specified": "not specified",
+        "answer": "yes / correct me",
+    },
+    "ru": {
+        "summary": "Кратко",
+        "must_requirements": "Обязательные требования",
+        "your_words": "ваши слова",
+        "said_in": "сказано раньше в нашей переписке",
+        "source": "источник",
+        "usage": "Как вы будете пользоваться",
+        "you_send": "Вы отправляете",
+        "product_answers": "Продукт отвечает",
+        "no_interaction": "работает без ваших сообщений",
+        "limitations": "Ограничения и выбранные компромиссы",
+        "initial_settings": "Начальные настройки",
+        "not_specified": "не указано",
+        "answer": "да / поправить",
+    },
+}
+
+#: How an unchosen value is shown to a user whose brief has no language table
+#: of its own: the user reads one message and sees which values nobody has
+#: decided yet.
+NOT_SPECIFIED = LABELS["en"]["not_specified"]
+
+
+def _labels(language: str | None) -> dict[str, str]:
+    """The label table of the brief's language, or `en` when there is none."""
+    if language is None:
+        return LABELS["en"]
+    return LABELS.get(language) or LABELS.get(language.split("-", maxsplit=1)[0]) or LABELS["en"]
 
 
 #: How many keys one presentation may try before giving up. Each step past the
@@ -115,41 +158,72 @@ def _confirmation_request_id(brief_id: str) -> str:
 def _render(brief: ProductBriefRead) -> str:
     """The one atomic confirmation message, and the only text the user is shown.
 
-    Everything the user is asked to confirm is in it: the summary, every
-    must-requirement with the id the architect will dispose of it by and the
-    provenance of its wording, and every typed initial setting. It is not a
-    series of questions, and it ends the way the user is told to answer it.
+    Everything the user is asked to confirm is in it, in the user's language:
+    the summary, every must-requirement with the id the architect will dispose
+    of it by and the provenance of its wording, how the user will use each of
+    them, the limitations and trade-offs chosen, and every initial setting by
+    its description. It is not a series of questions, and it ends the way the
+    user is told to answer it. What only the PO needs — the brief id and
+    revision — is in the PO-facing prefix, not here.
+
+    A document stored before the language, usage examples and setting
+    descriptions existed has no language: it renders in `en`, without the two
+    sections it cannot fill, and with its settings as the keys it stored.
     """
+    content = brief.content
+    label = _labels(content.language)
     lines = [
         f"<b>{brief.title}</b>",
-        f"Product Brief revision {brief.revision} (id: {brief.id})",
         "",
-        f"Summary: {brief.content.summary}",
+        f"{label['summary']}: {content.summary}",
         "",
-        "Must-requirements:",
+        f"{label['must_requirements']}:",
     ]
-    for requirement in brief.content.must_requirements:
+    for requirement in content.must_requirements:
         lines.append(f"- [{requirement.id}] {requirement.text}")
         if requirement.user_wording:
-            lines.append(f'  your words: "{requirement.user_wording}"')
+            lines.append(f'  {label["your_words"]}: "{requirement.user_wording}"')
         elif requirement.wording_reference:
-            lines.append(f"  said in: {requirement.wording_reference}")
+            # The reference is an audit pointer (`telegram:chat=42:message=17`)
+            # for the architect, not something the user can read.
+            lines.append(f"  {label['said_in']}")
         else:
-            lines.append(f"  source: {NOT_SPECIFIED}")
+            lines.append(f"  {label['source']}: {label['not_specified']}")
+    if content.language is not None:
+        lines.append("")
+        lines.append(f"{label['usage']}:")
+        for requirement in content.must_requirements:
+            examples = [e for e in content.usage_examples if e.requirement_id == requirement.id]
+            if not examples and requirement.user_facing:
+                continue
+            lines.append(f"[{requirement.id}]")
+            if not examples:
+                lines.append(f"  {label['no_interaction']}")
+            for example in examples:
+                lines.append(f"  {label['you_send']}: {example.user_sends}")
+                lines.append(f"  {label['product_answers']}: {example.product_answers}")
+        lines.append("")
+        lines.append(f"{label['limitations']}:")
+        if not content.limitations:
+            lines.append(f"- {label['not_specified']}")
+        lines.extend(f"- {limitation}" for limitation in content.limitations)
     lines.append("")
-    lines.append("Initial settings:")
-    if not brief.content.initial_settings:
-        lines.append(f"- {NOT_SPECIFIED}")
-    for setting in brief.content.initial_settings:
+    lines.append(f"{label['initial_settings']}:")
+    if not content.initial_settings:
+        lines.append(f"- {label['not_specified']}")
+    for setting in content.initial_settings:
+        if setting.description is not None:
+            lines.append(f"- {setting.description}")
+            continue
         subject = "" if setting.subject_id is None else f", subject {setting.subject_id}"
         value = (
-            NOT_SPECIFIED
+            label["not_specified"]
             if setting.value is None
             else json.dumps(setting.value, ensure_ascii=False)
         )
         lines.append(f"- {setting.key} ({setting.scope.value}{subject}) = {value}")
     lines.append("")
-    lines.append("yes / correct me")
+    lines.append(label["answer"])
     return "\n".join(lines)
 
 
@@ -197,7 +271,7 @@ async def clear_brief_pointer(project_id: str, headers: dict[str, str]) -> None:
 
 
 def _presented(brief: ProductBriefRead, prefix: str) -> str:
-    return f"{prefix}\n\n{_render(brief)}"
+    return f"Product Brief revision {brief.revision} (id: {brief.id}). {prefix}\n\n{_render(brief)}"
 
 
 @tool
@@ -206,6 +280,9 @@ async def present_product_brief(
     title: str,
     summary: str,
     must_requirements: list[dict],
+    language: str | None = None,
+    usage_examples: list[dict] | None = None,
+    limitations: list[str] | None = None,
     initial_settings: list[dict] | None = None,
     corrects_brief_id: str | None = None,
     *,
@@ -224,6 +301,10 @@ async def present_product_brief(
     stored revision and composes nothing: do not re-word it, show what it
     returned.
 
+    Write every text the user reads — title, summary, requirement texts,
+    usage examples, limitations, setting descriptions — in the user's language.
+    The tool supplies the section labels in that language itself.
+
     Args:
         project_id: Project ID (UUID).
         title: Short name of the product, e.g. "Reading tracker bot".
@@ -232,13 +313,36 @@ async def present_product_brief(
             `{"id": "r1", "text": "It stores a book",
               "user_wording": "<the user's own words>"}`.
             The id is used in a URL, so use only letters, digits, `.`, `_`, `-`.
+            Add `"user_facing": false` only for a requirement the user never
+            interacts with (internal, or scheduled with nothing the user sends);
+            every other requirement is user-facing and needs a usage example.
+            Word the text as something QA can check: a read-only HTTP GET, a
+            Telegram text message and its reply, an inline button press, or a
+            declared scheduled behaviour and its observable. A behaviour that
+            needs a write or an upload is stated by its observable after the
+            fact (a GET or a bot reply), never as a POST or an upload step.
             Give either `user_wording` (what the user actually wrote) or
             `wording_reference` (where they wrote it) — exactly one, never both,
             never neither.
+        language: The user's language as an ISO 639 code, e.g. "ru" or "en".
+            Required.
+        usage_examples: How the user will use the product — at least one per
+            user-facing must-requirement, each naming its requirement id:
+            `{"requirement_id": "r1", "user_sends": "the text /add Dune",
+              "product_answers": "Saved: Dune"}`. Describe what the user sends
+            (a text, a command, a button press, a photo) and what the product
+            answers in the user's own words. A brief where a user-facing
+            requirement has no example is refused and nothing is presented.
+        limitations: Limitations and chosen trade-offs, one plain-language
+            sentence each, e.g. "Receipts are read by a free method, so a blurry
+            photo may be misread." Never a raw setting key or value.
         initial_settings: Typed values the product should start with:
             `{"key": "alerts.default_currency", "scope": "product",
-              "value": "USD"}`. Leave empty when the user chose none. NEVER put
-            a token, password, API key or any other secret here — secrets go to
+              "value": "USD", "description": "Amounts are shown in US dollars"}`.
+            The user sees only `description`, so it is required and says in
+            the user's language what the setting and its chosen value mean.
+            Leave empty when the user chose none. NEVER put a token, password,
+            API key or any other secret here — secrets go to
             `set_project_secret`.
         corrects_brief_id: The brief id the user corrected, when re-presenting
             after a correction. Leave unset the first time.
@@ -288,6 +392,9 @@ async def present_product_brief(
                 "summary": summary,
                 "must_requirements": must_requirements,
                 "initial_settings": initial_settings or [],
+                "language": language,
+                "usage_examples": usage_examples or [],
+                "limitations": limitations or [],
             }
         )
     except ValidationError as invalid:
@@ -417,9 +524,21 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
             f"Create the story with create_story(product_brief_id='{brief.id}')."
         )
 
+    try:
+        content = ProposedProductBriefContent.model_validate(brief.content.model_dump(mode="json"))
+    except ValidationError as outdated:
+        # A revision presented before the brief carried a language, usage
+        # examples and setting descriptions: the server would refuse the echo,
+        # so ask for a corrected revision instead of failing the turn.
+        logger.warning("po_brief_confirmation_refused", brief_id=brief.id, error=str(outdated))
+        return (
+            f"Product Brief {brief.id} was not confirmed: it lacks what a brief must now "
+            f"carry:\n{outdated}\nPresent it again with corrects_brief_id='{brief.id}', "
+            "adding what is missing, before asking the user anything."
+        )
     confirmation = ProductBriefConfirm(
         request_id=_confirmation_request_id(brief.id),
-        content=ProposedProductBriefContent.model_validate(brief.content.model_dump(mode="json")),
+        content=content,
     )
     response = await api.post_raw(
         f"product-briefs/{brief.id}/confirm",
@@ -440,6 +559,7 @@ async def confirm_product_brief(project_id: str, brief_id: str, *, config: Runna
 
 
 __all__ = [
+    "LABELS",
     "NOT_SPECIFIED",
     "PRODUCT_BRIEF_POINTER_KEY",
     "clear_brief_pointer",

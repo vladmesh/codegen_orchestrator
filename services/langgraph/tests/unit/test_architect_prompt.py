@@ -45,6 +45,97 @@ class TestProductBriefDirectives:
         assert "Nothing you planned is dispatched until all of them are recorded" in SYSTEM_PROMPT
 
 
+class TestUsageExampleDirectives:
+    """The architect plans exactly the uses the user confirmed in the brief."""
+
+    @staticmethod
+    def _prompt() -> str:
+        return " ".join(SYSTEM_PROMPT.split())
+
+    def test_every_usage_example_becomes_one_qa_criterion_naming_its_requirement(self):
+        prompt = self._prompt()
+        assert "Turn every usage example of a requirement you plan into its own" in prompt
+        assert "stated through what QA can do" in prompt
+        assert "`(requirement <id>)`" in prompt
+        assert (
+            '- Telegram: sending "кофе 250" replies that an expense was recorded '
+            "(requirement expense-text)"
+        ) in SYSTEM_PROMPT
+
+    def test_an_upload_example_is_checked_through_its_observable_or_marked(self):
+        prompt = self._prompt()
+        assert "is never silently dropped" in prompt
+        assert "check it through its observable after the fact" in prompt
+        assert "`not QA-verifiable: needs a photo upload`" in prompt
+        assert "Never write the upload itself as a step." in prompt
+
+    def test_a_requirement_with_an_undefined_input_is_returned_not_narrowed(self):
+        prompt = self._prompt()
+        assert "Return an undefined input; never narrow it." in prompt
+        assert "do not plan the version the examples happen to show" in prompt
+        assert "`record_requirement_coverage(requirement_id=..., returned_reason=...)`" in prompt
+        assert "make the reason name the undefined input" in prompt
+
+    def test_an_input_the_brief_settles_is_planned_not_returned(self):
+        prompt = self._prompt()
+        assert "A usage example or a limitation that settles the form" in prompt
+        assert "planned as settled and not returned" in prompt
+
+    def test_every_task_requires_asking_back_instead_of_storing_another_record_kind(self):
+        prompt = self._prompt()
+        assert "Every task for a product that accepts user input states this rule" in prompt
+        assert "in its description and its acceptance criteria" in prompt
+        assert "never stores input it does not recognize as a different kind of record" in prompt
+        assert "it asks the user back what they meant" in prompt
+
+    def test_accumulated_state_is_judged_from_a_starting_value_qa_reads_first(self):
+        prompt = self._prompt()
+        assert "Judge accumulated state from the value QA reads first." in prompt
+        assert "a balance, a total, a count, a list of records" in prompt
+        assert "is written relative to a starting value QA reads first" in prompt
+        assert "in the example's reply wording" in prompt
+        assert (
+            '- Telegram: send "/balance" and note the starting balance, send "/income 5000" '
+            'and "кофе 300"; "/balance" then replies "Баланс: <start + 4700> ₽" '
+            "(requirement balance)"
+        ) in SYSTEM_PROMPT
+
+    def test_an_example_qa_cannot_reach_is_rewritten_or_returned_never_written(self):
+        prompt = self._prompt()
+        assert "**QA is one identity that cannot start over.**" in prompt
+        assert (
+            "Central QA acts as a single fixed Telegram identity whose product state "
+            "persists across rounds and across stories, and it cannot reset that state, "
+            "replace it, or act as a second user."
+        ) in prompt
+        assert (
+            "An example that can only be observed from a state that identity cannot be in "
+            '— a fresh user, an empty history, "no operations yet", another calendar month '
+            "— is not a check"
+        ) in prompt
+        assert "**Rewrite it into what QA can observe.**" in prompt
+        assert "becomes a check relative to the value QA reads first" in prompt
+        assert "one criterion stands for both" in prompt
+        assert (
+            "A precondition that is merely a time the identity cannot occupy — another "
+            "calendar month, a past period — has no rewrite and is not one."
+        ) in prompt
+        assert "**Return the requirement to the user**" in prompt
+        assert "`record_requirement_coverage(requirement_id=..., returned_reason=...)`" in prompt
+        assert "make the reason name the unreachable precondition" in prompt
+
+    def test_a_stateless_reply_keeps_its_exact_wording(self):
+        prompt = self._prompt()
+        assert "A reply that does not depend on earlier records keeps its exact wording" in prompt
+        assert "Keep the user's words: QA sends the message the example shows" in prompt
+
+    def test_the_workflow_points_the_criteria_step_at_the_usage_examples(self):
+        prompt = self._prompt()
+        step = prompt[prompt.find("7. Call `update_acceptance_criteria`") :]
+        step = step[: step.find("8. ")]
+        assert 'see "Usage Examples" below' in step
+
+
 class TestInitialSettingsDirectives:
     """A confirmed setting is planned for, not written by the plan."""
 
@@ -74,6 +165,39 @@ class TestInitialSettingsDirectives:
         assert "startup polling" in lower
         assert "product-owned seed code" in lower
         assert "duplicate" in lower and "service" in lower
+
+
+class TestCriteriaUseOnlyTheQAVocabulary:
+    """A criterion is stated through what QA can do, in the plan and in the brief."""
+
+    @staticmethod
+    def _brief_guidance() -> str:
+        from src.agents.po.tools_briefs import present_product_brief
+
+        return " ".join(present_product_brief.description.split())
+
+    def test_the_architect_prompt_no_longer_invites_curl(self):
+        assert "curl" not in SYSTEM_PROMPT.lower()
+
+    def test_the_architect_prompt_names_every_qa_capable_action(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "a read-only HTTP GET of a route" in prompt
+        assert "a Telegram text message sent to the bot, and the bot's reply" in prompt
+        assert "a press of an inline button" in prompt
+        assert "a declared `FIRE JOB <name> ... THEN <observable>`" in prompt
+
+    def test_the_architect_prompt_verifies_a_write_or_upload_through_its_observable(self):
+        prompt = " ".join(SYSTEM_PROMPT.split())
+        assert "never uploads a photo, file or other media" in prompt
+        assert "verified through its observable after the fact" in prompt
+        assert "never as a POST or an upload step" in prompt
+
+    def test_the_brief_guidance_carries_the_same_rule(self):
+        guidance = self._brief_guidance()
+        assert "a read-only HTTP GET" in guidance
+        assert "a Telegram text message and its reply" in guidance
+        assert "an inline button press" in guidance
+        assert "never as a POST or an upload step" in guidance
 
 
 class TestScheduledBehaviourDirectives:

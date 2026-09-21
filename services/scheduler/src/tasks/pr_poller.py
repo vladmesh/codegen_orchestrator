@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
 import os
@@ -19,6 +18,7 @@ from shared.contracts.dto.users_grant import (
     GrantIntentLifecycleResult,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.notifications import notify_admins_best_effort
@@ -26,6 +26,7 @@ from shared.queues import DEPLOY_QUEUE
 from shared.redis import RedisStreamClient
 
 from .. import startup
+from ._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ._recipients import resolve_project_recipient
 from .image_publication import (
     DEFAULT_BRANCH,
@@ -35,7 +36,7 @@ from .image_publication import (
     _redacted_failed_jobs,
     image_publication_for_commit,
 )
-from .story_completion import _parse_owner_repo
+from .owner_notifications import deliver_owed_notification, owe_story_owner_notification
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -44,16 +45,7 @@ logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
-
-
-def _parse_github_timestamp(value: object) -> datetime | None:
-    """A GitHub `...Z` timestamp as an aware datetime, or None when unusable."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+_MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
 
 
 def _ci_failure_limit() -> int:
@@ -131,13 +123,15 @@ def _build_failure_description(evidence: dict) -> str:
     return "\n".join(lines)
 
 
-async def _images_ready_for_deploy(
+async def _images_ready_for_deploy(  # noqa: PLR0913 — one merge's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
+    redis_client: RedisStreamClient,
     *,
     owner: str,
     repo_name: str,
     story_id: str,
+    project_id: str,
     head_sha: str,
     deployed_commit_sha: str,
     pull_request: dict,
@@ -186,7 +180,9 @@ async def _images_ready_for_deploy(
         return False
     await _refuse_unpublished_images(
         api_client,
+        redis_client,
         story_id=story_id,
+        project_id=project_id,
         head_sha=head_sha,
         deployed_commit_sha=deployed_commit_sha,
         verdict=verdict,
@@ -198,8 +194,10 @@ async def _images_ready_for_deploy(
 
 async def _refuse_unpublished_images(
     api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
     *,
     story_id: str,
+    project_id: str,
     head_sha: str,
     deployed_commit_sha: str,
     verdict: PublicationVerdict,
@@ -229,11 +227,45 @@ async def _refuse_unpublished_images(
             "generated_product_timeline": generated_product_timeline,
         },
     )
+    # The owner hears about this ending, not only the administrators. It is
+    # terminal for them in the only sense they have — their product stops moving
+    # until a person looks at it — and the story leaves PR_REVIEW on the next
+    # line, so no later tick scans it and nothing else would ever tell them.
+    owed = await owe_story_owner_notification(
+        api_client,
+        story_id,
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=_images_not_published_text(verdict.detail),
+        project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        log=log,
+    )
     await api_client.transition_story(story_id, "human-review")
+    await deliver_owed_notification(
+        api_client, redis_client, story_id, owed, log, story_record=True
+    )
     await notify_admins_best_effort(
         f"Story {story_id} was not deployed: {verdict.detail}",
         level="error",
         story_id=story_id,
+    )
+
+
+def _images_not_published_text(detail: str) -> str:
+    """Tell the owner their build never produced anything deployable."""
+    return (
+        "The project's build finished without publishing the images the deploy needs, "
+        f"so nothing was deployed. Reason: {detail}. A specialist has to look at this; "
+        "nothing more happens automatically."
+    )
+
+
+def _ci_attempts_exhausted_text(attempts: int) -> str:
+    """Tell the owner the automatic CI-fix loop has given up."""
+    return (
+        f"The same CI failure came back after {attempts} automatic fix attempts, "
+        "so the automatic retries have stopped. A specialist has to look at this; "
+        "nothing more happens automatically."
     )
 
 
@@ -363,9 +395,10 @@ def _has_usable_failed_job_evidence(run: object) -> bool:
     )
 
 
-async def _handle_failed_run(
+async def _handle_failed_run(  # noqa: PLR0913 — one CI run's context, each part named
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
+    redis_client: RedisStreamClient,
     *,
     owner: str,
     repo_name: str,
@@ -377,6 +410,7 @@ async def _handle_failed_run(
     existing_timeline: object,
 ) -> bool:
     """Persist one run's evidence and either create a fix or escalate."""
+    log = logger.bind(story_id=story_id, project_id=project_id)
     run_url = run.get("html_url", "")
     run_id = run.get("id", "")
     head_sha = run.get("head_sha") or "unknown"
@@ -450,7 +484,22 @@ async def _handle_failed_run(
         return False
 
     if attempt > _ci_failure_limit():
+        # Same reason as the unpublished-images refusal: the story leaves
+        # PR_REVIEW here and nothing scans it afterwards, so this is the last
+        # moment its owner can be told the retries have stopped.
+        owed = await owe_story_owner_notification(
+            api_client,
+            story_id,
+            event=OwnerNotificationEvent.STORY_BLOCKED,
+            text=_ci_attempts_exhausted_text(_ci_failure_limit()),
+            project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
         await api_client.transition_story(story_id, "human-review")
+        await deliver_owed_notification(
+            api_client, redis_client, story_id, owed, log, story_record=True
+        )
         await notify_admins_best_effort(
             f"CI failure {fingerprint} exhausted {_ci_failure_limit()} fix attempts "
             f"for story {story_id}",
@@ -476,6 +525,201 @@ async def _handle_failed_run(
     # an intermediate status the way three separate calls could.
     await api_client.retry_story_after_ci_failure(story_id)
     return True
+
+
+async def _park_story_for_merge_refusal(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    pr_number: int,
+    mergeable_state: object,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+    reason_code: str = "github_app_merge_refused",
+) -> None:
+    """Persist and announce GitHub's refusal before leaving ``pr_review``."""
+    reason = {
+        "reason": reason_code,
+        "pr_number": pr_number,
+        "mergeable_state": mergeable_state,
+        "detail": detail,
+    }
+    log.error("poll_merged_app_merge_refused", **reason)
+    await api_client.update_story(story_id, {"quarantine_reason": reason})
+    owed = await owe_story_owner_notification(
+        api_client,
+        story_id,
+        event=OwnerNotificationEvent.STORY_BLOCKED,
+        text=(
+            "The platform could not merge the finished pull request, so the story is "
+            f"waiting for a specialist. Reason: {detail}."
+        ),
+        project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        log=log,
+    )
+    await api_client.transition_story(story_id, "human-review")
+    await deliver_owed_notification(
+        api_client, redis_client, story_id, owed, log, story_record=True
+    )
+    await notify_admins_best_effort(
+        f"GitHub App could not merge PR #{pr_number} for story {story_id}: {detail}",
+        level="error",
+        story_id=story_id,
+        project_id=project_id,
+        pr_number=pr_number,
+        mergeable_state=mergeable_state,
+    )
+
+
+async def _merge_open_pr_without_auto_merge(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pull_request: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    """Merge a green PR only when GitHub did not accept an auto-merge request.
+
+    Pending and CI-blocked PRs stay in the poll set for their normal next tick.
+    A refusal observed from GitHub is terminal for this automatic path, so it is
+    recorded with owner and administrator notices instead of being retried as a
+    warning forever.
+    """
+    pr_number = pull_request["number"]
+    if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=pull_request.get("mergeable_state"),
+            detail="GitHub closed the pull request without merging it",
+            reason_code="github_pull_request_closed_unmerged",
+            log=log,
+        )
+        return None
+    if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
+        return pull_request
+
+    mergeable_state = pull_request.get("mergeable_state")
+    if mergeable_state == "behind":
+        try:
+            await github.update_pull_request_branch(owner, repo_name, pr_number)
+        except Exception as exc:
+            detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+            await _park_story_for_merge_refusal(
+                api_client,
+                redis_client,
+                story_id=story_id,
+                project_id=project_id,
+                pr_number=pr_number,
+                mergeable_state=mergeable_state,
+                detail=detail,
+                reason_code="github_app_update_branch_refused",
+                log=log,
+            )
+            return None
+        log.info("poll_merged_app_branch_update_requested", pr_number=pr_number)
+        return pull_request
+    if mergeable_state in _MERGE_PENDING_STATES:
+        log.info(
+            "poll_merged_app_merge_waiting_for_checks",
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+        )
+        return pull_request
+    if mergeable_state != "clean":
+        detail = f"GitHub reported mergeable_state={mergeable_state!r}"
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    try:
+        merge = await github.merge_pull_request(owner, repo_name, pr_number)
+    except Exception as exc:
+        detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    if merge.get("merged") is not True:
+        detail = str(merge.get("message") or "GitHub did not confirm that the pull request merged")
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=detail,
+            log=log,
+        )
+        return None
+
+    try:
+        return await github.get_pull_request(owner, repo_name, pr_number)
+    except Exception:
+        # GitHub confirmed the merge, but the immediately-following REST read
+        # is not yet usable. A later tick observes the merged PR; do not turn a
+        # confirmed merge into a human-review park because of that read failure.
+        log.exception("poll_merged_app_merge_readback_failed", pr_number=pr_number)
+        return None
+
+
+async def _current_pull_request(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    redis_client: RedisStreamClient,
+    *,
+    story_id: str,
+    project_id: str,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    log: structlog.stdlib.BoundLogger,
+) -> dict | None:
+    """Read the current PR and take the one fallback action this poller owns."""
+    try:
+        pull_request = await github.get_pull_request(owner, repo_name, pr_number)
+    except Exception:
+        log.exception("poll_merged_github_error", pr_number=pr_number)
+        return None
+    return await _merge_open_pr_without_auto_merge(
+        api_client,
+        github,
+        redis_client,
+        story_id=story_id,
+        project_id=project_id,
+        owner=owner,
+        repo_name=repo_name,
+        pull_request=pull_request,
+        log=log,
+    )
 
 
 async def poll_merged_prs(
@@ -518,13 +762,18 @@ async def poll_merged_prs(
             log.warning("poll_merged_no_pr_number")
             continue
 
-        try:
-            pr_data = await github.get_pull_request(owner, repo_name, story.pr_number)
-        except Exception:
-            log.exception("poll_merged_github_error", pr_number=story.pr_number)
-            continue
-
-        if not pr_data.get("merged_at"):
+        pr_data = await _current_pull_request(
+            api_client,
+            github,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            owner=owner,
+            repo_name=repo_name,
+            pr_number=story.pr_number,
+            log=log,
+        )
+        if pr_data is None or not pr_data.get("merged_at"):
             continue
 
         merged_pr = pr_data
@@ -555,9 +804,11 @@ async def poll_merged_prs(
         if not await _images_ready_for_deploy(
             api_client,
             github,
+            redis_client,
             owner=owner,
             repo_name=repo_name,
             story_id=story_id,
+            project_id=project_id,
             head_sha=head_sha,
             deployed_commit_sha=deployed_commit_sha,
             pull_request=merged_pr,
@@ -662,6 +913,7 @@ async def poll_merged_prs(
 
 async def poll_ci_failures(
     api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
 ) -> int:
     """Check CI status on open PRs for stories in pr_review.
 
@@ -731,6 +983,7 @@ async def poll_ci_failures(
             created = await _handle_failed_run(
                 api_client,
                 github,
+                redis_client,
                 owner=owner,
                 repo_name=repo_name,
                 story_id=story_id,

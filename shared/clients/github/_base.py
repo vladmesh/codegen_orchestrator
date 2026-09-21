@@ -31,8 +31,11 @@ class GitHubAppClientBase:
         self.app_id = os.getenv("GITHUB_APP_ID")
         self.private_key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH")
         self._private_key = None
-        # Cache: installation_id -> (token, expires_at_utc)
-        self._token_cache: dict[int, tuple[str, datetime]] = {}
+        # Cache: installation_id -> (token, expires_at_utc) for installation-wide
+        # tokens, (installation_id, repo) -> ... for repository-scoped ones. The key
+        # shape differs so a broad token is never served where a scoped one was asked
+        # for, nor the other way round.
+        self._token_cache: dict[int | tuple[int, str], tuple[str, datetime]] = {}
 
         if not self.app_id:
             logger.warning("github_app_id_missing", env_var="GITHUB_APP_ID")
@@ -181,11 +184,23 @@ class GitHubAppClientBase:
 
         raise RuntimeError("No GitHub App installations found")
 
-    async def _get_installation_token(self, installation_id: int) -> str:
-        """Get or create installation access token with caching."""
+    async def _get_installation_token(
+        self, installation_id: int, *, repo: str | None = None
+    ) -> str:
+        """Get or create an installation access token with caching.
+
+        When `repo` is given the token is minted for that single repository
+        (`repositories` in the request body, which GitHub reads as repository
+        names, not full names). Permissions are left at the installation
+        default: nothing here knows a narrower set the consumer needs.
+        """
+        cache_key: int | tuple[int, str] = (
+            installation_id if repo is None else (installation_id, repo)
+        )
+
         # 1. Check cache
-        if installation_id in self._token_cache:
-            token, expires_at = self._token_cache[installation_id]
+        if cache_key in self._token_cache:
+            token, expires_at = self._token_cache[cache_key]
             # Buffer of 60 seconds
             if datetime.now(UTC) < expires_at - timedelta(seconds=60):
                 return token
@@ -196,12 +211,14 @@ class GitHubAppClientBase:
             "Authorization": f"Bearer {jwt_token}",
             "Accept": "application/vnd.github+json",
         }
+        kwargs: dict[str, Any] = {} if repo is None else {"json": {"repositories": [repo]}}
 
         try:
             resp = await self._make_request(
                 "POST",
                 f"https://api.github.com/app/installations/{installation_id}/access_tokens",
                 headers=headers,
+                **kwargs,
             )
             data = resp.json()
             token = data["token"]
@@ -212,11 +229,15 @@ class GitHubAppClientBase:
             )
 
             # 3. Update cache
-            self._token_cache[installation_id] = (token, expires_at)
+            self._token_cache[cache_key] = (token, expires_at)
 
             return token
         except Exception:
-            logger.exception("github_app_token_generation_failed", installation_id=installation_id)
+            logger.exception(
+                "github_app_token_generation_failed",
+                installation_id=installation_id,
+                repo=repo,
+            )
             raise
 
     async def get_org_token(self, org: str) -> str:
@@ -235,4 +256,19 @@ class GitHubAppClientBase:
             return await self._get_installation_token(installation_id)
         except Exception:
             logger.exception("github_app_token_failed", owner=owner, repo=repo)
+            raise
+
+    async def get_repo_scoped_token(self, owner: str, repo: str) -> str:
+        """Get an access token valid for `owner/repo` only.
+
+        `get_token` resolves the installation containing the repository and
+        returns a token good for every repository that installation covers.
+        This mint narrows it to the one repository, so a credential handed to
+        an ephemeral worker container cannot reach another tenant's code.
+        """
+        try:
+            installation_id = await self.get_installation_id(owner, repo)
+            return await self._get_installation_token(installation_id, repo=repo)
+        except Exception:
+            logger.exception("github_app_scoped_token_failed", owner=owner, repo=repo)
             raise

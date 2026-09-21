@@ -107,6 +107,12 @@ def _bot_section(bot_username: str) -> str:
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
   sent the message, you have no result to report. Do not substitute code reading.
+  The one exception is a call that answers `not_applicable`: the transport
+  refused the input before it reached the bot, so report that check in the
+  not-applicable form, never as failed (see "Not applicable").
+  A check that needs a photo upload or another action the calls above cannot
+  send fails with cause `qa_capability`, and a bot that refuses the QA account
+  fails with cause `qa_access`; neither is a product failure.
 - If either Telegram call returns an error, stop testing and submit no product
   failure for it. The runtime records this as a non-product blocker.
 """
@@ -153,6 +159,11 @@ After storing the report, write this JSON to a file and submit it with
 `{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
 and only after every check is done.
 {_RESULT_JSON}
+Top-level `pass` is false whenever any check failed, whatever its cause.
+{_NOT_APPLICABLE_RULE}
+{_FAILED_DETAIL_RULE}
+{_ACCUMULATED_STATE_RULE}
+{_FAILURE_CAUSE_RULE}
 The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
 calls it has no result, and is reported to a human as unverified rather than as
 a passing or failing product.\
@@ -162,9 +173,81 @@ a passing or failing product.\
 _RESULT_JSON = """\
 {
   "pass": true/false,
-  "checks": [{"name": "check name", "pass": true/false, "detail": "one-line summary"}],
+  "checks": [
+    {"name": "passed check", "pass": true, "detail": "one-line summary"},
+    {"name": "failed check", "pass": false, "detail": "one-line summary",
+     "cause": "product" | "qa_capability" | "qa_access"},
+    {"name": "not applicable check", "not_applicable": true, "detail": "one-line summary"}
+  ],
   "summary": "brief summary"
 }
+"""
+
+
+_NOT_APPLICABLE_RULE = """\
+## Not applicable
+A check you added beyond the acceptance criteria whose input the transport
+refused — a call answered `not_applicable` — is reported in the not-applicable
+form: `name`, `"not_applicable": true` and a `detail` quoting that answer, with
+no `pass` and no `cause`. A not-applicable check is not a failed check and does
+not make top-level `pass` false. Use the form only after a call answered
+`not_applicable`: the runner accepts it only where it recorded that refusal
+itself, and otherwise counts the check as failed with cause `qa_capability`.
+An acceptance-criterion check is never not applicable: it passes or fails.
+"""
+
+
+_FAILED_DETAIL_RULE = """\
+## What a failed check's detail says
+The `detail` of a failed check is the whole of what the developer who fixes it
+is told, so it must say what was expected and what came back. Quote the expected
+value or wording exactly as the criterion states it, and the value you received
+exactly as you received it, in this form:
+`expected: <value or wording quoted from the criterion>; received: <actual value or reply>`.
+A detail that only says the wording or value is wrong, without both quotes, is
+not a valid failed check.
+"""
+
+
+_ACCUMULATED_STATE_RULE = """\
+## Accumulated state
+You always act as the same QA identity, and the records it made in earlier QA
+rounds and earlier stories stay in the product: you cannot and must not reset
+them. So when a criterion's expected value depends on data this identity may
+already have in the product — a balance, a total, a count, a list of records,
+"no records yet" — judge the change the criterion implies, not the absolute value:
+1. First read the starting value through the same observable (the command, reply
+   or GET the criterion checks) and record it in the check's detail.
+2. Perform the criterion's sequence.
+3. Judge the change. The criterion describes the sequence on a fresh account, so
+   its expected value is the change from zero: "after income 5000 and expense 300
+   the balance is 4700" is met when the balance grew by 4700 from the observed
+   start, and the reply keeps the criterion's wording form. A start of 9400 and a
+   reply of 14100 in that form passes; a reply of 9400 fails.
+A failed check of accumulated state quotes the start plus the change in the
+criterion's wording and names the observed starting value, for example
+`expected: /balance отвечает 14100 (start 9400 + 4700); received: 9400`.
+A starting value you cannot read makes the check unverifiable, not a product
+failure: report it failed with cause `qa_capability` when your calls cannot read
+it and `qa_access` when the product refuses the QA identity. A reply to a
+stateless message — one that does not depend on earlier records — is still
+matched exactly as the criterion words it.
+"""
+
+
+_FAILURE_CAUSE_RULE = """\
+## Why a check failed
+Every failed check carries a `cause`, and a passed check carries none. A result
+with a failed check that has no cause, or any other cause, is rejected.
+- `product` — you performed the check and the application answered wrongly.
+  Only this cause is a product failure.
+- `qa_capability` — the criterion needs an action your tools cannot perform,
+  for example an HTTP write (POST, PUT, DELETE) or a photo upload. A criterion
+  that needs a photo, file or other media sent to the bot is one of these. Report
+  the check as failed with this cause; it is never a product failure.
+- `qa_access` — the product refused the QA identity: a private bot that does not
+  answer the QA account, an endpoint answering 401 or 403 to QA. Report the
+  check as failed with this cause; it is never a product failure.
 """
 
 
@@ -260,9 +343,12 @@ CRITICAL RULES:
 {_PROBE_SECTION}{_DISPATCH_RULE}
 ## Checklist
 1. Health endpoint responds with 200
-2. Every check from acceptance criteria — execute and verify
+2. Every check from acceptance criteria — execute and verify; for a value that
+   accumulates, read its starting value first (see "Accumulated state")
 3. {_container_checklist_item(established_facts)}
-4. Edge cases — empty input, missing parameters, invalid values
+4. Edge cases you add beyond the acceptance criteria — missing parameters,
+   invalid values — using only inputs the transport can deliver. Over Telegram,
+   never send an empty or whitespace-only message: Telegram cannot carry one.
 
 {_report_section()}
 In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste the actual

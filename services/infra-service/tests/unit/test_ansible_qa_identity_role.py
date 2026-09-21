@@ -26,13 +26,22 @@ acceptance against a real target is a separate card.
 
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import jinja2
+from jinja2 import meta
 import pytest
 import yaml
 
 from shared.qa_identity import QA_SSH_USER
+from shared.qa_target_profile import (
+    QA_DOCKER_REQUIRED_VERBS,
+    QA_TARGET_PROFILE_VERSION,
+    proved_profile_version,
+    qa_target_artefact_digest,
+    wrapper_answer_problem,
+)
 
 ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 ROLE = ANSIBLE_DIR / "roles" / "qa_identity"
@@ -52,6 +61,17 @@ def _tasks() -> list[dict]:
 
 def _task_named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task["name"] == name)
+
+
+def _strings(value) -> list[str]:
+    """Every scalar inside a task argument, each one a template on its own."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
 
 
 def _defaults() -> dict:
@@ -329,6 +349,8 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         sudo: str | None = SUDO_ONE_WRAPPER,
         socket_reachable: bool = False,
         keys: str | None = SENTINEL,
+        wrapper_answer: str | None = None,
+        admin_can: bool = True,
     ) -> Path:
         stubs = tmp_path / "bin"
         stubs.mkdir(exist_ok=True)
@@ -350,7 +372,24 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
             "sudo",
             "exit 1" if sudo is None else f"cat <<'LISTING'\n{sudo}\nLISTING",
         )
-        _stub(stubs, "runuser", f"exit {0 if socket_reachable else 1}")
+        # `runuser -u ACCOUNT -- sudo -n WRAPPER version` is the account asking the
+        # wrapper which profile it is; by default that is this role's own wrapper
+        # file answering. Every other `runuser` is the socket question.
+        answer = (
+            f"exec {WRAPPER} version"
+            if wrapper_answer is None
+            else f"cat <<'ANSWER'\n{wrapper_answer}\nANSWER\nexit 0"
+        )
+        # Every other `runuser` is a `test` put to an account: the socket
+        # question, always as the QA account, and whether the administrative
+        # account can reach the seat, always as some other account.
+        _stub(
+            stubs,
+            "runuser",
+            f'if [ "$4" = "sudo" ]; then\n{answer}\nfi\n'
+            f'if [ "$2" != "{QA_SSH_USER}" ]; then exit {0 if admin_can else 1}; fi\n'
+            f"exit {0 if socket_reachable else 1}",
+        )
         return stubs
 
     def _prove(
@@ -360,10 +399,19 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         *,
         sshd: str = "admits",
         login_as: str = QA_SSH_USER,
+        admin: str = "root",
     ) -> subprocess.CompletedProcess:
         keys = stubs.parent / "home" / ".ssh" / "authorized_keys"
         return subprocess.run(
-            [str(PROOF), QA_SSH_USER, "/usr/local/bin/qa-docker", str(socket), SENTINEL],
+            [
+                str(PROOF),
+                QA_SSH_USER,
+                "/usr/local/bin/qa-docker",
+                str(socket),
+                SENTINEL,
+                QA_TARGET_PROFILE_VERSION,
+                admin,
+            ],
             capture_output=True,
             text=True,
             env={
@@ -445,7 +493,79 @@ class TestTheTargetProvesTheAccountCannotBecomeRoot:
         # so "this file is the one this role wrote" is asked with the role's own
         # sentinel rather than with a copy of it kept in the script.
         assert "{{ qa_authorized_keys_sentinel | quote }}" in proof["cmd"]
+        # The profile the wrapper must answer with travels in from the role's
+        # defaults, the same value the orchestrator pins.
+        assert "{{ qa_target_profile_version | quote }}" in proof["cmd"]
         assert _task_index(PROOF_TASK) == len(_tasks()) - 1
+
+    def test_the_proof_reports_the_profile_it_proved(self, tmp_path, socket):
+        """The receipt is written from this line, so it has to name the exact profile."""
+        result = self._prove(self._target(tmp_path), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            # The wrapper production target 5wwb carried: it predates `version`.
+            "qa-docker: docker version is refused on this host; "
+            "allowed: diff inspect logs port ps stats top",
+            "qa-docker profile=0123456789abcdef verbs=diff inspect logs port ps read-contract "
+            "stats top version",
+        ],
+    )
+    def test_a_seat_whose_wrapper_is_not_the_current_profile_is_refused(
+        self, tmp_path, socket, answer
+    ):
+        """Same path, same sudo rule, older file: the seat is not the one QA speaks to."""
+        result = self._prove(self._target(tmp_path, wrapper_answer=answer), socket)
+
+        assert result.returncode != 0
+        assert f"not QA target profile {QA_TARGET_PROFILE_VERSION}" in result.stderr
+        assert "qa_target_version=" not in result.stdout
+
+    # A host whose own name does not resolve makes sudo print this on stderr
+    # before it runs anything, and the account asks the wrapper through sudo.
+    SUDO_WARNING = "sudo: unable to resolve host vps-275301: Name or service not known"
+
+    @pytest.mark.parametrize("where", ["before", "after"])
+    def test_a_sudo_warning_beside_the_answer_is_not_an_old_wrapper(self, tmp_path, socket, where):
+        """What vps-275301's retrofit was refused on, with the right wrapper installed.
+
+        `sudo` writes that warning to stderr, the proof reads the answer with
+        stderr joined on — deliberately, because a wrapper that fails has
+        nothing else to say — and a host that cannot resolve its own name was
+        then reported as one carrying a wrapper of some other profile. The
+        wrapper's own line is what answers the question, so it is the line that
+        is read.
+        """
+        current = (
+            f"qa-docker profile={QA_TARGET_PROFILE_VERSION} "
+            f"verbs={' '.join(sorted(QA_DOCKER_REQUIRED_VERBS))}"
+        )
+        noisy = (
+            f"{self.SUDO_WARNING}\n{current}"
+            if where == "before"
+            else f"{current}\n{self.SUDO_WARNING}"
+        )
+
+        result = self._prove(self._target(tmp_path, wrapper_answer=noisy), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert proved_profile_version(result.stdout) == QA_TARGET_PROFILE_VERSION
+
+    def test_a_sudo_warning_does_not_excuse_a_wrapper_of_another_profile(self, tmp_path, socket):
+        """Tolerating the noise is not tolerating the answer underneath it."""
+        noisy = (
+            f"{self.SUDO_WARNING}\nqa-docker profile=0123456789abcdef "
+            f"verbs={' '.join(sorted(QA_DOCKER_REQUIRED_VERBS))}"
+        )
+
+        result = self._prove(self._target(tmp_path, wrapper_answer=noisy), socket)
+
+        assert result.returncode != 0
+        assert f"not QA target profile {QA_TARGET_PROFILE_VERSION}" in result.stderr
 
     def test_a_failed_proof_is_what_stops_the_identity_being_recorded(self):
         """The provisioner writes the label only when the playbook succeeded.
@@ -543,6 +663,40 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert result.returncode != 0
         assert "instead" in result.stderr
 
+    def test_an_administrative_account_that_cannot_reach_the_seat_is_refused(
+        self, tmp_path, socket
+    ):
+        """The seat is lent by the administrative account, not by root.
+
+        `_qa_target.py` appends the run key to this file over SSH as the account
+        the target is managed as, without sudo. On prod-target-5wwb that account
+        is `prod-deploy`, and the deploy of 2026-09-14 left its ACL entries on a
+        0700 `.ssh` with an empty mask: the role reported `ready` and QA run
+        qa-deploy-poll-de17120d then parked story-f8788965 on
+        `qa_identity_unreadable`. A seat nobody can lend is not a seat.
+        """
+        result = self._prove(self._target(tmp_path, admin_can=False), socket, admin="prod-deploy")
+
+        assert result.returncode != 0
+        assert "prod-deploy" in result.stderr
+
+    def test_an_administrative_account_that_can_reach_the_seat_passes(self, tmp_path, socket):
+        result = self._prove(self._target(tmp_path), socket, admin="prod-deploy")
+
+        assert result.returncode == 0, result.stderr
+        assert "prod-deploy" in result.stdout
+
+    def test_a_root_administrative_account_is_asked_nothing(self, tmp_path, socket):
+        """root reaches the file by being root; an ACL entry for it would be noise."""
+        result = self._prove(self._target(tmp_path, admin_can=False), socket, admin="root")
+
+        assert result.returncode == 0, result.stderr
+
+    def test_the_role_tells_the_proof_which_account_lends_the_seat(self):
+        proof = _task_named(_tasks(), PROOF_TASK)["ansible.builtin.script"]
+
+        assert "deploy_user" in proof["cmd"]
+
     def test_the_role_puts_the_ssh_client_the_proof_needs_on_the_target(self):
         """The proof takes the seat, so the target needs a client to take it with.
 
@@ -559,6 +713,85 @@ class TestTheTargetProvesAQARunCanTakeTheSeat:
         assert install["ansible.builtin.apt"]["state"] == "present"
         assert _task_index(install["name"]) < _task_index(PROOF_TASK)
         assert PROOF_TASK in names
+
+
+ADMIN_ACL_GRANTS = {
+    "{{ qa_ssh_home }}/.ssh": "rwx",
+    "{{ qa_ssh_home }}/.ssh/authorized_keys": "rw",
+}
+
+MODE_TASKS = (
+    "Create the QA account's SSH directory",
+    "Open the QA account's authorized_keys with a line that is never a key",
+)
+
+
+def _when(task: dict) -> list[str]:
+    condition = task.get("when", [])
+    return [condition] if isinstance(condition, str) else list(condition)
+
+
+class TestTheAdministrativeAccountCanLendTheQASeat:
+    """The precondition the runtime borrows the seat on, provisioned by the role.
+
+    A central QA run appends its one-shot key to the QA account's
+    `authorized_keys` over SSH as the account the target is managed as, without
+    sudo — so on a target whose administrative account is not root, that account
+    needs a search and a write inside a 0700 `.ssh` it does not own. Nothing in
+    this repository granted it: production worked only because somebody wrote
+    the ACL entries by hand in August, and a fresh Stand target is managed as
+    root, which is why the Stand never saw it.
+
+    Worse, the two mode tasks above recompute the ACL mask from the group bits
+    of the mode they set, so the deploy of 2026-09-14 reduced those hand-made
+    entries to `#effective:---` and QA run qa-deploy-poll-de17120d parked
+    story-f8788965 on `qa_identity_unreadable`. Hence both halves below: the
+    entry, and a mask that leaves it effective — after the modes that would
+    otherwise undo them.
+    """
+
+    def _acl(self, path: str, etype: str) -> dict:
+        return next(
+            task
+            for task in _tasks()
+            if task.get("ansible.posix.acl", {}).get("path") == path
+            and task["ansible.posix.acl"]["etype"] == etype
+        )
+
+    @pytest.mark.parametrize(("path", "permissions"), sorted(ADMIN_ACL_GRANTS.items()))
+    def test_the_administrative_account_gets_what_the_grant_script_tests_for(
+        self, path, permissions
+    ):
+        """The same four tests `_INSTALL_GRANT` makes, granted here."""
+        grant = self._acl(path, "user")["ansible.posix.acl"]
+
+        assert grant["entity"] == "{{ deploy_user }}"
+        assert grant["permissions"] == permissions
+        assert grant["state"] == "present"
+
+    @pytest.mark.parametrize(("path", "permissions"), sorted(ADMIN_ACL_GRANTS.items()))
+    def test_the_mask_leaves_that_entry_effective(self, path, permissions):
+        """An entry under a `---` mask grants nothing, which is the live defect."""
+        mask = self._acl(path, "mask")["ansible.posix.acl"]
+
+        assert mask["permissions"] == permissions
+        assert mask["state"] == "present"
+
+    @pytest.mark.parametrize(
+        ("path", "etype"), [(p, e) for p in ADMIN_ACL_GRANTS for e in ("user", "mask")]
+    )
+    def test_a_root_administrative_account_is_granted_nothing(self, path, etype):
+        """root already reaches the file, and an entry for it would be noise."""
+        assert "deploy_user != 'root'" in " ".join(_when(self._acl(path, etype)))
+
+    @pytest.mark.parametrize(
+        ("path", "etype"), [(p, e) for p in ADMIN_ACL_GRANTS for e in ("user", "mask")]
+    )
+    def test_the_grant_comes_after_the_modes_that_would_undo_it(self, path, etype):
+        grant = _task_index(self._acl(path, etype)["name"])
+
+        assert all(grant > _task_index(name) for name in MODE_TASKS)
+        assert grant < _task_index(PROOF_TASK)
 
 
 def _apply_user_module(before: dict, params: dict) -> dict:
@@ -846,6 +1079,99 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
         assert "qa_identity_proof.stdout" in report["qa_identity_proof"]
 
 
+class TestAPlayReportReadsOnlyWhatThePlayHas:
+    """A play-level task is templated in the play's scope, never in a role's.
+
+    `include_role` is dynamic: the defaults of the role it pulls in live inside
+    the include and are gone again by the time a later play task is templated,
+    unless the include says `public`. The retrofit's own host report named
+    `qa_ssh_user` — a default of `qa_identity` — and both managed production
+    targets failed on it after every change the playbook makes had already been
+    applied, which is the worst place for a play to stop: the work is done and
+    the caller is told the host is broken.
+
+    So every variable a play-level report names is checked here against what the
+    play can actually see: its own vars and vars_files, the facts its tasks and
+    its roles' tasks register, and the defaults of the roles it includes
+    publicly. Registered variables are host facts and survive any include; role
+    defaults do not.
+    """
+
+    # Supplied by Ansible itself or by the caller's `-e`, not by this play.
+    AMBIENT = frozenset({"inventory_hostname", "ansible_facts", "item", "target_host"})
+
+    def _play(self, playbook: Path) -> dict:
+        return yaml.safe_load(playbook.read_text())[0]
+
+    def _role(self, name: str) -> Path:
+        return ANSIBLE_DIR / "roles" / name
+
+    @staticmethod
+    def _facts(task: dict) -> set[str]:
+        """What one task leaves behind as a host fact, which outlives any scope."""
+        names = {task["register"]} if "register" in task else set()
+        for key in ("set_fact", "ansible.builtin.set_fact"):
+            names |= {name for name in (task.get(key) or {}) if name != "cacheable"}
+        return names
+
+    def _visible(self, playbook: Path) -> set[str]:
+        play = self._play(playbook)
+        names = set(self.AMBIENT) | set(play.get("vars") or {})
+        for relative in play.get("vars_files") or []:
+            names |= set(yaml.safe_load((playbook.parent / relative).read_text()) or {})
+        for task in [
+            *(play.get("pre_tasks") or []),
+            *play["tasks"],
+            *(play.get("post_tasks") or []),
+        ]:
+            names |= self._facts(task)
+            include = task.get("ansible.builtin.include_role") or task.get("include_role")
+            if include is None:
+                continue
+            role_tasks = yaml.safe_load(
+                (self._role(include["name"]) / "tasks" / "main.yml").read_text()
+            )
+            for role_task in role_tasks or []:
+                names |= self._facts(role_task)
+            if not include.get("public"):
+                continue
+            for scope in ("defaults", "vars"):
+                source = self._role(include["name"]) / scope / "main.yml"
+                if source.exists():
+                    names |= set(yaml.safe_load(source.read_text()) or {})
+        return names
+
+    def _reports(self, playbook: Path):
+        for task in self._play(playbook)["tasks"]:
+            body = task.get("ansible.builtin.debug", task.get("debug"))
+            if body is not None:
+                yield task["name"], body
+
+    @pytest.mark.parametrize(
+        "playbook",
+        [SOFTWARE_PLAYBOOK, RETROFIT_PLAYBOOK],
+        ids=lambda path: path.name,
+    )
+    def test_every_variable_a_play_level_report_names_is_in_scope(self, playbook):
+        visible = self._visible(playbook)
+
+        env = jinja2.Environment(autoescape=False)  # noqa: S701
+
+        for name, body in self._reports(playbook):
+            referenced: set[str] = set()
+            for text in _strings(body):
+                referenced |= meta.find_undeclared_variables(env.parse(text))
+            missing = sorted(referenced - visible)
+
+            assert not missing, f"{playbook.name}: {name!r} reads {missing}, which the play has not"
+
+    def test_the_retrofit_report_reads_the_role_defaults_through_a_public_include(self):
+        """The fix, stated where a later edit would have to undo it deliberately."""
+        include = _task_named(self._play(RETROFIT_PLAYBOOK)["tasks"], "Create the QA run identity")
+
+        assert include["ansible.builtin.include_role"]["public"] is True
+
+
 class TestTheTargetRefusesWhatWrites:
     """The wrapper, run as the target runs it, against a docker that records."""
 
@@ -952,3 +1278,53 @@ class TestTheTargetRefusesWhatWrites:
         names = set(allowed.split('"')[1].split())
         assert {"diff", "inspect", "logs", "port", "stats", "top"} <= names
         assert "ps" in names, "capability resolution asks docker which containers this project has"
+        assert QA_DOCKER_REQUIRED_VERBS <= names
+
+    def test_version_answers_the_pinned_profile_and_every_required_verb(self, docker):
+        result = self._wrapper(docker, "version")
+
+        assert result.returncode == 0, result.stderr
+        assert wrapper_answer_problem(result.stdout) is None
+        assert not docker.exists(), "version is answered by the wrapper, not by docker"
+
+    def test_version_takes_no_arguments_and_never_reaches_docker(self, docker):
+        result = self._wrapper(docker, "version", "--format", "{{json .}}")
+
+        assert result.returncode != 0
+        assert not docker.exists()
+
+
+class TestTheProfileVersionIsBoundToTheRoleFiles:
+    """`QA_TARGET_PROFILE_VERSION` is what these files say, mechanically.
+
+    A change to any role artefact — the wrapper's verbs above all — changes the
+    derived version, so this fails until the pinned constant, the wrapper's
+    line and the defaults' line are updated together. A host that still carries
+    the old files then answers an old profile and is refused.
+    """
+
+    def test_the_pinned_version_is_derived_from_the_role_files(self):
+        assert qa_target_artefact_digest(ROLE) == QA_TARGET_PROFILE_VERSION
+
+    def test_the_wrapper_and_the_defaults_carry_the_pinned_version(self):
+        assert f"QA_TARGET_PROFILE_VERSION={QA_TARGET_PROFILE_VERSION}\n" in WRAPPER.read_text()
+        assert _defaults()["qa_target_profile_version"] == QA_TARGET_PROFILE_VERSION
+
+    def test_changing_a_role_artefact_changes_the_version(self, tmp_path):
+        copy = tmp_path / "qa_identity"
+        shutil.copytree(ROLE, copy)
+        wrapper = copy / "files" / "qa-docker"
+        wrapper.write_text(wrapper.read_text().replace(" read-contract", "", 1))
+
+        assert qa_target_artefact_digest(copy) != QA_TARGET_PROFILE_VERSION
+
+    def test_the_version_lines_alone_do_not_change_the_version(self, tmp_path):
+        """Otherwise the version could never be written into the files it describes."""
+        copy = tmp_path / "qa_identity"
+        shutil.copytree(ROLE, copy)
+        wrapper = copy / "files" / "qa-docker"
+        wrapper.write_text(
+            wrapper.read_text().replace(QA_TARGET_PROFILE_VERSION, "ffffffffffffffff")
+        )
+
+        assert qa_target_artefact_digest(copy) == QA_TARGET_PROFILE_VERSION

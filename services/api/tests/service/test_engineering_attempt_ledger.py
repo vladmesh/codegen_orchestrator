@@ -46,6 +46,15 @@ async def _project(client: AsyncClient, telegram_id: int) -> dict:
     return response.json()
 
 
+async def _story(client: AsyncClient, project_id: str) -> dict:
+    response = await client.post(
+        "/api/stories/",
+        json={"project_id": project_id, "title": "Ledger dispatch story"},
+    )
+    assert response.status_code == HTTPStatus.CREATED, response.text
+    return response.json()
+
+
 @pytest.mark.asyncio
 async def test_project_bound_run_uses_project_owner_not_supplied_user(async_client: AsyncClient):
     owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
@@ -170,8 +179,8 @@ async def test_terminal_engineering_run_preserves_provider_reported_cost(
     assert rows.json()[0]["cache_read_tokens"] == 4
     assert rows.json()[0]["cache_write_tokens"] == 3
     run = await async_client.get(f"/api/runs/{run_id}")
-    assert run.json()["total_tokens"] == 17
-    assert run.json()["cost_usd"] == pytest.approx(0.040001)
+    assert "total_tokens" not in run.json()
+    assert "cost_usd" not in run.json()
 
 
 @pytest.mark.asyncio
@@ -756,9 +765,15 @@ async def test_manual_handoff_failure_only_aborts_before_queue_attempt(
         f"/api/engineering-budget-policies/{user['id']}",
         json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
     )
+    story = await _story(async_client, project["id"])
     created = await async_client.post(
         "/api/tasks/",
-        json={"project_id": project["id"], "title": "Dispatch failure", "type": "feature"},
+        json={
+            "project_id": project["id"],
+            "story_id": story["id"],
+            "title": "Dispatch failure",
+            "type": "feature",
+        },
     )
     assert created.status_code == HTTPStatus.CREATED, created.text
     if failure == "recipient":

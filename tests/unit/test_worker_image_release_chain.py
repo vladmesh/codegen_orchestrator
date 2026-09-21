@@ -55,15 +55,21 @@ def _index_of(steps: list[tuple[str, str]], needle: str) -> int:
     return matches[0]
 
 
+def _indices_of(steps: list[tuple[str, str]], needle: str) -> list[int]:
+    matches = [index for index, (_name, script) in enumerate(steps) if needle in script]
+    assert matches, f"expected at least one step containing {needle!r}"
+    return matches
+
+
 def test_deploy_verifies_worker_images_before_it_changes_what_is_running():
     steps = _deploy_steps()
     verification = _index_of(steps, "pull-worker-images.sh")
-    mutation = _index_of(steps, "up -d")
+    mutations = _indices_of(steps, "up -d")
 
-    assert verification < mutation, (
+    assert all(verification < mutation for mutation in mutations), (
         f"worker images are verified in step {verification} "
-        f"({steps[verification][0]}) but production is replaced in step {mutation} "
-        f"({steps[mutation][0]}); an incompatible image must fail before compose up -d"
+        f"({steps[verification][0]}) but production changes in steps {mutations}; "
+        "an incompatible image must fail before every compose up -d"
     )
 
 
@@ -87,7 +93,7 @@ def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again(
     script = steps[record][1]
 
     assert f"DIGEST_FILE='{HOST_RECORD}'" in steps[pull][1]
-    assert pull < record < _index_of(steps, "up -d")
+    assert pull < record < min(_indices_of(steps, "up -d"))
     assert HOST_RECORD in script
     assert "imagetools" not in script, "the record must not be a second resolution"
 

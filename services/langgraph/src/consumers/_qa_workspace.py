@@ -113,6 +113,24 @@ class QAWorkspace:
     def verdict_path(self) -> Path:
         return self.path / VERDICT_NAME
 
+    @property
+    def transport_refusals(self) -> list[QATelegramProbeEvidence]:
+        """Inputs the runtime refused because the transport cannot carry them.
+
+        Today that is `telegram_probe` refusing an empty or whitespace-only
+        message: a message operation with nothing to send, never delivered and
+        with no error, which no real probe records. These are the only grounds
+        on which an executor's not-applicable check is accepted.
+        """
+        return [
+            evidence
+            for evidence in self.telegram_probe_evidence
+            if evidence.action == "message"
+            and evidence.delivered is False
+            and evidence.error is None
+            and not evidence.sent.strip()
+        ]
+
     def submit_verdict(self, raw: str) -> None:
         """Keep the executor's final result JSON, whoever the executor was.
 

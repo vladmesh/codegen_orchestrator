@@ -10,17 +10,15 @@ import json
 
 import pytest
 
-from src.agents.po.tools import (
-    confirm_product_brief,
+from src.agents.po.tools_briefs import confirm_product_brief, present_product_brief
+from src.agents.po.tools_projects import (
     create_project,
-    create_story,
     get_project,
     list_projects,
-    list_stories,
-    present_product_brief,
     set_project_secret,
 )
 from src.agents.po.tools_shared import init_po_clients
+from src.agents.po.tools_stories import create_story, list_stories
 
 from .conftest import make_config
 
@@ -50,7 +48,28 @@ async def confirmed_brief_id(
                     "wording_reference": "chat 2026-09-02, the user's second message",
                 },
             ],
-            "initial_settings": [{"key": "reminders.default_hour", "scope": "product", "value": 9}],
+            "language": "en",
+            "usage_examples": [
+                {
+                    "requirement_id": "r1",
+                    "user_sends": "the text: buy milk",
+                    "product_answers": "Added: buy milk",
+                },
+                {
+                    "requirement_id": "r2",
+                    "user_sends": "nothing — at 9:00 the bot writes first",
+                    "product_answers": "Reminder: buy milk",
+                },
+            ],
+            "limitations": ["Reminders go out once a day, at the default hour"],
+            "initial_settings": [
+                {
+                    "key": "reminders.default_hour",
+                    "scope": "product",
+                    "value": 9,
+                    "description": "Reminders are sent at 9:00",
+                }
+            ],
         },
         config=make_config(),
     )
@@ -304,6 +323,10 @@ class TestCreateStoryIntegration:
                 "must_requirements": [
                     {"id": "r1", "text": "It answers", "user_wording": "it should answer me"}
                 ],
+                "language": "en",
+                "usage_examples": [
+                    {"requirement_id": "r1", "user_sends": "the text hi", "product_answers": "hi"}
+                ],
             },
             config=make_config(),
         )
@@ -320,6 +343,10 @@ class TestCreateStoryIntegration:
                 "summary": "A bot presented twice.",
                 "must_requirements": [
                     {"id": "r1", "text": "It answers", "user_wording": "it should answer me"}
+                ],
+                "language": "en",
+                "usage_examples": [
+                    {"requirement_id": "r1", "user_sends": "the text hi", "product_answers": "hi"}
                 ],
             },
             config=make_config(),

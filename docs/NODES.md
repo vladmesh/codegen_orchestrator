@@ -41,7 +41,7 @@ incomplete cost coverage without exposing reservation internals.
 - `notify_user`: proactive message to user via `po:proactive` stream
 - `web_search`: searching the documentation of external APIs through DuckDuckGo
 
-**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW). All other system events are dropped — the PO checks progress through reminders.
+**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW), and the non-terminal `story_requirements_returned` (the architect's admitted plan returned must-requirements; published by the architect consumer, replayed from the unacknowledged job until `po:input` accepts it), and the non-terminal `story_stage` (the scheduler's stage notice: the stage a story in work is at, what it waits for and the magnitude of the wait, on entry and after each quiet interval). The rest of `OwnerNotificationEvent` is routed too. All other system events are dropped — the PO checks progress through reminders.
 
 **Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
@@ -76,7 +76,7 @@ incomplete cost coverage without exposing reservation internals.
 - The user is notified through the PO (a `story_blocked` event)
 - The worker container is **not removed** (the admin can inspect it)
 
-To resume: `POST /tasks/{id}/resume` (the admin gives guidance, task WHR → IN_DEV).
+To resume: `POST /tasks/{id}/resume`, the one operator retry — the admin gives guidance, the task goes WHR → `todo` on a fresh iteration with its own retry budget, the story returns to `in_progress`, and the dispatcher starts a new run (see PIPELINE_V2 → Operator resume).
 
 **Output**: code in the repository, pushed to the story branch | Or `GAVE_UP` → the WHR flow
 
@@ -185,7 +185,7 @@ infra-service
 **Output**: the results go to the Redis Stream `provisioner:results`
 
 Server discovery is fail-closed: unknown provider servers are recorded as reserved and unmanaged.
-The scheduler publishes provisioning triggers only for managed records, including its startup retry
+`scheduler-infrastructure` publishes provisioning triggers only for managed records, including its startup retry
 path. The infra-service repeats both the managed-record check and the provider-ID allowlist check
 before any provisioning path, then repeats the allowlist at the destructive operation boundary, so
 direct or stale queue messages cannot bypass the discovery policy. Unauthorized scheduled rows are
@@ -247,4 +247,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → User
 ```
 
-**Important**: the PO ReactAgent coordinates the flow through LangChain tools. The Scaffolder prepares the repository before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. The scheduler PR poller detects a merge and triggers deploy.
+**Important**: the PO ReactAgent coordinates the flow through LangChain tools. The Scaffolder prepares the repository before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. The `scheduler-pipeline` PR poller detects a merge and triggers deploy.

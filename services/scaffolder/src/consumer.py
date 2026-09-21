@@ -22,6 +22,7 @@ from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
+from shared.notifications import notify_admins_best_effort
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
 from shared.redis import RedisStreamClient
 from src.clients.api import get_api_client
@@ -152,6 +153,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     except Exception as exc:
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
+        if msg.mode == "ensure":
+            # An exception is an ensure failure like any other: recorded, so the
+            # API parks the project's stories instead of refusing them silently.
+            await _record_scaffold_error(msg, error, api, log)
         return {"status": "failed", "error": error}
     finally:
         lease_refresh.cancel()
@@ -225,7 +230,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     )
 
     if result.success:
-        await _update_project_on_success(msg, result, api, settings, log)
+        project_config = await _update_project_on_success(msg, result, api, settings, log)
 
         # Set branch protection + auto-merge (non-fatal — scaffold succeeds regardless)
         try:
@@ -240,11 +245,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
         except Exception:
             log.warning("branch_protection_failed", exc_info=True)
 
-        try:
-            await github.enable_repo_auto_merge(org, msg.project_name)
-            log.info("repo_auto_merge_enabled")
-        except Exception:
-            log.warning("repo_auto_merge_enable_failed", exc_info=True)
+        await _verify_repo_auto_merge(msg, github, api, org, project_config, log)
 
         await api.update_project_status(msg.project_id, ProjectStatus.ACTIVE)
         log.info("scaffold_job_success")
@@ -288,6 +289,33 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     return {"status": "failed", "error": result.error or "unknown error"}
 
 
+async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) -> None:
+    """Prove GitHub accepted repository auto-merge, or leave an actionable record."""
+    try:
+        await github.enable_repo_auto_merge(org, msg.project_name)
+        repository = await github.get_repo(org, msg.project_name)
+        if getattr(repository, "allow_auto_merge", None) is not True:
+            raise RuntimeError("GitHub read-back reported allow_auto_merge=false")
+        if "repo_auto_merge_verification" in project_config:
+            project_config.pop("repo_auto_merge_verification")
+            await api.update_project_config(msg.project_id, project_config)
+        log.info("repo_auto_merge_verified")
+    except Exception as exc:
+        error = redact_diagnostic(exc)
+        log.error("repo_auto_merge_verification_failed", error=error, exc_info=True)
+        project_config["repo_auto_merge_verification"] = {"status": "failed", "error": error}
+        try:
+            await api.update_project_config(msg.project_id, project_config)
+        except Exception:
+            log.exception("repo_auto_merge_failure_mark_write_failed")
+        await notify_admins_best_effort(
+            f"Repository {org}/{msg.project_name} did not enable auto-merge: {error}",
+            level="error",
+            project_id=msg.project_id,
+            repository_id=msg.repository_id,
+        )
+
+
 async def _process_ensure_mode(
     msg,
     repo_full_name,
@@ -329,20 +357,27 @@ async def _process_ensure_mode(
         return {"status": "success"}
 
     log.error("ensure_workspace_failed", error=result.error)
-
-    # Mark project so scaffold_trigger stops retrying every cycle
-    try:
-        project = await api.get_project(msg.project_id)
-        config = dict(project.config) if project.config else {}
-        config["scaffold_error"] = result.error or "unknown error"
-        await api.update_project_config(msg.project_id, config)
-    except Exception:
-        log.warning("failed_to_mark_scaffold_error")
-
+    await _record_scaffold_error(msg, result.error or "unknown error", api, log)
     return {"status": "failed", "error": result.error or "unknown error"}
 
 
-async def _update_project_on_success(msg, result, api, settings, log) -> None:
+async def _record_scaffold_error(msg, error: str, api, log) -> None:
+    """Record a failed ensure on the project.
+
+    `scaffold_error` stops scaffold_trigger re-running ensure every cycle, and
+    the API's dispatch admission parks each story with a todo task on it. The
+    operator's infrastructure retry is what removes it.
+    """
+    try:
+        project = await api.get_project(msg.project_id)
+        config = dict(project.config) if project.config else {}
+        config["scaffold_error"] = error
+        await api.update_project_config(msg.project_id, config)
+    except Exception:
+        log.warning("failed_to_mark_scaffold_error", exc_info=True)
+
+
+async def _update_project_on_success(msg, result, api, settings, log) -> dict:
     """Update project config with tree and specs after successful scaffold/ensure."""
     workspace = Path(settings.workspace_base_path) / msg.repository_id
     project = await api.get_project(msg.project_id)
@@ -360,6 +395,7 @@ async def _update_project_on_success(msg, result, api, settings, log) -> None:
     if specs_summary:
         config["specs_summary"] = specs_summary
     await api.update_project_config(msg.project_id, config)
+    return config
 
 
 async def run_worker() -> None:

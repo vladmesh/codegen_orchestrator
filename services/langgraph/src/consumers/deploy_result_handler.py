@@ -174,26 +174,44 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
-    settings_seed = await _seed_initial_settings(
-        task_id=task_id,
-        story_id=story_id,
-        deployed_url=result["deployed_url"],
-        secret_values=result.get("secret_values", {}),
-    )
-    failures = settings_seed_failure_kinds(settings_seed)
-    if failures:
-        return await _handle_settings_seed_failure(
-            result=result,
+    if temporary_access_operation is not None:
+        # A capability operation redeploys the artifact the target is already
+        # running for one reason: to write or take away the QA identity's access.
+        # Its proof is the readback above. Seeding the project's confirmed
+        # settings here would be the work of a story deploy done against somebody
+        # else's artifact — and on 2026-09-19 it was: a revoke that had already
+        # proved the access inactive was recorded `settings_seed_failed` because
+        # the *next* story's confirmed brief declares a key the still-deployed
+        # commit does not, so the grant never reached REVOKED and held the target
+        # against that story's own QA handoff.
+        settings_seed: list[SettingSeedOutcome] = []
+        logger.info(
+            "deploy_settings_seed_not_a_product_deploy",
+            task_id=task_id,
+            temporary_access_operation=temporary_access_operation,
+        )
+    else:
+        settings_seed = await _seed_initial_settings(
             task_id=task_id,
             project_id=project_id,
-            callback_stream=callback_stream,
-            telegram_chat_id=telegram_chat_id,
-            redis=redis,
-            failures=failures,
-            application_id=application_id,
-            settings_seed=settings_seed,
-            deploy_fix_attempt=msg.deploy_fix_attempt,
+            story_id=story_id,
+            deployed_url=result["deployed_url"],
+            secret_values=result.get("secret_values", {}),
         )
+        failures = settings_seed_failure_kinds(settings_seed)
+        if failures:
+            return await _handle_settings_seed_failure(
+                result=result,
+                task_id=task_id,
+                project_id=project_id,
+                callback_stream=callback_stream,
+                telegram_chat_id=telegram_chat_id,
+                redis=redis,
+                failures=failures,
+                application_id=application_id,
+                settings_seed=settings_seed,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
+            )
 
     logger.info(
         "deploy_job_success",
@@ -357,6 +375,7 @@ async def _apply_temporary_access_operation(
 async def _seed_initial_settings(
     *,
     task_id: str,
+    project_id: str,
     story_id: str,
     deployed_url: str,
     secret_values: dict,
@@ -372,15 +391,32 @@ async def _seed_initial_settings(
     environment variable: the values are the confirmed ones, read through the
     released brief endpoint, and the capability is this deploy's in-memory
     resolver output. Neither the capability nor a setting value is logged.
+
+    A deploy that names its story reads that story's brief. One that names
+    none — the owner-grant deploy of a fresh project is the only *product*
+    deploy such a product gets — reads the project's latest confirmed brief
+    carrying settings, so the product never reaches QA unseeded. Either way one
+    event says which brief was found, or that there was nothing to seed. A
+    temporary-access capability operation also names no story and is not a
+    product deploy at all; its caller keeps it out of here.
     """
-    if not story_id:
-        return []
-    brief = await api_client.get_product_brief_by_story(story_id)
-    if brief is None or brief.confirmed_at is None:
+    if story_id:
+        route = "story"
+        brief = await api_client.get_product_brief_by_story(story_id)
+    else:
+        route = "project"
+        brief = await api_client.get_project_initial_settings_brief(project_id)
+    if brief is None or brief.confirmed_at is None or not brief.content.initial_settings:
+        logger.info("deploy_settings_seed_nothing_to_seed", task_id=task_id, route=route)
         return []
     settings = list(brief.content.initial_settings)
-    if not settings:
-        return []
+    logger.info(
+        "deploy_settings_seed_brief",
+        task_id=task_id,
+        brief_id=brief.id,
+        settings_count=len(settings),
+        route=route,
+    )
 
     capability = secret_values.get(_SETTINGS_WRITE_CAPABILITY)
     if not isinstance(capability, str) or not capability:

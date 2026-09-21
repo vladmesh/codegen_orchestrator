@@ -75,7 +75,7 @@ class TestDeveloperNodeWorkerReuse:
         self, mock_github_cls, mock_api, mock_spawn, mock_send_task
     ):
         """When worker_id is in state, should use send_task_to_worker."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send_task.return_value = SpawnResult(
@@ -96,7 +96,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
@@ -118,7 +118,7 @@ class TestDeveloperNodeWorkerReuse:
         self, mock_github_cls, mock_api, mock_spawn, mock_send_task
     ):
         """A timeout is only a teardown request, never spawn permission."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         # send_task_to_worker times out
@@ -139,7 +139,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
@@ -158,7 +158,7 @@ class TestDeveloperNodeWorkerReuse:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_spawns_when_no_worker_id(self, mock_github_cls, mock_api, mock_spawn):
         """When no worker_id in state, should use request_spawn as before."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
@@ -179,7 +179,7 @@ class TestDeveloperNodeWorkerReuse:
                 "action": "feature",
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
-                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                    story_id="story-1", project_id="proj-1", run_id="live-1", attempt_id="eng-1"
                 ),
                 "description": "Add login page",
                 "errors": [],
@@ -329,7 +329,7 @@ class TestEngineeringConsumerStoryWorker:
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.api_client")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
-    async def test_no_worker_lookup_for_standalone_task(
+    async def test_worker_lookup_uses_required_story_owner(
         self,
         mock_publish,
         mock_api,
@@ -338,7 +338,8 @@ class TestEngineeringConsumerStoryWorker:
         mock_handle_success,
         mock_get_worker,
     ):
-        """Task without story_id: no worker lookup."""
+        """Every engineering task resolves its story-owned reusable worker."""
+        mock_get_worker.return_value = None
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
@@ -366,6 +367,7 @@ class TestEngineeringConsumerStoryWorker:
         await process_engineering_job(
             {
                 "task_id": "eng-789",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
@@ -377,11 +379,9 @@ class TestEngineeringConsumerStoryWorker:
             redis_mock,
         )
 
-        # No story → no worker lookup
-        mock_get_worker.assert_not_called()
-        # story_id should be None in handle_success via params
+        mock_get_worker.assert_awaited_once_with(redis_mock.redis, "story-1")
         params = mock_handle_success.call_args[0][0]
-        assert params.story_id is None
+        assert params.story_id == "story-1"
 
 
 class TestHandleSuccessWorkerLifecycle:

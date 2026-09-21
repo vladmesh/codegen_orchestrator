@@ -10,7 +10,7 @@ from .tasks.health_checker import _check_server
 
 async def probe(target_handle: str) -> None:
     """Initialize scheduler runtime state and health-check one target."""
-    startup.init_config()
+    startup.init_config(startup.INFRASTRUCTURE_REQUIRED_KEYS)
     server = await api_client.get_server(target_handle)
     await _check_server(server)
 

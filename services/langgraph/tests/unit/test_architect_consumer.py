@@ -53,6 +53,7 @@ def _mock_api_get_project():
         mock_api.heartbeat_planning_attempt = AsyncMock()
         mock_api.finish_planning_attempt = AsyncMock()
         mock_api.admit_product_brief_coverage = AsyncMock()
+        mock_api.list_requirement_coverage = AsyncMock(return_value=[])
         yield mock_api
 
 
@@ -667,6 +668,21 @@ class _FakeBriefBoundary:
             returned_reason=coverage.returned_reason,
         )
 
+    async def list_requirement_coverage(self, brief_id):
+        return [
+            RequirementCoverageRead(
+                id=n,
+                brief_id=brief_id,
+                requirement_id=requirement_id,
+                planning_attempt_id=attempt,
+                task_id=task_id,
+                returned_reason=reason,
+            )
+            for n, (requirement_id, (attempt, task_id, reason)) in enumerate(
+                self.coverage.items(), start=1
+            )
+        ]
+
     async def admit_product_brief_coverage(self, brief_id, planning_attempt_id):
         self.admit_calls += 1
         must = {r.id for r in self.brief.content.must_requirements}
@@ -801,6 +817,112 @@ class TestUndisposedRequirementCounterfactual:
         assert boundary.tasks["task-1"]["dispatch_admitted"] is True
 
 
+class TestProductBriefUsageExamples:
+    """How the user confirmed each requirement is used reaches the plan in their words."""
+
+    @pytest.fixture
+    def mock_redis(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            telegram_chat_id="user-1",
+        ).model_dump(mode="json")
+
+    async def _instructions(self, api, mock_redis, valid_job_data, brief) -> str:
+        api.get_product_brief_by_story = AsyncMock(return_value=brief)
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        graph = _graph_returning()
+        with patch("src.consumers.architect.create_architect_graph", return_value=graph):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, mock_redis)
+        assert result["status"] == "success"
+        return graph.ainvoke.call_args[0][0]["messages"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_examples_grouped_by_requirement_limitations_and_internal_requirements(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        brief = make_product_brief(
+            content=ProductBriefContent(
+                summary="Бот личных финансов",
+                language="ru",
+                must_requirements=[
+                    {"id": "expense-text", "text": "Записывает расход из текста"},
+                    {"id": "income", "text": "Записывает доход"},
+                    {"id": "backup", "text": "Ночная резервная копия", "user_facing": False},
+                ],
+                # Shown to the user out of requirement order; planned in it.
+                usage_examples=[
+                    {
+                        "requirement_id": "income",
+                        "user_sends": "/income 80000 зарплата",
+                        "product_answers": "Записал доход 80 000 ₽",
+                    },
+                    {
+                        "requirement_id": "expense-text",
+                        "user_sends": "текст «кофе 250»",
+                        "product_answers": "Записал расход 250 ₽",
+                    },
+                    {
+                        "requirement_id": "expense-text",
+                        "user_sends": "текст «такси 600»",
+                        "product_answers": "Записал расход 600 ₽",
+                    },
+                ],
+                limitations=["Чеки распознаются бесплатным способом и могут читаться с ошибками."],
+            )
+        )
+
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, brief
+        )
+
+        assert "user's language: ru" in instructions
+        assert (
+            "[expense-text]\n"
+            "  - the user sends: текст «кофе 250»\n"
+            "    the product answers: Записал расход 250 ₽\n"
+            "  - the user sends: текст «такси 600»\n"
+            "    the product answers: Записал расход 600 ₽\n"
+            "[income]\n"
+            "  - the user sends: /income 80000 зарплата\n"
+            "    the product answers: Записал доход 80 000 ₽"
+        ) in instructions
+        assert "- backup: Ночная резервная копия (not user-facing" in instructions
+        assert "- expense-text: Записывает расход из текста\n" in instructions
+        assert (
+            "Limitations and trade-offs the user confirmed:\n"
+            "- Чеки распознаются бесплатным способом и могут читаться с ошибками."
+        ) in instructions
+        # The three rules, next to the examples they apply to.
+        assert "(requirement <id>)" in instructions
+        assert "returned_reason" in instructions and "undefined input" in instructions
+        assert "asks the user back" in instructions
+        # The coverage boundary is untouched.
+        assert "record_requirement_coverage" in instructions
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_brief_without_examples_still_gets_valid_instructions(
+        self, mock_redis, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        instructions = await self._instructions(
+            _mock_api_get_project, mock_redis, valid_job_data, make_product_brief()
+        )
+
+        assert "- req-1: It must sign users in\n- req-2: It must list cities\n" in instructions
+        assert "record_requirement_coverage" in instructions
+        assert "user's language" not in instructions
+        assert "the user sends:" not in instructions
+        assert "Limitations and trade-offs" not in instructions
+        assert "not user-facing" not in instructions
+
+
 class TestProductBriefInitialSettings:
     """The typed settings the user confirmed reach the plan as data.
 
@@ -914,3 +1036,218 @@ class TestProductBriefInitialSettings:
         user_msg = state["messages"][0]["content"]
         assert "record_requirement_coverage" in user_msg
         assert "settings_schema" not in user_msg
+
+
+class _FakeRedis:
+    """`po:input` and the notice marker, in memory; the first `fail_publishes` publishes raise."""
+
+    def __init__(self, fail_publishes: int = 0):
+        self.published: list[tuple[str, dict]] = []
+        self.keys: dict[str, str] = {}
+        self.fail_publishes = fail_publishes
+        self.redis = self
+
+    async def publish_flat(self, stream, fields):
+        if self.fail_publishes:
+            self.fail_publishes -= 1
+            raise ConnectionError("po:input unavailable")
+        self.published.append((stream, fields))
+
+    async def exists(self, key):
+        return int(key in self.keys)
+
+    async def set(self, key, value):
+        self.keys[key] = value
+
+
+_RETURNED_REASON = "Undefined input: which cities, and does the user type them or pick them?"
+
+
+def _coverage(*rows: tuple[str, str, str | None, str | None]) -> list[RequirementCoverageRead]:
+    return [
+        RequirementCoverageRead(
+            id=n,
+            brief_id="brief-1",
+            requirement_id=requirement_id,
+            planning_attempt_id=attempt,
+            task_id=task_id,
+            returned_reason=reason,
+        )
+        for n, (requirement_id, attempt, task_id, reason) in enumerate(rows, start=1)
+    ]
+
+
+_ONE_RETURNED = _coverage(
+    # A superseded attempt's return is not this plan's.
+    ("req-1", "plan-old", None, "stale reason of a voided attempt"),
+    ("req-1", "plan-1", "task-1", None),
+    ("req-2", "plan-1", None, _RETURNED_REASON),
+)
+_NONE_RETURNED = _coverage(("req-1", "plan-1", "task-1", None), ("req-2", "plan-1", "task-1", None))
+
+
+def _worded_brief(**overrides):
+    return make_product_brief(
+        content=ProductBriefContent(
+            summary="A product",
+            language="ru",
+            must_requirements=[
+                {"id": "req-1", "text": "It must sign users in"},
+                {"id": "req-2", "text": "It must list cities", "user_wording": "покажи города"},
+            ],
+        ),
+        **overrides,
+    )
+
+
+def _returned_events(redis: _FakeRedis) -> list[dict]:
+    return [
+        fields for _, fields in redis.published if fields["event"] == "story_requirements_returned"
+    ]
+
+
+class TestReturnedRequirementsNotice:
+    """A requirement the admitted plan returned is told to the owner, once, never silently lost."""
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            telegram_chat_id="user-1",
+        ).model_dump(mode="json")
+
+    def _admitting(self, api, coverage):
+        api.get_product_brief_by_story = AsyncMock(return_value=_worded_brief())
+        api.claim_planning_attempt = AsyncMock(return_value=make_planning_attempt())
+        api.admit_product_brief_coverage = AsyncMock(return_value=make_admission())
+        api.list_requirement_coverage = AsyncMock(return_value=coverage)
+
+    def _replaying(self, api, *, story_status="created", tasks=()):
+        api.get_story = AsyncMock(return_value=make_story(id="story-abc", status=story_status))
+        api.get_tasks_by_story = AsyncMock(return_value=list(tasks))
+        api.get_product_brief_by_story = AsyncMock(
+            return_value=_worded_brief(
+                coverage_admitted_at=make_product_brief().confirmed_at,
+                planning_attempt_id="plan-1",
+            )
+        )
+        api.claim_planning_attempt = AsyncMock(
+            return_value=make_planning_attempt(
+                outcome=ProductBriefPlanningAttemptOutcome.ALREADY_ADMITTED,
+                planning_attempt_id=None,
+            )
+        )
+
+    async def _run(self, job, redis):
+        with patch(
+            "src.consumers.architect.create_architect_graph", return_value=_graph_returning()
+        ):
+            from src.consumers.architect import process_architect_job
+
+            return await process_architect_job(job, redis)
+
+    @pytest.mark.asyncio
+    async def test_one_returned_requirement_is_one_event_to_the_owner(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        from shared.queues import PO_INPUT_QUEUE
+
+        self._admitting(_mock_api_get_project, _ONE_RETURNED)
+        redis = _FakeRedis()
+
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "success"
+        assert len(redis.published) == 1
+        stream, event = redis.published[0]
+        assert stream == PO_INPUT_QUEUE
+        assert event["event"] == "story_requirements_returned"
+        assert event["type"] == "system_event"
+        assert event["telegram_chat_id"] == "user-1"
+        assert event["story_id"] == "story-abc"
+        assert event["project_id"] == "proj-123"
+        text = event["text"]
+        assert "- req-2: It must list cities" in text
+        assert "the user's words: покажи города" in text
+        assert f"reason: {_RETURNED_REASON}" in text
+        assert "User's language: ru" in text
+        assert "will NOT be built" in text and "The rest of the story is being built" in text
+        # Only what this plan returned: the covered requirement and the voided
+        # attempt's return are not in it.
+        assert "req-1" not in text and "stale reason" not in text
+
+    @pytest.mark.asyncio
+    async def test_nothing_returned_publishes_nothing(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        self._admitting(_mock_api_get_project, _NONE_RETURNED)
+        redis = _FakeRedis()
+
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "success"
+        assert redis.published == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_publish_leaves_the_job_unacknowledged_and_the_replay_publishes(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        from src.consumers.architect import ReturnedRequirementsNoticeError
+
+        api = _mock_api_get_project
+        self._admitting(api, _ONE_RETURNED)
+        redis = _FakeRedis(fail_publishes=1)
+
+        # Raised out of the job, not turned into a failed (and acknowledged) result.
+        with pytest.raises(ReturnedRequirementsNoticeError, match="po:input unavailable"):
+            await self._run(valid_job_data, redis)
+        assert redis.published == []
+        api.admit_product_brief_coverage.assert_awaited_once()
+        # The admitted plan is not given back as if planning had failed.
+        api.finish_planning_attempt.assert_not_called()
+
+        # The reclaimed entry replays through the ALREADY_ADMITTED claim.
+        self._replaying(api)
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "success"
+        assert len(_returned_events(redis)) == 1
+        assert "reason: " + _RETURNED_REASON in _returned_events(redis)[0]["text"]
+        api.admit_product_brief_coverage.assert_awaited_once()
+
+        # A delivered notice is not published again by a later run on the same plan.
+        await self._run(valid_job_data, redis)
+        assert len(_returned_events(redis)) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_replay_of_an_already_decomposed_story_publishes_the_owed_notice(
+        self, valid_job_data, _mock_api_get_project, _llm_configured
+    ):
+        api = _mock_api_get_project
+        self._replaying(api, story_status=StoryStatus.IN_PROGRESS, tasks=[make_task()])
+        api.list_requirement_coverage = AsyncMock(return_value=_ONE_RETURNED)
+        redis = _FakeRedis()
+
+        result = await self._run(valid_job_data, redis)
+
+        assert result["status"] == "skipped"
+        assert len(_returned_events(redis)) == 1
+        api.claim_planning_attempt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_recipient_is_alerted_not_retried(
+        self, _mock_api_get_project, _llm_configured
+    ):
+        self._admitting(_mock_api_get_project, _ONE_RETURNED)
+        job = ArchitectMessage(story_id="story-abc", project_id="proj-123").model_dump(mode="json")
+        redis = _FakeRedis()
+
+        with patch("src.consumers.architect.notify_admins_best_effort") as alert:
+            result = await self._run(job, redis)
+
+        assert result["status"] == "success"
+        assert redis.published == []
+        alert.assert_awaited_once()
+        assert "no Telegram recipient" in alert.call_args.args[0]
+        assert "req-2" in alert.call_args.args[0]

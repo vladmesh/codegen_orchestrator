@@ -10,6 +10,8 @@ from uuid import uuid4
 
 import pytest
 
+from shared.tests.ssh_key_fixtures import fleet_private_key
+
 
 @pytest.fixture
 async def race_server(api_client):
@@ -27,6 +29,7 @@ async def race_server(api_client):
         "capacity_ram_mb": 8192,
         "capacity_disk_mb": 51200,
         "is_managed": True,
+        "ssh_key": fleet_private_key(),
     }
     resp = await api_client.post("/api/servers/", json=body)
     assert resp.status_code == 201, f"Failed to create server: {resp.text}"

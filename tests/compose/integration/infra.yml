@@ -59,7 +59,7 @@ services:
     networks:
       - infra-test
 
-  # Scheduler Service (with consumer loop)
+  # Seed the config read independently by both scheduler processes in this stack.
   system-config-seed:
     image: codegen-orchestrator/integration-test-runner:test
     build:
@@ -86,7 +86,7 @@ services:
     networks:
       - infra-test
 
-  scheduler:
+  scheduler-infrastructure:
     image: codegen-orchestrator/scheduler:test
     build:
       context: ../../..
@@ -101,10 +101,41 @@ services:
       - TIME4VPS_PASSWORD=test
       - HEALTH_CHECK_INTERVAL=60
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
-      # The analytics aggregator refuses to start without a Loki read address.
-      # No Loki runs in this stack, so cycles just mark every project as failed;
-      # the collection path itself is covered by the scheduler service tests.
-      - LOKI_URL=http://loki:3100
+      - SERVICE_NAME=scheduler-infrastructure
+    command: ["python", "-m", "src.infrastructure"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      system-config-seed:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - infra-test
+
+  scheduler-pipeline:
+    image: codegen-orchestrator/scheduler:test
+    build:
+      context: ../../..
+      dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - SERVICE_NAME=scheduler-pipeline
+    command: ["python", "-m", "src.pipeline"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
     depends_on:
       system-config-seed:
         condition: service_healthy
@@ -128,8 +159,10 @@ services:
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
-      scheduler:
-        condition: service_started
+      scheduler-infrastructure:
+        condition: service_healthy
+      scheduler-pipeline:
+        condition: service_healthy
       api:
         condition: service_healthy
     volumes:

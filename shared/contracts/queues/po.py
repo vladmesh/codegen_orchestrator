@@ -18,10 +18,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from shared.contracts.dto.story import (
+    STAGE_NOTICE_STATUSES,
+    WAITING_ON_BY_STATUS,
+    StoryStageNoticeKind,
+    StoryStatus,
+    StoryWaitEstimate,
+    StoryWaitingOn,
+)
 from shared.contracts.recipient import RejectsLegacyRecipientField
-from shared.contracts.vocab import POSystemEventName
+from shared.contracts.vocab import OwnerNotificationEvent, POSystemEventName
 
 # --- PO Input messages (po:input) ---
 
@@ -53,6 +61,35 @@ class POSystemEvent(RejectsLegacyRecipientField):
     story_id: str = ""
     project_id: str = ""
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    #: A ``story_stage`` notice's typed facts, and only that event's: the stage
+    #: the story is in, what that stage waits for, the magnitude of the wait and
+    #: why the notice was sent. Carried as fields rather than left in ``text`` so
+    #: what was announced can be read off the stream without parsing words.
+    stage: StoryStatus | None = None
+    waiting_on: StoryWaitingOn | None = None
+    wait_estimate: StoryWaitEstimate | None = None
+    stage_notice: StoryStageNoticeKind | None = None
+
+    @model_validator(mode="after")
+    def _stage_fields_belong_to_stage_notices(self) -> POSystemEvent:
+        stage_fields = (self.stage, self.waiting_on, self.wait_estimate, self.stage_notice)
+        if self.event is not OwnerNotificationEvent.STORY_STAGE:
+            if any(field is not None for field in stage_fields):
+                raise ValueError(f"stage fields are carried by story_stage only, not {self.event}")
+            return self
+        if any(field is None for field in stage_fields):
+            raise ValueError(
+                "story_stage carries stage, waiting_on, wait_estimate and stage_notice"
+            )
+        if self.stage not in STAGE_NOTICE_STATUSES:
+            raise ValueError(f"{self.stage} is not a stage a story is in work in")
+        if self.waiting_on is not WAITING_ON_BY_STATUS[self.stage]:
+            raise ValueError(
+                f"{self.stage} waits on {WAITING_ON_BY_STATUS[self.stage]}, not {self.waiting_on}"
+            )
+        if not self.story_id:
+            raise ValueError("story_stage names its story")
+        return self
 
 
 class POReminderMessage(RejectsLegacyRecipientField):

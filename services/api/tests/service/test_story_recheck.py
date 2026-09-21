@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from shared.redis.client import decode_redis_fields
+from shared.tests.ssh_key_fixtures import fleet_private_key
 
 BUILT_SHA = "e" * 40
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -58,6 +59,7 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
             "handle": f"recheck-{uuid.uuid4().hex[:8]}",
             "host": "recheck.example.test",
             "public_ip": "10.0.0.9",
+            "ssh_key": fleet_private_key(),
             "ssh_user": "root",
         },
     )
@@ -127,6 +129,7 @@ async def _story_quarantined_by(  # noqa: PLR0913, PLR0915
                 "application_id": application_id,
                 QA_HANDOFF_KEY: QAHandoffPlan(
                     qa_message=QAMessage(
+                        story_id=story_id,
                         project_id=project_id,
                         initiating_run_id="recheck-init-run",
                         deployed_url="http://10.0.0.9:8000",
@@ -193,7 +196,10 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  #
     assert accepted_while_stopped.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "application to be running" in accepted_while_stopped.text
 
-    sideways_e2e = await async_client.post(f"/api/applications/{application_id}/run-e2e")
+    sideways_e2e = await async_client.post(
+        f"/api/applications/{application_id}/run-e2e",
+        json={"story_id": story_id},
+    )
     assert sideways_e2e.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "quarantined story" in sideways_e2e.text
 

@@ -200,9 +200,11 @@ class DeveloperNode(FunctionalNode):
         if not repo_id:
             repo_id = state.get("repo_id")
 
-        # Get GitHub App token
+        # Get a GitHub App token scoped to this project's repository only. The
+        # worker is an ephemeral coding-agent container with unrestricted egress,
+        # so an installation-wide token would hand it every tenant's repository.
         github_client = GitHubAppClient()
-        access_token = await github_client.get_token(owner, repo_name)
+        access_token = await github_client.get_repo_scoped_token(owner, repo_name)
 
         # Build comprehensive task message for Claude
         task_message = build_task_message(
@@ -214,6 +216,8 @@ class DeveloperNode(FunctionalNode):
             action=action,
             feature_description=feature_description,
             story_context=state.get("story_context"),
+            task_acceptance_criteria=state.get("task_acceptance_criteria"),
+            repository_acceptance_criteria=state.get("repository_acceptance_criteria"),
         )
 
         task_title = get_task_title(action, project_name)
@@ -409,6 +413,7 @@ class DeveloperNode(FunctionalNode):
                         worker_result, state.get("project_spec") or {}, agent_type
                     ),
                     "turn_result_consumed": worker_result.turn_result_consumed,
+                    "execution": worker_result.execution,
                 }
 
             logger.info(
@@ -433,6 +438,7 @@ class DeveloperNode(FunctionalNode):
                     worker_result, state.get("project_spec") or {}, agent_type
                 ),
                 "turn_result_consumed": worker_result.turn_result_consumed,
+                "execution": worker_result.execution,
             }
 
         if worker_result.gave_up_reason:
@@ -453,6 +459,7 @@ class DeveloperNode(FunctionalNode):
                 "errors": state.get("errors", [])
                 + [f"Worker gave up: {worker_result.gave_up_reason}"],
                 "turn_result_consumed": worker_result.turn_result_consumed,
+                "execution": worker_result.execution,
             }
 
         error_msg = worker_result.error_message or worker_result.output or "Unknown error"
@@ -480,6 +487,7 @@ class DeveloperNode(FunctionalNode):
                 worker_result, state.get("project_spec") or {}, agent_type
             ),
             "turn_result_consumed": worker_result.turn_result_consumed,
+            "execution": worker_result.execution,
         }
 
     @staticmethod

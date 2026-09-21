@@ -74,7 +74,9 @@ DB_CONTAINER = "codegen_orchestrator-db-1"
 # Consumers first: a running consumer re-dispatches work while the database is
 # being emptied under it.
 CONSUMER_CONTAINERS = (
-    "codegen_orchestrator-scheduler-1",
+    "codegen_orchestrator-scheduler-pipeline-1",
+    "codegen_orchestrator-scheduler-infrastructure-1",
+    "codegen_orchestrator-scheduler-maintenance-1",
     "codegen_orchestrator-engineering-worker-1",
     "codegen_orchestrator-deploy-worker-1",
     "codegen_orchestrator-qa-worker-1",
@@ -472,7 +474,7 @@ def reset_control_plane(remote: Remote) -> None:
         )
 
     print("  starting the rest of the stack")
-    remote.run(f"cd {DEPLOY_PATH} && {COMPOSE} up -d")
+    remote.run(f"cd {DEPLOY_PATH} && {COMPOSE} up -d --remove-orphans")
 
 
 def verify(remote: Remote, keep: tuple[str, ...], allowed_handles: set[str]) -> list[str]:

@@ -1,12 +1,30 @@
 """API client for provisioner - communicates with the API service."""
 
-from shared.contracts.dto.server import ServerDTO
+from http import HTTPStatus
+
+import httpx
+
+from shared.contracts.dto.server import (
+    ProvisioningFinalization,
+    ProvisioningFinalizationDisposition,
+    ServerDTO,
+    TargetReadinessRead,
+    TargetReadinessReport,
+)
 from shared.log_config import get_logger
-from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL, provisioning_complete_labels
+from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 
 from ..clients.api import DeploymentRecord, api_client
 
 logger = get_logger(__name__)
+
+
+class TargetReadinessSupersededError(RuntimeError):
+    """The API refused a verdict: the row's identity or the profile changed meanwhile.
+
+    Nothing was recorded. It is neither a ready nor a not-ready fact about the
+    target as it is now, so it is never reported as one.
+    """
 
 
 async def get_server_info(server_handle: str) -> ServerDTO:
@@ -39,40 +57,40 @@ async def update_server_labels(server_handle: str, labels: dict) -> None:
     logger.info("api_server_labels_updated", server_handle=server_handle, labels=final_labels)
 
 
-async def mark_provisioning_complete(server_handle: str) -> None:
-    """Record a finished software phase, and the QA identity that phase created.
+async def list_managed_servers() -> list[ServerDTO]:
+    """Every server row the platform manages."""
+    return await api_client.list_servers(is_managed=True)
 
-    One write, from one function, because the two facts are one fact. The
-    software playbook is what creates the QA account; `provisioning_phase`
-    reaching `complete` is what says that playbook succeeded. If the identity
-    were recorded anywhere else — a later step, a second call site — there would
-    be a window in which a host reads as fully provisioned and lends no identity
-    to a QA run, and the QA runtime would have to guess which of the two it was
-    looking at.
+
+async def report_target_readiness(
+    server_handle: str, report: TargetReadinessReport
+) -> TargetReadinessRead:
+    """Apply one readiness verdict: receipt and repair, or incident and park.
+
+    Raises:
+        TargetReadinessSupersededError: the API refused the verdict because the
+            row's connection identity or the current profile changed meanwhile.
     """
-    await update_server_labels(server_handle, provisioning_complete_labels())
+    try:
+        applied = await api_client.report_target_readiness(server_handle, report)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != HTTPStatus.CONFLICT:
+            raise
+        raise TargetReadinessSupersededError(f"{server_handle}: {exc.response.text[:300]}") from exc
+    logger.info(
+        "api_target_readiness_reported",
+        server_handle=server_handle,
+        ready=applied.ready,
+        status=applied.status.value,
+        phase=report.phase.value if report.phase else None,
+        incident_id=applied.incident_id,
+    )
+    return applied
 
 
 async def record_qa_identity(server_handle: str) -> None:
-    """Record the QA identity on a host that was provisioned before it existed.
-
-    The retrofit path's half of :func:`mark_provisioning_complete`: the phase is
-    already complete on these hosts and is not re-run, so only the identity is
-    written — and only after the playbook that creates the account succeeded.
-    """
+    """Record the QA identity on a host that was provisioned before it existed."""
     await update_server_labels(server_handle, {QA_SSH_USER_LABEL: QA_SSH_USER})
-
-
-async def save_server_ssh_key(server_handle: str, ssh_key: str) -> None:
-    """Save SSH private key to server record via API (encrypted at rest).
-
-    Args:
-        server_handle: Server handle
-        ssh_key: Raw SSH private key content
-
-    """
-    await api_client.update_server(server_handle, {"ssh_key": ssh_key})
-    logger.info("api_server_ssh_key_saved", server_handle=server_handle)
 
 
 async def get_services_on_server(server_handle: str) -> list[DeploymentRecord]:
@@ -101,14 +119,15 @@ async def reserve_provisioning_attempt(
     return reservation.provisioning_attempts, episode_id
 
 
-async def reset_provisioning_attempts(
-    server_handle: str, attempt_number: int, episode_id: str
-) -> bool:
-    """Atomically clear attempts and mark ready if this attempt is still current.
-
-    This endpoint is the single owner of the terminal READY status: the counter
-    reset and the status write happen in one conditional UPDATE, so a superseded
-    attempt can never mark a server that a newer episode already owns.
-    """
-    result = await api_client.reset_provisioning_attempts(server_handle, attempt_number, episode_id)
-    return result.reset
+async def finalize_provisioning(
+    server_handle: str, finalization: ProvisioningFinalization
+) -> ProvisioningFinalizationDisposition:
+    """Commit one provisioning success through the API's sole finalizer."""
+    result = await api_client.finalize_provisioning(server_handle, finalization)
+    logger.info(
+        "api_provisioning_finalized",
+        server_handle=server_handle,
+        disposition=result.disposition.value,
+        reason=result.reason,
+    )
+    return result.disposition

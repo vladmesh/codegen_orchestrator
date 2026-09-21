@@ -102,8 +102,26 @@ For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks disp
 3. Sets `workspace_ready = True` in the project's config
 4. Until then the admission point refuses every dispatch of that project's tasks with `workspace_not_ready` — the check is a condition of the admission decision, on the project row it locks, not a flag the dispatcher reads
 5. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` when workspace is garbage-collected
+6. A failed ensure (a failed clone/setup or an exception in the ensure job) records `scaffold_error`, which stops the trigger; admission then parks each story with a todo task as `workspace_ensure_failed` instead of refusing it every tick, and the operator's `retry-infrastructure-attempt` removes `scaffold_error` so ensure runs again
 
 This prevents crashes when a workspace is GC'd between tasks in a story.
+
+### Managed target provisioning finalization
+
+Fresh provisioning, existing-access retrofit and reinstall use bootstrap access
+only until the generated administrative key has logged in. After the software
+proof, infra-service sends one `ProvisioningFinalization` command. The API locks
+the server row and atomically commits the normalized encrypted key, exact
+completion labels, identity-bound QA receipt, matching incident settlement,
+episode reset and READY. An operator identity edit or newer attempt wins as a
+typed conflict with no partial state; exact redelivery of the same finalized
+episode is idempotent. Infra-service encrypts that exact command under the
+stream entry before the POST. If the HTTP outcome is unknown, PEL reclaim calls
+only the saved finalizer command; it never reserves another attempt, rebuilds a
+node, reruns Ansible or rotates another key. The saved command has a 24-hour TTL
+and is deleted only after a typed finalizer result is published and acknowledged.
+Missing, corrupt, expired or unavailable replay state fails closed through the
+provisioning incident path.
 
 ---
 
@@ -195,6 +213,15 @@ decision has already created the queued Run and taken its budget hold, so what
 this loop still owes is the message and the transition out of `todo`. The
 operator route `POST /api/tasks/{id}/spawn-worker` enters at the same point.
 
+Two admission refusals are terminal for this tick but free of engineering retry
+accounting: `executor_unavailable` and `executor_confirmation_required`. The
+admission point parks them itself, in the transaction that decides and audits
+the refusal: task and story reach human review with the exact typed evidence and
+both owed notice audiences, and `current_iteration` is unchanged. The dispatcher
+only logs the decision. A parked task is no longer `todo`, and admission refuses
+a parked story with `infrastructure_parked`, so later ticks neither admit, mint,
+nor publish for it, even when the refusal's answer never reached the scheduler.
+
 The Product Brief condition is the one that can hold a whole story's plan back:
 a task created under an active architect planning attempt is
 `dispatch_admitted=false` and is refused with `product_brief_not_admitted` until
@@ -215,7 +242,7 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 2. Mounts workspace volume: `/data/workspaces/{repo_id}/ → /workspace`
 3. Worker-manager creates/checks out `story/{story_id}` branch in the workspace
 4. Project is already scaffolded — code, venv, git all ready
-5. Writes `TASK.md` into `/workspace/TASK.md` (task description + acceptance criteria)
+5. Writes `TASK.md` into `/workspace/TASK.md` (task description, the planning task's acceptance criteria and the primary repository's post-deploy QA checklist, both verbatim; the engineering consumer reads them for every producer)
 
 **Each task** (including first):
 1. Claude Code is invoked with a one-line redirect: `claude -p "Read TASK.md"` (full task stays in file)
@@ -228,6 +255,31 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 8. Summary → **TaskEvent** in DB
 9. Worker-manager reports task completion
 10. Dispatcher transitions task to `done`
+
+Before step 1 completes, worker-manager records explicit execution-phase
+evidence. Project lock, unusable worker profile, and other creation failures are
+`pre_agent_refused` with a typed infrastructure reason; successful container
+creation records `agent_started`. The engineering Run carries the evidence to
+the liveness supervisor. On a valid pre-agent refusal the first reconciliation
+tick parks task and story without incrementing the iteration. Evidence that is
+missing, malformed, legacy, or says `agent_started` stays on the ordinary
+engineering failure and retry path.
+
+The supervisor applies that park through the internal park endpoint, which uses
+the same park function as admission but accepts only evidence matching the locked
+refused Run, so the `failed` task moves to human review together with its story,
+evidence, and owed owner and administrator notices, never ahead of or behind them.
+Notification delivery is not part of the park. Terminal, transition-ineligible, and racing stories return
+`ineligible_story` and are contained per task, so one stale row cannot stop
+another task or any later supervisor in the tick.
+
+An administrator recovers only this park with one
+`POST /api/stories/{story_id}/retry-infrastructure-attempt` call, also exposed as
+`Retry infrastructure attempt` on the story detail page. The locked transaction
+verifies the exact refusal and Run fence, preserves the iteration, returns the
+task to `todo`, clears only the matching evidence, and restarts the story. The
+next dispatcher tick can create one fresh Run; repeated recovery calls are a
+typed no-op and never create an attempt themselves.
 
 **Next task in same story**:
 1. Same worker container and workspace
@@ -249,7 +301,33 @@ If the developer agent encounters an unsolvable problem:
    - User notified via PO ("story_blocked" event)
    - Worker container **NOT** destroyed (admin may inspect)
 5. Task dispatcher skips WHR tasks (not stuck, deliberately paused)
-6. Admin calls `POST /tasks/{id}/resume` with guidance → task back to `in_dev`
+6. Admin calls `POST /tasks/{id}/resume` with guidance → one fresh attempt (see
+   [Operator resume](#operator-resume) below)
+
+### Operator resume
+
+`POST /tasks/{id}/resume` (`guidance`, optional `retries`, default 3) is the one operator action
+that gives a task parked in `waiting_human_review` a fresh engineering attempt — after a gave-up or
+after the supervisor exhausted its retries. In one transaction it:
+
+- moves the task `waiting_human_review → backlog → todo` on a **fresh iteration**, one past every
+  iteration any of its engineering runs carries, so the dispatcher's next tick admits a new run. The
+  replay rule (a finished run of the task's *current* iteration is applied, not re-dispatched) keeps
+  serving the task a failed transition left in `todo`; it has nothing to apply to the fresh iteration;
+- sets `max_iterations` to that iteration plus `retries`, so the new attempt has its own retry
+  budget; both the old and the new values are recorded on the task's status events
+  (`action: operator_resume`), together with the parked attempts' `failure_metadata`, which the task
+  no longer carries;
+- moves the story `waiting_human_review → in_progress`, so the pipeline resumes with the task;
+- records the guidance as a task note.
+
+It is refused with a reason for a task not in `waiting_human_review` (422 `task_not_parked`), one
+parked by a typed infrastructure refusal (409 `infrastructure_parked` — that park is recovered by
+`POST /stories/{id}/retry-infrastructure-attempt`, which keeps `current_iteration`), one with a live
+run (409 `live_attempt_in_flight`), a story whose branch another task's worker holds (409
+`story_busy`), or a story that has ended (409 `story_not_resumable`). Do not patch
+`current_iteration` or re-queue a parked task by hand: that replays old outcomes or leaves the
+attempt without a retry budget.
 
 ### Worker reuse
 
@@ -267,17 +345,23 @@ If the developer agent encounters an unsolvable problem:
 
 **Trigger**: All tasks in story `done`
 
-1. Task Dispatcher creates PR from `story/{story_id}` → `main`
-2. Enables auto-merge (merge commit — preserves individual commits)
-3. Transitions story to `pr_review`
-4. Cleans up worker container (no longer needed)
-5. Triggers next queued story for this project (doesn't wait for PR merge)
+1. Task Dispatcher reads the current `story/{story_id}` ref SHA, then resolves its
+   `main` PR through `create_pull_request`; an open PR is reused, while later fix commits get a successor
+2. Validates the returned PR against that exact head and persists its number for the poller
+3. Attempts auto-merge; a refusal leaves the open PR visible but does not retain the worker
+4. Finalizes worker teardown, including the unchanged story binding
+5. Transitions the story to `pr_review` and triggers the next queued story
+
+If an armed PR merges while teardown is pending, the next no-commits response
+recovers only the stored merged PR whose branch and head SHA still equal the
+current story ref. An earlier fix-cycle PR or ambiguous GitHub response cannot
+stand in for the current completion.
 
 **CI runs on the PR:**
 - **Green CI** → auto-merge → PR poller detects merged PR → deploy
 - **Red CI** → PR poller detects CI failure → creates fix task → one `retry-after-ci-failure` call walks the story `failed → reopened → in_progress` server-side
 
-**PR merge detection**: PR poller (`scheduler/src/tasks/pr_poller.py`) polls GitHub for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
+**PR merge detection**: `scheduler-pipeline` runs the PR poller (`scheduler/src/tasks/pr_poller.py`) for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
 
 ---
 
@@ -412,11 +496,20 @@ pass as an ordinary schema error.
 - FAILED → create fix task, dispatch to `engineering:queue`, story → `in_progress`
 - EXHAUSTED → story `failed` (max QA→Engineering loops reached)
 - ERROR → story `failed`
+- BLOCKED → application stopped, story `waiting_human_review`, no fix task and no engineering
+  iteration. A QA harness blocker (`QA_HARNESS_BLOCKERS`: stale `qa-docker`, refused verb,
+  unavailable probe, SSH/runtime failure, an executor that never reached the capability endpoint)
+  also notifies administrators with the `recheck-qa` route, and the owner is told the platform's
+  test environment failed, not the product
 
 **Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
-**Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
-nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon session there.
+**Target prerequisites**: a managed target whose readiness receipt names the current QA target
+profile (`servers.qa_target_version`), written by managed-target reconciliation after the
+`qa_identity` role and its proof succeeded; a missing or stale receipt refuses the run before any
+access is issued. Before an executor starts, the runner also asks the live `qa-docker version`
+as the run's own identity and refuses an older wrapper. QA installs nothing on the target and
+needs no coding-agent CLI, LLM credentials or Telethon session there.
 
 **QA runtime prerequisites** (orchestrator `.env`):
 - `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly.
@@ -511,13 +604,12 @@ recently touched first and capped, in the `waiting_stories` section of
 backlog (manual/standalone tasks, not in active story)
 todo → in_dev → in_ci → testing → done
               → blocked (waiting on another task)
-              → waiting_human_review → in_dev (admin resumes with guidance)
-                                     → backlog (admin re-queues)
+              → waiting_human_review → backlog → todo (admin resume: fresh attempt)
                                      → failed / cancelled
               → failed → todo (retry, up to max_iterations)
               → cancelled (sibling of failed task, or manual)
 ```
-`waiting_human_review` — developer hit an unsolvable blocker (missing credentials, contradictory requirements, broken external dependencies). Admin must provide guidance via `POST /tasks/{id}/resume` or re-queue to backlog.
+`waiting_human_review` — developer hit an unsolvable blocker (missing credentials, contradictory requirements, broken external dependencies). The operator's one retry is `POST /tasks/{id}/resume` with guidance: a fresh iteration and retry budget, and the story back in progress (see Operator resume).
 
 ---
 

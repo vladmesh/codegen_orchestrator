@@ -10,11 +10,18 @@ import json
 import os
 import signal
 
+from cryptography.fernet import InvalidToken
+from pydantic import BaseModel, ConfigDict, ValidationError
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
+from shared.contracts.dto.server import (
+    ProvisioningFinalization,
+    ProvisioningFinalizationDisposition,
+)
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
+from shared.crypto import SecretsCipher
 from shared.log_config import setup_logging
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
@@ -24,6 +31,8 @@ from shared.provisioning_policy import (
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis import RedisStreamClient
 
+from .provisioner.api_client import finalize_provisioning
+from .provisioner.handlers import FinalizationOutcomeUnknown
 from .provisioner.incidents import IncidentPersistenceError, create_incident
 from .provisioner.node import ProvisionerNode
 
@@ -35,10 +44,55 @@ CONSUMER_NAME = f"infra-worker-{os.getpid()}"
 # Shutdown flag
 _shutdown = False
 INCIDENT_OUTAGE_RETRY_BUDGET = 3
+FINALIZATION_REPLAY_TTL_SECONDS = 24 * 60 * 60
+
+
+class FinalizationReplayEnvelope(BaseModel):
+    """One encrypted, delivery-bound finalizer command retained for PEL reclaim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    request_id: str
+    server_handle: str
+    finalization: ProvisioningFinalization
 
 
 def _outage_key(message_id: str) -> str:
     return f"provisioner:incident-outage:{message_id}"
+
+
+def _finalization_replay_key(message_id: str) -> str:
+    return f"provisioner:finalization-replay:{message_id}"
+
+
+async def _retain_finalization(
+    client,
+    msg,
+    request_id: str,
+    server_handle: str,
+    finalization: ProvisioningFinalization,
+) -> None:
+    """Encrypt and retain the exact finalizer command before its transport call."""
+    envelope = FinalizationReplayEnvelope(
+        message_id=msg.message_id,
+        request_id=request_id,
+        server_handle=server_handle,
+        finalization=finalization,
+    )
+    ciphertext = SecretsCipher().encrypt(envelope.model_dump_json())
+    await client.redis.set(
+        _finalization_replay_key(msg.message_id),
+        ciphertext,
+        ex=FINALIZATION_REPLAY_TTL_SECONDS,
+    )
+
+
+def _decode_finalization_replay(raw: str | bytes) -> FinalizationReplayEnvelope:
+    """Decrypt a retained command without exposing its validation input."""
+    ciphertext = raw.decode() if isinstance(raw, bytes) else raw
+    plaintext = SecretsCipher().decrypt(ciphertext)
+    return FinalizationReplayEnvelope.model_validate_json(plaintext)
 
 
 def _decode_hash(values: dict) -> dict[str, str]:
@@ -82,6 +136,7 @@ async def _handle_incident_outage(
     state = _decode_hash(await client.redis.hgetall(key))
     if state.get("terminal_published") == "1":
         await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+        await client.redis.delete(_finalization_replay_key(msg.message_id))
         return
 
     result = ProvisionerResult(
@@ -98,6 +153,7 @@ async def _handle_incident_outage(
     await client.publish("provisioner:results", result.model_dump(mode="json"))
     await client.redis.hset(key, mapping={"terminal_published": "1"})
     await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+    await client.redis.delete(_finalization_replay_key(msg.message_id))
 
 
 async def _retry_saved_incident(
@@ -107,6 +163,7 @@ async def _retry_saved_incident(
     key = _outage_key(msg.message_id)
     if state.get("terminal_published") == "1":
         await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+        await client.redis.delete(_finalization_replay_key(msg.message_id))
         return True
     try:
         await create_incident(
@@ -124,6 +181,7 @@ async def _retry_saved_incident(
     )
     await _publish_and_ack(client, msg, result)
     await client.redis.delete(key)
+    await client.redis.delete(_finalization_replay_key(msg.message_id))
     return True
 
 
@@ -134,7 +192,7 @@ def handle_shutdown(signum, frame):
     _shutdown = True
 
 
-async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
+async def process_provisioner_job(job_data: dict, *, retain_finalization=None) -> ProvisionerResult:
     """Process a single provisioner job.
 
     Args:
@@ -159,6 +217,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
             "is_incident_recovery": job_data.get("is_recovery", False),
             "provisioning_profile": job_data.get("profile"),
             "errors": [],
+            "retain_finalization": retain_finalization,
         }
 
         # Run provisioner
@@ -214,6 +273,13 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
                 errors=errors,
             )
 
+    except FinalizationOutcomeUnknown:
+        logger.warning(
+            "provisioning_finalization_redelivery_pending",
+            job_id=job_id,
+            server_handle=server_handle,
+        )
+        raise
     except IncidentPersistenceError:
         logger.error(
             "provisioner_incident_journal_unavailable",
@@ -234,6 +300,135 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
             status=ResultStatus.FAILED,
             server_handle=server_handle,
             error=str(e),
+        )
+
+
+async def _fail_finalization_replay(client, msg, job, reason: str) -> None:
+    """Record and publish a typed terminal failure without running provisioning."""
+    await create_incident(
+        job.server_handle,
+        IncidentType.PROVISIONING_FAILED,
+        {"step": "finalization_replay", "reason": reason},
+    )
+    result = ProvisionerResult(
+        request_id=job.request_id,
+        status=ResultStatus.FAILED,
+        server_handle=job.server_handle,
+        errors=[f"Provisioning finalization replay failed: {reason}"],
+    )
+    await _publish_and_ack(client, msg, result)
+    await client.redis.delete(_finalization_replay_key(msg.message_id))
+
+
+async def _retry_saved_finalization(client, msg, job, raw: str | bytes) -> None:
+    """Replay one exact saved command, never the provisioning node."""
+    try:
+        envelope = _decode_finalization_replay(raw)
+    except (InvalidToken, ValidationError, ValueError, TypeError):
+        await _fail_finalization_replay(client, msg, job, "corrupt")
+        return
+    if (envelope.message_id, envelope.request_id, envelope.server_handle) != (
+        msg.message_id,
+        job.request_id,
+        job.server_handle,
+    ):
+        await _fail_finalization_replay(client, msg, job, "command_mismatch")
+        return
+
+    try:
+        disposition = await finalize_provisioning(envelope.server_handle, envelope.finalization)
+    except Exception:
+        logger.warning(
+            "provisioning_finalization_redelivery_pending",
+            entry_id=msg.message_id,
+            server_handle=job.server_handle,
+        )
+        return
+
+    if disposition in (
+        ProvisioningFinalizationDisposition.FINALIZED,
+        ProvisioningFinalizationDisposition.IDEMPOTENT,
+    ):
+        result = ProvisionerResult(
+            request_id=job.request_id,
+            status=ResultStatus.SUCCESS,
+            server_handle=job.server_handle,
+            server_ip=envelope.finalization.proved_identity.public_ip,
+        )
+    else:
+        await create_incident(
+            job.server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {
+                "step": "finalization_replay",
+                "reason": disposition.value,
+                "episode_id": envelope.finalization.episode_id,
+                "identity": envelope.finalization.expected_identity.model_dump(mode="json"),
+            },
+        )
+        result = ProvisionerResult(
+            request_id=job.request_id,
+            status=(
+                ResultStatus.SUPERSEDED
+                if disposition is ProvisioningFinalizationDisposition.CONFLICT
+                else ResultStatus.FAILED
+            ),
+            server_handle=job.server_handle,
+            server_ip=envelope.finalization.proved_identity.public_ip,
+            errors=(
+                []
+                if disposition is ProvisioningFinalizationDisposition.CONFLICT
+                else ["Provisioning finalization was contained"]
+            ),
+        )
+    await _publish_and_ack(client, msg, result)
+    await client.redis.delete(_finalization_replay_key(msg.message_id))
+
+
+async def _handle_stream_message(client, msg) -> None:
+    """Handle one new or reclaimed stream delivery through its durable short circuits."""
+    job = None
+    try:
+        job = ProvisionerMessage.model_validate(msg.data)
+        state = _decode_hash(await client.redis.hgetall(_outage_key(msg.message_id)))
+        if state:
+            await _retry_saved_incident(client, msg, job, state)
+            return
+
+        replay_key = _finalization_replay_key(msg.message_id)
+        try:
+            raw_replay = await client.redis.get(replay_key)
+        except Exception:
+            await _fail_finalization_replay(client, msg, job, "unavailable")
+            return
+        if raw_replay is not None:
+            await _retry_saved_finalization(client, msg, job, raw_replay)
+            return
+        if msg.reclaimed:
+            await _fail_finalization_replay(client, msg, job, "missing_or_expired")
+            return
+
+        async def retain(finalization: ProvisioningFinalization) -> None:
+            await _retain_finalization(client, msg, job.request_id, job.server_handle, finalization)
+
+        result = await process_provisioner_job(
+            job.model_dump(mode="json"),
+            retain_finalization=retain,
+        )
+        await _publish_and_ack(client, msg, result)
+        await client.redis.delete(replay_key)
+        logger.debug("job_acked", entry_id=msg.message_id)
+    except IncidentPersistenceError as error:
+        if job is None:
+            raise
+        await _handle_incident_outage(client, msg, job, error)
+    except FinalizationOutcomeUnknown:
+        logger.warning("provisioning_finalization_redelivery_pending", entry_id=msg.message_id)
+    except Exception as exc:
+        logger.error(
+            "job_processing_error",
+            entry_id=msg.message_id,
+            error_type=type(exc).__name__,
         )
 
 
@@ -264,27 +459,7 @@ async def run_worker():
                 break
             if msg is None:
                 continue
-            try:
-                job = ProvisionerMessage.model_validate(msg.data)
-                state = _decode_hash(await client.redis.hgetall(_outage_key(msg.message_id)))
-                if state:
-                    await _retry_saved_incident(client, msg, job, state)
-                    continue
-
-                result = await process_provisioner_job(job.model_dump(mode="json"))
-                await _publish_and_ack(client, msg, result)
-                logger.debug("job_acked", entry_id=msg.message_id)
-
-            except IncidentPersistenceError as error:
-                await _handle_incident_outage(client, msg, job, error)
-
-            except Exception as e:
-                logger.error(
-                    "job_processing_error",
-                    entry_id=msg.message_id,
-                    error=str(e),
-                    exc_info=True,
-                )
+            await _handle_stream_message(client, msg)
     finally:
         await client.close()
         logger.info("infrastructure_worker_shutdown")

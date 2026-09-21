@@ -368,7 +368,6 @@ class TestTaskArchiving:
 
         task_md = tmp_path / "TASK.md"
         task_md.write_text("# Task: Build API\n\nImplement GET /users")
-        gitignore = tmp_path / ".gitignore"
 
         with (
             patch("worker_wrapper.wrapper.TASK_MD_PATH", str(task_md)),
@@ -387,8 +386,9 @@ class TestTaskArchiving:
         assert "# Developer Report" in content
         assert "---" in content  # separator between task and report
 
-        # .gitignore should have .story/ entry
-        assert ".story/" in gitignore.read_text()
+        # The product's own .gitignore is never edited: `.story/` is kept out of
+        # the commit by the workspace-local exclude rules instead.
+        assert not (tmp_path / ".gitignore").exists()
 
     def test_archive_without_report(self, config, broker_client, tmp_path):
         """Archive works without a report — just saves task description."""
@@ -434,14 +434,23 @@ class TestTaskArchiving:
             wrapper._archive_task({"task_id": "t-1"}, report="some report")
             # Should not raise
 
-    def test_gitignore_not_duplicated(self, config, broker_client, tmp_path):
-        """_ensure_gitignore_entry doesn't add duplicate entries."""
+    def test_archiving_leaves_the_products_gitignore_untouched(
+        self, config, broker_client, tmp_path
+    ):
+        """The product's .gitignore is a tracked kit file; archiving may not edit it."""
         wrapper = WorkerWrapper(config, broker_client=broker_client)
 
         gitignore = tmp_path / ".gitignore"
-        gitignore.write_text("node_modules/\n.story/\n")
+        gitignore.write_text("node_modules/\n")
+        before = gitignore.read_bytes()
+        task_md = tmp_path / "TASK.md"
+        task_md.write_text("# Task")
 
-        wrapper._ensure_gitignore_entry(str(gitignore), ".story/")
+        with (
+            patch("worker_wrapper.wrapper.TASK_MD_PATH", str(task_md)),
+            patch("worker_wrapper.wrapper.OLD_TASKS_DIR", str(tmp_path / ".story" / "old_tasks")),
+            patch("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path)),
+        ):
+            wrapper._archive_task({"task_id": "task-1"}, report=None)
 
-        lines = gitignore.read_text().splitlines()
-        assert lines.count(".story/") == 1
+        assert gitignore.read_bytes() == before

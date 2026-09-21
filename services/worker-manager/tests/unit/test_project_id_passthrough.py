@@ -3,10 +3,11 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
-import pytest
 from fakeredis import aioredis
+import httpx
 from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
@@ -17,7 +18,6 @@ from shared.contracts.queues.worker import (
     WorkerOwnership,
 )
 from shared.redis import decode_redis_fields
-
 from src.config import settings
 from src.consumer import WorkerCommandConsumer
 from src.manager import WorkerManager
@@ -37,7 +37,9 @@ def _make_create_command(
         instructions="test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT],
-        ownership=WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id),
+        ownership=WorkerOwnership(
+            story_id="story-1", project_id=project_id, run_id=run_id, attempt_id=attempt_id
+        ),
         repo_id=repo_id,
     )
     return CreateWorkerCommand(
@@ -94,12 +96,16 @@ async def test_consumer_passes_none_reason_when_missing():
 @pytest.mark.asyncio
 async def test_consumer_passes_ownership_to_manager(consumer):
     """Ownership from WorkerConfig should be forwarded to manager as one fact."""
-    cmd = _make_create_command(project_id="proj-123", run_id="live-777", attempt_id="eng-777", repo_id="repo-123")
+    cmd = _make_create_command(
+        project_id="proj-123", run_id="live-777", attempt_id="eng-777", repo_id="repo-123"
+    )
     await consumer._handle_create(cmd)
 
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
     call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
-    assert call_kwargs["ownership"] == WorkerOwnership(project_id="proj-123", run_id="live-777", attempt_id="eng-777")
+    assert call_kwargs["ownership"] == WorkerOwnership(
+        story_id="story-1", project_id="proj-123", run_id="live-777", attempt_id="eng-777"
+    )
 
 
 @pytest.mark.asyncio
@@ -143,7 +149,9 @@ def test_a_create_command_without_ownership_is_refused():
 def test_ownership_rejects_an_empty_part(project_id, run_id, attempt_id):
     """An empty label attributes nothing, so an empty part is not ownership."""
     with pytest.raises(ValidationError):
-        WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id)
+        WorkerOwnership(
+            story_id="story-1", project_id=project_id, run_id=run_id, attempt_id=attempt_id
+        )
 
 
 # --- Phase 2: Workspace by repo_id ---
@@ -180,6 +188,7 @@ class TestWorkspaceByRepoId:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
@@ -190,19 +199,27 @@ class TestWorkspaceByRepoId:
         return redis
 
     @pytest.mark.asyncio
-    async def test_create_worker_uses_scaffolded_workspace_with_repo_id(self, mock_redis, mock_docker):
+    async def test_create_worker_uses_scaffolded_workspace_with_repo_id(
+        self, mock_redis, mock_docker
+    ):
         """With repo_id, should call get_scaffolded_workspace."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ) as mock_scaffolded_ws:
             await manager.create_worker_with_capabilities(
                 worker_id="w-1",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -218,7 +235,12 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id=None,
             )
 
@@ -226,14 +248,17 @@ class TestWorkspaceByRepoId:
         assert all(call.args[0] != "worker:meta:w-2" for call in mock_redis.hset.await_args_list)
 
     @pytest.mark.asyncio
-    async def test_create_worker_raises_when_scaffolded_workspace_missing(self, mock_redis, mock_docker):
+    async def test_create_worker_raises_when_scaffolded_workspace_missing(
+        self, mock_redis, mock_docker
+    ):
         """When scaffolded workspace doesn't exist, should raise RuntimeError."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (
             patch(
                 "src.manager.workspace_mod.get_scaffolded_workspace",
-                return_value=(Path("/tmp/ws/repo-missing"), False),
+                # Fixture path; no host temporary file is created.
+                return_value=(Path("/tmp/ws/repo-missing"), False),  # noqa: S108
             ),
             pytest.raises(RuntimeError, match="Scaffolded workspace not found"),
         ):
@@ -241,7 +266,12 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-missing",
             )
 
@@ -256,7 +286,8 @@ class TestWorkspaceByRepoId:
         with (
             patch(
                 "src.manager.workspace_mod.get_scaffolded_workspace",
-                return_value=(Path("/tmp/ws/repo-1"), True),
+                # Fixture path; no host temporary file is created.
+                return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
             ),
             patch(
                 "src.manager.git_ops.refresh_git_token",
@@ -268,7 +299,12 @@ class TestWorkspaceByRepoId:
                 worker_id="w-3",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
             )
@@ -291,13 +327,19 @@ class TestRepoIdRedisMeta:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-5",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -312,13 +354,19 @@ class TestRepoIdRedisMeta:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-5b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -333,13 +381,19 @@ class TestRepoIdRedisMeta:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-6",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -362,7 +416,8 @@ class TestDeleteWorkerPreservation:
             "worker:meta:w-7",
             mapping={
                 "dev_network": "dev_proj_w-7",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -387,13 +442,17 @@ class TestDeleteWorkerPreservation:
 
     @pytest.mark.asyncio
     async def test_delete_worker_preserves_workspace_without_project_id(self, mock_docker):
-        """delete_worker should NOT remove workspace even without project_id (scaffolded workspaces are persistent)."""
+        """
+        delete_worker should NOT remove workspace even without project_id (scaffolded workspaces
+        are persistent).
+        """
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.hset(
             "worker:meta:w-8",
             mapping={
                 "dev_network": "dev_proj_w-8",
-                "workspace_path": "/tmp/ws/repo-2",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-2",  # noqa: S108
             },
         )
         await redis.hset("worker:status:w-8", mapping={"status": WorkerStatus.RUNNING})
@@ -458,7 +517,8 @@ class TestDeleteWorkerRemovesFromActiveSet:
             "worker:meta:w-9",
             mapping={
                 "dev_network": "dev_proj_w-9",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -534,7 +594,9 @@ class TestWorkspaceGC:
             patch("src.garbage_collector.os.listdir", return_value=["repo-abc"]),
             patch("src.garbage_collector.Path") as mock_path_cls,
             patch("src.garbage_collector.workspace_mod.remove_workspace"),
-            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock) as mock_notify,
+            patch(
+                "src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock
+            ) as mock_notify,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -662,20 +724,27 @@ class TestProjectMutex:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
         with (
             patch(
                 "src.manager.workspace_mod.get_scaffolded_workspace",
-                return_value=(Path("/tmp/ws/repo-1"), True),
+                # Fixture path; no host temporary file is created.
+                return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
             ),
             pytest.raises(RuntimeError, match="already has active worker"),
         ):
@@ -683,7 +752,12 @@ class TestProjectMutex:
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -695,13 +769,19 @@ class TestProjectMutex:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -713,14 +793,20 @@ class TestProjectMutex:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ):
             # Should not raise
             result = await manager.create_worker_with_capabilities(
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
             assert result == "w-second"
@@ -734,7 +820,8 @@ class TestProjectMutex:
             "worker:meta:w-first",
             mapping={
                 "dev_network": "dev_proj_w-first",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -794,7 +881,8 @@ class TestFailureCounter:
             "worker:meta:w-10",
             mapping={
                 "dev_network": "dev_proj_w-10",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -822,7 +910,8 @@ class TestFailureCounter:
             "worker:meta:w-11",
             mapping={
                 "dev_network": "dev_proj_w-11",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -852,7 +941,8 @@ class TestFailureCounter:
             "worker:meta:w-12",
             mapping={
                 "dev_network": "dev_proj_w-12",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -881,7 +971,8 @@ class TestFailureCounter:
             "worker:meta:w-13",
             mapping={
                 "dev_network": "dev_proj_w-13",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -909,7 +1000,8 @@ class TestFailureCounter:
             "worker:meta:w-14",
             mapping={
                 "dev_network": "dev_proj_w-14",
-                "workspace_path": "/tmp/ws/repo-1",
+                # Fixture path; no host temporary file is created.
+                "workspace_path": "/tmp/ws/repo-1",  # noqa: S108
                 "project_id": "proj-1",
                 # A developer worker's `project_id` is written by the
                 # acquisition itself, so it is also what says it holds the
@@ -943,6 +1035,7 @@ class TestForceCleanAndReject:
         redis = MagicMock()
         redis.set = AsyncMock()
         redis.hset = AsyncMock()
+        redis.expire = AsyncMock()
         redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
@@ -954,7 +1047,9 @@ class TestForceCleanAndReject:
     @pytest.mark.asyncio
     async def test_spawn_rejected_after_three_failures(self, mock_redis, mock_docker):
         """When failure_count>=3, spawn should be rejected with RuntimeError."""
-        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
+        mock_redis.get = AsyncMock(
+            side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with pytest.raises(RuntimeError, match="Max retries"):
@@ -962,14 +1057,21 @@ class TestForceCleanAndReject:
                 worker_id="w-16",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
     @pytest.mark.asyncio
     async def test_reject_before_workspace_resolution(self, mock_redis, mock_docker):
         """When failure_count>=3, workspace should NOT be resolved (reject happens first)."""
-        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
+        mock_redis.get = AsyncMock(
+            side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None
+        )
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (
@@ -980,7 +1082,12 @@ class TestForceCleanAndReject:
                 worker_id="w-17",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 
@@ -994,13 +1101,19 @@ class TestForceCleanAndReject:
 
         with patch(
             "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+            # Fixture path; no host temporary file is created.
+            return_value=(Path("/tmp/ws/repo-1"), True),  # noqa: S108
         ) as mock_ws:
             await manager.create_worker_with_capabilities(
                 worker_id="w-18",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
+                ownership=WorkerOwnership(
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="eng-1",
+                    attempt_id="attempt-eng-1",
+                ),
                 repo_id="repo-1",
             )
 

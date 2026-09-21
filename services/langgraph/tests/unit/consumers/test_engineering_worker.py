@@ -500,6 +500,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-run-34160792874",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-34160792874",
                 "planning_task_id": "fix-attempt-1",
@@ -580,6 +581,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-1",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -660,6 +662,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-feat-2",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -739,6 +742,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-3",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -808,6 +812,7 @@ class TestFeatureActionFlow:
         result = await process_engineering_job(
             {
                 "task_id": "eng-feat-4",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -969,6 +974,7 @@ class TestFeatureActionFlow:
         await process_engineering_job(
             {
                 "task_id": "eng-feat-5",
+                "story_id": "story-1",
                 "project_id": "proj-1",
                 "initiating_run_id": "live-1",
                 "action": "feature",
@@ -1132,6 +1138,72 @@ class TestNoNewCommitFailure:
         mock_api.transition_story.assert_awaited_once_with("story-1", "human-review")
         # Nothing was deployed for a run that produced nothing.
         mock_redis.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_parking_is_not_silent(self, mock_redis, mock_api):
+        """A story parked here reaches both audiences, not just this process's log.
+
+        The administrators get the reason because a parked story is operational
+        work; the owner gets a story-level event because their product stops
+        moving until a person picks it up, and nothing else would ever tell them.
+        """
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+        from shared.queues import PO_INPUT_QUEUE
+        from src.consumers.engineering import _fail_job
+
+        mock_api.transition_story = AsyncMock()
+
+        with patch(
+            "src.consumers.engineering_result_handler.notify_admins_best_effort",
+            new_callable=AsyncMock,
+        ) as notify:
+            await _fail_job(
+                "eng-deploy-fix-deploy-poll-1",
+                "Worker reported commit d159f7d but it is no new commit on story/story-1",
+                redis=mock_redis,
+                story_id="story-1",
+                failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+                project_id="project-1",
+                telegram_chat_id="777",
+            )
+
+        alert = notify.await_args.args[0]
+        assert "story-1" in alert
+        assert "eng-deploy-fix-deploy-poll-1" in alert
+        assert "no new commit on story/story-1" in alert
+
+        queue, fields = mock_redis.publish_flat.await_args.args
+        assert queue == PO_INPUT_QUEUE
+        assert fields["event"] == "story_blocked"
+        assert fields["telegram_chat_id"] == "777"
+        assert fields["story_id"] == "story-1"
+        assert "nothing more happens automatically" in fields["text"]
+
+    @pytest.mark.asyncio
+    async def test_a_parked_story_without_a_chat_still_alerts_the_administrators(
+        self, mock_redis, mock_api
+    ):
+        """An owner with no chat is not a reason to leave operations blind."""
+        from shared.contracts.dto.run_result import EngineeringFailureReason
+        from src.consumers.engineering import _fail_job
+
+        mock_api.transition_story = AsyncMock()
+
+        with patch(
+            "src.consumers.engineering_result_handler.notify_admins_best_effort",
+            new_callable=AsyncMock,
+        ) as notify:
+            await _fail_job(
+                "eng-2",
+                "no new commit",
+                redis=mock_redis,
+                story_id="story-1",
+                failure_reason=EngineeringFailureReason.NO_NEW_COMMIT,
+                project_id="project-1",
+            )
+
+        notify.assert_awaited_once()
+        mock_redis.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_an_ordinary_technical_failure_leaves_the_story_alone(self, mock_redis, mock_api):

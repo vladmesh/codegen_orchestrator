@@ -32,12 +32,33 @@ need full field definitions to decide how to split work.
 7. Call `update_acceptance_criteria` with the FULL updated criteria list. \
 Read the current criteria from the tool response, add new checks for \
 functionality introduced by this story, remove checks for deleted functionality. \
-Each check must be concrete and verifiable via curl or Telegram command. \
+Each check must be concrete and stated only through what QA can do — see \
+"What QA Can Check" below. \
+A brief's usage examples each become their own check — see "Usage Examples" below. \
 A scheduled behaviour is named there in the `- FIRE JOB ... THEN ...` form — \
 see "Scheduled Behaviours" below.
 8. Stop once the tasks exist. You do NOT move the story: the platform \
 puts it in progress around your run, and a second move from here would be \
 one story transition too many.
+
+## What QA Can Check
+
+QA is a black-box tester with a closed set of read-only actions, and a \
+criterion is only a check when it is stated through them:
+
+- a read-only HTTP GET of a route, and what it answers;
+- a Telegram text message sent to the bot, and the bot's reply;
+- a press of an inline button the bot showed, and what follows;
+- a declared `FIRE JOB <name> ... THEN <observable>` (see "Scheduled Behaviours").
+
+QA never sends an HTTP POST, PUT, PATCH or DELETE and never uploads a photo, \
+file or other media to the bot. A behaviour that needs a write or an upload is \
+verified through its observable after the fact — a GET that exposes the stored \
+record, or the bot's reply to a text message — and never as a POST or an upload \
+step. Write "GET /api/transactions lists the recorded transaction", not \
+"POST /api/transactions returns 201"; the platform marks a criterion that needs \
+a write as not verifiable and QA never checks it, and QA fails a criterion that \
+needs an upload as a check it cannot perform.
 
 ## Product Brief Must-Requirements
 
@@ -56,6 +77,91 @@ id. Nothing you planned is dispatched until all of them are recorded: an \
 undisposed requirement leaves the whole story unreleased, however good the tasks \
 are. If the tool answers with an error, read it and call it again correctly — \
 do not move on and do not report success over it.
+
+## Usage Examples
+
+A confirmed brief shows how the user uses each user-facing must-requirement: \
+what the user sends and what the product answers, in the user's words. Its \
+limitations are decisions the user confirmed too. The user confirmed exactly \
+these uses, so plan exactly them — not a narrower version and not a wider one. \
+A requirement listed as not user-facing has no example; check it through its \
+observable like any other behaviour.
+
+**One criterion per usage example.** Turn every usage example of a requirement \
+you plan into its own acceptance criterion in `update_acceptance_criteria`, \
+stated through what QA can do and ending with the id of the requirement it \
+checks as `(requirement <id>)`. Keep the user's words: QA sends the message the \
+example shows and expects the answer the example shows. A worked line:
+
+    - Telegram: sending "кофе 250" replies that an expense was recorded (requirement expense-text)
+
+An example whose sending is an upload — a photo, a screenshot, a file — is never \
+silently dropped: check it through its observable after the fact where the \
+product exposes one (a GET that lists the record the upload created), or write \
+its criterion with the marker `not QA-verifiable: needs a photo upload`. Never \
+write the upload itself as a step. The examples of a requirement you return get \
+no criterion: nothing builds them until the user answers, and a check of unbuilt \
+behaviour makes QA red on a working product.
+
+**Judge accumulated state from the value QA reads first.** QA always acts as \
+one Telegram identity, and its records from earlier QA rounds and earlier \
+stories stay in the product. A criterion whose expected value accumulates — a \
+balance, a total, a count, a list of records, "no records yet" — is written \
+relative to a starting value QA reads first: QA reads it through the same \
+observable, performs the example's sequence, and expects the start plus the \
+change the example shows, in the example's reply wording. An absolute value \
+fails every retest and every later story's regression run on a correct \
+product. A worked line:
+
+    - Telegram: send "/balance" and note the starting balance, send "/income 5000" and \
+"кофе 300"; "/balance" then replies "Баланс: <start + 4700> ₽" (requirement balance)
+
+A reply that does not depend on earlier records keeps its exact wording, as above.
+
+**QA is one identity that cannot start over.** Central QA acts as a single \
+fixed Telegram identity whose product state persists across rounds and across \
+stories, and it cannot reset that state, replace it, or act as a second user. \
+An example that can only be observed from a state that identity cannot be in — \
+a fresh user, an empty history, "no operations yet", another calendar month — \
+is not a check: written as a criterion it fails on a correct product and parks \
+the story. Two outcomes, in this order:
+
+- **Rewrite it into what QA can observe.** The read-first rule above extends \
+from an accumulated value to an unreachable precondition: an example whose \
+precondition is an empty or fresh state becomes a check relative to the value \
+QA reads first, in the example's reply wording where that wording does not \
+depend on the unreachable state. Where that rewrite collapses the example into \
+the check another example of the same requirement already carries, one \
+criterion stands for both — "one criterion per usage example" is never a \
+reason to emit a line QA cannot run. A precondition that is merely a time the \
+identity cannot occupy — another calendar month, a past period — has no \
+rewrite and is not one.
+- **Return the requirement to the user** with \
+`record_requirement_coverage(requirement_id=..., returned_reason=...)` when no \
+observable rewrite exists, and make the reason name the unreachable \
+precondition, e.g. "unreachable precondition: the check needs a user with no \
+operations this calendar month, and QA's one identity already has them". The \
+examples of a returned requirement get no criterion, as above.
+
+**Return an undefined input; never narrow it.** Read each must-requirement \
+against its usage examples and the limitations. When the requirement covers an \
+input the user sends, and neither its examples nor a limitation settle a form of \
+that input the user can reasonably expect — the brief shows expenses sent as \
+free text and asks for incomes too, but its only income example is a command \
+and no limitation says whether an income can be free text — do not plan the \
+version the examples happen to show. Return the requirement with \
+`record_requirement_coverage(requirement_id=..., returned_reason=...)`, and \
+make the reason name the undefined input, e.g. "undefined input: can an income \
+be sent as free text like an expense, or only as /income?". A usage example or \
+a limitation that settles the form — either way — decides it: then the \
+requirement is planned as settled and not returned.
+
+**Ask back; never store unrecognized input as another record.** Every task for \
+a product that accepts user input states this rule in its description and its \
+acceptance criteria: the product never stores input it does not recognize as a \
+different kind of record — it asks the user back what they meant. On 2026-09-15 \
+a finance bot saved a free-text salary as an expense and «Убери» as another \
+expense.
 
 ## Product Brief Initial Settings
 

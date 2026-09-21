@@ -1,12 +1,14 @@
 import asyncio
+from dataclasses import dataclass, replace
 import os
+from pathlib import Path
 import shutil
 import subprocess
-from dataclasses import dataclass, replace
-from pathlib import Path
 
 import structlog
 import yaml
+
+from shared.worker_compose import COMPOSE_PLAN_DIRECTORY, worker_compose_project
 
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
@@ -26,7 +28,6 @@ _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 # Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
-_PLAN_DIRECTORY = ".compose-plans"
 _DEFAULT_CPU_LIMIT = "1.0"
 _DEFAULT_MEMORY_LIMIT = "512MiB"
 _DOCKER_EXECUTABLE = Path(shutil.which("docker") or "/usr/bin/docker")
@@ -115,7 +116,9 @@ def _apply_effective_overrides(data: dict, worker_id: str) -> None:
             resources["limits"] = {"cpus": _DEFAULT_CPU_LIMIT, "memory": _DEFAULT_MEMORY_LIMIT}
 
 
-def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: list[str]) -> ComposeInvocation:
+def _write_snapshot(
+    invocation: ComposeInvocation, data: dict, command_args: list[str]
+) -> ComposeInvocation:
     """Persist the validated resolved project outside the worker-writable workspace."""
     services = data.get("services")
     if not isinstance(services, dict):
@@ -129,7 +132,10 @@ def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: lis
             )
         for directive in _SNAPSHOT_LOADER_DIRECTIVES:
             if directive in service:
-                raise ValueError(f"Service '{service_name}': {directive} cannot be retained in an execution snapshot")
+                raise ValueError(
+                    f"Service '{service_name}': {directive} "
+                    f"cannot be retained in an execution snapshot"
+                )
         assert_permitted_build_shape(service_name, service)
     RESOURCE_IDENTITY_POLICY.assert_snapshot(data, invocation.worker_id)
     plan_directory = invocation.snapshot_path.parent if invocation.snapshot_path else None
@@ -159,7 +165,7 @@ class ComposeRunner:
         self.workspace_base_path = Path(workspace_base_path)
 
     def _plan_directory(self, worker_id: str) -> Path:
-        path = self.workspace_base_path / _PLAN_DIRECTORY / worker_id
+        path = self.workspace_base_path / COMPOSE_PLAN_DIRECTORY / worker_id
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         path.chmod(0o700)
         return path
@@ -265,18 +271,22 @@ class ComposeRunner:
         else:
             worker_workspace = self.workspace_base_path / worker_id / "workspace"
         if not worker_workspace.is_dir():
-            raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {worker_workspace}")
+            raise ValueError(
+                f"Workspace for worker '{worker_id}' does not exist: {worker_workspace}"
+            )
         worker_workspace_resolved = worker_workspace.resolve()
 
         try:
             effective_cwd = (worker_workspace / cwd).resolve()
             effective_cwd.relative_to(worker_workspace_resolved)
         except ValueError as exc:
-            raise ValueError(f"Path traversal detected: cwd '{cwd}' resolves outside workspace") from exc
+            raise ValueError(
+                f"Path traversal detected: cwd '{cwd}' resolves outside workspace"
+            ) from exc
         if not effective_cwd.is_dir():
             raise ValueError(f"Compose cwd does not exist: {effective_cwd}")
 
-        project_name = f"worker_{worker_id}"
+        project_name = worker_compose_project(worker_id)
         plan_directory = self._plan_directory(worker_id)
 
         subcommand = self._subcommand(args)
@@ -339,7 +349,9 @@ class ComposeRunner:
             *default_file_args,
             *network_args,
         ]
-        run_env = {key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None}
+        run_env = {
+            key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None
+        }
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"
         if env:
@@ -367,14 +379,20 @@ class ComposeRunner:
             raise ValueError("; ".join(command_result.errors))
         if self._has_global_file_selection(args):
             raise ValueError("Recovery commands do not allow worker-selected Compose files")
-        workspace = Path(workspace_dir) if workspace_dir else self.workspace_base_path / worker_id / "workspace"
+        workspace = (
+            Path(workspace_dir)
+            if workspace_dir
+            else self.workspace_base_path / worker_id / "workspace"
+        )
         if not workspace.is_dir():
             raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {workspace}")
         plan_directory = self._plan_directory(worker_id)
-        environment = {key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None}
+        environment = {
+            key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None
+        }
         environment["HOST_UID"] = "1000"
         environment["HOST_GID"] = "1000"
-        project_name = f"worker_{worker_id}"
+        project_name = worker_compose_project(worker_id)
         return ComposeInvocation(
             command=[
                 str(_DOCKER_EXECUTABLE),
@@ -423,7 +441,9 @@ class ComposeRunner:
         try:
             result = await loop.run_in_executor(None, _run_config)
         except subprocess.TimeoutExpired as exc:
-            raise ValueError(f"docker compose config timed out after {timeout}s for worker '{worker_id}'") from exc
+            raise ValueError(
+                f"docker compose config timed out after {timeout}s for worker '{worker_id}'"
+            ) from exc
         except OSError as exc:
             raise ValueError(f"docker compose config is unavailable: {exc}") from exc
         if result.returncode != 0:
@@ -503,8 +523,10 @@ class ComposeRunner:
 
         try:
             result = await loop.run_in_executor(None, _run_subprocess)
-        except subprocess.TimeoutExpired:
-            raise ValueError(f"docker compose timed out after {timeout}s for worker '{worker_id}'")
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"docker compose timed out after {timeout}s for worker '{worker_id}'"
+            ) from exc
 
         logger.info(
             "compose_run_complete",

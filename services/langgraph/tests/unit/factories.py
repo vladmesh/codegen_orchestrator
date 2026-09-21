@@ -23,6 +23,7 @@ from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.user import UserDTO
+from shared.qa_target_profile import QA_TARGET_PROFILE_VERSION
 from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
 
 _NOW = datetime.now(UTC)
@@ -203,6 +204,9 @@ def make_server(**overrides) -> ServerDTO:
         # Admission refuses a host whose software provisioning is not recorded
         # complete, so the default server here is one that finished provisioning.
         "labels": {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
+        # ...and one whose current QA target profile was proved by reconciliation.
+        "qa_target_version": QA_TARGET_PROFILE_VERSION,
+        "qa_target_proved_at": _NOW,
         "created_at": _NOW,
         "updated_at": _NOW,
     }

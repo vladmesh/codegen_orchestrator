@@ -66,6 +66,10 @@ def _unrevoked_ttl_minutes() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_unrevoked_ttl_minutes")
 
 
+def _target_held_max_minutes() -> int:
+    return startup.get_config().get_int("supervisor.qa_handoff_target_held_max_minutes")
+
+
 def _new_operation_run_id(operation: str) -> str:
     return f"temporary-access-{operation}-{uuid.uuid4().hex[:12]}"
 
@@ -104,15 +108,12 @@ async def grant_temporary_access(
             raise
         # A target holder or live legacy row is a precondition for this handoff,
         # never a reason to abort the dispatcher cycle that can settle others.
-        logger.warning(
-            "temporary_access_handoff_deferred",
+        await _defer_or_fail_held_handoff(
+            api_client,
             grant_id=grant_id,
             project_id=project_id,
             target_application_id=target_application_id,
             qa_run_id=qa_message.run_id,
-            remediation=(
-                "drain any live legacy grant with the prior release and wait for target cleanup"
-            ),
         )
         return None
     if grant.status is not TemporaryAccessStatus.GRANTING:
@@ -120,6 +121,74 @@ async def grant_temporary_access(
     if await api_client.get_run_if_missing_returns_none(grant.grant_run_id) is None:
         await _publish_operation(api_client, redis_client, grant, grant.grant_run_id, "grant")
     return grant
+
+
+def _holder_description(holder) -> str:
+    if holder is None:
+        return "a live grant the target-held refusal named but the record no longer lists"
+    return (
+        f"grant {holder.id} (status {holder.status.value}, QA run {holder.qa_run_id}"
+        f", revoke reason {holder.revoke_reason.value if holder.revoke_reason else 'none'}"
+        f", revoke attempts {holder.revoke_attempts})"
+    )
+
+
+async def _defer_or_fail_held_handoff(
+    api_client,
+    *,
+    grant_id: str,
+    project_id: str,
+    target_application_id: int,
+    qa_run_id: str,
+) -> None:
+    """Report the holder every tick, and stop deferring once it will not clear.
+
+    A refused handoff used to be a warning with no holder in it and no end: the
+    story stayed in TESTING until something outside the platform gave up, which
+    is a run that ends on somebody else's clock rather than on a named platform
+    state. So the holder is read and named, and the wait is bounded by the QA
+    run's own age. Past the bound the run carries the ordinary
+    `qa_access_grant_failed` verdict, naming what held the target, and the story
+    reaches human review instead of waiting.
+    """
+    holder = await api_client.live_temporary_access_grant_holding_target(
+        project_id, target_application_id
+    )
+    run = await api_client.get_run_if_missing_returns_none(qa_run_id)
+    waiting_minutes = _age_minutes(run.created_at) if run is not None else 0.0
+    log = logger.bind(
+        grant_id=grant_id,
+        project_id=project_id,
+        target_application_id=target_application_id,
+        qa_run_id=qa_run_id,
+        held_by=holder.id if holder is not None else None,
+        held_by_status=holder.status.value if holder is not None else None,
+        held_by_qa_run_id=holder.qa_run_id if holder is not None else None,
+        waiting_minutes=round(waiting_minutes, 1),
+    )
+    if waiting_minutes < _target_held_max_minutes():
+        log.warning(
+            "temporary_access_handoff_deferred",
+            remediation=(
+                "drain any live legacy grant with the prior release and wait for target cleanup"
+            ),
+        )
+        return
+    detail = (
+        f"temporary QA access for application {target_application_id} stayed held for "
+        f"{round(waiting_minutes, 1)} minutes by {_holder_description(holder)}"
+    )
+    log.error("temporary_access_handoff_target_held_exhausted", error=detail)
+    await _fail_qa_run(api_client, qa_run_id, detail)
+    await notify_admins_best_effort(
+        "A QA handoff could not obtain temporary access because the target stayed held: "
+        f"project {project_id}, application {target_application_id}, QA run {qa_run_id}. "
+        f"{detail}",
+        level="error",
+        component="temporary_access",
+        grant_id=grant_id,
+        qa_run_id=qa_run_id,
+    )
 
 
 async def supervise_temporary_access(api_client, redis_client: RedisStreamClient) -> dict[str, int]:
@@ -210,10 +279,17 @@ async def _publish_operation(
 
 
 def _operation_succeeded(run) -> bool:
+    """Whether the run carries the product's confirmed readback.
+
+    A capability run records `SUCCESS` only after the product read the access
+    back active for a grant, inactive for a revoke; any other readback fails the
+    run. A skipped run never reached the product, so it proves nothing.
+    """
     return (
         run.status is RunStatus.COMPLETED
         and run.result is not None
         and run.result.deploy_outcome is DeployOutcome.SUCCESS
+        and run.result.skipped_reason is None
     )
 
 
@@ -336,7 +412,7 @@ async def _settle_granted(api_client, redis_client, grant, counts, log) -> None:
 
 
 async def _fail_and_revoke(api_client, redis_client, grant, detail, counts, log) -> None:
-    await _fail_qa_run(api_client, grant, detail)
+    await _fail_qa_run(api_client, grant.qa_run_id, detail)
     await _dispatch_revoke(
         api_client, redis_client, grant, TemporaryAccessRevokeReason.GRANT_FAILED
     )
@@ -516,9 +592,9 @@ async def _escalate_unrevoked(api_client, grant, detail, counts) -> None:
     counts["escalated"] += 1
 
 
-async def _fail_qa_run(api_client, grant, detail: str) -> None:
+async def _fail_qa_run(api_client, qa_run_id: str, detail: str) -> None:
     await api_client.record_run_outcome_unless_settled(
-        grant.qa_run_id,
+        qa_run_id,
         {
             "status": RunStatus.FAILED.value,
             "error_message": detail,

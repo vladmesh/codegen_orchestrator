@@ -47,7 +47,7 @@ def _engineering_message() -> dict:
 async def _github_reporting_a_deployed_head():
     """A repository whose default branch already carries the reported commit."""
     client = AsyncMock()
-    client.get_token = AsyncMock(return_value="ghs_fake")
+    client.get_repo_scoped_token = AsyncMock(return_value="ghs_fake")
     client.get_repo = AsyncMock(return_value=SimpleNamespace(default_branch="main"))
     client.branch_contains_commit = AsyncMock(return_value=True)
     return client

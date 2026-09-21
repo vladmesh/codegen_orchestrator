@@ -28,7 +28,14 @@
 
 set -eu
 
-ALLOWED="diff inspect logs port ps read-contract stats top"
+# The QA target profile this wrapper belongs to. `shared/qa_target_profile.py`
+# pins the same value, and a unit test derives it from this role's files with
+# this line blanked: a role artefact that changes while this stays put fails the
+# build, and a host still carrying an older copy answers `version` with a
+# profile the orchestrator refuses before any QA executor starts.
+QA_TARGET_PROFILE_VERSION=f239eaa991672fa1
+
+ALLOWED="diff inspect logs port ps read-contract stats top version"
 
 if [ "$#" -eq 0 ]; then
     echo "qa-docker: a docker sub-command is required; allowed: $ALLOWED" >&2
@@ -36,6 +43,18 @@ if [ "$#" -eq 0 ]; then
 fi
 
 subcommand=$1
+
+# Read-only and host-local: which profile this is and which verbs it answers.
+# It never reaches docker, so it is the one question that cannot be refused by
+# the runtime it describes.
+if [ "$subcommand" = "version" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "qa-docker: version takes no arguments" >&2
+        exit 2
+    fi
+    echo "qa-docker profile=$QA_TARGET_PROFILE_VERSION verbs=$ALLOWED"
+    exit 0
+fi
 
 if [ "$subcommand" = "read-contract" ]; then
     if [ "$#" -ne 4 ]; then
@@ -94,7 +113,9 @@ cat -- "$resolved" || {
 fi
 
 for allowed in $ALLOWED; do
-    [ "$allowed" = "read-contract" ] && continue
+    case "$allowed" in
+        read-contract | version) continue ;;
+    esac
     if [ "$subcommand" = "$allowed" ]; then
         exec docker "$@"
     fi

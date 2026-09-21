@@ -20,11 +20,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fakeredis import aioredis
+import pytest
+
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.redis import decode_redis_fields
-
 from src.manager import DEV_NETWORK_TYPE_LABEL, QA_WORKER_TYPE, WorkerManager
 
 pytestmark = pytest.mark.asyncio
@@ -32,8 +32,12 @@ pytestmark = pytest.mark.asyncio
 # The run that initiated the work, and the attempt inside it. They are
 # deliberately unalike here: a test that used one value for both could not see
 # the two being swapped.
-OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1")
-OTHER_RUN = WorkerOwnership(project_id="proj-alpha", run_id="live-beta", attempt_id="eng-alpha-2")
+OWNERSHIP = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1"
+)
+OTHER_RUN = WorkerOwnership(
+    story_id="story-1", project_id="proj-alpha", run_id="live-beta", attempt_id="eng-alpha-2"
+)
 
 
 def _docker_mock():
@@ -74,6 +78,29 @@ async def test_the_container_is_labelled_with_its_project_and_run():
     assert labels[WorkerLabel.ATTEMPT.value] == "eng-alpha-1"
     assert labels[WorkerLabel.ID.value] == "w-labelled"
     assert labels[WorkerLabel.TYPE.value] == "worker"
+
+
+async def test_a_standalone_worker_keeps_run_ownership_without_a_story_label():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    docker = _docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    standalone = OWNERSHIP.model_copy(update={"story_id": None})
+
+    await manager.create_worker(
+        "w-standalone",
+        "worker:latest",
+        ownership=standalone,
+        network_name="codegen_worker",
+        create_dev_network=False,
+    )
+
+    labels = docker.run_container.await_args.kwargs["labels"]
+    assert WorkerLabel.STORY.value not in labels
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    meta = decode_redis_fields(await redis.hgetall("worker:meta:w-standalone"))
+    assert "story_id" not in meta
+    assert meta["run_id"] == "live-alpha"
+    assert meta["attempt_id"] == "eng-alpha-1"
 
 
 async def test_the_dev_network_carries_the_same_ownership_as_its_worker():
@@ -187,14 +214,19 @@ async def test_two_runs_of_one_project_are_told_apart_by_their_run_label():
     assert by_run == {"live-alpha": "worker-w-run-1", "live-beta": "worker-w-run-2"}
 
 
-@patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True))
+@patch(
+    "src.manager.workspace_mod.get_scaffolded_workspace",
+    return_value=(Path("/data/ws/repo-1"), True),
+)
 async def test_a_developer_worker_carries_the_ownership_the_request_named(_workspace):
     """The whole path: create request → labels and metadata, one value each."""
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = _docker_mock()
     manager = WorkerManager(redis=redis, docker_client=docker)
 
-    with patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"):
+    with patch.object(
+        manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"
+    ):
         await manager.create_worker_with_capabilities(
             worker_id="dev-owned",
             capabilities=[],
@@ -224,14 +256,20 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
     """
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = _docker_mock()
-    docker.inspect_container = AsyncMock(return_value={"NetworkSettings": {"Networks": {"codegen_qa_egress": {}}}})
+    docker.inspect_container = AsyncMock(
+        return_value={"NetworkSettings": {"Networks": {"codegen_qa_egress": {}}}}
+    )
     docker.inspect_network = AsyncMock(return_value={"Internal": True})
     manager = WorkerManager(redis=redis, docker_client=docker)
-    qa_ownership = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="qa-alpha-9")
+    qa_ownership = WorkerOwnership(
+        story_id="story-1", project_id="proj-alpha", run_id="live-alpha", attempt_id="qa-alpha-9"
+    )
 
     with (
         patch("src.manager.settings") as settings,
-        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"),
+        patch.object(
+            manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"
+        ),
         patch("src.manager.qa_egress.establish", new_callable=AsyncMock) as establish,
         patch("src.manager.qa_egress.verify_isolation"),
     ):

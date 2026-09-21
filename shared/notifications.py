@@ -7,7 +7,9 @@ does NOT require env vars to be set.
 
 import asyncio
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from http import HTTPStatus
 import os
 
@@ -154,23 +156,51 @@ async def send_telegram_message(
         return False
 
 
-async def notify_admins(message: str, level: str = "info") -> int:
-    """Notify all administrators via Telegram and propagate boundary failures.
+class AdminDeliveryStatus(StrEnum):
+    """What one publication to the administrator audience amounted to."""
 
-    Args:
-        message: Message text (will be prefixed with emoji)
-        level: Severity level (info, warning, error, critical, success)
+    #: Every configured administrator's Telegram send returned success.
+    DELIVERED = "delivered"
+    #: Some, but not all, configured administrators were reached.
+    PARTIAL = "partial"
+    #: At least one administrator is configured and none was reached.
+    FAILED = "failed"
+    #: No administrator is configured. Nobody can be told; not a delivery.
+    UNADDRESSABLE = "unaddressable"
 
-    Returns:
-        Number of administrators whose Telegram delivery succeeded. A return of
-        zero is valid when the users API returns no administrators.
 
-    Raises:
-        RuntimeError: If required configuration is missing or the users API
-            returns a non-200 response.
-        httpx.RequestError: If the users API request fails or times out.
-        ValidationError: If the users API response is not a valid user list.
+@dataclass(frozen=True)
+class AdminDeliveryResult:
+    """The per-recipient truth `notify_admins` folds into one success count.
+
+    ``send_telegram_message`` reports rate limiting, non-200 answers, timeouts
+    and transport errors as ``False`` rather than raising, so a caller that has
+    to settle a durable obligation cannot read "did not raise" as delivered.
     """
+
+    configured: int
+    succeeded: int
+
+    @property
+    def status(self) -> AdminDeliveryStatus:
+        if self.configured == 0:
+            return AdminDeliveryStatus.UNADDRESSABLE
+        if self.succeeded >= self.configured:
+            return AdminDeliveryStatus.DELIVERED
+        if self.succeeded == 0:
+            return AdminDeliveryStatus.FAILED
+        return AdminDeliveryStatus.PARTIAL
+
+    @property
+    def detail(self) -> str:
+        return (
+            f"{self.status.value}: Telegram accepted {self.succeeded} of "
+            f"{self.configured} configured administrators"
+        )
+
+
+async def _list_admin_users() -> list[UserDTO]:
+    """Read the administrators from the users API. Propagates every read failure."""
     config = _ensure_config()
 
     # Get all users through the shared transport, so this read carries
@@ -186,35 +216,63 @@ async def notify_admins(message: str, level: str = "info") -> int:
 
     if not users:
         logger.warning("no_users_found", action="skip_notifications")
-        return 0
+        return []
 
-    # Filter admin users
     admin_users = [user for user in users if user.is_admin]
-
     if not admin_users:
         logger.warning("no_admin_users_found", action="skip_notifications")
-        return 0
+    return admin_users
 
-    # Prepare message with emoji
+
+async def deliver_to_admins(message: str, level: str = "info") -> AdminDeliveryResult:
+    """Send one message to every administrator and report per-recipient truth.
+
+    This is the boundary for callers that settle a durable obligation. It raises
+    exactly what `notify_admins` raises (configuration and users-API failures);
+    Telegram failures are returned in the result, never swallowed into success.
+    """
+    admin_users = await _list_admin_users()
+    if not admin_users:
+        return AdminDeliveryResult(configured=0, succeeded=0)
+
     emoji = EMOJI_MAP.get(level, "ℹ️")
     formatted_message = f"{emoji} {message}"
 
     # Send to all admins in parallel
     tasks = [send_telegram_message(user.telegram_id, formatted_message) for user in admin_users]
-
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Count successes
-    success_count = sum(1 for r in results if r is True)
-
+    result = AdminDeliveryResult(
+        configured=len(admin_users), succeeded=sum(1 for r in results if r is True)
+    )
     logger.info(
         "admins_notified",
-        success_count=success_count,
-        total_admins=len(admin_users),
+        success_count=result.succeeded,
+        total_admins=result.configured,
         level=level,
     )
+    return result
 
-    return success_count
+
+async def notify_admins(message: str, level: str = "info") -> int:
+    """Notify all administrators via Telegram and propagate boundary failures.
+
+    Args:
+        message: Message text (will be prefixed with emoji)
+        level: Severity level (info, warning, error, critical, success)
+
+    Returns:
+        Number of administrators whose Telegram delivery succeeded. A return of
+        zero is valid when the users API returns no administrators. Callers that
+        must tell no administrators from failed delivery use `deliver_to_admins`.
+
+    Raises:
+        RuntimeError: If required configuration is missing or the users API
+            returns a non-200 response.
+        httpx.RequestError: If the users API request fails or times out.
+        ValidationError: If the users API response is not a valid user list.
+    """
+    return (await deliver_to_admins(message, level=level)).succeeded
 
 
 async def notify_admins_best_effort(

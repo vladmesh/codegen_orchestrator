@@ -16,11 +16,12 @@ from shared.allocation_freshness import (
     effective_allocation_metrics_freshness_seconds,
     validate_health_check_interval,
 )
-from shared.contracts.dto.server import ServerStatus, ServerUpdate
+from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.models.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter
+from src.metrics.node_exporter import NodeMetrics
 from src.tasks.app_health_prober import app_health_probe_cycle
 
 from .. import startup
@@ -40,6 +41,8 @@ HEALTH_CHECK_INTERVAL = validate_health_check_interval(
 
 NODE_EXPORTER_PORT = 9100
 CADVISOR_PORT = 8080
+CONTROL_HOST_HANDLE = "control-host"
+CONTROL_HOST_LABEL = "control_host"
 
 
 def _http_timeout() -> float:
@@ -74,6 +77,38 @@ def _get_http_client() -> httpx.AsyncClient:
 def _get_checkable_servers(servers: list) -> list:
     """Filter servers to only those that should be health-checked."""
     return [s for s in servers if s.is_managed and s.status in _CHECKABLE_STATUSES]
+
+
+async def _ensure_control_host(servers: list):
+    """Return the control-host inventory row, creating its non-managed monitor row once."""
+    for server in servers:
+        if server.handle == CONTROL_HOST_HANDLE:
+            return server
+
+    hostname = os.getenv("ORCHESTRATOR_HOSTNAME")
+    public_ip = os.getenv("ORCHESTRATOR_PUBLIC_IP")
+    if not hostname or not public_ip:
+        logger.error("control_host_monitoring_not_configured")
+        return None
+    try:
+        return await api_client.create_server(
+            ServerCreate(
+                handle=CONTROL_HOST_HANDLE,
+                host=hostname,
+                public_ip=public_ip,
+                is_managed=False,
+                status=ServerStatus.ACTIVE,
+                labels={"role": CONTROL_HOST_LABEL},
+            )
+        )
+    except Exception as error:
+        logger.error(
+            "control_host_inventory_create_failed",
+            error=str(error),
+            error_type=type(error).__name__,
+            exc_info=True,
+        )
+        return None
 
 
 async def _fetch_metrics(http: httpx.AsyncClient, ip: str, port: int) -> str | None:
@@ -242,6 +277,25 @@ async def _check_resource_thresholds(server, node_metrics) -> None:
             await _create_resource_incident(server, "disk", round(disk_pct, 1))
 
 
+async def _check_control_host_disk(server) -> None:
+    """Check the scheduler container's backing filesystem without a host bind mount.
+
+    Docker overlayfs reports the capacity and available blocks of its backing host
+    filesystem for ``/``.  The scheduler's statvfs result therefore tracks the
+    control host disk on which Docker stores the release, images and cache.
+    """
+    filesystem = os.statvfs("/")
+    total_bytes = filesystem.f_blocks * filesystem.f_frsize
+    available_bytes = filesystem.f_bavail * filesystem.f_frsize
+    await _check_resource_thresholds(
+        server,
+        NodeMetrics(
+            disk_total_bytes=total_bytes,
+            disk_used_bytes=total_bytes - available_bytes,
+        ),
+    )
+
+
 async def _create_resource_incident(server, resource: str, usage_pct: float) -> None:
     """Create RESOURCE_EXHAUSTED incident if none exists."""
     active = await api_client.get_active_incidents(server.handle, IncidentType.RESOURCE_EXHAUSTED)
@@ -301,6 +355,11 @@ async def health_check_worker():
 
             for server in checkable:
                 await _check_server(server)
+                checked += 1
+
+            control_host = await _ensure_control_host(servers)
+            if control_host is not None:
+                await _check_control_host_disk(control_host)
                 checked += 1
 
             # Application health probing (after server checks)

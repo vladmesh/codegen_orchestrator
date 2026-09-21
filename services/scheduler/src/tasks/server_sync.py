@@ -329,7 +329,11 @@ async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
     # this Time4VPS producer and only after an exact stable-ID match.
     db_servers_list = await api_client.get_servers()
     db_servers_by_handle = {server.handle: server for server in db_servers_list}
-    db_servers_by_ip = {server.public_ip: server for server in db_servers_list}
+    # control-host monitors this scheduler host. It has no provider identity and
+    # must not prevent discovering a real provider row that shares its public IP.
+    db_servers_by_ip = {
+        server.public_ip: server for server in db_servers_list if server.handle != "control-host"
+    }
     db_servers_by_provider_id = {}
     for server in db_servers_list:
         if server.provider not in (None, TIME4VPS_PROVIDER):

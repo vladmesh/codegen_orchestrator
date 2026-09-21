@@ -11,25 +11,30 @@ import pytest
 from shared.clients.internal_api import InternalAPIClient
 from shared.queues import PO_REMINDERS_KEY
 from src.agents.po.tools import (
-    create_project,
-    create_story,
     get_all_tools,
     get_budget_balance,
-    get_project,
-    get_run_status,
-    get_story,
-    init_po_clients,
-    list_projects,
-    list_stories,
     notify_user,
-    reopen_story,
-    set_project_secret,
     set_reminder,
-    teardown_project,
-    validate_telegram_token,
     web_search,
 )
-from src.agents.po.tools_projects import AVAILABLE_MODULES, _project_creation_identity
+from src.agents.po.tools_projects import (
+    AVAILABLE_MODULES,
+    _project_creation_identity,
+    create_project,
+    get_project,
+    list_projects,
+    set_project_secret,
+    teardown_project,
+    validate_telegram_token,
+)
+from src.agents.po.tools_shared import init_po_clients
+from src.agents.po.tools_stories import (
+    create_story,
+    get_run_status,
+    get_story,
+    list_stories,
+    reopen_story,
+)
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 

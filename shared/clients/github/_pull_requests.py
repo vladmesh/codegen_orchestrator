@@ -220,6 +220,24 @@ class PullRequestsMixin:
         )
         return result
 
+    async def update_pull_request_branch(self, owner: str, repo: str, pr_number: int) -> dict:
+        """Ask GitHub to bring a pull-request branch up to date with its base."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "PUT",
+            f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/update-branch",
+            headers=headers,
+            json={},
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        logger.info("pr_branch_update_requested", owner=owner, repo=repo, pr_number=pr_number)
+        return result
+
     async def list_pull_requests(
         self,
         owner: str,

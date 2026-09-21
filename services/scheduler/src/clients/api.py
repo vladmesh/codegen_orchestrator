@@ -21,6 +21,10 @@ from shared.contracts.dto.engineering_dispatch import (
     EngineeringDispatchCommand,
     EngineeringDispatchRead,
 )
+from shared.contracts.dto.engineering_execution import (
+    EngineeringInfrastructureParkCommand,
+    EngineeringInfrastructureParkRead,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.product_brief import ProductBriefRead
@@ -247,6 +251,11 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "runs/", params=params)
         return [RunDTO.model_validate(r) for r in resp.json()]
 
+    async def list_story_runs(self, story_id: str) -> list[RunDTO]:
+        """List every run of a story, of every type, newest first."""
+        resp = await self.request("GET", "runs/", params={"story_id": story_id})
+        return [RunDTO.model_validate(r) for r in resp.json()]
+
     async def list_runs_owing_owner_notification(self, *, limit: int) -> list[RunDTO]:
         """One page of the runs whose owner has not been told their story ended.
 
@@ -359,6 +368,26 @@ class SchedulerAPIClient(InternalAPIClient):
         """Every capability-backed grant that still needs reconciliation."""
         resp = await self.request("GET", "temporary-access-grants/", params={"live": "true"})
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
+
+    async def live_temporary_access_grant_holding_target(
+        self, project_id: str, target_application_id: int
+    ) -> TemporaryAccessGrantDTO | None:
+        """The grant a refused handoff is waiting behind, if it is still readable.
+
+        The create endpoint answers a held target with 409 and names the holder
+        in prose. A deferral has to report the holder as fields, so it reads the
+        record instead of parsing that sentence.
+        """
+        resp = await self.request(
+            "GET",
+            "temporary-access-grants/",
+            params={"live": "true", "project_id": project_id},
+        )
+        for row in resp.json():
+            grant = TemporaryAccessGrantDTO.model_validate(row)
+            if grant.target_application_id == target_application_id:
+                return grant
+        return None
 
     async def get_live_temporary_access_grant_for_run(
         self, qa_run_id: str
@@ -490,6 +519,21 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": "scheduler"},
         )
         return StoryDTO.model_validate(resp.json())
+
+    async def park_infrastructure_refusal(
+        self, story_id: str, command: EngineeringInfrastructureParkCommand
+    ) -> EngineeringInfrastructureParkRead:
+        """Park one exact pre-agent refusal on its task and story in one transaction.
+
+        The API owns completion: evidence, both transitions and the owner's
+        durable notice commit together, and a repeat returns `already_parked`.
+        """
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/park-infrastructure-refusal",
+            json=command.model_dump(mode="json"),
+        )
+        return EngineeringInfrastructureParkRead.model_validate(resp.json())
 
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:
         """Apply one Story transition. action: 'start', 'complete', 'archive'.

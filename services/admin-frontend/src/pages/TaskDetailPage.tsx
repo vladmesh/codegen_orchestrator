@@ -181,7 +181,7 @@ function TaskActions({ task, onSuccess }: { task: Task; onSuccess: () => void })
         />
       )}
 
-      {/* Resume: waiting_human_review → in_dev with guidance */}
+      {/* Resume: waiting_human_review → a fresh attempt (todo, new iteration and retry budget) with guidance */}
       {task.status === 'waiting_human_review' && (
         <>
           {showResume ? (

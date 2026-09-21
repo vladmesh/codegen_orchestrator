@@ -27,7 +27,9 @@ than passing it: it would prove nothing about a stack the manifest says may exis
 
 Cleanup is part of the test result. Every delete command must succeed and each owned resource must
 then be observed as absent. A delete or verification error fails the run, including when the test
-body already failed.
+body already failed. The one exception is stated rather than tolerated: the database rows the schema
+itself refuses to delete are declared retained, proven still there and reported — see **Database
+teardown, derived from the catalog**.
 
 Scaffold stream deletion is not treated as cancellation. Each execution atomically checks the
 project cancel marker and registers its own expiring lease before external work. Concurrent or
@@ -48,24 +50,23 @@ JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; two noop engineering Tasks and deterministic QA | 1 | one project; paid admission evidence; two ordered noop Tasks on one Story worker; deploy; deterministic QA; completed Story/PO record; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port release | 75 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | a user registered through the product's own door — a fresh Telegram id, a promo code minted through the internal API and redeemed by that named actor, and the engineering budget policy the code arms; one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
-| `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 281 min | derived worst case: initial lifecycle, two repairs plus one retry, post-deploy checks, 10m evidence/cleanup margin |
-| `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 281 min | derived worst case as `mega-brief`, with the kit install inside the engineering budget |
+| `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
+| `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
 | `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
 The local target names reflect that same contract:
 
 - `make test-live-mega-noop` runs only the noop class.
-- `make test-live-mega` is a compatibility alias for `test-live-mega-noop`.
 - `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
 - `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
 - `make test-live-mega-brief-package` runs only its package variant, the same path onto the kit
   package route, for one locally configured pair.
 - `make test-live-matrix` delegates the four paid cells to the stand runner.
-- `make test-live-pipeline` is a legacy aggregate of scaffold, engineering, and both full-pipeline
-  classes. It is not a named suite and intentionally remains visible until duplicate coverage is
-  removed in a later iteration.
+
+There is no compatibility alias or aggregate target in the local Makefile: select the named class
+that owns the coverage you want, or use `make stand-run SUITE=<suite>` for a canonical stand run.
 
 ### Switching the QA executor
 
@@ -111,17 +112,42 @@ could not log in.
 
 ### Timeout budget
 
-The timeout values are deliberate bounds, not duration estimates. The noop lifecycle's explicit
-waits sum to at most 61m20s (`120 + 840 + 60 + 420 + 420 + 120 + 320 + 300 + 180 + 180 + 120 + 300 +
-300` seconds): scaffold; two ordered noop Tasks; Story aggregation; deploy; a bounded public health
-probe (up to two 30-second paths per attempt); deterministic QA; completed-story and durable PO
-delivery; the exact deployment record; then undeploy Run, terminal application, and port-allocation
-release. The 75-minute cap leaves 13m40s for manifest-owned teardown and diagnostics. The LLM pipeline
-remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because it does not yet run the new lifecycle
-acceptance. `mega-brief` has a 281-minute cap: 93m pre-follow-up lifecycle, up to 153m under the
-harness settings-seed ceiling (two manifest repairs plus one convergent retry), 25m post-follow-up
-lifecycle, and a 10m evidence/cleanup margin inside pytest. `mega-brief-package` runs the same
-lifecycle under a longer productive window — 65 minutes, then a 15-minute cleanup grace — because
+The timeout values are deliberate bounds, not duration estimates. The scaffold bound is the one that
+is not a constant: `shared/stand_deadlines.py` derives it from the product's module count — 120
+seconds for the first rendered service and another 120 for each further one — because `make setup`
+runs `uv sync --frozen` for the root and then for every service before `framework.generate` and ruff.
+`mega-noop` scaffolds the two-module level-1 product, so its scaffold bound is 240 seconds; every
+one-module suite keeps 120. The noop lifecycle's explicit waits are not transcribed here any more,
+and they are not transcribed in `shared/stand_deadlines.py` either: the ledger there
+(`NOOP_LIFECYCLE_WAITS`) is built from the wait constants themselves — `DEPLOY_RUN_TIMEOUT`,
+`ENGINEERING_TIMEOUT`, `QA_RUN_TIMEOUT` and the rest, which `tests/live/pipeline_helpers.py` imports
+from that same module — so a timeout that moves takes the ledger and the cap with it. The numbers
+below are what it sums to today, not a second copy of it. The ledger sums to 140m40s and the
+155-minute cap leaves 14m20s for manifest-owned teardown and diagnostics — at least the 11m40s
+reserve the ledger requires of it, which is checked where both are defined.
+
+It has three parts. The **first story** spends 68m20s (`240 + 840 + 60 + 1320 + 420 + 120 + 320 +
+300 + 180 + 180 + 120` seconds): scaffold; two ordered noop Tasks; Story aggregation; the merged
+deploy Run, whose 1320 seconds legitimately span the *product's own* CI, because no Run is created
+until the merged commit's images are observed published; deploy; the typed deploy outcome; a bounded
+public health probe (each attempt tries both health paths, each with the client timeout);
+deterministic QA; completed-story and durable PO delivery; the exact deployment record. The **second
+story on the same project** spends 62m20s (`420 + 60 + 1320 + 540 + 420 + 320 + 300 + 180 + 180`):
+one noop Task and its Story aggregation; its own merged deploy Run, with the same image-publication
+bound inside it; the typed deploy outcome, which for a second story has to cover the deploy itself,
+because the application is already `running` from the first story's deploy and stays terminal
+throughout a redeploy — the Run is the fact, not the status; the application's own terminal status
+once that Run has settled; the health probe; QA; completed-story and PO delivery. **Teardown**
+spends 10m: undeploy Run, terminal application and port-allocation release. The whole `mega-noop`
+path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, the executor switch,
+this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes. The LLM pipeline
+remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because its project is backend-only — one
+module, so one module's scaffold bound — and it does not yet run the new lifecycle
+acceptance. `mega-brief` stops its productive work at 50 minutes on the fixture's own clock and
+then gets a 10-minute cleanup grace before the runner kills the process group — the two are
+`MEGA_BRIEF_PRODUCTIVE_SECONDS` and `MEGA_BRIEF_HARD_STOP_SECONDS`, and the grace is their
+difference, not a third number. `mega-brief-package` runs the same lifecycle under a longer
+productive window — 65 minutes, then a 15-minute cleanup grace — because
 its engineering turn obtains the kit, builds the package wheel, installs it with `kit add` and
 regenerates the product contract before any of its own work starts. A recreate's readiness wait and the QA executor switch that follows it are separately
 limited to three minutes each; runner preflight and final sweep are each five minutes.
@@ -133,7 +159,7 @@ control-plane bootstrap measured about seven minutes. It now uses a stand-only m
 whose expected 2–3 minute duration is pending live confirmation; that expectation does not change
 the overall provisioning budget. The matrix runner is bounded at 274 minutes (`5m preflight + 4 ×
 (60m cell + 3m readiness + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict
-41-minute reserve over provisioning plus that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
+31-minute reserve over provisioning, the 10-minute pre-provisioning reserve and that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
 jobs do not share an outer timeout.
 
 ### Invariant map and first-iteration baseline
@@ -144,9 +170,16 @@ immutable noop `ExecutorDecision`, typed terminal result, canonical zero-provide
 and actual reservation outcome; its second `todo` Task is blocked by the first and must not receive
 a Run early. The two Tasks complete through one observed Story-worker lifecycle before the PR/merge
 can lead to deploy. It also proves the completed Story's durable `story_completed` owner record, its
-matching post-cursor PO input event and verified public URL, the successful service deployment's exact
-merged SHA, and a product API undeploy through terminal `not_deployed` plus owned port-allocation
-absence. Every named suite also compares the deploy Run's image references with the commit `main` points at —
+matching post-cursor PO input event and the message a *bot* product's owner is owed — the bot handle,
+the confirmed brief's usage examples in the brief's language, and no backend address at all — the
+successful service deployment's exact merged SHA, and a product API undeploy through terminal
+`not_deployed` plus owned port-allocation absence. Its Story is planned against a confirmed Product
+Brief the released PO tools froze without any model call, and released only by the one admission step
+on the architect's own coverage routes — and because publishing that story wakes the live architect
+consumer, the run proves from durable rows that nothing but the harness ever claimed this brief's
+plan, rather than relying on having won that race; the grant deploy that follows seeds that brief's
+`initial_settings` into the deployed product, and the run reads the value back from the product
+itself. Every named suite also compares the deploy Run's image references with the commit `main` points at —
 read from GitHub, never from what the deploy was given — before it spends a QA attempt, so a
 deployment running an older image fails as a deploy defect rather than as a product one. Because no
 deploy Run is created until that commit's images are published, `DEPLOY_RUN_TIMEOUT` now spans the
@@ -159,6 +192,10 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
 | Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
 | Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
+| Confirmed brief without a model | the frozen brief's `confirmed_at` and `story_id`, read back over the API, and a plan released only by `POST /product-briefs/{id}/admit` over tasks that were undispatchable before it | `mega-noop` |
+| Nothing but the harness planned it | three durable observations — before the admission, after it and after engineering — that the brief's planning attempt is still this run's, that the claim was never finished out from under it, and that the story carries exactly the tasks this run planned | `mega-noop` |
+| Confirmed settings reach the product | the deploy Run's per-setting `settings_seed`, the consumer's `deploy_settings_seed_brief` line with `route=story`, and the deployed product's own readback | `mega-noop` |
+| Scripted product change | the story branch diff carries every change-set path, and the deployment answers the added endpoint, the registered product setting and the published bot command | `mega-noop` |
 | Deployed artifact identity | the deploy Run's image references, tagged with `main`'s head as GitHub reports it, read before any QA attempt | all named suites |
 | Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
 | Failure attribution | the failing stage, its control-plane reason, the engineering Run records and the verdict | all named suites; the paid verdict rules apply to LLM/matrix |
@@ -184,8 +221,8 @@ test-live-clean` can remove the leftovers once debugging is done. Without the fl
 fail-closed exactly as above.
 
 ```bash
-LIVE_NO_CLEANUP=1 make test-live-mega   # leave resources for inspection on failure
-make test-live-clean                    # remove them afterwards
+LIVE_NO_CLEANUP=1 make test-live-mega-noop   # leave resources for inspection on failure
+make test-live-clean                         # remove them afterwards
 ```
 
 The full pipeline has a separate post-deploy gate. Once the application is `running`, the harness
@@ -292,6 +329,23 @@ limit. `tests/live/test_run_evidence.py` covers the whole schema offline;
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.
 
+**The Product Brief block is what the run's own scenario owes.** `brief.obligations` names the
+facts this run is judged on, and only those can make the verdict red. A paid confirmed-brief
+variant owes the whole durable chain — confirmation, coverage, admission, the Architect criterion,
+the settings readback and the deploy seed, and the job central QA fired; `mega-brief-package` owes
+its deployment's `package_route` on top of it, because reading the active-package contract and the
+generated job registry off the deployment is what entitles the run to claim the package path was
+taken. The free level-1 lifecycle confirms a Product Brief through the released PO tools on every
+run, so it owes that confirmation and is red without it; it publishes no Architect criterion and
+its deterministic QA fires no product job, so it owes neither and the document says so instead of
+the flat "this is not a Product Brief scenario" it used to answer to all seven fields.
+
+The Architect criterion is judged against the expectation the *scenario declared*
+(`BriefScenario.expected_criterion`) — the same terms its fixture refuses the run on — rather than
+against one variant's job name. Stand run 34243255594 is why: `mega-brief-package` passed every
+test, deployed, fired `reminders.tick` and was called red by an artifact that demanded
+`multilingual_digest` (`issue:62bc9840e23a44c2098b`).
+
 ## Naming the failure
 
 A run that stopped has to say **where** and **why** in the artifact itself, because by the time
@@ -360,8 +414,8 @@ directory with the run evidence and names it when one was asked for and did not 
 `scripts/stand_acceptance.py` refuses a paid failure that asked for the snapshot and can say neither
 what became of it nor where it is. The free `mega-noop` route asks for nothing from the target host.
 
-Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of `scheduler`,
-`engineering-worker`, `worker-manager`, `worker-broker`, `api`, `qa-worker` and `deploy-worker` into
+Two collectors feed it. `stand-e2e.yml` pulls redacted `docker compose logs` tails of all three
+scheduler services, `engineering-worker`, `worker-manager`, `worker-broker`, `api`, `qa-worker` and `deploy-worker` into
 `suite-services.log` when the suite fails — through the same `shared.diagnostics.redact_diagnostic` helper and the same
 protected-name allow-list the provisioning-failure branch uses, with the stated reason published in
 place of the tails if that pipe cannot complete. And `dump_debug` now writes beside the run evidence,
@@ -434,6 +488,205 @@ record, its Redis keys included. A capture that fails is not a licence to remove
 `account_listed_workers` first, which writes the failure down as a missed capture naming the worker
 and why its ending could not be read. That is an acceptable ending; a worker that simply disappears
 is not.
+
+## Database teardown, derived from the catalog
+
+The rows a run leaves behind are removed by `tests/live/db_teardown.py`, which is given the run's
+roots — its project id, and the Telegram id of the user it registered when it has one — and reads
+the rest out of `pg_constraint`. Starting at those rows it walks *incoming* foreign keys, so what
+the run owns is what the keys say points at it, and it follows only
+the edges the database would refuse (`NO ACTION`, `RESTRICT`); a child the schema removes or unlinks
+by itself (`CASCADE`, `SET NULL`) is neither deleted here nor expected to be gone, which is why
+`engineering_attempt_ledger` is outside a project-rooted closure (it FKs `runs`, `projects`,
+`stories` and `tasks` with `SET NULL`) and enters a user-rooted one, where it is retained rather
+than deleted — see the retention rule below; a table reachable only
+through a `CASCADE` edge is out of the plan for the same reason, and when one appears the database
+refuses the delete and the error names the constraint, so the gap is loud rather than silent. The
+deletion order is the
+reverse topological order of that closure, in one transaction, and a cycle between two tables is
+raised by name rather than guessed at.
+
+**The plan is built from foreign keys and only foreign keys — and the schema has columns that are
+not one.** `service_deployments.project_id` is denormalized from the application and deliberately
+carries no key (`shared/models/deployment.py`), and its `application_id` is nullable, so a row can
+name a run's project and be reachable through no key at all: nothing deletes it, nothing refuses,
+and a proof built from keys alone would call the teardown clean. Such columns are therefore derived
+too, never listed. The schema's own foreign keys say what a column name means — `project_id` is the
+name a dozen tables use for `projects.id` — so any *other* column of that name carrying no key of
+its own is treated as the reference it is, and becomes a predicate and an ordering edge like any
+foreign key. That covers `service_deployments` and `api_keys` today, and covers the next
+denormalized column by existing. Two rules keep it honest: a name that resolves to more than one
+parent inside the closure is raised rather than guessed at, and an explicit key outranks an inferred
+one — a table the schema unlinks with its own `ON DELETE SET NULL` key into the closure, such as the
+deliberately-retained `engineering_budget_reservations`, is left alone however its other columns are
+named.
+
+**The run's user is a row the level-1 run owns, and it is a second root.** The level-1 run registers
+itself through the product's door — `register_run_owner` mints a promo code and redeems it at a
+fresh Telegram id from the band the harness registers in
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) — so the rows that hang off that user without hanging off its project are the run's residue:
+`engineering_budget_policies`, `engineering_budget_reservations`, the `promo_codes` row it redeemed,
+`work_admission_audits`, its `rag_*` dialogue rows. They join the closure because the *root* does,
+not because anyone listed them; `work_admission_audits.user_id` carries no foreign key at all and is
+covered by the same denormalized-column derivation as `service_deployments.project_id`.
+
+A root's predicate is the caller's subject and nothing widens it. `projects.owner_id` points at
+`users`, so the user root reaches the project root — that edge orders the two (a project goes before
+its owner) and selects nothing, which is why a run deletes the project it named rather than every
+project its owner happens to have.
+
+The other suites — scaffold, engineering, brief, LLM — still share one fixture user at a fixed
+`TEST_TELEGRAM_ID`. Their teardown passes no user predicate, so there is no user root, and their
+regime is unchanged: the fixture is nobody's to delete and nothing hanging off it joins the closure.
+
+**Two of the run's own rows cannot be deleted, and the plan says so rather than trying.**
+`engineering_attempt_ledger` is append-only by the trigger
+`engineering_attempt_ledger_append_only`, and its `user_id` foreign key is `NO ACTION`, so the run's
+`users` row cannot go either while its attempts exist. Both are declared in
+`db_teardown.RETENTION_RULES`: no `DELETE` is issued for them, they are inventoried before the
+deletes and read back by predicate afterwards, and teardown reports them by table, key and count.
+The retained set has to be *exactly* the declared one — for a run's own teardown, exactly one `users`
+row for its Telegram id plus the ledger rows of its own engineering attempts — and anything else
+fails the teardown. It is a stated rule, not a swallowed error: no trigger is disabled and no schema
+or product contract changes to accommodate it (whether it should is issue:792460b9934c749050ce).
+
+The stand sweep carries the same second root, selected by what the harness wrote rather than by one
+id. That is the backstop for a run that died between registering and creating its project: such a
+run owns a user, a code and a policy and no project at all, so nothing the title prefixes select
+could ever find it.
+
+Two things bound that root, and the distinction between them matters. The Telegram id band
+(`live_harness.RUN_USER_TELEGRAM_ID_MIN..MAX`) is where runs register, but it is **not** ownership:
+Telegram issues account ids and a real customer can hold one anywhere inside it, so selecting on the
+band alone would be a blind range delete over strangers' budgets, codes, audits and dialogue rows.
+What the harness genuinely owns is the *username* it registers under — `live_run_<telegram id>`,
+written by `register_run_owner` and by nothing else — the same kind of naming as a contour's project
+title prefix. `run_user_sweep_predicate()` requires both, so a row inside the band that the harness
+did not name is left where it is.
+
+On top of that, the sweep takes the user root **only in a contour that owns live runs**. `make
+test-live-clean` runs the sweep with `LIVE_CONTOUR` unset, which is the prod contour — the one whose
+refusal says it "holds real users' data". Nothing registers run-owned users there, so the production
+sweep keeps exactly the regime it had before the registration door existed: projects by title
+prefix, plus the single fixture-user statement, and no user root at all.
+
+Two bounds this backstop does not cover, stated rather than implied. A registration that mints a
+code and is then refused (the criterion-5 path) raises before the run has a user, so its unredeemed
+`promo_codes` row is reachable by neither teardown path — `redeemed_by_user_id` is NULL — and stays
+as one unusable row per refused registration; the run fails loudly, so an operator sees it. And a
+run that dies after registering but before its project exists has no per-run teardown at all
+(`cleanup_guard` is installed after `create_project`), so its user's rows depend entirely on this
+sweep.
+
+The proof is the same plan read back. Every key the run owns is recorded *before* the deletes and
+asked for again afterwards, so the check still answers once the project row is gone; anything that
+answers is raised as its table, its key and the constraint by which it belongs to the run. A delete
+the database refuses is reported as the constraint, the table it is on and whether the plan knew
+about that table at all — a table outside the plan means the catalog it was built from is stale.
+
+This replaced a hand-written list of `DELETE` statements, which went stale silently and in the
+direction of leaving residue behind: run 35441716423 could not delete its project because the
+level-1 grant deploy had written a `users_grant_intents` row referencing its `deploy-grant-…` run,
+and that table was in nobody's list. `tests/live/test_db_teardown.py` holds both properties offline,
+against this schema's own metadata (`shared/tests/project_cleanup.py::metadata_catalog_payload`).
+
+## The run proves it left nothing, and needed nobody
+
+Two proofs the level-1 lifecycle takes about itself, both built on `run_proof.py` — one question,
+one source, three answers: **absent** (asked and found nothing), **leftover** (asked and found
+things), **unaskable** (could not ask). The third is the point. An unreachable target, an unreadable
+registry or a Redis that refused the query fails the run naming the kind it could not check, never
+passes it quietly; this is the distinction card 1318 had to add when an unreadable manager log was
+rendering as an empty log. Every probe therefore raises on a non-answer — a non-zero exit, a missing
+marker, an unparseable payload — instead of returning an empty finding list, and a kind that no
+check answered at all is reported as *unasked* and fails too, so the proof cannot shrink by losing a
+probe.
+
+**And a question no reachable state could answer yes to is not a passing question either.** That is
+the same defect one level up, and it is how the first version of this proof failed review: the PO
+checkpoint kind asked `thread_id = <run id>` when nothing in the repository ever checkpoints under a
+run id, so it reported `absent` on every possible run. Two things answer it now. The PO kind asks
+the thread the consumer really writes (below), and refuses to answer without the snapshot that makes
+the run's own rows knowable. And `run_residue.vacuity_notes` names, in a green proof's own notes,
+every kind whose subject list was empty — a run that owns no deployed stack passes
+`target_containers` whatever is on the target, and a reader is told so instead of trusting the label.
+
+**Nothing left** (`run_residue.py`, asked by `cleanup_and_prove` after `cleanup_all` succeeds). One
+question per kind the Definition of Done names: containers on the control host *and* on the target,
+image repositories in the registry, workspaces, Redis keys, the GitHub repository, the PO checkpoint
+thread, and the database rows. This asks about *kinds*, not about removals, which is what makes it
+different from the verification each removal already does — a kind nothing removes is invisible to
+those. Two such kinds exist today:
+
+- The one-shot containers `docker compose run` creates inside a worker's bounded compose plan.
+  `docker compose down -v` removes the plan's services and not these, and exited
+  `*-integration-tests-run-*` containers survived a completed story on production for 7+ hours and
+  then survived a whole project teardown (`issue:868e40fc0377b0dabb77`). They carry no
+  `com.codegen.run.id`, so the run-label query cannot see them; they are asked for by the label
+  Compose does stamp, the worker's own project name. Worker-manager now removes them too, in the
+  worker's teardown and in the orphan collector (`shared/worker_compose.py`).
+
+  **A level-1 run creates none of these**, and the assertion is made anyway because the Definition of
+  Done names them. The level-1 developer path is the scripted `NoopRunner`, whose only product step
+  is `make setup` (`packages/worker-wrapper/src/worker_wrapper/runners/noop.py`), and `make setup` in
+  the pinned kit runs `uv sync`, `framework.generate` and `ruff` — no `docker compose` at all.
+  `make test-integration` is run only by a real developer agent, which
+  `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` tells to; that is the path the
+  issue's production evidence comes from, and the fix is for it.
+- The project workspace. A developer worker's checkout is deliberately preserved across its own
+  teardown so the next attempt reuses it, so nothing ever took it away when the project went;
+  `shared/live_harness_workspaces.py` removes the run's entries inside worker-manager and reads the
+  filesystem back.
+
+- The PO conversation rows. The thread is `po_thread_id(telegram_chat_id)` → `po-chat-<chat id>`
+  (`shared/contracts/queues/po.py`), the only value the PO consumer passes as a checkpoint thread id,
+  and it is composed from the chat id the PO tools are invoked with — so `capture_run_po_position`
+  is given the actor, never assuming one. For a level-1 run that actor is the user the run
+  registered for itself, so the thread is the run's own and nothing else has ever written to it; for
+  a run that shares the fixture user the thread is a **fixture every live run shares**, not the
+  run's to delete, while the rows that appear on it during the run still are. One mechanism serves
+  both: `po_checkpoints.py` takes a snapshot of the thread before the project exists, removes the
+  difference after cleanup, and asks the same predicate again; the thread is left exactly as the run
+  found it, head checkpoint and channel versions intact. Without that snapshot the kind is reported
+  as one that *could not be asked* — never as absent. The bound the shared case leaves is stated
+  there: "appeared during this run" is the run's rows only while no other run writes to the same
+  thread at the same time, which the stand's one-suite-at-a-time schedule holds. Level 1's own
+  registered identity removes that question for level 1 entirely; the suites that still share the
+  fixture keep it.
+
+The database kind is **not re-asked**: `cleanup_all` hands the residue proof the `TeardownReport`
+that the catalog-derived teardown above already produced, so the one place that knows how to ask the
+database stays the only place that asks it, and the check carries the tables and key count it
+proved — and, when the plan retained rows, those by table, key and count too, so the one `users` row
+and the ledger rows a level-1 run leaves by declared rule are named in the proof rather than hidden
+behind the word `absent`. That kind goes red in `cleanup_all` — before this proof is reached — which
+is the card's instruction rather than an accident, and is said so in `database_check_from`. The one Redis key a
+clean run keeps is `worker:evidence:removed:<run id>` — the removal records are evidence and expire
+on their own TTL — and it is excluded by name, with the reason in the proof's notes.
+
+**Nobody needed** (`run_intervention.py`, recorded before teardown). No story of the run ever entered
+`waiting_human_review`, `waiting_user_secret` or a quarantine. *Ever*: a story that parked and was
+then recovered ends `completed` and has its `quarantine_reason` cleared, so the terminal state
+cannot answer this. What survives the recovery is the owner notification the park published onto
+`po:input`, read from a cursor the run captures before its project exists — which is why this runs
+ahead of teardown, since teardown XDELs the run's own stream entries. Which events count is not a
+list somebody maintained: every park owes its owner a notice through
+`owe_owner_notification(..., terminal_status=StoryStatus.WAITING_*)`, and
+`test_run_intervention.py` reads `services/` for that call shape and fails when a producer appears
+that `INTERVENTION_EVENTS` does not know. That scan is what added `story_impossible_capacity` and
+`task_impossible_capacity`, both of which park a story in `waiting_human_review`.
+
+The stories' current state is the second source, for a park whose notification never reached the
+stream: status, `quarantine_reason`, and the still-owed `owner_notification`. That last one is read
+through `GET /api/stories/{id}/owner-notification` and **not** out of the story listing, because
+`StoryRead` does not declare the field and FastAPI drops it — reading it from the listing was a
+third check that asserted nothing, and `test_run_intervention.py` now drives the real helper against
+a fake transport so the route it asks is part of the contract.
+
+Offline coverage for both, kind by kind, is in `tests/live/test_run_residue.py`,
+`tests/live/test_po_checkpoints.py` and `tests/live/test_run_intervention.py`; the pieces outside
+`tests/live` are in `shared/tests/test_run_residue_probes.py` and
+`services/worker-manager/tests/unit/test_compose_residue.py`.
 
 ## Bot access revocation
 

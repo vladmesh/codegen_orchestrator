@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import urllib.error
 import urllib.request
 
 # This module runs under the host's system interpreter, which has no
@@ -69,6 +70,39 @@ def build_target_payload(
     }
 
 
+class ApiRefusedError(RuntimeError):
+    """The API answered the registration with an error status.
+
+    Carries the status and the API's own reason, and nothing of the request:
+    what the caller may print is exactly this.
+    """
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
+
+
+def _refusal_detail(error: urllib.error.HTTPError) -> str:
+    """The API's stated reason for a refusal, or a bounded stand-in for it.
+
+    Only a textual `detail` is repeated. FastAPI's own request-validation body
+    quotes the rejected input back, and the input here is the creation key, so a
+    `detail` of any other shape is named rather than printed.
+    """
+    try:
+        body = error.read().decode(errors="replace")
+    except OSError:
+        return "the response body could not be read"
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return "the response body is not JSON"
+    if isinstance(parsed, dict) and isinstance(parsed.get("detail"), str):
+        return parsed["detail"]
+    return "the response body states no textual reason"
+
+
 def _request(url: str, key: str, payload: dict[str, object]) -> dict[str, object]:
     request = urllib.request.Request(  # noqa: S310 -- workflow-owned local API URL
         url,
@@ -76,8 +110,14 @@ def _request(url: str, key: str, payload: dict[str, object]) -> dict[str, object
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "X-Internal-Key": key},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-        parsed = json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            parsed = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        # A traceback here would end the run with the status alone, which is what
+        # made stand run 35380550303 cost eight minutes and a machine pair to
+        # learn nothing. The API's reason is what the log needs.
+        raise ApiRefusedError(exc.code, _refusal_detail(exc)) from None
     if not isinstance(parsed, dict):
         raise RuntimeError("server registration response is malformed")
     return parsed
@@ -105,7 +145,14 @@ def main() -> int:
         print(f"target registration refused: {exc}", file=sys.stderr)
         return 2
 
-    server = _request(f"{args.api_url}/api/servers/", internal_key, payload)
+    try:
+        server = _request(f"{args.api_url}/api/servers/", internal_key, payload)
+    except ApiRefusedError as exc:
+        print(
+            f"target registration of {payload['handle']} refused: {exc}",
+            file=sys.stderr,
+        )
+        return 3
     print(f"registered {server.get('handle', payload['handle'])} as pending_setup")
     return 0
 

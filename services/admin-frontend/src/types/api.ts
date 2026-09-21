@@ -151,6 +151,7 @@ export interface TaskTransition {
 export interface TaskResume {
   guidance: string
   actor?: string
+  retries?: number
 }
 
 export interface SpawnWorkerRequest {
@@ -421,6 +422,8 @@ export interface Server {
   provider_id?: string | null
   notes?: string | null
   provisioning_started_at?: string | null
+  provisioning_attempts?: number
+  provisioning_episode_id?: string | null
   cpu_usage_pct?: number | null
   load_avg_1m?: number | null
   load_avg_5m?: number | null
@@ -431,6 +434,10 @@ export interface Server {
   container_count_total?: number | null
   uptime_seconds?: number | null
   last_health_check?: string | null
+  ssh_key_fingerprint?: string | null
+  qa_target_version?: string | null
+  qa_target_proved_at?: string | null
+  target_readiness_failure_phase?: string | null
 }
 
 export interface ContainerMetrics {
@@ -544,10 +551,6 @@ export interface Run {
   started_at: string | null
   callback_stream: string | null
   iteration: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  total_tokens: number | null
-  cost_usd: number | null
   agent_profile: Record<string, unknown> | null
   transcript_path: string | null
   transcript_truncated: boolean | null
@@ -603,10 +606,29 @@ export interface ExecutorDiagnostic {
   active_lease_count?: number | null
   reason_code: string
   reason: string
+  profile?: ExecutorProfileObservation | null
+}
+
+export type ExecutorProfileCondition = 'healthy' | 'logged_out' | 'read_contended' | 'refresh_expired' | 'refresh_expiring' | 'refresh_missing' | 'unusable' | 'unverifiable'
+export type ProfileLoginState = 'expired' | 'logged_in' | 'logged_out' | 'unknown'
+export type RefreshMaterialState = 'missing' | 'present' | 'unknown'
+export type CredentialExpirySource = 'claude_oauth_expires_at' | 'codex_access_token_jwt_exp' | 'codex_refresh_token_jwt_exp'
+export type LastRefreshSource = 'codex_auth_last_refresh'
+
+export interface ExecutorProfileObservation {
+  condition: ExecutorProfileCondition
+  login_state: ProfileLoginState
+  refresh_material: RefreshMaterialState
+  session_expires_at?: string | null
+  session_expiry_source?: CredentialExpirySource | null
+  refresh_expires_at?: string | null
+  refresh_expiry_source?: CredentialExpirySource | null
+  last_refresh_at?: string | null
+  last_refresh_source?: LastRefreshSource | null
 }
 
 export interface ExecutorDiagnosticSnapshot {
-  schema_version: 'v1'
+  schema_version: 'v2'
   version: string
   observed_at: string
   expires_at: string

@@ -1,6 +1,6 @@
+from pathlib import Path
 import shutil
 import subprocess
-from pathlib import Path
 
 WORKER_OWNER = "1000:1000"
 
@@ -19,7 +19,8 @@ def _resolve_direct_workspace_child(base_path: str, entry_id: str) -> Path:
 
     if entry.is_absolute() or len(entry.parts) != 1 or candidate.parent != root:
         raise ValueError(
-            f"Invalid scaffolded workspace identifier {entry_id!r}: it must name one direct child of {root}"
+            f"Invalid scaffolded workspace identifier "
+            f"{entry_id!r}: it must name one direct child of {root}"
         )
 
     return candidate
@@ -68,7 +69,8 @@ def prepare_worker_paths(workspace_path: str | Path, transcript_path: str | Path
     for path in (workspace, transcript):
         try:
             result = subprocess.run(
-                ["chown", "-R", WORKER_OWNER, str(path)],
+                # Git is supplied by the service image on its managed PATH.
+                ["chown", "-R", WORKER_OWNER, str(path)],  # noqa: S607
                 capture_output=True,
                 check=False,
                 text=True,

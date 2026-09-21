@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import DeploySkipReason, QABlockerCategory
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
@@ -24,6 +26,7 @@ PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 def _message() -> QAMessage:
     return QAMessage(
+        story_id="story-1",
         project_id=PROJECT_ID,
         initiating_run_id="live-1",
         telegram_chat_id="",
@@ -70,12 +73,100 @@ def _operation_run(
     *,
     outcome: DeployOutcome | None = None,
     age_minutes: int = 0,
+    skipped_reason: DeploySkipReason | None = None,
 ):
     return SimpleNamespace(
         status=status,
-        result=SimpleNamespace(deploy_outcome=outcome) if outcome is not None else None,
+        result=(
+            SimpleNamespace(deploy_outcome=outcome, skipped_reason=skipped_reason)
+            if outcome is not None
+            else None
+        ),
         created_at=datetime.now(UTC) - timedelta(minutes=age_minutes),
     )
+
+
+@pytest.mark.asyncio
+async def test_skipped_grant_run_is_not_proof_and_retries_without_releasing_qa() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant()
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.COMPLETED,
+        outcome=DeployOutcome.SUCCESS,
+        skipped_reason=DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
+    )
+    redis = AsyncMock()
+
+    counts = await supervise_temporary_access(api, redis)
+
+    updates = [call.args[1] for call in api.update_temporary_access_grant.await_args_list]
+    assert all(update.status is not TemporaryAccessStatus.GRANTED for update in updates)
+    assert updates[0].grant_attempts == grant.grant_attempts + 1
+    assert updates[0].last_error == "grant proof failed"
+    assert [call.args[0] for call in redis.publish_message.await_args_list] == [DEPLOY_QUEUE]
+    assert counts["released"] == 0
+
+
+@pytest.mark.asyncio
+async def test_skipped_grant_run_at_the_bound_fails_qa_with_the_access_blocker() -> None:
+    from src.tasks.temporary_access import _max_grant_attempts, supervise_temporary_access
+
+    grant = _grant(grant_attempts=_max_grant_attempts())
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.COMPLETED,
+        outcome=DeployOutcome.SUCCESS,
+        skipped_reason=DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
+    )
+    redis = AsyncMock()
+
+    await supervise_temporary_access(api, redis)
+
+    run_id, outcome = api.record_run_outcome_unless_settled.await_args.args
+    assert run_id == grant.qa_run_id
+    assert outcome["status"] == RunStatus.FAILED.value
+    assert outcome["result"]["blocker"]["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED
+    assert QA_QUEUE not in [call.args[0] for call in redis.publish_message.await_args_list]
+    updates = [call.args[1] for call in api.update_temporary_access_grant.await_args_list]
+    assert any(
+        update.status is TemporaryAccessStatus.REVOKING
+        and update.revoke_reason is TemporaryAccessRevokeReason.GRANT_FAILED
+        for update in updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_skipped_revoke_run_is_not_proof_and_never_closes_the_record() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-skipped",
+        revoke_attempts=1,
+    )
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.COMPLETED,
+        outcome=DeployOutcome.SUCCESS,
+        skipped_reason=DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA,
+    )
+
+    counts = await supervise_temporary_access(api, AsyncMock())
+
+    updates = [call.args[1] for call in api.update_temporary_access_grant.await_args_list]
+    assert all(update.status is not TemporaryAccessStatus.REVOKED for update in updates)
+    assert any(update.status is TemporaryAccessStatus.REVOKE_FAILED for update in updates)
+    assert counts["revoked"] == 0
+    assert counts["revoke_failed"] == 1
 
 
 @pytest.mark.asyncio
@@ -113,10 +204,8 @@ async def test_grant_persists_the_verified_identity_and_exact_target_before_disp
     assert api.create_temporary_access_grant.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_target_holder_conflict_defers_only_this_handoff() -> None:
-    from src.tasks.temporary_access import grant_temporary_access
-
+def _held_api(*, holder, qa_run_age_minutes: float) -> AsyncMock:
+    """An API whose create is refused because `holder` still holds the target."""
     api = AsyncMock()
     # The target names the commit it is running, which is what a capability
     # redeploy has to ask for again.
@@ -126,9 +215,21 @@ async def test_target_holder_conflict_defers_only_this_handoff() -> None:
         request=httpx.Request("POST", "https://api/temporary-access-grants/"),
         response=httpx.Response(409),
     )
-    redis = AsyncMock()
+    api.live_temporary_access_grant_holding_target = AsyncMock(return_value=holder)
+    api.get_run_if_missing_returns_none = AsyncMock(
+        return_value=SimpleNamespace(
+            status=RunStatus.QUEUED,
+            result=None,
+            created_at=datetime.now(UTC) - timedelta(minutes=qa_run_age_minutes),
+        )
+    )
+    return api
 
-    grant = await grant_temporary_access(
+
+async def _deferred_handoff(api, redis) -> TemporaryAccessGrantDTO | None:
+    from src.tasks.temporary_access import grant_temporary_access
+
+    return await grant_temporary_access(
         api,
         redis,
         project_id=PROJECT_ID,
@@ -138,8 +239,72 @@ async def test_target_holder_conflict_defers_only_this_handoff() -> None:
         qa_message=_message(),
     )
 
+
+@pytest.mark.asyncio
+async def test_target_holder_conflict_defers_only_this_handoff() -> None:
+    holder = _grant(id="tempaccess-qa-0", qa_run_id="qa-0")
+    api = _held_api(holder=holder, qa_run_age_minutes=0)
+    redis = AsyncMock()
+
+    with capture_logs() as logs:
+        grant = await _deferred_handoff(api, redis)
+
     assert grant is None
     redis.publish_message.assert_not_awaited()
+    # Nothing about the refused run is settled while the wait is still inside
+    # its bound: only the holder is reported.
+    api.record_run_outcome_unless_settled.assert_not_awaited()
+    deferred = [entry for entry in logs if entry["event"] == "temporary_access_handoff_deferred"]
+    assert len(deferred) == 1
+    assert deferred[0]["held_by"] == "tempaccess-qa-0"
+    assert deferred[0]["held_by_status"] == TemporaryAccessStatus.GRANTING.value
+    assert deferred[0]["held_by_qa_run_id"] == "qa-0"
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_past_its_bound_fails_qa_and_names_the_holder() -> None:
+    """The story reaches a verdict instead of waiting for something outside."""
+    from src.tasks.temporary_access import _target_held_max_minutes
+
+    holder = _grant(
+        id="tempaccess-qa-0",
+        qa_run_id="qa-0",
+        status=TemporaryAccessStatus.REVOKE_FAILED,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_attempts=3,
+    )
+    api = _held_api(holder=holder, qa_run_age_minutes=_target_held_max_minutes())
+    redis = AsyncMock()
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()) as notified:
+        grant = await _deferred_handoff(api, redis)
+
+    assert grant is None
+    redis.publish_message.assert_not_awaited()
+    settled = api.record_run_outcome_unless_settled.await_args
+    assert settled.args[0] == "qa-1"
+    outcome = settled.args[1]
+    assert outcome["status"] == RunStatus.FAILED.value
+    blocker = outcome["result"]["blocker"]
+    assert blocker["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED.value
+    # The verdict says which grant held the target and in what state.
+    assert "tempaccess-qa-0" in blocker["received"]
+    assert TemporaryAccessStatus.REVOKE_FAILED.value in blocker["received"]
+    assert "tempaccess-qa-0" in notified.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_past_its_bound_reports_even_an_unreadable_holder() -> None:
+    api = _held_api(holder=None, qa_run_age_minutes=99)
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()):
+        assert await _deferred_handoff(api, AsyncMock()) is None
+
+    outcome = api.record_run_outcome_unless_settled.await_args.args[1]
+    assert outcome["status"] == RunStatus.FAILED.value
+    assert (
+        outcome["result"]["blocker"]["category"] == QABlockerCategory.QA_ACCESS_GRANT_FAILED.value
+    )
 
 
 @pytest.mark.asyncio
@@ -486,13 +651,19 @@ async def test_revoke_marks_the_record_closed_only_after_a_proved_operation() ->
 
 @pytest.mark.asyncio
 async def test_exhausted_revoke_escalates_once_and_never_republishes_access() -> None:
-    from src.tasks.temporary_access import _settle_revoke, _settle_revoke_failed
+    from src.tasks.temporary_access import (
+        _max_revoke_attempts,
+        _settle_revoke,
+        _settle_revoke_failed,
+    )
+
+    configured_attempt_limit = _max_revoke_attempts()
 
     grant = _grant(
         status=TemporaryAccessStatus.REVOKING,
         revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
         revoke_run_id="temporary-access-revoke-last",
-        revoke_attempts=3,
+        revoke_attempts=configured_attempt_limit,
     )
     api = AsyncMock()
     # The target names the commit it is running, which is what a capability
@@ -514,7 +685,7 @@ async def test_exhausted_revoke_escalates_once_and_never_republishes_access() ->
         settled = _grant(
             status=TemporaryAccessStatus.REVOKE_FAILED,
             revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
-            revoke_attempts=3,
+            revoke_attempts=configured_attempt_limit,
             escalated_at=datetime.now(UTC),
         )
         await _settle_revoke_failed(api, AsyncMock(), settled, counts, AsyncMock())

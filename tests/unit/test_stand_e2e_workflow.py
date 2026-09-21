@@ -5,6 +5,7 @@ below are the ones whose absence is discovered at the worst moment — a second
 run trampling the first, or a failed run whose logs were never collected.
 """
 
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from scripts.stand_run import (
     STAND_PROVISIONING_TIMEOUT_SECONDS,
     SUITES,
 )
+from shared.ssh_keys import normalize_admin_private_key
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 COLLECTOR = Path(__file__).parents[2] / "scripts" / "stand_collect_run_evidence.sh"
@@ -138,6 +140,16 @@ def test_a_template_override_reaches_the_suite_and_the_seeded_stand_configuratio
     )
 
 
+def test_stand_recreates_and_waits_for_scheduler_health_after_seeding():
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+
+    gate = "up -d --force-recreate --no-deps --wait --wait-timeout 180"
+    assert gate in bring_up
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in bring_up
+    assert bring_up.index("seed_agent_configs.py") < bring_up.index(gate)
+    assert "grep -q system_configs_validated" not in bring_up
+
+
 def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     steps = list(_steps())
     resolve = _steps()["Resolve the suite"]
@@ -186,7 +198,7 @@ def test_provisioning_failure_evidence_survives_a_pre_pytest_failure():
     assert "provisioning-state.jsonl" in provision
     assert "provisioning-services.log" in provision
     assert "docker compose" in provision
-    assert "infra-service scheduler" in provision
+    assert "infra-service scheduler-infrastructure" in provision
     assert "redact_diagnostic" in provision
     assert "provisioning-state.jsonl" in collect
     assert "provisioning-services.log" in collect
@@ -215,7 +227,7 @@ def test_the_provisioning_service_tails_are_kept_when_provisioning_succeeds():
     collection = next(
         index
         for index, line in enumerate(lines)
-        if "logs --no-color --tail 300 infra-service scheduler" in line
+        if "logs --no-color --tail 300 infra-service scheduler-infrastructure" in line
     )
     guard = next(
         index
@@ -241,7 +253,8 @@ def test_suite_failure_captures_every_service_that_carries_the_pipeline():
     collect = _steps()["Record machine manifest"]["run"]
 
     assert "logs --no-color --tail 300" in collect
-    assert "scheduler engineering-worker worker-manager worker-broker api" in collect
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in collect
+    assert "engineering-worker worker-manager worker-broker api" in collect
     assert "qa-worker deploy-worker" in collect
     # One redaction path on this side: the service tails. The target-host
     # snapshot is redacted by the suite that takes it, through the same helper.
@@ -364,11 +377,11 @@ def test_stand_target_uses_the_typed_fast_profile_and_real_immediate_health_prob
 
     assert "--profile stand_e2e" in provision
     assert "--no-require-fresh-metrics" in provision
-    assert "scheduler python -m src.stand_health_probe" in provision
+    assert "scheduler-infrastructure python -m src.stand_health_probe" in provision
     assert "first_health_ready" in provision
     assert (
         provision.index("--no-require-fresh-metrics")
-        < provision.index("scheduler python -m src.stand_health_probe")
+        < provision.index("scheduler-infrastructure python -m src.stand_health_probe")
         < provision.rindex("scripts.wait_stand_provisioning")
     )
 
@@ -678,7 +691,7 @@ def test_control_plane_bootstrap_is_minimal_and_keeps_target_provisioning_separa
 
     assert "gather_facts: false" in control_plane
     assert "Gather control plane facts" in control_plane
-    assert "Wait for any possibly running apt/dpkg processes" in control_plane
+    assert "Settle first boot before apt or Docker work" in control_plane
     assert "upgrade: dist" not in control_plane
     assert "Create runtime user" in control_plane
     assert "docker-ce" in control_plane
@@ -721,11 +734,6 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     """
     [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
     timeout = play["vars"]["stand_apt_lock_timeout_seconds"]
-    initial_wait = next(
-        task
-        for task in play["pre_tasks"]
-        if task["name"] == "Wait for any possibly running apt/dpkg processes"
-    )
     apt_tasks = {
         task["name"]: task["ansible.builtin.apt"]
         for task in [*play["pre_tasks"], *play["tasks"]]
@@ -736,7 +744,6 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     )
 
     assert timeout == 300
-    assert "timeout {{ stand_apt_lock_timeout_seconds }}s" in initial_wait["ansible.builtin.shell"]
     assert set(apt_tasks) == {
         "Update apt cache without changing the base image",
         "Install control-plane host tools",
@@ -749,6 +756,143 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     assert not any("retries" in task or "until" in task for task in apt_tasks.values())
     assert docker_repository["ansible.builtin.apt_repository"]["update_cache"] is False
     assert apt_tasks["Install Docker Engine and compose tooling"]["update_cache"] is True
+
+
+def _first_boot_settle_tasks() -> tuple[dict, list[dict]]:
+    [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
+    return play, play["pre_tasks"]
+
+
+def test_first_boot_is_settled_before_any_apt_or_docker_work_and_survives_one_drop():
+    """Runs 35594323906/35597245917/35595495097 lost the host to its own first boot.
+
+    The image's automatic upgrades are stopped for good on this disposable VM,
+    cloud-init is waited for, and a drop or reboot during that window gets one
+    bounded reconnect before the same settle runs again, this time strictly.
+    """
+    play, pre_tasks = _first_boot_settle_tasks()
+    names = [task["name"] for task in pre_tasks]
+    first, reconnect, again = (
+        pre_tasks[names.index("Settle first boot before apt or Docker work")],
+        pre_tasks[names.index("Wait for control plane to return after a first-boot drop")],
+        pre_tasks[names.index("Settle first boot again after reconnecting")],
+    )
+    all_tasks = [*pre_tasks, *play["tasks"]]
+    first_apt_or_package_work = min(
+        index
+        for index, task in enumerate(all_tasks)
+        if any(
+            key.startswith("ansible.builtin.apt") or key == "ansible.builtin.get_url"
+            for key in task
+        )
+    )
+
+    assert names.index("Wait for control plane to be reachable") == 0
+    assert (
+        names.index(first["name"])
+        < names.index(reconnect["name"])
+        < names.index(again["name"])
+        < names.index("Gather control plane facts")
+        < first_apt_or_package_work
+    )
+    assert first["ignore_unreachable"] is True
+    assert first["register"] == "stand_first_boot_settle"
+    assert reconnect["when"] == again["when"] == "stand_first_boot_settle is unreachable"
+    assert reconnect["ansible.builtin.wait_for_connection"]["timeout"] == (
+        "{{ stand_first_boot_reconnect_timeout_seconds }}"
+    )
+    assert "ignore_unreachable" not in again
+    assert again["ansible.builtin.shell"] == first["ansible.builtin.shell"]
+    assert play["vars"]["stand_first_boot_reconnect_timeout_seconds"] == 180
+    assert play["vars"]["stand_first_boot_settle_timeout_seconds"] == 300
+    # The whole bootstrap step has 15 minutes: two settles plus a reconnect fit.
+    assert (
+        2 * play["vars"]["stand_first_boot_settle_timeout_seconds"]
+        + play["vars"]["stand_first_boot_reconnect_timeout_seconds"]
+    ) < 15 * 60
+    assert "ServerAliveInterval=" in play["vars"]["ansible_ssh_extra_args"]
+    assert "Wait for any possibly running apt/dpkg processes" not in names
+
+
+def _run_settle(tmp: Path, *, timeout_seconds: int, cloud_init_rc: int, lock_polls: int):
+    _, pre_tasks = _first_boot_settle_tasks()
+    [settle] = [
+        task for task in pre_tasks if task["name"] == "Settle first boot before apt or Docker work"
+    ]
+    command = settle["ansible.builtin.shell"]["cmd"].replace(
+        "{{ stand_first_boot_settle_timeout_seconds }}", str(timeout_seconds)
+    )
+    assert "{{" not in command and "{%" not in command and "{#" not in command
+    calls = tmp / "calls"
+    stubs = tmp / "bin"
+    stubs.mkdir()
+    for name, body in {
+        "systemctl": "exit 0",
+        "cloud-init": f'[ "$1" = status ] && [ "$2" = --wait ] && exit {cloud_init_rc}; exit 0',
+        # Held for the first `lock_polls` probes, then free; negative = held forever.
+        "fuser": (
+            f'n=$(cat "{tmp}/polls" 2>/dev/null || echo 0); echo $((n + 1)) > "{tmp}/polls"; '
+            f'[ {lock_polls} -lt 0 ] || [ "$n" -lt {lock_polls} ]'
+        ),
+        "dpkg": "exit 0",
+        "sleep": "exit 0",
+    }.items():
+        stub = stubs / name
+        stub.write_text(f'#!/bin/bash\necho "{name} $*" >> "{calls}"\n{body}\n')
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/bash", "-c", command],
+        env={"PATH": f"{stubs}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    return result, recorded
+
+
+def test_first_boot_settle_stops_upgrades_then_waits_for_cloud_init_then_locks():
+    with tempfile.TemporaryDirectory() as tmp:
+        result, calls = _run_settle(Path(tmp), timeout_seconds=20, cloud_init_rc=0, lock_polls=2)
+
+    assert result.returncode == 0, result.stderr
+    units = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service"
+    assert calls[:3] == [
+        f"systemctl mask {units}",
+        f"systemctl stop {units}",
+        "cloud-init status --wait",
+    ]
+    assert [call.split()[0] for call in calls[3:]] == [
+        "fuser",
+        "sleep",
+        "fuser",
+        "sleep",
+        "fuser",
+        "dpkg",
+    ]
+    assert calls[-1] == "dpkg --configure -a"
+
+
+def test_first_boot_settle_accepts_a_finished_cloud_init_with_warnings_or_errors():
+    for rc in (1, 2):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, calls = _run_settle(
+                Path(tmp), timeout_seconds=20, cloud_init_rc=rc, lock_polls=0
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert f"cloud-init finished with status {rc}" in result.stderr
+        assert "cloud-init status --long" in calls
+        assert calls[-1] == "dpkg --configure -a"
+
+
+def test_first_boot_settle_fails_clearly_when_the_host_never_settles():
+    with tempfile.TemporaryDirectory() as tmp:
+        result, calls = _run_settle(Path(tmp), timeout_seconds=1, cloud_init_rc=0, lock_polls=-1)
+
+    assert result.returncode == 124
+    assert "waiting for dpkg/apt locks" in result.stderr
+    assert "dpkg --configure -a" not in calls
 
 
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
@@ -906,3 +1050,73 @@ def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environm
 
 def test_obsolete_self_target_registration_route_is_deleted():
     assert not (WORKFLOW.parents[2] / "scripts" / "register_stand_target.py").exists()
+
+
+def _write_target_key(secret: str) -> str:
+    """Run the registration step's own key writer and return the file it left.
+
+    The script below is the step's `run` up to the point the material leaves the
+    runner, so the writer under test is the workflow's line and not a copy of it.
+    The step's cleanup trap shreds the file on exit, so the copy is taken inside
+    the same shell.
+    """
+    script = _steps()["Register and provision dynamic target"]["run"]
+    prefix = script.split('key_path="${RUNNER_TEMP}/stand-bootstrap.key"')[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        copy = root / "delivered.key"
+        subprocess.run(
+            ["bash", "-c", prefix + '\ncp "${target_key}" "$1"\n', "write-target-key", str(copy)],
+            check=True,
+            env={
+                "PATH": os.environ["PATH"],
+                "RUNNER_TEMP": str(root),
+                "TARGET_ID": "6a920e74c9c98a452507b09b",
+                "TARGET_IP": "203.0.113.19",
+                "STAND_RUN_TAG": "gha-41-1",
+                "SSH_PRIVATE_KEY": secret,
+            },
+        )
+        return copy.read_text()
+
+
+def test_the_registration_key_file_is_accepted_when_the_secret_lost_its_last_newline():
+    """The refusal that killed stand run 35380550303, pinned at its producer.
+
+    `SSH_PRIVATE_KEY` reaches the step as an environment variable, and a stored
+    secret whose final newline was eaten is exactly the shape the API refuses
+    with `ssh_key rejected: no_terminal_newline`. The writer restores it, so the
+    key the script submits parses.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "fleet"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        key_text = generated.read_text()
+
+    delivered = _write_target_key(key_text.rstrip("\n"))
+
+    assert delivered.endswith("\n")
+    assert normalize_admin_private_key(delivered).fingerprint == (
+        normalize_admin_private_key(key_text).fingerprint
+    )
+
+
+def test_a_secret_that_kept_its_newline_still_yields_one_accepted_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "fleet"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(generated)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        key_text = generated.read_text()
+
+    delivered = _write_target_key(key_text)
+
+    assert normalize_admin_private_key(delivered).fingerprint == (
+        normalize_admin_private_key(key_text).fingerprint
+    )

@@ -11,9 +11,16 @@
 # seat is not assumed from the tasks that ran; it is asked of the machine, with
 # the same tools somebody looking for a way up would use.
 #
-# Two questions are asked, and a host has to answer both:
+# Three questions are asked, and a host has to answer all of them:
 #
 # * can this account become root — the ceiling the identity exists under.
+# * can the administrative account this host is managed as lend the seat — the
+#   run key is appended over SSH as that account and without sudo, so a 0700
+#   `.ssh` it has no ACL entry in blocks every QA run on this host while every
+#   other check here passes. That is what a deploy did to prod-target-5wwb on
+#   2026-09-14: it recomputed the ACL mask from the mode it re-applied, the
+#   administrative account's entries went `#effective:---`, and the role still
+#   said `ready`.
 # * can a QA run actually borrow it — its `authorized_keys` is there and holds
 #   the line the role opens it with, and sshd really lets a key written into
 #   that file in. Everything above is a statement about a seat nobody has sat
@@ -39,6 +46,8 @@ user=${1:?the account to prove}
 wrapper=${2:?the one command it may run through sudo}
 socket=${3:?the docker socket it must not reach}
 sentinel=${4:?the line the role opens authorized_keys with}
+profile=${5:?the QA target profile the wrapper must answer with}
+admin=${6:?the administrative account a QA run lends this seat with}
 
 # The proof key is appended to a live `authorized_keys` and has to come back out
 # whichever way this script leaves, including a failure below it. Removal is a
@@ -89,6 +98,27 @@ granted=$(printf '%s\n' "$listing" |
 expected="(root) NOPASSWD: $wrapper"
 [ "$granted" = "$expected" ] || fail "may run more through sudo than $wrapper: [$granted]"
 
+# The wrapper that sudo rule reaches has to be this role's current one. An older
+# copy passes every check above — same path, same rule — and refuses a verb QA
+# needs halfway through a paid run. So the account asks the wrapper itself,
+# through the same sudo rule a run uses, which profile it is.
+#
+# stderr is kept, because a wrapper that fails has nothing else to say — and
+# that stream is also where sudo prints its own warnings, `unable to resolve
+# host` on a target whose name does not resolve among them. So the wrapper's
+# answer is the line that answers, not everything that was written: the last
+# line the wrapper's own reply shape matches. A host that says nothing of that
+# shape still fails, and so does one whose wrapper names another profile.
+answer=$(runuser -u "$user" -- sudo -n "$wrapper" version 2>&1) ||
+    fail "cannot ask $wrapper for its profile through sudo: [$answer]"
+# The pipeline ends in `tail`, so "no such line" arrives as an empty reply and
+# is refused below rather than as a failure of the grep.
+reply=$(printf '%s\n' "$answer" | grep '^qa-docker profile=' | tail -n 1)
+case "$reply" in
+    "qa-docker profile=$profile verbs="*) ;;
+    *) fail "reaches a $wrapper that is not QA target profile $profile: [$answer]" ;;
+esac
+
 # Asked as the account, so mode, group and ACL are all answered at once: an ACL
 # entry granting this account the socket leaves no trace in its group list.
 if [ -e "$socket" ]; then
@@ -106,6 +136,24 @@ keys=$home/.ssh/authorized_keys
 [ -f "$keys" ] || fail "has no $keys: a QA run has nothing to write its key into"
 grep -q -F -- "$sentinel" "$keys" ||
     fail "$keys does not carry the line this role opens it with, so what wrote it is unknown"
+
+# The four tests the runtime's own grant script makes before it appends a key,
+# made here as the account that will make them. Root is not asked: it reaches
+# the file by being root, and an ACL entry for it would grant nothing it has not
+# got. Anything else has to have been granted one by the role above, and a `ready`
+# verdict that did not check would be the 2026-09-14 blocker again.
+if [ "$admin" != "root" ]; then
+    getent passwd "$admin" >/dev/null ||
+        fail "cannot be lent: no administrative account $admin on this target"
+    runuser -u "$admin" -- test -x "$home/.ssh" ||
+        fail "cannot be lent: $admin cannot search $home/.ssh"
+    runuser -u "$admin" -- test -w "$home/.ssh" ||
+        fail "cannot be lent: $admin cannot write $home/.ssh"
+    runuser -u "$admin" -- test -r "$keys" ||
+        fail "cannot be lent: $admin cannot read $keys"
+    runuser -u "$admin" -- test -w "$keys" ||
+        fail "cannot be lent: $admin cannot write $keys"
+fi
 
 # The last word, and the only one that is not a statement about a file: sshd's.
 # A file with the right name, owner and mode still admits nobody if the account
@@ -147,4 +195,4 @@ logged_in=$(ssh -i "$work/key" \
 [ "$logged_in" = "$user" ] ||
     fail "logged a key written into $keys in as [$logged_in] instead"
 
-echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable keys=$keys login=ok"
+echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable keys=$keys login=ok lent_by=$admin qa_target_version=$profile"

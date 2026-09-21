@@ -21,6 +21,7 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QAFailedCheck,
+    QAFailedCheckCause,
     QARunResult,
     QAStateChange,
     QAStateChangeCleanup,
@@ -274,6 +275,23 @@ class TestOptionalFieldPreservation:
         assert run.result.deploy_fix_attempt == 2
         assert run.result.error_details == "ImportError"
         assert run.result.bot_username == "mybot"
+
+    def test_a_stored_failed_check_without_a_cause_reads_as_a_product_failure(self):
+        run = _run(
+            RunType.QA,
+            {"qa_outcome": "failed", "failed_checks": [{"name": "weather", "detail": "404"}]},
+        )
+
+        assert run.result.failed_checks[0].cause is QAFailedCheckCause.PRODUCT
+
+    def test_a_failed_check_cause_is_a_closed_set(self):
+        check = QAFailedCheck.model_validate(
+            {"name": "upload", "detail": "no photo tool", "cause": "qa_capability"}
+        )
+        assert check.cause is QAFailedCheckCause.QA_CAPABILITY
+
+        with pytest.raises(ValidationError):
+            QAFailedCheck.model_validate({"name": "upload", "detail": "x", "cause": "flaky"})
 
     def test_qa_failed_checks_round_trip(self):
         wire = QARunResult(

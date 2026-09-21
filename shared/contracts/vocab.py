@@ -120,6 +120,24 @@ class OwnerNotificationEvent(StrEnum):
     TASK_IMPOSSIBLE_CAPACITY = "task_impossible_capacity"
     STORY_IMPOSSIBLE_CAPACITY = "story_impossible_capacity"
     TASK_RESOURCES_RESUMED = "task_resources_resumed"
+    #: Non-terminal: the admitted plan returned must-requirements instead of
+    #: planning them. Published by the architect, never a durable record.
+    STORY_REQUIREMENTS_RETURNED = "story_requirements_returned"
+    #: Non-terminal: a story in work entered a stage, or is still in it after the
+    #: quiet interval. Published by the scheduler's stage-notice sweep, never a
+    #: durable record — a late or missed stage notice is not owed.
+    STORY_STAGE = "story_stage"
+
+
+#: Owner events that are told once, best-effort, and are never an owed record.
+#: The durable owner-notification seam refuses them, so a producer cannot turn a
+#: progress notice into an obligation the recovery sweep would chase.
+NON_DURABLE_OWNER_EVENTS = frozenset(
+    {
+        OwnerNotificationEvent.STORY_REQUIREMENTS_RETURNED,
+        OwnerNotificationEvent.STORY_STAGE,
+    }
+)
 
 
 class POCallbackEvent(StrEnum):

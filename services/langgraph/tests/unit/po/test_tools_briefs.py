@@ -17,13 +17,14 @@ import pytest
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.product_brief import ProposedProductBriefContent
-from src.agents.po.tools import init_po_clients
 from src.agents.po.tools_briefs import (
+    LABELS,
     PRODUCT_BRIEF_POINTER_KEY,
     _creation_request_id,
     confirm_product_brief,
     present_product_brief,
 )
+from src.agents.po.tools_shared import init_po_clients
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
 BRIEF_ID = "brief-1"
@@ -34,6 +35,19 @@ _REQUIREMENTS = [
         "id": "r2",
         "text": "It suggests a recipe every morning",
         "wording_reference": "telegram:chat=42:message=17",
+    },
+]
+
+_EXAMPLES = [
+    {
+        "requirement_id": "r1",
+        "user_sends": "the text: pancakes, flour, milk, eggs",
+        "product_answers": "Saved the recipe Pancakes",
+    },
+    {
+        "requirement_id": "r2",
+        "user_sends": "nothing — at 8:00 the bot writes first",
+        "product_answers": "Today's recipe: Pancakes",
     },
 ]
 
@@ -55,15 +69,20 @@ def _stored_content(summary: str = "A bot that keeps recipes", settings=None) ->
                 "text": "It stores a recipe",
                 "user_wording": "I want to save my recipes",
                 "wording_reference": None,
+                "user_facing": True,
             },
             {
                 "id": "r2",
                 "text": "It suggests a recipe every morning",
                 "user_wording": None,
                 "wording_reference": "telegram:chat=42:message=17",
+                "user_facing": True,
             },
         ],
         "initial_settings": settings or [],
+        "language": "en",
+        "usage_examples": _EXAMPLES,
+        "limitations": [],
     }
 
 
@@ -189,9 +208,16 @@ async def _present(**overrides) -> str:
         "title": "Recipe bot",
         "summary": "A bot that keeps recipes",
         "must_requirements": _REQUIREMENTS,
+        "language": "en",
+        "usage_examples": _EXAMPLES,
     }
     payload.update(overrides)
     return await present_product_brief.ainvoke(payload, config=_config())
+
+
+def _user_part(message: str) -> str:
+    """The part the PO is told to send unchanged: everything after the prefix."""
+    return message.split("\n\n", maxsplit=1)[1]
 
 
 class TestPresenting:
@@ -202,15 +228,29 @@ class TestPresenting:
         _install(api, stream_client)
 
         message = await _present(
-            initial_settings=[{"key": "recipes.default_language", "value": "ru"}]
+            initial_settings=[
+                {
+                    "key": "recipes.default_language",
+                    "value": "ru",
+                    "description": "Recipes are written in Russian",
+                }
+            ],
+            limitations=["Recipes are only saved from text, not from photos"],
         )
 
         assert "A bot that keeps recipes" in message
         assert "[r1] It stores a recipe" in message
         assert 'your words: "I want to save my recipes"' in message
-        assert "said in: telegram:chat=42:message=17" in message
-        # JSON, not repr: the user is asked to confirm ru, never 'ru'.
-        assert 'recipes.default_language (product) = "ru"' in message
+        # Where the user said it is shown in words; the audit pointer is not.
+        assert "[r2] It suggests a recipe every morning\n  said earlier in our conversation" in (
+            message
+        )
+        assert "telegram:chat=42:message=17" not in message
+        assert "How you will use it:\n[r1]\n  You send: the text: pancakes" in message
+        assert "Limitations and chosen trade-offs:\n- Recipes are only saved from text" in message
+        # The setting is shown by what it means, never by its key.
+        assert "Initial settings:\n- Recipes are written in Russian" in message
+        assert "recipes.default_language" not in message
         assert message.rstrip().endswith("yes / correct me")
 
     @pytest.mark.asyncio
@@ -221,6 +261,155 @@ class TestPresenting:
         message = await _present()
 
         assert "Initial settings:\n- not specified" in message
+
+    @pytest.mark.asyncio
+    async def test_a_russian_brief_is_shown_in_russian_only(self, stream_client):
+        """The 2026-09-15 finance bot: English labels and `ocr.method = free`."""
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(
+            title="Финансовый бот",
+            summary="Бот, который считает мои доходы и расходы",
+            language="ru",
+            must_requirements=[
+                {"id": "expense", "text": "Записывает расход", "user_wording": "считай траты"},
+                {"id": "income", "text": "Записывает доход", "user_wording": "и доходы тоже"},
+                {
+                    "id": "backup",
+                    "text": "Раз в сутки сохраняет резервную копию",
+                    "user_wording": "чтобы ничего не пропало",
+                    "user_facing": False,
+                },
+            ],
+            usage_examples=[
+                {
+                    "requirement_id": "expense",
+                    "user_sends": "фото чека",
+                    "product_answers": "Записал расход 450 ₽, категория «Продукты»",
+                },
+                {
+                    "requirement_id": "income",
+                    "user_sends": "команду /income 50000 зарплата",
+                    "product_answers": "Записал доход 50 000 ₽",
+                },
+            ],
+            limitations=["Доход вводится только командой /income, не фотографией"],
+            initial_settings=[
+                {
+                    "key": "ocr.method",
+                    "value": "free",
+                    "description": "Чеки распознаются бесплатным способом",
+                }
+            ],
+        )
+
+        shown = _user_part(message)
+        assert "Как вы будете пользоваться:" in shown
+        assert "[income]\n  Вы отправляете: команду /income 50000 зарплата" in shown
+        assert "  Продукт отвечает: Записал доход 50 000 ₽" in shown
+        assert "[backup]\n  работает без ваших сообщений" in shown
+        assert "Ограничения и выбранные компромиссы:\n- Доход вводится только" in shown
+        assert "- Чеки распознаются бесплатным способом" in shown
+        assert "ocr.method" not in shown
+        assert "(product)" not in shown
+        assert " = " not in shown
+        assert shown.rstrip().endswith(LABELS["ru"]["answer"])
+        for english in LABELS["en"].values():
+            assert english not in shown
+        # What only the PO needs stays in the prefix it is not told to send.
+        assert "(id: brief-1)" in message
+        assert "brief-1" not in shown
+
+    @pytest.mark.asyncio
+    async def test_a_russian_brief_never_shows_a_raw_wording_reference(self, stream_client):
+        """The 1293 review: «где сказано: telegram:chat=42:message=17» reached the user."""
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(
+            title="Финансовый бот",
+            summary="Бот, который считает мои расходы",
+            language="ru",
+            must_requirements=[
+                {
+                    "id": "expense",
+                    "text": "Записывает расход",
+                    "wording_reference": "telegram:chat=42:message=17",
+                }
+            ],
+            usage_examples=[
+                {
+                    "requirement_id": "expense",
+                    "user_sends": "текст «кофе 250»",
+                    "product_answers": "Записал расход 250 ₽",
+                }
+            ],
+        )
+
+        shown = _user_part(message)
+        assert "[expense] Записывает расход\n  сказано раньше в нашей переписке\n" in shown
+        assert "telegram:chat=42:message=17" not in shown
+        assert "chat=" not in shown
+        # The reference itself is kept for the architect, in the stored revision.
+        stored = api.briefs["brief-1"]["content"]["must_requirements"][0]
+        assert stored["wording_reference"] == "telegram:chat=42:message=17"
+
+    @pytest.mark.asyncio
+    async def test_a_language_with_no_table_falls_back_to_english_labels(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(language="de")
+
+        assert "How you will use it:" in message
+        assert message.rstrip().endswith(LABELS["en"]["answer"])
+
+    @pytest.mark.asyncio
+    async def test_a_user_facing_requirement_without_an_example_is_refused(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(usage_examples=[_EXAMPLES[0]])
+
+        assert "No Product Brief was presented" in message
+        assert "no usage example: r2" in message
+        assert api.posts == []
+        assert api.patches == []
+
+    @pytest.mark.asyncio
+    async def test_a_brief_without_a_language_is_refused(self, stream_client):
+        api = _API()
+        _install(api, stream_client)
+
+        message = await _present(language=None)
+
+        assert "No Product Brief was presented" in message
+        assert "language" in message
+        assert api.posts == []
+
+    @pytest.mark.asyncio
+    async def test_a_brief_stored_before_usage_examples_still_renders(self, stream_client):
+        """A revision presented before this card is re-presented, not refused."""
+        legacy = {
+            "summary": "A bot that keeps recipes",
+            "must_requirements": [
+                {"id": "r1", "text": "It stores a recipe", "user_wording": "save my recipes"}
+            ],
+            "initial_settings": [{"key": "recipes.default_language", "value": "ru"}],
+        }
+        api = _API(
+            project_config={PRODUCT_BRIEF_POINTER_KEY: BRIEF_ID},
+            briefs={BRIEF_ID: _brief(content=legacy)},
+        )
+        _install(api, stream_client)
+
+        message = await _present()
+
+        assert api.posts == []
+        assert "[r1] It stores a recipe" in message
+        assert 'recipes.default_language (product) = "ru"' in message
+        assert message.rstrip().endswith("yes / correct me")
 
     @pytest.mark.asyncio
     async def test_the_revision_is_opened_through_the_released_endpoint(self, stream_client):
@@ -343,7 +532,11 @@ class TestPresenting:
         api = _API(secret_keys=["OPENROUTER_KEY", "RECIPES_FEED_ID"])
         _install(api, stream_client)
 
-        message = await _present(initial_settings=[{"key": "recipes.feed_id", "value": "feed-7"}])
+        message = await _present(
+            initial_settings=[
+                {"key": "recipes.feed_id", "value": "feed-7", "description": "Recipe feed 7"}
+            ]
+        )
 
         assert api.posts == []
         assert "is a secret of this project" in message
@@ -480,6 +673,27 @@ class TestConfirming:
         )
 
         assert "does not match the stored revision" in message
+
+    @pytest.mark.asyncio
+    async def test_a_revision_stored_before_usage_examples_asks_for_a_correction(
+        self, stream_client
+    ):
+        legacy = {
+            "summary": "A bot that keeps recipes",
+            "must_requirements": [
+                {"id": "r1", "text": "It stores a recipe", "user_wording": "save my recipes"}
+            ],
+        }
+        api = _API(briefs={BRIEF_ID: _brief(content=legacy)})
+        _install(api, stream_client)
+
+        message = await confirm_product_brief.ainvoke(
+            {"project_id": PROJECT_ID, "brief_id": BRIEF_ID}, config=_config()
+        )
+
+        assert api.posts == []
+        assert "was not confirmed" in message
+        assert f"corrects_brief_id='{BRIEF_ID}'" in message
 
     @pytest.mark.asyncio
     async def test_a_brief_that_does_not_exist_confirms_nothing(self, stream_client):

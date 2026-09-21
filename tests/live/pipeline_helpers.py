@@ -5,13 +5,14 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -29,26 +30,62 @@ from brief_telemetry import (
     stage,
 )
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
+import db_teardown
 import httpx
+from level1_brief import (
+    LEVEL1_COMMAND_REQUIREMENT,
+    LEVEL1_EXTENSION_REQUIREMENT,
+    LEVEL1_SETTING_REQUIREMENT,
+    Level1Brief,
+    bot_completion_message_mismatches,
+    build_level1_brief,
+    build_level1_extension_brief,
+)
+from level1_change_set import (
+    LEVEL1_COMMAND,
+    LEVEL1_ENDPOINT_PATH,
+    LEVEL1_EXTENSION_ENDPOINT_PATH,
+    build_level1_change_sets,
+    build_level1_extension_change_set,
+    level1_command_description,
+)
+from level1_merge_artifact import change_set_comparison, merge_artifact_mismatches
+from level1_second_story import (
+    checkout_records,
+    deploy_path_record,
+    manager_log_coverage,
+    workspace_assignments,
+)
+from level1_stage_notices import extend_stage_spans
 from live_harness import (
     TERMINAL_RUN_STATUSES,
     CleanupError,
     OwnershipManifest,
     cleanup_on_error,
+    new_run_telegram_id,
     resolve_repo_root,
     run_created_at,
+    run_user_username,
 )
 from package_route import (
     PACKAGE_ROUTE_ARTIFACTS,
     package_route_facts,
     unreadable_package_route,
 )
+import po_checkpoints
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import run_cleanup
 from run_evidence import (
+    BRIEF_OBLIGATIONS_CTX_KEY,
+    ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY,
+    LEVEL1_BRIEF_OBLIGATIONS,
     LOG_TAIL_LINES,
     LOG_TAIL_MAX_CHARS,
+    PACKAGE_BRIEF_OBLIGATION,
+    PAID_BRIEF_OBLIGATIONS,
     TARGET_SNAPSHOT_FILENAME,
+    TASK_ACCEPTANCE_CRITERIA_CTX_KEY,
+    TASK_DESCRIPTIONS_CTX_KEY,
     Capture,
     DeployRunRecord,
     QARunLookup,
@@ -61,6 +98,8 @@ from run_evidence import (
     qa_run_facts,
     target_snapshot_requirement,
 )
+import run_intervention
+import run_residue
 from settings_seed_followup import (
     KEEP_WAITING,
     WaitOutcome,
@@ -68,6 +107,7 @@ from settings_seed_followup import (
     observed,
     resolve_wait_pass,
 )
+import structlog
 
 from scripts.template_pin import TEMPLATE_PIN
 
@@ -82,32 +122,58 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionOutcome,
     EngineeringBudgetAdmissionRead,
+    EngineeringBudgetPolicyState,
     EngineeringBudgetReservationState,
 )
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.owner_notification import OwnerNotificationState
+from shared.contracts.dto.product_brief import (
+    ProductBriefAdmissionOutcome,
+    ProductBriefPlanningAttemptOutcome,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
-from shared.contracts.queues.deploy import DeployOutcome
-from shared.contracts.queues.po import POSystemEvent
+from shared.contracts.queues.deploy import LIFECYCLE_ACTIONS, DeployOutcome
+from shared.contracts.queues.po import POSystemEvent, po_thread_id
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import require_live_contour
 from shared.live_harness_cleanup import (
     MAIN_HEAD_PROBE_MARKER,
+    MERGE_FILE_SET_PROBE_MARKER,
+    STORY_BRANCH_BASE_PROBE_MARKER,
     STORY_BRANCH_DIFF_MARKER,
     STORY_BRANCH_PROBE_MARKER,
     build_remote_cleanup_command,
 )
 from shared.queues import SCAFFOLD_QUEUE
-from shared.stand_deadlines import MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS
+from shared.stand_deadlines import (
+    DEPLOY_OUTCOME_TIMEOUT,
+    DEPLOY_RUN_TIMEOUT,
+    DEPLOY_TIMEOUT,
+    ENGINEERING_TIMEOUT,
+    HEALTH_PROBE_ATTEMPTS,
+    HEALTH_PROBE_PATHS,
+    HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS,
+    HEALTH_PROBE_RETRY_DELAY_SECONDS,
+    MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
+    OWNER_NOTIFICATION_TIMEOUT,
+    STORY_AGGREGATION_POLL_INTERVAL,
+    STORY_AGGREGATION_TIMEOUT,
+    STORY_COMPLETION_TIMEOUT,
+    UNDEPLOY_TIMEOUT,
+    scaffold_budget_seconds,
+)
+
+logger = structlog.get_logger()
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -117,6 +183,10 @@ AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
+# The API as a container on the internal network reaches it. Everything the
+# harness runs inside `langgraph` addresses it this way, including the
+# residue probe's SSH-target resolution.
+INTERNAL_API_URL = "http://api:8000"
 # The template the live suite scaffolds from when nothing overrides it: the production
 # pin itself, read from `scripts/system_configs.yaml` through `scripts.template_pin`, so
 # the suite scaffolds from what a deployed orchestrator scaffolds from and no copy of the
@@ -128,28 +198,32 @@ TEMPLATE_REF_ENV = "LIVE_TEMPLATE_REF"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
-SCAFFOLD_TIMEOUT = 120
-ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
+# The scaffold has no flat budget: it is derived per project from the module
+# count, in `shared.stand_deadlines.scaffold_budget_seconds`, and `wait_scaffold`
+# reads it from the project it was handed. There is deliberately no constant here
+# for a caller to pass instead.
+SCAFFOLD_POLL_INTERVAL = 3
+# Every bound this lifecycle waits on is defined in `shared/stand_deadlines.py`
+# and imported above, not restated here: the `mega-noop` cap is derived from the
+# ledger that sums those same constants, so a timeout a caller could change
+# without the ledger noticing is exactly the defect round 5 of card 1316 left
+# behind. What stays local is a poll interval — how often a wait looks — which
+# no budget is computed from.
 LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
-DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 SCAFFOLD_FENCE_TIMEOUT = 900
-# Merged PR → pr_poller cycle → deploy run carrying the merged head SHA.
-# The wait for a deploy Run to *appear*. It now legitimately spans the project's
-# own CI: no Run is created until the merged commit's images are observed
-# published, which is what keeps DEPLOY_TIMEOUT below meaning "deploy.yml +
-# smoke" instead of quietly absorbing somebody else's build. So it is the old
-# 420 s of merge detection and Run creation plus the producer's full image bound
-# (`image_publication.IMAGE_PUBLICATION_TIMEOUT_SECONDS`, 900 s), after which the
-# story is refused and no Run can ever appear. Derived rather than measured on
-# purpose: it is the ceiling the gate itself imposes, so it cannot be too small.
-DEPLOY_RUN_TIMEOUT = 1320
 DEPLOY_RUN_POLL_INTERVAL = 5
-# The deploy consumer writes the run result right after the app reports its
-# status, so this only covers that last write on the initial lifecycle. A
-# settings-seed follow-up goes directly from Run discovery to this wait, so its
-# derived budgets also include the full deploy lifecycle below.
-DEPLOY_OUTCOME_TIMEOUT = 120
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
+#: How long the manager's first `checkout_branch` of a story branch may take.
+#:
+#: `issue:028670f21dbd138ccd04` is the measurement this is chosen against: on
+#: production the *first* checkout of a second story hit the manager's 30 s exec
+#: bound (`git_ops._exec_script`) and the automatic retry then did the same work
+#: in about four seconds. So the honest bound sits between the two — far enough
+#: above the four seconds that a loaded stand's fetch is not a failure, and far
+#: enough below the 30 s exec bound that a checkout approaching it fails here
+#: rather than by killing the worker. Fifteen seconds is that: nearly four times
+#: the measured work and half the timeout it must never reach.
+SECOND_STORY_CHECKOUT_BOUND_SECONDS = 15
 SETTINGS_SEED_MANIFEST_REPAIR_ATTEMPT_TIMEOUT = (
     LLM_ENGINEERING_TIMEOUT + DEPLOY_RUN_TIMEOUT + DEPLOY_TIMEOUT + DEPLOY_OUTCOME_TIMEOUT
 )
@@ -168,19 +242,13 @@ SETTINGS_SEED_REPAIR_POLL_INTERVAL = 10
 # A one-repair brief ceiling is therefore safer than pretending retries can be
 # matched: it cannot pay for repeated undeclared-key repairs of any identity.
 BRIEF_MAX_MANIFEST_REPAIRS = 1
-# Deploy hands off to QA on the scheduler's next poll, then QA retries the health
-# check while the service finishes coming up.
-QA_RUN_TIMEOUT = 300
 QA_RUN_POLL_INTERVAL = 5
-# Completion is emitted after QA by the supervisor, then the durable owner
-# notification is delivered to PO.  Undeploy runs over the same bounded deploy
-# consumer path as a normal deployment, but has no GitHub workflow phase.
-STORY_COMPLETION_TIMEOUT = 180
-OWNER_NOTIFICATION_TIMEOUT = 180
-UNDEPLOY_TIMEOUT = 300
 LIFECYCLE_POLL_INTERVAL = 3
 # One owned deploy's teardown: 60s of SSH per target server, plus container start.
 SERVER_CLEANUP_TIMEOUT = 180
+# Four psql round trips: the foreign-key catalog, the run's owned keys, the
+# deletes, and the residue proof. The old single-statement delete had 15s.
+DB_TEARDOWN_TIMEOUT = 60
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -204,8 +272,38 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 NOOP_PROJECT_DESCRIPTION = "Pipeline E2E test - noop"
 NOOP_TASK_TITLE = "Noop implementation task"
 NOOP_TASK_DESCRIPTION = "Empty commit via NoopRunner - pipeline test"
-NOOP_FOLLOWUP_TASK_TITLE = "Noop follow-up integration task"
-NOOP_FOLLOWUP_TASK_DESCRIPTION = "Second empty NoopRunner commit after the first task"
+
+# The product shape every suite but level-1 has always created.
+BACKEND_ONLY_MODULES = ["backend"]
+
+# Level-1: a Telegram-bot product. `tg_bot` is what makes the bot token a
+# *required* user secret of the deploy (services/tg_bot/env.contract.yaml), so
+# this module list and the token binding below are one decision, not two.
+LEVEL1_MODULES = ["backend", "tg_bot"]
+LEVEL1_PROJECT_DESCRIPTION = "Pipeline E2E test - level-1 Telegram bot product"
+#: What the level-1 scenario is called in its own evidence document — the name
+#: of the stand suite that runs it, the same way a paid brief variant is named
+#: after the suite it is the target of.
+LEVEL1_BRIEF_VARIANT = "mega-noop"
+LEVEL1_BACKEND_TASK_TITLE = "Level-1 marker endpoint and product setting"
+LEVEL1_BOT_TASK_TITLE = "Level-1 Telegram command handler"
+#: The extension story's one task — the second story of the same project.
+LEVEL1_EXTENSION_TASK_TITLE = "Level-1 extension endpoint and product setting"
+#: The stand environment secret holding the token of @mega_e2e_codegen_bot.
+#: One bot, one stand, so a run that cannot have it exclusively refuses to start.
+STAND_PRODUCT_BOT_TOKEN_ENV = "STAND_PRODUCT_BOT_TOKEN"  # noqa: S105 — a name, not a secret
+#: The secret key the binding route writes, and teardown drops again
+#: (services/api/src/utils/telegram_binding.py).
+TELEGRAM_TOKEN_SECRET_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 — a key name, not a secret
+#: The one route a bot token may reach a project through
+#: (services/api/src/routers/projects/telegram.py); the plain secret path
+#: refuses it on purpose (services/api/src/routers/projects/secrets.py).
+TELEGRAM_TOKEN_ROUTE = "/api/projects/{project_id}/telegram/token"  # noqa: S105
+#: How long the deployed bot is given to publish its command menu to Telegram
+#: after the deploy reports success. It happens in the bot's own post-init, so
+#: this is startup latency, not work.
+LEVEL1_COMMAND_MENU_TIMEOUT = 120
+LEVEL1_COMMAND_MENU_POLL_SECONDS = 5
 
 LLM_BACKEND_PROJECT_DESCRIPTION = (
     "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
@@ -468,29 +566,15 @@ def record_package_route(ctx: dict) -> str | None:
     return None
 
 
-def _digest_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
-    """The digest variant's own expectation: a behaviour that takes no arguments."""
-    if behaviour.arguments != {}:
-        return (
-            f"Architect declared unexpected arguments for {BRIEF_JOB_NAME}: {behaviour.arguments}"
-        )
-    return None
-
-
 def _package_behaviour_error(behaviour: ScheduledBehaviourCriterion) -> str | None:
-    """The package variant's own expectation: `at`, and an observable QA can bind.
+    """The package variant's own expectation beyond its arguments.
 
-    The second half is the reason this variant exists.  Central QA passes a
+    The observable is the reason this variant exists.  Central QA passes a
     package behaviour row only on a post-fire HTTP read of a route the criterion's
     observable *names*; an observable naming no route is not bindable and fails
     by design.  Judged here, against the binder itself, a criterion that could
     never pass stops the run before it is paid for rather than after.
     """
-    if BRIEF_PACKAGE_JOB_ARGUMENT not in behaviour.arguments:
-        return (
-            f"Architect declared {BRIEF_PACKAGE_JOB_NAME} without the required "
-            f"{BRIEF_PACKAGE_JOB_ARGUMENT!r} argument: {behaviour.arguments}"
-        )
     read = f"{BRIEF_PACKAGE_ROUTE}?user_ref={BRIEF_PACKAGE_OWNER_REF}"
     if not observation_answers(behaviour.observable, "http_get", read):
         return (
@@ -526,15 +610,27 @@ class BriefScenario:
     brief_title: str
     brief_summary: str
     must_requirements: tuple[dict[str, str], ...]
+    #: How the user uses each must-requirement, one example or more per id.
+    usage_examples: tuple[dict[str, str], ...]
+    limitations: tuple[str, ...]
     story_title: str
     settings_key: str
     settings_value: object
+    #: What the setting means, as the user is shown it instead of its key.
+    settings_description: str
     #: The scheduled behaviour the architect must publish for this contract.
     job_name: str
     productive_seconds: int
-    #: What else that behaviour owes beyond its name.  Each variant states its
-    #: own; neither is asserted for the other.
-    behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None]
+    #: The argument names that behaviour must declare, and whether it may
+    #: declare others.  These are data rather than a predicate because the run
+    #: evidence has to judge the *same* expectation the fixture refused the run
+    #: on: it used to spell the digest variant's job name and arguments itself,
+    #: and called a green package run red (`issue:62bc9840e23a44c2098b`).
+    job_argument_names: frozenset[str]
+    job_allows_other_arguments: bool
+    #: What else that behaviour owes beyond its name and arguments.  Each
+    #: variant states its own, or `None` when it owes nothing further.
+    behaviour_error: Callable[[ScheduledBehaviourCriterion], str | None] | None
     #: What this variant requires of the *deployed* product before QA judges it,
     #: read from the deployment itself.  Returns the reason the run is red, or
     #: `None`.  A variant that requires nothing of the deployment's shape says
@@ -544,6 +640,45 @@ class BriefScenario:
     @property
     def requirement_ids(self) -> set[str]:
         return {requirement["id"] for requirement in self.must_requirements}
+
+    @property
+    def expected_criterion(self) -> dict:
+        """What the architect owes this contract, as the evidence reads it."""
+        return {
+            "name": self.job_name,
+            "required_arguments": sorted(self.job_argument_names),
+            "allows_other_arguments": self.job_allows_other_arguments,
+        }
+
+    @property
+    def evidence_obligations(self) -> tuple[str, ...]:
+        """Which Product Brief facts a run of this variant owes its artifact.
+
+        Every confirmed-brief variant owes the whole durable chain; one that
+        asks something of the *deployment* owes the package route it read off
+        it, because that read is what entitles the run to claim the package
+        path was taken at all.
+        """
+        if self.deployment_check is None:
+            return PAID_BRIEF_OBLIGATIONS
+        return (*PAID_BRIEF_OBLIGATIONS, PACKAGE_BRIEF_OBLIGATION)
+
+    def criterion_error(self, behaviour: ScheduledBehaviourCriterion) -> str | None:
+        """Everything this variant requires of the behaviour the architect published."""
+        missing = sorted(self.job_argument_names - set(behaviour.arguments))
+        if missing:
+            return (
+                f"Architect declared {self.job_name} without the required "
+                f"{', '.join(repr(one) for one in missing)} argument: {behaviour.arguments}"
+            )
+        if not self.job_allows_other_arguments and set(behaviour.arguments) != set(
+            self.job_argument_names
+        ):
+            return (
+                f"Architect declared unexpected arguments for {self.job_name}: "
+                f"{behaviour.arguments}"
+            )
+        return self.behaviour_error(behaviour) if self.behaviour_error is not None else None
 
 
 BRIEF_DIGEST_SCENARIO = BriefScenario(
@@ -567,12 +702,30 @@ BRIEF_DIGEST_SCENARIO = BriefScenario(
             "user_wording": "The digest must be produced in Russian and English.",
         },
     ),
+    usage_examples=(
+        {
+            "requirement_id": "scheduled_digest",
+            "user_sends": "a request to run the digest now",
+            "product_answers": "the digest runs and its records become readable",
+        },
+        {
+            "requirement_id": "selected_languages",
+            "user_sends": "a read of the digest records after a run",
+            "product_answers": "one record in Russian and one in English",
+        },
+    ),
+    limitations=("Only the languages chosen in the product setting get a digest.",),
     story_title="Build the multilingual scheduled digest",
     settings_key=BRIEF_SETTINGS_KEY,
     settings_value=BRIEF_LANGUAGES,
+    settings_description="The digest is produced in Russian and English.",
     job_name=BRIEF_JOB_NAME,
     productive_seconds=BRIEF_PRODUCTIVE_DEADLINE_SECONDS,
-    behaviour_error=_digest_behaviour_error,
+    # The digest behaviour takes no arguments at all, and nothing else is owed
+    # of it beyond that.
+    job_argument_names=frozenset(),
+    job_allows_other_arguments=False,
+    behaviour_error=None,
     # The digest product is deliberately package-free, so its deployment owes
     # this check nothing and is asked nothing.
     deployment_check=None,
@@ -606,11 +759,30 @@ BRIEF_PACKAGE_SCENARIO = BriefScenario(
             "user_wording": "I want to check whether my reminder has already fired.",
         },
     ),
+    usage_examples=(
+        {
+            "requirement_id": "one_time_reminder",
+            "user_sends": "a reminder for a moment a minute from now",
+            "product_answers": "once that moment passes, the reminder is marked emitted",
+        },
+        {
+            "requirement_id": "reminder_state_readable",
+            "user_sends": "a read of my reminders",
+            "product_answers": "each reminder with whether it is still pending or emitted",
+        },
+    ),
+    limitations=("Reminders fire once; there are no repeating reminders.",),
     story_title="Build the one-time reminder capability",
     settings_key=BRIEF_PACKAGE_SETTINGS_KEY,
     settings_value=BRIEF_PACKAGE_OWNER_REF,
+    settings_description="Reminders are recorded for the configured user reference.",
     job_name=BRIEF_PACKAGE_JOB_NAME,
     productive_seconds=BRIEF_PACKAGE_PRODUCTIVE_DEADLINE_SECONDS,
+    # The package's `jobs_schema` declares `at` as required; whether the
+    # architect spells further arguments beside it is not this variant's
+    # business, and never was.
+    job_argument_names=frozenset({BRIEF_PACKAGE_JOB_ARGUMENT}),
+    job_allows_other_arguments=True,
     behaviour_error=_package_behaviour_error,
     deployment_check=record_package_route,
 )
@@ -679,22 +851,40 @@ def internal_headers() -> dict[str, str]:
     return {"X-Internal-Key": require_internal_api_key()}
 
 
-# ── API clients: the three kinds, each built in exactly one place ────────
+# ── API clients: the four kinds, each built in exactly one place ─────────
 #
-# Every live client is one of these three, and the name of the factory says
+# Every live client is one of these four, and the name of the factory says
 # which. Nothing outside this section composes auth headers: a call site that
 # assembles its own is how the mega ended up with a client that authenticated as
 # nobody.
 
 
-def api_client_as_test_user(**kwargs) -> httpx.AsyncClient:
-    """Acts ON BEHALF OF the harness test user.
+def api_client_as_named_user(telegram_id: int, **kwargs) -> httpx.AsyncClient:
+    """Acts ON BEHALF OF one named Telegram actor, whoever it is.
 
     Both credentials, and both are needed: the internal key is what gets past the
     global auth gate (``require_authenticated_caller``), while X-Telegram-ID is
     what the request is judged as (``resolve_actor``). The key does not deputize
     the named user — a request naming a non-admin user is still that non-admin
-    user. This is the client for the product path: projects, stories, tasks.
+    user.
+
+    This is the factory a run-owned user is reached through: the level-1 run
+    registers a fresh Telegram id through the product's promo door and then
+    drives the whole product path as that user.
+    """
+    return _api_client(
+        {**internal_headers(), USER_AUTH_HEADER: str(telegram_id)},
+        **kwargs,
+    )
+
+
+def api_client_as_test_user(**kwargs) -> httpx.AsyncClient:
+    """Acts ON BEHALF OF the harness fixture user shared by every run.
+
+    The client for the suites that still share one fixture user — the scaffold,
+    engineering, brief and LLM paths. The level-1 suite does not use it: it
+    registers its own user and reaches the API through
+    ``api_client_as_named_user``.
     """
     return _api_client({**internal_headers(), **AUTH_HEADERS}, **kwargs)
 
@@ -850,15 +1040,20 @@ def docker_exec_python_module(
 async def ensure_test_user(
     api: httpx.AsyncClient, api_internal: httpx.AsyncClient | None = None
 ) -> None:
-    """Ensure the harness's fixture user exists, then touch it as that user.
+    """Ensure the shared fixture user exists, then touch it as that user.
 
     Registration is promo-gated: `_requires_promo` exempts only a service acting
-    for itself, so a request naming `X-Telegram-ID` must redeem a code. The
-    harness user is a fixture, not a customer walking through the product door,
-    so when `api_internal` is given it is created by the internal service naming
-    nobody. Updating an existing user needs no code, which is why the user-client
-    call below still stands: it is what proves the product client's header
-    composition is accepted by the auth gate.
+    for itself, so a request naming `X-Telegram-ID` must redeem a code. This user
+    is a fixture, not a customer walking through the product door, so when
+    `api_internal` is given it is created by the internal service naming nobody.
+    Updating an existing user needs no code, which is why the user-client call
+    below still stands: it is what proves the product client's header composition
+    is accepted by the auth gate.
+
+    The level-1 suite no longer comes here. It walks the door itself —
+    `register_run_owner` mints a code and redeems it at a fresh Telegram id — so
+    the fixture belongs to the scaffold, engineering, brief and LLM paths alone,
+    and it is nobody's to delete: every one of those runs shares it.
 
     `api_internal` is optional so the header-composition contract test can drive
     this function with one fake transport and no server behind it.
@@ -920,13 +1115,20 @@ async def create_pipeline_project(
     agent_type: str,
     task_title: str,
     task_description: str,
+    modules: list[str],
     detailed_spec: str | None = None,
+    run_owner: "RunOwner | None" = None,
 ) -> dict:
     """Create project + repository for one live pipeline variant. Returns ctx dict.
 
     This factory serves the scaffold, engineering and full pipelines alike, so it
     cannot tell whether this run will reach a deploy — and it does not guess. The
     deploy stack is owned by ``own_deploy_ahead``, from the fact that decides it.
+
+    ``modules`` is required rather than defaulted: it decides which services the
+    scaffolder renders and therefore which environment contract the deploy has to
+    satisfy — a bot module brings a required user secret with it. A default here
+    would let a caller inherit a product shape it never asked for.
     """
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
@@ -937,7 +1139,7 @@ async def create_pipeline_project(
     manifest = OwnershipManifest(run_id=f"live-{uuid.uuid4().hex[:12]}")
     config = {
         "description": description,
-        "modules": ["backend"],
+        "modules": list(modules),
         "agent_type": agent_type,
     }
     if detailed_spec:
@@ -960,13 +1162,18 @@ async def create_pipeline_project(
 
     manifest.own("project", project_id)
     ctx = {
+        # Whoever `api` names owns this project, so the run's own user — when it
+        # has one — is recorded here before anything else can fail. Teardown
+        # reads it from the first moment the context exists, which is also the
+        # first moment a failed run has rows to clean up.
+        "run_owner": run_owner,
         "project_id": project_id,
         "project_title": project_title,
         "project_name": project_name,
         "repo_name": project_name,
         "manifest": manifest,
         "agent_type": agent_type,
-        "modules": ["backend"],
+        "modules": list(modules),
         "scaffold_task_description": task_description,
         "task_title": task_title,
         "task_description": task_description,
@@ -999,11 +1206,156 @@ async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncC
         agent_type="noop",
         task_title=NOOP_TASK_TITLE,
         task_description=NOOP_TASK_DESCRIPTION,
+        modules=BACKEND_ONLY_MODULES,
     )
 
 
+class Level1RunRefused(RuntimeError):
+    """The level-1 run cannot start, and this says which precondition failed.
+
+    A refusal, never a skip: every reason this is raised for means the run would
+    have gone on to prove something it cannot prove — a bot product with no bot,
+    or a bot somebody else is already driving.
+    """
+
+
+def require_product_bot_token() -> str:
+    """The stand's product bot token, or a refusal naming what is missing.
+
+    Read at the very start of the run. The level-1 story deploys a Telegram-bot
+    product whose `tg_bot` module declares `TELEGRAM_BOT_TOKEN` as a *required*
+    user secret, so without it the deploy dead-ends in WAITING_FOR_USER_SECRET
+    forty minutes later and every product assertion after it is vacuous.
+    """
+    token = (os.getenv(STAND_PRODUCT_BOT_TOKEN_ENV) or "").strip()
+    if not token:
+        raise Level1RunRefused(
+            f"{STAND_PRODUCT_BOT_TOKEN_ENV} is not set, so the level-1 run has no bot to bind "
+            "to its product. It is a protected `stand` environment secret; "
+            ".github/workflows/stand-e2e.yml passes it to this suite for the level-1 suite only."
+        )
+    return token
+
+
+async def bind_product_bot_token(api: httpx.AsyncClient, ctx: dict, token: str) -> dict:
+    """Bind the stand's bot to this project, through the one route that may.
+
+    The route runs the whole validation chain server-side and answers with a
+    typed verdict, so this is also where "somebody is already polling this bot"
+    is detected: `_check_no_poller` probes `getUpdates` and a live long-poller
+    makes Telegram answer 409, which comes back as `poller_active`. That is a
+    refusal here rather than a second probe of our own — one asker, one answer.
+
+    What that probe proves is one-directional and the suite does not overstate
+    it: anything that is not a 409 is recorded as a passed check, so an
+    unreachable or odd Telegram answer reads as "no poller seen" rather than as
+    "no poller". The binding itself is what actually keeps the bot to this run —
+    one live project may hold it, and teardown releases it.
+    """
+    route = TELEGRAM_TOKEN_ROUTE.format(project_id=ctx["project_id"])
+    response = await api.post(route, json={"token": token})
+    response.raise_for_status()
+    verdict = response.json()
+    # The verdict carries no token; the username and the check names are what a
+    # failed run needs to read afterwards.
+    ctx["bot_binding"] = {
+        "status": verdict["status"],
+        "reason_code": verdict.get("reason_code"),
+        "bot_username": verdict.get("bot_username"),
+        "checks": [
+            {"name": check["name"], "passed": check["passed"]}
+            for check in verdict.get("checks", [])
+        ],
+    }
+    if verdict["status"] != "ok":
+        raise Level1RunRefused(
+            f"{STAND_PRODUCT_BOT_TOKEN_ENV} was refused by {route}: "
+            f"{verdict.get('reason_code')} — {verdict['user_message']} "
+            f"(checks: {ctx['bot_binding']['checks']})"
+        )
+    ctx["bot_username"] = verdict["bot_username"]
+    return ctx["bot_binding"]
+
+
+async def create_level1_bot_project(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, run_owner: "RunOwner | None" = None
+) -> dict:
+    """Create the level-1 Telegram-bot product: two modules, a bot, two change sets.
+
+    Order matters and is the point. The token is demanded before anything is
+    created, so a stand without it spends nothing. The change sets are built
+    before the project, so a kit that moved under the pin refuses here rather
+    than in a worker container. The binding happens after the repository exists
+    — the route needs a primary repository to hang `bot_username` on — and
+    inside a cleanup guard, so a refused token leaves no project behind.
+    """
+    token = require_product_bot_token()
+    marker = new_health_marker()
+    template = resolve_template()
+    change_sets = build_level1_change_sets(marker, template)
+    # The extension story's marker and change set are minted here too, before
+    # anything is created, for the same reason the first story's are: a kit that
+    # moved under the pin has to refuse the run offline rather than an hour
+    # later, and it is no better to discover that after the first story spent
+    # its forty minutes. The extension marker is its own — a second story that
+    # deployed nothing of its own could otherwise be satisfied by the first
+    # story's deployment.
+    extension_marker = new_health_marker()
+    extension_change_set = build_level1_extension_change_set(marker, extension_marker, template)
+
+    ctx = await create_pipeline_project(
+        api,
+        api_internal,
+        project_prefix=require_live_contour().pipeline,
+        description=LEVEL1_PROJECT_DESCRIPTION,
+        agent_type="noop",
+        task_title=LEVEL1_BACKEND_TASK_TITLE,
+        task_description=change_sets.backend_task_description(),
+        modules=LEVEL1_MODULES,
+        run_owner=run_owner,
+    )
+    ctx["level1_marker"] = marker
+    ctx["level1_change_set_paths"] = change_sets.paths
+    # The level-1 lifecycle confirms a Product Brief through the released PO
+    # tools on every run, so its evidence document owes that confirmation and
+    # is red without it. It publishes no Architect criterion and its
+    # deterministic QA fires no product job, so it owes neither of those: the
+    # artifact used to answer "this is not a Product Brief scenario" to all of
+    # them, which was false about the first and true only by accident.
+    ctx["brief_variant"] = LEVEL1_BRIEF_VARIANT
+    ctx[BRIEF_OBLIGATIONS_CTX_KEY] = list(LEVEL1_BRIEF_OBLIGATIONS)
+    # The product contract this run's story is planned against. Minted from the
+    # same marker as the change sets, so the setting the user confirms is the
+    # one the backend manifest declares and the value is this run's alone.
+    ctx["level1_brief"] = build_level1_brief(marker)
+    ctx["followup_task_title"] = LEVEL1_BOT_TASK_TITLE
+    ctx["followup_task_description"] = change_sets.bot_task_description()
+    # What QA judges each task by, and what `format_acceptance_criteria` has to
+    # put into that task's TASK.md word for word. Minted from the same marker as
+    # the change sets and the brief, so the three cannot drift apart and a
+    # document left over from another run cannot satisfy the verbatim check.
+    ctx["task_criteria"] = change_sets.backend_acceptance_criteria()
+    ctx["followup_task_criteria"] = change_sets.bot_acceptance_criteria()
+    ctx["product_bot_token"] = token
+    # Everything the second story is built from, held until the first story has
+    # completed. It is a plan, not state: nothing in it is read while the first
+    # story runs, and `second_story_scope` is what makes it this run's current
+    # story.
+    ctx["level1_extension_marker"] = extension_marker
+    ctx["level1_extension_plan"] = {
+        "task_title": LEVEL1_EXTENSION_TASK_TITLE,
+        "task_description": extension_change_set.task_description(),
+        "task_criteria": extension_change_set.acceptance_criteria(),
+        "change_set_paths": extension_change_set.paths,
+    }
+
+    async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
+        await bind_product_bot_token(api, ctx, token)
+    return ctx
+
+
 async def create_llm_backend_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, run_owner: "RunOwner | None" = None
 ) -> dict:
     """Create project + repository for the live LLM backend pipeline.
 
@@ -1022,6 +1374,8 @@ async def create_llm_backend_project(
         agent_type=live_worker_agent_type(),
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=llm_backend_task_description(marker),
+        modules=BACKEND_ONLY_MODULES,
+        run_owner=run_owner,
     )
     ctx["health_marker"] = marker
     ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
@@ -1095,11 +1449,27 @@ def resolve_template() -> tuple[str, str]:
     return repo, ref
 
 
+def registry_repository(repo_name: str, module: str) -> str:
+    """The registry repository one module's image is published to.
+
+    Derived the way the deploy's own resolver derives it from the environment
+    contract's ``<SERVICE>_IMAGE`` variable
+    (``services/langgraph/src/subgraphs/devops/secret_resolver.py``): the service
+    name, lowercased, with underscores turned into hyphens. `tg_bot` therefore
+    publishes to ``<repo>-tg-bot``, and teardown has to own that name to remove
+    it.
+    """
+    return f"{GITHUB_ORG}/{repo_name}-{module.lower().replace('_', '-')}"
+
+
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
     template_repo, template_ref = resolve_template()
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
-    ctx["manifest"].own("registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend")
+    # One registry repository per module: a two-module product publishes two
+    # images, and an unowned one is residue teardown never looks for.
+    for module in ctx["modules"]:
+        ctx["manifest"].own("registry_repository", registry_repository(ctx["repo_name"], module))
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
@@ -1108,7 +1478,10 @@ def trigger_scaffold(ctx: dict) -> None:
         "template_repo": template_repo,
         "template_ref": template_ref,
         "project_name": ctx["project_name"],
-        "modules": "backend",
+        # The module list this run's project was created with. It was hard-coded
+        # to "backend" while every caller asked for exactly that; a two-module
+        # product would otherwise have been scaffolded without its bot.
+        "modules": ",".join(ctx["modules"]),
         "task_description": ctx.get("scaffold_task_description", "Pipeline E2E test project"),
     }
     result = subprocess.run(
@@ -1135,25 +1508,119 @@ def trigger_scaffold(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
+class ScaffoldDidNotComplete(AssertionError):
+    """The scaffold phase ended this run, and the failure says so itself.
+
+    Raised from `wait_scaffold`, so a scaffold that never reached `active`
+    stops the fixture at the phase that actually failed. Before this existed the
+    wait returned quietly and the first thing pytest reported was an assertion
+    about engineering or the scripted path — a downstream symptom of a phase
+    that never ran (stand-e2e run 35406260851).
+    """
+
+
+# The scaffolder's own log is the only place its progress is written down, and
+# `dump_debug` already reads it the same way. Both renderers `setup_logging` can
+# install (JSON and console) put the event name in the line verbatim, so the
+# event is recovered by name rather than by parsing one of the two formats. The
+# names looked for are the scaffold-phase ones the scaffolder emits
+# (`scaffold_job_started`, `scaffold_make_setup_start`, `scaffold_complete`, …);
+# the underscore is what keeps the compose stream prefix `scaffolder` from
+# answering on every line.
+SCAFFOLDER_EVENT_TAIL_LINES = 200
+SCAFFOLDER_EVENT_MAX_CHARS = 400
+_SCAFFOLD_EVENT_PATTERN = re.compile(r"\b(scaffold_[a-z0-9_]+)\b")
+
+
+def last_scaffolder_event(project_id: str) -> str:
+    """The scaffolder's last recorded event for this project, or why there is none.
+
+    Never raises: this runs inside the construction of a failure message, and a
+    failure message that dies reading a log tail is worse than one that says the
+    tail was unreadable.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "logs", f"--tail={SCAFFOLDER_EVENT_TAIL_LINES}", "scaffolder"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+    except Exception as error:  # noqa: BLE001 - any read failure is reported, not raised
+        return f"unreadable ({type(error).__name__})"
+    if result.returncode != 0:
+        return f"unreadable (docker compose logs exited {result.returncode})"
+    all_lines = result.stdout.splitlines()
+    own_lines = [line for line in all_lines if project_id in line]
+    lines = own_lines or all_lines
+    for line in reversed(lines):
+        match = _SCAFFOLD_EVENT_PATTERN.search(line)
+        if match is None:
+            continue
+        scope = "this project" if own_lines else "no line named this project, so the container's"
+        detail = redacted_dump_text(line.strip())[-SCAFFOLDER_EVENT_MAX_CHARS:]
+        return f"{match.group(1)} ({scope} last scaffold line: {detail})"
+    return "no scaffold event in the scaffolder's log tail"
+
+
 async def wait_scaffold(
     api: httpx.AsyncClient,
     ctx: dict,
-    timeout: int = SCAFFOLD_TIMEOUT,
     on_poll: Callable[[], None] | None = None,
 ) -> None:
-    """Wait for scaffold to complete. Updates ctx['scaffold_status'].
+    """Wait out this project's own scaffold budget. Updates ctx['scaffold_status'].
 
-    After ProjectStatus split (#22), scaffold success sets status to 'active'.
-    Failure leaves status as 'draft' — we detect that via timeout.
+    The budget is derived from the product being scaffolded — its module count,
+    through `scaffold_budget_seconds` — and not passed in, so no caller can hand
+    a two-module product a one-module number.
+
+    Two of the three outcomes are told apart rather than conflated. The
+    scaffolder publishes its own failure by writing `scaffold_error` into the
+    project config (`services/scaffolder/src/consumer.py`), which the project
+    read returns, so a scaffold that failed is reported the poll after it
+    records that instead of waiting out the whole budget. What remains
+    indistinguishable is a scaffold still working from one that died without
+    writing anything — a full-mode exception records no `scaffold_error` — and
+    that is exactly what the timeout message describes rather than diagnoses.
     """
-    status = await poll_status(
-        api,
-        f"/api/projects/{ctx['project_id']}",
-        {ProjectStatus.ACTIVE},
-        timeout,
-        on_poll,
+    timeout = scaffold_budget_seconds(len(ctx["modules"]))
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        if on_poll is not None:
+            on_poll()
+        await asyncio.sleep(SCAFFOLD_POLL_INTERVAL)
+        response = await api.get(f"/api/projects/{ctx['project_id']}")
+        response.raise_for_status()
+        project = response.json()
+        ctx["scaffold_status"] = project.get("status")
+        if ctx["scaffold_status"] == ProjectStatus.ACTIVE:
+            return
+        scaffold_error = (project.get("config") or {}).get("scaffold_error")
+        if scaffold_error:
+            ctx["scaffold_error"] = scaffold_error
+            raise ScaffoldDidNotComplete(_scaffold_failure_message(ctx, started, timeout))
+        if time.monotonic() >= deadline:
+            raise ScaffoldDidNotComplete(_scaffold_failure_message(ctx, started, timeout))
+
+
+def _scaffold_failure_message(ctx: dict, started: float, timeout: int) -> str:
+    """Name the phase, the wait, the last status and the scaffolder's last event."""
+    modules = ctx["modules"]
+    scaffold_error = ctx.get("scaffold_error")
+    verdict = (
+        f"the scaffolder recorded scaffold_error={scaffold_error!r}"
+        if scaffold_error
+        else "the scaffolder recorded no failure, so it was still working or died silently"
     )
-    ctx["scaffold_status"] = status
+    return (
+        f"scaffold did not complete for project {ctx.get('project_id')}: "
+        f"{verdict}. Waited {time.monotonic() - started:.0f}s of a {timeout}s budget for "
+        f"{len(modules)} module(s) ({', '.join(modules)}). "
+        f"Project status: {ctx.get('scaffold_status')}. "
+        f"Scaffolder's last recorded event: {last_scaffolder_event(str(ctx.get('project_id')))}"
+    )
 
 
 async def wait_product_brief_admission(
@@ -1347,10 +1814,8 @@ def own_deploy_ahead(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
-async def create_story_and_task(
-    api: httpx.AsyncClient, ctx: dict, *, linear_noop_tasks: bool = False
-) -> None:
-    """Create an in-progress Story and one or two schedulable engineering Tasks.
+async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
+    """Create an in-progress Story and one schedulable engineering Task.
 
     Creating the story is what makes this run able to deploy, so this is where the
     deploy stack is owned — derived, not declared at the call site. Once the
@@ -1421,14 +1886,1017 @@ async def create_story_and_task(
     ctx["task_id"] = first_task_id
     ctx["first_task_id"] = first_task_id
     ctx["task_ids"] = [first_task_id]
-    if linear_noop_tasks:
-        second_task_id = await create_task(
-            title=NOOP_FOLLOWUP_TASK_TITLE,
-            description=NOOP_FOLLOWUP_TASK_DESCRIPTION,
-            blocked_by_task_id=first_task_id,
+
+
+# ── Level-1: the confirmed brief, and the plan admitted without a model ──
+
+
+class Level1PhaseFailed(RuntimeError):
+    """A level-1 phase did not produce what the phases after it are about.
+
+    Raised out of the fixture rather than yielded, the way card 1310 made the
+    scaffold raise `ScaffoldDidNotComplete`: the level-1 route is deterministic,
+    so a brief that was not confirmed, a plan that was not admitted, engineering
+    that did not finish or a deploy that did not succeed is a failure of that
+    phase — never a skip, and never a later assertion about the product that
+    phase never produced.
+    """
+
+    def __init__(self, phase: str, reason: str) -> None:
+        super().__init__(f"level-1 {phase} phase failed: {reason}")
+        self.phase = phase
+        self.reason = reason
+
+
+# ── The registration door ────────────────────────────────────────────────
+#
+# A level-1 run is a customer walking through the product's front door, not a
+# fixture: a Telegram id nobody has used, a promo code minted through the
+# internal API for this run alone, and a registration that redeems it. That is
+# the only way this run's user comes to exist — `_requires_promo` exempts a
+# service acting for itself, and the run deliberately does not take that exit,
+# because an internal registration would prove the harness can create a row and
+# nothing about the door a real first user comes through.
+
+#: What the code this run mints carries, and therefore exactly what the policy
+#: its redemption arms has to hold. Generous against the two scripted noop
+#: attempts the run makes — each holds `attempt_reservation_microusd` and
+#: settles as unknown-cost, so the limit must cover both with room left — and
+#: finite, so the run proves an *enforced* policy rather than an absent one.
+LEVEL1_PROMO_CREDITS_MICROUSD = 50_000_000
+LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD = 1_000_000
+
+PROMO_BATCH_ROUTE = "/api/promo-codes/batch"
+USER_UPSERT_ROUTE = "/api/users/upsert"
+ENGINEERING_BUDGET_POLICY_ROUTE = "/api/engineering-budget-policies/{user_id}"
+
+
+@dataclass(frozen=True)
+class RunOwner:
+    """The user one run registered for itself, and the code that paid for it.
+
+    Carried through the run because two later things need it: every product
+    call is made as this user, and teardown owns the rows that hang off it.
+    """
+
+    telegram_id: int
+    user_id: int
+    promo_code: str
+    credits_microusd: int
+    attempt_reservation_microusd: int
+
+    def as_evidence(self) -> dict:
+        """What the run records about its own registration; never the code itself.
+
+        The promo code is a one-time credential. It is spent by the time this is
+        written, but a spent credential in an artifact is still a credential in
+        an artifact, so the evidence names the user and the values, not the code.
+        """
+        return {
+            "telegram_id": self.telegram_id,
+            "user_id": self.user_id,
+            "credits_microusd": self.credits_microusd,
+            "attempt_reservation_microusd": self.attempt_reservation_microusd,
+        }
+
+
+def require_run_owner(ctx: dict) -> RunOwner:
+    """This run's own registered user, or a refusal naming the registration phase."""
+    owner = ctx.get("run_owner")
+    if owner is None:
+        raise Level1PhaseFailed(
+            "registration",
+            "this run has no registered owner, so it cannot act as the user that owns its "
+            "project; the level-1 run registers one through the promo door before it creates "
+            "anything",
         )
-        ctx["second_task_id"] = second_task_id
-        ctx["task_ids"].append(second_task_id)
+    return owner
+
+
+def _registration_detail(response: httpx.Response) -> str:
+    """The API's own verdict on a refused registration, in its own words.
+
+    `_promo_error` answers a machine-readable `{"detail": {"code": ...}}` —
+    `promo_code_required`, `promo_code_not_found`, `promo_code_redeemed` — and
+    that code is the useful half of a refusal. Anything else is reported as the
+    body it actually was.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip()
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict) and "code" in detail:
+        return str(detail["code"])
+    return json.dumps(detail if detail is not None else payload)
+
+
+async def register_run_owner(
+    api_internal: httpx.AsyncClient,
+    *,
+    named_client_factory: Callable[[int], httpx.AsyncClient] = api_client_as_named_user,
+) -> RunOwner:
+    """Mint a code and register this run's user by redeeming it. Or refuse.
+
+    Every exit that is not "a user was created by a redemption" raises
+    `Level1PhaseFailed("registration", ...)`. There is deliberately no second
+    attempt and no other route: the internal service could register this id
+    naming nobody, and a run that quietly did so would go on to assert a paid
+    admission about a user that never walked through the door it is here to
+    exercise. A refusal names its phase; a fallback would name nothing.
+
+    `named_client_factory` is how the client for the new actor is built, and it
+    is a parameter for the same reason `ensure_test_user` takes an optional
+    internal client: the offline regression drives this whole sequence — mint,
+    redeem, read back — against one transport with no server behind it.
+    """
+    telegram_id = new_run_telegram_id()
+    taken = await api_internal.get(f"/api/users/by-telegram/{telegram_id}")
+    if taken.status_code != httpx.codes.NOT_FOUND:
+        raise Level1PhaseFailed(
+            "registration",
+            f"Telegram id {telegram_id} is not fresh: /api/users/by-telegram answered "
+            f"{taken.status_code}, so this run would have adopted a user it did not register",
+        )
+    minted = await api_internal.post(
+        PROMO_BATCH_ROUTE,
+        json={
+            "quantity": 1,
+            "credits_microusd": LEVEL1_PROMO_CREDITS_MICROUSD,
+            "attempt_reservation_microusd": LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+        },
+    )
+    if minted.status_code != httpx.codes.CREATED:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{PROMO_BATCH_ROUTE} answered {minted.status_code}: {_registration_detail(minted)}",
+        )
+    batch = minted.json()
+    if len(batch) != 1:
+        raise Level1PhaseFailed(
+            "registration", f"{PROMO_BATCH_ROUTE} minted {len(batch)} codes for a batch of one"
+        )
+    code = batch[0]["code"]
+    async with named_client_factory(telegram_id) as api_user:
+        registered = await api_user.post(
+            USER_UPSERT_ROUTE,
+            json={
+                "telegram_id": telegram_id,
+                "username": run_user_username(telegram_id),
+                "first_name": "Live",
+                "last_name": "Run",
+                "promo_code": code,
+            },
+        )
+    if registered.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{USER_UPSERT_ROUTE} refused the promo registration of {telegram_id} with "
+            f"{registered.status_code}: {_registration_detail(registered)}. The run registers "
+            "no other way — an internal-service registration would redeem no code and arm "
+            "no policy",
+        )
+    user = registered.json()
+    if user.get("telegram_id") != telegram_id or user.get("is_admin"):
+        raise Level1PhaseFailed(
+            "registration",
+            f"{USER_UPSERT_ROUTE} returned {user.get('telegram_id')} "
+            f"(is_admin={user.get('is_admin')}) for a redemption of {telegram_id}",
+        )
+    return RunOwner(
+        telegram_id=telegram_id,
+        user_id=user["id"],
+        promo_code=code,
+        credits_microusd=LEVEL1_PROMO_CREDITS_MICROUSD,
+        attempt_reservation_microusd=LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+    )
+
+
+async def verify_run_owner_budget_policy(api_internal: httpx.AsyncClient, owner: RunOwner) -> dict:
+    """The policy the redemption armed is enabled, and carries the promo's credits.
+
+    Two reads, because they answer two different questions. The lookup says the
+    policy exists and is *enforced* — an absent policy reads `unlimited`, which
+    is what the fixture user had and what this card removes from level 1. The
+    balance says the arming is the promo's: the whole grant is still available,
+    nothing has been spent, and the account is not exhausted.
+    """
+    route = ENGINEERING_BUDGET_POLICY_ROUTE.format(user_id=owner.user_id)
+    lookup_response = await api_internal.get(route)
+    if lookup_response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{route} answered {lookup_response.status_code}: "
+            f"{_registration_detail(lookup_response)}",
+        )
+    lookup = lookup_response.json()
+    policy = lookup.get("policy")
+    if lookup.get("enforcement") != "enforced" or policy is None:
+        raise Level1PhaseFailed(
+            "registration",
+            f"user {owner.user_id} registered with a promo code but its engineering budget "
+            f"policy is {lookup.get('enforcement')}: {policy}",
+        )
+    if policy.get("state") != EngineeringBudgetPolicyState.ENABLED.value:
+        raise Level1PhaseFailed(
+            "registration",
+            f"the policy of user {owner.user_id} is {policy.get('state')}, not "
+            f"{EngineeringBudgetPolicyState.ENABLED.value}",
+        )
+    armed = (policy.get("limit_microusd"), policy.get("attempt_reservation_microusd"))
+    carried = (owner.credits_microusd, owner.attempt_reservation_microusd)
+    if armed != carried:
+        raise Level1PhaseFailed(
+            "registration",
+            f"the policy of user {owner.user_id} arms {armed}, but the code it redeemed "
+            f"carried {carried} (limit, attempt reservation) in microusd",
+        )
+    balance_response = await api_internal.get(f"{route}/balance")
+    if balance_response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "registration",
+            f"{route}/balance answered {balance_response.status_code}: "
+            f"{_registration_detail(balance_response)}",
+        )
+    balance = balance_response.json()
+    if (
+        balance.get("known_spend_microusd") != 0
+        or balance.get("remaining_microusd") != owner.credits_microusd
+        or balance.get("exhausted")
+    ):
+        raise Level1PhaseFailed(
+            "registration",
+            f"the freshly armed balance of user {owner.user_id} is not the promo's credits: "
+            f"{balance}",
+        )
+    return {"policy": lookup, "balance": balance}
+
+
+#: How long the brief is watched for the story bind `create_story` performs, so
+#: the claim below lands between that bind and the architect message it
+#: publishes. It is a handful of API round trips, not work.
+LEVEL1_PLAN_CLAIM_TIMEOUT = 120
+#: While the bind is plausibly still in flight the claim is retried with no
+#: delay at all, so it lands within one round trip of the bind. After that a
+#: brief that is still unbound is waited for rather than hammered.
+LEVEL1_PLAN_CLAIM_TIGHT_SECONDS = 5
+LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL = 0.5
+#: The API's own refusal for a brief that has no story yet
+#: (`services/api/src/routers/product_briefs.py:113-120`). It is the one refusal
+#: the claim retry tolerates; every other answer is an answer.
+PLAN_HAS_NO_STORY_DETAIL = "planning requires a confirmed Product Brief bound to a story"
+
+#: What the PO tools print, and the two ids the level-1 flow reads back out of
+#: them. `brief_pipeline` reads the same two.
+PO_BRIEF_ID_RE = re.compile(r"\(id: (brief-[a-f0-9]+)\)")
+PO_STORY_ID_RE = re.compile(r"Story: (story-[A-Za-z0-9-]+) —")
+
+
+def po_tool_config(ctx: dict) -> dict:
+    """The LangGraph config the released PO tools are invoked with.
+
+    The chat id is the identity every PO tool composes its `X-Telegram-ID`
+    header from, so it is this run's own owner — the user that registered
+    through the promo door and owns this project. Read from the context rather
+    than from a constant: a tool acting as anyone else would be acting as a user
+    who does not own what it is asked to change.
+    """
+    return {
+        "configurable": {
+            "thread_id": ctx["manifest"].run_id,
+            "telegram_chat_id": str(require_run_owner(ctx).telegram_id),
+            "project_creation_identity": {
+                "project_id": ctx["project_id"],
+                "initiating_run_id": ctx["manifest"].run_id,
+            },
+        }
+    }
+
+
+def _brief_is_not_bound_yet(response: httpx.Response) -> bool:
+    """Is this the API saying the brief has no story to plan in *yet*?"""
+    if response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
+        return False
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return False
+    return detail == PLAN_HAS_NO_STORY_DETAIL
+
+
+async def _claim_plan_as_soon_as_it_is_claimable(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Own this brief's plan the instant it becomes ownable, and before anyone else.
+
+    This is the claim itself in a tight retry, not a poll for the bind followed
+    by a claim: the refusal for a brief with no story yet is a known 422
+    (`PLAN_HAS_NO_STORY_DETAIL`), so retrying through it is the same wait with
+    the extra read — and its sleep — removed.
+
+    Why that is enough to win. `create_story` binds the brief to its story
+    (`POST /product-briefs/{id}/story`) and only *then* publishes the story to
+    `architect:queue` (`services/langgraph/src/agents/po/tools_stories.py`), and
+    both the bind and this claim take the brief row `SELECT ... FOR UPDATE`
+    (`_product_brief_helpers.load_brief_for_update`). A claim that arrives while
+    the bind is committing therefore queues on that row and reads the bound row
+    the moment it is released — it cannot miss the bind and retry past it. The
+    architect, meanwhile, has not yet been told the story exists.
+
+    It is still a race, and the run does not rely on having won it: a claim that
+    comes back anything but `claimed` stops the run, and
+    `verify_level1_plan_is_this_runs_alone` proves from durable state that
+    nothing else planned this brief.
+    """
+    brief_id = ctx["brief_id"]
+    route = f"/api/product-briefs/{brief_id}/planning-attempts/claim"
+    started = time.monotonic()
+    deadline = started + LEVEL1_PLAN_CLAIM_TIMEOUT
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        response = await api.post(route)
+        if response.status_code == httpx.codes.OK:
+            ctx["level1_plan_claim_attempts"] = attempts
+            return response.json()
+        if not _brief_is_not_bound_yet(response):
+            raise Level1PhaseFailed(
+                "brief",
+                f"the plan of Product Brief {brief_id} could not be claimed: "
+                f"HTTP {response.status_code} {response.text[:300]}",
+            )
+        if time.monotonic() - started > LEVEL1_PLAN_CLAIM_TIGHT_SECONDS:
+            await asyncio.sleep(LEVEL1_PLAN_CLAIM_BACKOFF_INTERVAL)
+    raise Level1PhaseFailed(
+        "brief",
+        f"Product Brief {brief_id} was never bound to a story within "
+        f"{LEVEL1_PLAN_CLAIM_TIMEOUT}s, so its plan could not be claimed "
+        f"({attempts} attempts)",
+    )
+
+
+async def _present_level1_brief(
+    po: dict,
+    ctx: dict,
+    brief: Level1Brief,
+    config: dict,
+    *,
+    corrects_brief_id: str | None = None,
+) -> str:
+    """Open one revision through the released `present_product_brief`, and say which.
+
+    `corrects_brief_id` is the tool's own correction path and is passed exactly
+    as the tool documents it: "a correction is a new revision, never an edit"
+    (`services/langgraph/src/agents/po/tools_briefs.py`). Nothing else about the
+    call changes — the arguments are the brief's own, composed by no model.
+    """
+    arguments = brief.present_arguments(ctx["project_id"])
+    if corrects_brief_id is not None:
+        arguments["corrects_brief_id"] = corrects_brief_id
+    presented = await po["present_product_brief"].ainvoke(arguments, config=config)
+    match = PO_BRIEF_ID_RE.search(presented)
+    if match is None:
+        raise Level1PhaseFailed("brief", f"PO presented no Product Brief id: {presented}")
+    return match.group(1)
+
+
+async def _confirm_level1_brief_and_publish_story(
+    api: httpx.AsyncClient, po: dict, ctx: dict, brief: Level1Brief, config: dict
+) -> dict:
+    """Freeze the open revision, publish its story, and own this run's plan.
+
+    The claim races the architect deliberately and the run does not rely on
+    winning it: `verify_level1_plan_is_this_runs_alone` proves from durable rows
+    that nothing else planned this brief. What is here is only the order —
+    ownership of the deploy stack, then the claim in flight, then the story.
+    """
+    confirmed = await po["confirm_product_brief"].ainvoke(
+        {"project_id": ctx["project_id"], "brief_id": ctx["brief_id"]}, config=config
+    )
+    if "confirmed and frozen" not in confirmed:
+        raise Level1PhaseFailed("brief", f"PO did not freeze the brief: {confirmed}")
+
+    # The deploy stack can arise as soon as the story's plan is released, so
+    # recovery ownership precedes the story publication.
+    own_deploy_ahead(ctx)
+    claim_ahead = asyncio.create_task(_claim_plan_as_soon_as_it_is_claimable(api, ctx))
+    try:
+        created = await po["create_story"].ainvoke(
+            {
+                "project_id": ctx["project_id"],
+                "title": brief.story_title,
+                "description": brief.story_description,
+                "product_brief_id": ctx["brief_id"],
+            },
+            config=config,
+        )
+        match = PO_STORY_ID_RE.search(created)
+        if match is None:
+            # The PO refused, so no story was ever bound and the claim would
+            # only wait out its own budget before saying so less usefully.
+            raise Level1PhaseFailed("brief", f"PO created and published no story: {created}")
+    except BaseException:
+        claim_ahead.cancel()
+        with suppress(asyncio.CancelledError):
+            await claim_ahead
+        raise
+    ctx["story_id"] = match.group(1)
+    return await claim_ahead
+
+
+async def _read_back_confirmed_level1_brief(api: httpx.AsyncClient, ctx: dict, claim: dict) -> dict:
+    """The frozen object, read over the API, and this run's ownership of its plan.
+
+    The rendered PO message is an instruction to a user and not durable proof of
+    anything, so what a story is planned against is read back from the API.
+    """
+    response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "brief",
+            f"the confirmed brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
+    ctx["brief_read"] = response.json()
+    if not ctx["brief_read"].get("confirmed_at"):
+        raise Level1PhaseFailed(
+            "brief", f"the frozen brief carries no confirmed_at: {ctx['brief_read']}"
+        )
+    if ctx["brief_read"].get("story_id") != ctx["story_id"]:
+        raise Level1PhaseFailed(
+            "brief",
+            f"brief {ctx['brief_id']} backs story {ctx['brief_read'].get('story_id')}, "
+            f"not the story {ctx['story_id']} the PO created",
+        )
+    if claim.get("outcome") != ProductBriefPlanningAttemptOutcome.CLAIMED.value:
+        raise Level1PhaseFailed(
+            "brief",
+            "this run does not own the plan of its own brief: the claim answered "
+            f"{claim.get('outcome')!r} for attempt {claim.get('planning_attempt_id')!r}, "
+            "so something else is planning it",
+        )
+    ctx["level1_planning_attempt_id"] = claim["planning_attempt_id"]
+    return ctx["brief_read"]
+
+
+async def create_level1_confirmed_brief(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Drive the released PO tools to a confirmed brief and its story. No model.
+
+    The same three tools `brief_pipeline._po_create_confirmed_story` drives, in
+    the same order, against the same boundary — what a PO model would have
+    composed is `level1_brief.build_level1_brief` instead. The frozen object is
+    then read back over the API, because the rendered PO message is an
+    instruction to a user and not durable proof of anything.
+    """
+    brief: Level1Brief = ctx["level1_brief"]
+    config = po_tool_config(ctx)
+    async with po_tool_boundary(api_url=API_URL) as po:
+        ctx["brief_id"] = await _present_level1_brief(po, ctx, brief, config)
+        ctx["brief_requirement_ids"] = brief.requirement_ids
+        claim = await _confirm_level1_brief_and_publish_story(api, po, ctx, brief, config)
+    return await _read_back_confirmed_level1_brief(api, ctx, claim)
+
+
+async def create_level1_extension_brief(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """The second brief of the same project, confirmed as a *correction*.
+
+    The released tool has no update path: a correction is a new revision, and it
+    is opened by presenting again while naming the revision it corrects
+    (`tools_briefs.py`). So this presents the extension brief the user first
+    asked for, presents it again corrected — with `corrects_brief_id` naming the
+    revision the correction supersedes — confirms *that* revision, and creates
+    the extension story from it.
+
+    Why the correction names the extension's own first presentation and not the
+    first story's brief. `create_story` clears the project's presented-brief
+    pointer once a revision is bound to a story, and `present_product_brief`
+    refuses a `corrects_brief_id` when no revision is open for the project
+    (`tools_briefs.py`: "No Product Brief revision is open for project …"). A
+    revision that is already spent on a story is therefore not correctable
+    through the released tools at all — by design, since the superseded revision
+    stays exactly as it was — and the correction this run performs is the one the
+    released tools actually support. Both revision numbers are recorded, so the
+    artifact says which revision corrected which.
+
+    The superseded revision is read back afterwards: a correction that had
+    *edited* the document instead of opening a revision would show up there.
+    """
+    brief: Level1Brief = ctx["level1_brief"]
+    draft = build_level1_extension_brief(
+        ctx["level1_marker"], ctx["level1_extension_marker"], draft=True
+    )
+    config = po_tool_config(ctx)
+    async with po_tool_boundary(api_url=API_URL) as po:
+        corrected_id = await _present_level1_brief(po, ctx, draft, config)
+        ctx["level1_corrected_brief_id"] = corrected_id
+        ctx["brief_id"] = await _present_level1_brief(
+            po, ctx, brief, config, corrects_brief_id=corrected_id
+        )
+        if ctx["brief_id"] == corrected_id:
+            raise Level1PhaseFailed(
+                "brief",
+                f"the correction of Product Brief {corrected_id} opened no new revision: "
+                "the released tool answered with the revision it was asked to correct",
+            )
+        ctx["brief_requirement_ids"] = brief.requirement_ids
+        claim = await _confirm_level1_brief_and_publish_story(api, po, ctx, brief, config)
+    read = await _read_back_confirmed_level1_brief(api, ctx, claim)
+
+    superseded = await api.get(f"/api/product-briefs/{corrected_id}")
+    if superseded.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "brief",
+            f"the superseded revision {corrected_id} could not be read back: "
+            f"HTTP {superseded.status_code} {superseded.text[:300]}",
+        )
+    ctx["level1_corrected_brief_read"] = superseded.json()
+    ctx["level1_brief_revisions"] = {
+        "corrected": {
+            "brief_id": corrected_id,
+            "revision": ctx["level1_corrected_brief_read"].get("revision"),
+            "confirmed_at": ctx["level1_corrected_brief_read"].get("confirmed_at"),
+            "story_id": ctx["level1_corrected_brief_read"].get("story_id"),
+        },
+        "confirmed": {
+            "brief_id": ctx["brief_id"],
+            "revision": read.get("revision"),
+            "corrects_brief_id": corrected_id,
+            "story_id": read.get("story_id"),
+        },
+    }
+    return read
+
+
+async def _start_level1_story(api: httpx.AsyncClient, ctx: dict) -> str:
+    """Move this run's story to `in_progress`, or accept that the architect did.
+
+    The architect consumer transitions the story with `start` *before* it reaches
+    the claim that turns it away (`consumers/architect.py:611-617`) and swallows
+    its own failure there. Whichever of the two gets there first is correct, and
+    the other must not treat that as an error: `IN_PROGRESS -> IN_PROGRESS` is
+    not a declared transition (`shared/contracts/dto/story.py:50-59`), so a
+    second `start` answers 422. What matters is only where the story landed —
+    and anything that is not "it is in progress" stops the run by name, never as
+    a bare `raise_for_status`.
+    """
+    story_id = ctx["story_id"]
+    read = await api.get(f"/api/stories/{story_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} could not be read: HTTP {read.status_code} {read.text[:300]}",
+        )
+    observed = read.json().get("status")
+    if observed == StoryStatus.IN_PROGRESS.value:
+        ctx["level1_story_started_by"] = "architect"
+        return observed
+    if observed != StoryStatus.CREATED.value:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {story_id} is {observed!r}; a plan is built in a story that is "
+            f"{StoryStatus.CREATED.value} or {StoryStatus.IN_PROGRESS.value}",
+        )
+    started = await api.post(f"/api/stories/{story_id}/start", json={"actor": "live-test"})
+    if started.status_code == httpx.codes.OK:
+        ctx["level1_story_started_by"] = "harness"
+        return StoryStatus.IN_PROGRESS.value
+    # The architect started it between the read and this post. Its start is as
+    # good as ours, so the refusal is only a failure if the story is not there.
+    reread = await api.get(f"/api/stories/{story_id}")
+    if reread.status_code == httpx.codes.OK and (
+        reread.json().get("status") == StoryStatus.IN_PROGRESS.value
+    ):
+        ctx["level1_story_started_by"] = "architect"
+        return StoryStatus.IN_PROGRESS.value
+    raise Level1PhaseFailed(
+        "admission",
+        f"story {story_id} could not be started: HTTP {started.status_code} {started.text[:300]}",
+    )
+
+
+async def verify_level1_plan_is_this_runs_alone(
+    api: httpx.AsyncClient, ctx: dict, *, when: str
+) -> dict:
+    """Prove, from durable state, that nothing but this harness planned this brief.
+
+    The level-1 run must not need an architect model credential, and "the
+    harness usually wins the claim" is not that proof: a race lost quietly would
+    spend an architect turn on a suite that then passes, which is worse than a
+    red run. So this asks the durable rows instead, and every answer it needs is
+    there:
+
+    * **the plan's attempt is this run's.** A claim by anything else either
+      answered `in_progress` and changed nothing, or took the plan over — and a
+      takeover mints a *new* attempt id (`product_briefs.py:401-404`). So an
+      attempt id on the brief that is still ours means no rival claim succeeded.
+    * **nobody gave our claim up.** `finish` only accepts the id the brief
+      currently names (`product_briefs.py:460-467`), and only this run has it, so
+      an attempt that is still `active` before the admission was never finished
+      by anyone else. After the admission it is closed, by our own admit
+      (`product_briefs.py:669`).
+    * **nobody else planned into this story.** An architect that did run its
+      graph would create its own tasks here; the roster is therefore exactly the
+      tasks this run planned, each naming this run's attempt.
+    * every coverage disposition names this run's attempt.
+
+    `when` labels the observation so the artifact shows the sequence of them.
+    Returns the observation and records it on `ctx["level1_plan_provenance"]`.
+    """
+    attempt_id = ctx["level1_planning_attempt_id"]
+    brief_id = ctx["brief_id"]
+    read = await api.get(f"/api/product-briefs/{brief_id}")
+    if read.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"Product Brief {brief_id} could not be read to prove its planning "
+            f"provenance: HTTP {read.status_code} {read.text[:300]}",
+        )
+    brief = read.json()
+    roster = await api.get("/api/tasks/", params={"story_id": ctx["story_id"]})
+    if roster.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"story {ctx['story_id']} task roster could not be read: "
+            f"HTTP {roster.status_code} {roster.text[:300]}",
+        )
+    tasks = [task for task in roster.json() if task.get("story_id") == ctx["story_id"]]
+    admitted = bool(brief.get("coverage_admitted_at"))
+    observation = {
+        "when": when,
+        "planning_attempt_id": brief.get("planning_attempt_id"),
+        "planning_attempt_active": brief.get("planning_attempt_active"),
+        "coverage_admitted_at": brief.get("coverage_admitted_at"),
+        "task_ids": sorted(task["id"] for task in tasks),
+        "task_planning_attempt_ids": sorted(
+            {str(task.get("planning_attempt_id")) for task in tasks}
+        ),
+    }
+    ctx.setdefault("level1_plan_provenance", []).append(observation)
+
+    reasons: list[str] = []
+    if brief.get("planning_attempt_id") != attempt_id:
+        reasons.append(
+            f"the brief's planning attempt is {brief.get('planning_attempt_id')!r}, not this "
+            f"run's {attempt_id!r}: something else claimed this plan"
+        )
+    if not admitted and brief.get("planning_attempt_active") is not True:
+        reasons.append(
+            "this run's claim is no longer active while the plan is still unadmitted: "
+            "something else finished or superseded it"
+        )
+    if admitted and brief.get("planning_attempt_active") is not False:
+        reasons.append("the plan is admitted but its attempt is still open")
+    expected_tasks = sorted(ctx.get("task_ids", []))
+    if expected_tasks and observation["task_ids"] != expected_tasks:
+        reasons.append(
+            f"story {ctx['story_id']} carries tasks this run did not plan: "
+            f"{observation['task_ids']} against {expected_tasks}"
+        )
+    foreign = sorted(
+        task["id"] for task in tasks if task.get("planning_attempt_id") not in (attempt_id, None)
+    )
+    if foreign:
+        reasons.append(f"tasks planned under another attempt are in this story: {foreign}")
+    for row in ctx.get("level1_coverage", []):
+        if row.get("planning_attempt_id") != attempt_id:
+            reasons.append(
+                f"coverage of {row.get('requirement_id')!r} names attempt "
+                f"{row.get('planning_attempt_id')!r}, not this run's"
+            )
+    if reasons:
+        raise Level1PhaseFailed(
+            "admission",
+            f"this run does not own the planning of Product Brief {brief_id} at {when}: "
+            + "; ".join(reasons),
+        )
+    return observation
+
+
+@dataclass(frozen=True)
+class PlannedLevel1Task:
+    """One task of a level-1 plan, and the must-requirement it covers."""
+
+    requirement_id: str
+    title: str
+    description: str
+    acceptance_criteria: str
+
+
+async def admit_level1_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Plan and admit the first level-1 story: two ordered scripted tasks."""
+    return await _plan_and_admit_level1(
+        api,
+        ctx,
+        [
+            PlannedLevel1Task(
+                requirement_id=LEVEL1_SETTING_REQUIREMENT,
+                title=ctx["task_title"],
+                description=ctx["task_description"],
+                acceptance_criteria=ctx["task_criteria"],
+            ),
+            PlannedLevel1Task(
+                requirement_id=LEVEL1_COMMAND_REQUIREMENT,
+                title=ctx["followup_task_title"],
+                description=ctx["followup_task_description"],
+                acceptance_criteria=ctx["followup_task_criteria"],
+            ),
+        ],
+    )
+
+
+async def admit_level1_extension_plan(api: httpx.AsyncClient, ctx: dict) -> dict:
+    """Plan and admit the extension story: one scripted task, same route.
+
+    Deliberately the same function as the first story's, with a plan of one task
+    instead of two. The property card 1316 asserts is that the *second* story's
+    planning is admitted deterministically through the architect's own coverage
+    route with no architect model call — and that is only worth asserting if it
+    is the same route, not a second implementation of it that could diverge.
+    """
+    return await _plan_and_admit_level1(
+        api,
+        ctx,
+        [
+            PlannedLevel1Task(
+                requirement_id=LEVEL1_EXTENSION_REQUIREMENT,
+                title=ctx["task_title"],
+                description=ctx["task_description"],
+                acceptance_criteria=ctx["task_criteria"],
+            )
+        ],
+    )
+
+
+async def _plan_and_admit_level1(
+    api: httpx.AsyncClient, ctx: dict, planned: list[PlannedLevel1Task]
+) -> dict:
+    """Plan and admit one level-1 story through the architect's own routes.
+
+    Claim (taken in `create_level1_confirmed_brief`, before the architect could)
+    → one task per must-requirement, created unadmitted under that attempt →
+    one coverage disposition per requirement → the one admission step. No model
+    is asked anything, and the gate is passed rather than stepped around: the
+    tasks are read *before* the admission to show them undispatchable, and the
+    admission's own release set is what makes them dispatchable.
+
+    The tasks are created in order, each blocked by the one before it, so a plan
+    of two is the ordered pair the first story runs and a plan of one is the
+    extension story's single task.
+    """
+    brief: Level1Brief = ctx["level1_brief"]
+    attempt_id = ctx["level1_planning_attempt_id"]
+
+    await _start_level1_story(api, ctx)
+
+    async def plan_task(
+        *,
+        title: str,
+        description: str,
+        acceptance_criteria: str,
+        blocked_by_task_id: str | None,
+    ) -> str:
+        created = await api.post(
+            "/api/tasks/",
+            json={
+                "project_id": ctx["project_id"],
+                "story_id": ctx["story_id"],
+                "type": "create",
+                "title": title,
+                "description": description,
+                # What QA checks this task by. It is not decoration: the
+                # engineering consumer reads it back
+                # (`consumers/acceptance_context.load_task_acceptance_criteria`)
+                # and `format_acceptance_criteria` quotes it into the worker's
+                # TASK.md stripped and otherwise untouched, which is the thing
+                # this run's evidence then asserts is there word for word. A plan
+                # whose tasks carry none leaves that assertion with nothing to
+                # check, which is how it went vacuous once already.
+                "acceptance_criteria": acceptance_criteria,
+                "status": TaskStatus.TODO,
+                "blocked_by_task_id": blocked_by_task_id,
+                "planning_attempt_id": attempt_id,
+                # Named for what actually planned it. Nothing routes on this
+                # field, and calling the harness "architect" would hide exactly
+                # the distinction `verify_level1_plan_is_this_runs_alone` makes.
+                "created_by": "live-test",
+            },
+        )
+        if created.status_code != httpx.codes.CREATED:
+            raise Level1PhaseFailed(
+                "admission",
+                f"a task of this plan could not be created: HTTP {created.status_code} "
+                f"{created.text[:300]}",
+            )
+        return created.json()["id"]
+
+    task_ids: list[str] = []
+    covers: dict[str, str] = {}
+    for task in planned:
+        task_id = await plan_task(
+            title=task.title,
+            description=task.description,
+            acceptance_criteria=task.acceptance_criteria,
+            blocked_by_task_id=task_ids[-1] if task_ids else None,
+        )
+        task_ids.append(task_id)
+        covers[task.requirement_id] = task_id
+    ctx["task_id"] = ctx["first_task_id"] = task_ids[0]
+    if len(task_ids) > 1:
+        ctx["second_task_id"] = task_ids[1]
+    ctx["task_ids"] = task_ids
+
+    missing = sorted(set(brief.requirement_ids) - set(covers))
+    if missing:
+        raise Level1PhaseFailed(
+            "admission", f"the level-1 plan disposes of no task for {', '.join(missing)}"
+        )
+
+    # Before the admission: the plan is this run's alone, it exists, and none of
+    # it may move. The first is the zero-model property; the second is the gate
+    # itself, read rather than assumed.
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="before_admission")
+    ctx["level1_plan_before_admission"] = await _level1_plan_snapshot(api, ctx)
+    unadmitted = [
+        task
+        for task in ctx["level1_plan_before_admission"]
+        if task["dispatch_admitted"] is not False
+    ]
+    if unadmitted:
+        raise Level1PhaseFailed(
+            "admission",
+            f"tasks planned under attempt {attempt_id} were dispatchable before the "
+            f"brief's coverage was admitted: {unadmitted}",
+        )
+
+    for requirement_id, task_id in sorted(covers.items()):
+        recorded = await api.put(
+            f"/api/product-briefs/{ctx['brief_id']}/coverage/{requirement_id}",
+            json={
+                "requirement_id": requirement_id,
+                "planning_attempt_id": attempt_id,
+                "task_id": task_id,
+            },
+        )
+        if recorded.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"the disposition of {requirement_id!r} was refused: "
+                f"HTTP {recorded.status_code} {recorded.text[:300]}",
+            )
+
+    admission = await api.post(
+        f"/api/product-briefs/{ctx['brief_id']}/admit", json={"planning_attempt_id": attempt_id}
+    )
+    if admission.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the one admission step was refused: HTTP {admission.status_code} "
+            f"{admission.text[:300]}",
+        )
+    ctx["level1_admission"] = admission.json()
+    if ctx["level1_admission"]["outcome"] != ProductBriefAdmissionOutcome.ADMITTED.value:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the one admission step answered {ctx['level1_admission']['outcome']!r}: "
+            f"{ctx['level1_admission']}",
+        )
+
+    response = await api.get(f"/api/product-briefs/{ctx['brief_id']}")
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted brief could not be read back: HTTP {response.status_code} "
+            f"{response.text[:300]}",
+        )
+    ctx["brief_read"] = response.json()
+    if not ctx["brief_read"].get("coverage_admitted_at"):
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admission answered admitted but brief {ctx['brief_id']} carries no "
+            "coverage_admitted_at",
+        )
+    coverage = await api.get(f"/api/product-briefs/{ctx['brief_id']}/coverage")
+    if coverage.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the admitted coverage could not be read back: HTTP {coverage.status_code} "
+            f"{coverage.text[:300]}",
+        )
+    ctx["level1_coverage"] = coverage.json()
+    ctx["level1_plan_after_admission"] = await _level1_plan_snapshot(api, ctx)
+    await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_admission")
+    return ctx["brief_read"]
+
+
+async def _level1_plan_snapshot(api: httpx.AsyncClient, ctx: dict) -> list[dict]:
+    """The plan's tasks, as the durable rows a reader can check the gate against."""
+    snapshot = []
+    for task_id in ctx["task_ids"]:
+        response = await api.get(f"/api/tasks/{task_id}")
+        if response.status_code != httpx.codes.OK:
+            raise Level1PhaseFailed(
+                "admission",
+                f"planned task {task_id} could not be read: HTTP {response.status_code} "
+                f"{response.text[:300]}",
+            )
+        task = response.json()
+        snapshot.append(
+            {
+                "id": task["id"],
+                "status": task["status"],
+                "dispatch_admitted": task["dispatch_admitted"],
+                "planning_attempt_id": task["planning_attempt_id"],
+            }
+        )
+    return snapshot
+
+
+#: How far back the deploy consumer's log is read for this run's seed line. The
+#: line is written while the deploy result is being handled, which is the poll
+#: the harness is inside of when it reads this.
+SETTINGS_SEED_LOG_TAIL_LINES = 2000
+SETTINGS_SEED_BRIEF_EVENT = "deploy_settings_seed_brief"
+
+
+def record_settings_seed_brief_log(ctx: dict) -> None:
+    """Read the deploy consumer's own statement of which brief it seeded from.
+
+    The run result says what became of each setting; this says *where the
+    settings came from* — `route=story` means the deploy read the brief of the
+    story it names, which is the route a story-carrying grant deploy must take.
+    A deploy that fell back to the project's latest confirmed brief would seed
+    the same values and be indistinguishable in the result alone.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "logs",
+                f"--tail={SETTINGS_SEED_LOG_TAIL_LINES}",
+                "deploy-worker",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+    except Exception as error:  # noqa: BLE001 - an unreadable log is a stated reason
+        ctx["settings_seed_brief_log_error"] = (
+            f"the deploy consumer's log could not be read: {type(error).__name__}"
+        )
+        return
+    if result.returncode != 0:
+        ctx["settings_seed_brief_log_error"] = (
+            f"docker compose logs deploy-worker exited {result.returncode}"
+        )
+        return
+    run_id = ctx["deploy_run_id"]
+    for line in reversed(result.stdout.splitlines()):
+        start = line.find('{"')
+        if start < 0:
+            continue
+        try:
+            record = json.loads(line[start:])
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("event") != SETTINGS_SEED_BRIEF_EVENT or record.get("task_id") != run_id:
+            continue
+        ctx["settings_seed_brief_log"] = {
+            "event": record.get("event"),
+            "task_id": record.get("task_id"),
+            "brief_id": record.get("brief_id"),
+            "route": record.get("route"),
+            "settings_count": record.get("settings_count"),
+        }
+        ctx["settings_seed_brief_log_error"] = None
+        return
+    ctx["settings_seed_brief_log_error"] = (
+        f"no {SETTINGS_SEED_BRIEF_EVENT} line naming deploy run {run_id} in the last "
+        f"{SETTINGS_SEED_LOG_TAIL_LINES} lines of the deploy consumer's log"
+    )
+
+
+def level1_completion_text_requirement(ctx: dict) -> Callable[[str], list[str]]:
+    """What the level-1 owner's completion message has to be: a bot product's.
+
+    Judged against the *confirmed* brief read back from the API, not against the
+    constant the harness presented, so the message is checked against what the
+    user actually froze.
+    """
+    usage_examples = ctx["brief_read"]["content"]["usage_examples"]
+    language = ctx["brief_read"]["content"]["language"]
+    bot_username = ctx["bot_username"]
+
+    def requirement(text: str) -> list[str]:
+        return bot_completion_message_mismatches(
+            text,
+            bot_username=bot_username,
+            usage_examples=usage_examples,
+            language=language,
+        )
+
+    return requirement
 
 
 async def wait_engineering(
@@ -1473,8 +2941,8 @@ async def wait_engineering(
     # With PR-based CI gate, story goes to PR_REVIEW (not DEPLOYING) after all tasks done.
     # PR_REVIEW → DEPLOYING happens later via webhook when PR is merged.
     if "story_id" in ctx and status == TaskStatus.DONE:
-        for _ in range(20):  # up to 60s
-            await asyncio.sleep(3)
+        for _ in range(STORY_AGGREGATION_TIMEOUT // STORY_AGGREGATION_POLL_INTERVAL):
+            await asyncio.sleep(STORY_AGGREGATION_POLL_INTERVAL)
             resp = await api.get(f"/api/stories/{ctx['story_id']}")
             resp.raise_for_status()
             story_status = resp.json().get("status")
@@ -1969,6 +3437,18 @@ def _record_task_diagnostic(ctx: dict, task: dict, *, task_id: str | None = None
             secrets=secret_env_values(dict(os.environ)),
         )
         failure_metadata = json.loads(redacted)
+    if "acceptance_criteria" in task:
+        # What the run's evidence checks the attempt's TASK.md quotes verbatim.
+        # Recorded only when the payload actually carries the field: a reader
+        # that never saw the task must say so rather than read a missing key as
+        # "this task has no acceptance criteria".
+        ctx.setdefault(TASK_ACCEPTANCE_CRITERIA_CTX_KEY, {})[diagnostic_task_id] = task[
+            "acceptance_criteria"
+        ]
+    if task.get("description"):
+        # How a reading of the workspace document is attributed to this task: it
+        # is the text the control plane builds that task's TASK.md around.
+        ctx.setdefault(TASK_DESCRIPTIONS_CTX_KEY, {})[diagnostic_task_id] = task["description"]
     ctx.setdefault("task_diagnostics", {})[diagnostic_task_id] = {
         "status": task.get("status"),
         "current_iteration": task.get("current_iteration"),
@@ -2086,8 +3566,8 @@ async def wait_linear_noop_engineering(
     ctx["task_status"] = second_status
     ctx["engineering_elapsed"] = elapsed
     if second_status == TaskStatus.DONE:
-        for _ in range(20):
-            await asyncio.sleep(3)
+        for _ in range(STORY_AGGREGATION_TIMEOUT // STORY_AGGREGATION_POLL_INTERVAL):
+            await asyncio.sleep(STORY_AGGREGATION_POLL_INTERVAL)
             response = await api.get(f"/api/stories/{ctx['story_id']}")
             response.raise_for_status()
             ctx["story_status"] = response.json().get("status")
@@ -2746,6 +4226,17 @@ async def wait_deploy_run(
                     record_deploy_run(ctx, run)
                 ctx["deploy_run_id"] = run["id"]
                 ctx["deploy_head_sha"] = head_sha
+                # The commit that is actually deployed, and the path that
+                # created this Run. Both are facts of the Run itself and are
+                # read here, once, rather than re-derived later: the merge
+                # commit is what the project's CI builds and what the story's
+                # branch base has to contain, and the path is what tells the
+                # initial-owner grant from the ordinary PR poller — a
+                # distinction success cannot make.
+                ctx["deploy_merge_commit_sha"] = (run["run_metadata"] or {}).get(
+                    "deployed_commit_sha"
+                )
+                ctx["deploy_path"] = deploy_path_record(run)
                 return observed(run)
         return KEEP_WAITING
 
@@ -3301,38 +4792,105 @@ async def wait_story_completed(
 
 def _matching_completion_event(
     events: list[POSystemEvent], notification: dict, ctx: dict
-) -> POSystemEvent | None:
-    """Return the one new PO event that is the durable completion record."""
+) -> tuple[POSystemEvent | None, str]:
+    """The one new PO event that is the durable completion record, and why not.
+
+    Returns `(event, reason)`. The reason is what a timed-out wait prints: "no
+    single matching PO event" is not diagnosable, while "one story_completed
+    event for this story, and its text is not the notification's" is.
+    """
     # POSystemEvent always names a subject through task_id. A story-level
     # notification has no task in its durable record, so the producer uses the
     # story id as that subject.
     expected_subject = notification.get("task_id") or notification.get("story_id")
-    matches = [
+    own = [
         event
         for event in events
-        if event.event == "story_completed"
-        and event.story_id == ctx["story_id"]
-        and event.project_id == ctx["project_id"]
+        if event.event == "story_completed" and event.story_id == ctx["story_id"]
+    ]
+    matches = [
+        event
+        for event in own
+        if event.project_id == ctx["project_id"]
         and event.text == notification.get("text")
         and event.task_id == expected_subject
     ]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0], "matched"
+    if len(matches) > 1:
+        return None, f"{len(matches)} PO events match this completion; exactly one may"
+    if not own:
+        return None, (
+            f"none of the {len(events)} new PO events is a story_completed event for "
+            f"story {ctx['story_id']}"
+        )
+    differences = sorted(
+        {
+            difference
+            for event in own
+            for difference in ([] if event.project_id == ctx["project_id"] else ["project_id"])
+            + ([] if event.text == notification.get("text") else ["text"])
+            + ([] if event.task_id == expected_subject else ["task_id"])
+        }
+    )
+    return None, (
+        f"{len(own)} story_completed PO event(s) for this story, and none matches the "
+        f"notification on: {', '.join(differences)}"
+    )
+
+
+def _completion_notification_mismatches(
+    notification: dict, ctx: dict, *, text_requirement: Callable[[str], list[str]]
+) -> list[str]:
+    """Every field of the durable record that is not what it has to be.
+
+    The identity, the terminal status, the delivered state and the absent task
+    subject are the same for every product. What the message itself has to say
+    is not, so the caller states it: a bot product's owner is told how to reach
+    their bot, a backend product's owner is given an address.
+    """
+    expectations = (
+        ("event", notification.get("event"), "story_completed"),
+        ("story_id", notification.get("story_id"), ctx["story_id"]),
+        ("project_id", notification.get("project_id"), ctx["project_id"]),
+        ("terminal_status", notification.get("terminal_status"), StoryStatus.COMPLETED.value),
+        ("state", notification.get("state"), OwnerNotificationState.DELIVERED.value),
+        ("task_id", notification.get("task_id"), None),
+    )
+    reasons = [
+        f"{field}={observed!r}, expected {expected!r}"
+        for field, observed, expected in expectations
+        if observed != expected
+    ]
+    reasons.extend(f"text: {reason}" for reason in text_requirement(notification.get("text", "")))
+    return reasons
 
 
 async def wait_owner_completion_notification(
     api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
+    text_requirement: Callable[[str], list[str]],
     timeout: float = OWNER_NOTIFICATION_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
     events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
 ) -> tuple[dict, POSystemEvent] | None:
-    """Prove the durable completion record was accepted by the PO input stream."""
+    """Prove the durable completion record was accepted by the PO input stream.
+
+    Two conjuncts, and a timeout says which of them failed. Run 35441716423 is
+    why: the notification was delivered and the harness rejected it, and its
+    artifact — `last_state=delivered events_after_cursor=1` — could not say
+    whether the message or the durable PO record was the thing that did not
+    match. Both answers are recorded on every pass now, and the last ones are
+    what the error carries.
+    """
     story_id = ctx["story_id"]
     cursor = ctx["po_input_cursor"]
     deadline = time.monotonic() + timeout
     last_state = None
     last_events = 0
+    notification_reasons: list[str] = ["the notification was never read"]
+    event_reason = "no PO events were read"
     while time.monotonic() < deadline:
         response = await api_internal.get(f"/api/stories/{story_id}/owner-notification")
         response.raise_for_status()
@@ -3340,26 +4898,185 @@ async def wait_owner_completion_notification(
         last_state = notification.get("state")
         events = events_after(cursor)
         last_events = len(events)
-        event = _matching_completion_event(events, notification, ctx)
-        valid_notification = (
-            notification.get("event") == "story_completed"
-            and notification.get("story_id") == story_id
-            and notification.get("project_id") == ctx["project_id"]
-            and notification.get("terminal_status") == StoryStatus.COMPLETED.value
-            and notification.get("state") == OwnerNotificationState.DELIVERED.value
-            and notification.get("task_id") is None
-            and ctx["deployed_url"] in notification.get("text", "")
+        event, event_reason = _matching_completion_event(events, notification, ctx)
+        notification_reasons = _completion_notification_mismatches(
+            notification, ctx, text_requirement=text_requirement
         )
-        if valid_notification and event is not None:
+        if not notification_reasons and event is not None:
             ctx["owner_notification"] = notification
             ctx["owner_notification_po_event"] = event.model_dump(mode="json")
             return notification, event
         await asyncio.sleep(poll_interval)
     ctx["owner_notification_error"] = (
-        f"story {story_id} completion notification was not delivered to PO in {timeout}s; "
-        f"last_state={last_state} events_after_cursor={last_events}"
+        f"story {story_id} completion notification was not accepted in {timeout}s; "
+        f"last_state={last_state} events_after_cursor={last_events}. "
+        "The notification itself: "
+        + ("every field matched" if not notification_reasons else "; ".join(notification_reasons))
+        + f". The durable PO record: {event_reason}."
     )
     return None
+
+
+#: The stand's own quiet interval: the predicate judges repeats against it.
+STAGE_NOTICE_QUIET_KEY = "supervisor.stage_notice_quiet_minutes"
+#: The stand's dispatcher tick: the resolution the stage-notice sweep promises.
+DISPATCH_INTERVAL_KEY = "scheduler.dispatch_interval_seconds"
+#: Seconds between the harness's own reads of the story's status. Well under
+#: the dispatcher interval, so a stage the sweep must have seen is one the
+#: harness saw too, and for about as long.
+STORY_STAGE_SAMPLE_SECONDS = 5.0
+#: The ctx key of the running sampler; scoped per story, never serialized.
+_STAGE_SAMPLER_KEY = "story_stage_sampler"
+#: Every sampler this run started, so the run's `finally` can stop any a raised
+#: phase left running.
+_STAGE_SAMPLER_TASKS_KEY = "story_stage_sampler_tasks"
+
+
+@dataclass
+class _StoryStageSampler:
+    story_id: str
+    spans: list
+    read_errors: int = 0
+
+
+async def _sample_story_stages(
+    api: httpx.AsyncClient, sampler: _StoryStageSampler, interval: float
+) -> None:
+    while True:
+        try:
+            response = await api.get(f"/api/stories/{sampler.story_id}")
+            response.raise_for_status()
+            extend_stage_spans(sampler.spans, response.json()["status"], datetime.now(UTC))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a missed sample shortens a span, never invents one
+            sampler.read_errors += 1
+        await asyncio.sleep(interval)
+
+
+def start_story_stage_observation(
+    api: httpx.AsyncClient, ctx: dict, *, interval: float = STORY_STAGE_SAMPLE_SECONDS
+) -> None:
+    """Start reading this story's status on the harness's own clock.
+
+    The API keeps no transition history, so what the story went through is
+    observed here, the same way the scheduler's sweep observes it: by reading
+    the status repeatedly. `record_stage_notices` stops it and records the
+    spans as the side the notices are compared with.
+    """
+    sampler = _StoryStageSampler(story_id=ctx["story_id"], spans=[])
+    task = asyncio.create_task(_sample_story_stages(api, sampler, interval))
+    ctx[_STAGE_SAMPLER_KEY] = (sampler, task, interval)
+    ctx.setdefault(_STAGE_SAMPLER_TASKS_KEY, []).append(task)
+
+
+async def _stop_task(task: asyncio.Task) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def stop_story_stage_observations(ctx: dict) -> None:
+    """Stop every sampler still running — a phase that raised leaves one behind."""
+    for task in ctx.pop(_STAGE_SAMPLER_TASKS_KEY, []):
+        await _stop_task(task)
+
+
+async def _finish_story_stage_observation(ctx: dict) -> dict | None:
+    started = ctx.pop(_STAGE_SAMPLER_KEY, None)
+    if started is None:
+        return None
+    sampler, task, interval = started
+    await _stop_task(task)
+    return {
+        "sample_interval_seconds": interval,
+        "read_errors": sampler.read_errors,
+        "spans": sampler.spans,
+    }
+
+
+async def record_stage_notices(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
+) -> None:
+    """Record the `story_stage` notices this story left on `po:input`, and its stages.
+
+    Read after the story's ending, before teardown XDELs this run's PO entries,
+    from the same cursor the completion notification is fenced by. The stages
+    the harness observed the story in are stopped and recorded beside them,
+    with the stand's dispatcher interval: that is what the notices are judged
+    against by `level1_stage_notices.stage_notice_mismatches`. A read that could
+    not be made is recorded as `stage_notices_error` instead.
+    """
+    story_id = ctx["story_id"]
+    observed = await _finish_story_stage_observation(ctx)
+    try:
+        configs = {}
+        for key in (STAGE_NOTICE_QUIET_KEY, DISPATCH_INTERVAL_KEY):
+            response = await api_internal.get(f"/api/system-configs/{key}")
+            response.raise_for_status()
+            configs[key] = response.json().get("value")
+        events = events_after(ctx["po_input_cursor"])
+    except Exception as error:  # noqa: BLE001 — evidence: say what failed, never raise
+        ctx["stage_notices_error"] = (
+            f"stage notices of story {story_id} could not be read: {type(error).__name__}: {error}"
+        )
+        return
+    ctx["stage_notices"] = {
+        "story_id": story_id,
+        "quiet_minutes": configs[STAGE_NOTICE_QUIET_KEY],
+        "dispatch_interval_seconds": configs[DISPATCH_INTERVAL_KEY],
+        "ended_at": (ctx.get("story_terminal") or {}).get("updated_at"),
+        "observed_stages": observed,
+        "notices": [
+            event.model_dump(mode="json")
+            for event in events
+            if event.event == OwnerNotificationEvent.STORY_STAGE and event.story_id == story_id
+        ],
+    }
+
+
+async def _project_deploy_runs(api_internal: httpx.AsyncClient, project_id: str) -> list[dict]:
+    """Every deploy Run of this project, not only the ones a story owns.
+
+    The capability deploys carry no story — `temporary_access` sends its
+    `DeployMessage` with `story_id=""` — so `_story_runs` cannot see them, and
+    they are exactly the deploys whose records have to be accounted for here.
+    """
+    require_unscoped_run_observer(api_internal)
+    response = await api_internal.get(
+        "/api/runs/", params={"project_id": project_id, "run_type": RunType.DEPLOY.value}
+    )
+    response.raise_for_status()
+    return [run for run in response.json() if run.get("type") == RunType.DEPLOY.value]
+
+
+_LIFECYCLE_ACTION_VALUES = frozenset(action.value for action in LIFECYCLE_ACTIONS)
+
+
+def deploys_that_record(runs: Iterable[dict]) -> list[dict]:
+    """The deploy Runs that can have written a `service_deployments` row.
+
+    `_create_deployment_record` runs once per deploy of repository state, so a
+    deploy Run writes at most one record. A stop or undeploy Run writes none: it
+    acts on an already-deployed application over SSH and never reaches the
+    deployer (`_handle_lifecycle_action`). A Run still in flight is counted,
+    because its record is written before the Run is patched terminal.
+    """
+    return [
+        run
+        for run in runs
+        if ((run.get("result") or {}).get("action")) not in _LIFECYCLE_ACTION_VALUES
+    ]
+
+
+def _newest_deployment(deployments: Sequence[dict]) -> dict | None:
+    """The row the application is currently serving: the last one written."""
+    if not deployments:
+        return None
+    return max(deployments, key=lambda row: (str(row.get("deployed_at") or ""), row.get("id") or 0))
 
 
 async def wait_service_deployment(
@@ -3369,7 +5086,34 @@ async def wait_service_deployment(
     timeout: float = DEPLOY_OUTCOME_TIMEOUT,
     poll_interval: float = LIFECYCLE_POLL_INTERVAL,
 ) -> dict | None:
-    """Select exactly one successful deployment for this application and SHA."""
+    """Select the deployment this application is serving, out of a log of deploys.
+
+    `service_deployments` is an immutable log of deploy attempts
+    (`shared/models/deployment.py`), and one level-1 run fills it more than
+    once. Run 35451082771 failed here with `ambiguous deployments for
+    application 1 … [2, 1]`, and the two rows were written by two different
+    deploys of the same commit: `deploy-grant-71672573103249b09aaf4cb3dbdf2a54`
+    at 15:48:00 and `temporary-access-grant-a6a508bec27d` at 15:49:14, the
+    redeploy that hands QA its temporary capability. Both carry
+    `service_name=stand-t-477db6f21739461cb11fa8e6f94cc169` — the project's
+    runtime slug, which is the only service name a deploy record ever holds,
+    whether the product has one module or two. So "exactly one row per
+    application" was never about modules: it was an assertion about a product
+    that deploys once, and this product deploys again whenever a capability is
+    granted or revoked.
+
+    What the rows cannot say by themselves is which deploy wrote them — the
+    record carries no run id — so the guard the old assertion existed for is
+    kept by counting them against the deploys that could have written them. Each
+    deploy Run of this project writes at most one record and a stop/undeploy Run
+    writes none, so more records than deploys is the same deploy recorded twice,
+    and that still fails here by name. Taking the first row instead, or dropping
+    the count, would have made a genuine duplicate invisible.
+
+    The row that is selected is the newest one, because that is the deploy the
+    application is actually running, and it still has to be a success carrying
+    this run's merged SHA.
+    """
     application_id = ctx["application_id"]
     project_id = ctx["project_id"]
     deadline = time.monotonic() + timeout
@@ -3385,14 +5129,17 @@ async def wait_service_deployment(
             if str(deployment.get("application_id")) == str(application_id)
             and str(deployment.get("project_id")) == str(project_id)
         ]
-        if len(deployments) > 1:
+        recorded_by = deploys_that_record(await _project_deploy_runs(api_internal, project_id))
+        if len(deployments) > len(recorded_by):
             ctx["service_deployment_error"] = (
-                f"ambiguous deployments for application {application_id}, project {project_id}: "
-                f"{[deployment.get('id') for deployment in deployments]}"
+                f"more deployment records than deploys for application {application_id}, "
+                f"project {project_id}: records "
+                f"{[deployment.get('id') for deployment in deployments]} from deploy runs "
+                f"{[run.get('id') for run in recorded_by]}"
             )
             return None
-        if len(deployments) == 1:
-            deployment = deployments[0]
+        deployment = _newest_deployment(deployments)
+        if deployment is not None:
             if (
                 deployment.get("result") == "success"
                 and deployment.get("deployed_sha") == ctx["deploy_head_sha"]
@@ -3414,7 +5161,11 @@ async def wait_service_deployment(
 
 
 async def probe_health_endpoint(
-    url: str, *, attempts: int = 5, retry_delay: float = 5, expect_marker: str | None = None
+    url: str,
+    *,
+    attempts: int = HEALTH_PROBE_ATTEMPTS,
+    retry_delay: float = HEALTH_PROBE_RETRY_DELAY_SECONDS,
+    expect_marker: str | None = None,
 ) -> dict:
     """Probe the public health endpoint while the application is still running.
 
@@ -3425,9 +5176,9 @@ async def probe_health_endpoint(
     always did.
     """
     last_error = None
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS) as client:
         for attempt in range(1, attempts + 1):
-            for path in ("/health", "/v1/health"):
+            for path in HEALTH_PROBE_PATHS:
                 try:
                     response = await client.get(f"{url}{path}")
                 except httpx.ConnectError as error:
@@ -3546,8 +5297,740 @@ async def wait_application_not_deployed(
     return None
 
 
+# ── Level-1 product probes ───────────────────────────────────────────────
+
+
+async def probe_level1_endpoint(ctx: dict) -> dict:
+    """Ask the deployed backend for the endpoint the change set added.
+
+    Why this is honest: the scaffolded kit serves no `/level1/marker`, and the
+    marker is minted for this run, so nothing in the pinned template, no cached
+    image and no earlier run's artifact can answer with it. The same call also
+    answers the settings question — the payload carries the generated
+    `SETTINGS_SCHEMAS` registry, which exists only because `make setup` ran
+    `framework.generate` over the manifest the change set edited. A manifest edit
+    that never reached the generator comes back as an empty registry here.
+    """
+    url = f"{ctx['deployed_url']}{LEVEL1_ENDPOINT_PATH}"
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as product:
+        response = await product.get(url)
+    payload = response.json() if response.status_code == 200 else None
+    declared = (payload or {}).get("declared_settings") or {}
+    return {
+        "url": url,
+        "status_code": response.status_code,
+        "marker": (payload or {}).get("marker"),
+        "setting_key": (payload or {}).get("setting_key"),
+        "declared_settings": declared,
+        # The registry key is derived by the generator, so the probe does not
+        # assume its spelling: what is asserted is that exactly one declared key
+        # carries this run's marker as the value the manifest declares for it.
+        "settings_declaring_marker": sorted(
+            key
+            for key, schema in declared.items()
+            if isinstance(schema, dict) and schema.get("default") == ctx["level1_marker"]
+        ),
+    }
+
+
+async def probe_level1_command_menu(ctx: dict) -> dict:
+    """Ask Telegram what the running bot registered, with this run's marker in it.
+
+    Why this is honest, and why it is the cheapest thing that is: the command
+    menu is published by the deployed bot itself, in its own post-init, using
+    the token this run bound — so an answer carrying this run's marker can only
+    have been written by this run's deployed image. Reading the image out of the
+    registry instead would prove the same thing at the cost of a pull and a
+    credential; sending the bot a message would need a second Telegram identity
+    the harness does not have.
+
+    Bounded polling, because the bot publishes at startup and the deploy reports
+    success as soon as the containers are up.
+    """
+    url = f"https://api.telegram.org/bot{ctx['product_bot_token']}/getMyCommands"
+    expected_description = level1_command_description(ctx["level1_marker"])
+    observed: list[dict] = []
+    status_code = None
+    deadline = time.monotonic() + LEVEL1_COMMAND_MENU_TIMEOUT
+    while True:
+        async with httpx.AsyncClient(timeout=15) as telegram:
+            response = await telegram.get(url)
+        status_code = response.status_code
+        if status_code == 200:
+            observed = response.json().get("result") or []
+            if any(
+                command.get("command") == LEVEL1_COMMAND
+                and command.get("description") == expected_description
+                for command in observed
+            ):
+                break
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(LEVEL1_COMMAND_MENU_POLL_SECONDS)
+    return {
+        "status_code": status_code,
+        "expected_command": LEVEL1_COMMAND,
+        "expected_description": expected_description,
+        "commands": observed,
+    }
+
+
+async def record_level1_product_evidence(ctx: dict) -> None:
+    """Read the three product facts while the deployment is still running.
+
+    Evidence collection: a probe that cannot run is recorded as the reason it
+    could not, so the artifact says which of the three was unreadable instead of
+    losing all of them — and the assertions that follow still fail the run.
+    """
+    for name, probe in (
+        ("level1_endpoint_probe", probe_level1_endpoint),
+        ("level1_command_menu_probe", probe_level1_command_menu),
+    ):
+        try:
+            ctx[name] = await probe(ctx)
+        except (httpx.HTTPError, ValueError) as error:
+            ctx[f"{name}_error"] = (
+                f"{name} could not be read: {type(error).__name__}: "
+                f"{redacted_dump_text(str(error))[:300]}"
+            )
+
+
+def record_level1_scripted_path(ctx: dict) -> None:
+    """Whether the worker applied the change set or fell back to an empty commit.
+
+    The fallback path commits nothing, so the story branch's own diff is what
+    tells the two apart — and the diff is already read through an existing probe
+    for every run's evidence. It is read once here, at the first moment both
+    engineering tasks are settled, so the suite can assert it rather than
+    inferring the scripted path from the deployed product alone.
+    """
+    record_story_branch_diff(ctx)
+    if ctx.get("story_branch_diff_error"):
+        ctx["level1_scripted_path_error"] = ctx["story_branch_diff_error"]
+        return
+    diff = ctx["story_branch_diff"]["diff"]
+    missing = [path for path in ctx["level1_change_set_paths"] if path not in diff]
+    ctx["level1_scripted_path"] = {
+        "head_sha": ctx["story_branch_diff"]["head_sha"],
+        "change_set_paths": ctx["level1_change_set_paths"],
+        "paths_missing_from_diff": missing,
+    }
+    ctx["level1_scripted_path_error"] = (
+        None
+        if not missing
+        else (
+            "the story branch carries no change for "
+            f"{missing}: the worker took the runner's fallback path (an empty commit) "
+            "instead of applying the change set"
+        )
+    )
+
+
+def probe_merge_file_set(repo_name: str, merge_commit_sha: str) -> dict:
+    """Read one deployed story merge's file set through the stand GitHub App."""
+    result = docker_exec_python_module(
+        "langgraph",
+        "shared.live_harness_cleanup",
+        [
+            "merge-file-set-probe",
+            "--owner",
+            GITHUB_ORG,
+            "--repo",
+            repo_name,
+            "--merge-commit-sha",
+            merge_commit_sha,
+            "--marker",
+            MERGE_FILE_SET_PROBE_MARKER,
+        ],
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"merge file set probe for {repo_name}@{merge_commit_sha} failed: "
+            f"{result.stderr or result.stdout}"
+        )
+    return parse_probe_payload(
+        result.stdout, MERGE_FILE_SET_PROBE_MARKER, subject="merge file set probe"
+    )
+
+
+def record_level1_merge_artifact(ctx: dict) -> bool:
+    """Capture and judge the current level-1 story merge before teardown.
+
+    A deployment Run is the durable fact that names the merge GitHub placed on
+    the product default branch.  Capture it here, immediately after that Run is
+    found and while the stand's App credential can still read the generated
+    repository.  Both the observation and its verdict stay in ``ctx`` so the
+    evidence artifact can explain a red result after teardown deletes the repo.
+    """
+    merge_commit_sha = ctx.get("deploy_merge_commit_sha")
+    observation: dict | None = None
+    if not merge_commit_sha:
+        error = "the deploy run named no merge commit for its changed-file capture"
+    else:
+        try:
+            observation = probe_merge_file_set(ctx["repo_name"], merge_commit_sha)
+        except Exception as caught:  # noqa: BLE001 - evidence must name an unreadable GitHub fact
+            error = (
+                f"the merge file set at {merge_commit_sha} could not be read: "
+                f"{type(caught).__name__}: {caught}"
+            )
+        else:
+            error = None
+            ctx["level1_merge_artifact"] = observation
+
+    parent_contents = (observation or {}).get("parent_file_contents")
+    product_agents_content = (
+        parent_contents.get("AGENTS.md") if isinstance(parent_contents, dict) else None
+    )
+    reasons = merge_artifact_mismatches(
+        observation,
+        product_agents_content=product_agents_content,
+    )
+    if error is not None:
+        reasons = [error, *reasons]
+        ctx["level1_merge_artifact_error"] = error
+    else:
+        ctx["level1_merge_artifact_error"] = None
+    ctx["level1_merge_artifact_verdict"] = {
+        "holds": not reasons,
+        "reasons": reasons,
+        "change_set": change_set_comparison(
+            observation, expected_paths=ctx["level1_change_set_paths"]
+        ),
+    }
+    return not reasons
+
+
+# ── The second story of the same project ─────────────────────────────────
+#
+# The level-1 lifecycle runs two stories on one project, and the second one is
+# where five of the seven regressions sprint:1445 found by hand lived. Every
+# helper the first story uses is reused for it unchanged — that is the point:
+# the properties asserted are properties of the platform's ordinary path, not of
+# a second implementation of it.
+#
+# What makes that possible is the scope below. The run's context carries "the
+# story this run is currently about" under one set of keys, every wait and every
+# recorder reads them, and `second_story_scope` swaps that set for the extension
+# story and swaps it back. The first story's evidence is kept whole, the
+# extension's lands under `level1_extension`, and no helper needs to know that
+# there are two.
+
+
+#: The context keys that belong to *one story* and are swapped by
+#: `second_story_scope`. Everything not named here is the run's or the
+#: project's: the ownership manifest, the evidence collector, the project and
+#: repository identity, the bot binding, the per-task diagnostics that are
+#: keyed by task id and therefore cumulative by construction — and the live
+#: deployment's identity, which is the *project's* one application and must
+#: stay current, because the undeploy that ends the lifecycle acts on it after
+#: the second story has redeployed it.
+SECOND_STORY_SCOPED_KEYS = frozenset(
+    {
+        # The brief, its revisions and this run's ownership of its plan
+        "level1_brief",
+        "brief_id",
+        "brief_read",
+        "brief_requirement_ids",
+        "level1_corrected_brief_id",
+        "level1_corrected_brief_read",
+        "level1_brief_revisions",
+        "level1_planning_attempt_id",
+        "level1_plan_claim_attempts",
+        "po_input_cursor",
+        # The story and its plan
+        "story_id",
+        "story_status",
+        "level1_story_started_by",
+        "level1_admission",
+        "level1_coverage",
+        "level1_plan_before_admission",
+        "level1_plan_after_admission",
+        "level1_plan_provenance",
+        "task_id",
+        "task_ids",
+        "first_task_id",
+        "second_task_id",
+        "task_title",
+        "task_description",
+        "task_criteria",
+        "followup_task_title",
+        "followup_task_description",
+        "followup_task_criteria",
+        # Engineering
+        "task_status",
+        "engineering_elapsed",
+        "first_task_status",
+        "second_task_status",
+        "second_task_status_before_first_terminal",
+        "noop_task_sequence_error",
+        "noop_settlement",
+        "noop_settlement_error",
+        "linear_noop_completion_error",
+        "linear_noop_task_statuses_before_deploy",
+        "linear_noop_worker_ids",
+        "engineering_failure_steps",
+        "level1_change_set_paths",
+        "level1_scripted_path",
+        "level1_scripted_path_error",
+        "level1_merge_artifact",
+        "level1_merge_artifact_error",
+        "level1_merge_artifact_verdict",
+        "story_branch",
+        "story_branch_compare",
+        "story_branch_error",
+        "story_branch_diff",
+        "story_branch_diff_error",
+        "story_engineering_runs",
+        "story_engineering_runs_error",
+        # What only the second story can show
+        "first_checkout",
+        "first_checkout_error",
+        "manager_log_read",
+        "manager_log_read_error",
+        "workspace_assignments",
+        "manager_checkout_script",
+        "manager_checkout_script_error",
+        "story_branch_base_probe",
+        "story_branch_base_error",
+        "story_ci_runs",
+        "story_ci_runs_error",
+        # Deploy
+        "deploy_run_id",
+        "deploy_head_sha",
+        "deploy_merge_commit_sha",
+        "deploy_path",
+        "deploy_run_error",
+        "deploy_run_record",
+        "deploy_run_status",
+        "deploy_run_created_at",
+        "deploy_outcome",
+        "deploy_outcome_error",
+        "deploy_error_details",
+        "deployed_image_references",
+        "deployed_image_error",
+        "deployed_image_tag_expected",
+        "deployed_commit_sha",
+        "main_head_probe",
+        "env_contract_probes",
+        "env_contract_errors",
+        "final_app_status",
+        "ci_failure_evidence",
+        "brief_deploy_story_status",
+        # The deployed product, and QA over it
+        "health_probe_before_undeploy",
+        "health_probe_error",
+        "level1_endpoint_probe",
+        "level1_endpoint_probe_error",
+        "level1_command_menu_probe",
+        "level1_command_menu_probe_error",
+        "level1_extension_endpoint_probe",
+        "level1_extension_endpoint_probe_error",
+        "level1_settings_seed",
+        "level1_settings_readback",
+        "settings_seed_brief_log",
+        "settings_seed_brief_log_error",
+        "qa_result",
+        "qa_run",
+        "qa_run_lookup",
+        "qa_run_record",
+        "qa_run_record_error",
+        # Completion
+        "story_terminal",
+        "story_terminal_error",
+        "owner_notification",
+        "owner_notification_po_event",
+        "owner_notification_error",
+        "stage_notices",
+        "stage_notices_error",
+        _STAGE_SAMPLER_KEY,
+    }
+)
+
+
+@contextmanager
+def second_story_scope(ctx: dict):
+    """Make the extension story this run's current story, then give the first back.
+
+    On the way in, every scoped key is saved and removed, so the extension story
+    starts with nothing of the first story's to be mistaken for its own: a
+    recorder that never ran leaves its key absent rather than leaving the first
+    story's value in place, and every assertion about the extension story is
+    then an assertion about something the extension story actually produced.
+
+    On the way out — including out of a raised phase failure, which is why this
+    is a `finally` — the extension's own values are collected under
+    `level1_extension` and the first story's are restored exactly. The artifact
+    and every existing assertion therefore keep reading the first story where
+    they always did.
+    """
+    saved = {key: ctx[key] for key in SECOND_STORY_SCOPED_KEYS if key in ctx}
+    for key in SECOND_STORY_SCOPED_KEYS:
+        ctx.pop(key, None)
+    try:
+        yield ctx
+    finally:
+        extension = {key: ctx[key] for key in SECOND_STORY_SCOPED_KEYS if key in ctx}
+        ctx["level1_extension"] = {**ctx.get("level1_extension", {}), **extension}
+        # Every engineering attempt of the *run*, in the order it was planned.
+        # `task_ids` is one story's, and the evidence artifact's per-attempt
+        # capture is the run's, so the cumulative list is recorded here — the
+        # one place that has both stories' rosters at once.
+        ctx[ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY] = [
+            *saved.get("task_ids", []),
+            *extension.get("task_ids", []),
+        ]
+        for key in SECOND_STORY_SCOPED_KEYS:
+            ctx.pop(key, None)
+        ctx.update(saved)
+
+
+def begin_level1_extension_story(ctx: dict) -> None:
+    """Put the extension story's own plan into the scope the helpers read.
+
+    Everything here was minted at project creation, before the first story ran,
+    so a kit that moved under the pin refused the whole run then rather than
+    after the first story spent its minutes. The PO cursor is captured here
+    because it has to precede anything the extension story can publish — the
+    first story's completion event is already behind it, so the wait for the
+    *second* notification cannot be satisfied by the first.
+    """
+    plan = ctx["level1_extension_plan"]
+    ctx["level1_brief"] = build_level1_extension_brief(
+        ctx["level1_marker"], ctx["level1_extension_marker"]
+    )
+    ctx["task_title"] = plan["task_title"]
+    ctx["task_description"] = plan["task_description"]
+    ctx["task_criteria"] = plan["task_criteria"]
+    ctx["level1_change_set_paths"] = plan["change_set_paths"]
+    ctx["po_input_cursor"] = po_input_cursor()
+
+
+#: What the first-checkout read of the manager's log is bounded by, stated for
+#: the evidence artifact as well as for the reader here.
+#:
+#: `docker compose logs` with no `--tail` returns every line the container has
+#: written since it started, so the bound is the manager container's own
+#: lifetime. The stand is provisioned for the run and its manager is started
+#: before the first story exists, so every line this run's manager wrote is
+#: inside that bound by construction.
+#:
+#: Why it cannot be outgrown the way `--tail=5000` was: there is no line count
+#: in it. A count is a promise about how *quiet* the run will be, and a second
+#: story doubles the chatter that has to fit under it; a bound made of the
+#: container's start moves with the container, so no amount of logging can push
+#: a line of this run outside it. The only thing that could is the daemon's log
+#: rotation, and no compose file here configures a logging driver or a
+#: `max-size`, so the container keeps its whole log.
+MANAGER_LOG_BOUND = (
+    "every line the worker-manager container has written since it started "
+    "(docker compose logs with no --tail)"
+)
+#: The branch name the manager's checkout script is read back for. Any story
+#: branch would do — the script is built the same way for all of them — and
+#: using this run's makes the recorded text the text this run's checkout ran.
+MANAGER_CHECKOUT_SCRIPT_PROBE = (
+    "import json; from src import git_ops; "
+    "print('MANAGER_CHECKOUT_SCRIPT:' + json.dumps(git_ops.build_checkout_script(BRANCH)))"
+)
+MANAGER_CHECKOUT_SCRIPT_MARKER = "MANAGER_CHECKOUT_SCRIPT:"
+
+
+def record_manager_checkout_script(ctx: dict) -> None:
+    """Read the checkout script the *running* manager builds for this branch.
+
+    Out of the manager's own container, not out of this checkout's source: what
+    card 1305 is about is what the deployed manager does to a reused workspace,
+    and an assertion against the source in this tree would pass against an image
+    built before the fix. Evidence collection, so an unreadable answer is a
+    stated reason rather than a raise.
+    """
+    branch = story_branch_name(ctx["story_id"])
+    script = f"BRANCH = {branch!r}\n{MANAGER_CHECKOUT_SCRIPT_PROBE}"
+    try:
+        result = docker_exec("worker-manager", script)
+    except Exception as error:  # noqa: BLE001 - an unreadable manager is a stated reason
+        ctx["manager_checkout_script_error"] = (
+            f"the manager's checkout script could not be read: {type(error).__name__}"
+        )
+        return
+    if result.returncode != 0:
+        ctx["manager_checkout_script_error"] = (
+            f"reading the manager's checkout script exited {result.returncode}: "
+            f"{redacted_dump_text(result.stderr or result.stdout)[:300]}"
+        )
+        return
+    try:
+        ctx["manager_checkout_script"] = parse_probe_payload(
+            result.stdout, MANAGER_CHECKOUT_SCRIPT_MARKER, subject="manager checkout script"
+        )
+    except (RuntimeError, ValueError) as error:
+        ctx["manager_checkout_script_error"] = (
+            f"the manager printed no checkout script: {type(error).__name__}: {error}"
+        )
+        return
+    ctx["manager_checkout_script_error"] = None
+
+
+def record_first_checkout(ctx: dict) -> None:
+    """Read the manager's own account of this story's workspace and checkout.
+
+    `issue:028670f21dbd138ccd04`: on production the first `checkout_branch` of a
+    *second* story hit the 30-second exec bound, the worker was deleted, the run
+    failed, and the automatic retry succeeded in about four seconds — so the
+    only place the defect is visible is the manager's own start/complete pair.
+    The duration is recorded as a number whether or not it is within any bound;
+    judging it is `level1_second_story.checkout_mismatches`'s job.
+    """
+    branch = story_branch_name(ctx["story_id"])
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "logs", "--no-color", "worker-manager"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+    except Exception as error:  # noqa: BLE001 - an unreadable log is a stated reason
+        reason = f"the manager's log could not be read: {type(error).__name__}"
+        ctx["manager_log_read_error"] = reason
+        ctx["first_checkout_error"] = reason
+        return
+    if result.returncode != 0:
+        reason = f"docker compose logs worker-manager exited {result.returncode}"
+        ctx["manager_log_read_error"] = reason
+        ctx["first_checkout_error"] = reason
+        return
+    coverage = manager_log_coverage(result.stdout)
+    ctx["manager_log_read"] = {"bound": MANAGER_LOG_BOUND, **coverage}
+    ctx["manager_log_read_error"] = None
+    if not coverage["records"]:
+        # The capture came back, and nothing in it is a record the manager
+        # wrote. That is a statement about this read, not about the manager, so
+        # it is reported as unreadable rather than as an empty list of
+        # checkouts: "we could not tell" and "the manager logged none" are
+        # different answers and only one of them is evidence about the platform.
+        ctx["first_checkout_error"] = (
+            f"the manager's log was read ({MANAGER_LOG_BOUND}) but none of its "
+            f"{coverage['lines']} lines parsed as a record, so whether the manager logged a "
+            f"checkout of {branch} cannot be told from it"
+        )
+        return
+    ctx["first_checkout"] = checkout_records(result.stdout, branch=branch)
+    # The same read answers the other question about this story's worker: which
+    # workspace the manager gave it. One `docker compose logs` for both, because
+    # both are facts of the same window and a second read could miss one.
+    ctx["workspace_assignments"] = workspace_assignments(result.stdout, repo_id=ctx["repo_id"])
+    ctx["first_checkout_error"] = None
+
+
+def probe_story_branch_base(repo_name: str, branch: str, contains_sha: str) -> dict:
+    """Where a story branch was cut from, and whether that commit contains another."""
+    args = [
+        "story-branch-base-probe",
+        "--owner",
+        GITHUB_ORG,
+        "--repo",
+        repo_name,
+        "--branch",
+        branch,
+        "--contains-sha",
+        contains_sha,
+        "--marker",
+        STORY_BRANCH_BASE_PROBE_MARKER,
+    ]
+    result = docker_exec_python_module("langgraph", "shared.live_harness_cleanup", args, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"story branch base probe for {repo_name}@{branch} failed: "
+            f"{result.stderr or result.stdout}"
+        )
+    return parse_probe_payload(
+        result.stdout, STORY_BRANCH_BASE_PROBE_MARKER, subject="story branch base probe"
+    )
+
+
+def record_story_branch_base(ctx: dict, *, contains_sha: str) -> None:
+    """Record where this story's branch was cut from, and what that base contains."""
+    branch = story_branch_name(ctx["story_id"])
+    try:
+        ctx["story_branch_base_probe"] = probe_story_branch_base(
+            ctx["repo_name"], branch, contains_sha
+        )
+    except Exception as error:  # noqa: BLE001 - an unreadable probe is a stated reason
+        ctx["story_branch_base_error"] = (
+            f"the base of {branch} could not be compared, so it is unknown what it was cut "
+            f"from: {type(error).__name__}: {error}"
+        )
+        return
+    ctx["story_branch_base_error"] = None
+
+
+async def record_story_ci_runs(api: httpx.AsyncClient, ctx: dict) -> None:
+    """Read the project's own CI runs the scheduler observed for this story.
+
+    The PR poller writes them onto the story as it waits for the merge commit's
+    images (`services/scheduler/src/tasks/pr_poller.py`), so this is the
+    platform's own observation of the generated product's CI rather than a
+    second GitHub read of our own.
+    """
+    story_id = ctx["story_id"]
+    try:
+        response = await api.get(f"/api/stories/{story_id}")
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        ctx["story_ci_runs_error"] = (
+            f"story {story_id} could not be read for its CI observations: "
+            f"{type(error).__name__}: {error}"
+        )
+        return
+    timeline = response.json().get("generated_product_timeline") or {}
+    runs = timeline.get("ci_runs")
+    ctx["story_ci_runs"] = runs if isinstance(runs, list) else []
+    ctx["story_ci_runs_error"] = None
+
+
+async def record_story_engineering_runs(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Every engineering Run of this story's tasks, as the durable rows they are.
+
+    A task that is `done` says nothing about how it got there: an attempt that
+    died and was retried leaves a failed Run behind and a done task in front of
+    it. Both are read here so the assertion is about the attempts.
+    """
+    runs: list[dict] = []
+    try:
+        for task_id in ctx["task_ids"]:
+            for run in await _engineering_runs_for_task(api_internal, task_id):
+                runs.append(
+                    {
+                        "id": run.get("id"),
+                        "task_id": run.get("task_id"),
+                        "status": run.get("status"),
+                        "created_at": run.get("created_at"),
+                    }
+                )
+    except httpx.HTTPError as error:
+        ctx["story_engineering_runs_error"] = (
+            f"this story's engineering runs could not be read: {type(error).__name__}: {error}"
+        )
+        return
+    ctx["story_engineering_runs"] = sorted(
+        runs, key=lambda run: (run.get("created_at") or "", str(run.get("id")))
+    )
+    ctx["story_engineering_runs_error"] = None
+
+
+async def probe_level1_extension_endpoint(ctx: dict) -> dict:
+    """Ask the deployed backend for the endpoint the *extension* story added.
+
+    Honest for the same reason the first story's probe is, and for one more: the
+    payload carries the first story's marker beside the extension's, so a
+    deployment that answers it is a deployment carrying both stories' work. The
+    pinned kit serves no `/level1/extension`, and both markers are minted per
+    run, so neither a cached image nor the first story's own deployment can
+    answer with this pair.
+    """
+    url = f"{ctx['deployed_url']}{LEVEL1_EXTENSION_ENDPOINT_PATH}"
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as product:
+        response = await product.get(url)
+    payload = response.json() if response.status_code == 200 else None
+    declared = (payload or {}).get("declared_settings") or {}
+    return {
+        "url": url,
+        "status_code": response.status_code,
+        "marker": (payload or {}).get("marker"),
+        "base_marker": (payload or {}).get("base_marker"),
+        "setting_key": (payload or {}).get("setting_key"),
+        "declared_settings": sorted(declared),
+        "settings_declaring_marker": sorted(
+            key
+            for key, schema in declared.items()
+            if isinstance(schema, dict) and schema.get("default") == ctx["level1_extension_marker"]
+        ),
+    }
+
+
+async def record_level1_extension_product_evidence(ctx: dict) -> None:
+    """Read the extension story's product fact while the deployment is running."""
+    try:
+        ctx["level1_extension_endpoint_probe"] = await probe_level1_extension_endpoint(ctx)
+    except (httpx.HTTPError, ValueError) as error:
+        ctx["level1_extension_endpoint_probe_error"] = (
+            f"level1_extension_endpoint_probe could not be read: {type(error).__name__}: "
+            f"{redacted_dump_text(str(error))[:300]}"
+        )
+
+
+#: The task statuses an engineering failure really lands on, and why both.
+#:
+#: A scripted step failure POSTs `success=false`, which becomes a
+#: `WorkerBlockedResult` and reaches `handle_worker_gave_up`
+#: (`services/langgraph/src/consumers/engineering_result_handler.py:343`). That
+#: handler transitions the planning task to `WAITING_HUMAN_REVIEW` and is the
+#: **only** writer of `failure_metadata` — the field that carries the reason the
+#: wrapper stamped `(step=…, error_class=…, exit_code=…)` into. The path that
+#: does set `FAILED`, `handle_engineering_failure`, writes no `failure_metadata`
+#: at all. Reading `FAILED` alone therefore collects nothing on exactly the run
+#: whose step name is wanted, so both are read.
+ENGINEERING_FAILURE_STATUSES = (TaskStatus.FAILED, TaskStatus.WAITING_HUMAN_REVIEW)
+
+
+def record_engineering_failure_steps(ctx: dict) -> dict[str, dict[str, str | None]]:
+    """Name the runner step behind every unsettled engineering task of this run.
+
+    The scripted runner names the step it died on and the wrapper now carries it
+    into the blocked reason, which the control plane stores as the task's
+    `failure_metadata.reason`. This lifts it back out so a red run's evidence
+    says `setup` or `commit` rather than only that engineering failed.
+
+    The status is recorded beside the step rather than dropped, because the two
+    say different things and one of them is never normal: a gave-up parks the
+    task in `waiting_human_review`, which the sprint's "Zero intervention" item
+    forbids outright. The evidence has to name the step *and* show the park, so
+    reading the step is never mistaken for accepting the state it came from.
+    """
+    steps: dict[str, dict[str, str | None]] = {}
+    for task_id, diagnostic in (ctx.get("task_diagnostics") or {}).items():
+        status = diagnostic.get("status")
+        if status not in ENGINEERING_FAILURE_STATUSES:
+            continue
+        reason = (diagnostic.get("failure_metadata") or {}).get("reason") or ""
+        match = re.search(r"\bstep=([A-Za-z0-9_]+)", reason)
+        steps[task_id] = {
+            "status": str(getattr(status, "value", status)),
+            "step": match.group(1) if match else None,
+        }
+    ctx["engineering_failure_steps"] = steps
+    return steps
+
+
+async def _bot_binding_residue(api_internal: httpx.AsyncClient, ctx: dict) -> dict:
+    """What the project still holds of its bot after the undeploy released it.
+
+    The release is server-side, on the transition that means teardown
+    (`services/api/src/routers/applications.py` → `release_bot_binding`), and it
+    drops two things: the `bot_username` the uniqueness check reads, and the
+    stored `TELEGRAM_BOT_TOKEN`. Both are read back here, because a run that
+    ends holding either leaves the next one unable to bind the same bot — and
+    the stand has exactly one.
+    """
+    repository = await api_internal.get(f"/api/repositories/{ctx['repo_id']}")
+    repository.raise_for_status()
+    keys = await api_internal.get(f"/api/projects/{ctx['project_id']}/config/secrets/keys")
+    keys.raise_for_status()
+    return {
+        "bot_username": repository.json().get("bot_username"),
+        "secret_keys": keys.json().get("keys", []),
+    }
+
+
 async def verify_undeploy_residue(api_internal: httpx.AsyncClient, ctx: dict) -> dict | None:
-    """Fail closed unless the exact pre-undeploy port allocation is gone."""
+    """Fail closed unless the exact pre-undeploy port allocation is gone.
+
+    A run that bound a bot answers for that too: the binding is a resource of a
+    finite pool of one, so "the undeploy left nothing behind" includes it.
+    """
     response = await api_internal.get(f"/api/servers/{ctx['server_handle']}/ports")
     response.raise_for_status()
     owned = [
@@ -3562,11 +6045,29 @@ async def verify_undeploy_residue(api_internal: httpx.AsyncClient, ctx: dict) ->
         "port_allocation_absent": not owned,
         "observed_allocations": owned,
     }
-    ctx["undeploy_residue"] = residue
+    errors = []
     if owned:
-        ctx["undeploy_residue_error"] = (
+        errors.append(
             f"undeploy left owned port allocations for application {ctx['application_id']}: {owned}"
         )
+    if ctx.get("bot_binding"):
+        binding = await _bot_binding_residue(api_internal, ctx)
+        residue["bot_username_released"] = binding["bot_username"] is None
+        residue["bot_token_released"] = TELEGRAM_TOKEN_SECRET_KEY not in binding["secret_keys"]
+        residue["observed_bot_binding"] = binding
+        if not residue["bot_username_released"]:
+            errors.append(
+                f"undeploy left project {ctx['project_id']} bound to bot "
+                f"@{binding['bot_username']}, so the next run cannot bind the same bot"
+            )
+        if not residue["bot_token_released"]:
+            errors.append(
+                f"undeploy left {TELEGRAM_TOKEN_SECRET_KEY} in the secrets of project "
+                f"{ctx['project_id']}"
+            )
+    ctx["undeploy_residue"] = residue
+    if errors:
+        ctx["undeploy_residue_error"] = "; ".join(errors)
         return None
     return residue
 
@@ -4092,12 +6593,402 @@ async def fence_owned_work(api_internal: httpx.AsyncClient, ctx: dict) -> None:
     await wait_for_owned_runs(api_internal, ctx)
 
 
-async def cleanup_all(
+# ── The run's two proofs about itself ────────────────────────────────────
+#
+# One is taken before teardown and one after it, and the order is forced: the
+# zero-intervention proof reads the PO history this run's own teardown is about
+# to XDEL its entries out of, and the residue proof asks questions that are only
+# meaningful once the removals have happened.
+
+
+@dataclass(frozen=True)
+class RunPoPosition:
+    """Where a run stands in PO's two durable stores before it does anything.
+
+    Both halves are captured before the project exists, because both answer a
+    question about what *this* run caused and neither can be reconstructed
+    afterwards.
+
+    `input_cursor` is the last `po:input` id, so the run's own park
+    notifications are exactly the entries after it.
+
+    `thread_id` and `checkpoint_snapshot` are the PO conversation thread the run
+    will write to and everything already on it. The thread is
+    `po-chat-<the harness's Telegram id>` — a fixture every live run on the
+    contour shares — so the run owns the difference, not the thread.
+
+    Three outcomes, and they are three fields rather than one `None`, because
+    that conflation is what stand run 35486586267 failed on:
+
+    * a snapshot was taken — `checkpoint_snapshot` holds it;
+    * the database has no checkpoint table yet — the snapshot is the empty one,
+      which is the *true* one (nothing pre-existed), and `snapshot_note` says
+      so, so the residue kind stays askable;
+    * the read failed — `checkpoint_snapshot` is `None` and `snapshot_error`
+      says why, and the residue proof reports that kind as one it could not ask,
+      naming the reason rather than only the consequence.
+    """
+
+    input_cursor: str
+    thread_id: str
+    checkpoint_snapshot: dict[str, list[str]] | None
+    snapshot_error: str | None = None
+    snapshot_note: str | None = None
+
+
+def capture_run_po_position(telegram_id: int) -> RunPoPosition:
+    """Fix this run's place in PO's history and conversation state.
+
+    The actor is named rather than assumed. PO composes its checkpoint thread
+    from the chat id its tools are invoked with, so the thread to snapshot is
+    the one belonging to the user this run will act as — its own registered
+    user for a level-1 run, the shared fixture for a run that has none. Reading
+    the fixture's thread for a run that never writes to it would pass the
+    residue kind while the run's real rows stayed behind.
+
+    A snapshot that cannot be taken is recorded as a reason rather than raised:
+    failing a run at its first second because a read failed would be worse than
+    running it and reporting one kind as unaskable, which is what happens.
+
+    A database with no checkpoint table is not that case. It is an answer: no
+    row pre-existed, so the empty snapshot is correct and the run keeps the
+    difference it needs. Recording it as "no snapshot" is what turned a kind
+    that could be asked into a kind that could not.
+    """
+    thread = po_thread_id(str(telegram_id))
+    cursor = po_input_cursor()
+    try:
+        snapshot = po_checkpoints.snapshot(thread, _psql)
+    except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable kind
+        return RunPoPosition(
+            input_cursor=cursor,
+            thread_id=thread,
+            checkpoint_snapshot=None,
+            snapshot_error=f"{type(exc).__name__}: {exc}",
+        )
+    if snapshot is None:
+        return RunPoPosition(
+            input_cursor=cursor,
+            thread_id=thread,
+            checkpoint_snapshot={},
+            snapshot_note=po_checkpoints.NO_CHECKPOINTER_AT_START,
+        )
+    return RunPoPosition(input_cursor=cursor, thread_id=thread, checkpoint_snapshot=snapshot)
+
+
+def record_run_po_position(ctx: dict, position: RunPoPosition) -> None:
+    """Give this run the PO position its two proofs are read against.
+
+    Captured by the caller before the project exists and only recorded here,
+    because there is no context to record it on until then. Taken at the top of
+    a run rather than per story: the question the Definition of Done asks is
+    about the run, and a position taken one phase later would silently exclude a
+    park from the phase before it.
+    """
+    ctx["run_po_input_cursor"] = position.input_cursor
+    ctx["po_thread_id"] = position.thread_id
+    ctx["po_checkpoint_snapshot"] = position.checkpoint_snapshot
+    ctx["po_checkpoint_snapshot_error"] = position.snapshot_error
+    ctx["po_checkpoint_snapshot_note"] = position.snapshot_note
+
+
+async def _story_with_owed_notification(api_internal: httpx.AsyncClient, story: dict) -> dict:
+    """One story, with the park notice its own row may still owe.
+
+    Read through `/api/stories/{id}/owner-notification` because the list route's
+    response model is `list[StoryRead]` and `StoryRead` has no
+    `owner_notification` field — FastAPI drops it, so reading it out of the
+    listing is a check that can never fire. A story with no record answers 404,
+    which is the absence; any other refusal raises, so an unreadable source
+    reaches the proof as a kind that could not be asked.
+    """
+    response = await api_internal.get(f"/api/stories/{story['id']}/owner-notification")
+    if response.status_code == httpx.codes.NOT_FOUND:
+        return {**story, "owner_notification": None}
+    response.raise_for_status()
+    return {**story, "owner_notification": response.json()}
+
+
+async def _run_stories_for_intervention(api_internal: httpx.AsyncClient, ctx: dict) -> list[dict]:
+    """Every story of this run's project, each carrying its owed park notice."""
+    response = await api_internal.get("/api/stories/", params={"project_id": ctx["project_id"]})
+    response.raise_for_status()
+    return [await _story_with_owed_notification(api_internal, story) for story in response.json()]
+
+
+async def record_no_intervention(
+    api_internal: httpx.AsyncClient, ctx: dict, *, command: Callable[..., object] = _redis_json
+) -> None:
+    """Prove, before teardown, that no story of this run ever waited for a person.
+
+    Before teardown for one concrete reason: cleanup XDELs the PO stream entries
+    this run owns, and the stream is where the durable history of a park lives.
+    Read afterwards, the strongest source would have been deleted by the thing
+    that is supposed to be proven harmless.
+
+    The verdict is recorded rather than raised, so the artifact holds it whatever
+    else the run did; `test_full_pipeline` is what fails the run on it.
+    """
+    stories: list[dict] = []
+    stories_error: BaseException | None = None
+    try:
+        stories = await _run_stories_for_intervention(api_internal, ctx)
+    except Exception as exc:  # noqa: BLE001 — an unreadable source is an unaskable check
+        stories_error = exc
+
+    def state() -> list[dict]:
+        if stories_error is not None:
+            raise stories_error
+        return stories
+
+    ops = run_intervention.InterventionOps(
+        history=lambda: [
+            event.model_dump(mode="json")
+            for event in po_events_after(_require_run_po_cursor(ctx), command=command)
+        ],
+        state=state,
+    )
+    proof = run_intervention.prove_no_intervention(
+        ops,
+        run_intervention.RunStories(
+            project_id=str(ctx["project_id"]),
+            story_ids=tuple(str(story["id"]) for story in stories),
+        ),
+        subject=f"run {ctx['manifest'].run_id}",
+    )
+    ctx["no_intervention"] = proof.as_dict()
+    ctx["no_intervention_error"] = "; ".join(proof.failures) or None
+
+
+#: Every proof taken before teardown that an assertion — not only a reader of
+#: the artifact — has to be able to read. Each one is recorded once, on the
+#: context, under the name the assertion asks for it by.
+PRE_TEARDOWN_PROOF_KEYS = ("no_intervention", "no_intervention_error")
+
+
+async def record_pre_teardown_proofs(
+    api_internal: httpx.AsyncClient, ctx: dict, *, command: Callable[..., object] = _redis_json
+) -> None:
+    """Take the run's pre-teardown proofs once, before anything reads them.
+
+    These used to be taken in the pipeline fixture's `finally`, and that is a
+    later moment than it reads: a module-scoped generator fixture runs its
+    `finally` at *teardown*, which pytest does after the last test that used it.
+    So every assertion about a proof recorded there read a context the proof was
+    not on yet, and
+    `test_no_story_of_this_run_ever_waited_for_a_person` failed
+    `KeyError: 'no_intervention'` on stand run 35486586267 — not because no
+    story ever waited for a person, but because nothing had asked yet.
+
+    Idempotent, because it is called from both places that need it: before the
+    fixture hands the context to the tests, and from the `finally` for a run
+    that raised before it ever got there. The first answer is the one kept — it
+    is the one taken while the run's own history was still whole.
+    """
+    if all(key in ctx for key in PRE_TEARDOWN_PROOF_KEYS):
+        return
+    await record_no_intervention(api_internal, ctx, command=command)
+
+
+async def with_pre_teardown_proofs(
+    phases: AsyncIterator[dict],
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    command: Callable[..., object] = _redis_json,
+) -> AsyncIterator[dict]:
+    """Yield the run's context only once its pre-teardown proofs are on it.
+
+    The ordering rule of the fixture, in one place that can be driven offline:
+    whatever the phases yield reaches a test with every proof
+    `PRE_TEARDOWN_PROOF_KEYS` names already recorded on it.
+    """
+    async for value in phases:
+        await record_pre_teardown_proofs(api_internal, ctx, command=command)
+        yield value
+
+
+def _require_run_po_cursor(ctx: dict) -> str:
+    cursor = ctx.get("run_po_input_cursor")
+    if cursor is None:
+        raise RuntimeError(
+            "this run captured no PO cursor, so its intervention history cannot be read"
+        )
+    return cursor
+
+
+def run_inventory(ctx: dict) -> run_residue.RunInventory:
+    """What this run owns, read from its manifest and never from a live listing."""
+    manifest = ctx["manifest"]
+    by_kind: dict[str, list] = {}
+    for resource in manifest.resources:
+        by_kind.setdefault(resource.kind, []).append(resource)
+    deployments = by_kind.get("server_deployment", [])
+    handles = {
+        resource.metadata["server_handle"]
+        for resource in deployments
+        if resource.metadata.get("server_handle")
+    }
+    return run_residue.RunInventory(
+        run_id=manifest.run_id,
+        project_id=str(ctx.get("project_id") or ""),
+        repo_id=str(ctx.get("repo_id") or ""),
+        repo_name=str(ctx.get("repo_name") or ""),
+        story_ids=tuple(
+            str(story_id)
+            for story_id in dict.fromkeys(
+                [ctx.get("story_id"), (ctx.get("level1_extension") or {}).get("story_id")]
+            )
+            if story_id
+        ),
+        worker_ids=tuple(resource.identifier for resource in by_kind.get("worker", [])),
+        registry_repositories=tuple(
+            resource.identifier for resource in by_kind.get("registry_repository", [])
+        ),
+        stack_names=tuple(resource.identifier for resource in deployments),
+        # Only when every owned deploy resolved to the same target. A mixed or
+        # unresolved set is asked of every managed target instead, exactly as
+        # the teardown clears every one of them.
+        server_handle=next(iter(handles))
+        if len(handles) == 1 and len(handles) == len(deployments)
+        else None,
+        po_thread_id=str(ctx.get("po_thread_id") or ""),
+        po_checkpoint_snapshot=ctx.get("po_checkpoint_snapshot"),
+        po_checkpoint_snapshot_error=ctx.get("po_checkpoint_snapshot_error"),
+    )
+
+
+#: The project-scoped Redis keys this run creates and nothing else removes: the
+#: fences teardown itself raises, and the workspace bookkeeping a worker leaves.
+#: They expire on their own, which is enough for the platform and not enough for
+#: "after cleanup there is nothing left" — so they are released here, by name,
+#: before the proof asks whether any key still names this run.
+PROJECT_SCOPED_RUN_KEYS = (
+    "live:scaffold:cancelled:{project_id}",
+    "live:scaffold:leases:{project_id}",
+    "live:work:cancelled:{project_id}",
+    "live:work:leases:{project_id}",
+    "live:work:failed:{project_id}",
+    "workspace:lock:{project_id}",
+    "workspace:{project_id}:failure_count",
+)
+
+
+def release_project_fences(ctx: dict) -> None:
+    """Drop the fences this run's own teardown raised, once nothing needs them.
+
+    Last, deliberately. Every one of these is what stops a consumer from
+    creating a new resource for this project while teardown runs, so releasing
+    one earlier would reopen the door the removals have just walked through.
+    """
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return
+    _redis_command(
+        "UNLINK", *[key.format(project_id=project_id) for key in PROJECT_SCOPED_RUN_KEYS]
+    )
+    _redis_command("SREM", "workspace:active_projects", str(project_id))
+
+
+async def cleanup_and_prove(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
     ctx: dict,
 ) -> None:
-    """Delete owned resources using an unscoped internal run observer."""
+    """Clean this run up, and only then ask whether anything of it is left.
+
+    The proof is here and not inside `cleanup_all` because the two make
+    different claims and are used by different callers. `cleanup_all` removes
+    what a run owns and verifies each removal, and the harness contract suite
+    drives it with fakes and no stack behind it. This asks the further question
+    the Definition of Done asks — "is anything of this run left anywhere" — of
+    every kind including the ones no removal touches, and it can only be asked
+    of a real installation.
+    """
+    database = await cleanup_all(api_internal, api_observer, ctx)
+    release_project_fences(ctx)
+    remove_run_po_checkpoints(ctx)
+    prove_nothing_left(ctx, database)
+
+
+def remove_run_po_checkpoints(ctx: dict) -> None:
+    """Take back the PO conversation rows this run added to the fixture thread.
+
+    The thread itself is not removed and must not be: its key is the harness's
+    fixture Telegram id, which every live run on the contour shares. What is
+    removed is the difference between what the thread carries now and what it
+    carried when this run captured its snapshot, which leaves the thread exactly
+    as the run found it. A run with no snapshot removes nothing, and the residue
+    proof then reports the kind as one it could not ask.
+    """
+    thread = ctx.get("po_thread_id")
+    if not thread or ctx.get("po_checkpoint_snapshot") is None:
+        return
+    left = po_checkpoints.remove_run_rows(thread, ctx["po_checkpoint_snapshot"], _psql)
+    ctx["po_checkpoint_removal"] = {"thread_id": thread, "left": left}
+
+
+def prove_nothing_left(
+    ctx: dict,
+    database: db_teardown.TeardownReport | None,
+) -> None:
+    """Remove the run's workspaces, then prove every kind of residue is absent.
+
+    The one removal that happens here rather than earlier is the workspace: a
+    developer worker's checkout is deliberately preserved across its own
+    teardown so the next attempt reuses it, so nothing else in a run's lifetime
+    ever takes it away. Everything else has already been removed by the steps
+    above, and this is only the proof that they were.
+
+    Raises `CleanupError` naming every kind that is not proven absent — a
+    leftover by name, and a kind that could not be checked as the kind it is.
+    """
+    inventory = run_inventory(ctx)
+    ops, remove_workspaces = run_residue.host_residue_ops(
+        ORCHESTRATOR_ROOT, INTERNAL_API_URL, _psql
+    )
+    entries = inventory.workspace_entries()
+    workspace_removal_error: str | None = None
+    if entries:
+        try:
+            remove_workspaces(entries)
+        except Exception as exc:  # noqa: BLE001 — the proof below is what judges the outcome
+            workspace_removal_error = f"workspace removal failed: {type(exc).__name__}: {exc}"
+    notes = [
+        note
+        for note in (
+            workspace_removal_error,
+            ctx.get("po_checkpoint_snapshot_error"),
+            ctx.get("po_checkpoint_snapshot_note"),
+        )
+        if note
+    ]
+    proof = run_residue.prove_run_residue(
+        ops,
+        inventory,
+        database_check=run_residue.database_check_from(database),
+        notes=notes,
+    )
+    ctx["run_residue"] = proof.as_dict()
+    if proof.failures:
+        raise CleanupError(
+            f"run {inventory.run_id} left resources behind: " + "; ".join(proof.failures)
+        )
+
+
+async def cleanup_all(
+    api_internal: httpx.AsyncClient,
+    api_observer: httpx.AsyncClient | None,
+    ctx: dict,
+) -> db_teardown.TeardownReport | None:
+    """Delete owned resources using an unscoped internal run observer.
+
+    Answers with the database teardown's own report — the proof for the database
+    kind that cards 1311 and 1313 built — so `cleanup_and_prove` can carry it
+    into the run's residue proof instead of asking the database a second time.
+    A run that owns no project has none, which is the honest answer to a
+    question that was never put.
+    """
     errors: list[str] = []
 
     try:
@@ -4142,9 +7033,17 @@ async def cleanup_all(
             errors.append(f"GitHub repository: {exc}")
 
     # 5. DB records (API delete doesn't cascade to stories/tasks, use SQL)
+    # The report and the raise are both kept: they are this run's proof for the
+    # database kind, and the residue proof below carries whichever one happened
+    # rather than asking the database a second time in its own words.
+    database_report: db_teardown.TeardownReport | None = None
     if "project_id" in ctx:
+        owner = ctx.get("run_owner")
         try:
-            _cleanup_db(ctx["project_id"])
+            database_report = _cleanup_db(
+                ctx["project_id"],
+                owner.telegram_id if owner is not None else None,
+            )
         except Exception as exc:
             errors.append(f"database project: {exc}")
 
@@ -4200,37 +7099,20 @@ async def cleanup_all(
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors))
     manifest_path = ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
     manifest_path.unlink(missing_ok=True)
+    return database_report
 
 
-def _cleanup_db(project_id: str) -> None:
-    """Delete project and all related records via SQL (proper cascade)."""
-    sql = (
-        f"DELETE FROM task_events WHERE task_id IN "
-        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
-        f"DELETE FROM runs WHERE project_id = '{project_id}';"
-        f"DELETE FROM requirement_coverages WHERE brief_id IN "
-        f"(SELECT id FROM product_briefs WHERE project_id = '{project_id}');"
-        f"DELETE FROM product_briefs WHERE project_id = '{project_id}';"
-        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
-        f"DELETE FROM stories WHERE project_id = '{project_id}';"
-        f"DELETE FROM brainstorms WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_chunks WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_documents WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
-        f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
-        f"DELETE FROM port_allocations WHERE application_id IN "
-        f"(SELECT id FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
-        # application_health_history FKs applications (NO ACTION), delete it first.
-        f"DELETE FROM application_health_history WHERE application_id IN "
-        f"(SELECT id FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
-        f"DELETE FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}');"
-        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
-        f"DELETE FROM projects WHERE id = '{project_id}';"
-    )
+def _psql(sql: str) -> db_teardown.SqlResult:
+    """Run one statement batch against the stack's database.
+
+    The batch arrives on stdin (`-f -`), not as an argument: the residue pass
+    names every key the run owned, and Linux caps one argv element at 128 KiB,
+    so a run with a few thousand `rag_chunks` rows would have failed that pass
+    with a bare `OSError` after the deletes had already committed. Stdin has no
+    such ceiling. `ON_ERROR_STOP` makes a refused statement end the batch
+    instead of letting the rest of a transaction run against a failed one, and
+    the unaligned tab-separated tuples are what `db_teardown.parse_rows` reads.
+    """
     result = subprocess.run(
         [
             "docker",
@@ -4243,16 +7125,60 @@ def _cleanup_db(project_id: str) -> None:
             "postgres",
             "-d",
             "orchestrator",
-            "-c",
-            sql,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-t",
+            "-A",
+            "-F",
+            "\t",
+            "-f",
+            "-",
         ],
+        input=sql,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=DB_TEARDOWN_TIMEOUT,
         cwd=ORCHESTRATOR_ROOT,
     )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
+    return db_teardown.SqlResult(
+        returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
+    )
+
+
+def _cleanup_db(
+    project_id: str, run_user_telegram_id: int | None = None
+) -> db_teardown.TeardownReport:
+    """Delete the run's rows, and prove from the catalog what went and what stayed.
+
+    The list of tables is not written down anywhere: `db_teardown` derives it
+    from the foreign keys that point at this run's rows, deletes in the order
+    those keys imply, and then asks the database for the exact keys it owned. A
+    new table referencing a run — `users_grant_intents` was the one that
+    stranded run 35441716423 — is in the plan the moment its foreign key exists,
+    and a row that survives anyway is raised by table, key and constraint rather
+    than as a psql error string.
+
+    A run that registered its own user names it here, and the plan then owns the
+    rows that hang off that user as well — its budget policy, its reservations,
+    the code it redeemed, its admission audits. Two of them it cannot delete and
+    says so: the append-only attempt ledger and, because the ledger names it, the
+    `users` row itself. Those are retained by declared rule and read back, and
+    anything other than exactly one user row plus this run's own ledger rows
+    fails the teardown. The returned report carries that retention by table, key
+    and count, and the residue proof reads it from there rather than asking the
+    database a second time in its own words.
+    """
+    report = db_teardown.teardown_project(
+        project_id, _psql, run_user_telegram_id=run_user_telegram_id
+    )
+    if report.retention_report:
+        logger.info(
+            "database teardown kept the rows its plan declares undeletable",
+            selection=report.selection,
+            retained=report.retained,
+            retained_report=report.retention_report,
+        )
+    return report
 
 
 # ── Debug dump ───────────────────────────────────────────────────────────
@@ -4402,7 +7328,14 @@ def dump_debug(ctx: dict, test_name: str) -> None:
             lines.extend([f"- dynamic worker log capture failed: {type(error).__name__}", ""])
 
     # Collect docker logs from relevant services
-    for service in ["scaffolder", "engineering-worker", "scheduler", "deploy-worker"]:
+    for service in [
+        "scaffolder",
+        "engineering-worker",
+        "scheduler-pipeline",
+        "scheduler-infrastructure",
+        "scheduler-maintenance",
+        "deploy-worker",
+    ]:
         try:
             result = subprocess.run(
                 ["docker", "compose", "logs", f"--tail={DEBUG_DUMP_SERVICE_TAIL_LINES}", service],

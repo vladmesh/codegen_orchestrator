@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from http import HTTPStatus
 from typing import Any
 
 import docker
@@ -31,7 +32,9 @@ class DockerClientWrapper:
         """Get a container by ID."""
         return await self._run(self._client.containers.get, container_id)
 
-    async def list_containers(self, filters: dict[str, Any] | None = None, all: bool = False) -> list[Any]:
+    async def list_containers(
+        self, filters: dict[str, Any] | None = None, all: bool = False
+    ) -> list[Any]:
         """List containers."""
         return await self._run(self._client.containers.list, all=all, filters=filters)
 
@@ -56,7 +59,10 @@ class DockerClientWrapper:
                 await self._run(container.remove, force=force, v=v)
             except docker.errors.APIError as exc:
                 explanation = str(exc.explanation or "")
-                if exc.status_code != 409 or "already in progress" not in explanation:
+                if (
+                    exc.status_code != HTTPStatus.CONFLICT
+                    or "already in progress" not in explanation
+                ):
                     raise
         except docker.errors.NotFound:
             return
@@ -202,7 +208,11 @@ class DockerClientWrapper:
         owner once Redis has forgotten the worker this network was made for.
         """
         return await self._run(
-            self._client.networks.create, name, driver=driver, internal=internal, labels=labels or {}
+            self._client.networks.create,
+            name,
+            driver=driver,
+            internal=internal,
+            labels=labels or {},
         )
 
     async def inspect_network(self, name: str) -> dict[str, Any]:
@@ -218,7 +228,9 @@ class DockerClientWrapper:
         except docker.errors.NotFound:
             pass
 
-    async def connect_network(self, network_name: str, container_id: str, aliases: list[str] | None = None) -> None:
+    async def connect_network(
+        self, network_name: str, container_id: str, aliases: list[str] | None = None
+    ) -> None:
         """Connect a container to a network."""
         network = await self._run(self._client.networks.get, network_name)
         await self._run(network.connect, container_id, aliases=aliases)
@@ -249,4 +261,6 @@ class DockerClientWrapper:
         container = await self.get_container(container_id)
         # exec_run is blocking, run in executor
         # returns (exit_code, output)
-        return await asyncio.wait_for(self._run(container.exec_run, cmd=command, user=user), timeout=timeout)
+        return await asyncio.wait_for(
+            self._run(container.exec_run, cmd=command, user=user), timeout=timeout
+        )

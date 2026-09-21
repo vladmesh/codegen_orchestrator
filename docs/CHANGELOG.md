@@ -3,7 +3,271 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-21
+
+- Level-1 evidence now captures and judges each merged file set before teardown, proving both stories carry
+  only their declared product changes and no orchestrator-injected path or legacy overwrite.
+- The stand bootstrap masks the VM's automatic apt upgrades and waits for cloud-init before apt/Docker work,
+  reconnecting once after an SSH drop or reboot, so first-boot upgrades no longer kill the level-1 run.
+- The scaffolder image now ships `aiohttp` for shared administrator notifications, and CI imports every
+  production service entrypoint from its built image so undeclared runtime dependencies fail before merge.
+- `POST /tasks/{id}/resume` is the one operator retry: fresh iteration, recorded retry budget, story back in
+  progress, so a parked task gets a new run rather than a replayed failure.
+- Deploy cleanup also prunes dangling images after the build cache, so classic image stores do not
+  grow on every rebuilt `:local` tag while worker-cleanup failures still surface.
+- Deploy cleanup keeps the last distinct worker image generation, tolerates Docker conflicts, and always prunes cache;
+  control-host inventory creation no longer disrupts health checks or provider discovery.
+- Deploy cleanup retains the recorded worker release and its predecessor, removes stale worker generations safely,
+  and prunes build cache older than one day; the scheduler now alerts on the control host's backing disk usage.
+- A story in work tells its owner its stage, what it waits for and the magnitude of the wait on entry and after
+  `supervisor.stage_notice_quiet_minutes`, via a best-effort `story_stage` event with a Redis marker.
+- Telegram QA probes collect final reply and edit state at a bounded two-second cadence through their
+  deadline, treating replies deleted before then as silent so progress notices cannot hide an answer.
+
+## 2026-09-20
+
+- `deploying`, `testing`, `pr_review` and the user-secret wait get age bounds from one watchdog; the secret ask is
+  a durable owner notification whose `delivered_at` starts its clock, so an undelivered ask never expires.
+- The PR fallback updates an out-of-date branch for another CI pass, and parks a refused update or closed-unmerged
+  pull request with its durable owner and administrator notices instead of leaving review indefinitely.
+- Scaffolding verifies repository auto-merge and alerts on refusal; the PR poller merges green fallback PRs or
+  parks a GitHub refusal with durable owner and administrator notifications instead of leaving review stalled.
+- A worker turn writes nothing the product tracks: worker-mode compose runs through a `DOCKER_COMPOSE`
+  stand-in outside the checkout, and the agent's instructions go to `WORKER_INSTRUCTIONS.md`, not `AGENTS.md`.
+- The paths a turn injects are defined once and kept out of the product's history by `.git/info/exclude`
+  plus a publish guard that refuses to push a commit carrying one and names it.
+- The level-1 live run walks the product's registration door — a fresh Telegram id, a promo code minted
+  through the internal API and redeemed by that named actor — instead of a promo-bypassing fixture user.
+- Live teardown takes the run's own user as a second root, so its budget policy, reservations, redeemed code
+  and admission audits are deleted and proven gone; the ledger and the `users` row are declared retained.
+- The stand sweep's user root selects on the `live_run_` username the harness writes, not on a Telegram-id band
+  alone, and is taken only in a contour that owns live runs, so a production sweep names no real user's rows.
+- The PO checkpoint presence query answers with a row rather than a rendered boolean, so the run's residue
+  proof asks its `po_checkpoint_thread` kind instead of reporting it unaskable on every run.
+- The run's zero-intervention proof is taken before the pipeline fixture hands its context to the tests, so the
+  assertion about it reads a proof instead of raising `KeyError` on every run.
+- The run-evidence document carries both of the run's proofs about itself, each with its outcome and with the
+  reason for any kind that could not be asked, so a red run explains itself without being re-run.
+- Run evidence judges the Product Brief facts the run's own scenario declares it owes, so a green
+  `mega-brief-package` run is green and carries its deployment's package route (`issue:62bc9840e23a44c2098b`).
+- The level-1 evidence reports the Product Brief it confirmed instead of "this is not a Product Brief scenario".
+- A `pytest.skip` outside the paid class of the level-1 module, and a stand budget stated in the docs or the
+  runner that disagrees with `shared/stand_deadlines.py`, now fail an offline check; `mega-brief`'s stale
+  281-minute cap and the runner's 297-minute job-cap comment were the drift they found.
+- `docs/TESTING.md` says what level 1 proves and what it cannot catch, with the suite's own test count and cap.
+- The level-1 run proves after cleanup that no container, image repository, workspace, Redis key, GitHub
+  repository or PO conversation row of it is left, and names a kind it could not check instead of passing it.
+- The run takes back the PO checkpoint rows it added to the shared fixture thread, scoped by a snapshot taken
+  before it started, so the thread is left as the run found it rather than deleted or silently kept.
+- The run asserts from its durable PO history that no story ever entered `waiting_human_review`,
+  `waiting_user_secret` or a quarantine, so a park that was later recovered still fails the run.
+- Worker-manager removes the one-shot `docker compose run` containers of a worker's bounded plan, which
+  `docker compose down -v` left on the host (`issue:868e40fc0377b0dabb77`).
+- The harness reads the worker-manager's log in both structlog renderings and from the container's start rather
+  than a line tail, and an unparsable capture is reported as unreadable instead of as no checkout.
+
+## 2026-09-19
+
+- A temporary-access capability redeploy no longer seeds the brief's settings, so a proved revoke stops being
+  recorded as failed and the previous story's grant stops holding the target against the next story's QA.
+- A QA handoff refused the target retries on the next tick instead of waiting out the recovery window, and past
+  a bound fails the run naming the holder, so the story reaches a verdict rather than sitting in TESTING.
+- The level-1 lifecycle runs a second story on the same project, from a corrected brief revision through the
+  released PO tools, and asserts what only it can show: checkout duration, branch base, deploy path, hooks.
+- The `mega-noop` ledger is built from the wait constants the harness imports from it, not from copies, so the
+  suite cap covers the deploy Run's image-publication bound instead of understating it by 1800 seconds.
+- The level-1 plan creates its two tasks with the acceptance criteria QA checks them by, keyed on the run's
+  marker, so the run's verbatim assertion over each attempt's TASK.md has something it can fail on.
+- Run evidence keeps the `TASK.md` and `.story/STORY.md` of every engineering attempt, keyed by task and
+  gap-by-gap honest, and the suite asserts each attempt's TASK.md quotes its acceptance criteria verbatim.
+- The live deployment assertion reads `service_deployments` as the deploy log it is: the newest record is
+  selected, and more records than the project's deploys is still refused as the same deploy written twice.
+- The stand sweep deletes through the catalog-derived plan `tests/live/db_teardown.py` builds, keeping its own
+  project selection and its fixture-user removal, so no second delete list can go stale on `users_grant_intents`.
+- The level-1 live run builds its story from a Russian Product Brief confirmed through the released PO tools
+  and admits the plan through the architect's own coverage routes, both without any model call.
+- The level-1 run proves from durable rows that nothing but the harness claimed its brief's plan, and accepts
+  a story the live architect consumer started, so publishing that story cannot cost an architect model turn.
+- The level-1 run asserts the grant deploy seeded the confirmed `initial_settings` into the deployed product,
+  and that the owner's completion message is a bot product's: the bot handle and usage examples, no backend address.
+- A completion-notification wait that times out now names which conjunct failed — the notification's own fields or
+  the missing durable PO record — instead of only a state and an event count.
+- Live teardown derives the project's delete order and its residue proof from the catalog — foreign keys plus
+  the denormalized columns that are not one — instead of a hand-written list, and names any leftover row.
+- The scaffold wait is sized by the product: `shared/stand_deadlines.scaffold_budget_seconds` gives the
+  first rendered module 120 s and each further one another 120 s, so level-1's two modules get 240 s.
+- `wait_scaffold` raises `ScaffoldDidNotComplete` naming the phase, the wait, the last project status and
+  the scaffolder's last event, and fails the poll after `scaffold_error` appears instead of waiting it out.
+
+## 2026-09-18
+
+- The stand target key file is written with `printf '%s\n'` like the bootstrap one, so a secret without a
+  trailing newline no longer fails registration, and an API refusal now prints its status and reason.
+- The level-1 stand suite builds a Telegram-bot product: modules `backend` and `tg_bot`, its token bound
+  through `POST /projects/{id}/telegram/token`, and a change set per task the scripted developer applies.
+- `POST /result` carries the runner's `step`, `error_class` and `exit_code` into the blocked reason, so a
+  failed scripted step names the step instead of being dropped at the wrapper boundary.
+- The live scaffold trigger sends the project's own module list and owns a registry repository per module,
+  so a two-module product is rendered whole and leaves no unowned image behind.
+- The level-1 change set is put through the product's own gate offline: `codegen-kit-tooling` is a test-only
+  dependency at the commit the pinned render resolves, and `tests/unit/test_level1_change_set.py` runs
+  `framework.generate`, spec validation, spec compliance, controller-sync, ruff, xenon and deptry over the
+  applied tree, so a change set the stand would reject fails in CI instead.
+
+- The no-LLM developer runner applies a change set fenced in `/workspace/TASK.md`, runs the product's
+  `make setup` and commits through its own hooks, so a level-1 E2E run really changes code without a model.
+
+- The architect never writes a criterion whose precondition central QA's one fixed identity cannot reach
+  (an empty history, another month): it rewrites the example against the value QA reads first, or returns it.
+
+## 2026-09-17
+
+- The worker manager's own git runs no product hook (`-c core.hooksPath=/dev/null` per command), cuts a new
+  story branch from the freshly fetched default branch, and fails worker creation when the upstream was not set.
+- Worker teardown unbinds the story it held, and the registry evicts a binding whose worker has neither status
+  nor metadata left, so a deleted worker is never handed to the next engineering attempt.
+- A worker creation that fails after the early ACK records the exception type and the step it failed in, so a
+  bare timeout no longer logs an empty reason.
+- QA reports a check the transport refused (an empty Telegram message) as not applicable, and the runner keeps it
+  only against its own recorded refusal, so a passing bot is no longer quarantined as `qa_checks_unverifiable`.
+- Every engineering run's TASK.md quotes the planning task's criteria and the repository's QA checklist verbatim,
+  and a failed QA check's detail quotes expected and received values, so fix workers never guess the wording.
+- QA reads an accumulating value (balance, count, list) first and judges the change, and the architect writes
+  such criteria relative to that start, since QA's one identity keeps its earlier records.
+
+## 2026-09-16
+
+- The owner-grant deploy carries its story and a storyless commit deploy seeds the project's latest confirmed
+  `initial_settings`, so a fresh product never reaches QA unseeded; every seed step logs what it found.
+
+## 2026-09-15
+
+- The finance-bot architect plan checks read a real model's Russian («спрашивает пользователя», «в свободной форме»),
+  so the opt-in replay stops failing a compliant plan; a plan that stores without asking back still fails.
+
+- A completed Telegram-bot story tells the user how to use it: the bot's @username and the confirmed brief's usage
+  examples in its language (or /start and /help), never the backend API address; the PO relays them.
+
+- A must-requirement the architect returns reaches the owner: the architect publishes `story_requirements_returned`
+  after admission (replayed until delivered), and the PO says what will not be built and offers a follow-up brief.
+
+- The architect receives the brief's usage examples and limitations: each example becomes a QA check naming its
+  requirement, an undefined input is returned instead of narrowed, and every task requires asking back.
+
+- PO and architect default to `openai/gpt-5.6-sol` on OpenRouter; a unit test captures their real request bodies and
+  proves no sampling parameter and only `max_completion_tokens` reach the model, plus an opt-in live smoke.
+
+- The Product Brief carries the user's language, usage examples per user-facing requirement, limitations and
+  setting descriptions; it renders in the user's language, and a user-facing requirement without an example is refused.
+
+- The PO fixes each input's form and its symmetric case, names a cheaper variant's trade-off in the brief's limitations,
+  and reports a blocked story as stopped; the brief no longer shows the user a raw wording reference.
+
+- The scheduler tears down every worker of an engineering attempt that gave up (story with no live run), so a
+  gave-up worker no longer stays RUNNING when the handler never asks for its removal.
+
+- Criteria needing an HTTP write are marked not verifiable before QA and reported as `qa_capability` failures;
+  an upload criterion reaches the QA executor, which reports it as `qa_capability`. Architect and brief guidance
+  state checks only through QA's read-only vocabulary.
+
+- A failed QA check carries a closed cause (`product`, `qa_capability`, `qa_access`); only product failures reach a
+  fix task, and a run with none parks as the `qa_checks_unverifiable` harness blocker.
+
+- A temporary-access grant/revoke deploy never takes the same-SHA skip, and the sweep and API refuse a skipped run
+  as proof, so QA is released only after the product read the grant back active.
+
+## 2026-09-14
+
+- A failed ensure-workspace parks each story with a todo task as `workspace_ensure_failed` with owner and admin
+  notices, and the infrastructure retry clears `scaffold_error`, ending the silent `workspace_not_ready` loop.
+
+- The `qa_identity` role grants a non-root administrative account an effective ACL on the QA seat's `.ssh` and
+  `authorized_keys` and proves it, so a deploy's `chmod` stops blanking the mask and parking QA on production.
+
+- Ensure-mode scaffold names the project by the GitHub name in the repository's `git_url`, falling back to the project
+  slug, so a project whose repository row holds a non-ASCII title stops failing workspace ensure after story teardown.
+
+- The QA identity retrofit includes its role publicly and reads the wrapper's own line out of sudo's output, so
+  the host report stops failing on an undefined `qa_ssh_user` and a host that cannot resolve its name still proves.
+
+- Executor diagnostics v2 report credential-free Claude/Codex login, refresh and expiry facts, and the publisher sends
+  one retried admin Telegram alert per unhealthy stretch of a logged-out, expired or 24-hour-expiring profile.
+- The Codex profile reader joins the worker profile lock and requires the ChatGPT `auth_mode`, so a concurrent refresh
+  never reads as logged out and an API-key profile is never admitted as a subscription session.
+- A missing Codex profile lock no longer counts as uncontended, workers create it at startup, and `auth.json` must load
+  as the pinned CLI format; the Claude FIFO login recipe now works across two shells.
+- The Codex format check also validates the complete agent-identity record and serde_json's strict JSON rules, so a
+  profile the CLI would reject before choosing its auth mode is never reported healthy or admitted.
+- Profile JSON now parses through one total, bounded boundary that mirrors pinned serde_json number range and depth,
+  so `1e400` or deep nesting maps to `unusable` instead of healthy or an uncaught exception.
+- Claude credentials containing the non-standard `NaN`, `Infinity` or `-Infinity` literals are now unusable, as the
+  standard JSON parser Claude Code uses rejects them, instead of being admitted as healthy.
+
+- Provisioning success now atomically commits its generated key, completion labels, QA receipt, incident settlement
+  and READY behind episode and identity fences, so operator edits win without partial state.
+- Server reads expose the active provisioning fence, and finalization replays require the exact canonical labels and
+  stored key, so altered deliveries cannot pass as idempotent.
+- Unknown finalizer outcomes retain one encrypted command for stream reclaim, preventing a second attempt, playbook
+  run or generated-key rotation while failures remain incident-backed and non-admitting.
+- Provisioning uses a bootstrap credential only for the access play, then proves the generated key by login and
+  runs the proof through it, so a READY receipt never names a key that has not connected.
+
+## 2026-09-13
+
+- Fresh provisioning stores its generated key first and records the play's QA target proof with READY in one
+  episode-fenced reset, so a newly provisioned target is admissible instead of permanently unproved.
+- Managed targets are admitted only with a parsed admin key and an identity-bound receipt for the current
+  `qa_identity` profile, which every production deploy reconciles under its own `target_not_ready` park.
+- QA harness failures — stale `qa-docker`, refused verbs, unreadable probes, unreached executors — are typed
+  blockers that park the story for `recheck-qa` with an admin notice, never a product fix task.
+- Temporary QA admission now scopes legacy contention to an exact known target, and an audited admin drain
+  closes unreconcilable legacy or escalated revokes without a manual SQL update.
+- Admission now parks pre-agent refusals in its deciding transaction and the Run-backed park needs matching
+  evidence, so a lost answer cannot mint another attempt; owner and admin notices are owed durably.
+- The durable admin park notice settles on per-recipient Telegram results, so a refused or partial send
+  stays owed and retries instead of being recorded delivered, and no configured admin is `unaddressable`.
+- Terminal stories now retry canonical teardown for every owned developer and QA worker, while project-lock repair proves the owner terminal and fails closed on ambiguous legacy state.
+- PR-review handoff now releases its story worker before starting later work, while standalone tasks and admin E2E remain run-owned without a fabricated story.
+- Template compatibility waits for generated user-access commits, preventing a transient read-after-write 404 from rejecting a valid production template.
+- Scheduler teardown now clears only a fully removed worker's unchanged story binding, so later QA and deploy fixes spawn fresh instead of waiting on a dead stream.
+- Story completion resolves the current branch PR on every retry, so teardown reuses an open PR while later fix commits receive a new deployable PR.
+- PR handoff verifies the current branch head and recovers a PR merged during worker teardown, avoiding false no-commit quarantine without trusting stale fix-cycle PRs.
+
+## 2026-09-12
+
+- The bot mints an invite with the credits and attempt reservation from `admission.invite_*` system config
+  instead of a zero budget, so an invited user is admitted to paid work at all.
+- `POST`, `PATCH` and `DELETE /api/system-configs` require internal or administrator access, so an ordinary
+  LK bearer can no longer rewrite the scheduler and admission constants the fleet runs on.
+- `.env.example` documents `ADMIN_TELEGRAM_IDS`; an empty value means no account can mint invites.
+- A paid refusal parks its story through the story-backed owner notice when the work was initiated by a PO
+  request rather than a Run, and one task's failure no longer skips the rest of the dispatcher cycle.
+- A coding worker is handed a GitHub token minted for its own repository only, so a prompt-injected
+  worker container can no longer reach every repository the App installation covers.
+- Worker output consumer groups are created at `0` before the first read, so a result published
+  between a failed read and the group's creation is delivered instead of lost to nobody.
+- A story parked in human review by the PR poller (images never published, CI fix budget spent) or by
+  the no-new-commit path now tells its owner, durably where a record fits, instead of only the admins.
+- `docker-compose.prod.yml` gives every platform container json-file rotation (50m x 5) and, where the
+  footprint is known, a `mem_limit`, so an unbounded log can no longer fill the production disk.
+- Split scheduler pipeline, infrastructure and maintenance into independently configured processes,
+  so auxiliary failures cannot stop dispatch or provisioning recovery.
+
+## 2026-09-09
+
+- Run responses no longer project engineering token/cost accounting; Grafana and admin consumers read the
+  append-only engineering ledger, and the retired Run columns are dropped.
+
+- Worker services inherit the root Ruff policy; split launch, Compose admission and cleanup phases
+  while preserving worker ownership, QA isolation and readiness ordering.
+
+- Frontend Docker builds enforce peer dependencies with plain `npm ci`, matching the existing CI
+  checks and removing an obsolete dependency-resolution bypass.
+
 ## 2026-09-08
+
+- PO tool callers import from the owning modules; the aggregator keeps tool composition and utilities,
+  removing the remaining compatibility exports without changing the agent tool set.
 
 - Update Python and frontend dependencies together and bring worker-manager code under Ruff 0.16,
   so the dependency refresh passes formatting and lint checks.

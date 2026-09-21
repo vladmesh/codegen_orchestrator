@@ -1,8 +1,14 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
+import live_harness
 from live_harness import OwnershipManifest
+import pipeline_helpers
 import pytest
 import run_evidence
 from run_evidence import (
@@ -33,6 +39,8 @@ from run_evidence import (
     role_from_worker_id,
     write_artifact,
 )
+import run_intervention
+import run_residue
 import suite_outcome
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -46,6 +54,7 @@ from shared.live_harness_cleanup import (
     MERGE_BASE_IS_HEAD_REFERENCE,
     MERGE_BASE_REFERENCE,
     PRE_MERGE_DEFAULT_HEAD_REFERENCE,
+    RESIDUE_FINDINGS_KEY,
 )
 
 pytestmark = pytest.mark.needs_no_api_credential
@@ -74,6 +83,7 @@ def _isolated_suite_outcome():
 
 REPO = "live-test-llm-1a2b3c4d"
 RUN_ID = "live-1a2b3c4d5e6f"
+STORY_ID = "story-live-1a2b3c4d5e6f"
 PROJECT_ID = "11111111-2222-3333-4444-555555555555"
 DEV_WORKER_ID = f"dev-{REPO[:20]}-9f8e7d6c"
 DEV_CONTAINER = f"worker-{DEV_WORKER_ID}"
@@ -178,7 +188,12 @@ def removal_record(
         worker_id=worker_id,
         container=container,
         ownership=ownership
-        or WorkerOwnership(project_id=PROJECT_ID, run_id=RUN_ID, attempt_id="task-1"),
+        or WorkerOwnership(
+            story_id=STORY_ID,
+            project_id=PROJECT_ID,
+            run_id=RUN_ID,
+            attempt_id="task-1",
+        ),
         removed_at=REMOVED_AT,
         delete_reason=delete_reason,
         worker_type=RemovalFact.read(worker_type),
@@ -223,6 +238,7 @@ def container_payload(
     attempt_id: str = "task-1",
     created: datetime = RUN_START + timedelta(seconds=5),
     environment: tuple[str, ...] = (),
+    workspace_source: str = "/data/workspaces/x",
 ) -> dict:
     running = exit_code is None
     return {
@@ -255,7 +271,7 @@ def container_payload(
             "Error": "",
         },
         "Mounts": [
-            {"Destination": "/workspace", "Source": "/data/workspaces/x"},
+            {"Destination": "/workspace", "Source": workspace_source},
             {"Destination": "/artifacts/worker-transcripts", "Source": transcript_source},
         ],
     }
@@ -1142,7 +1158,7 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
 
-    assert EVIDENCE_SCHEMA_VERSION == 17
+    assert EVIDENCE_SCHEMA_VERSION == 23
     assert artifact["schema_version"] == EVIDENCE_SCHEMA_VERSION
     assert artifact["kind"] == EVIDENCE_KIND
     assert artifact["generated_at"] == "2026-08-13T12:05:00+00:00"
@@ -1180,6 +1196,28 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
             for field in ("status", "quarantine_reason", "pull_request", "ci_runs")
         },
     }
+    # v19: a run that ran no second story says so, rather than omitting the
+    # section — the same shape every other unread fact of this artifact has.
+    assert artifact["second_story"]["ran"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "this run ran no second story",
+    }
+    # v22: stage notices per story, each one captured or its absence stated.
+    assert artifact["stage_notices"]["first_story"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "the first story's stage notices were never recorded by this run",
+    }
+    assert artifact["stage_notices"]["second_story"]["reason"] == "this run ran no second story"
+    assert artifact["story_merge_artifacts"]["first_story"]["observation"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": "the first story's merge file set was never recorded by this run",
+    }
+    assert artifact["story_merge_artifacts"]["second_story"]["verdict"]["reason"] == (
+        "this run ran no second story"
+    )
     assert artifact["discovery"]["run_id"] == RUN_ID
     assert artifact["discovery"]["docker_filters"] == [
         "label=com.codegen.type=worker",
@@ -1231,6 +1269,18 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
 
     assert artifact["qa"]["state"] == QAExercise.NOT_EXERCISED.value
     assert artifact["capture_errors"] == []
+    # v21: a run that took neither proof says so for each of them, by name. The
+    # run this replaces failed both and the document mentioned neither.
+    assert artifact["proofs"]["intervention"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": run_evidence.PROOF_SECTIONS["intervention"][1],
+    }
+    assert artifact["proofs"]["residue"] == {
+        "status": CaptureStatus.MISSED.value,
+        "value": None,
+        "reason": run_evidence.PROOF_SECTIONS["residue"][1],
+    }
     assert "redact_diagnostic" in artifact["privacy"]
 
     worker = artifact["workers"][0]
@@ -1249,6 +1299,9 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
         "exit_code",
         "log_tail",
         "transcript",
+        # What this attempt was told, whatever the run cost: a free run retains
+        # these too, because "every engineering attempt" has no price condition.
+        "documents",
         # A paid run, so it carries the three bodies its artifact is diagnosed
         # from — whatever its outcome.
         "agent_report",
@@ -1847,7 +1900,13 @@ def _brief_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
         deploy_outcome=DeployOutcome.SUCCESS.value,
         final_app_status=ApplicationStatus.RUNNING.value,
         qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
-        brief_scenario=True,
+        brief_variant="mega-brief",
+        brief_obligations=list(run_evidence.PAID_BRIEF_OBLIGATIONS),
+        brief_expected_criterion={
+            "name": "multilingual_digest",
+            "required_arguments": [],
+            "allows_other_arguments": False,
+        },
         brief_id="brief-1",
         brief_read={
             "id": "brief-1",
@@ -2120,6 +2179,245 @@ def test_brief_scenario_job_evidence_must_match_the_architect_criterion(
         and "job_evidence" in reason["detail"]
         for reason in artifact["verdict"]["reasons"]
     )
+
+
+def _package_scenario_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A completed green `mega-brief-package` run, as its fixture leaves the context.
+
+    The same durable chain as the digest variant, on the variant's own contract:
+    the criterion is `reminders.tick` with the `at` argument the package's
+    `jobs_schema` declares, and the deployment's own generated artifacts say the
+    capability is the kit package.
+    """
+    ctx = _brief_scenario_ctx(
+        collector,
+        brief_variant="mega-brief-package",
+        brief_obligations=[*run_evidence.PAID_BRIEF_OBLIGATIONS, "package_route"],
+        brief_expected_criterion={
+            "name": "reminders.tick",
+            "required_arguments": ["at"],
+            "allows_other_arguments": True,
+        },
+        brief_acceptance={
+            "criterion": {
+                "name": "reminders.tick",
+                "arguments": {"at": "2999-01-01T00:00:00Z"},
+                "observable": (
+                    "GET /reminders?user_ref=owner-e2e shows that reference's reminder in "
+                    "state emitted"
+                ),
+            }
+        },
+        brief_job_evidence={
+            "command_id": "qa-qa-1-reminders.tick",
+            "name": "reminders.tick",
+            "arguments": {"at": "2999-01-01T00:00:00Z"},
+            "fired_by_product": PROJECT_ID,
+            "fired_by_run": "qa-1",
+            "dispatch_status": "dispatched",
+            "accepted_at": "2026-09-08T10:02:00+00:00",
+            "dispatched_at": "2026-09-08T10:02:01+00:00",
+        },
+        brief_package_route={
+            "package": "reminders",
+            "version": "0.2.0",
+            "manifest_sha256": "a" * 64,
+            "behaviour": "reminders.tick",
+            "declared_by": "package:reminders",
+            "read_from": [
+                "services/backend/src/generated/active_packages.py",
+                "services/backend/src/generated/job_registry.py",
+            ],
+        },
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_a_green_package_brief_run_is_green_and_carries_its_package_route(tmp_path):
+    """The defect `issue:62bc9840e23a44c2098b` was opened for, offline.
+
+    Stand run 34243255594 passed every test of this suite and was called red,
+    because the acceptance capture demanded the *digest* variant's job name and
+    the package facts the suite asserts never reached the document.
+    """
+    collector = collector_for(FakeDocker())
+    collector.capture()
+
+    artifact = build_artifact(_package_scenario_ctx(collector), root=tmp_path)
+
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.GREEN.value
+    assert artifact["verdict"]["reasons"] == []
+    brief = artifact["brief"]
+    assert brief["variant"] == "mega-brief-package"
+    assert brief["acceptance"]["value"]["name"] == "reminders.tick"
+    assert brief["package_route"] == {
+        "status": "captured",
+        "value": {
+            "package": "reminders",
+            "version": "0.2.0",
+            "manifest_sha256": "a" * 64,
+            "behaviour": "reminders.tick",
+            "declared_by": "package:reminders",
+            "read_from": [
+                "services/backend/src/generated/active_packages.py",
+                "services/backend/src/generated/job_registry.py",
+            ],
+        },
+        "reason": None,
+    }
+
+
+def test_a_package_run_that_could_not_read_its_deployment_is_red_with_that_reason(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    del ctx["brief_package_route"]
+    ctx["brief_deployment_error"] = (
+        "the deployed product's kit package contract could not be read: the probe of the "
+        "deployment exited 1. The product did not take the package route, so this suite "
+        "proves nothing about it."
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["package_route"]["reason"] == ctx["brief_deployment_error"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in artifact["verdict"]["reasons"]] == [
+        run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+    ]
+    assert "package_route" in artifact["verdict"]["reasons"][0]["detail"]
+
+
+def test_a_package_route_declaring_another_behaviour_than_the_criterion_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    ctx["brief_package_route"] = {**ctx["brief_package_route"], "behaviour": "reminders.sweep"}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["package_route"]["status"] == CaptureStatus.MISSED.value
+    assert "reminders.sweep" in artifact["brief"]["package_route"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def test_the_digest_variant_still_refuses_a_criterion_carrying_arguments(tmp_path):
+    """The variant-aware expectation is the fixture's, not a looser one."""
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _brief_scenario_ctx(collector)
+    ctx["brief_acceptance"]["criterion"]["arguments"] = {"at": "2999-01-01T00:00:00Z"}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["acceptance"]["status"] == CaptureStatus.MISSED.value
+    assert "arguments {}" in artifact["brief"]["acceptance"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def test_a_package_criterion_missing_its_required_argument_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _package_scenario_ctx(collector)
+    ctx["brief_acceptance"]["criterion"]["arguments"] = {}
+    ctx["brief_job_evidence"]["arguments"] = {}
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["brief"]["acceptance"]["status"] == CaptureStatus.MISSED.value
+    assert "'at'" in artifact["brief"]["acceptance"]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+
+
+def _level1_brief_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
+    """A completed level-1 run: a brief confirmed with no model, deterministic QA."""
+    ctx = base_ctx(
+        collector,
+        agent_type="noop",
+        qa_requires_executor=False,
+        qa_agent_type_requested=None,
+        qa_agent_type=None,
+        task_status=TaskStatus.DONE,
+        deploy_run_id="deploy-1",
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+        brief_variant="mega-noop",
+        brief_obligations=list(run_evidence.LEVEL1_BRIEF_OBLIGATIONS),
+        brief_id="brief-1",
+        brief_read={
+            "id": "brief-1",
+            "confirmed_at": "2026-09-20T10:00:00+00:00",
+            "content": {
+                "language": "ru",
+                "must_requirements": [{"id": "level1_command", "text": "Бот отвечает"}],
+            },
+        },
+    )
+    ctx.update(overrides)
+    return ctx
+
+
+def test_the_level1_run_reports_the_brief_it_confirmed_and_stays_green(tmp_path):
+    """Level 1 confirms a Product Brief on every run, so the document says so.
+
+    It used to answer "this is not a Product Brief scenario" to all seven
+    fields, which was the opposite of what the run did.
+    """
+    collector = collector_for(FakeDocker())
+    collector.capture()
+
+    artifact = build_artifact(_level1_brief_ctx(collector), root=tmp_path)
+
+    brief = artifact["brief"]
+    assert brief["required"] is True
+    assert brief["variant"] == "mega-noop"
+    assert brief["obligations"] == ["confirmed"]
+    assert brief["confirmed"]["value"]["id"] == "brief-1"
+    assert brief["confirmed"]["value"]["confirmed_at"] == "2026-09-20T10:00:00+00:00"
+    for fact in ("acceptance", "job_evidence", "package_route"):
+        assert brief[fact]["status"] == CaptureStatus.MISSED.value
+        assert "is not a Product Brief scenario" not in brief[fact]["reason"]
+        assert "mega-noop" in brief[fact]["reason"]
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.GREEN.value
+
+
+def test_a_level1_run_without_its_confirmed_brief_is_red(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _level1_brief_ctx(collector)
+    del ctx["brief_read"]
+
+    artifact = build_artifact(ctx, root=tmp_path)
+
+    assert artifact["verdict"]["status"] == run_evidence.Verdict.RED.value
+    assert [reason["code"] for reason in artifact["verdict"]["reasons"]] == [
+        run_evidence.VerdictReason.BRIEF_EVIDENCE_MISSED.value
+    ]
+
+
+def test_a_run_whose_scenario_confirms_no_brief_owes_nothing_and_says_so(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = base_ctx(collector, task_status=TaskStatus.DONE)
+
+    brief = build_artifact(ctx, root=tmp_path)["brief"]
+
+    assert brief["required"] is False
+    assert brief["obligations"] == []
+    assert all(
+        "confirms no Product Brief" in brief[fact]["reason"] for fact in run_evidence.BRIEF_FACTS
+    )
+
+
+def test_an_unknown_brief_obligation_is_refused_rather_than_ignored(tmp_path):
+    collector = collector_for(FakeDocker())
+    collector.capture()
+    ctx = _level1_brief_ctx(collector, brief_obligations=["confirmed", "telepathy"])
+
+    with pytest.raises(ValueError, match="telepathy"):
+        build_artifact(ctx, root=tmp_path)
 
 
 def test_the_artifact_names_the_debug_dumps_this_run_wrote(codex_docker, tmp_path):
@@ -3597,3 +3895,769 @@ def test_a_paid_run_that_succeeded_end_to_end_is_admitted_with_its_captures(code
         assert _paid_failure_errors("green.json", stripped) == [
             f"paid_failure_worker_retention_missing:green.json:{DEV_WORKER_ID}:{field}"
         ]
+
+
+# --- What the developer was actually told -----------------------------------
+#
+# The two documents the control plane puts in front of an engineering attempt:
+# the TASK.md worker-manager injects into the attempt's workspace and the
+# .story/STORY.md worker-wrapper writes beside it. The fixtures below model the
+# level-1 run's shape, which is what makes keeping them per attempt hard — two
+# engineering tasks, one reused container, one workspace directory, and a
+# TASK.md rewritten in place at the start of the second turn.
+
+DEV_WORKER = "dev-live-test-repo-aa11bb22"
+DEV_WORKER_CONTAINER = f"worker-{DEV_WORKER}"
+BACKEND_TASK = "11111111-aaaa-4444-8888-000000000001"
+BOT_TASK = "11111111-aaaa-4444-8888-000000000002"
+BACKEND_DESCRIPTION = "Add GET /level1/marker to the backend, answering this run's marker."
+BOT_DESCRIPTION = "Add the /level1 command to the Telegram bot."
+LEVEL1_CRITERIA = (
+    "GET /level1/marker answers 200 with this run's marker.\n"
+    'The bot replies "level-1 ready" to /level1.'
+)
+STORY_MD = "# Story: level-1 bot\n\n- backend endpoint\n- bot command\n"
+
+
+@pytest.fixture
+def workspace(tmp_path: Path) -> Path:
+    """The one host directory every attempt of a repository shares."""
+    directory = tmp_path / "workspaces" / "live-test-repo"
+    (directory / ".story").mkdir(parents=True)
+    return directory
+
+
+def task_md(description: str, criteria: str | None = None) -> str:
+    """A TASK.md shaped like the one `build_feature_task` writes."""
+    criteria_section = (
+        ""
+        if criteria is None
+        else (
+            "\n## Acceptance Criteria (QA checks these literally)\n\n"
+            "QA judges this task by the criteria below, word for word.\n\n"
+            f"{criteria}\n"
+        )
+    )
+    return (
+        f"# Task: Add Feature in {REPO}\n\n## What To Do\n\n{description}\n"
+        f"{criteria_section}\n## Project Context\n\n**Name**: {REPO}\n"
+    )
+
+
+def write_turn(workspace: Path, *, task: str, story: str | None = STORY_MD, at: datetime) -> None:
+    """One worker turn writing its documents into the shared workspace."""
+    stamp = at.timestamp()
+    (workspace / "TASK.md").write_text(task, encoding="utf-8")
+    os.utime(workspace / "TASK.md", (stamp, stamp))
+    story_path = workspace / ".story" / "STORY.md"
+    if story is None:
+        story_path.unlink(missing_ok=True)
+        return
+    story_path.write_text(story, encoding="utf-8")
+    os.utime(story_path, (stamp, stamp))
+
+
+def developer_docker(
+    workspace: Path, transcripts: Path, *, exit_code: int | None = 0
+) -> FakeDocker:
+    docker = FakeDocker()
+    docker.add(
+        DEV_WORKER_CONTAINER,
+        container_payload(
+            worker_id=DEV_WORKER,
+            agent_type=FREE_AGENT_TYPE,
+            exit_code=exit_code,
+            transcript_source=str(transcripts),
+            attempt_id=BACKEND_TASK,
+            workspace_source=str(workspace),
+        ),
+        f"scripted runner applied the change set worker_id={DEV_WORKER}",
+    )
+    return docker
+
+
+def level1_ctx(**overrides) -> dict:
+    ctx = {
+        "task_ids": [BACKEND_TASK, BOT_TASK],
+        run_evidence.TASK_DESCRIPTIONS_CTX_KEY: {
+            BACKEND_TASK: BACKEND_DESCRIPTION,
+            BOT_TASK: BOT_DESCRIPTION,
+        },
+    }
+    ctx.update(overrides)
+    return ctx
+
+
+def captured_text(attempt: dict, name: str) -> str:
+    return attempt["documents"][name]["readings"][0]["body"]["value"]["text"]
+
+
+def test_both_tasks_of_one_reused_worker_keep_the_document_they_were_given(workspace, transcripts):
+    """One container, one workspace file, two attempts — and two documents kept.
+
+    This is the level-1 run: its story's worker is reused for both tasks
+    (`verify_linear_noop_story_completion` requires exactly one developer worker
+    id), so the second turn overwrites `/workspace/TASK.md` in place. A capture
+    that read the file once, at teardown, would file the bot task's document
+    under both attempts; the pass that saw the first one is the only place it
+    exists.
+    """
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+
+    collector.capture()
+    # The worker finishes the backend task and starts the bot task.
+    write_turn(workspace, task=task_md(BOT_DESCRIPTION), at=RUN_START + timedelta(seconds=40))
+    collector.capture()
+
+    instructions = run_evidence.developer_instructions(level1_ctx(), collector.records())
+
+    assert [attempt["attempt_id"] for attempt in instructions["attempts"]] == [
+        BACKEND_TASK,
+        BOT_TASK,
+    ]
+    backend, bot = instructions["attempts"]
+    assert BACKEND_DESCRIPTION in captured_text(backend, run_evidence.TASK_DOCUMENT)
+    assert BOT_DESCRIPTION not in captured_text(backend, run_evidence.TASK_DOCUMENT)
+    assert BOT_DESCRIPTION in captured_text(bot, run_evidence.TASK_DOCUMENT)
+    # Both attempts carry the story document the same turns wrote beside them.
+    assert captured_text(backend, run_evidence.STORY_DOCUMENT) == STORY_MD
+    assert captured_text(bot, run_evidence.STORY_DOCUMENT) == STORY_MD
+
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+    assert instructions["complete"]["value"] == {
+        "attempts": 2,
+        "documents": sorted(
+            f"{task}/{name}"
+            for task in (BACKEND_TASK, BOT_TASK)
+            for name in (run_evidence.TASK_DOCUMENT, run_evidence.STORY_DOCUMENT)
+        ),
+    }
+    # The ledger keeps both readings and no body of them twice.
+    ledger = instructions["workspace_readings"][run_evidence.TASK_DOCUMENT]
+    assert len(ledger) == 2
+    assert all("body" not in reading for reading in ledger)
+    assert {reading["worker_id"] for reading in ledger} == {DEV_WORKER}
+
+
+#: The second story of the same project: its own task, its own worker, and the
+#: *same* workspace directory — the manager reuses one persistent checkout per
+#: project, so the extension story's turn rewrites the same `/workspace/TASK.md`
+#: the first story's two turns did.
+EXTENSION_WORKER = "dev-live-test-repo-cc33dd44"
+EXTENSION_TASK = "11111111-aaaa-4444-8888-000000000003"
+EXTENSION_DESCRIPTION = "Add GET /level1/extension to the backend, beside the first story's."
+
+
+def test_a_second_story_on_the_reused_workspace_keeps_its_own_attempt(workspace, transcripts):
+    """Three attempts, two containers, one directory — and three documents kept.
+
+    An attempt is one engineering task of the *run*, not of one story: the
+    level-1 lifecycle runs a second story on the same project, its worker is
+    handed the workspace the first story left behind, and its turn overwrites
+    the same file again. A capture that kept only the current story's roster
+    would file the extension story's document under nothing at all.
+    """
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+    collector.capture()
+    write_turn(workspace, task=task_md(BOT_DESCRIPTION), at=RUN_START + timedelta(seconds=40))
+    collector.capture()
+    # The first story ends; the second story's worker gets the same directory.
+    docker.add(
+        f"worker-{EXTENSION_WORKER}",
+        container_payload(
+            worker_id=EXTENSION_WORKER,
+            agent_type=FREE_AGENT_TYPE,
+            exit_code=0,
+            transcript_source=str(transcripts),
+            attempt_id=EXTENSION_TASK,
+            workspace_source=str(workspace),
+        ),
+        f"scripted runner applied the change set worker_id={EXTENSION_WORKER}",
+    )
+    write_turn(
+        workspace, task=task_md(EXTENSION_DESCRIPTION), at=RUN_START + timedelta(seconds=120)
+    )
+    collector.capture()
+
+    ctx = level1_ctx(
+        **{
+            run_evidence.ENGINEERING_ATTEMPT_TASK_IDS_CTX_KEY: [
+                BACKEND_TASK,
+                BOT_TASK,
+                EXTENSION_TASK,
+            ],
+            run_evidence.TASK_DESCRIPTIONS_CTX_KEY: {
+                BACKEND_TASK: BACKEND_DESCRIPTION,
+                BOT_TASK: BOT_DESCRIPTION,
+                EXTENSION_TASK: EXTENSION_DESCRIPTION,
+            },
+        }
+    )
+    instructions = run_evidence.developer_instructions(ctx, collector.records())
+
+    assert [attempt["attempt_id"] for attempt in instructions["attempts"]] == [
+        BACKEND_TASK,
+        BOT_TASK,
+        EXTENSION_TASK,
+    ]
+    extension = instructions["attempts"][2]
+    assert EXTENSION_DESCRIPTION in captured_text(extension, run_evidence.TASK_DOCUMENT)
+    assert BOT_DESCRIPTION not in captured_text(extension, run_evidence.TASK_DOCUMENT)
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+    assert instructions["complete"]["value"]["attempts"] == 3
+    # The reading that carries it was taken from the *second* story's container,
+    # which is how one reused directory keeps two stories' documents apart.
+    assert extension["documents"][run_evidence.TASK_DOCUMENT]["readings"][0]["worker_id"] == (
+        EXTENSION_WORKER
+    )
+
+
+def test_a_document_read_unchanged_on_many_passes_is_one_reading(workspace, transcripts):
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+
+    collector.capture()
+    collector.capture()
+    collector.capture()
+
+    readings = collector.records()[0]["documents"][run_evidence.TASK_DOCUMENT]["readings"]
+    assert len(readings) == 1
+    assert readings[0]["first_seen_at"] < readings[0]["last_seen_at"]
+
+
+def test_an_attempt_whose_document_was_never_read_is_named_and_is_not_complete(
+    workspace, transcripts
+):
+    """The run only ever saw the first turn, so the second attempt is a stated gap."""
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+    collector.capture()
+
+    instructions = run_evidence.developer_instructions(level1_ctx(), collector.records())
+
+    bot = instructions["attempts"][1]
+    assert bot["documents"][run_evidence.TASK_DOCUMENT]["status"] == (
+        run_evidence.DocumentStatus.UNREADABLE.value
+    )
+    complete = instructions["complete"]
+    assert complete["status"] == CaptureStatus.MISSED.value
+    assert complete["value"] is None
+    assert f"attempt {BOT_TASK}: TASK.md is unreadable" in complete["reason"]
+    assert "none of the 1 reading(s)" in complete["reason"]
+    # The attempt that was read is not dragged down with it.
+    assert instructions["attempts"][0]["documents"][run_evidence.TASK_DOCUMENT]["status"] == (
+        run_evidence.DocumentStatus.CAPTURED.value
+    )
+
+
+def test_an_attempt_the_run_never_read_cannot_be_attributed(workspace, transcripts):
+    docker = developer_docker(workspace, transcripts)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+    collector.capture()
+
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(**{run_evidence.TASK_DESCRIPTIONS_CTX_KEY: {}}), collector.records()
+    )
+
+    entry = instructions["attempts"][0]["documents"][run_evidence.TASK_DOCUMENT]
+    assert entry["status"] == run_evidence.DocumentStatus.UNREADABLE.value
+    assert "was never read by this run" in entry["reason"]
+
+
+def test_an_attempt_outside_a_story_states_it_was_given_no_story_document(workspace, transcripts):
+    docker = developer_docker(workspace, transcripts)
+    write_turn(
+        workspace,
+        task=task_md(BACKEND_DESCRIPTION),
+        story=None,
+        at=RUN_START + timedelta(seconds=6),
+    )
+    collector = collector_for(docker)
+    collector.capture()
+
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(task_ids=[BACKEND_TASK]), collector.records()
+    )
+
+    entry = instructions["attempts"][0]["documents"][run_evidence.STORY_DOCUMENT]
+    assert entry["status"] == run_evidence.DocumentStatus.ABSENT.value
+    assert entry["reason"] == run_evidence.STORY_NOT_WRITTEN_REASON
+    # An absent optional document is a fact about the attempt, not a gap.
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def test_a_workspace_the_host_cannot_read_is_a_stated_gap(transcripts, tmp_path):
+    docker = developer_docker(tmp_path / "gone", transcripts)
+    collector = collector_for(docker)
+
+    collector.capture()
+
+    entry = collector.records()[0]["documents"][run_evidence.TASK_DOCUMENT]
+    assert entry["status"] == run_evidence.DocumentStatus.UNREADABLE.value
+    assert "is not a readable directory on the harness host" in entry["reason"]
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(task_ids=[BACKEND_TASK]), collector.records()
+    )
+    complete = instructions["complete"]
+    assert complete["status"] == CaptureStatus.MISSED.value
+    assert "is not a readable directory" in complete["reason"]
+    # Both documents of the attempt are gaps here: nothing was read at all.
+    assert "2 document(s)" in complete["reason"]
+
+
+def test_a_removed_container_says_its_documents_went_with_it(tmp_path):
+    """The one case the capture cannot win, said plainly instead of waited out.
+
+    worker-manager's removal record carries an exit code and a log tail; it
+    carries no workspace document, and nothing here holds the container open to
+    get one. So the attempt is in the artifact with the stated reason.
+    """
+    docker = FakeDocker()
+    docker.delete(DEV_WORKER_CONTAINER)
+    collector = collector_for(docker)
+
+    collector.capture()
+
+    entry = collector.records()[0]["documents"][run_evidence.TASK_DOCUMENT]
+    assert entry["status"] == run_evidence.DocumentStatus.UNREADABLE.value
+    assert entry["reason"] == run_evidence.DOCUMENTS_REMOVED_WITH_CONTAINER_REASON
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(task_ids=[BACKEND_TASK]), collector.records()
+    )
+    assert instructions["complete"]["status"] == CaptureStatus.MISSED.value
+    assert (
+        run_evidence.DOCUMENTS_REMOVED_WITH_CONTAINER_REASON in (instructions["complete"]["reason"])
+    )
+
+
+def test_a_document_already_read_survives_the_container_s_removal(workspace, transcripts):
+    """The removal record replaces the ending, never the reading already held."""
+    docker = developer_docker(workspace, transcripts, exit_code=None)
+    write_turn(workspace, task=task_md(BACKEND_DESCRIPTION), at=RUN_START + timedelta(seconds=6))
+    collector = collector_for(docker)
+    collector.capture()
+
+    docker.delete(DEV_WORKER_CONTAINER, worker_id=DEV_WORKER)
+    collector.capture()
+
+    record = collector.records()[0]
+    assert record["discovered_by"] == Discovery.DELETE_CAPTURE.value
+    assert record["exit_code"]["value"] == 1
+    entry = record["documents"][run_evidence.TASK_DOCUMENT]
+    # The latest pass could read nothing, and says so …
+    assert entry["status"] == run_evidence.DocumentStatus.UNREADABLE.value
+    # … while what an earlier pass read is still here.
+    assert BACKEND_DESCRIPTION in entry["readings"][0]["body"]["value"]["text"]
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(task_ids=[BACKEND_TASK]), collector.records()
+    )
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def test_a_qa_executor_is_not_an_engineering_attempt(transcripts, tmp_path):
+    """A QA executor is given a probe command, not the developer's documents."""
+    docker = FakeDocker()
+    docker.add(
+        QA_CONTAINER,
+        container_payload(
+            worker_id=QA_WORKER_ID,
+            agent_type="claude",
+            exit_code=0,
+            transcript_source=str(transcripts),
+            worker_type="qa",
+            attempt_id="qa-run-1",
+            workspace_source=str(tmp_path),
+        ),
+        "qa executor said something",
+    )
+    collector = collector_for(docker)
+
+    collector.capture()
+
+    documents = collector.records()[0]["documents"]
+    assert {entry["status"] for entry in documents.values()} == {
+        run_evidence.DocumentStatus.NOT_APPLICABLE.value
+    }
+    instructions = run_evidence.developer_instructions({}, collector.records())
+    assert instructions["attempts"] == []
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+
+
+def criteria_instructions(workspace, transcripts, *, written: str, expected: str | None) -> dict:
+    docker = developer_docker(workspace, transcripts)
+    write_turn(
+        workspace,
+        task=task_md(BACKEND_DESCRIPTION, written),
+        at=RUN_START + timedelta(seconds=6),
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    ctx = level1_ctx(task_ids=[BACKEND_TASK])
+    if expected is not None:
+        ctx[run_evidence.TASK_ACCEPTANCE_CRITERIA_CTX_KEY] = {BACKEND_TASK: expected}
+    return run_evidence.developer_instructions(ctx, collector.records())
+
+
+def test_the_captured_task_document_quotes_the_task_s_criteria_verbatim(workspace, transcripts):
+    instructions = criteria_instructions(
+        workspace, transcripts, written=LEVEL1_CRITERIA, expected=f"\n{LEVEL1_CRITERIA}\n"
+    )
+
+    check = instructions["attempts"][0]["acceptance_criteria"]
+    assert check["status"] == run_evidence.CriteriaCheck.QUOTED.value
+    assert check["task_id"] == BACKEND_TASK
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == []
+
+
+def test_the_verbatim_check_fails_when_the_criteria_were_altered(workspace, transcripts):
+    """A paraphrase is not a quote, and neither is one changed quotation mark."""
+    altered = LEVEL1_CRITERIA.replace('"level-1 ready"', "'level-1 ready'")
+    instructions = criteria_instructions(
+        workspace, transcripts, written=altered, expected=LEVEL1_CRITERIA
+    )
+
+    check = instructions["attempts"][0]["acceptance_criteria"]
+    assert check["status"] == run_evidence.CriteriaCheck.NOT_QUOTED.value
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == [check["detail"]]
+    assert "do not appear in the captured" in check["detail"]
+
+
+def test_a_prefix_of_the_criteria_does_not_answer_for_them(workspace, transcripts):
+    instructions = criteria_instructions(
+        workspace,
+        transcripts,
+        written=LEVEL1_CRITERIA[: len(LEVEL1_CRITERIA) // 2],
+        expected=LEVEL1_CRITERIA,
+    )
+
+    assert (
+        instructions["attempts"][0]["acceptance_criteria"]["status"]
+        == run_evidence.CriteriaCheck.NOT_QUOTED.value
+    )
+
+
+def test_an_uncaptured_task_document_cannot_claim_its_criteria_are_quoted(transcripts, tmp_path):
+    docker = developer_docker(tmp_path / "gone", transcripts)
+    collector = collector_for(docker)
+    collector.capture()
+
+    instructions = run_evidence.developer_instructions(
+        level1_ctx(
+            task_ids=[BACKEND_TASK],
+            **{run_evidence.TASK_ACCEPTANCE_CRITERIA_CTX_KEY: {BACKEND_TASK: LEVEL1_CRITERIA}},
+        ),
+        collector.records(),
+    )
+
+    check = instructions["attempts"][0]["acceptance_criteria"]
+    assert check["status"] == run_evidence.CriteriaCheck.NOT_QUOTED.value
+    assert "is unreadable" in check["detail"]
+
+
+def test_a_task_with_no_criteria_and_a_task_never_read_are_different_answers(
+    workspace, transcripts
+):
+    no_criteria = criteria_instructions(workspace, transcripts, written="", expected="")
+    unread = criteria_instructions(workspace, transcripts, written="", expected=None)
+
+    assert (
+        no_criteria["attempts"][0]["acceptance_criteria"]["status"]
+        == run_evidence.CriteriaCheck.NO_CRITERIA.value
+    )
+    assert (
+        unread["attempts"][0]["acceptance_criteria"]["status"]
+        == run_evidence.CriteriaCheck.CRITERIA_UNREAD.value
+    )
+    # Neither is a failure of the verbatim assertion: there is nothing to quote,
+    # and nothing known to quote.
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(no_criteria) == []
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(unread) == []
+
+
+def test_a_free_run_retains_what_its_developer_was_told(workspace, transcripts, tmp_path):
+    """No price condition: the level-1 run is free and still keeps its documents."""
+    docker = developer_docker(workspace, transcripts)
+    write_turn(
+        workspace,
+        task=task_md(BACKEND_DESCRIPTION, LEVEL1_CRITERIA),
+        at=RUN_START + timedelta(seconds=6),
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        agent_type=FREE_AGENT_TYPE,
+        qa_requires_executor=False,
+        task_id=BACKEND_TASK,
+        task_ids=[BACKEND_TASK],
+        **{
+            run_evidence.TASK_DESCRIPTIONS_CTX_KEY: {BACKEND_TASK: BACKEND_DESCRIPTION},
+            run_evidence.TASK_ACCEPTANCE_CRITERIA_CTX_KEY: {BACKEND_TASK: LEVEL1_CRITERIA},
+        },
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path, now=RUN_START + timedelta(seconds=300))
+
+    assert artifact["verdict"]["paid"] is False
+    # The free route retains none of the three paid bodies …
+    assert "agent_report" not in artifact["workers"][0]
+    # … and still says what this attempt was told.
+    instructions = artifact["developer_instructions"]
+    assert instructions["complete"]["status"] == CaptureStatus.CAPTURED.value
+    assert BACKEND_DESCRIPTION in captured_text(
+        instructions["attempts"][0], run_evidence.TASK_DOCUMENT
+    )
+    assert (
+        instructions["attempts"][0]["acceptance_criteria"]["status"]
+        == run_evidence.CriteriaCheck.QUOTED.value
+    )
+
+
+# --- The level-1 assertion, in the shape the live run has ---------------------
+#
+# Two attempts of one story, one reused worker, criteria planned per task. The
+# live suite asserts `attempts_without_quoted_acceptance_criteria(...) == []`,
+# and these are the ways that has to go red — including the one that made the
+# permissive helper vacuous: a task nobody gave acceptance criteria to.
+
+BOT_CRITERIA = (
+    "- The deployed bot answers the command /level1 with exactly "
+    '"level-1 marker: e2e-abc123def456".\n'
+    "- The command menu the running bot publishes lists /level1."
+)
+
+
+def two_turn_instructions(
+    workspace, transcripts, *, backend_written: str, bot_written: str, criteria: dict
+) -> dict:
+    """One worker, two turns, each turn's TASK.md read by the pass that saw it."""
+    docker = developer_docker(workspace, transcripts)
+    write_turn(
+        workspace,
+        task=task_md(BACKEND_DESCRIPTION, backend_written),
+        at=RUN_START + timedelta(seconds=6),
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    write_turn(
+        workspace,
+        task=task_md(BOT_DESCRIPTION, bot_written),
+        at=RUN_START + timedelta(seconds=40),
+    )
+    collector.capture()
+    return run_evidence.developer_instructions(
+        level1_ctx(**{run_evidence.TASK_ACCEPTANCE_CRITERIA_CTX_KEY: criteria}),
+        collector.records(),
+    )
+
+
+def test_the_level1_assertion_passes_when_every_attempt_quotes_its_own_criteria(
+    workspace, transcripts
+):
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA,
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: BOT_CRITERIA},
+    )
+
+    assert [attempt["acceptance_criteria"]["status"] for attempt in instructions["attempts"]] == [
+        run_evidence.CriteriaCheck.QUOTED.value
+    ] * 2
+    assert run_evidence.attempts_without_quoted_acceptance_criteria(instructions) == []
+
+
+def test_the_level1_assertion_fails_when_one_attempt_s_criteria_were_altered(
+    workspace, transcripts
+):
+    """Card 1301's quoting regressing on one of the two tasks turns the run red."""
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA.replace('"level-1 marker:', "'level-1 marker:"),
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: BOT_CRITERIA},
+    )
+
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert BOT_TASK in failures[0]
+    assert "do not appear in the captured" in failures[0]
+
+
+def test_the_level1_assertion_fails_when_a_task_carries_no_criteria(workspace, transcripts):
+    """The vacuum this round closes, stated as a test.
+
+    The permissive helper answers `[]` for a plan that asked for nothing — which
+    is why the live assertion reads the strict one. Both are asserted here
+    together so the difference cannot be lost in a later edit.
+    """
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written="",
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA, BOT_TASK: ""},
+    )
+
+    assert run_evidence.attempts_not_quoting_acceptance_criteria(instructions) == []
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert f"task {BOT_TASK} carries no acceptance criteria" in failures[0]
+
+
+def test_the_level1_assertion_fails_when_the_criteria_were_never_read(workspace, transcripts):
+    instructions = two_turn_instructions(
+        workspace,
+        transcripts,
+        backend_written=LEVEL1_CRITERIA,
+        bot_written=BOT_CRITERIA,
+        criteria={BACKEND_TASK: LEVEL1_CRITERIA},
+    )
+
+    failures = run_evidence.attempts_without_quoted_acceptance_criteria(instructions)
+    assert len(failures) == 1
+    assert "was never read by this run" in failures[0]
+
+
+# ── The run's two proofs about itself, in the document a reader has ──────
+#
+# Stand run 35486586267 failed on both of them and the artifact it wrote named
+# neither: no residue section, no intervention section, and `capture_errors`
+# empty. The reason the run was red existed only in the suite's stderr, which is
+# not evidence anybody keeps. These drive the real recorders — the ones the live
+# fixture calls — and then read the document.
+
+
+def _proofs_ctx(collector, **overrides) -> dict:
+    return base_ctx(
+        collector,
+        manifest=SimpleNamespace(run_id=RUN_ID, resources=[]),
+        **overrides,
+    )
+
+
+def _clean_residue_ops():
+    return run_residue.ResidueOps(
+        run_labelled_containers=lambda _run: [],
+        compose_project_containers=lambda _project: [],
+        off_host_residue=lambda _inventory: {
+            kind: {RESIDUE_FINDINGS_KEY: []}
+            for kind in ("github_repository", "registry_repositories", "target_containers")
+        },
+        workspace_entries=lambda _entries: [],
+        redis_keys=lambda _patterns: [],
+        story_worker_bindings=lambda _stories: [],
+        po_checkpoint_rows=lambda _inventory: [],
+    )
+
+
+def _record_residue(monkeypatch, ctx: dict, ops) -> None:
+    """Drive the real residue recorder, whatever it ends up proving."""
+    monkeypatch.setattr(run_residue, "host_residue_ops", lambda *_args: (ops, lambda _entries: []))
+    try:
+        pipeline_helpers.prove_nothing_left(ctx, object())
+    except live_harness.CleanupError:
+        pass
+
+
+async def _record_intervention(ctx: dict, notification: httpx.Response) -> None:
+    """Drive the real zero-intervention recorder against a fake control plane."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/stories/":
+            return httpx.Response(
+                200,
+                json=[{"id": "story-1", "status": "completed", "quarantine_reason": None}],
+            )
+        return notification
+
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handle)
+    ) as api:
+        await pipeline_helpers.record_no_intervention(api, ctx, command=lambda *_args: [])
+
+
+class TestBothProofsExplainThemselvesInTheArtifact:
+    def test_a_proven_run_carries_both_verdicts_and_every_question_asked(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        ctx = _proofs_ctx(
+            collector_for(codex_docker),
+            run_po_input_cursor="0-0",
+            po_thread_id="po-chat-999000001",
+            po_checkpoint_snapshot={"checkpoints": ["|1f0-aaa"]},
+        )
+        asyncio.run(_record_intervention(ctx, httpx.Response(404, json={"detail": "none"})))
+        _record_residue(monkeypatch, ctx, _clean_residue_ops())
+
+        proofs = build_artifact(ctx, root=tmp_path)["proofs"]
+
+        for name in ("intervention", "residue"):
+            section = proofs[name]
+            assert section["status"] == CaptureStatus.CAPTURED.value, section
+            assert section["value"]["outcome"] == "proven"
+            assert section["value"]["failures"] == []
+        assert {check["kind"] for check in proofs["residue"]["value"]["checks"]} == set(
+            run_residue.RESIDUE_KINDS
+        )
+        assert {check["kind"] for check in proofs["intervention"]["value"]["checks"]} == set(
+            run_intervention.INTERVENTION_KINDS
+        )
+
+    def test_a_kind_that_could_not_be_asked_carries_its_reason(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        """The residue failure of run 35486586267, as the document would hold it."""
+        ctx = _proofs_ctx(
+            collector_for(codex_docker),
+            po_thread_id="po-chat-999000001",
+            po_checkpoint_snapshot=None,
+            po_checkpoint_snapshot_error="PoCheckpointError: reading the tables failed",
+        )
+        _record_residue(monkeypatch, ctx, _clean_residue_ops())
+
+        residue = build_artifact(ctx, root=tmp_path)["proofs"]["residue"]["value"]
+        po = next(check for check in residue["checks"] if check["kind"] == "po_checkpoint_thread")
+        assert residue["outcome"] == "unproven"
+        assert po["outcome"] == "unaskable"
+        assert "reading the tables failed" in po["unaskable_reason"]
+        assert any("po_checkpoint_thread" in failure for failure in residue["failures"])
+
+    def test_a_park_the_run_owns_is_named_in_the_document(
+        self, monkeypatch, codex_docker, tmp_path
+    ):
+        ctx = _proofs_ctx(collector_for(codex_docker), run_po_input_cursor="0-0")
+        asyncio.run(
+            _record_intervention(
+                ctx,
+                httpx.Response(
+                    200,
+                    json={"event": "story_blocked", "state": "owed", "story_id": "story-1"},
+                ),
+            )
+        )
+
+        intervention = build_artifact(ctx, root=tmp_path)["proofs"]["intervention"]["value"]
+        assert intervention["outcome"] == "unproven"
+        assert any("waiting_human_review" in failure for failure in intervention["failures"])
+
+    def test_a_proof_that_was_never_taken_says_so_rather_than_reading_as_clean(
+        self, codex_docker, tmp_path
+    ):
+        """The shape of run 35486586267's document: neither section existed at all."""
+        proofs = build_artifact(_proofs_ctx(collector_for(codex_docker)), root=tmp_path)["proofs"]
+
+        for name in ("intervention", "residue"):
+            section = proofs[name]
+            assert section["status"] == CaptureStatus.MISSED.value
+            assert section["value"] is None
+            assert section["reason"] == run_evidence.PROOF_SECTIONS[name][1]

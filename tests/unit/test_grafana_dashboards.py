@@ -75,3 +75,5 @@ def test_runs_dashboard_exposes_outcomes_retries_and_effort_without_zero_fallbac
     assert "NULLIF" in queries
     assert "COALESCE(total_tokens, 0)" not in queries
     assert "COALESCE(cost_usd, 0)" not in queries
+    assert "r.total_tokens" not in queries
+    assert "r.cost_usd" not in queries

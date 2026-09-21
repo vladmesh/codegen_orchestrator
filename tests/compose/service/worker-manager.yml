@@ -106,6 +106,7 @@ services:
     volumes:
       - ../../../services/worker-manager/src:/app/src
       - ../../../services/worker-manager/tests:/app/tests
+      - ../../../services/scheduler/src/tasks:/app/scheduler_tasks:ro
       - ../../../shared:/app/shared
       - /var/run/docker.sock:/var/run/docker.sock
       - workspaces:/data/workspaces

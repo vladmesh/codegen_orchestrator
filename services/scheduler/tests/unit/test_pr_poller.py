@@ -3,9 +3,16 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
+from _run_routing_factories import _make_story as _routing_make_story
 import pytest
 
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.user import UserDTO
+from shared.contracts.vocab import OwnerNotificationEvent
+from shared.queues import PO_INPUT_QUEUE
 from src.tasks.image_publication import ImagePublication, PublicationVerdict
 from src.tasks.pr_poller import (
     _failure_fingerprint,
@@ -299,6 +306,193 @@ async def test_skips_unmerged_pr(mock_gh_cls):
 
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_app_merges_open_pr_without_auto_merge_after_green_checks(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = _published_ci_run()
+    gh.get_pull_request.side_effect = [
+        {
+            "number": 42,
+            "state": "open",
+            "merged_at": None,
+            "auto_merge": None,
+            "mergeable_state": "clean",
+            "head": {"sha": "a" * 40},
+        },
+        {
+            "number": 42,
+            "state": "closed",
+            "merged_at": "2026-09-20T21:18:00Z",
+            "merge_commit_sha": "e" * 40,
+            "head": {"sha": "a" * 40},
+        },
+    ]
+    gh.merge_pull_request.return_value = {"merged": True, "sha": "e" * 40}
+
+    assert await poll_merged_prs(api, redis) == 1
+
+    gh.merge_pull_request.assert_awaited_once_with("org", "my-repo", 42)
+    api.transition_story.assert_awaited_once_with("story-1", "deploy")
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_open_pr_without_auto_merge_waits_while_checks_are_pending(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "unknown",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.merge_pull_request.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_behind_open_pr_updates_branch_and_waits_for_rerun(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "behind",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.update_pull_request_branch.assert_awaited_once_with("org", "my-repo", 42)
+    gh.merge_pull_request.assert_not_awaited()
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_behind_branch_update_refusal_parks_once(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "behind",
+        "head": {"sha": "a" * 40},
+    }
+    gh.update_pull_request_branch.side_effect = RuntimeError("Update branch conflict")
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_app_update_branch_refused"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_closed_unmerged_pr_parks_once(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "closed",
+        "merged_at": None,
+        "auto_merge": None,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_pull_request_closed_unmerged"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.deliver_owed_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.owe_story_owner_notification", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_app_merge_refusal_parks_and_notifies(mock_gh_cls, owe, deliver, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "state": "open",
+        "merged_at": None,
+        "auto_merge": None,
+        "mergeable_state": "clean",
+        "head": {"sha": "a" * 40},
+    }
+    gh.merge_pull_request.return_value = {"merged": False, "message": "Branch is protected"}
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    reason = api.update_story.await_args.args[1]["quarantine_reason"]
+    assert reason["reason"] == "github_app_merge_refused"
+    assert reason["detail"] == "Branch is protected"
+    owe.assert_awaited_once()
+    api.transition_story.assert_awaited_once_with("story-1", "human-review")
+    deliver.assert_awaited_once()
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     """QA fix cycle: story has pr_number=5 (the fix PR).
     Old PR #3 is also merged on same branch — but we only look at #5.
@@ -495,6 +689,7 @@ async def test_story_ci_failure_redacts_task_and_timeline_evidence(monkeypatch):
         await _handle_failed_run(
             api,
             github,
+            AsyncMock(),
             owner="org",
             repo_name="repo",
             story_id="story-1",
@@ -546,6 +741,7 @@ async def test_handle_failed_run_recovers_transient_details_on_a_later_poll():
         await _handle_failed_run(
             api,
             github,
+            AsyncMock(),
             owner="org",
             repo_name="repo",
             story_id="story-1",
@@ -572,6 +768,7 @@ async def test_handle_failed_run_recovers_transient_details_on_a_later_poll():
         await _handle_failed_run(
             api,
             github,
+            AsyncMock(),
             owner="org",
             repo_name="repo",
             story_id="story-1",
@@ -631,7 +828,7 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.create_task.side_effect = lambda *_: effects.append("task")
     api.retry_story_after_ci_failure.side_effect = lambda *_: effects.append("retry")
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
     task = api.create_task.call_args.args[0]
     evidence = task["failure_metadata"]["ci_failure"]
     assert evidence == {
@@ -693,7 +890,7 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.update_story.reset_mock()
     story.generated_product_timeline = None
     gh.get_workflow_failure_details.reset_mock()
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
     api.create_task.assert_not_awaited()
     gh.get_workflow_failure_details.assert_awaited_once()
     repeated = api.update_story.await_args.args[1]["generated_product_timeline"]
@@ -702,7 +899,7 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     story.generated_product_timeline = repeated
     api.update_story.reset_mock()
     gh.get_workflow_failure_details.reset_mock()
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
     api.update_story.assert_not_awaited()
     gh.get_workflow_failure_details.assert_not_awaited()
 
@@ -740,7 +937,7 @@ async def test_run_34162226616_timeline_survives_fix_task_creation_failure(mock_
         "head": {"sha": "bad-head"},
     }
 
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
 
     timeline = api.update_story.await_args.args[1]["generated_product_timeline"]
     assert timeline["ci_runs"][0]["id"] == 34162226616
@@ -764,7 +961,7 @@ async def test_ci_failure_retry_is_one_server_side_move(mock_gh_cls):
         "unavailable_reason": None,
     }
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
 
     api.retry_story_after_ci_failure.assert_awaited_once_with("story-1")
     # No lifecycle sequencing is left on the client side: three `fail`/`reopen`/
@@ -792,7 +989,7 @@ async def test_ci_registry_setup_failure_tells_worker_not_to_change_code(mock_gh
         "unavailable_reason": None,
     }
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
 
     description = api.create_task.call_args.args[0]["description"]
     assert "CI infrastructure failure" in description
@@ -821,7 +1018,7 @@ async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cl
         api.get_tasks_by_story.return_value = prior
         gh.get_latest_workflow_run.return_value = _failed_run(run_id, f"sha-{run_id}")
         api.create_task.return_value.id = f"fix-{run_id}"
-        assert await poll_ci_failures(api) == 1
+        assert await poll_ci_failures(api, AsyncMock()) == 1
         created = api.create_task.call_args.args[0]
         task = AsyncMock()
         task.failure_metadata = created["failure_metadata"]
@@ -830,7 +1027,7 @@ async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cl
     api.get_tasks_by_story.return_value = prior
     gh.get_latest_workflow_run.return_value = _failed_run(203, "sha-203")
     api.create_task.reset_mock()
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
     api.create_task.assert_not_awaited()
     api.transition_story.assert_awaited_with("story-1", "human-review")
     notify.assert_awaited_once()
@@ -868,9 +1065,9 @@ async def test_exhausted_failure_retries_story_transition(mock_gh_cls, notify):
     api.get_tasks_by_story.return_value = prior
     api.transition_story.side_effect = [RuntimeError("temporary"), None]
 
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
     notify.assert_not_awaited()
-    assert await poll_ci_failures(api) == 0
+    assert await poll_ci_failures(api, AsyncMock()) == 0
 
     assert api.transition_story.await_count == 2
     notify.assert_awaited_once()
@@ -890,7 +1087,7 @@ async def test_ci_failure_records_details_unavailability(mock_gh_cls):
     gh.get_latest_workflow_run.return_value = _failed_run(301, "sha-301")
     gh.get_workflow_failure_details.side_effect = RuntimeError("token leaked if copied")
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
     task = api.create_task.call_args.args[0]
     assert task["failure_metadata"]["ci_failure"]["details_unavailable_reason"] == "RuntimeError"
     assert "token leaked" not in task["description"]
@@ -918,7 +1115,7 @@ async def test_ci_failure_marks_unavailable_failed_job_log(mock_gh_cls):
         "unavailable_reason": None,
     }
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
 
     description = api.create_task.call_args.args[0]["description"]
     assert "Failed step: Set up Docker Buildx" in description
@@ -947,7 +1144,7 @@ async def test_ci_failure_marks_empty_failed_job_log(mock_gh_cls):
         "unavailable_reason": None,
     }
 
-    assert await poll_ci_failures(api) == 1
+    assert await poll_ci_failures(api, AsyncMock()) == 1
 
     description = api.create_task.call_args.args[0]["description"]
     assert "Job log unavailable: GitHub job log was empty" in description
@@ -1142,3 +1339,164 @@ async def test_a_merge_with_no_merge_commit_deploys_nothing(mock_gh_cls):
     gh.get_latest_workflow_run.assert_not_awaited()
     api.create_run.assert_not_awaited()
     redis.publish_message.assert_not_awaited()
+
+
+class _OwnerWorld:
+    """The API and stream a parked story's owner notification actually meets.
+
+    The seam's promise is about what the *next* process reads, so the pieces the
+    delivery consults are real: the story whose status the record is checked
+    against, the project and user the recipient is resolved from, and the record
+    the API keeps. Everything else on the client stays an `AsyncMock`.
+    """
+
+    PROJECT_ID = "00000000-0000-0000-0000-000000000001"
+    OWNER_USER_ID = 4242
+    OWNER_CHAT_ID = "900004242"
+
+    def __init__(self, api, *, status=StoryStatus.PR_REVIEW):
+        self.story = _routing_make_story(
+            id="story-1", project_id=self.PROJECT_ID, status=status.value
+        )
+        self.record: dict | None = None
+        self.published: list[dict] = []
+        api.get_story = AsyncMock(side_effect=self._get_story)
+        api.transition_story = AsyncMock(side_effect=self._transition_story)
+        api.update_story_owner_notification = AsyncMock(side_effect=self._write_record)
+        api.get_project = AsyncMock(return_value=self._project())
+        api.get_user = AsyncMock(return_value=self._owner())
+
+    def _project(self) -> ProjectDTO:
+        return ProjectDTO(
+            id=UUID(self.PROJECT_ID),
+            initiating_run_id="test-run-1",
+            title="Test Project",
+            slug="test-project",
+            status=ProjectStatus.ACTIVE,
+            config={},
+            owner_id=self.OWNER_USER_ID,
+            created_at=datetime.now(UTC),
+        )
+
+    def _owner(self) -> UserDTO:
+        return UserDTO(
+            id=self.OWNER_USER_ID,
+            telegram_id=int(self.OWNER_CHAT_ID),
+            is_admin=False,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+    async def _get_story(self, story_id: str):
+        assert story_id == self.story.id
+        return self.story
+
+    async def _transition_story(self, story_id: str, action: str):
+        assert (story_id, action) == (self.story.id, "human-review")
+        self.story = self.story.model_copy(update={"status": StoryStatus.WAITING_HUMAN_REVIEW})
+        return self.story
+
+    async def _write_record(self, story_id: str, record: dict) -> None:
+        assert story_id == self.story.id
+        self.record = record
+
+    def redis(self):
+        client = AsyncMock()
+        client.publish_flat = AsyncMock(side_effect=self._publish_flat)
+        return client
+
+    async def _publish_flat(self, queue: str, fields: dict) -> None:
+        assert queue == PO_INPUT_QUEUE
+        self.published.append(fields)
+
+    @property
+    def owner_message(self) -> dict:
+        assert len(self.published) == 1, self.published
+        return self.published[0]
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_story_parked_for_unpublished_images_tells_its_owner(mock_gh_cls, notify):
+    """The refusal reaches the owner, not only the administrators.
+
+    The story leaves PR_REVIEW here and no later tick scans it, so this is the
+    only moment the owner can be told their product stopped moving.
+    """
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    world = _OwnerWorld(api)
+    redis = world.redis()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    gh.get_latest_workflow_run.return_value = {
+        "id": 900,
+        "status": "completed",
+        "conclusion": "failure",
+        "html_url": "https://github.com/org/my-repo/actions/runs/900",
+        "created_at": "2026-03-20T03:16:00Z",
+        "head_sha": "e" * 40,
+    }
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [{"name": "build-and-push", "failed_steps": ["Build image"]}],
+        "unavailable_reason": None,
+    }
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "merge_commit_sha": "e" * 40,
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    message = world.owner_message
+    assert message["event"] == OwnerNotificationEvent.STORY_BLOCKED.value
+    assert message["telegram_chat_id"] == world.OWNER_CHAT_ID
+    assert message["story_id"] == "story-1"
+    assert "nothing more happens automatically" in message["text"]
+    # Owed before the transition and settled after it: the owner is told, or the
+    # obligation outlives this process.
+    assert world.record["state"] == "delivered"
+    assert world.record["event"] == OwnerNotificationEvent.STORY_BLOCKED.value
+    # The administrators still hear about it.
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_story_whose_ci_fix_budget_ran_out_tells_its_owner(mock_gh_cls, notify):
+    """Exhausted automatic retries are an ending, and endings reach the owner."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    world = _OwnerWorld(api)
+    redis = world.redis()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    details = {
+        "failed_jobs": [{"name": "lint", "failed_steps": ["Ruff"]}],
+        "unavailable_reason": None,
+    }
+    gh.get_workflow_failure_details.return_value = details
+    gh.get_latest_workflow_run.return_value = _failed_run(203, "sha-203")
+    fingerprint = _failure_fingerprint(details["failed_jobs"], None)
+    prior = []
+    for run_id in (201, 202):
+        task = AsyncMock()
+        task.failure_metadata = {"ci_failure": {"run_id": run_id, "fingerprint": fingerprint}}
+        prior.append(task)
+    api.get_tasks_by_story.return_value = prior
+
+    assert await poll_ci_failures(api, redis) == 0
+
+    message = world.owner_message
+    assert message["event"] == OwnerNotificationEvent.STORY_BLOCKED.value
+    assert message["telegram_chat_id"] == world.OWNER_CHAT_ID
+    assert "nothing more happens automatically" in message["text"]
+    assert world.record["state"] == "delivered"
+    api.create_task.assert_not_awaited()
+    notify.assert_awaited_once()

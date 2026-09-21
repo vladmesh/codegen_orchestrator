@@ -1,6 +1,6 @@
 """Common schemas."""
 
-from .actions import AdminAction, FromRepoRequest, SpawnWorkerRequest
+from .actions import AdminAction, E2ERunAction, FromRepoRequest, SpawnWorkerRequest
 from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
 from .application import (
@@ -45,6 +45,7 @@ from .task import (
     TaskUpdate,
 )
 from .temporary_access import (
+    TemporaryAccessDrainCommand,
     TemporaryAccessEscalation,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantRead,
@@ -54,6 +55,7 @@ from .user import UserCreate, UserRead, UserUpsert
 
 __all__ = [
     "AdminAction",
+    "E2ERunAction",
     "FromRepoRequest",
     "SpawnWorkerRequest",
     "AgentConfigCreate",
@@ -109,6 +111,7 @@ __all__ = [
     "TaskRead",
     "TaskTransition",
     "TaskUpdate",
+    "TemporaryAccessDrainCommand",
     "TemporaryAccessEscalation",
     "TemporaryAccessGrantCreate",
     "TemporaryAccessGrantRead",

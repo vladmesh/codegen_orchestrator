@@ -4,9 +4,9 @@ from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock, call
 
 import docker as docker_sdk
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+import pytest
 
 from src.routers._shared import safe_resolve
 from src.routers.introspect import router as introspect_router
@@ -74,14 +74,16 @@ class TestListWorkers:
                 "story:workers": {},
                 "worker:status:w1": {"status": "RUNNING"},
                 "worker:meta:w1": {
-                    "workspace_path": "/tmp/ws/w1/workspace",
+                    # Fixture path; no host temporary file is created.
+                    "workspace_path": "/tmp/ws/w1/workspace",  # noqa: S108
                     "dev_network": "dev_proj_w1",
                     "project_id": "p1",
                 },
                 "worker:active-turn:w1": {},
                 "worker:status:w2": {"status": "PAUSED"},
                 "worker:meta:w2": {
-                    "workspace_path": "/tmp/ws/w2/workspace",
+                    # Fixture path; no host temporary file is created.
+                    "workspace_path": "/tmp/ws/w2/workspace",  # noqa: S108
                     "dev_network": "dev_proj_w2",
                 },
                 "worker:active-turn:w2": {},
@@ -118,7 +120,8 @@ class TestListWorkers:
             side_effect=lambda key: {
                 "story:workers": {},
                 "worker:status:w1": {"status": "RUNNING"},
-                "worker:meta:w1": {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},
+                # Fixture path; no host temporary file is created.
+                "worker:meta:w1": {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},  # noqa: S108
                 "worker:active-turn:w1": {},
             }[key]
         )
@@ -151,7 +154,9 @@ class TestListWorkers:
         data = resp.json()
         assert data[0]["status"] == "COMPLETED"
 
-    def test_inventory_keeps_container_process_lease_binding_and_waiter_separate(self, redis, docker):
+    def test_inventory_keeps_container_process_lease_binding_and_waiter_separate(
+        self, redis, docker
+    ):
         redis.keys = AsyncMock(return_value=["worker:status:orphaned-worker"])
         redis.hgetall = AsyncMock(
             side_effect=[
@@ -216,7 +221,9 @@ class TestListWorkers:
         docker.inspect_container = AsyncMock(side_effect=RuntimeError("docker unavailable"))
         app = _make_app(redis=redis, docker=docker)
         app.state.engineering_attempts = MagicMock()
-        app.state.engineering_attempts.list_running = AsyncMock(side_effect=RuntimeError("api unavailable"))
+        app.state.engineering_attempts.list_running = AsyncMock(
+            side_effect=RuntimeError("api unavailable")
+        )
 
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/")
@@ -239,7 +246,12 @@ class TestGetWorker:
         redis.hgetall = AsyncMock(
             side_effect=[
                 {"status": "RUNNING"},  # status
-                {"workspace_path": "/tmp/ws/w1/workspace", "dev_network": "net1", "project_id": "p1"},  # meta
+                {
+                    # Fixture path; no host temporary file is created.
+                    "workspace_path": "/tmp/ws/w1/workspace",  # noqa: S108
+                    "dev_network": "net1",
+                    "project_id": "p1",
+                },  # meta
             ]
         )
         redis.get = AsyncMock(return_value=None)
@@ -264,7 +276,8 @@ class TestGetWorker:
         redis.hgetall = AsyncMock(
             side_effect=[
                 {"status": "RUNNING"},
-                {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},
+                # Fixture path; no host temporary file is created.
+                {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},  # noqa: S108
             ]
         )
         redis.get = AsyncMock(return_value=None)

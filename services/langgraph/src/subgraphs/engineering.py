@@ -14,6 +14,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_execution import EngineeringExecutionEvidence
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.run_result import EngineeringFailureReason
 from shared.contracts.queues.worker import WorkerOwnership
@@ -56,6 +57,11 @@ class EngineeringState(TypedDict):
     # .story/STORY.md content (file-first context: goal, task list, references)
     story_md: str | None
 
+    # What QA judges the work by: the planning task's own criteria and the
+    # primary repository's cumulative checklist central QA runs after deploy.
+    task_acceptance_criteria: str | None
+    repository_acceptance_criteria: str | None
+
     # Repository info (for workspace mounting)
     repo_id: str | None
 
@@ -87,6 +93,7 @@ class EngineeringState(TypedDict):
     worker_observability: dict | None
     gave_up_reason: str | None
     turn_result_consumed: bool
+    execution: EngineeringExecutionEvidence | None
 
     # The classification of a failure the pipeline routes on rather than only
     # logs — currently a DONE-looking result that carried no new commit. It

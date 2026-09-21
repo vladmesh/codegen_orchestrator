@@ -189,3 +189,14 @@ def test_a_run_says_which_contour_it_deployed():
     only way to tell production from the stand is to open the run.
     """
     assert _workflow()["run-name"] == "Deploy ${{ inputs.environment }}"
+
+
+def test_scheduler_readiness_runs_after_system_config_seed():
+    steps = {step["name"]: step for step in _deploy_job()["steps"]}
+    names = list(steps)
+    readiness = steps["Wait for scheduler services"]
+
+    script = readiness["with"]["script"]
+    assert "up -d --force-recreate --no-deps --wait --wait-timeout 180" in script
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in script
+    assert names.index("Apply system configs") < names.index("Wait for scheduler services")

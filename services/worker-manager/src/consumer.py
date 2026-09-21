@@ -1,6 +1,7 @@
 import asyncio
 
 import structlog
+
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     CreateWorkerResponse,
@@ -15,6 +16,7 @@ from shared.log_config.correlation import bind_message_context, unbind_message_c
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis import RedisStreamClient, TypedMessage
 
+from .creation_failure import worker_creation_failure_reason, worker_creation_step
 from .manager import WorkerManager
 
 logger = structlog.get_logger()
@@ -22,7 +24,11 @@ logger = structlog.get_logger()
 
 def resolve_local_auth_mode(*, requested_mode: str, agent_type, live_contour: str | None) -> str:
     """Select the stand's local auth without widening the queue producer API."""
-    if live_contour == "stand" and requested_mode == "host_session" and agent_type.value == "claude":
+    if (
+        live_contour == "stand"
+        and requested_mode == "host_session"
+        and agent_type.value == "claude"
+    ):
         return "stand_token"
     return requested_mode
 
@@ -111,7 +117,9 @@ class WorkerCommandConsumer:
         # Validate early (project lock, retry limit) — these are fast checks
         # done inside create_worker_with_capabilities before the heavy work.
         # Send early ACK with worker_id so spawner can poll status.
-        early_resp = CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+        early_resp = CreateWorkerResponse(
+            request_id=cmd.request_id, success=True, worker_id=worker_id
+        )
         await self.publish_response(cmd, early_resp)
 
         try:
@@ -146,7 +154,17 @@ class WorkerCommandConsumer:
             # No return — early ACK already sent, status is RUNNING in Redis
             return None
         except Exception as e:  # noqa: BLE001 — post-ACK failure is recorded instead of requeued
-            logger.error("worker_creation_failed_after_ack", worker_id=worker_id, error=str(e))
+            # The response is already out, so this log is the record of why the
+            # creation failed. `str(e)` is empty for a bare timeout — the shape a
+            # checkout that ran out its bound raises — and an empty `error=` reads
+            # as no failure at all, so the reason names the exception type and the
+            # creation step instead.
+            logger.error(
+                "worker_creation_failed_after_ack",
+                worker_id=worker_id,
+                error=worker_creation_failure_reason(e),
+                step=worker_creation_step(e),
+            )
             # Worker status is already FAILED in Redis (set by manager cleanup)
             # No second response needed — spawner polls status and will see FAILED
             return None

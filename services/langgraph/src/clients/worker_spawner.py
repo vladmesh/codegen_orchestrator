@@ -14,6 +14,10 @@ import uuid
 from pydantic import ValidationError
 import redis.asyncio as redis
 
+from shared.contracts.dto.engineering_execution import (
+    EngineeringExecutionEvidence,
+    EngineeringExecutionPhase,
+)
 from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
@@ -75,6 +79,7 @@ class SpawnResult:
     stop_reason: WorkerStopReason | None = None
     agent_limit_seconds: int | None = None
     turn_result_consumed: bool = False
+    execution: EngineeringExecutionEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,11 @@ def _invalid_worker_result(request_id: str, worker_id: str | None) -> SpawnResul
         output="",
         error_message="invalid_worker_result",
         worker_id=worker_id,
+        execution=(
+            EngineeringExecutionEvidence(execution_phase=EngineeringExecutionPhase.AGENT_STARTED)
+            if worker_id is not None
+            else None
+        ),
     )
 
 
@@ -152,6 +162,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
             turn_result_consumed=True,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
         )
     if isinstance(result, WorkerBlockedResult):
         return SpawnResult(
@@ -172,6 +185,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
             turn_result_consumed=True,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
         )
     # WorkerFailedResult
     return SpawnResult(
@@ -194,6 +210,9 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
         turn_result_consumed=True,
+        execution=EngineeringExecutionEvidence(
+            execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+        ),
     )
 
 
@@ -210,14 +229,32 @@ async def _wait_until_ready(
     start = asyncio.get_running_loop().time()
     seen_status = False
     while (asyncio.get_running_loop().time() - start) < timeout:
-        status = await redis_client.hget(f"worker:status:{worker_id}", "status")
-        status_str = status.decode() if isinstance(status, bytes) else status
+        fields = decode_redis_fields(await redis_client.hgetall(f"worker:status:{worker_id}"))
+        status_str = fields.get("status")
         if status_str == WorkerStatus.RUNNING:
             return None
         if status_str == WorkerStatus.FAILED:
             error = await redis_client.get(f"worker:error:{worker_id}")
             error_msg = error.decode() if isinstance(error, bytes) else str(error)
-            return SpawnResult(request_id, False, -1, f"Creation failed: {error_msg}")
+            try:
+                execution = EngineeringExecutionEvidence.model_validate(
+                    {
+                        key: fields[key]
+                        for key in ("execution_phase", "infrastructure_refusal")
+                        if key in fields
+                    }
+                )
+            except ValidationError:
+                execution = None
+                logger.warning("worker_creation_execution_evidence_invalid", worker_id=worker_id)
+            return SpawnResult(
+                request_id,
+                False,
+                -1,
+                f"Creation failed: {error_msg}",
+                worker_id=worker_id,
+                execution=execution,
+            )
         if status_str is None:
             if seen_status:
                 return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
@@ -290,12 +327,19 @@ async def _wait_for_response(
     stream: str = WORKER_RESPONSES,
     worker_id: str | None = None,
     output_request_id: str | None = None,
+    group_start_id: str = "0",
 ) -> dict | None:
     """Wait for a specific response in the stream.
 
     If request_id is None, returns the first message (used for worker output streams).
     If worker_id is provided, periodically checks that the worker container is still
     alive. Returns None immediately if the worker is detected as dead.
+
+    `group_start_id` is the position the group is re-created at when a read finds
+    it gone. It must be the position the caller bootstrapped the group with:
+    silently narrowing to `$` here drops any message that arrived between the
+    failed read and the re-creation, and once the group owns the stream position
+    nobody else will read it.
     """
     start_time = asyncio.get_running_loop().time()
     last_liveness_check = start_time
@@ -328,9 +372,12 @@ async def _wait_for_response(
             )
         except redis.ResponseError as e:
             if "NOGROUP" in str(e):
-                # Group doesn't exist yet, create it
+                # Group is gone (never created, or the stream was dropped under
+                # it). Re-create it where the caller wanted it to start.
                 try:
-                    await redis_client.xgroup_create(stream, group_name, id="$", mkstream=True)
+                    await redis_client.xgroup_create(
+                        stream, group_name, id=group_start_id, mkstream=True
+                    )
                 except redis.ResponseError:
                     pass
                 continue
@@ -656,7 +703,12 @@ async def request_spawn(
     worker_id = None
 
     try:
-        # 1. Create consumer group for responses
+        # 1. Create consumer group for responses.
+        # `$` is deliberate here and nothing can be lost by it: the group exists
+        # before the create command below is published, so worker-manager's reply
+        # necessarily lands after it. WORKER_RESPONSES is shared by every spawn in
+        # flight, so `0` would instead replay every other request's retained reply
+        # through this group.
         try:
             await redis_client.xgroup_create(WORKER_RESPONSES, group_name, id="$", mkstream=True)
         except redis.ResponseError as e:
@@ -699,7 +751,12 @@ async def request_spawn(
 
         # 3. Wait for early ACK (worker_id) — should be near-instant
         create_resp = await _wait_for_response(
-            redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
+            redis_client,
+            group_name,
+            consumer_id,
+            request_id,
+            CREATION_TIMEOUT,
+            group_start_id="$",
         )
 
         if not create_resp:
@@ -782,6 +839,10 @@ async def request_spawn(
                 f"Timeout after {timeout_seconds}s waiting for worker output. "
                 "Container teardown requested; its confirmation is reconciled separately.",
                 error_message="execution_timeout",
+                worker_id=worker_id,
+                execution=EngineeringExecutionEvidence(
+                    execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+                ),
             )
 
     except asyncio.CancelledError:
@@ -852,9 +913,13 @@ async def send_task_to_worker(
         if adopted is not None:
             return adopted
 
-        # 1. Set up output stream consumer group BEFORE sending task
+        # 1. Set up output stream consumer group BEFORE sending the task.
+        # Start at `0` like every other reader of a worker output stream: the
+        # group owns the position, so anything it skips is read by nobody. Output
+        # retained from an earlier turn is harmless — the wait below matches on
+        # this turn's request id and acks the rest.
         try:
-            await redis_client.xgroup_create(output_stream, group_name, id="$", mkstream=True)
+            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise
@@ -911,11 +976,23 @@ async def send_task_to_worker(
                 output=f"Timeout after {timeout_seconds}s waiting for worker output.",
                 error_message="execution_timeout",
                 worker_id=worker_id,
+                execution=EngineeringExecutionEvidence(
+                    execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+                ),
             )
 
     except Exception as e:
         logger.error("send_task_failed", error=str(e), worker_id=worker_id)
-        return SpawnResult(request_id, False, -1, str(e), worker_id=worker_id)
+        return SpawnResult(
+            request_id,
+            False,
+            -1,
+            str(e),
+            worker_id=worker_id,
+            execution=EngineeringExecutionEvidence(
+                execution_phase=EngineeringExecutionPhase.AGENT_STARTED
+            ),
+        )
     finally:
         try:
             await redis_client.xgroup_destroy(output_stream, group_name)

@@ -1,17 +1,18 @@
 """The only worker-network service allowed to bridge worker control traffic."""
 
-import json
-import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+import json
+import secrets
 from typing import Any
 
-import httpx
-import structlog
 from fastapi import FastAPI, Header, HTTPException, Response
+import httpx
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
+import structlog
+
 from shared.contracts.queues.worker_result import parse_worker_result
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
@@ -136,7 +137,9 @@ app = FastAPI(title="worker-broker", lifespan=lifespan)
 
 
 @app.post("/internal/workers")
-async def register_worker(registration: Registration, x_broker_internal_token: str | None = Header(default=None)):
+async def register_worker(
+    registration: Registration, x_broker_internal_token: str | None = Header(default=None)
+):
     _internal(x_broker_internal_token)
     redis: Redis = app.state.redis
     await redis.hset(
@@ -151,7 +154,9 @@ async def register_worker(registration: Registration, x_broker_internal_token: s
         },
     )
     try:
-        await redis.xgroup_create(registration.input_stream, registration.consumer_group, id="0", mkstream=True)
+        await redis.xgroup_create(
+            registration.input_stream, registration.consumer_group, id="0", mkstream=True
+        )
     except ResponseError as exc:
         if "BUSYGROUP" not in str(exc):
             raise
@@ -159,16 +164,22 @@ async def register_worker(registration: Registration, x_broker_internal_token: s
 
 
 @app.delete("/internal/workers/{worker_id}")
-async def unregister_worker(worker_id: str, x_broker_internal_token: str | None = Header(default=None)):
+async def unregister_worker(
+    worker_id: str, x_broker_internal_token: str | None = Header(default=None)
+):
     _internal(x_broker_internal_token)
-    await app.state.redis.delete(credential_key(worker_id), f"worker:session:{worker_id}", active_turn_key(worker_id))
+    await app.state.redis.delete(
+        credential_key(worker_id), f"worker:session:{worker_id}", active_turn_key(worker_id)
+    )
     return {"ok": True}
 
 
 @app.post("/v1/workers/{worker_id}/input/lease")
 async def lease_input(worker_id: str, x_worker_broker_token: str | None = Header(default=None)):
     redis: Redis = app.state.redis
-    metadata = await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.INPUT_LEASE)
+    metadata = await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.INPUT_LEASE
+    )
     entries = await redis.xreadgroup(
         metadata["consumer_group"], worker_id, {metadata["input_stream"]: ">"}, count=1, block=1
     )
@@ -194,9 +205,13 @@ async def submit_output(
     worker_id: str, submission: Submission, x_worker_broker_token: str | None = Header(default=None)
 ):
     redis: Redis = app.state.redis
-    metadata = await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.OUTPUT_SUBMIT)
+    metadata = await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.OUTPUT_SUBMIT
+    )
     result = parse_worker_result(submission.result)
-    active_turn = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
+    active_turn = WorkerActiveTurn.from_redis_fields(
+        await redis.hgetall(active_turn_key(worker_id))
+    )
     output_fields = {"data": json.dumps(result.model_dump(mode="json"))}
     if active_turn is not None and active_turn.lease_id == submission.lease_id:
         # The consumer that owns a reclaimed engineering entry must be able to
@@ -210,7 +225,8 @@ async def submit_output(
         maxlen=settings.STREAM_MAXLEN,
         approximate=True,
     )
-    # ACK comes after the typed output is durably accepted. A failed submission leaves the input pending.
+    # ACK comes after the typed output is durably accepted. A failed submission leaves the
+    # input pending.
     await redis.xack(metadata["input_stream"], metadata["consumer_group"], submission.lease_id)
     if active_turn is not None and active_turn.lease_id == submission.lease_id:
         await redis.delete(active_turn_key(worker_id))
@@ -218,9 +234,13 @@ async def submit_output(
 
 
 @app.post("/v1/workers/{worker_id}/status")
-async def update_status(worker_id: str, update: StatusUpdate, x_worker_broker_token: str | None = Header(default=None)):
+async def update_status(
+    worker_id: str, update: StatusUpdate, x_worker_broker_token: str | None = Header(default=None)
+):
     redis: Redis = app.state.redis
-    await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.STATUS_UPDATE)
+    await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.STATUS_UPDATE
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping=update.values)
     return {"ok": True}
 
@@ -228,7 +248,9 @@ async def update_status(worker_id: str, update: StatusUpdate, x_worker_broker_to
 @app.get("/v1/workers/{worker_id}/session")
 async def get_session(worker_id: str, x_worker_broker_token: str | None = Header(default=None)):
     redis: Redis = app.state.redis
-    metadata = await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_READ)
+    metadata = await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_READ
+    )
     value = await redis.get(f"worker:session:{worker_id}")
     if value:
         await redis.expire(f"worker:session:{worker_id}", int(metadata["session_ttl_seconds"]))
@@ -236,25 +258,39 @@ async def get_session(worker_id: str, x_worker_broker_token: str | None = Header
 
 
 @app.put("/v1/workers/{worker_id}/session")
-async def set_session(worker_id: str, update: SessionUpdate, x_worker_broker_token: str | None = Header(default=None)):
+async def set_session(
+    worker_id: str, update: SessionUpdate, x_worker_broker_token: str | None = Header(default=None)
+):
     redis: Redis = app.state.redis
-    metadata = await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_WRITE)
-    await redis.set(f"worker:session:{worker_id}", update.session_id, ex=int(metadata["session_ttl_seconds"]))
+    metadata = await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_WRITE
+    )
+    await redis.set(
+        f"worker:session:{worker_id}", update.session_id, ex=int(metadata["session_ttl_seconds"])
+    )
     return {"ok": True}
 
 
 @app.delete("/v1/workers/{worker_id}/session")
 async def clear_session(worker_id: str, x_worker_broker_token: str | None = Header(default=None)):
     redis: Redis = app.state.redis
-    await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_CLEAR)
+    await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.SESSION_CLEAR
+    )
     await redis.delete(f"worker:session:{worker_id}")
     return {"ok": True}
 
 
 @app.post("/v1/workers/{worker_id}/infra/compose")
-async def compose(worker_id: str, request: dict[str, Any], x_worker_broker_token: str | None = Header(default=None)):
+async def compose(
+    worker_id: str,
+    request: dict[str, Any],
+    x_worker_broker_token: str | None = Header(default=None),
+):
     redis: Redis = app.state.redis
-    await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.INFRA_COMPOSE)
+    await _worker(
+        redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.INFRA_COMPOSE
+    )
     async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(
             f"{settings.WORKER_MANAGER_URL}/api/worker/{worker_id}/infra/compose",
@@ -265,4 +301,6 @@ async def compose(worker_id: str, request: dict[str, Any], x_worker_broker_token
         body = response.json()
     except json.JSONDecodeError:
         body = {"error": "worker-manager returned invalid JSON"}
-    return Response(content=json.dumps(body), status_code=response.status_code, media_type="application/json")
+    return Response(
+        content=json.dumps(body), status_code=response.status_code, media_type="application/json"
+    )

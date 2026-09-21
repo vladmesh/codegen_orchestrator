@@ -35,9 +35,14 @@
       ansible.builtin.setup:
 
   tasks:
+    # `public`, because the host report at the end of this play names the
+    # role's own variables (`qa_ssh_user`). A dynamic include keeps a role's
+    # defaults inside itself, so without this the play applies every change it
+    # makes and then fails on the line that reports them.
     - name: Create the QA run identity
       ansible.builtin.include_role:
         name: qa_identity
+        public: true
 
     # The old QA agent ran as the deploy user — which on a host provisioned
     # before this is `root` — so its leftovers are in that account's home.

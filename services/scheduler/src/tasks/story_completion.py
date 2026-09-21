@@ -8,14 +8,15 @@ import structlog
 
 from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
+from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
+from ._github_refs import _parse_owner_repo
 from ._recipients import resolve_project_recipient
+from .story_worker_teardown import finalize_story_worker_teardown
 from .supervisor.common import STORY_HUMAN_REVIEW_ACTION
 
 if TYPE_CHECKING:
@@ -28,51 +29,59 @@ logger = structlog.get_logger(__name__)
 STORY_NO_COMMITS_REASON = "story_branch_has_no_commits"
 
 
-def _parse_owner_repo(git_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub git_url.
+def _validate_current_cycle_pr(pr: object, *, branch: str, branch_sha: str) -> dict:
+    """Require an exact, unambiguous identity for the current branch state."""
+    if not isinstance(pr, dict):
+        raise ValueError("current-cycle pull request response is not an object")
+    number = pr.get("number")
+    head = pr.get("head")
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise ValueError("current-cycle pull request has no valid number")
+    if not isinstance(head, dict):
+        raise ValueError("current-cycle pull request has no head identity")
+    if head.get("ref") != branch or head.get("sha") != branch_sha:
+        raise ValueError("current-cycle pull request does not match the current branch head")
+    return pr
 
-    Handles both HTTPS and token-based URLs:
-    - https://github.com/org/repo
-    - https://x-access-token:TOKEN@github.com/org/repo.git
-    """
-    # Strip .git suffix and trailing slashes
-    url = git_url.rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
-    # Take last two path segments
-    parts = url.split("/")
-    return parts[-2], parts[-1]
 
+async def _resolve_current_cycle_pr(
+    github: GitHubAppClient,
+    *,
+    story: StoryDTO,
+    owner: str,
+    repo_name: str,
+    branch: str,
+) -> dict:
+    """Resolve the PR representing the exact current story-branch state."""
+    branch_sha = await github.get_ref_sha(owner, repo_name, f"heads/{branch}")
+    if not isinstance(branch_sha, str) or not branch_sha:
+        raise ValueError(f"current story branch {branch} has no commit SHA")
 
-async def _cleanup_story_worker(
-    redis_client: RedisStreamClient,
-    story_id: str,
-) -> None:
-    """Clean up the worker container associated with a story.
+    try:
+        pr = await github.create_pull_request(
+            owner,
+            repo_name,
+            head=branch,
+            base="main",
+            title=story.title,
+            body="All tasks completed. Auto-merge enabled.",
+        )
+    except NoCommitsBetweenError as no_commits:
+        if not story.pr_number:
+            raise
+        try:
+            stored_pr = await github.get_pull_request(owner, repo_name, story.pr_number)
+        except Exception as exc:
+            raise RuntimeError("could not verify stored PR after no-commits response") from exc
+        try:
+            _validate_current_cycle_pr(stored_pr, branch=branch, branch_sha=branch_sha)
+        except ValueError:
+            raise no_commits from None
+        if stored_pr["number"] != story.pr_number or not stored_pr.get("merged_at"):
+            raise no_commits
+        return stored_pr
 
-    Reads worker_id from Redis registry, sends DeleteWorkerCommand,
-    then clears the registry entry.
-    """
-    redis = redis_client.redis
-    worker_id = await redis.hget(STORY_WORKERS_KEY, story_id)
-    if not worker_id:
-        return
-
-    if isinstance(worker_id, bytes):
-        worker_id = worker_id.decode()
-
-    # Send delete command to worker-manager
-    delete_cmd = DeleteWorkerCommand(
-        request_id=f"cleanup-story-{story_id}",
-        worker_id=worker_id,
-        reason="completed",
-    )
-    await redis_client.publish(WORKER_COMMANDS, delete_cmd.model_dump(mode="json"))
-
-    # Clear registry entry
-    await redis.hdel(STORY_WORKERS_KEY, story_id)
-
-    logger.info("story_worker_cleaned_up", story_id=story_id, worker_id=worker_id)
+    return _validate_current_cycle_pr(pr, branch=branch, branch_sha=branch_sha)
 
 
 async def _trigger_next_story(
@@ -185,10 +194,10 @@ async def complete_stories(
     left where it is.
 
     When all live tasks in a story are done:
-    1. Create PR from story/{story_id} → main
-    2. Enable auto-merge (merge commit, not squash — preserves individual commits)
-    3. Transition story to PR_REVIEW
-    4. Cleanup worker container, trigger next story
+    1. Read story/{story_id} HEAD and resolve its exact current-cycle PR
+    2. Persist that PR number and attempt auto-merge
+    3. Finalize worker removal and its unchanged story binding
+    4. Transition story to PR_REVIEW, then trigger the next story
 
     Deploy is triggered later by poll_merged_prs() when PR is merged to main.
 
@@ -256,26 +265,22 @@ async def complete_stories(
 
         git_url = repo.git_url or ""
         owner, repo_name = _parse_owner_repo(git_url)
-        story_title = story.title
         branch = f"story/{story_id}"
 
         # Create PR from story branch to main
         try:
             github = GitHubAppClient()
-            pr = await github.create_pull_request(
-                owner,
-                repo_name,
-                head=branch,
-                base="main",
-                title=story_title,
-                body="All tasks completed. Auto-merge enabled.",
+            pr = await _resolve_current_cycle_pr(
+                github,
+                story=story,
+                owner=owner,
+                repo_name=repo_name,
+                branch=branch,
             )
             pr_number = pr["number"]
+            await api_client.update_story(story_id, {"pr_number": pr_number})
             pr_node_id = pr.get("node_id", "")
             pr_merged = pr.get("merged_at") is not None
-
-            # Store PR number so poll_merged_prs can look up this exact PR
-            await api_client.update_story(story_id, {"pr_number": pr_number})
 
             if pr_merged:
                 # PR already merged (e.g. QA fix cycle — fix task pushed to
@@ -287,8 +292,15 @@ async def complete_stories(
                     pr_number=pr_number,
                     branch=branch,
                 )
+                if not await finalize_story_worker_teardown(
+                    redis_client,
+                    story_id=story_id,
+                    project_id=project_id,
+                    request_id=f"pr-review-story-{story_id}",
+                ):
+                    continue
                 await api_client.transition_story(story_id, "pr_review")
-                await _cleanup_story_worker(redis_client, story_id)
+                await _trigger_next_story(api_client, redis_client, project_id)
                 completed += 1
                 continue
 
@@ -307,7 +319,10 @@ async def complete_stories(
                 pr_node_id=pr_node_id,
                 log=log,
             ):
-                log.warning("story_auto_merge_failed", pr_number=pr_number)
+                # The PR poller re-reads this PR after checks settle. It either
+                # merges through the App or parks a GitHub refusal with notices;
+                # this creation tick deliberately owns neither decision.
+                log.info("story_auto_merge_deferred_to_poller", pr_number=pr_number)
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets
@@ -320,12 +335,17 @@ async def complete_stories(
             log.exception("story_pr_creation_failed", branch=branch)
             continue
 
+        if not await finalize_story_worker_teardown(
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            request_id=f"pr-review-story-{story_id}",
+        ):
+            continue
+
         # Transition story to pr_review (poll_merged_prs handles deploy after merge)
         await api_client.transition_story(story_id, "pr_review")
         log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
-
-        # Cleanup story worker container (no longer needed)
-        await _cleanup_story_worker(redis_client, story_id)
 
         # Trigger next queued story for this project (doesn't need PR to merge)
         await _trigger_next_story(api_client, redis_client, project_id)

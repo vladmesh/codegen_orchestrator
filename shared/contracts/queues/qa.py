@@ -20,7 +20,9 @@ class QAOutcome(StrEnum):
 class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
 
-    story_id: str = ""
+    # Story transitions carry their owner; ad-hoc administrative E2E is
+    # deliberately run-owned and has no story to guess.
+    story_id: str | None = Field(default=None, min_length=1)
     project_id: str
     # The run that asked for this work, exactly as on `EngineeringMessage`: the
     # project's `initiating_run_id`, carried by the producer. A QA executor is
@@ -67,3 +69,8 @@ class QAServerInfo:
     # and `qa_ssh_user` is set: the reason travels with the resolution so the
     # refusal can be journalled where it is decided rather than re-derived.
     qa_identity_rejection: str = ""
+    # Why this host's QA target readiness receipt does not prove the current
+    # profile (`shared.qa_target_profile.QATargetReceiptRejection`), when it
+    # does not. A run refuses such a host before issuing access or starting an
+    # executor.
+    qa_target_receipt_rejection: str = ""

@@ -390,7 +390,10 @@ class TestMalformedOutputHandling:
                 task_content="fix",
                 timeout_seconds=5,
                 ownership=WorkerOwnership(
-                    project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1"
+                    story_id="story-1",
+                    project_id="proj-1",
+                    run_id="run-1",
+                    attempt_id="eng-attempt-1",
                 ),
             )
 

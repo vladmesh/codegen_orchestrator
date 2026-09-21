@@ -32,6 +32,7 @@ from ._base import start_worker
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
 from ._repo_setup import _create_repo_and_set_secrets
+from .acceptance_context import load_primary_repository, load_task_acceptance_criteria
 from .engineering_result_handler import (
     EngineeringSuccessParams,
     _write_task_event,
@@ -302,8 +303,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             attempt_turn=attempt_turn,
         )
 
-        primary_repo = await api_client.get_primary_repository(project_id)
+        primary_repo = await load_primary_repository(api_client, project_id)
         repo_id = primary_repo.id if primary_repo else None
+        # What QA judges this work by, read here so every producer's run carries it.
+        task_acceptance_criteria = await load_task_acceptance_criteria(api_client, planning_task_id)
+        repository_acceptance_criteria = primary_repo.acceptance_criteria if primary_repo else None
 
         story_context = await _build_story_context(story_id, planning_task_id) if story_id else None
         story_md = await _build_story_md(story_id, planning_task_id) if story_id else None
@@ -320,6 +324,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "story_context": story_context,
             "story_md": story_md,
             "repo_id": repo_id,
+            "task_acceptance_criteria": task_acceptance_criteria,
+            "repository_acceptance_criteria": repository_acceptance_criteria,
             # `msg.task_id` is the engineering run's id (task_dispatcher creates
             # the run and names the message after it). It travels into the
             # subgraph as what it is: one attempt inside the initiating run.
@@ -344,6 +350,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "stop_reason": None,
             "agent_limit_seconds": None,
             "turn_result_consumed": False,
+            "execution": None,
             "errors": [],
         }
 
@@ -390,6 +397,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     deploy_fix_attempt=deploy_fix_attempt,
                     worker_observability=result.get("worker_observability"),
                     turn_result_consumed=result.get("turn_result_consumed", True),
+                    execution=result.get("execution"),
                 )
             )
 
@@ -405,6 +413,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 redis=redis,
                 worker_observability=result.get("worker_observability"),
                 turn_result_consumed=result.get("turn_result_consumed", True),
+                execution=result.get("execution"),
             )
         else:
             # FAILED (technical) or unexpected status — treat as technical failure
@@ -428,9 +437,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 stop_reason=result.get("stop_reason"),
                 agent_limit_seconds=result.get("agent_limit_seconds"),
                 redis=redis,
+                execution=result.get("execution"),
                 turn_result_consumed=result.get("turn_result_consumed", False),
                 story_id=story_id,
                 failure_reason=result.get("failure_reason"),
+                project_id=project_id or "",
+                telegram_chat_id=telegram_chat_id,
             )
 
     except Exception as e:
