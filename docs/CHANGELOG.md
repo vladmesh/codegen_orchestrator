@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- The stand bootstrap masks the VM's automatic apt upgrades and waits for cloud-init before apt/Docker work,
+  reconnecting once after an SSH drop or reboot, so first-boot upgrades no longer kill the level-1 run.
 - The scaffolder image now ships `aiohttp` for shared administrator notifications, and CI imports every
   production service entrypoint from its built image so undeclared runtime dependencies fail before merge.
 - `POST /tasks/{id}/resume` is the one operator retry: fresh iteration, recorded retry budget, story back in

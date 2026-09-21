@@ -691,7 +691,7 @@ def test_control_plane_bootstrap_is_minimal_and_keeps_target_provisioning_separa
 
     assert "gather_facts: false" in control_plane
     assert "Gather control plane facts" in control_plane
-    assert "Wait for any possibly running apt/dpkg processes" in control_plane
+    assert "Settle first boot before apt or Docker work" in control_plane
     assert "upgrade: dist" not in control_plane
     assert "Create runtime user" in control_plane
     assert "docker-ce" in control_plane
@@ -734,11 +734,6 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     """
     [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
     timeout = play["vars"]["stand_apt_lock_timeout_seconds"]
-    initial_wait = next(
-        task
-        for task in play["pre_tasks"]
-        if task["name"] == "Wait for any possibly running apt/dpkg processes"
-    )
     apt_tasks = {
         task["name"]: task["ansible.builtin.apt"]
         for task in [*play["pre_tasks"], *play["tasks"]]
@@ -749,7 +744,6 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     )
 
     assert timeout == 300
-    assert "timeout {{ stand_apt_lock_timeout_seconds }}s" in initial_wait["ansible.builtin.shell"]
     assert set(apt_tasks) == {
         "Update apt cache without changing the base image",
         "Install control-plane host tools",
@@ -762,6 +756,143 @@ def test_control_plane_apt_operations_tolerate_a_late_lock_with_a_bounded_wait()
     assert not any("retries" in task or "until" in task for task in apt_tasks.values())
     assert docker_repository["ansible.builtin.apt_repository"]["update_cache"] is False
     assert apt_tasks["Install Docker Engine and compose tooling"]["update_cache"] is True
+
+
+def _first_boot_settle_tasks() -> tuple[dict, list[dict]]:
+    [play] = yaml.safe_load(CONTROL_PLANE_PLAYBOOK.read_text())
+    return play, play["pre_tasks"]
+
+
+def test_first_boot_is_settled_before_any_apt_or_docker_work_and_survives_one_drop():
+    """Runs 35594323906/35597245917/35595495097 lost the host to its own first boot.
+
+    The image's automatic upgrades are stopped for good on this disposable VM,
+    cloud-init is waited for, and a drop or reboot during that window gets one
+    bounded reconnect before the same settle runs again, this time strictly.
+    """
+    play, pre_tasks = _first_boot_settle_tasks()
+    names = [task["name"] for task in pre_tasks]
+    first, reconnect, again = (
+        pre_tasks[names.index("Settle first boot before apt or Docker work")],
+        pre_tasks[names.index("Wait for control plane to return after a first-boot drop")],
+        pre_tasks[names.index("Settle first boot again after reconnecting")],
+    )
+    all_tasks = [*pre_tasks, *play["tasks"]]
+    first_apt_or_package_work = min(
+        index
+        for index, task in enumerate(all_tasks)
+        if any(
+            key.startswith("ansible.builtin.apt") or key == "ansible.builtin.get_url"
+            for key in task
+        )
+    )
+
+    assert names.index("Wait for control plane to be reachable") == 0
+    assert (
+        names.index(first["name"])
+        < names.index(reconnect["name"])
+        < names.index(again["name"])
+        < names.index("Gather control plane facts")
+        < first_apt_or_package_work
+    )
+    assert first["ignore_unreachable"] is True
+    assert first["register"] == "stand_first_boot_settle"
+    assert reconnect["when"] == again["when"] == "stand_first_boot_settle is unreachable"
+    assert reconnect["ansible.builtin.wait_for_connection"]["timeout"] == (
+        "{{ stand_first_boot_reconnect_timeout_seconds }}"
+    )
+    assert "ignore_unreachable" not in again
+    assert again["ansible.builtin.shell"] == first["ansible.builtin.shell"]
+    assert play["vars"]["stand_first_boot_reconnect_timeout_seconds"] == 180
+    assert play["vars"]["stand_first_boot_settle_timeout_seconds"] == 300
+    # The whole bootstrap step has 15 minutes: two settles plus a reconnect fit.
+    assert (
+        2 * play["vars"]["stand_first_boot_settle_timeout_seconds"]
+        + play["vars"]["stand_first_boot_reconnect_timeout_seconds"]
+    ) < 15 * 60
+    assert "ServerAliveInterval=" in play["vars"]["ansible_ssh_extra_args"]
+    assert "Wait for any possibly running apt/dpkg processes" not in names
+
+
+def _run_settle(tmp: Path, *, timeout_seconds: int, cloud_init_rc: int, lock_polls: int):
+    _, pre_tasks = _first_boot_settle_tasks()
+    [settle] = [
+        task for task in pre_tasks if task["name"] == "Settle first boot before apt or Docker work"
+    ]
+    command = settle["ansible.builtin.shell"]["cmd"].replace(
+        "{{ stand_first_boot_settle_timeout_seconds }}", str(timeout_seconds)
+    )
+    assert "{{" not in command and "{%" not in command and "{#" not in command
+    calls = tmp / "calls"
+    stubs = tmp / "bin"
+    stubs.mkdir()
+    for name, body in {
+        "systemctl": "exit 0",
+        "cloud-init": f'[ "$1" = status ] && [ "$2" = --wait ] && exit {cloud_init_rc}; exit 0',
+        # Held for the first `lock_polls` probes, then free; negative = held forever.
+        "fuser": (
+            f'n=$(cat "{tmp}/polls" 2>/dev/null || echo 0); echo $((n + 1)) > "{tmp}/polls"; '
+            f'[ {lock_polls} -lt 0 ] || [ "$n" -lt {lock_polls} ]'
+        ),
+        "dpkg": "exit 0",
+        "sleep": "exit 0",
+    }.items():
+        stub = stubs / name
+        stub.write_text(f'#!/bin/bash\necho "{name} $*" >> "{calls}"\n{body}\n')
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/bash", "-c", command],
+        env={"PATH": f"{stubs}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    return result, recorded
+
+
+def test_first_boot_settle_stops_upgrades_then_waits_for_cloud_init_then_locks():
+    with tempfile.TemporaryDirectory() as tmp:
+        result, calls = _run_settle(Path(tmp), timeout_seconds=20, cloud_init_rc=0, lock_polls=2)
+
+    assert result.returncode == 0, result.stderr
+    units = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service"
+    assert calls[:3] == [
+        f"systemctl mask {units}",
+        f"systemctl stop {units}",
+        "cloud-init status --wait",
+    ]
+    assert [call.split()[0] for call in calls[3:]] == [
+        "fuser",
+        "sleep",
+        "fuser",
+        "sleep",
+        "fuser",
+        "dpkg",
+    ]
+    assert calls[-1] == "dpkg --configure -a"
+
+
+def test_first_boot_settle_accepts_a_finished_cloud_init_with_warnings_or_errors():
+    for rc in (1, 2):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, calls = _run_settle(
+                Path(tmp), timeout_seconds=20, cloud_init_rc=rc, lock_polls=0
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert f"cloud-init finished with status {rc}" in result.stderr
+        assert "cloud-init status --long" in calls
+        assert calls[-1] == "dpkg --configure -a"
+
+
+def test_first_boot_settle_fails_clearly_when_the_host_never_settles():
+    with tempfile.TemporaryDirectory() as tmp:
+        result, calls = _run_settle(Path(tmp), timeout_seconds=1, cloud_init_rc=0, lock_polls=-1)
+
+    assert result.returncode == 124
+    assert "waiting for dpkg/apt locks" in result.stderr
+    assert "dpkg --configure -a" not in calls
 
 
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
