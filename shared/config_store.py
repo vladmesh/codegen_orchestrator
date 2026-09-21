@@ -7,12 +7,12 @@ It is read at service startup, from synchronous code, so it takes the
 synchronous form of the shared transport rather than raw `httpx`: these reads are
 internal API calls and carry the same two headers as every other one.
 
-Usage:
-    store = ConfigStore(api_base_url="http://api:8000")
-    interval = store.get_int("scheduler.dispatch_interval_seconds")
-    thresholds = store.get_category("health")
+Callers must opt a key into bounded last-known-good reads explicitly. Keys with
+no stale policy fail closed when the source cannot be read.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 import threading
 import time
 from typing import Any
@@ -31,33 +31,70 @@ class ConfigStoreUnavailableError(RuntimeError):
     """Raised when the system-config API cannot answer a config request."""
 
 
-class ConfigStore:
-    """Read system configs from API with in-memory TTL cache."""
+@dataclass(frozen=True)
+class BoundedStalePolicy:
+    """Allow a cached config value only up to a bounded age during source failure."""
 
-    def __init__(self, api_base_url: str, cache_ttl: int = 30):
+    max_age_seconds: float
+
+    def __post_init__(self) -> None:
+        if self.max_age_seconds <= 0:
+            raise ValueError("max_age_seconds must be greater than zero")
+
+
+@dataclass(frozen=True)
+class _CachedConfig:
+    value: Any
+    expires_at: float
+    fetched_at: float
+
+
+class ConfigStore:
+    """Read system configs from API with an in-memory TTL cache.
+
+    Normal cache hits use `cache_ttl`. Once a refresh is due and the source is
+    unavailable, keys fail closed unless the caller supplied a BoundedStalePolicy
+    for that exact key.
+    """
+
+    def __init__(
+        self,
+        api_base_url: str,
+        cache_ttl: int = 30,
+        *,
+        stale_policies: Mapping[str, BoundedStalePolicy] | None = None,
+    ):
         self._client = InternalAPISyncClient(api_base_url, timeout=10.0)
         self._cache_ttl = cache_ttl
-        self._cache: dict[str, tuple[Any, float]] = {}  # key -> (value, expires_at)
+        self._stale_policies = dict(stale_policies or {})
+        self._cache: dict[str, _CachedConfig] = {}
         self._lock = threading.Lock()
 
     def _source_unavailable(self, key: str, reason: str, cause: Exception | None) -> Any:
-        """Return the last known value for `key`, or raise if there is none.
-
-        An unreachable or broken config source is not the same as a missing key:
-        callers already running on a value keep running on it, and only a caller
-        that never read the key at all gets an error.
-        """
+        """Use a bounded last-known value for explicitly opted-in keys, or fail closed."""
         with self._lock:
             cached = self._cache.get(key)
 
-        if cached is not None:
-            logger.warning(
-                "config_store_source_unavailable_using_last_known",
+        policy = self._stale_policies.get(key)
+        if cached is not None and policy is not None:
+            stale_age_seconds = max(time.monotonic() - cached.fetched_at, 0.0)
+            if stale_age_seconds <= policy.max_age_seconds:
+                logger.warning(
+                    "config_store_source_unavailable_using_bounded_stale",
+                    key=key,
+                    reason=reason,
+                    stale_age_seconds=round(stale_age_seconds, 3),
+                    max_stale_age_seconds=policy.max_age_seconds,
+                )
+                return cached.value
+
+            logger.error(
+                "config_store_source_unavailable_stale_expired",
                 key=key,
                 reason=reason,
-                value=cached[0],
+                stale_age_seconds=round(stale_age_seconds, 3),
+                max_stale_age_seconds=policy.max_age_seconds,
             )
-            return cached[0]
 
         raise ConfigStoreUnavailableError(
             f"System config API is unavailable while reading '{key}' ({reason})"
@@ -67,8 +104,8 @@ class ConfigStore:
         """Get a config value by key. Raises KeyError if not found and no default."""
         with self._lock:
             cached = self._cache.get(key)
-            if cached and cached[1] > time.monotonic():
-                return cached[0]
+            if cached and cached.expires_at > time.monotonic():
+                return cached.value
 
         try:
             resp = self._client.get_raw(f"system-configs/{key}")
@@ -80,8 +117,13 @@ class ConfigStore:
                 value = resp.json()["value"]
             except (KeyError, TypeError, ValueError) as exc:
                 return self._source_unavailable(key, "invalid response body", exc)
+            now = time.monotonic()
             with self._lock:
-                self._cache[key] = (value, time.monotonic() + self._cache_ttl)
+                self._cache[key] = _CachedConfig(
+                    value=value,
+                    expires_at=now + self._cache_ttl,
+                    fetched_at=now,
+                )
             return value
         if resp.status_code != httpx.codes.NOT_FOUND:
             return self._source_unavailable(key, f"HTTP {resp.status_code}", None)
@@ -101,24 +143,6 @@ class ConfigStore:
         sentinel = _DEFAULT_SENTINEL if default is None else default
         value = self.get(key, sentinel)
         return float(value)
-
-    def get_category(self, category: str) -> dict[str, Any]:
-        """Get all configs in a category as {key: value} dict."""
-        try:
-            resp = self._client.get_raw("system-configs/", params={"category": category})
-            if resp.status_code == httpx.codes.OK:
-                result = {}
-                for item in resp.json():
-                    key = item["key"]
-                    value = item["value"]
-                    result[key] = value
-                    with self._lock:
-                        self._cache[key] = (value, time.monotonic() + self._cache_ttl)
-                return result
-        except httpx.RequestError:
-            logger.warning("config_store_category_fetch_failed", category=category)
-
-        return {}
 
     def validate_required(self, keys: list[str]) -> None:
         """Validate that all required config keys exist in the DB.
