@@ -157,204 +157,227 @@ def _deploy_retry_ttl() -> int:
     return startup.get_config().get_int("deploy.deploy_retry_ttl")
 
 
-def _retry_action_deltas(action: DeployRetryAction) -> tuple[int, int, int, int]:
-    """Return tested, retried, redispatched and failed increments for a retry action."""
+class DeploySupervisorAction(StrEnum):
+    """One DEPLOYING story's aggregate effect for the supervisor tick."""
+
+    NONE = "none"
+    TESTED = "tested"
+    RETRIED = "retried"
+    REDISPATCHED = "redispatched"
+    WAITING = "waiting"
+    ESCALATED = "escalated"
+    FAILED = "failed"
+
+
+_CODE_FIX_OUTCOMES = frozenset(
+    {
+        DeployOutcome.CODE_FIX,
+        DeployOutcome.SMOKE_FAILURE,
+    }
+)
+_RETRY_OUTCOMES = frozenset(
+    {
+        DeployOutcome.RETRY,
+        DeployOutcome.CANCELLED,
+        DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+        DeployOutcome.IMAGES_NOT_PUBLISHED,
+        DeployOutcome.IMAGE_REGISTRY_UNREADABLE,
+    }
+)
+_TERMINAL_FAILURE_OUTCOMES = frozenset(
+    {
+        DeployOutcome.GIVE_UP,
+        DeployOutcome.ALLOCATION_MISSING,
+        DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+        DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+        DeployOutcome.HEAD_SHA_MISSING,
+    }
+)
+_ROUTED_DEPLOY_OUTCOMES = frozenset(
+    {
+        DeployOutcome.SUCCESS,
+        DeployOutcome.SETTINGS_SEED_FAILED,
+        DeployOutcome.WAITING_INFRASTRUCTURE,
+        DeployOutcome.WAITING_FOR_USER_SECRET,
+    }
+) | _CODE_FIX_OUTCOMES | _RETRY_OUTCOMES | _TERMINAL_FAILURE_OUTCOMES
+
+
+def _empty_deploy_supervision_counts() -> dict[str, int]:
+    """Return one counter for every externally reported supervisor action."""
     return {
-        DeployRetryAction.RETRIED: (0, 1, 0, 0),
-        DeployRetryAction.RECONCILED: (1, 0, 0, 0),
-        DeployRetryAction.REPAIR_DISPATCHED: (0, 0, 1, 0),
-        DeployRetryAction.FAILED: (0, 0, 0, 1),
-    }.get(action, (0, 0, 0, 0))
+        action.value: 0
+        for action in DeploySupervisorAction
+        if action is not DeploySupervisorAction.NONE
+    }
 
 
-#: The API exposes story transitions as action endpoints, not as status values:
-#: `POST stories/{id}/human-review` is what moves a story into the human-review
-#: queue. Posting `waiting_human_review` instead is a 404 — an escalation that
-#: reaches nobody — so the action lives here once and every caller uses it.
-async def supervise_deploying_stories(  # noqa: C901, PLR0912, PLR0915
+def _retry_supervisor_action(action: DeployRetryAction) -> DeploySupervisorAction:
+    """Translate retry-local outcomes into the tick's single aggregate action."""
+    return {
+        DeployRetryAction.RETRIED: DeploySupervisorAction.RETRIED,
+        DeployRetryAction.RECONCILED: DeploySupervisorAction.TESTED,
+        DeployRetryAction.REPAIR_DISPATCHED: DeploySupervisorAction.REDISPATCHED,
+        DeployRetryAction.IN_FLIGHT: DeploySupervisorAction.NONE,
+        DeployRetryAction.FAILED: DeploySupervisorAction.FAILED,
+    }[action]
+
+
+async def supervise_deploying_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
-    """Poll DEPLOYING stories and route based on deploy run outcome.
+    """Poll DEPLOYING stories and aggregate one typed routing action per story.
 
-    Reads run.result.deploy_outcome set by the deploy worker:
-    - SUCCESS → story TESTING, publish QAMessage
-    - SMOKE_FAILURE / CODE_FIX → story IN_PROGRESS, redispatch to engineering
-    - RETRY → increment retry counter, re-publish DeployMessage or FAILED
-    - WAITING_INFRASTRUCTURE → routed by `shared.allocation_disposition`, which
-      gives each refusal disposition its own behaviour: a wait that resumes, an
-      escalation to the human-review queue, or an operator alert. Never failed:
-      the deploy never ran, because the platform had no server to run it on.
-    - GIVE_UP → story FAILED, notify admins
-
-    Returns dict with counts of actions taken.
+    Selection and counting live here; run-state gating and DeployOutcome routing
+    live in bounded helpers below. A story contributes at most one externally
+    reported action to a tick.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.DEPLOYING)
-    if not stories:
-        return {
-            "tested": 0,
-            "retried": 0,
-            "redispatched": 0,
-            "waiting": 0,
-            "escalated": 0,
-            "failed": 0,
-        }
-
-    tested = 0
-    retried = 0
-    redispatched = 0
-    waiting = 0
-    failed = 0
-    refused: dict[RefusedDeployAction, int] = dict.fromkeys(RefusedDeployAction, 0)
+    counts = _empty_deploy_supervision_counts()
     redis = redis_client._redis
 
     for story in stories:
-        story_id = story.id
-        project_id = str(story.project_id)
-        log = logger.bind(story_id=story_id, project_id=project_id)
+        action = await _supervise_deploying_story(api_client, redis_client, redis, story)
+        if action is not DeploySupervisorAction.NONE:
+            counts[action.value] += 1
 
-        # Find latest deploy run for this story
-        try:
-            run = await api_client.get_latest_run_by_story(story_id, run_type="deploy")
-        except ValidationError as exc:
-            await _fail_story_on_invalid_result(
-                api_client, story_id, project_id, "deploy", exc, log
-            )
-            failed += 1
-            continue
-        if run is None:
-            continue
+    return counts
 
-        # A recheck deploy persists the exact message before publication. A
-        # process can die after that commit, so a queued recheck without its
-        # dispatch stamp is recovered here instead of remaining DEPLOYING
-        # forever. Other queued deploys have no reconstructable handoff.
-        if run.status is RunStatus.QUEUED:
-            if await _recover_recheck_deploy_handoff(api_client, redis_client, run, log):
-                retried += 1
-            continue
-        if run.status is RunStatus.RUNNING:
-            continue
 
-        # Only a superseded (CANCELLED) run reaches here without a result; a
-        # terminal run that lost its outcome would have failed validation above.
-        if run.result is None:
-            log.info("deploy_run_superseded_skip", run_id=run.id, run_status=run.status.value)
-            continue
+async def _supervise_deploying_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    redis,
+    story,
+) -> DeploySupervisorAction:
+    """Resolve one DEPLOYING story to the single action this tick performed."""
+    story_id = story.id
+    project_id = str(story.project_id)
+    log = logger.bind(story_id=story_id, project_id=project_id)
 
-        outcome = run.result.deploy_outcome
+    try:
+        run = await api_client.get_latest_run_by_story(story_id, run_type="deploy")
+    except ValidationError as exc:
+        await _fail_story_on_invalid_result(api_client, story_id, project_id, "deploy", exc, log)
+        return DeploySupervisorAction.FAILED
 
-        if outcome == DeployOutcome.SUCCESS:
-            handed_off = await _handle_deploy_success_story(
-                api_client, redis_client, story_id, project_id, run, run.result, log
-            )
-            if handed_off:
-                tested += 1
-            else:
-                failed += 1
+    if run is None:
+        return DeploySupervisorAction.NONE
 
-        elif outcome in (DeployOutcome.CODE_FIX, DeployOutcome.SMOKE_FAILURE):
-            dispatched = await _handle_deploy_code_fix(
-                api_client,
-                redis_client,
-                story_id,
-                project_id,
-                run,
-                run.result,
-                _code_fix_description(run.result.error_details or "unknown deploy error"),
-                log,
-            )
-            if dispatched:
-                redispatched += 1
-            else:
-                failed += 1
+    # A recheck deploy persists the exact message before publication. A process
+    # can die after that commit, so a queued recheck without its dispatch stamp
+    # is recoverable. Other queued deploys have no reconstructable handoff.
+    if run.status is RunStatus.QUEUED:
+        recovered = await _recover_recheck_deploy_handoff(api_client, redis_client, run, log)
+        return DeploySupervisorAction.RETRIED if recovered else DeploySupervisorAction.NONE
 
-        elif outcome in (
-            DeployOutcome.RETRY,
-            DeployOutcome.CANCELLED,
-            DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
-            DeployOutcome.IMAGES_NOT_PUBLISHED,
-            DeployOutcome.IMAGE_REGISTRY_UNREADABLE,
-        ):
-            # A cancelled deploy did not fail and did not deploy: something took
-            # the project away from it — the fence a temporary-access revoke
-            # takes, or another deploy holding the lock. The story still needs
-            # its commit deployed, so it goes round again under the same bound
-            # that stops a failing deploy from looping.
-            #
-            # A deploy refused over images is the same shape: nothing was
-            # deployed and the commit still needs to be. Both refusals reach
-            # this route because both are answerable by trying again — an image
-            # that has gone from the registry and a registry that could not be
-            # read are different facts, which is why they are different
-            # outcomes, but neither is settled by giving up on the first look.
-            # The bound that stops a failing deploy from looping stops these too.
-            if outcome is DeployOutcome.CANCELLED:
-                log.info("deploy_supervisor_redeploy_after_cancel", run_id=run.id)
-            if outcome is DeployOutcome.IMAGES_NOT_PUBLISHED:
-                log.info("deploy_supervisor_redeploy_after_unpublished_images", run_id=run.id)
-            if outcome is DeployOutcome.IMAGE_REGISTRY_UNREADABLE:
-                log.info("deploy_supervisor_redeploy_after_unreadable_registry", run_id=run.id)
-            retry_action = await _handle_deploy_retry(
-                api_client, redis_client, redis, story_id, project_id, run, log
-            )
-            tested_delta, retried_delta, redispatched_delta, failed_delta = _retry_action_deltas(
-                retry_action
-            )
-            tested += tested_delta
-            retried += retried_delta
-            redispatched += redispatched_delta
-            failed += failed_delta
+    if run.status is RunStatus.RUNNING:
+        return DeploySupervisorAction.NONE
 
-        elif outcome is DeployOutcome.SETTINGS_SEED_FAILED:
-            # The application is up; a confirmed setting of the story's brief is
-            # not in it. This is its own route on purpose — the retry branch
-            # above reconciles an applied owner grant straight to SUCCESS, which
-            # would hand QA a deploy presented as successful with the readback
-            # evidence gone.
-            retry_action = await _route_settings_seed_failure(
-                api_client, redis_client, redis, story_id, project_id, run, log
-            )
-            tested_delta, retried_delta, redispatched_delta, failed_delta = _retry_action_deltas(
-                retry_action
-            )
-            tested += tested_delta
-            retried += retried_delta
-            redispatched += redispatched_delta
-            failed += failed_delta
+    # Only a superseded CANCELLED run reaches here without a result; a terminal
+    # run that lost its outcome would have failed validation above.
+    if run.result is None:
+        log.info("deploy_run_superseded_skip", run_id=run.id, run_status=run.status.value)
+        return DeploySupervisorAction.NONE
 
-        elif outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
-            action = await _route_refused_deploy(
-                api_client, redis_client, story_id, project_id, run, run.result, log
-            )
-            # Each action names the counter it advances, so a behaviour the
-            # routing distinguishes cannot be merged back together in the counts.
-            refused[action] += 1
+    return await _route_deploy_outcome(
+        api_client,
+        redis_client,
+        redis,
+        story_id,
+        project_id,
+        run,
+        run.result,
+        log,
+    )
 
-        elif outcome == DeployOutcome.WAITING_FOR_USER_SECRET:
-            await _handle_deploy_waiting_user_secret(
-                api_client, redis_client, story_id, project_id, run, log
-            )
-            waiting += 1
 
-        elif outcome in (
-            DeployOutcome.GIVE_UP,
-            DeployOutcome.ALLOCATION_MISSING,
-            DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
-            DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
-            DeployOutcome.HEAD_SHA_MISSING,
-        ):
-            await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
-            failed += 1
+async def _route_deploy_outcome(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    redis,
+    story_id: str,
+    project_id: str,
+    run,
+    result: DeployRunResult,
+    log: structlog.stdlib.BoundLogger,
+) -> DeploySupervisorAction:
+    """Route one terminal deploy result without owning selection or aggregation."""
+    outcome = result.deploy_outcome
 
-    return {
-        "tested": tested,
-        "retried": retried,
-        "redispatched": redispatched + refused[RefusedDeployAction.REDISPATCHED],
-        "waiting": waiting + refused[RefusedDeployAction.WAITING],
-        "escalated": refused[RefusedDeployAction.ESCALATED],
-        "failed": failed + refused[RefusedDeployAction.FAILED],
-    }
+    if outcome is DeployOutcome.SUCCESS:
+        handed_off = await _handle_deploy_success_story(
+            api_client, redis_client, story_id, project_id, run, result, log
+        )
+        return (
+            DeploySupervisorAction.TESTED
+            if handed_off
+            else DeploySupervisorAction.FAILED
+        )
+
+    if outcome in _CODE_FIX_OUTCOMES:
+        dispatched = await _handle_deploy_code_fix(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            _code_fix_description(result.error_details or "unknown deploy error"),
+            log,
+        )
+        return (
+            DeploySupervisorAction.REDISPATCHED
+            if dispatched
+            else DeploySupervisorAction.FAILED
+        )
+
+    if outcome in _RETRY_OUTCOMES:
+        _log_redeploy_reason(outcome, run, log)
+        retry_action = await _handle_deploy_retry(
+            api_client, redis_client, redis, story_id, project_id, run, log
+        )
+        return _retry_supervisor_action(retry_action)
+
+    if outcome is DeployOutcome.SETTINGS_SEED_FAILED:
+        retry_action = await _route_settings_seed_failure(
+            api_client, redis_client, redis, story_id, project_id, run, log
+        )
+        return _retry_supervisor_action(retry_action)
+
+    if outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
+        action = await _route_refused_deploy(
+            api_client, redis_client, story_id, project_id, run, result, log
+        )
+        return DeploySupervisorAction(action.value)
+
+    if outcome is DeployOutcome.WAITING_FOR_USER_SECRET:
+        await _handle_deploy_waiting_user_secret(
+            api_client, redis_client, story_id, project_id, run, log
+        )
+        return DeploySupervisorAction.WAITING
+
+    if outcome in _TERMINAL_FAILURE_OUTCOMES:
+        await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
+        return DeploySupervisorAction.FAILED
+
+    raise AssertionError(f"DeployOutcome {outcome.value!r} has no supervisor route")
+
+
+def _log_redeploy_reason(
+    outcome: DeployOutcome,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Keep retry-path observability separate from the state-machine router."""
+    event = {
+        DeployOutcome.CANCELLED: "deploy_supervisor_redeploy_after_cancel",
+        DeployOutcome.IMAGES_NOT_PUBLISHED: "deploy_supervisor_redeploy_after_unpublished_images",
+        DeployOutcome.IMAGE_REGISTRY_UNREADABLE: "deploy_supervisor_redeploy_after_unreadable_registry",
+    }.get(outcome)
+    if event is not None:
+        log.info(event, run_id=run.id)
 
 
 async def _recover_recheck_deploy_handoff(
