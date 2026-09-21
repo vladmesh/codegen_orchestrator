@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- Server inventory sync now reconciles each provider row through typed outcomes and separate phases,
+  removing the server-sync complexity exemption without changing provisioning policy.
 - Level-1 evidence now captures and judges each merged file set before teardown, proving both stories carry
   only their declared product changes and no orchestrator-injected path or legacy overwrite.
 - The stand bootstrap masks the VM's automatic apt upgrades and waits for cloud-init before apt/Docker work,
