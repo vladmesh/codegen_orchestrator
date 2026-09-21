@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-21  
-Audited branch: main at 44e330a132a394f44229eec8731794a656a12927 (after PR #553)  
+Audited branch: main at b13d5976ffc88a3b172ff2e4e00481b16d408223 (after PR #554)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -31,7 +31,7 @@ Of the original sixteen H/M/L findings:
 This refresh adds three findings:
 
 - **M9 — new since the old audit:** executor-profile health now mirrors private Codex/Claude credential formats closely enough that updating a pinned CLI carries adapter-maintenance risk.
-- **M10 — newly identified, but not newly introduced:** several core orchestration functions are explicitly exempt from Ruff complexity/branch/statement limits.
+- **M10 — partially complete:** PR #554 removed the server-sync complexity exemption by introducing typed per-provider-server outcomes and explicit reconciliation phases; two deploy state machines remain exempt.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
 So the current actionable set is one High finding, four Medium findings and four Low findings. The completed original work should stay completed; no rewrite is justified.
@@ -49,8 +49,9 @@ The most architecture-relevant changes since the previous refresh are:
 - PRs #506-#524 substantially expanded central QA contracts, failure classification and worker lifecycle handling.
 - PRs #525-#552 expanded deterministic/live acceptance evidence, teardown, generated-product isolation, state-age supervision, operator resume and service-image runtime checks.
 - PR #553 removed the production undeploy dependency on `shared.live_harness_cleanup`, moved the shared cleanup primitive to `shared.deployment_cleanup`, and added a service-source import boundary guard.
+- PR #554 decomposed server-list reconciliation into typed per-provider-server outcomes plus explicit discovery, missing-server and notification phases, removing the `_sync_server_list` complexity suppression.
 
-These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1 and M10 still deserve attention even though many individual failure cases are better than before. PR #553 separately closed the M2 production-to-harness dependency.
+These changes mostly harden correctness. They also make a few existing coordination modules larger, which is why H1 and the remaining M10 deploy hotspots still deserve attention even though many individual failure cases are better than before. PR #553 closed the M2 production-to-harness dependency; PR #554 completed the server-sync slice of M10.
 
 ---
 
@@ -71,7 +72,7 @@ These changes mostly harden correctness. They also make a few existing coordinat
 | M7 | Medium | Open | ConfigStore still serves an unbounded last-known value after source failure; policy is global rather than key-classified. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
 | M9 | Medium | New | Worker-manager mirrors detailed private executor credential/profile formats, especially Codex auth.json/serde_json behavior. |
-| M10 | Medium | New to audit | Core deploy/server-sync orchestration still opts out of complexity, branch and statement limits at function scope. |
+| M10 | Medium | Partial | PR #554 removed the server-sync complexity exemption; deploy supervision and deploy consumption still opt out of complexity/branch/statement limits. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
 | L3 | Low | Open | Several long-lived external client classes still instantiate a fresh httpx.AsyncClient per request/batch. |
@@ -286,23 +287,43 @@ Do not replace these checks with permissive parsing.
 **Severity:** Medium  
 **Removal safety:** 3/5  
 **Removal simplicity:** 2/5  
-**Status:** Newly identified in this refresh; the suppressions already existed on 2026-09-12.
+**Status:** Partially complete via PR #554.
 
 ### Current evidence
 
-The root Ruff policy is active, but several important orchestration functions explicitly suppress the rules that would normally flag large decision surfaces:
+PR #554 completed the server-sync hotspot. `_sync_server_list` now aggregates a closed typed
+`ProviderServerOutcome` from one-server reconciliation and delegates discovery, missing-server
+marking and managed-server notifications to explicit phases. Its C901/PLR0912/PLR0915 suppression
+is gone.
+
+Two deploy state machines still explicitly suppress the rules that would normally flag large
+decision surfaces:
 
 - services/scheduler/src/tasks/supervisor/deploy.py::supervise_deploying_stories — C901, PLR0912, PLR0915;
 - services/langgraph/src/consumers/deploy.py::process_deploy_job — C901, PLR0911, PLR0912, PLR0915;
-- services/scheduler/src/tasks/server_sync.py::_sync_server_list — C901, PLR0912, PLR0915.
 
-The surrounding modules are substantial: deploy supervision is roughly 1,613 lines and the deploy consumer roughly 834 lines.
+The surrounding modules remain substantial: deploy supervision is roughly 1,613 lines and the
+deploy consumer roughly 834 lines.
 
-This does not undo H4. H4 was about worker services inheriting the repository lint policy. M10 is a separate observation that some central orchestration code opts out of the most relevant complexity checks locally.
+This does not undo H4. H4 was about worker services inheriting the repository lint policy. M10 is
+a separate observation that some central orchestration code opts out of the most relevant
+complexity checks locally.
 
-### Why it matters
+### What PR #554 proved
 
-These functions encode state machines, retry budgets and typed failure routes. High branch/statement counts make it easier to introduce a path that:
+The server-sync refactor kept `_sync_server_list` as the orchestration boundary while making one
+provider row resolve to a typed outcome. Existing discovery, allowlist promotion/demotion, stable
+provider identity, legacy collision refusal, missing-server marking and provider-outage behavior
+remain covered by unit/service/integration tests.
+
+The full required CI gate passed, including Ruff, unit tests, offline live regressions, scheduler
+service tests, infra integration tests, template compatibility and production service-image
+entrypoint imports. PR #554 merged as `b13d5976ffc88a3b172ff2e4e00481b16d408223`.
+
+### Why the remainder still matters
+
+The two remaining functions encode state machines, retry budgets and typed failure routes. High
+branch/statement counts make it easier to introduce a path that:
 
 - skips a durable transition;
 - spends a retry twice;
@@ -312,17 +333,17 @@ These functions encode state machines, retry budgets and typed failure routes. H
 
 ### Recommendation
 
-Refactor by state transition, not by arbitrary helper extraction.
+Keep the PR #554 pattern: refactor by state transition, not arbitrary helper extraction.
 
-For each function:
+For each remaining function:
 
 1. identify the closed set of typed outcomes;
 2. map each outcome to a small handler with explicit inputs;
 3. keep the outer function as selection/dispatch;
-4. move tests to the handlers plus one routing table/coverage test;
+4. move tests to the handlers plus one routing/coverage test;
 5. remove the complexity suppression only when the state machine is actually simpler.
 
-Take one hotspot per PR.
+Take one remaining deploy hotspot per PR.
 
 ---
 
@@ -553,7 +574,7 @@ Each item can be delivered incrementally without a rewrite.
 
 ## Phase 3 — state-machine decomposition
 
-1. **M10:** split one complexity-exempt orchestration function by typed outcome and remove its suppression.
+1. **M10:** server-sync is complete; take one of the two remaining deploy hotspots and apply the same typed-outcome decomposition pattern.
 2. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
 3. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
@@ -571,7 +592,7 @@ The remaining debt is concentrated rather than diffuse:
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows and ConfigStore policy remain;
 - **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
-- **complexity exemptions:** a few central state machines sit outside normal per-function complexity limits;
+- **complexity exemptions:** server-sync is back under normal limits; two central deploy state machines remain exempt;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
 The next cleanup should continue the repository's existing direction: preserve typed contracts and durable evidence, then make ownership boundaries match them. The evidence does not support a rewrite.
