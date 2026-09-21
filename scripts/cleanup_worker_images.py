@@ -31,6 +31,7 @@ class Image:
     image_id: str
     source_hash: str
     references: tuple[str, ...]
+    parent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,19 @@ def plan_cleanup(
         else:
             remove.append(Decision(image.image_id, image.source_hash, "REMOVE", "stale_generation"))
 
+    images_by_id = {image.image_id: image for image in images}
+    removable_ids = {item.image_id for item in remove}
+
+    def parent_depth(image_id: str, ancestors: frozenset[str] = frozenset()) -> int:
+        image = images_by_id[image_id]
+        parent_id = image.parent_id
+        if parent_id not in removable_ids or parent_id in ancestors:
+            return 0
+        return 1 + parent_depth(parent_id, ancestors | {image_id})
+
+    # Docker's classic storage driver retains a base while a child exists, so
+    # remove stale descendants before their stale ancestors.
+    remove.sort(key=lambda item: (-parent_depth(item.image_id), item.image_id))
     return CleanupPlan(tuple(keep), tuple(remove))
 
 
@@ -163,20 +177,62 @@ def _worker_images(run_docker: Callable[[list[str]], str]) -> list[Image]:
             for reference in (raw.get("RepoTags") or []) + (raw.get("RepoDigests") or [])
         )
     }
+    while True:
+        derived_ids = {
+            str(raw["Id"])
+            for raw in raw_images
+            if raw.get("Parent") in worker_ids and isinstance(raw.get("Id"), str)
+        }
+        if derived_ids <= worker_ids:
+            break
+        worker_ids |= derived_ids
     images: list[Image] = []
     for raw in raw_images:
         image_id = raw.get("Id")
         labels = raw.get("Config", {}).get("Labels", {})
         source_hash = labels.get(WORKER_SOURCE_HASH_LABEL) if isinstance(labels, dict) else None
         references = tuple((raw.get("RepoTags") or []) + (raw.get("RepoDigests") or []))
+        parent_id = raw.get("Parent")
         if (
             isinstance(image_id, str)
             and isinstance(source_hash, str)
             and source_hash
-            and (image_id in worker_ids or raw.get("Parent") in worker_ids)
+            and image_id in worker_ids
         ):
-            images.append(Image(image_id=image_id, source_hash=source_hash, references=references))
+            images.append(
+                Image(
+                    image_id=image_id,
+                    source_hash=source_hash,
+                    references=references,
+                    parent_id=parent_id if isinstance(parent_id, str) and parent_id else None,
+                )
+            )
     return images
+
+
+def _container_image_ids(run_docker: Callable[[list[str]], str]) -> set[str]:
+    """Return every image ID referenced by running or stopped containers."""
+    container_ids = {
+        item for item in run_docker(["ps", "-a", "-q", "--no-trunc"]).splitlines() if item
+    }
+    image_ids: set[str] = set()
+    for container_id in container_ids:
+        image_id = run_docker(
+            ["container", "inspect", "--format", "{{.Image}}", container_id]
+        ).strip()
+        if not image_id:
+            raise RuntimeError(f"Docker returned no image ID for container {container_id}")
+        image_ids.add(image_id)
+    return image_ids
+
+
+def _is_docker_refusal(error: subprocess.CalledProcessError) -> bool:
+    message = "\n".join(
+        str(value) for value in (error.stdout, error.stderr) if value is not None
+    ).lower()
+    return (
+        "conflict:" in message or "being used" in message or "has dependent child images" in message
+    )
 
 
 def cleanup_worker_images(
@@ -188,9 +244,7 @@ def cleanup_worker_images(
 ) -> CleanupPlan:
     """Print the retention decision, then remove only its stale worker images."""
     images = _worker_images(run_docker)
-    running_image_ids = set(
-        run_docker(["ps", "--no-trunc", "--format", "{{.ImageID}}"]).splitlines()
-    )
+    running_image_ids = _container_image_ids(run_docker)
     plan = plan_cleanup(
         current_record=_load_record(release_record),
         previous_record=_load_record(previous_release_record),
@@ -200,7 +254,15 @@ def cleanup_worker_images(
     print(render_plan(plan))
     if not dry_run:
         for item in plan.remove:
-            run_docker(["image", "rm", item.image_id])
+            try:
+                run_docker(["image", "rm", item.image_id])
+            except subprocess.CalledProcessError as error:
+                if not _is_docker_refusal(error):
+                    raise
+                print(
+                    f"KEEP {item.image_id} reason=docker_refused source_hash={item.source_hash}",
+                    file=sys.stdout,
+                )
     return plan
 
 

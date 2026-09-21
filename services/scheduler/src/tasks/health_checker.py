@@ -90,16 +90,25 @@ async def _ensure_control_host(servers: list):
     if not hostname or not public_ip:
         logger.error("control_host_monitoring_not_configured")
         return None
-    return await api_client.create_server(
-        ServerCreate(
-            handle=CONTROL_HOST_HANDLE,
-            host=hostname,
-            public_ip=public_ip,
-            is_managed=False,
-            status=ServerStatus.ACTIVE,
-            labels={"role": CONTROL_HOST_LABEL},
+    try:
+        return await api_client.create_server(
+            ServerCreate(
+                handle=CONTROL_HOST_HANDLE,
+                host=hostname,
+                public_ip=public_ip,
+                is_managed=False,
+                status=ServerStatus.ACTIVE,
+                labels={"role": CONTROL_HOST_LABEL},
+            )
         )
-    )
+    except Exception as error:
+        logger.error(
+            "control_host_inventory_create_failed",
+            error=str(error),
+            error_type=type(error).__name__,
+            exc_info=True,
+        )
+        return None
 
 
 async def _fetch_metrics(http: httpx.AsyncClient, ip: str, port: int) -> str | None:

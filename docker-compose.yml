@@ -433,7 +433,7 @@ services:
       SERVICE_NAME: scheduler-infrastructure
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
-      ORCHESTRATOR_PUBLIC_IP: ${ORCHESTRATOR_PUBLIC_IP}
+      ORCHESTRATOR_PUBLIC_IP: ${ORCHESTRATOR_PUBLIC_IP:-}
     command: ["python", "-m", "src.infrastructure"]
     healthcheck:
       test: ["CMD-SHELL", '[ "$$(cat /tmp/scheduler-service-ready 2>/dev/null)" = "$$SERVICE_NAME" ]']

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- Deploy cleanup keeps the last distinct worker image generation, tolerates Docker conflicts, and always prunes cache;
+  control-host inventory creation no longer disrupts health checks or provider discovery.
 - Deploy cleanup retains the recorded worker release and its predecessor, removes stale worker generations safely,
   and prunes build cache older than one day; the scheduler now alerts on the control host's backing disk usage.
 - A story in work tells its owner its stage, what it waits for and the magnitude of the wait on entry and after

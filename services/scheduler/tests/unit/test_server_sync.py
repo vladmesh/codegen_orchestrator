@@ -375,6 +375,35 @@ async def test_sync_refuses_ip_collision_without_exact_provider_identity(
 
 
 @pytest.mark.asyncio
+async def test_sync_ignores_control_host_when_matching_legacy_ips(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    """The scheduler host is monitor-only, never a Time4VPS identity candidate."""
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    control_host = ServerDTO(
+        handle="control-host",
+        host="orchestrator.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        is_managed=False,
+        labels={"role": "control_host"},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="provider.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(return_value=[control_host])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.create_server = AsyncMock()
+
+    assert await server_sync._sync_server_list(mock_time4vps_client) == (1, 0, 0)
+    mock_api_client.create_server.assert_awaited_once()
+    mock_api_client.update_server.assert_not_called()
+    assert mock_notify_admins.await_args.kwargs["level"] == "info"
+
+
+@pytest.mark.asyncio
 async def test_sync_refuses_legacy_identity_collision_once_then_stays_quiet(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):

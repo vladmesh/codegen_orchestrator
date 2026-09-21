@@ -415,6 +415,32 @@ class TestAppHealthIntegration:
         mock_app_probe.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_control_host_creation_failure_does_not_skip_app_probe(
+        self, mock_api_client, monkeypatch
+    ):
+        monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "orchestrator.example")
+        monkeypatch.setenv("ORCHESTRATOR_PUBLIC_IP", "203.0.113.10")
+        mock_api_client.get_servers.return_value = []
+        mock_api_client.create_server.side_effect = RuntimeError("API unavailable")
+
+        class _BreakLoop(Exception):
+            pass
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch(
+                "src.tasks.health_checker.app_health_probe_cycle", new_callable=AsyncMock
+            ) as mock_app_probe,
+            patch("src.tasks.health_checker.asyncio.sleep", side_effect=_BreakLoop),
+        ):
+            from src.tasks.health_checker import health_check_worker
+
+            with pytest.raises(_BreakLoop):
+                await health_check_worker()
+
+        mock_app_probe.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_cleanup_includes_app_health_history(self, mock_api_client):
         """Daily cleanup also deletes old app health history."""
         mock_api_client.delete_old_metrics_history = AsyncMock(return_value={"deleted": 5})

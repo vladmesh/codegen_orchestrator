@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 from scripts.cleanup_worker_images import Image, cleanup_worker_images, plan_cleanup, render_plan
 
@@ -11,11 +12,13 @@ def _image(
     image_id: str,
     source_hash: str,
     repository: str = "worker",
+    parent_id: str | None = None,
 ) -> Image:
     return Image(
         image_id=image_id,
         source_hash=source_hash,
         references=(f"{repository}@sha256:{image_id}",),
+        parent_id=parent_id,
     )
 
 
@@ -151,8 +154,10 @@ def test_dry_run_prints_the_plan_without_removing_images(tmp_path, capsys):
             return "current\nprevious\nstale\n"
         if command[:2] == ["image", "inspect"]:
             return json.dumps([inspected[command[2]]])
-        if command == ["ps", "--no-trunc", "--format", "{{.ImageID}}"]:
-            return ""
+        if command == ["ps", "-a", "-q", "--no-trunc"]:
+            return "stopped-container\n"
+        if command == ["container", "inspect", "--format", "{{.Image}}", "stopped-container"]:
+            return "previous\n"
         raise AssertionError(command)
 
     cleanup_worker_images(
@@ -168,3 +173,136 @@ def test_dry_run_prints_the_plan_without_removing_images(tmp_path, capsys):
         "REMOVE stale reason=stale_generation source_hash=stale",
     ]
     assert all(command[:3] != ["image", "rm", "stale"] for command in calls)
+
+
+def test_stopped_container_image_is_kept_by_real_docker_identity_query(tmp_path, capsys):
+    current = tmp_path / "current.json"
+    previous = tmp_path / "previous.json"
+    current.write_text(json.dumps(_record("current", "current")))
+    previous.write_text(json.dumps(_record("previous", "previous")))
+    calls: list[list[str]] = []
+    inspected = {
+        image_id: {
+            "Id": image_id,
+            "RepoTags": [f"worker-base-common:{image_id}"],
+            "RepoDigests": [f"worker-base-common@sha256:{image_id}"],
+            "Parent": "",
+            "Config": {"Labels": {"org.codegen.worker_source_hash": source_hash}},
+        }
+        for image_id, source_hash in (
+            ("current", "current"),
+            ("previous", "previous"),
+            ("stale", "stale"),
+        )
+    }
+
+    def docker(command: list[str]) -> str:
+        calls.append(command)
+        if command == ["image", "ls", "-q", "--no-trunc"]:
+            return "current\nprevious\nstale\n"
+        if command[:2] == ["image", "inspect"]:
+            return json.dumps([inspected[command[2]]])
+        if command == ["ps", "-a", "-q", "--no-trunc"]:
+            return "stopped-container\n"
+        if command == ["container", "inspect", "--format", "{{.Image}}", "stopped-container"]:
+            return "stale\n"
+        raise AssertionError(command)
+
+    cleanup_worker_images(
+        release_record=current,
+        previous_release_record=previous,
+        dry_run=True,
+        run_docker=docker,
+    )
+
+    assert "KEEP stale reason=running_container source_hash=stale" in capsys.readouterr().out
+    assert ["ps", "-a", "-q", "--no-trunc"] in calls
+
+
+def test_live_cleanup_keeps_docker_refusal_and_continues_with_other_images(tmp_path, capsys):
+    current = tmp_path / "current.json"
+    previous = tmp_path / "previous.json"
+    current.write_text(json.dumps(_record("current", "current")))
+    previous.write_text(json.dumps(_record("previous", "previous")))
+    removals: list[str] = []
+    inspected = {
+        image_id: {
+            "Id": image_id,
+            "RepoTags": [f"worker-base-common:{image_id}"],
+            "RepoDigests": [f"worker-base-common@sha256:{image_id}"],
+            "Parent": "",
+            "Config": {"Labels": {"org.codegen.worker_source_hash": source_hash}},
+        }
+        for image_id, source_hash in (
+            ("current", "current"),
+            ("previous", "previous"),
+            ("refused", "stale"),
+            ("removed", "stale"),
+        )
+    }
+
+    def docker(command: list[str]) -> str:
+        if command == ["image", "ls", "-q", "--no-trunc"]:
+            return "current\nprevious\nrefused\nremoved\n"
+        if command[:2] == ["image", "inspect"]:
+            return json.dumps([inspected[command[2]]])
+        if command == ["ps", "-a", "-q", "--no-trunc"]:
+            return ""
+        if command[:2] == ["image", "rm"]:
+            removals.append(command[2])
+            if command[2] == "refused":
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="conflict: unable to delete refused (must be forced)"
+                )
+            return ""
+        raise AssertionError(command)
+
+    cleanup_worker_images(
+        release_record=current,
+        previous_release_record=previous,
+        dry_run=False,
+        run_docker=docker,
+    )
+
+    assert removals == ["refused", "removed"]
+    assert "KEEP refused reason=docker_refused source_hash=stale" in capsys.readouterr().out
+
+
+def test_live_cleanup_removes_derived_images_before_their_base(tmp_path):
+    current = tmp_path / "current.json"
+    previous = tmp_path / "previous.json"
+    current.write_text(json.dumps(_record("current", "current")))
+    previous.write_text(json.dumps(_record("previous", "previous")))
+    removals: list[str] = []
+
+    def docker(command: list[str]) -> str:
+        if command == ["image", "ls", "-q", "--no-trunc"]:
+            return "current\nprevious\nstale-base\nstale-derived\n"
+        source_hash = "stale" if command[2].startswith("stale") else command[2]
+        if command[:2] == ["image", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Id": command[2],
+                        "RepoTags": [f"worker-base-common:{command[2]}"],
+                        "RepoDigests": [f"worker-base-common@sha256:{command[2]}"],
+                        "Parent": "stale-base" if command[2] == "stale-derived" else "",
+                        "Config": {"Labels": {"org.codegen.worker_source_hash": source_hash}},
+                    }
+                ]
+            )
+        if command == ["ps", "-a", "-q", "--no-trunc"]:
+            return ""
+        if command[:2] == ["image", "rm"]:
+            removals.append(command[2])
+            return ""
+        raise AssertionError(command)
+
+    cleanup_worker_images(
+        release_record=current,
+        previous_release_record=previous,
+        dry_run=False,
+        run_docker=docker,
+    )
+
+    assert removals == ["stale-derived", "stale-base"]
