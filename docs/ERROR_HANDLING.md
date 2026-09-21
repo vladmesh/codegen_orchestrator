@@ -78,6 +78,23 @@ story is not failed, it carries `quarantine_reason.reason = user_secret_request_
 administrators are told it will not end on its own. A wait entered before the ask was durable is
 asked once, and its clock starts at that delivery.
 
+### Story Stage Notices
+
+While a story is in work its owner is told the stage, not left in silence
+(`services/scheduler/src/tasks/supervisor/stage_notices.py`). A story in `created`,
+`in_progress`, `reopened`, `pr_review`, `deploying` or `testing` gets one non-terminal
+`story_stage` event on entering the stage and one more each time it is still there
+`supervisor.stage_notice_quiet_minutes` (60) after the last notice. The sweep runs once per
+dispatcher tick, so the owner hears each stage the story is *observed* in within one sweep; a stage
+entered and left between two sweeps is deliberately not announced, because it is no longer true. The event carries the
+`StoryStatus`, its `WAITING_ON_BY_STATUS` value and a `StoryWaitEstimate` — the magnitude of the
+state's bound above, or `unbounded` where the map has none. Terminal states and the two states
+whose owner was already told what is needed (`waiting_user_secret`, `waiting_human_review`) get
+none. The last notice per story is a Redis marker (`story:stage_notice:<id>`) written before the
+publish, with no expiry, so a scheduler restart of any length neither repeats nor resets the
+interval; it is deleted by the first sweep that no longer finds the story in work. It is best-effort by
+design: a lost stage notice is superseded by the next one, so it is never an owed record.
+
 ---
 
 ## 4. Propagation Flow

@@ -179,6 +179,11 @@
   category: supervisor
   description: "Minutes a story may wait, after its secret request was delivered to the owner, before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
 
+- key: supervisor.stage_notice_quiet_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a story may stay in one in-work stage after its last stage notice before its owner is told again that it is still there (measured from that notice, kept in Redis)"
+
 - key: supervisor.temporary_access_ttl_minutes
   value: 60
   category: supervisor

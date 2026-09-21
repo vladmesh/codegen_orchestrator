@@ -390,6 +390,18 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
 )
 
 
+def configured_bound_minutes(status: StoryStatus) -> int | None:
+    """The configured upper bound of a Story state's wait, if the map bounds it.
+
+    The stage notices read their order-of-magnitude estimate from here, so the
+    number an owner is told about and the number that ends the wait are one.
+    """
+    for bound in STATE_AGE_BOUNDS:
+        if bound.status is status:
+            return _threshold_minutes(bound)
+    return None
+
+
 async def supervise_state_age_bounds(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,

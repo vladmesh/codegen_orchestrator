@@ -123,6 +123,82 @@ WAITING_ON_BY_STATUS: dict[StoryStatus, StoryWaitingOn] = {
 }
 
 
+# --- Stage notices ---
+#
+# While a story is in work its owner is told which stage it is at, what it is
+# waiting for and roughly how long that takes. The stage is the ``StoryStatus``
+# and what it waits for is ``WAITING_ON_BY_STATUS`` — no second vocabulary. The
+# three sets below partition ``StoryStatus``; a status in none of them would be
+# a stage nobody decided about, and the contract test refuses it.
+
+#: The stages a story is *in work* in: the platform, not a person, owes the next
+#: step, so silence here reads as "it disappeared". Each one is told on entry
+#: and again after the quiet interval.
+STAGE_NOTICE_STATUSES: frozenset[StoryStatus] = frozenset(
+    {
+        StoryStatus.CREATED,
+        StoryStatus.IN_PROGRESS,
+        StoryStatus.REOPENED,
+        StoryStatus.PR_REVIEW,
+        StoryStatus.DEPLOYING,
+        StoryStatus.TESTING,
+    }
+)
+
+#: Endings. The owner is told the outcome through the durable terminal seam,
+#: and there is no next stage to announce.
+STAGE_NOTICE_TERMINAL_STATUSES: frozenset[StoryStatus] = frozenset(
+    {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
+)
+
+#: Parked states whose owner has already been told what is needed and that no
+#: platform work is under way: ``waiting_user_secret`` asks the owner for the
+#: values themselves, and ``waiting_human_review`` told them work is stopped
+#: until a person acts, with no known time. A "the system is still waiting"
+#: reminder in either would contradict what they were told.
+STAGE_NOTICE_OWNER_TOLD_STATUSES: frozenset[StoryStatus] = frozenset(
+    {StoryStatus.WAITING_USER_SECRET, StoryStatus.WAITING_HUMAN_REVIEW}
+)
+
+
+class StoryWaitEstimate(StrEnum):
+    """The order of magnitude of a stage's wait, read off its configured bound.
+
+    It is a ceiling's magnitude, not a prediction: ``TENS_OF_MINUTES`` says the
+    stage is bounded somewhere between ten minutes and an hour. ``UNBOUNDED``
+    is the honest answer for a stage no configured bound covers — nothing is
+    invented to fill it.
+    """
+
+    MINUTES = "minutes"
+    TENS_OF_MINUTES = "tens_of_minutes"
+    HOURS = "hours"
+    DAYS = "days"
+    UNBOUNDED = "unbounded"
+
+
+def story_wait_estimate(bound_minutes: int | None) -> StoryWaitEstimate:
+    """The magnitude of a configured upper bound, in minutes."""
+    if bound_minutes is None:
+        return StoryWaitEstimate.UNBOUNDED
+    if bound_minutes < 10:  # noqa: PLR2004 — the magnitudes are the contract
+        return StoryWaitEstimate.MINUTES
+    if bound_minutes <= 60:  # noqa: PLR2004
+        return StoryWaitEstimate.TENS_OF_MINUTES
+    if bound_minutes < 24 * 60:
+        return StoryWaitEstimate.HOURS
+    return StoryWaitEstimate.DAYS
+
+
+class StoryStageNoticeKind(StrEnum):
+    """Why a stage notice was sent."""
+
+    #: The story was seen in this stage for the first time.
+    ENTERED = "entered"
+    #: The story is still in the stage a quiet interval after the last notice.
+    STILL_THERE = "still_there"
+
+
 # --- Response DTOs ---
 
 

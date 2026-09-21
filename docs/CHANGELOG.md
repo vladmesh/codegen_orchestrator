@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- A story in work tells its owner its stage, what it waits for and the magnitude of the wait on entry and after
+  `supervisor.stage_notice_quiet_minutes`, via a best-effort `story_stage` event with a Redis marker.
 - Telegram QA probes collect final reply and edit state at a bounded two-second cadence through their
   deadline, treating replies deleted before then as silent so progress notices cannot hide an answer.
 

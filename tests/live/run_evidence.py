@@ -315,7 +315,10 @@ def evidence_output_directory(root: Path | None = None) -> Path:
 #      their source was asked in, and the reason for any kind that could not be
 #      asked. Before this a run that failed one of them left a reader nothing to
 #      read: stand run 35486586267 failed both and the document named neither.
-EVIDENCE_SCHEMA_VERSION = 21
+# v22: `stage_notices` carries, for each of the run's two stories, the
+#      `story_stage` events its owner was sent while it was in work
+#      (issue:b28d93), or the reason they could not be read.
+EVIDENCE_SCHEMA_VERSION = 22
 EVIDENCE_KIND = "worker_failure_attribution"
 
 #: Every Product Brief fact this document can carry, in the order it is written.
@@ -3896,6 +3899,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         },
         "generated_product_timeline": generated_product_timeline(ctx),
         "second_story": second_story(ctx),
+        "stage_notices": stage_notice_evidence(ctx),
         "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
@@ -3994,6 +3998,40 @@ def second_story(ctx: dict) -> dict:
         "qa": captured("qa_result"),
         "story_terminal": captured("story_terminal", "story_terminal_error"),
         "owner_notification": captured("owner_notification", "owner_notification_error"),
+    }
+
+
+STAGE_NOTICES_NOTE = (
+    "The story_stage events each story's owner was sent while it was in work, read "
+    "off po:input after the story ended: the stage, what it waited on, the "
+    "magnitude of the wait and whether it was an entry or a repeat after the quiet "
+    "interval — beside the stages the harness itself sampled the story in and the "
+    "stand's dispatcher interval they are compared at. Recorded as observed; "
+    "level1_stage_notices judges them."
+)
+
+
+def stage_notice_evidence(ctx: dict) -> dict:
+    """Each story's stage notices, or the stated reason they are not here."""
+
+    def captured(source: dict, story: str) -> dict:
+        if "stage_notices" in source:
+            return Capture.captured(source["stage_notices"]).as_dict()
+        reason = source.get("stage_notices_error") or (
+            f"the {story} story's stage notices were never recorded by this run"
+        )
+        return Capture.missed(reason).as_dict()
+
+    extension = ctx.get("level1_extension")
+    second = (
+        captured(extension, "second")
+        if isinstance(extension, dict) and extension
+        else Capture.missed("this run ran no second story").as_dict()
+    )
+    return {
+        "note": STAGE_NOTICES_NOTE,
+        "first_story": captured(ctx, "first"),
+        "second_story": second,
     }
 
 
