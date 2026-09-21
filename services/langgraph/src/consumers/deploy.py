@@ -8,6 +8,9 @@ Run standalone: python -m src.consumers.deploy
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 import structlog
 
 from shared.allocation_disposition import attempt_disposition, may_terminate_story
@@ -311,16 +314,520 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
-    job_data: dict, redis: RedisStreamClient
+@dataclass(frozen=True)
+class DeployAccessContext:
+    """Validated access capabilities carried into one deploy execution."""
+
+    grant_intent: Any | None = None
+    temporary_access_grant: Any | None = None
+    temporary_access_operation: str | None = None
+
+
+@dataclass(frozen=True)
+class DeployBaseContext:
+    """Project and access facts required before resource preparation."""
+
+    project: ProjectDTO
+    access: DeployAccessContext
+
+
+@dataclass(frozen=True)
+class PreparedDeploy:
+    """Inputs that are safe to hand to the DevOps subgraph."""
+
+    base: DeployBaseContext
+    subgraph_input: dict
+
+
+@dataclass(frozen=True)
+class DeployTerminal:
+    """A deploy path that already persisted and classified its terminal response."""
+
+    response: dict
+
+
+async def _deploy_failure_terminal(
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    error_msg: str,
+    *,
+    deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
+    missing_user_secrets: list[MissingUserSecret] | None = None,
+) -> DeployTerminal:
+    """Persist one classified deploy failure and wrap its worker response."""
+    response = await _handle_deploy_failure(
+        task_id=msg.task_id,
+        project_id=msg.project_id,
+        story_id=msg.story_id,
+        error_msg=error_msg,
+        callback_stream=msg.callback_stream,
+        telegram_chat_id=msg.telegram_chat_id,
+        redis=redis,
+        deploy_outcome=deploy_outcome,
+        deploy_fix_attempt=msg.deploy_fix_attempt,
+        missing_user_secrets=missing_user_secrets,
+    )
+    return DeployTerminal(response)
+
+
+async def _claim_deploy_job(
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> DeployTerminal | None:
+    """Acquire the project deploy lock and atomically move the run to RUNNING."""
+    task_id = msg.task_id
+    project_id = msg.project_id
+    lock_key = f"deploy:{project_id}:lock"
+
+    acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=_deploy_lock_ttl())
+    if not acquired:
+        logger.info(
+            "deploy_lock_not_acquired",
+            task_id=task_id,
+            project_id=project_id,
+            lock_key=lock_key,
+        )
+        await api_client.patch(
+            f"runs/{task_id}",
+            json={
+                "status": RunStatus.CANCELLED.value,
+                "error_message": (
+                    f"Skipped: another deploy is already in progress for project {project_id}"
+                ),
+                "result": DeployRunResult(
+                    deploy_outcome=DeployOutcome.CANCELLED,
+                    action=msg.action,
+                ).model_dump(mode="json"),
+            },
+        )
+        return DeployTerminal(
+            live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
+        )
+
+    start = await api_client.start_run(task_id)
+    if not start.started:
+        logger.info(
+            "deploy_job_run_cancelled_before_start",
+            task_id=task_id,
+            project_id=project_id,
+            run_status=start.run_status.value,
+        )
+        return DeployTerminal(live_work_settled({"status": "cancelled", "reason": "run_cancelled"}))
+
+    return None
+
+
+async def _resolve_deploy_access(
+    run: Any,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> DeployAccessContext | DeployTerminal:
+    """Validate durable grant references before any deploy side effect is attempted."""
+    grant_intent = None
+    stored_intent = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
+    if stored_intent is not None:
+        try:
+            if not isinstance(stored_intent, str):
+                raise ValueError("grant intent reference is not a string")
+            grant_intent = await api_client.get_users_grant_intent(msg.project_id, stored_intent)
+        except (TypeError, ValueError):
+            return await _deploy_failure_terminal(
+                msg,
+                redis,
+                "grant intent is malformed",
+                deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            )
+        if (
+            grant_intent.project_id != msg.project_id
+            or grant_intent.target_sha != msg.head_sha
+            or grant_intent.execution_run_id != msg.task_id
+        ):
+            return await _deploy_failure_terminal(
+                msg,
+                redis,
+                "grant intent target does not match deploy message",
+                deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            )
+
+    temporary_access_grant = None
+    temporary_access_operation = None
+    metadata = getattr(run, "run_metadata", None) or {}
+    stored_temporary_access_grant = metadata.get("temporary_access_grant_id")
+    if stored_temporary_access_grant is not None:
+        temporary_access_operation = metadata.get("temporary_access_operation")
+        if not isinstance(stored_temporary_access_grant, str) or not isinstance(
+            temporary_access_operation, str
+        ):
+            return await _deploy_failure_terminal(
+                msg,
+                redis,
+                "temporary access operation is malformed",
+                deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            )
+        temporary_access_grant = await api_client.get_temporary_access_grant(
+            stored_temporary_access_grant
+        )
+        if (
+            temporary_access_grant.project_id != msg.project_id
+            or temporary_access_grant.head_sha != msg.head_sha
+            or temporary_access_operation not in {"grant", "revoke"}
+        ):
+            return await _deploy_failure_terminal(
+                msg,
+                redis,
+                "temporary access target does not match deploy message",
+                deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            )
+
+    return DeployAccessContext(
+        grant_intent=grant_intent,
+        temporary_access_grant=temporary_access_grant,
+        temporary_access_operation=temporary_access_operation,
+    )
+
+
+async def _load_deploy_base(
+    run: Any,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> DeployBaseContext | DeployTerminal:
+    """Validate message/project/access facts that precede resource preparation."""
+    if msg.action not in LIFECYCLE_ACTIONS and not msg.head_sha:
+        error_msg = "head_sha is required for deploy actions that read repository state"
+        logger.error(
+            "deploy_head_sha_missing",
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            action=msg.action.value,
+        )
+        return await _deploy_failure_terminal(
+            msg,
+            redis,
+            error_msg,
+            deploy_outcome=DeployOutcome.HEAD_SHA_MISSING,
+        )
+
+    tg_kwargs = (
+        {"telegram_id": int(msg.telegram_chat_id)}
+        if msg.telegram_chat_id and msg.telegram_chat_id.isdigit()
+        else {}
+    )
+    project: ProjectDTO | None = await api_client.get_project(msg.project_id, **tg_kwargs)
+    if not project:
+        error_msg = f"Project {msg.project_id} not found"
+        await api_client.patch(
+            f"runs/{msg.task_id}",
+            json={
+                "status": RunStatus.FAILED.value,
+                "error_message": error_msg,
+                "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                    mode="json"
+                ),
+            },
+        )
+        return DeployTerminal(live_work_unsettled({"status": "failed", "error": error_msg}))
+
+    access = await _resolve_deploy_access(run, msg, redis)
+    if isinstance(access, DeployTerminal):
+        return access
+
+    if msg.action in LIFECYCLE_ACTIONS:
+        return DeployTerminal(
+            await _handle_lifecycle_action(msg, msg.task_id, msg.project_id, project)
+        )
+
+    return DeployBaseContext(project=project, access=access)
+
+
+async def _allocate_deploy_resources(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> tuple[dict, dict[str, str]] | DeployTerminal:
+    """Resolve placement and effective environment for a normal deploy."""
+    try:
+        alloc_result = await _allocate_resources(msg.project_id, base.project)
+    except AllocationError as error:
+        return DeployTerminal(await _record_infrastructure_wait(msg.task_id, msg.project_id, error))
+
+    if isinstance(alloc_result, str):
+        await api_client.patch(
+            f"runs/{msg.task_id}",
+            json={
+                "status": RunStatus.FAILED.value,
+                "error_message": alloc_result,
+                "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                    mode="json"
+                ),
+            },
+        )
+        return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
+
+    try:
+        env_overrides = _effective_env_overrides(base.project, msg.env_overrides)
+    except ValueError as error:
+        return await _deploy_failure_terminal(
+            msg,
+            redis,
+            str(error),
+            deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+        )
+    return alloc_result, env_overrides
+
+
+async def _maybe_skip_redundant_deploy(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    allocated_resources: dict,
+    env_overrides: dict[str, str],
+) -> DeployTerminal | None:
+    """Complete a deploy immediately when its exact commit/environment is already live."""
+    access = base.access
+    if (
+        access.grant_intent is not None
+        or access.temporary_access_grant is not None
+        or msg.fence_active_deploys
+    ):
+        return None
+
+    application_id = await _already_deployed_application(
+        allocated_resources, msg.head_sha, env_overrides
+    )
+    if application_id is None:
+        return None
+
+    reason = DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA
+    logger.info(
+        "deploy_redundant_skipped",
+        task_id=msg.task_id,
+        project_id=msg.project_id,
+        application_id=application_id,
+        head_sha=msg.head_sha,
+        reason=reason.value,
+    )
+    await api_client.patch(
+        f"runs/{msg.task_id}",
+        json={
+            "status": RunStatus.COMPLETED.value,
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS,
+                application_id=application_id,
+                action=msg.action,
+                skipped_reason=reason,
+            ).model_dump(mode="json"),
+        },
+    )
+    await publish_callback_event(
+        redis,
+        msg.callback_stream,
+        "completed",
+        msg.task_id,
+        "Deploy skipped: application already runs this commit",
+        telegram_chat_id=msg.telegram_chat_id,
+        project_id=msg.project_id,
+    )
+    return DeployTerminal(live_work_settled({"status": "success", "reason": reason.value}))
+
+
+async def _precheck_deploy(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+    allocated_resources: dict,
+) -> DeployTerminal | None:
+    """Run the deploy pre-check, including the existing create→feature probe fallback."""
+    action = msg.action
+    precheck_error = await _run_deploy_precheck(
+        allocated_resources, base.project, msg.project_id, action
+    )
+    if precheck_error and action == "create" and "already exists" in precheck_error:
+        logger.warning(
+            "deploy_action_auto_fallback",
+            task_id=msg.task_id,
+            from_action="create",
+            to_action="feature",
+            reason=precheck_error,
+        )
+        precheck_error = await _run_deploy_precheck(
+            allocated_resources, base.project, msg.project_id, "feature"
+        )
+    if not precheck_error:
+        return None
+
+    logger.warning("deploy_precheck_failed", task_id=msg.task_id, error=precheck_error)
+    return await _deploy_failure_terminal(msg, redis, precheck_error)
+
+
+async def _prepare_deploy(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    job_data: dict,
+    redis: RedisStreamClient,
+) -> PreparedDeploy | DeployTerminal:
+    """Turn validated project facts into one safe DevOps-subgraph invocation."""
+    resources = await _allocate_deploy_resources(base, msg, redis)
+    if isinstance(resources, DeployTerminal):
+        return resources
+    allocated_resources, env_overrides = resources
+
+    redundant = await _maybe_skip_redundant_deploy(
+        base,
+        msg,
+        redis,
+        allocated_resources,
+        env_overrides,
+    )
+    if redundant is not None:
+        return redundant
+
+    precheck = await _precheck_deploy(base, msg, redis, allocated_resources)
+    if precheck is not None:
+        return precheck
+
+    primary_repo = await api_client.get_primary_repository(msg.project_id)
+    git_url = primary_repo.git_url if primary_repo else ""
+    return PreparedDeploy(
+        base=base,
+        subgraph_input=_build_subgraph_input(
+            msg.project_id,
+            base.project,
+            git_url,
+            allocated_resources,
+            job_data,
+            head_sha=msg.head_sha,
+            deployed_commit_sha=msg.deployed_commit_sha,
+            fence_active_deploys=msg.fence_active_deploys,
+        ),
+    )
+
+
+async def _route_deploy_result(
+    result: dict,
+    prepared: PreparedDeploy,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
 ) -> dict:
-    """Process a single deploy job by running DevOps Subgraph."""
+    """Map one DevOps-subgraph result to the deploy worker's durable typed outcome."""
+    if result.get("deployment_result", {}).get("status") == "cancelled":
+        logger.info("deploy_job_cancelled_during_actions", task_id=msg.task_id)
+        await api_client.patch(
+            f"runs/{msg.task_id}",
+            json={
+                "status": RunStatus.CANCELLED.value,
+                "error_message": "Deploy was cancelled before it could finish",
+                "result": DeployRunResult(
+                    deploy_outcome=DeployOutcome.CANCELLED,
+                    action=msg.action,
+                    deployment_result=result.get("deployment_result"),
+                ).model_dump(mode="json"),
+            },
+        )
+        return live_work_unsettled({"status": "cancelled"})
+
+    if result.get("deployed_url"):
+        smoke_result = result.get("smoke_result")
+        if smoke_result and smoke_result.get("status") == "fail":
+            return await _handle_smoke_failure(
+                result=result,
+                smoke_result=smoke_result,
+                task_id=msg.task_id,
+                project_id=msg.project_id,
+                project_name=project_runtime_slug(prepared.base.project),
+                callback_stream=msg.callback_stream,
+                telegram_chat_id=msg.telegram_chat_id,
+                story_id=msg.story_id,
+                redis=redis,
+                msg=msg,
+            )
+        access = prepared.base.access
+        return await _handle_deploy_success(
+            result=result,
+            smoke_result=smoke_result,
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            project=prepared.base.project,
+            callback_stream=msg.callback_stream,
+            telegram_chat_id=msg.telegram_chat_id,
+            story_id=msg.story_id,
+            redis=redis,
+            msg=msg,
+            application_id=result.get("application_id"),
+            grant_intent=access.grant_intent,
+            temporary_access_grant=access.temporary_access_grant,
+            temporary_access_operation=access.temporary_access_operation,
+        )
+
+    if result.get("missing_user_secrets"):
+        missing = [
+            MissingUserSecret.model_validate(entry) for entry in result.get("missing_user_secrets")
+        ]
+        missing_keys = [secret.key for secret in missing]
+        logger.info("deploy_job_missing_secrets", task_id=msg.task_id, missing=missing_keys)
+        typed_outcome = _resolution_outcome(result)
+        if typed_outcome is not None and typed_outcome != DeployOutcome.WAITING_FOR_USER_SECRET:
+            raise ValueError(
+                "missing_user_secrets present but resolution_outcome is "
+                f"{typed_outcome}, expected {DeployOutcome.WAITING_FOR_USER_SECRET}"
+            )
+        return (
+            await _deploy_failure_terminal(
+                msg,
+                redis,
+                f"Missing secrets: {', '.join(missing_keys)}",
+                deploy_outcome=DeployOutcome.WAITING_FOR_USER_SECRET,
+                missing_user_secrets=missing,
+            )
+        ).response
+
+    typed_outcome = _resolution_outcome(result)
+    if typed_outcome:
+        errors = result.get("errors", ["Environment resolution failed"])
+        return (
+            await _deploy_failure_terminal(
+                msg,
+                redis,
+                "; ".join(errors),
+                deploy_outcome=typed_outcome,
+            )
+        ).response
+
+    errors = result.get("errors", ["Unknown deployment error"])
+    logger.error("deploy_job_failed", task_id=msg.task_id, errors=errors)
+    return (
+        await _deploy_failure_terminal(
+            msg,
+            redis,
+            "; ".join(errors),
+            deploy_outcome=DeployOutcome.RETRY,
+        )
+    ).response
+
+
+async def _execute_prepared_deploy(
+    prepared: PreparedDeploy,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> dict:
+    """Invoke DevOps once and route its result through the closed result dispatcher."""
+    result = await create_devops_subgraph().ainvoke(prepared.subgraph_input)
+    logger.info(
+        "devops_subgraph_result",
+        task_id=msg.task_id,
+        result_keys=sorted(result.keys()),
+        has_smoke_result="smoke_result" in result,
+        smoke_result=result.get("smoke_result"),
+        deployed_url=result.get("deployed_url"),
+        errors=result.get("errors"),
+    )
+    return await _route_deploy_result(result, prepared, msg, redis)
+
+
+async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
+    """Process a single deploy job through explicit claim, prepare and result phases."""
     msg = validate_queued_message(DeployMessage, job_data)
     task_id = msg.task_id
     project_id = msg.project_id
-    story_id = msg.story_id
-    callback_stream = msg.callback_stream
-    telegram_chat_id = msg.telegram_chat_id
 
     logger.info(
         "deploy_job_started",
@@ -329,494 +836,63 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         triggered_by=msg.triggered_by.value,
     )
 
-    # A run cancelled before this message was picked up is a deploy somebody
-    # already gave up on and replaced — the temporary access sweep withdrawing a
-    # grant deploy it could not confirm, for one. Its message can outlive the
-    # decision in the queue, and running it now would apply an effect after the
-    # state that asked for it is gone. Checked before the lock, so refusing does
-    # not touch a lock this job never took.
     run = await api_client.get_run(task_id)
     if run.status is RunStatus.CANCELLED:
         logger.info("deploy_job_run_cancelled", task_id=task_id, project_id=project_id)
         return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
 
     lock_key = f"deploy:{project_id}:lock"
-
     try:
-        # Atomic Redis lock: only one consumer can process a deploy per project
-        acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=_deploy_lock_ttl())
-        if not acquired:
-            logger.info(
-                "deploy_lock_not_acquired",
-                task_id=task_id,
-                project_id=project_id,
-                lock_key=lock_key,
-            )
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.CANCELLED.value,
-                    "error_message": (
-                        f"Skipped: another deploy is already in progress for project {project_id}"
-                    ),
-                    # Terminal and typed for the same reason as the fenced case
-                    # below: a cancelled run with no outcome is skipped by every
-                    # supervisor, so the story it belongs to would wait forever
-                    # on a deploy that was never going to run.
-                    "result": DeployRunResult(
-                        deploy_outcome=DeployOutcome.CANCELLED,
-                        action=msg.action,
-                    ).model_dump(mode="json"),
-                },
-            )
-            return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
+        claimed = await _claim_deploy_job(msg, redis)
+        if claimed is not None:
+            return claimed.response
 
-        # Take the run to running as one locked decision. The read above is a
-        # cheap early-out, not a guard: a withdrawal landing between it and here
-        # would be overwritten by a blind patch, and the resurrected run then
-        # passes the dispatch claim and deploys the value the withdrawal was
-        # revoking. A run cancelled by that point stays cancelled and this job
-        # ends instead of starting.
-        start = await api_client.start_run(task_id)
-        if not start.started:
-            logger.info(
-                "deploy_job_run_cancelled_before_start",
-                task_id=task_id,
-                project_id=project_id,
-                run_status=start.run_status.value,
-            )
-            return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
-
-        # Publish progress event
         await publish_callback_event(
             redis,
-            callback_stream,
+            msg.callback_stream,
             "progress",
             task_id,
             "Deploy task started",
-            telegram_chat_id=telegram_chat_id,
+            telegram_chat_id=msg.telegram_chat_id,
             project_id=project_id or "",
         )
 
-        if msg.action not in LIFECYCLE_ACTIONS and not msg.head_sha:
-            error_msg = "head_sha is required for deploy actions that read repository state"
-            logger.error(
-                "deploy_head_sha_missing",
-                task_id=task_id,
-                project_id=project_id,
-                action=msg.action.value,
-            )
-            return await _handle_deploy_failure(
-                task_id=task_id,
-                project_id=project_id,
-                story_id=story_id,
-                error_msg=error_msg,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                deploy_outcome=DeployOutcome.HEAD_SHA_MISSING,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-            )
+        base = await _load_deploy_base(run, msg, redis)
+        if isinstance(base, DeployTerminal):
+            return base.response
 
-        # Fetch project details (with user isolation)
-        tg_kwargs = (
-            {"telegram_id": int(telegram_chat_id)}
-            if telegram_chat_id and telegram_chat_id.isdigit()
-            else {}
-        )
-        project: ProjectDTO | None = await api_client.get_project(project_id, **tg_kwargs)
-        if not project:
-            error_msg = f"Project {project_id} not found"
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.FAILED.value,
-                    "error_message": error_msg,
-                    "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
-                        mode="json"
-                    ),
-                },
-            )
-            return live_work_unsettled({"status": "failed", "error": error_msg})
+        prepared = await _prepare_deploy(base, msg, job_data, redis)
+        if isinstance(prepared, DeployTerminal):
+            return prepared.response
 
-        grant_intent = None
-        temporary_access_grant = None
-        temporary_access_operation = None
-        stored_intent = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
-        if stored_intent is not None:
-            try:
-                if not isinstance(stored_intent, str):
-                    raise ValueError("grant intent reference is not a string")
-                grant_intent = await api_client.get_users_grant_intent(project_id, stored_intent)
-            except (TypeError, ValueError):
-                return await _handle_deploy_failure(
-                    task_id=task_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    error_msg="grant intent is malformed",
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    redis=redis,
-                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
-                    deploy_fix_attempt=msg.deploy_fix_attempt,
-                )
-            if (
-                grant_intent.project_id != project_id
-                or grant_intent.target_sha != msg.head_sha
-                or grant_intent.execution_run_id != task_id
-            ):
-                return await _handle_deploy_failure(
-                    task_id=task_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    error_msg="grant intent target does not match deploy message",
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    redis=redis,
-                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
-                    deploy_fix_attempt=msg.deploy_fix_attempt,
-                )
-
-        temporary_access_metadata = getattr(run, "run_metadata", None) or {}
-        stored_temporary_access_grant = temporary_access_metadata.get("temporary_access_grant_id")
-        if stored_temporary_access_grant is not None:
-            temporary_access_operation = temporary_access_metadata.get("temporary_access_operation")
-            if not isinstance(stored_temporary_access_grant, str) or not isinstance(
-                temporary_access_operation, str
-            ):
-                return await _handle_deploy_failure(
-                    task_id=task_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    error_msg="temporary access operation is malformed",
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    redis=redis,
-                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
-                    deploy_fix_attempt=msg.deploy_fix_attempt,
-                )
-            temporary_access_grant = await api_client.get_temporary_access_grant(
-                stored_temporary_access_grant
-            )
-            if (
-                temporary_access_grant.project_id != project_id
-                or temporary_access_grant.head_sha != msg.head_sha
-                or temporary_access_operation not in {"grant", "revoke"}
-            ):
-                return await _handle_deploy_failure(
-                    task_id=task_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    error_msg="temporary access target does not match deploy message",
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    redis=redis,
-                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
-                    deploy_fix_attempt=msg.deploy_fix_attempt,
-                )
-
-        # Lifecycle actions (stop/undeploy) — skip both allocation and the DevOps
-        # subgraph. They bring down an application that already exists; allocating
-        # would create one instead of finding the one the message names.
-        if msg.action in LIFECYCLE_ACTIONS:
-            return await _handle_lifecycle_action(msg, task_id, project_id, project)
-
-        # Get or create allocations for the project
-        try:
-            alloc_result = await _allocate_resources(project_id, project)
-        except AllocationError as error:
-            return await _record_infrastructure_wait(task_id, project_id, error)
-        if isinstance(alloc_result, str):
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.FAILED.value,
-                    "error_message": alloc_result,
-                    "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
-                        mode="json"
-                    ),
-                },
-            )
-            return live_work_unsettled({"status": "failed", "error": alloc_result})
-        allocated_resources = alloc_result
-
-        try:
-            env_overrides = _effective_env_overrides(project, msg.env_overrides)
-        except ValueError as error:
-            return await _handle_deploy_failure(
-                task_id=task_id,
-                project_id=project_id,
-                story_id=story_id,
-                error_msg=str(error),
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-            )
-
-        # A fenced deploy has to run: the shortcut would report a value removed
-        # while the run that set it is still live on GitHub Actions. A capability
-        # operation exists to reach the product, so skipping it would record a
-        # grant or revoke that never happened.
-        application_id = None
-        if grant_intent is None and temporary_access_grant is None and not msg.fence_active_deploys:
-            application_id = await _already_deployed_application(
-                allocated_resources, msg.head_sha, env_overrides
-            )
-        if application_id is not None:
-            # One reason for the log line and for the Run result: a reader across
-            # the Run boundary sees the same fact this process decided, and a
-            # follow-up wait does not have to reconstruct it from a SHA.
-            reason = DeploySkipReason.ALREADY_DEPLOYED_SAME_SHA
-            logger.info(
-                "deploy_redundant_skipped",
-                task_id=task_id,
-                project_id=project_id,
-                application_id=application_id,
-                head_sha=msg.head_sha,
-                reason=reason.value,
-            )
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.COMPLETED.value,
-                    "result": DeployRunResult(
-                        deploy_outcome=DeployOutcome.SUCCESS,
-                        application_id=application_id,
-                        action=msg.action,
-                        skipped_reason=reason,
-                    ).model_dump(mode="json"),
-                },
-            )
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "completed",
-                task_id,
-                "Deploy skipped: application already runs this commit",
-                telegram_chat_id=telegram_chat_id,
-                project_id=project_id,
-            )
-            return live_work_settled({"status": "success", "reason": reason.value})
-
-        # Pre-check: validate server state via SSH before deploying
-        action = msg.action
-        precheck_error = await _run_deploy_precheck(
-            allocated_resources, project, project_id, action
-        )
-
-        # Auto-fallback: create ↔ feature based on actual server state
-        if precheck_error and action == "create" and "already exists" in precheck_error:
-            logger.warning(
-                "deploy_action_auto_fallback",
-                task_id=task_id,
-                from_action="create",
-                to_action="feature",
-                reason=precheck_error,
-            )
-            action = "feature"
-            precheck_error = await _run_deploy_precheck(
-                allocated_resources, project, project_id, action
-            )
-        if precheck_error:
-            logger.warning("deploy_precheck_failed", task_id=task_id, error=precheck_error)
-            return await _handle_deploy_failure(
-                task_id=task_id,
-                project_id=project_id,
-                story_id=story_id,
-                error_msg=precheck_error,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-            )
-
-        # Resolve git_url from primary Repository entity
-        primary_repo = await api_client.get_primary_repository(project_id)
-        _git_url = primary_repo.git_url if primary_repo else ""
-
-        # Run DevOps subgraph
-        devops_subgraph = create_devops_subgraph()
-        subgraph_input = _build_subgraph_input(
-            project_id,
-            project,
-            _git_url,
-            allocated_resources,
-            job_data,
-            head_sha=msg.head_sha,
-            deployed_commit_sha=msg.deployed_commit_sha,
-            fence_active_deploys=msg.fence_active_deploys,
-        )
-        result = await devops_subgraph.ainvoke(subgraph_input)
-
-        logger.info(
-            "devops_subgraph_result",
-            task_id=task_id,
-            result_keys=sorted(result.keys()),
-            has_smoke_result="smoke_result" in result,
-            smoke_result=result.get("smoke_result"),
-            deployed_url=result.get("deployed_url"),
-            errors=result.get("errors"),
-        )
-
-        if result.get("deployment_result", {}).get("status") == "cancelled":
-            # A cancelled deploy is terminal, and the run has to say so. Left at
-            # RUNNING it is skipped by every supervisor for good, and the story
-            # behind it waits on a deploy nobody is carrying any more. The fence
-            # a revoke takes cancels ordinary deploys as a matter of course, so
-            # this is a normal path, not a teardown corner.
-            logger.info("deploy_job_cancelled_during_actions", task_id=task_id)
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.CANCELLED.value,
-                    "error_message": "Deploy was cancelled before it could finish",
-                    "result": DeployRunResult(
-                        deploy_outcome=DeployOutcome.CANCELLED,
-                        action=msg.action,
-                        deployment_result=result.get("deployment_result"),
-                    ).model_dump(mode="json"),
-                },
-            )
-            return live_work_unsettled({"status": "cancelled"})
-
-        if result.get("deployed_url"):
-            smoke_result = result.get("smoke_result")
-            smoke_failed = smoke_result and smoke_result.get("status") == "fail"
-
-            if smoke_failed:
-                project_name = project_runtime_slug(project)
-                return await _handle_smoke_failure(
-                    result=result,
-                    smoke_result=smoke_result,
-                    task_id=task_id,
-                    project_id=project_id,
-                    project_name=project_name,
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    story_id=story_id,
-                    redis=redis,
-                    msg=msg,
-                )
-
-            return await _handle_deploy_success(
-                result=result,
-                smoke_result=smoke_result,
-                task_id=task_id,
-                project_id=project_id,
-                project=project,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                story_id=story_id,
-                redis=redis,
-                msg=msg,
-                application_id=result.get("application_id"),
-                grant_intent=grant_intent,
-                temporary_access_grant=temporary_access_grant,
-                temporary_access_operation=temporary_access_operation,
-            )
-        elif result.get("missing_user_secrets"):
-            missing = [
-                MissingUserSecret.model_validate(entry)
-                for entry in result.get("missing_user_secrets")
-            ]
-            missing_keys = [m.key for m in missing]
-            logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing_keys)
-            typed_outcome = _resolution_outcome(result)
-            if typed_outcome is not None and typed_outcome != DeployOutcome.WAITING_FOR_USER_SECRET:
-                raise ValueError(
-                    "missing_user_secrets present but resolution_outcome is "
-                    f"{typed_outcome}, expected {DeployOutcome.WAITING_FOR_USER_SECRET}"
-                )
-            outcome = DeployOutcome.WAITING_FOR_USER_SECRET
-            return await _handle_deploy_failure(
-                task_id=task_id,
-                project_id=project_id,
-                story_id=story_id,
-                error_msg=f"Missing secrets: {', '.join(missing_keys)}",
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                deploy_outcome=outcome,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-                missing_user_secrets=missing,
-            )
-        else:
-            typed_outcome = _resolution_outcome(result)
-            if typed_outcome:
-                errors = result.get("errors", ["Environment resolution failed"])
-                return await _handle_deploy_failure(
-                    task_id=task_id,
-                    project_id=project_id,
-                    story_id=story_id,
-                    error_msg="; ".join(errors),
-                    callback_stream=callback_stream,
-                    telegram_chat_id=telegram_chat_id,
-                    redis=redis,
-                    deploy_outcome=typed_outcome,
-                    deploy_fix_attempt=msg.deploy_fix_attempt,
-                )
-            errors = result.get("errors", ["Unknown deployment error"])
-            logger.error("deploy_job_failed", task_id=task_id, errors=errors)
-            error_msg = "; ".join(errors)
-
-            return await _handle_deploy_failure(
-                task_id=task_id,
-                project_id=project_id,
-                story_id=story_id,
-                error_msg=error_msg,
-                callback_stream=callback_stream,
-                telegram_chat_id=telegram_chat_id,
-                redis=redis,
-                deploy_outcome=DeployOutcome.RETRY,
-                deploy_fix_attempt=msg.deploy_fix_attempt,
-            )
+        return await _execute_prepared_deploy(prepared, msg, redis)
 
     except WorkflowCancellationUnprovenError:
-        # Teardown could not prove the dispatched GitHub Actions run stopped.
-        # Masking this as a normal deploy failure would ACK the queue entry and
-        # let cleanup delete external/DB resources while the run may still execute.
-        # Propagate so the live-work fence marks the failure and cleanup fails closed.
         logger.error(
             "deploy_workflow_cancellation_unproven",
             task_id=task_id,
             project_id=project_id,
         )
         raise
-    except Exception as e:
+    except Exception as error:
         if project_id and await redis.redis.exists(live_work_cancel_key(project_id)):
-            # Live teardown is fencing this project, so no deploy-path failure is
-            # normal: the dispatched deploy.yml run may still be executing. Handling
-            # it as a deploy failure would ACK the queue entry and let cleanup delete
-            # external and DB resources. Propagate to the live-work fence instead.
             logger.error(
                 "deploy_job_exception_under_live_teardown",
                 task_id=task_id,
                 project_id=project_id,
-                error_type=type(e).__name__,
+                error_type=type(error).__name__,
                 exc_info=True,
             )
             raise
         logger.error(
             "deploy_job_exception",
             task_id=task_id,
-            error=str(e),
-            error_type=type(e).__name__,
+            error=str(error),
+            error_type=type(error).__name__,
             exc_info=True,
         )
-        return await _handle_deploy_failure(
-            task_id=task_id,
-            project_id=project_id,
-            story_id=story_id,
-            error_msg=str(e),
-            callback_stream=callback_stream,
-            telegram_chat_id=telegram_chat_id,
-            redis=redis,
-            deploy_fix_attempt=msg.deploy_fix_attempt,
-        )
+        return (await _deploy_failure_terminal(msg, redis, str(error))).response
     finally:
-        # Always release the deploy lock so the next deploy can proceed
         await redis.redis.delete(lock_key)
 
 
