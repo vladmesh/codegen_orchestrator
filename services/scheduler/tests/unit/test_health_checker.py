@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 # Must set before importing health_checker (module-level config)
 os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
@@ -306,6 +307,45 @@ node_load1 0.5
         call_kwargs = mock_api_client.create_incident.call_args[1]
         assert call_kwargs["incident_type"] == "resource_exhausted"
         assert "disk" in call_kwargs["details"]["resource"]
+
+    @pytest.mark.asyncio
+    async def test_control_host_disk_over_threshold_opens_existing_resource_incident(
+        self, mock_api_client
+    ):
+        """The scheduler container's root filesystem reports its host backing disk."""
+        stat = SimpleNamespace(f_blocks=100, f_bavail=5, f_frsize=1024)
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch("src.tasks.health_checker.os.statvfs", return_value=stat),
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
+        ):
+            from src.tasks.health_checker import _check_control_host_disk
+
+            await _check_control_host_disk(_make_server("control-host", "control-host"))
+
+        assert (
+            mock_api_client.create_incident.call_args.kwargs["incident_type"]
+            == "resource_exhausted"
+        )
+        assert mock_api_client.create_incident.call_args.kwargs["details"]["resource"] == "disk"
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_control_host_disk_under_threshold_keeps_incident_closed(self, mock_api_client):
+        stat = SimpleNamespace(f_blocks=100, f_bavail=15, f_frsize=1024)
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch("src.tasks.health_checker.os.statvfs", return_value=stat),
+        ):
+            from src.tasks.health_checker import _check_control_host_disk
+
+            await _check_control_host_disk(_make_server("control-host", "control-host"))
+
+        mock_api_client.create_incident.assert_not_called()
 
 
 class TestFilterServers:

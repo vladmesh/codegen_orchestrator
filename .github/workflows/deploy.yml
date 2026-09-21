@@ -312,6 +312,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
+            if [ -r deployed-worker-images.json ]; then
+              cp deployed-worker-images.json previous-deployed-worker-images.json
+            else
+              : > previous-deployed-worker-images.json
+            fi
             GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}' \
             GHCR_OWNER='${{ github.repository_owner }}' \
             WORKER_IMAGE_TAG='${{ github.sha }}' \
@@ -470,4 +475,11 @@ jobs:
           username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            docker image prune -f
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            python3 scripts/cleanup_worker_images.py \
+              --release-record deployed-worker-images.json \
+              --previous-release-record previous-deployed-worker-images.json
+            # Keep one day of build cache so a deploy retry can reuse recent layers;
+            # cache older than that cannot be part of this release's build.
+            docker builder prune --all --force --filter until=24h
