@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at 798e06a66a2d7de982af8e0e17d6efcd198f3869 (after PR #557)  
+Audited branch: main at acd44c68aed61a3c1d0383ab826a4ab3b63c8eea (after PR #558)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -24,9 +24,9 @@ Those improvements do not invalidate the main architectural concern from the ori
 
 Of the original sixteen H/M/L findings:
 
-- **10 remain complete:** H2, H3, H4, M1, M2, M3, M4, M6, M8 and L1.
+- **11 remain complete:** H2, H3, H4, M1, M2, M3, M4, M6, M7, M8 and L1.
 - **H1 remains partially complete.**
-- **5 remain open:** M5, M7 and L2-L4.
+- **4 remain open:** M5 and L2-L4.
 
 This refresh adds three findings:
 
@@ -34,7 +34,7 @@ This refresh adds three findings:
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-So the current actionable set is one High finding, three Medium findings and four Low findings. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, two Medium findings and four Low findings. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -52,8 +52,9 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #554 decomposed server-list reconciliation into typed per-provider-server outcomes plus explicit discovery, missing-server and notification phases, removing the `_sync_server_list` complexity suppression.
 - PR #555 decomposed `process_deploy_job` into explicit claim, access-validation, resource-preparation, precheck, execution and typed result-routing phases, removing its C901/PLR0911/PLR0912/PLR0915 suppression while keeping the queue/result and teardown boundaries intact.
 - PR #557 decomposed scheduler `supervise_deploying_stories` into thin selection/aggregation, per-story run-state gating and closed `DeployOutcome` routing, removing its C901/PLR0912/PLR0915 suppression and adding structural outcome-coverage guards.
+- PR #558 replaced ConfigStore's global unbounded last-known-good fallback with fail-closed defaults plus an explicit 15-minute bounded-stale allowlist for safe scheduler cadence keys, and removed the unused `get_category()` fallback surface.
 
-These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency.
+These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, and PR #558 closed M7 by making stale config use explicit, bounded and key-classified.
 
 ---
 
@@ -71,7 +72,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M4 | Medium | Complete | Run accounting compatibility is gone and the engineering attempt ledger is canonical. |
 | M5 | Medium | Open; safer remediation | Legacy temporary-access columns/branches remain, but operator drain now provides a supported path to eliminate unreconcilable live legacy rows. |
 | M6 | Medium | Complete | PO tools use owner modules; retired compatibility re-exports remain removed. |
-| M7 | Medium | Open | ConfigStore still serves an unbounded last-known value after source failure; policy is global rather than key-classified. |
+| M7 | Medium | Complete | PR #558 made stale reads opt-in and bounded; unclassified config fails closed and only a small scheduler cadence allowlist may use a 15-minute last-known value. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
 | M9 | Medium | New | Worker-manager mirrors detailed private executor credential/profile formats, especially Codex auth.json/serde_json behavior. |
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
@@ -204,37 +205,60 @@ The operator drain should survive if it still has a purpose for current target-b
 
 ---
 
-## M7. ConfigStore still has a global, unbounded last-known-good policy
+## M7. ConfigStore stale reads are explicit, bounded and key-classified
 
 **Severity:** Medium  
 **Removal safety:** 2/5  
 **Removal simplicity:** 3/5  
-**Status:** Open.
+**Status:** Complete via PR #558.
 
 ### Current evidence
 
-shared/config_store.py::_source_unavailable() returns the last cached value whenever the config API is unreachable, returns malformed data, or answers a non-404 error.
+PR #558 changed `shared/config_store.py` so a key with no stale policy fails closed when the
+config API is unreachable, returns malformed data, or answers a non-404 error. A caller must now
+opt an exact key into `BoundedStalePolicy` to use a last-known value.
 
-Once a key has been cached, this fallback has no maximum stale age. The normal cache TTL decides when to re-read, but it does not bound how old a value may be when the source is broken.
+The cache records when the value was fetched separately from its ordinary cache TTL. On source
+failure, an opted-in stale value is accepted only while its age is within the configured maximum;
+after that bound, `ConfigStoreUnavailableError` is raised. Structured warning/error events include
+the stale age and maximum stale age.
 
-The same module also has get_category(), which returns an empty mapping after a request failure. Current code search finds no production caller for get_category(), so that branch is currently mostly dead API surface rather than a production fallback.
+Scheduler startup owns the current stale-safe classification. The 15-minute allowlist is limited to:
 
-### Why it matters
+- scheduler dispatch interval;
+- GitHub sync interval;
+- server-list sync interval;
+- server-details sync interval;
+- RAG summarizer poll interval;
+- metrics cleanup interval.
 
-The repository now has more security, budget, executor and admission policy in system config. Treating every key as equally safe to run stale is too coarse.
+Deploy retry budgets, supervisor limits, health thresholds and every unlisted/new key inherit the
+fail-closed default automatically.
 
-A stale polling interval is different from stale admission/security policy.
+The unused `get_category()` API and its empty-mapping-on-failure behavior were removed. A 404
+continues to mean a missing key rather than source unavailability.
 
-### Recommendation
+### Validation
 
-Classify config at the call site or schema level:
+Regression coverage now proves:
 
-- startup-critical / security / admission / budget: fail closed;
-- operational timing / observability: bounded last-known-good may be acceptable.
+- unclassified cached keys fail closed on source loss;
+- bounded keys survive network, 5xx and malformed-body failures only inside their age budget;
+- the exact age boundary is honored and expired stale data is refused;
+- deleted keys still surface as missing even when an old value was cached;
+- scheduler startup passes stale policy only for the explicit safe allowlist;
+- behavior-changing deploy policy remains fail closed.
 
-If stale reads are retained, give them a maximum staleness bound and a metric/alert. Remove get_category() if no production caller appears.
+PR #558 passed the full required CI gate: Ruff formatting/lint, unit tests, offline live
+regressions, scheduler/API/LangGraph/infra service tests, integration suites, template
+compatibility and production service-image entrypoint imports. It merged as
+`acd44c68aed61a3c1d0383ab826a4ab3b63c8eea`.
 
-This is a policy split, not a request to globally delete resilience.
+### Retention guidance
+
+Keep fail-closed as the ConfigStore default. Add a bounded stale policy only for a reviewed key
+whose semantics remain safe during a short source outage; do not broaden the scheduler allowlist by
+category or prefix.
 
 ---
 
@@ -546,7 +570,7 @@ This remains a narrow, status-driven workaround for repository-installation visi
 
 **Keep selectively, not globally.**
 
-M7 should make stale policy explicit by config class. Operational timing may reasonably use bounded last-known-good; security/admission/budget policy should not inherit that behavior accidentally.
+PR #558 now enforces this split: stale use is exact-key opt-in with a maximum age, while every unlisted key fails closed. Keep that default and review any future allowlist addition narrowly.
 
 ---
 
@@ -565,7 +589,6 @@ These are small and should not alter product state-machine semantics.
 
 1. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
 2. **M9:** formalize versioned executor-profile adapters and fixture/version gates.
-3. **M7:** classify stale-safe versus fail-closed system config and bound any retained stale reads.
 
 Each item can be delivered incrementally without a rewrite.
 
@@ -586,7 +609,7 @@ The remaining debt is concentrated rather than diffuse:
 
 - **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
-- **compatibility residue:** temporary-access legacy rows and ConfigStore policy remain;
+- **compatibility residue:** temporary-access legacy rows remain;
 - **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
