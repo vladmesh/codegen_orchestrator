@@ -13,7 +13,7 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
-from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
+from shared.deployment_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 from tests.unit.factories import make_run, make_run_start
 
 
