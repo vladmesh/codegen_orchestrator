@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 import json
 import time
 from typing import NamedTuple
@@ -18,6 +19,7 @@ from shared.provisioning_policy import (
     normalize_provider_id,
     provider_operation_is_authorized,
 )
+from shared.schemas import Time4VPSServer
 from src.clients.api import api_client
 
 from .. import startup
@@ -41,6 +43,33 @@ class ManagementChange(NamedTuple):
     provider_id: int
     was_managed: bool
     is_managed: bool
+
+
+class ServerInventoryIndex(NamedTuple):
+    """Database inventory indexes used by one provider reconciliation cycle."""
+
+    by_handle: dict[str, ServerDTO]
+    by_ip: dict[str, ServerDTO]
+    by_provider_id: dict[int, ServerDTO]
+
+
+class ProviderServerOutcomeKind(StrEnum):
+    """Closed set of outcomes for one provider-server reconciliation."""
+
+    SKIPPED = "skipped"
+    RECONCILED = "reconciled"
+    COLLISION_REFUSED = "collision_refused"
+    DISCOVERED = "discovered"
+
+
+class ProviderServerOutcome(NamedTuple):
+    """Durable facts produced while reconciling one provider server."""
+
+    kind: ProviderServerOutcomeKind
+    updated: bool = False
+    management_change: ManagementChange | None = None
+    discovered_server: ServerDTO | None = None
+    refused_collision_handle: str | None = None
 
 
 class TriggerRule(NamedTuple):
@@ -300,7 +329,177 @@ async def _refuse_legacy_identity_collision(existing: ServerDTO, *, server_id: i
     return True
 
 
-async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
+def _build_server_inventory_index(db_servers_list: list[ServerDTO]) -> ServerInventoryIndex:
+    """Index database inventory by each identity used during reconciliation."""
+    by_handle = {server.handle: server for server in db_servers_list}
+    # control-host monitors this scheduler host. It has no provider identity and
+    # must not prevent discovering a real provider row that shares its public IP.
+    by_ip = {
+        server.public_ip: server for server in db_servers_list if server.handle != "control-host"
+    }
+    by_provider_id: dict[int, ServerDTO] = {}
+    for server in db_servers_list:
+        if server.provider not in (None, TIME4VPS_PROVIDER):
+            continue
+        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
+        if provider_id is not None:
+            by_provider_id[int(provider_id)] = server
+    return ServerInventoryIndex(by_handle, by_ip, by_provider_id)
+
+
+async def _discover_provider_server(
+    srv: Time4VPSServer,
+    *,
+    should_manage: bool,
+) -> ServerDTO:
+    """Persist one provider server that has no existing or colliding database row."""
+    ip = srv.ip
+    server_id = srv.id
+    if not ip or not server_id:
+        raise ValueError("Provider server discovery requires both ip and server_id")
+
+    hostname = srv.domain or ip
+    if should_manage:
+        status = ServerStatus.PENDING_SETUP
+        logger.info(
+            "managed_server_discovered",
+            server_ip=ip,
+            server_handle=f"vps-{server_id}",
+            status=status,
+        )
+    else:
+        status = ServerStatus.RESERVED
+        logger.info(
+            "unmanaged_server_discovered",
+            server_ip=ip,
+            server_handle=f"vps-{server_id}",
+        )
+
+    server_create = ServerCreate(
+        handle=f"vps-{server_id}",
+        host=hostname,
+        public_ip=ip,
+        is_managed=should_manage,
+        status=status,
+        labels={"provider": TIME4VPS_PROVIDER, "provider_id": str(server_id)},
+    )
+    new_server = await api_client.create_server(server_create)
+    logger.info(
+        "server_discovered",
+        server_ip=ip,
+        server_handle=f"vps-{server_id}",
+        is_managed=should_manage,
+    )
+    return new_server
+
+
+async def _reconcile_provider_server(
+    srv: Time4VPSServer,
+    *,
+    managed_server_ids: set[str],
+    inventory: ServerInventoryIndex,
+) -> ProviderServerOutcome:
+    """Reconcile exactly one provider row into one typed outcome."""
+    ip = srv.ip
+    if not ip:
+        return ProviderServerOutcome(ProviderServerOutcomeKind.SKIPPED)
+
+    server_id = srv.id
+    if not server_id:
+        logger.warning(f"Server with IP {ip} has no server_id, skipping")
+        return ProviderServerOutcome(ProviderServerOutcomeKind.SKIPPED)
+
+    hostname = srv.domain or ip
+    should_manage = str(server_id) in managed_server_ids
+    existing = inventory.by_provider_id.get(server_id)
+    if existing:
+        was_updated, management_change = await _reconcile_existing_server(
+            existing,
+            server_id=server_id,
+            ip=ip,
+            hostname=hostname,
+            should_manage=should_manage,
+        )
+        return ProviderServerOutcome(
+            ProviderServerOutcomeKind.RECONCILED,
+            updated=was_updated,
+            management_change=management_change,
+        )
+
+    legacy_collision = inventory.by_ip.get(ip)
+    if legacy_collision:
+        # Existing rows without an exact provider/stable-ID match are an
+        # upgrade precondition, not a discovery opportunity. Creating a new
+        # row here would schedule destructive work against an ambiguous host.
+        refusal_changed = await _refuse_legacy_identity_collision(
+            legacy_collision,
+            server_id=server_id,
+        )
+        return ProviderServerOutcome(
+            ProviderServerOutcomeKind.COLLISION_REFUSED,
+            updated=refusal_changed,
+            refused_collision_handle=legacy_collision.handle,
+        )
+
+    discovered_server = await _discover_provider_server(
+        srv,
+        should_manage=should_manage,
+    )
+    return ProviderServerOutcome(
+        ProviderServerOutcomeKind.DISCOVERED,
+        discovered_server=discovered_server,
+    )
+
+
+async def _mark_missing_provider_servers(
+    db_servers_list: list[ServerDTO],
+    *,
+    api_server_ids: set[str],
+    refused_collision_handles: set[str],
+) -> int:
+    """Mark database rows missing from the provider inventory as unreachable."""
+    missing_count = 0
+    for server in db_servers_list:
+        if server.handle in refused_collision_handles:
+            continue
+        if server.provider != TIME4VPS_PROVIDER:
+            continue
+        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
+        if provider_id is None:
+            logger.warning(
+                "time4vps_server_identity_invalid",
+                server_handle=server.handle,
+                provider_id=server.provider_id,
+            )
+            continue
+        is_missing = provider_id not in api_server_ids
+        if is_missing and server.status != ServerStatus.UNREACHABLE:
+            await api_client.update_server(
+                server.handle,
+                ServerUpdate(status=ServerStatus.UNREACHABLE),
+            )
+            missing_count += 1
+            logger.warning(
+                "server_missing_from_time4vps",
+                server_handle=server.handle,
+                server_ip=server.public_ip,
+            )
+    return missing_count
+
+
+async def _notify_new_managed_servers(servers: list[ServerDTO]) -> None:
+    """Notify administrators after all provider rows have been reconciled."""
+    for server in servers:
+        await notify_admins_best_effort(
+            f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
+            "Provisioning will be triggered automatically.",
+            level="info",
+            component="server_sync",
+            server_handle=server.handle,
+        )
+
+
+async def _sync_server_list(
     client: Time4VPSClient,
 ) -> tuple[int, int, int]:
     """Sync basic server list - discover new, mark missing.
@@ -328,144 +527,39 @@ async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
     # Provider ID is the stable identity. A legacy row can be upgraded only by
     # this Time4VPS producer and only after an exact stable-ID match.
     db_servers_list = await api_client.get_servers()
-    db_servers_by_handle = {server.handle: server for server in db_servers_list}
-    # control-host monitors this scheduler host. It has no provider identity and
-    # must not prevent discovering a real provider row that shares its public IP.
-    db_servers_by_ip = {
-        server.public_ip: server for server in db_servers_list if server.handle != "control-host"
-    }
-    db_servers_by_provider_id = {}
-    for server in db_servers_list:
-        if server.provider not in (None, TIME4VPS_PROVIDER):
-            continue
-        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
-        if provider_id is not None:
-            db_servers_by_provider_id[int(provider_id)] = server
+    inventory = _build_server_inventory_index(db_servers_list)
 
-    new_managed_servers = []
+    new_managed_servers: list[ServerDTO] = []
     management_changes: list[ManagementChange] = []
+    refused_collision_handles: set[str] = set()
     discovered_count = 0
     updated_count = 0
-    missing_count = 0
-    refused_collision_handles: set[str] = set()
 
     for srv in api_servers:
-        ip = srv.ip
-        if not ip:
-            continue
-
-        server_id = srv.id
-        if not server_id:
-            logger.warning(f"Server with IP {ip} has no server_id, skipping")
-            continue
-
-        hostname = srv.domain or ip
-        should_manage = str(server_id) in managed_server_ids
-
-        existing = db_servers_by_provider_id.get(server_id)
-
-        if existing:
-            was_updated, management_change = await _reconcile_existing_server(
-                existing,
-                server_id=server_id,
-                ip=ip,
-                hostname=hostname,
-                should_manage=should_manage,
-            )
-            if was_updated:
-                updated_count += 1
-            if management_change:
-                management_changes.append(management_change)
-        elif legacy_collision := db_servers_by_ip.get(ip):
-            # Existing rows without an exact provider/stable-ID match are an
-            # upgrade precondition, not a discovery opportunity. Creating a new
-            # row here would schedule destructive work against an ambiguous host.
-            refusal_changed = await _refuse_legacy_identity_collision(
-                legacy_collision, server_id=server_id
-            )
-            refused_collision_handles.add(legacy_collision.handle)
-            if refusal_changed:
-                updated_count += 1
-        else:
-            # New Server Discovered
-            is_managed = should_manage
-
-            # Managed servers need provisioning by default
-            if is_managed:
-                status = ServerStatus.PENDING_SETUP
-                logger.info(
-                    "managed_server_discovered",
-                    server_ip=ip,
-                    server_handle=f"vps-{server_id}",
-                    status=status,
-                )
-            else:
-                status = ServerStatus.RESERVED
-                logger.info(
-                    "unmanaged_server_discovered",
-                    server_ip=ip,
-                    server_handle=f"vps-{server_id}",
-                )
-
-            server_create = ServerCreate(
-                handle=f"vps-{server_id}",
-                host=hostname,
-                public_ip=ip,
-                is_managed=is_managed,
-                status=status,
-                labels={"provider": TIME4VPS_PROVIDER, "provider_id": str(server_id)},
-            )
-            new_server = await api_client.create_server(server_create)
-
-            logger.info(
-                "server_discovered",
-                server_ip=ip,
-                server_handle=f"vps-{server_id}",
-                is_managed=is_managed,
-            )
+        outcome = await _reconcile_provider_server(
+            srv,
+            managed_server_ids=managed_server_ids,
+            inventory=inventory,
+        )
+        updated_count += int(outcome.updated)
+        if outcome.management_change is not None:
+            management_changes.append(outcome.management_change)
+        if outcome.discovered_server is not None:
             discovered_count += 1
-
-            # Track new managed servers for notification
-            if is_managed:
-                new_managed_servers.append(new_server)
+            if outcome.discovered_server.is_managed:
+                new_managed_servers.append(outcome.discovered_server)
+        if outcome.refused_collision_handle is not None:
+            refused_collision_handles.add(outcome.refused_collision_handle)
 
     api_server_ids = {str(server.id) for server in api_servers}
-    for server in db_servers_list:
-        if server.handle in refused_collision_handles:
-            continue
-        if server.provider != TIME4VPS_PROVIDER:
-            continue
-        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
-        if provider_id is None:
-            logger.warning(
-                "time4vps_server_identity_invalid",
-                server_handle=server.handle,
-                provider_id=server.provider_id,
-            )
-            continue
-        is_missing = provider_id not in api_server_ids
-        if is_missing and server.status != ServerStatus.UNREACHABLE:
-            await api_client.update_server(
-                server.handle, ServerUpdate(status=ServerStatus.UNREACHABLE)
-            )
-            missing_count += 1
-            logger.warning(
-                "server_missing_from_time4vps",
-                server_handle=server.handle,
-                server_ip=server.public_ip,
-            )
+    missing_count = await _mark_missing_provider_servers(
+        db_servers_list,
+        api_server_ids=api_server_ids,
+        refused_collision_handles=refused_collision_handles,
+    )
 
-    await _report_management_changes(management_changes, db_servers_by_handle)
-
-    # Send notifications for new managed servers
-    for server in new_managed_servers:
-        await notify_admins_best_effort(
-            f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
-            "Provisioning will be triggered automatically.",
-            level="info",
-            component="server_sync",
-            server_handle=server.handle,
-        )
+    await _report_management_changes(management_changes, inventory.by_handle)
+    await _notify_new_managed_servers(new_managed_servers)
     return discovered_count, updated_count, missing_count
 
 
