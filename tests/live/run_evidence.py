@@ -4040,8 +4040,9 @@ def stage_notice_evidence(ctx: dict) -> dict:
 
 STORY_MERGE_ARTIFACT_NOTE = (
     "The changed paths GitHub reports for each deployed story merge, read before the run "
-    "tears its generated repository down. Each is judged against that story's declared "
-    "level-1 change-set paths and against the old orchestrator Makefile and AGENTS.md edits."
+    "tears its generated repository down. Each records whether it exactly matches that story's "
+    "declared level-1 change set, while the verdict rejects only orchestrator Makefile and "
+    "AGENTS.md edits and injected paths."
 )
 
 

@@ -49,7 +49,7 @@ from level1_change_set import (
     build_level1_extension_change_set,
     level1_command_description,
 )
-from level1_merge_artifact import merge_artifact_mismatches
+from level1_merge_artifact import change_set_comparison, merge_artifact_mismatches
 from level1_second_story import (
     checkout_records,
     deploy_path_record,
@@ -5485,7 +5485,6 @@ def record_level1_merge_artifact(ctx: dict) -> bool:
     )
     reasons = merge_artifact_mismatches(
         observation,
-        expected_paths=ctx["level1_change_set_paths"],
         product_agents_content=product_agents_content,
     )
     if error is not None:
@@ -5493,7 +5492,13 @@ def record_level1_merge_artifact(ctx: dict) -> bool:
         ctx["level1_merge_artifact_error"] = error
     else:
         ctx["level1_merge_artifact_error"] = None
-    ctx["level1_merge_artifact_verdict"] = {"holds": not reasons, "reasons": reasons}
+    ctx["level1_merge_artifact_verdict"] = {
+        "holds": not reasons,
+        "reasons": reasons,
+        "change_set": change_set_comparison(
+            observation, expected_paths=ctx["level1_change_set_paths"]
+        ),
+    }
     return not reasons
 
 

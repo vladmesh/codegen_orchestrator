@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from level1_merge_artifact import merge_artifact_mismatches
+from level1_merge_artifact import change_set_comparison, merge_artifact_mismatches
 import pipeline_helpers
 import pytest
 import run_evidence
@@ -46,13 +46,28 @@ def _merge(
 def _reasons(observation: dict | None) -> list[str]:
     return merge_artifact_mismatches(
         observation,
-        expected_paths=EXPECTED_PATHS,
         product_agents_content=PRODUCT_AGENTS,
     )
 
 
 def test_a_clean_merge_matches_its_declared_level1_change_set():
     assert _reasons(_merge()) == []
+    assert change_set_comparison(_merge(), expected_paths=EXPECTED_PATHS) == {
+        "exact_match": True,
+        "extra_paths": [],
+        "missing_declared_paths": [],
+    }
+
+
+def test_an_extra_product_path_is_recorded_without_failing_the_artifact_verdict():
+    observation = _merge([*EXPECTED_PATHS, "services/backend/src/generated/settings.py"])
+
+    assert _reasons(observation) == []
+    assert change_set_comparison(observation, expected_paths=EXPECTED_PATHS) == {
+        "exact_match": False,
+        "extra_paths": ["services/backend/src/generated/settings.py"],
+        "missing_declared_paths": [],
+    }
 
 
 @pytest.mark.parametrize("injected", INJECTED_PATHS)
@@ -91,9 +106,7 @@ def test_an_agents_overwrite_without_its_pre_merge_product_content_is_not_a_pass
         agents="# Developer instructions\n\nRead TASK.md and complete the task.\n",
     )
 
-    reasons = merge_artifact_mismatches(
-        observation, expected_paths=EXPECTED_PATHS, product_agents_content=None
-    )
+    reasons = merge_artifact_mismatches(observation, product_agents_content=None)
 
     assert "the product AGENTS.md content before the merge was not captured" in reasons
 
@@ -133,7 +146,15 @@ def test_the_harness_records_and_judges_the_merge_before_teardown(monkeypatch):
 
     assert pipeline_helpers.record_level1_merge_artifact(ctx) is True
     assert ctx["level1_merge_artifact"] == observation
-    assert ctx["level1_merge_artifact_verdict"] == {"holds": True, "reasons": []}
+    assert ctx["level1_merge_artifact_verdict"] == {
+        "holds": True,
+        "reasons": [],
+        "change_set": {
+            "exact_match": True,
+            "extra_paths": [],
+            "missing_declared_paths": [],
+        },
+    }
 
 
 def test_the_harness_reads_the_merge_set_through_the_github_app_probe(monkeypatch):

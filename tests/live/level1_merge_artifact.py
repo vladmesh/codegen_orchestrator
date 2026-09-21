@@ -9,10 +9,23 @@ from worker_wrapper.injected_paths import offending_paths
 MAKEFILE_OVERRIDE_MARKER = "# --- orchestrator overrides ---"
 
 
+def change_set_comparison(observation: dict | None, *, expected_paths: Iterable[str]) -> dict:
+    """State whether the merge is exactly its declared change set without judging it red."""
+    paths = observation.get("changed_paths") if isinstance(observation, dict) else None
+    if not isinstance(paths, list) or not all(isinstance(path, str) and path for path in paths):
+        return {"exact_match": None, "extra_paths": [], "missing_declared_paths": []}
+    expected = set(expected_paths)
+    actual = set(paths)
+    return {
+        "exact_match": actual == expected and len(paths) == len(actual),
+        "extra_paths": sorted(actual - expected),
+        "missing_declared_paths": sorted(expected - actual),
+    }
+
+
 def merge_artifact_mismatches(
     observation: dict | None,
     *,
-    expected_paths: Iterable[str],
     product_agents_content: str | None,
 ) -> list[str]:
     """Return why one merged file set is not the level-1 story's product change.
@@ -46,14 +59,6 @@ def merge_artifact_mismatches(
     injected = offending_paths(paths)
     if injected:
         reasons.append(f"the merge changes injected path(s): {', '.join(injected)}")
-
-    expected = sorted(set(expected_paths))
-    actual = sorted(set(paths))
-    if actual != expected:
-        reasons.append(
-            "the merge file set does not exactly match the level-1 change set: "
-            f"expected {expected}, found {actual}"
-        )
 
     contents = observation.get("file_contents")
     if not isinstance(contents, dict):
