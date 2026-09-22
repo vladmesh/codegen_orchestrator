@@ -1,0 +1,34 @@
+{
+  "codex": {
+    "cli_version": "0.144.6",
+    "source": {
+      "repository": "openai/codex",
+      "ref": "rust-v0.144.6",
+      "commit": "5d1fbf26c43abc65a203928b2e31561cb039e06d"
+    },
+    "serde_json_version": "1.0.149",
+    "validated_sources": [
+      "codex-rs/login/src/auth/storage.rs",
+      "codex-rs/login/src/token_data.rs",
+      "codex-rs/protocol/src/auth.rs",
+      "codex-rs/protocol/src/account.rs",
+      "codex-rs/Cargo.lock"
+    ],
+    "contract_tests": "services/worker-manager/tests/unit/test_host_profile_readers.py"
+  },
+  "claude": {
+    "cli_version": "2.1.278",
+    "source": {
+      "kind": "pinned-installed-cli-observation",
+      "installer": "https://claude.ai/install.sh",
+      "version_output": "2.1.278"
+    },
+    "private_fields": [
+      "claudeAiOauth",
+      "accessToken",
+      "refreshToken",
+      "expiresAt"
+    ],
+    "contract_tests": "services/worker-manager/tests/unit/test_host_profile_readers.py"
+  }
+}
