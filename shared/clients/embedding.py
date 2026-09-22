@@ -82,11 +82,13 @@ class EmbeddingClient:
         all_embeddings: list[list[float]] = []
         total_tokens = 0
 
-        for i in range(0, len(texts), MAX_BATCH_SIZE):
-            batch = texts[i : i + MAX_BATCH_SIZE]
-            result = await self._generate_batch(batch, model, dimensions)
-            all_embeddings.extend(result.embeddings)
-            total_tokens += result.total_tokens
+        # One pool per call: the instance is a process-wide singleton, so it must not own one.
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for i in range(0, len(texts), MAX_BATCH_SIZE):
+                batch = texts[i : i + MAX_BATCH_SIZE]
+                result = await self._generate_batch(client, batch, model, dimensions)
+                all_embeddings.extend(result.embeddings)
+                total_tokens += result.total_tokens
 
         return EmbeddingResult(
             embeddings=all_embeddings,
@@ -96,6 +98,7 @@ class EmbeddingClient:
 
     async def _generate_batch(
         self,
+        client: httpx.AsyncClient,
         texts: list[str],
         model: str,
         dimensions: int,
@@ -112,13 +115,12 @@ class EmbeddingClient:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/embeddings",
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
+        response = await client.post(
+            f"{self.base_url}/embeddings",
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
 
         data = response.json()
 
