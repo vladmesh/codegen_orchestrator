@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at f2368cc58ce6691ab3466ad1c0850f92cb823b0c (after PR #563)  
+Audited branch: main at 2e946d4b82474e54bac925c79ae2e5f22e4c375c (after PR #564)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -17,6 +17,7 @@ The repository changed substantially after the 2026-09-12 refresh: more than two
 - long-lived story states gained bounded watchdogs and stage notices;
 - generated-product and live-test evidence now checks substantially more residue and artifact boundaries;
 - CI imports production service entrypoints from built images, catching missing runtime dependencies before merge.
+- Time4VPS scheduler reconciliation now reuses one bounded HTTP connection pool per sync cycle instead of creating a fresh pool for every provider request.
 
 Those improvements do not invalidate the main architectural concern from the original audit. The scheduler process split from PR #485 remains useful, and PR #563 removed terminal/gave-up worker teardown reconciliation from the order-sensitive dispatcher tick into its own scheduler-pipeline worker. The remaining dispatcher still owns one large ordered routing/supervision cycle whose sequencing is part of the product contract.
 
@@ -57,6 +58,7 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #560 pinned the Claude worker image to Claude Code 2.1.278, moved private `.credentials.json` / `claudeAiOauth` field interpretation into `claude_profile_v21278.py`, and added adapter-version and private-format boundary guards.
 - PR #562 moved Codex 0.144.6's remaining serde_json 1.0.149 and JWT compatibility into `codex_profile_v01446.py`, left `host_profile.py` vendor-neutral, and added explicit source/version provenance for the pinned Codex and Claude compatibility contracts.
 - PR #563 extracted terminal-story and gave-up-attempt worker teardown reconciliation from `task_dispatcher_loop` into an independent scheduler-pipeline worker. The two durable scans now also have sibling failure isolation, so one broken reconciliation pass does not suppress the other or the dispatcher tick.
+- PR #564 added an explicit bounded async lifecycle to `Time4VPSClient` and made scheduler server-sync reuse one `httpx.AsyncClient` across inventory/detail reads in a tick, while preserving one-shot behavior for callers that do not opt into the context. The owned pool closes on both success and provider failure.
 
 These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility routing/supervision cycle, although PR #563 removed worker teardown reconciliation from that positional boundary. M10 is complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex private-format boundary explicit, PR #560 did the same for Claude, and PR #562 closed M9 by moving the remaining Codex parser/JWT compatibility behind the versioned adapter and pinning compatibility provenance.
 
@@ -82,7 +84,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
-| L3 | Low | Open | Several long-lived external client classes still instantiate a fresh httpx.AsyncClient per request/batch. |
+| L3 | Low | Open; partially advanced via PR #564 | Scheduler Time4VPS sync now owns one bounded HTTP pool per tick, but other long-lived/batched client paths still create a fresh httpx.AsyncClient per request/batch. |
 | L4 | Low | Open | AGENTS.md says environment variables never use defaults while shared/config.py intentionally defines safe defaults. |
 | L5 | Low | New | ARCHITECTURE.md still describes retired Run token/cost storage instead of the engineering attempt ledger. |
 
@@ -402,26 +404,28 @@ Run the production-safe inventory/sweep for that prefix, record that it is empty
 **Severity:** Low  
 **Removal safety:** 4/5  
 **Removal simplicity:** 3/5  
-**Status:** Open.
+**Status:** Open; partially advanced via PR #564.
 
-Confirmed examples on current main include:
+PR #564 completed one bounded slice for scheduler Time4VPS reconciliation:
 
-- shared/clients/github/_base.py::_make_request();
-- shared/clients/time4vps.py::_request();
-- services/infra-service/src/provisioner/bitlaunch.py::get_server_ip();
-- shared/clients/embedding.py::_generate_batch();
-- shared/clients/registry.py::manifest_digest();
-- shared/clients/infra_client.py health probe helper.
+- `Time4VPSClient` now has an explicit async context lifecycle that owns one `httpx.AsyncClient`;
+- scheduler `sync_servers_worker` enters that context only around provider inventory/detail I/O, so all provider reads in one tick share a connection pool;
+- the context closes before unrelated scheduler work and closes on provider failure as well;
+- callers that do not opt into the context keep the previous one-shot request lifecycle, so the change did not silently extend credential/session lifetime across services;
+- regression tests cover pooled reuse, close-on-error, one-shot compatibility and scheduler enter/exit behavior.
 
-For GitHub and Time4VPS in particular, the class is long-lived conceptually but the connection pool is not.
+PR #564 passed CI run #2079, including Ruff, unit/offline regressions, scheduler/API/infra/LangGraph/worker-manager service tests, backend/infra/frontend/PO-tool integrations, template compatibility and production service-image entrypoint imports. It merged to main as `2e946d4b82474e54bac925c79ae2e5f22e4c375c`.
 
-### Recommendation
+L3 remains open. Confirmed remaining examples include:
 
-Give long-lived client objects one owned AsyncClient with explicit close/context lifecycle. Keep one-shot probes one-shot where lifecycle complexity would cost more than pooling saves.
+- `shared/clients/github/_base.py::_make_request()`;
+- Time4VPS callers outside the bounded scheduler context, including infra-service provisioning;
+- `services/infra-service/src/provisioner/bitlaunch.py::get_server_ip()`;
+- `shared/clients/embedding.py::_generate_batch()`;
+- `shared/clients/registry.py::manifest_digest()`;
+- the one-shot health probe helper in `shared/clients/infra_client.py`.
 
-Do not introduce a process-global HTTP singleton.
-
----
+The next changes should distinguish genuinely long-lived/batched clients from deliberate one-shot probes. Reuse an owned client where an object or operation already has a clear lifecycle; keep isolated probes one-shot where pooling would add more lifecycle complexity than value. Do not introduce a process-global HTTP singleton.
 
 ## L4. Written environment-default policy still contradicts actual safe defaults
 
@@ -589,7 +593,7 @@ PR #558 now enforces this split: stale use is exact-key opt-in with a maximum ag
 1. **L5:** fix ARCHITECTURE.md ledger ownership.
 2. **L4:** make the env-default convention match the actual architecture.
 3. **L2:** perform the legacy mega-test resource proof and delete the prefix if empty.
-4. **L3:** migrate one high-frequency external client to owned connection pooling and establish the lifecycle pattern.
+4. **L3:** PR #564 established the bounded owned-client pattern for scheduler Time4VPS sync; continue with one remaining genuinely long-lived/batched client path rather than broad process-global pooling.
 
 These are small and should not alter product state-machine semantics.
 
@@ -617,7 +621,7 @@ The remaining debt is concentrated rather than diffuse:
 - **coordination concentration:** scheduler-pipeline still has a large ordered routing/supervision cycle, though worker teardown reconciliation is now independent;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows remain;
-- **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
+- **small hygiene debt:** remaining HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
 Executor private-format coupling is no longer an open finding: the pinned Codex and Claude contracts now have explicit versioned adapters, upgrade gates and provenance.
 
