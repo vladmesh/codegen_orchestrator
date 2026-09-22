@@ -32,6 +32,7 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 from shared.contracts.vocab import AgentType
 from src.claude_auth import inspect_claude_host_session, validate_claude_host_session
+from src.claude_profile_v21278 import CLAUDE_CODE_VERSION
 from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
 from src.codex_profile_v01446 import CODEX_CLI_VERSION
 from src.host_profile import (
@@ -59,6 +60,30 @@ def test_codex_profile_adapter_version_matches_worker_image_pin():
 
     assert match is not None
     assert match.group(1) == CODEX_CLI_VERSION
+
+
+def test_claude_profile_adapter_version_matches_worker_image_pin():
+    """A Claude Code bump must select/update the format adapter in the same change."""
+    dockerfile = (
+        ROOT_DIR / "services/worker-manager/images/worker-base-claude/Dockerfile"
+    ).read_text()
+    match = re.search(r"^ARG CLAUDE_CODE_VERSION=(\S+)$", dockerfile, flags=re.MULTILINE)
+
+    assert match is not None
+    assert match.group(1) == CLAUDE_CODE_VERSION
+    assert 'bash -s -- "${CLAUDE_CODE_VERSION}"' in dockerfile
+    assert 'claude --version | grep -F "${CLAUDE_CODE_VERSION}"' in dockerfile
+
+
+def test_claude_private_format_stays_in_versioned_adapter():
+    """Keep private Claude credential field names out of the stable profile reader."""
+    root = Path(__file__).resolve().parents[2] / "src"
+    reader = (root / "claude_auth.py").read_text()
+    adapter = (root / "claude_profile_v21278.py").read_text()
+
+    for private_name in ("claudeAiOauth", "accessToken", "refreshToken", "expiresAt"):
+        assert private_name not in reader
+        assert private_name in adapter
 
 
 def _b64(value: dict) -> str:
@@ -1621,10 +1646,20 @@ def test_every_reader_json_parse_goes_through_the_total_boundary():
     root = Path(__file__).resolve().parents[2] / "src"
     parses = {
         name: (root / name).read_text().count("json.loads(")
-        for name in ("claude_auth.py", "codex_auth.py", "host_profile.py")
+        for name in (
+            "claude_auth.py",
+            "claude_profile_v21278.py",
+            "codex_auth.py",
+            "host_profile.py",
+        )
     }
 
-    assert parses == {"claude_auth.py": 0, "codex_auth.py": 0, "host_profile.py": 1}
+    assert parses == {
+        "claude_auth.py": 0,
+        "claude_profile_v21278.py": 0,
+        "codex_auth.py": 0,
+        "host_profile.py": 1,
+    }
 
 
 # --- Claude: standard JSON only, without Codex's pinned serde_json policies ------------
