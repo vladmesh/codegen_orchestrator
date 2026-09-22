@@ -16,6 +16,7 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
+from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
@@ -26,7 +27,6 @@ from shared.notifications import notify_admins_best_effort
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
 from shared.redis import RedisStreamClient
 from src.clients.api import get_api_client
-from src.clients.github import get_github_client
 from src.config import get_settings
 from src.scaffold import run_ensure_workspace, run_scaffold
 from src.spec_extractor import extract_specs_summary
@@ -136,19 +136,20 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     settings = get_settings()
 
     try:
-        # Get GitHub token
-        github = get_github_client()
-        org = os.environ.get("GITHUB_ORG", "")
-        if not org:
-            raise RuntimeError("GITHUB_ORG environment variable is not set")
-        repo_full_name = f"{org}/{msg.project_name}"
-        github_token = await github.get_org_token(org)
+        # One GitHub HTTP pool spans every GitHub call of this operation and is
+        # closed on success, failure and cancellation alike.
+        async with GitHubAppClient() as github:
+            org = os.environ.get("GITHUB_ORG", "")
+            if not org:
+                raise RuntimeError("GITHUB_ORG environment variable is not set")
+            repo_full_name = f"{org}/{msg.project_name}"
+            github_token = await github.get_org_token(org)
 
-        # Route by mode
-        args = (msg, repo_full_name, github, github_token, api, settings, log)
-        if msg.mode == "ensure":
-            return await _process_ensure_mode(*args)
-        return await _process_full_mode(*args)
+            # Route by mode
+            args = (msg, repo_full_name, github, github_token, api, settings, log)
+            if msg.mode == "ensure":
+                return await _process_ensure_mode(*args)
+            return await _process_full_mode(*args)
 
     except Exception as exc:
         error = redact_diagnostic(exc)
