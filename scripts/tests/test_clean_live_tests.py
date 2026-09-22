@@ -275,6 +275,7 @@ def test_remote_residue_scan_reports_containers_and_directories(tmp_path):
 
 def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers.get("X-Internal-Key") == "test-internal-key"
@@ -291,6 +292,76 @@ def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
 
     with pytest.raises(clean_live_tests.CleanupFailure, match="server list fetch failed: 500"):
         clean_live_tests.clean_remote_servers(["live-te-11111111111111111111111111111111"])
+
+
+def test_api_clients_use_configured_endpoint_and_internal_key(monkeypatch):
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/api/servers/":
+            return httpx.Response(200, json=[])
+        if request.url.path.endswith("/ssh-key"):
+            return httpx.Response(200, json={"ssh_key": "KEY"})
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+    original_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "Client", lambda *a, **kw: original_client(*a, transport=transport, **kw)
+    )
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda *a, **kw: original_async_client(*a, transport=transport, **kw)
+    )
+
+    assert clean_live_tests._observe_remote_servers() == ([], [])
+    assert clean_live_tests._fetch_remote_server_key("vps-1") == "KEY"
+
+    import asyncio
+
+    async def fence_request():
+        async with clean_live_tests.internal_api_client() as client:
+            await client.get("/api/runs/run-1")
+
+    asyncio.run(fence_request())
+    assert [str(request.url) for request in requests] == [
+        "https://internal.example/api/servers/",
+        "https://internal.example/api/servers/vps-1/ssh-key",
+        "https://internal.example/api/runs/run-1",
+    ]
+    assert all(request.headers["X-Internal-Key"] == "test-internal-key" for request in requests)
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_api_clients_refuse_missing_endpoint_before_request(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("API_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("API_BASE_URL", value)
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(httpx, "Client", lambda *a, **kw: pytest.fail("HTTP requested"))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: pytest.fail("HTTP requested"))
+
+    for call in (
+        clean_live_tests.internal_api_client,
+        clean_live_tests._observe_remote_servers,
+        lambda: clean_live_tests._fetch_remote_server_key("vps-1"),
+    ):
+        with pytest.raises(clean_live_tests.CleanupFailure, match="API_BASE_URL is required"):
+            call()
+
+
+def test_cleanup_refuses_missing_endpoint_before_any_cleanup(monkeypatch):
+    monkeypatch.delenv("API_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        clean_live_tests, "manifest_project_ids", lambda: pytest.fail("cleanup started")
+    )
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="API_BASE_URL is required"):
+        clean_live_tests.main()
 
 
 _ORPHAN = "live-te-" + "a" * 32
@@ -638,6 +709,7 @@ def test_recovery_fences_the_live_target_run_before_it_captures_or_removes_it(
 
 
 def test_main_remote_failure_leaves_db_slugs_available_for_retry(monkeypatch, tmp_path):
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     projects = [
         {
@@ -714,6 +786,7 @@ def test_unprovable_manifest_still_lets_every_other_sweep_run(monkeypatch, tmp_p
     while the operator still got a red run either way. Fail-closed is kept: the
     same failure is raised, after the sweeps that can still do their work.
     """
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     calls: list[str] = []
 
@@ -852,7 +925,9 @@ def test_inventory_returns_zero_and_names_every_empty_surface(monkeypatch, capsy
     projects: list[dict[str, str]] = []
     monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
     monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
-    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
     monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
     monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
     monkeypatch.setattr(
@@ -874,6 +949,79 @@ def test_inventory_returns_zero_and_names_every_empty_surface(monkeypatch, capsy
         assert f"{surface}: 0" in output
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+def test_inventory_reports_skipped_servers_without_contacting_them(monkeypatch, capsys, mixed):
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "7")
+    eligible = {
+        "handle": "managed-7",
+        "provider": "time4vps",
+        "provider_id": "7",
+        "is_managed": True,
+        "ssh_user": "root",
+        "public_ip": "203.0.113.7",
+    }
+    skipped = {"handle": "inventory-only", "is_managed": False}
+    rows = [skipped, {"is_managed": False}]
+    if mixed:
+        rows.append(eligible)
+    original_client = httpx.Client
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=rows))
+    monkeypatch.setattr(
+        httpx, "Client", lambda *a, **kw: original_client(*a, transport=transport, **kw)
+    )
+    contacts = []
+
+    @contextmanager
+    def key_file(handle):
+        contacts.append(handle)
+        yield "/tmp/inventory-key"  # noqa: S108
+
+    monkeypatch.setattr(clean_live_tests, "_server_key_file", key_file)
+    monkeypatch.setattr(clean_live_tests, "_ssh", lambda *a, **kw: _result(stdout=""))
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([prefix]) == int(not mixed)
+    output = capsys.readouterr().out
+    assert "deployed_stacks: 0" in output if mixed else "deployed_stacks: skipped" in output
+    assert "deployed_stacks_skipped_servers: 2" in output
+    assert "inventory-only: is_not_managed" in output
+    assert "<unknown handle>: is_not_managed" in output
+    assert contacts == (["managed-7"] if mixed else [])
+
+
+def test_inventory_reports_skips_when_eligible_scan_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        clean_live_tests,
+        "_observe_remote_servers",
+        lambda: ([{"handle": "managed-7"}], [("inventory-only", "is_not_managed")]),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "collect_remote_residue",
+        lambda *a, **kw: (_ for _ in ()).throw(clean_live_tests.CleanupFailure("SSH failed")),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_local_workspaces", lambda *args: [])
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+    output = capsys.readouterr().out
+    assert "deployed_stacks: unreadable (SSH failed)" in output
+    assert "deployed_stacks_skipped_servers: 1" in output
+    assert "inventory-only: is_not_managed" in output
+
+
 def test_inventory_returns_nonzero_and_names_matches(monkeypatch, capsys):
     prefix = clean_live_tests.PROJECT_PREFIXES[-1]
     slug_prefix = clean_live_tests._inventory_slug_prefixes([prefix])[0]
@@ -885,7 +1033,12 @@ def test_inventory_returns_nonzero_and_names_matches(monkeypatch, capsys):
     monkeypatch.setattr(
         clean_live_tests,
         "inventory_remote_stacks",
-        lambda prefixes: {"vps-1": ["directory /opt/services/" + slug_prefix + "1" * 32]},
+        lambda prefixes: (
+            {"vps-1": ["directory /opt/services/" + slug_prefix + "1" * 32]},
+            [],
+            1,
+            None,
+        ),
     )
     monkeypatch.setattr(
         clean_live_tests,
@@ -919,7 +1072,9 @@ def test_inventory_returns_nonzero_when_a_surface_is_unreadable(monkeypatch, cap
             clean_live_tests.CleanupFailure("GitHub unavailable")
         ),
     )
-    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
     monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
     monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
     monkeypatch.setattr(
@@ -981,8 +1136,8 @@ def test_inventory_never_reaches_a_destructive_helper(monkeypatch):
     monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(
         clean_live_tests,
-        "_fetch_remote_servers",
-        lambda: [{"handle": "server-1", "ssh_user": "root", "public_ip": "203.0.113.1"}],
+        "_observe_remote_servers",
+        lambda: ([{"handle": "server-1", "ssh_user": "root", "public_ip": "203.0.113.1"}], []),
     )
     monkeypatch.setattr(clean_live_tests, "_server_key_file", fake_server_key_file)
     monkeypatch.setattr(clean_live_tests, "_ssh", lambda *args, **kwargs: _result(stdout=""))
@@ -1000,7 +1155,9 @@ def test_inventory_reports_redis_unreadable_when_projects_are_unreadable(monkeyp
         ),
     )
     monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
-    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_remote_stacks", lambda prefixes: ({}, [], 0, None)
+    )
     monkeypatch.setattr(
         clean_live_tests,
         "inventory_redis",
@@ -1052,3 +1209,8 @@ def test_live_inventory_make_target_uses_the_project_environment():
 
     assert "test-live-inventory" in makefile
     assert "uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)" in makefile
+    assert (
+        "make test-live-inventory PREFIX=name - Read-only residue inventory (requires API_BASE_URL)"
+        in makefile
+    )
+    assert "make test-live-clean     - Sweep live-test residue (requires API_BASE_URL)" in makefile

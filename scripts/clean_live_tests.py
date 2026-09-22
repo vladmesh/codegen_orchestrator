@@ -1,5 +1,6 @@
 # ruff: noqa: S608
 import argparse
+from collections.abc import Mapping
 from contextlib import contextmanager
 import json
 import os
@@ -9,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 
-CLEANUP_API_URL = "http://localhost:8000"
 HTTP_OK = 200
 ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
 if not ORCHESTRATOR_ROOT:
@@ -30,6 +30,7 @@ from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
     build_remote_residue_command,
+    cleanup_target_skip_reason,
     managed_cleanup_targets,
     tolerant_prefix_pattern,
     validate_managed_cleanup_target,
@@ -214,8 +215,7 @@ def internal_api_client():
     """
     import httpx
 
-    headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
-    return httpx.AsyncClient(base_url=CLEANUP_API_URL, timeout=20, headers=headers)
+    return httpx.AsyncClient(base_url=_api_base_url(), timeout=20, headers=_internal_api_headers())
 
 
 def manifest_context(data: dict) -> dict:
@@ -681,12 +681,20 @@ def _internal_api_headers() -> dict[str, str]:
     return {"X-Internal-Key": internal_key}
 
 
-def _fetch_remote_servers() -> list[dict]:
+def _api_base_url() -> str:
+    base_url = os.environ.get("API_BASE_URL")
+    if not base_url or not base_url.strip():
+        raise CleanupFailure("API_BASE_URL is required for live-test cleanup and inventory")
+    return base_url
+
+
+def _observe_remote_servers() -> tuple[list[dict], list[tuple[str, str]]]:
+    """Read the registered servers once, retaining policy exclusions for inventory."""
     import httpx
 
     try:
         with httpx.Client(
-            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+            base_url=_api_base_url(), headers=_internal_api_headers(), timeout=10
         ) as client:
             resp = client.get("/api/servers/")
             if resp.status_code != HTTP_OK:
@@ -696,14 +704,27 @@ def _fetch_remote_servers() -> list[dict]:
             servers = resp.json()
             if not isinstance(servers, list):
                 raise CleanupFailure("server list fetch returned a non-list response")
+            skipped = []
+            for server in servers:
+                reason = cleanup_target_skip_reason(server)
+                if reason is not None:
+                    handle = server.get("handle") if isinstance(server, Mapping) else None
+                    if not isinstance(handle, str) or not handle.strip():
+                        handle = "<unknown handle>"
+                    skipped.append((handle, reason))
             targets = managed_cleanup_targets(servers)
-            if not targets:
-                raise CleanupFailure("server list fetch returned no managed cleanup target")
-            return [validate_managed_cleanup_target(target) for target in targets]
+            return [validate_managed_cleanup_target(target) for target in targets], skipped
     except CleanupFailure:
         raise
     except Exception as exc:
         raise CleanupFailure(f"server list fetch failed: {exc}") from exc
+
+
+def _fetch_remote_servers() -> list[dict]:
+    targets, _ = _observe_remote_servers()
+    if not targets:
+        raise CleanupFailure("server list fetch returned no managed cleanup target")
+    return targets
 
 
 def _fetch_remote_server_key(handle: str) -> str:
@@ -711,7 +732,7 @@ def _fetch_remote_server_key(handle: str) -> str:
 
     try:
         with httpx.Client(
-            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+            base_url=_api_base_url(), headers=_internal_api_headers(), timeout=10
         ) as client:
             resp = client.get(f"/api/servers/{handle}/ssh-key")
             if resp.status_code != HTTP_OK:
@@ -794,7 +815,9 @@ def stack_names_from_residue(findings: list[str]) -> set[str]:
     return names
 
 
-def collect_remote_residue(slug_prefixes: list[str] | None = None) -> dict[str, list[str]]:
+def collect_remote_residue(
+    slug_prefixes: list[str] | None = None, *, servers: list[dict] | None = None
+) -> dict[str, list[str]]:
     """Inventory live-test stacks on every target, independent of the database.
 
     The DB-driven sweep can only clean slugs it still has rows for, so a run that
@@ -806,7 +829,7 @@ def collect_remote_residue(slug_prefixes: list[str] | None = None) -> dict[str, 
     command = build_remote_residue_command(
         DEPLOY_SLUG_PREFIXES if slug_prefixes is None else slug_prefixes
     )
-    for server in _fetch_remote_servers():
+    for server in _fetch_remote_servers() if servers is None else servers:
         with _server_key_file(server["handle"]) as key_path:
             result = _ssh(server, key_path, command)
         if result.returncode != 0:
@@ -835,9 +858,21 @@ def inventory_github_repositories(prefixes: list[str]) -> list[str]:
     return contour_repo_residue(list_org_repositories(), _inventory_slug_prefixes(prefixes))
 
 
-def inventory_remote_stacks(prefixes: list[str]) -> dict[str, list[str]]:
-    """Read every registered server for stacks matching the selected slug prefixes."""
-    return collect_remote_residue(_inventory_slug_prefixes(prefixes))
+def inventory_remote_stacks(
+    prefixes: list[str],
+) -> tuple[dict[str, list[str]], list[tuple[str, str]], int, str | None]:
+    """Scan eligible targets and retain the skipped registered servers."""
+    targets, skipped = _observe_remote_servers()
+    try:
+        stacks = collect_remote_residue(_inventory_slug_prefixes(prefixes), servers=targets)
+    except Exception as exc:
+        return {}, skipped, len(targets), str(exc)
+    return (
+        stacks,
+        skipped,
+        len(targets),
+        None,
+    )
 
 
 def _inventory_redis_command(*args: str) -> str:
@@ -990,13 +1025,26 @@ def inventory(prefixes: list[str] | None = None) -> int:
         ],
     )
     inspect("github_repositories", lambda: inventory_github_repositories(selected))
-    inspect(
-        "deployed_stacks",
-        lambda: inventory_remote_stacks(selected),
-        lambda findings: [
-            f"{handle}: {finding}" for handle, items in findings.items() for finding in items
-        ],
-    )
+    try:
+        stacks, skipped, eligible_count, scan_error = inventory_remote_stacks(selected)
+    except Exception as exc:
+        has_failure = True
+        print(f"deployed_stacks: unreadable ({exc})")
+    else:
+        findings = [f"{handle}: {finding}" for handle, items in stacks.items() for finding in items]
+        if scan_error is not None:
+            print(f"deployed_stacks: unreadable ({scan_error})")
+            has_failure = True
+        elif skipped and not eligible_count:
+            print("deployed_stacks: skipped")
+            has_failure = True
+        else:
+            _print_inventory_surface("deployed_stacks", findings)
+            if findings:
+                has_failure = True
+        print(f"deployed_stacks_skipped_servers: {len(skipped)}")
+        for handle, reason in skipped:
+            print(f"  - {handle}: {reason}")
     if project_rows is None:
         print("redis_capability_messages: unreadable (database projects unreadable)")
         print("redis_worker_meta: unreadable (database projects unreadable)")
@@ -1159,6 +1207,7 @@ scan_and_clean()
 
 
 def main():
+    _api_base_url()
     manifest_projects = manifest_project_ids()
 
     print_step("Recovering ownership manifests")

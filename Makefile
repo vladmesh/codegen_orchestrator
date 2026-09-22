@@ -39,7 +39,8 @@ help:
 	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
 	@echo "  make test-live            - Run all live tests (from host, no LLM)"
-	@echo "  make test-live-inventory PREFIX=name - Read-only residue inventory"
+	@echo "  make test-live-inventory PREFIX=name - Read-only residue inventory (requires API_BASE_URL)"
+	@echo "  make test-live-clean     - Sweep live-test residue (requires API_BASE_URL)"
 	@echo "  make test-live N=health   - Run specific live test file"
 	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
 	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
@@ -427,13 +428,14 @@ stand-e2e:
 stand-clean:
 	@LIVE_CONTOUR=stand uv run python -m scripts.clean_live_tests
 
-# Cleanup DB and artifacts left by live tests
+# Cleanup DB and artifacts left by live tests. API_BASE_URL is required.
 test-live-clean:
 	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
 	@uv run python -m scripts.clean_live_tests
 
 # Read every cleanup surface without changing it. PREFIX must name one prefix in
 # the selected contour; the script validates that boundary before it inspects anything.
+# API_BASE_URL is required for the internal server inventory.
 test-live-inventory:
 	@test -n "$(PREFIX)" || (echo "PREFIX is required" >&2; exit 2)
 	@uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)
