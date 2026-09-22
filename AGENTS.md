@@ -56,9 +56,10 @@ in `--command`, that receipt is never reusable, and do not substitute a narrower
 
 ## Project conventions
 
-**Fail fast** — this is a prototype, not legacy software. Do not add fallback values, compatibility
-shims, or speculative branches that hide a missing required value. Required environment variables
-raise a clear error; required mappings and typed objects are accessed directly.
+**Fail fast** — this is a prototype, not legacy software. Do not add compatibility shims, speculative
+branches, or fallback values that hide a missing required value. Required environment variables raise a
+clear error; required mappings and typed objects are accessed directly. Which settings count as required
+is set by the environment-variable rule below.
 
 **Contracts first** — statuses, queue names, and messages use the types in `shared/`; do not
 construct ad-hoc dict payloads or invent string values. Check `docs/CONTRACTS.md` before changing
@@ -93,7 +94,16 @@ changed and why — no file inventories, no narrative of what was found. For exa
   so one admission point decides instead of each caller.
 ```
 
-**Environment variables** — never use default values:
+**Environment variables** — a default is allowed only where a missing value cannot change what the
+system does in production:
+
+- Identity, credentials, connectivity and required production policy have no default. In
+  `shared/config.py` they are `Field(...)`, or a `*_field()` helper with `required=True`; a missing value
+  fails at startup.
+- Safe presentation, logging and local-ergonomics settings may have a documented default, as
+  `service_name`, `log_format` and `log_level` do in `shared.config.BaseSettings`.
+- Behaviour-changing production policy is explicit configuration, never a hidden fallback.
+
 ```python
 # Wrong
 api_key = os.getenv("OPENAI_API_KEY", "sk-test")

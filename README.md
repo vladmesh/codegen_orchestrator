@@ -94,8 +94,9 @@ Two details that cost the most time when they are unknown:
   it from the tree. Editing it needs no rebuild for bind-mounted services — see
   [docs/REBUILD.md](docs/REBUILD.md), which is also where the two separate build loops are
   explained.
-- Nothing takes a default value. A missing key raises rather than falling back, on purpose. The
-  reasoning is in [AGENTS.md](AGENTS.md#project-conventions).
+- Required settings take no default. A missing identity, credential, connection or production-policy
+  value raises rather than falling back, on purpose; only safe presentation, logging and local-ergonomics
+  settings have documented defaults. The rule is in [AGENTS.md](AGENTS.md#rules).
 
 Test layers, what each one costs and when to run it: [docs/TESTING.md](docs/TESTING.md).
 
