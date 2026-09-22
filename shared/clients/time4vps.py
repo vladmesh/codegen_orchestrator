@@ -78,6 +78,7 @@ class Time4VPSClient:
         self.username = username or os.getenv("TIME4VPS_USERNAME")
         self.password = password or os.getenv("TIME4VPS_PASSWORD")
         self._auth_header: str | None = None
+        self._client: httpx.AsyncClient | None = None
 
         if not self.username or not self.password:
             logger.warning(
@@ -97,13 +98,32 @@ class Time4VPSClient:
             self._auth_header = f"Basic {encoded_auth}"
         return {"Authorization": self._auth_header}
 
+    async def __aenter__(self) -> "Time4VPSClient":
+        """Open one connection pool for a bounded batch of provider operations."""
+        if self._client is not None:
+            raise RuntimeError("Time4VPSClient context is already open")
+        self._client = httpx.AsyncClient()
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the owned connection pool, if this client currently owns one."""
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """Send an authenticated request, logging the response body on 4xx/5xx."""
+        """Send an authenticated request, reusing a bounded owned pool when present."""
         headers = self._get_auth_header()
         url = f"{self.base_url}{path}"
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.request(method, url, headers=headers, **kwargs)
+        if self._client is None:
+            async with httpx.AsyncClient() as client:
+                resp = await client.request(method, url, headers=headers, **kwargs)
+        else:
+            resp = await self._client.request(method, url, headers=headers, **kwargs)
 
         if resp.is_error:
             body = resp.text[:_ERROR_BODY_LIMIT]
