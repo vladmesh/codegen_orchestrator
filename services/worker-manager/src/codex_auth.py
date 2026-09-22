@@ -41,6 +41,7 @@ from .codex_profile_v01446 import (
     NOT_REFRESHABLE,
     auth_mode_refusal,
     format_refusal,
+    jwt_expiry,
     parse_json,
     session_tokens,
 )
@@ -52,7 +53,6 @@ from .host_profile import (
     ProfileFacts,
     ProfileInspection,
     iso_instant,
-    jwt_expiry,
     logged_out,
     read_contended,
     unusable,
