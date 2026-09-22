@@ -14,13 +14,12 @@ from shared.contracts.dto.executor_diagnostics import (
     RefreshMaterialState,
 )
 
+from .claude_profile_v21278 import ClaudeProfileFormatError, session_material
 from .host_profile import (
     JSON_PARSE_FAILURE,
     MAX_JSON_BYTES,
-    MetadataError,
     ProfileFacts,
     ProfileInspection,
-    epoch_instant,
     load_json,
     logged_out,
     unusable,
@@ -35,10 +34,9 @@ _NOT_REFRESHABLE = "Claude host session has no refresh-capable credentials"
 def inspect_claude_host_session(profile_path: str | None, *, now: datetime) -> ProfileInspection:
     """Observe login, refresh material and stored session expiry without exposing them.
 
-    Claude Code stores `claudeAiOauth.expiresAt` (epoch milliseconds) for the
-    access token only. Its refresh token is opaque, so no refresh expiry is ever
-    reported for Claude and an expired access token with a refresh token present
-    is still a renewable login.
+    The versioned adapter owns Claude Code's private credential shape. This
+    reader owns stable file I/O, total JSON parsing and health classification.
+    Claude's refresh token is opaque, so no refresh expiry is inferred.
     """
     if not profile_path:
         return unusable(_REQUIRED)
@@ -56,34 +54,26 @@ def inspect_claude_host_session(profile_path: str | None, *, now: datetime) -> P
     # serde_json reader, so Codex's pinned number-range, duplicate-key and
     # surrogate policies do not apply here.
     data = load_json(raw, pinned_serde_json=False)
-    if data is JSON_PARSE_FAILURE or not isinstance(data, dict):
+    if data is JSON_PARSE_FAILURE:
         return unusable(_UNREADABLE)
 
-    oauth = data.get("claudeAiOauth")
-    if oauth is None or oauth == {}:
-        return logged_out(_NOT_REFRESHABLE)
-    if not isinstance(oauth, dict):
+    try:
+        material = session_material(data)
+    except ClaudeProfileFormatError:
         return unusable(_UNREADABLE)
-    access_token = oauth.get("accessToken")
-    refresh_token = oauth.get("refreshToken")
-    if any(
-        value is not None and not isinstance(value, str) for value in (access_token, refresh_token)
-    ):
-        return unusable(_UNREADABLE)
-    if not access_token and not refresh_token:
+    if material is None:
         return logged_out(_NOT_REFRESHABLE)
 
     facts = ProfileFacts()
-    if oauth.get("expiresAt") is not None:
-        try:
-            facts = ProfileFacts(
-                session_expires_at=epoch_instant(oauth["expiresAt"], milliseconds=True),
-                session_expiry_source=CredentialExpirySource.CLAUDE_OAUTH_EXPIRES_AT,
-            )
-        except MetadataError:
-            facts = ProfileFacts(metadata_invalid=True)
+    if material.metadata_invalid:
+        facts = ProfileFacts(metadata_invalid=True)
+    elif material.session_expires_at is not None:
+        facts = ProfileFacts(
+            session_expires_at=material.session_expires_at,
+            session_expiry_source=CredentialExpirySource.CLAUDE_OAUTH_EXPIRES_AT,
+        )
 
-    if not refresh_token:
+    if not material.refresh_token:
         return facts.refresh_missing(now, _NOT_REFRESHABLE)
     if facts.metadata_invalid:
         return ProfileInspection(
