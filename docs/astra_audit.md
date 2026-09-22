@@ -1,8 +1,8 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at 2e946d4b82474e54bac925c79ae2e5f22e4c375c (after PR #564)  
-Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
+Audited branch: main at c83380f5 (after PR #570, sprint:1453)  
+Previous refresh: 2026-09-22 morning, through 2e946d4b82474e54bac925c79ae2e5f22e4c375c (after PR #564)  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
 ## Executive summary
@@ -18,6 +18,7 @@ The repository changed substantially after the 2026-09-12 refresh: more than two
 - generated-product and live-test evidence now checks substantially more residue and artifact boundaries;
 - CI imports production service entrypoints from built images, catching missing runtime dependencies before merge.
 - Time4VPS scheduler reconciliation now reuses one bounded HTTP connection pool per sync cycle instead of creating a fresh pool for every provider request.
+- The GitHub App client and the embedding client own one bounded HTTP pool per operation (sprint:1453, PRs #568/#569), the legacy `mega-test` sweep prefix is retired after a recorded read-only production inventory (PRs #566/#570), and ARCHITECTURE.md/AGENTS.md match the code again (PR #567).
 
 Those improvements do not invalidate the main architectural concern from the original audit. The scheduler process split from PR #485 remains useful, and PR #563 removed terminal/gave-up worker teardown reconciliation from the order-sensitive dispatcher tick into its own scheduler-pipeline worker. The remaining dispatcher still owns one large ordered routing/supervision cycle whose sequencing is part of the product contract.
 
@@ -25,17 +26,18 @@ Those improvements do not invalidate the main architectural concern from the ori
 
 Of the original sixteen H/M/L findings:
 
-- **11 remain complete:** H2, H3, H4, M1, M2, M3, M4, M6, M7, M8 and L1.
+- **13 are complete:** H2, H3, H4, M1, M2, M3, M4, M6, M7, M8, L1, L2 and L4.
 - **H1 remains partially complete:** PR #563 extracted durable worker teardown reconciliation, while the order-sensitive routing/supervision tick remains.
-- **4 remain open:** M5 and L2-L4.
+- **M5 remains open.**
+- **L3 remains open with three bounded slices done** (Time4VPS scheduler sync, GitHub App client, embedding client); what is left is adoption by callers and the deliberate one-shot probes, which are not a cleanup task.
 
 This refresh adds three findings:
 
 - **M9 — complete via PRs #559, #560 and #562:** Codex 0.144.6 and Claude Code 2.1.278 have named versioned profile adapters and worker-image version gates; PR #562 moved the remaining Codex serde_json/JWT behavior behind the Codex adapter and added explicit compatibility provenance.
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
-- **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
+- **L5 — complete via PR #567:** ARCHITECTURE.md now attributes lifecycle/status/timing to `runs` and engineering token/cost accounting to `engineering_attempt_ledger`.
 
-So the current actionable set is one High finding, one Medium finding and four Low findings. M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, one Medium finding and one partially open Low finding (L3 caller adoption). Sprint:1453 (2026-09-22, cards 1332-1336) closed the audit's Phase 1 in one day; the two follow-ups it filed are issue:11af3167eb3d888181f1 (the sweep's hard-coded `localhost:8000` API address) and issue:e3b4bea6544eac7dfe24 (the inventory skips unmanaged servers), plus issue:6a835ce0d0b4965221a7 (two `shared/config.py` defaults against the new L4 rule) and issue:53c6c4413943e22db0b8 (scaffolder's cached GitHub client on concurrent entry). M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -59,6 +61,11 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #562 moved Codex 0.144.6's remaining serde_json 1.0.149 and JWT compatibility into `codex_profile_v01446.py`, left `host_profile.py` vendor-neutral, and added explicit source/version provenance for the pinned Codex and Claude compatibility contracts.
 - PR #563 extracted terminal-story and gave-up-attempt worker teardown reconciliation from `task_dispatcher_loop` into an independent scheduler-pipeline worker. The two durable scans now also have sibling failure isolation, so one broken reconciliation pass does not suppress the other or the dispatcher tick.
 - PR #564 added an explicit bounded async lifecycle to `Time4VPSClient` and made scheduler server-sync reuse one `httpx.AsyncClient` across inventory/detail reads in a tick, while preserving one-shot behavior for callers that do not opt into the context. The owned pool closes on both success and provider failure.
+- PR #566 added a read-only `--inventory --prefix` mode to `scripts/clean_live_tests.py` (`make test-live-inventory PREFIX=…`), reusing the sweep's collectors and never reaching a clean/delete/fence/recover path, so a retired prefix can be proven empty on production without a destructive run.
+- PR #567 rewrote the ARCHITECTURE.md monitoring section around ledger ownership (L5) and narrowed the AGENTS.md environment-variable rule to what `shared/config.py` does (L4).
+- PR #568 gave `GitHubAppClientBase` an `async with` lifecycle owning one `httpx.AsyncClient`, closing on error, with per-call clients kept for callers outside the lifecycle and no global singleton.
+- PR #569 made `EmbeddingClient` share one `httpx.AsyncClient` across the batches of one generate call.
+- PR #570 removed `Contour.legacy` and the `mega-test` prefix from `shared/live_contour.py` after the PO's recorded production inventory found zero matches on every surface; the contour tests were rewritten to the two-prefix contour.
 
 These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility routing/supervision cycle, although PR #563 removed worker teardown reconciliation from that positional boundary. M10 is complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex private-format boundary explicit, PR #560 did the same for Claude, and PR #562 closed M9 by moving the remaining Codex parser/JWT compatibility behind the versioned adapter and pinning compatibility provenance.
 
@@ -83,10 +90,10 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M9 | Medium | Complete via PRs #559/#560/#562 | Codex 0.144.6 owns its private serde_json/JWT compatibility behind the versioned adapter, Claude Code 2.1.278 has the corresponding credential adapter, and both pins have explicit provenance and upgrade gates. |
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
-| L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
-| L3 | Low | Open; partially advanced via PR #564 | Scheduler Time4VPS sync now owns one bounded HTTP pool per tick, but other long-lived/batched client paths still create a fresh httpx.AsyncClient per request/batch. |
-| L4 | Low | Open | AGENTS.md says environment variables never use defaults while shared/config.py intentionally defines safe defaults. |
-| L5 | Low | New | ARCHITECTURE.md still describes retired Run token/cost storage instead of the engineering attempt ledger. |
+| L2 | Low | Complete via PRs #566/#570 | Read-only production inventory recorded zero `mega-test` matches; `Contour.legacy` and the prefix are gone. |
+| L3 | Low | Open; three slices done (PRs #564/#568/#569) | Time4VPS sync, the GitHub App client and the embedding client own bounded pools; remaining per-request clients are deliberate one-shot probes or callers that have not yet entered the GitHub lifecycle. |
+| L4 | Low | Complete via PR #567 | AGENTS.md states the narrowed rule; two `shared/config.py` defaults that now contradict it are tracked as issue:6a835ce0d0b4965221a7. |
+| L5 | Low | Complete via PR #567 | ARCHITECTURE.md attributes token/cost accounting to engineering_attempt_ledger. |
 
 K1-K4 below remain retention notes, not additional deletion tasks.
 
@@ -380,101 +387,57 @@ This finding needs no further cleanup task.
 
 # Low severity
 
-## L2. Legacy live-test prefix mega-test remains sweepable
+## L2. Legacy live-test prefix mega-test is retired
 
 **Severity:** Low  
-**Removal safety:** 4/5  
-**Removal simplicity:** 5/5  
-**Status:** Open.
+**Status:** Complete via PRs #566 and #570 (sprint:1453).
 
-shared/live_contour.py still declares the production contour with legacy=("mega-test",).
+PR #566 added `make test-live-inventory PREFIX=<prefix>`: a read-only mode of `scripts/clean_live_tests.py` over every surface the sweep covers (database projects, GitHub organisation repositories, deployed stacks on registered servers, Redis capability work and worker metadata, local Docker containers, local workspaces). It exits 0 only when every surface was readable and nothing matched.
 
-Current code search finds the prefix only in the contour plus cleanup/guard tests, which is a good sign: it does not appear to be a current producer.
+The PO ran it on the production host on 2026-09-22 from a separate clone of main (the deployed checkout is bind-mounted into running services and was not touched): exit 0, zero matches on every surface. The record is the `[po:inventory]` comment on sprint:1453. PR #570 then removed `Contour.legacy` and the `mega-test` entry; `git grep -n mega-test` on main is empty.
 
-The missing step is operational proof that no resource still needs that sweep prefix.
-
-### Recommendation
-
-Run the production-safe inventory/sweep for that prefix, record that it is empty, then delete the legacy tuple entry and its dedicated tests.
+Two weaknesses of that proof are filed rather than hidden: the script hard-codes `CLEANUP_API_URL = http://localhost:8000`, which production does not publish, so the run needed a temporary loopback proxy (issue:11af3167eb3d888181f1); and `deployed_stacks` skipped all eight registered servers as not managed cleanup targets, so the surface was "readable" without any remote host being scanned (issue:e3b4bea6544eac7dfe24).
 
 ---
 
-## L3. Several external clients still create AsyncClient per request
+## L3. External clients own bounded HTTP pools where an operation has a lifecycle
 
 **Severity:** Low  
 **Removal safety:** 4/5  
 **Removal simplicity:** 3/5  
-**Status:** Open; partially advanced via PR #564.
+**Status:** Open for caller adoption only; three bounded slices complete (PRs #564, #568, #569).
 
-PR #564 completed one bounded slice for scheduler Time4VPS reconciliation:
+Completed slices:
 
-- `Time4VPSClient` now has an explicit async context lifecycle that owns one `httpx.AsyncClient`;
-- scheduler `sync_servers_worker` enters that context only around provider inventory/detail I/O, so all provider reads in one tick share a connection pool;
-- the context closes before unrelated scheduler work and closes on provider failure as well;
-- callers that do not opt into the context keep the previous one-shot request lifecycle, so the change did not silently extend credential/session lifetime across services;
-- regression tests cover pooled reuse, close-on-error, one-shot compatibility and scheduler enter/exit behavior.
+- PR #564: `Time4VPSClient` has an explicit async context owning one `httpx.AsyncClient`; scheduler server-sync enters it only around provider I/O; one-shot callers are unchanged.
+- PR #568: `GitHubAppClientBase` gained `__aenter__`/`__aexit__` owning one `httpx.AsyncClient`; every `_make_request` inside the lifecycle reuses it, the pool closes on the failure path, nested entry is refused, and callers outside the lifecycle keep a per-call client. No process-global singleton was introduced and the rate-limit retry is unchanged. Today only `services/langgraph/src/subgraphs/devops/env_contract_loader.py` enters the lifecycle.
+- PR #569: `EmbeddingClient` shares one `httpx.AsyncClient(timeout=self.timeout)` across all batches of one generate call, closing on success and failure.
 
-PR #564 passed CI run #2079, including Ruff, unit/offline regressions, scheduler/API/infra/LangGraph/worker-manager service tests, backend/infra/frontend/PO-tool integrations, template compatibility and production service-image entrypoint imports. It merged to main as `2e946d4b82474e54bac925c79ae2e5f22e4c375c`.
+What remains, and is deliberately not a cleanup task:
 
-L3 remains open. Confirmed remaining examples include:
-
-- `shared/clients/github/_base.py::_make_request()`;
-- Time4VPS callers outside the bounded scheduler context, including infra-service provisioning;
-- `services/infra-service/src/provisioner/bitlaunch.py::get_server_ip()`;
-- `shared/clients/embedding.py::_generate_batch()`;
-- `shared/clients/registry.py::manifest_digest()`;
-- the one-shot health probe helper in `shared/clients/infra_client.py`.
-
-The next changes should distinguish genuinely long-lived/batched clients from deliberate one-shot probes. Reuse an owned client where an object or operation already has a clear lifecycle; keep isolated probes one-shot where pooling would add more lifecycle complexity than value. Do not introduce a process-global HTTP singleton.
-
-## L4. Written environment-default policy still contradicts actual safe defaults
-
-**Severity:** Low  
-**Removal safety:** 4/5  
-**Removal simplicity:** 5/5  
-**Status:** Open.
-
-AGENTS.md still says:
-
-- fail fast and do not add fallback values;
-- environment variables — never use default values.
-
-shared/config.py intentionally says its base fields are optional with sensible defaults and provides defaults for service name, log format, log level and default agent type.
-
-Those defaults are not equivalent to silently defaulting a required secret or endpoint. The code is more nuanced than the rule.
-
-### Recommendation
-
-Narrow the convention:
-
-- identity, credentials, connectivity and required production policy: no default;
-- safe presentation/logging/local ergonomics: documented defaults allowed;
-- behavior-changing production policy: explicit env/system config, not a hidden fallback.
-
-This is a documentation fix, not a request to delete useful defaults.
+- callers of `GitHubAppClient` that run several requests per operation (scaffolder consumer, story completion, PR polling) have not yet adopted `async with GitHubAppClient()`; adopt it where an operation already has a clear boundary, one caller at a time;
+- the scaffolder's process-cached client (`services/scaffolder/src/clients/github.py::get_github_client`) would share and lose its pool on concurrent entry; no caller does that today, tracked as issue:53c6c4413943e22db0b8;
+- `services/infra-service/src/provisioner/bitlaunch.py::get_server_ip()`, `shared/clients/registry.py::manifest_digest()` and the health probe in `shared/clients/infra_client.py` are one-shot probes where pooling would add lifecycle complexity for nothing; leave them.
 
 ---
 
-## L5. Architecture documentation still describes retired Run accounting
+## L4. Environment-default convention matches the code
 
 **Severity:** Low  
-**Removal safety:** 5/5  
-**Removal simplicity:** 5/5  
-**Status:** New finding.
+**Status:** Complete via PR #567 (sprint:1453).
 
-M4 is complete: engineering token/cost accounting is canonical in engineering_attempt_ledger and the old Run compatibility fields/columns were removed.
+AGENTS.md now states the narrowed rule: identity, credentials, connectivity and required production policy have no default (`Field(...)` or a `*_field()` helper with `required=True`); safe presentation, logging and local-ergonomics settings may carry a documented default, as `service_name`, `log_format` and `log_level` do; behaviour-changing production policy is explicit configuration, never a hidden fallback. `shared/config.py` was not changed to make the rule true.
 
-ARCHITECTURE.md still says the runs table stores token/cost effort information. That is now misleading and contradicts the completed M4 migration.
+The rule now exposes two defaults that were previously hidden behind the blanket wording: `default_agent_type_field()` defaults to `"claude"` (behaviour-changing production policy) and `telegram_token_field(required=False)` defaults to `""` (a credential). They are tracked as issue:6a835ce0d0b4965221a7 for the owner to decide between making them required and documenting an exception.
 
-### Recommendation
+---
 
-Update the monitoring section so:
+## L5. Architecture documentation describes ledger accounting
 
-- runs owns lifecycle/status/timing/result identity;
-- engineering_attempt_ledger owns engineering token/cost accounting;
-- Grafana reads engineering accounting from the ledger.
+**Severity:** Low  
+**Status:** Complete via PR #567 (sprint:1453).
 
-This can be a tiny docs-only cleanup.
+The ARCHITECTURE.md monitoring section now says that `runs` owns lifecycle, status, timing and result identity, that `engineering_attempt_ledger` owns engineering token and cost accounting, and that Grafana reads engineering accounting from the ledger. No repository document attributes tokens or cost to `runs` any more.
 
 ---
 
@@ -590,12 +553,7 @@ PR #558 now enforces this split: stale use is exact-key opt-in with a maximum ag
 
 ## Phase 1 — safe, local cleanup
 
-1. **L5:** fix ARCHITECTURE.md ledger ownership.
-2. **L4:** make the env-default convention match the actual architecture.
-3. **L2:** perform the legacy mega-test resource proof and delete the prefix if empty.
-4. **L3:** PR #564 established the bounded owned-client pattern for scheduler Time4VPS sync; continue with one remaining genuinely long-lived/batched client path rather than broad process-global pooling.
-
-These are small and should not alter product state-machine semantics.
+Complete. Sprint:1453 (2026-09-22, PRs #566-#570) closed L5, L4 and L2 and did the two remaining long-lived/batched L3 slices. What is left of L3 is caller adoption of the GitHub client lifecycle, which belongs to whoever next touches those callers, not to a cleanup card.
 
 ## Phase 2 — bounded compatibility cleanup
 
@@ -621,7 +579,7 @@ The remaining debt is concentrated rather than diffuse:
 - **coordination concentration:** scheduler-pipeline still has a large ordered routing/supervision cycle, though worker teardown reconciliation is now independent;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows remain;
-- **small hygiene debt:** remaining HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
+- **small hygiene debt:** only caller adoption of the GitHub client lifecycle; the legacy sweep prefix and both documentation-policy mismatches are gone (sprint:1453).
 
 Executor private-format coupling is no longer an open finding: the pinned Codex and Claude contracts now have explicit versioned adapters, upgrade gates and provenance.
 
