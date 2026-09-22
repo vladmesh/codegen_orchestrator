@@ -325,13 +325,14 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
             "voided": 0,
         },
         "supervise_testing_stories": {},
-        "supervise_temporary_access": {},
     }
     for name, result in checks.items():
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
 
-    late_supervisor = AsyncMock(return_value={})
-    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", late_supervisor)
+    late_supervisor = AsyncMock(return_value={"entered": 0, "still_there": 0, "unaddressable": 0})
+    sweep = AsyncMock()
+    monkeypatch.setattr(task_dispatcher, "supervise_stage_notices", late_supervisor)
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
         "sleep",
@@ -341,7 +342,8 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
     with pytest.raises(asyncio.CancelledError):
         await task_dispatcher.task_dispatcher_loop()
 
-    late_supervisor.assert_not_awaited()
+    late_supervisor.assert_awaited_once_with(api_client, redis)
+    sweep.assert_not_awaited()
     redis.close.assert_awaited_once()
 
 
