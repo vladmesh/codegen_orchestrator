@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from scripts import clean_live_tests
+from shared.live_contour import CONTOURS
 
 _LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
 
@@ -181,7 +182,7 @@ def test_local_docker_filter_is_a_regexp_alternation(monkeypatch):
         "ps",
         "-aq",
         "--filter",
-        "name=live-test|live-crud|mega-test",
+        "name=live-test|live-crud",
     ]
 
 
@@ -771,8 +772,7 @@ def test_stand_sweep_cannot_address_production_projects(monkeypatch):
 
         conditions = module._build_conditions()
         assert "stand-test-%" in conditions
-        assert "live-test" not in conditions
-        assert "mega-test" not in conditions
+        assert all(prefix not in conditions for prefix in CONTOURS["prod"].project_prefixes)
 
         assert not module._STACK_NAME_PATTERN.match("live-te-" + "0" * 32)
         assert module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
@@ -790,8 +790,8 @@ def test_production_sweep_is_unchanged_without_a_contour(monkeypatch):
 
     module = importlib.reload(clean_live_tests)
 
-    assert module.PROJECT_PREFIXES == ["live-test", "live-crud", "mega-test"]
-    assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-", "mega-te-"]
+    assert module.PROJECT_PREFIXES == ["live-test", "live-crud"]
+    assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-"]
     assert not module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
 
 
