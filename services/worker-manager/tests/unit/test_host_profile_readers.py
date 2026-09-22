@@ -36,6 +36,7 @@ from src.claude_profile_v21278 import CLAUDE_CODE_VERSION
 from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
 from src.codex_profile_v01446 import (
     CODEX_CLI_VERSION,
+    CODEX_SOURCE_COMMIT,
     SERDE_JSON_MAX_NESTING,
     SERDE_JSON_VERSION,
     jwt_expiry,
@@ -111,7 +112,7 @@ def test_profile_adapter_provenance_matches_pinned_versions():
     assert codex["cli_version"] == CODEX_CLI_VERSION
     assert codex["source"]["repository"] == "openai/codex"
     assert codex["source"]["ref"] == f"rust-v{CODEX_CLI_VERSION}"
-    assert re.fullmatch(r"[0-9a-f]{40}", codex["source"]["commit"])
+    assert codex["source"]["commit"] == CODEX_SOURCE_COMMIT
     assert codex["serde_json_version"] == SERDE_JSON_VERSION
     assert codex["validated_sources"] == [
         "codex-rs/login/src/auth/storage.rs",
