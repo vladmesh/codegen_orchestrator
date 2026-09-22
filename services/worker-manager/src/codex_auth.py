@@ -18,15 +18,12 @@ One observation order serves worker creation and diagnostics alike:
    `config.toml`.
 """
 
-import base64
-import binascii
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import fcntl
 import os
 from pathlib import Path
-import re
 import stat
 import time
 import tomllib
@@ -40,6 +37,13 @@ from shared.contracts.dto.executor_diagnostics import (
     RefreshMaterialState,
 )
 
+from .codex_profile_v01446 import (
+    NOT_REFRESHABLE,
+    auth_mode_refusal,
+    format_refusal,
+    parse_json,
+    session_tokens,
+)
 from .host_profile import (
     JSON_PARSE_FAILURE,
     LAST_REFRESH_CLOCK_SKEW,
@@ -49,7 +53,6 @@ from .host_profile import (
     ProfileInspection,
     iso_instant,
     jwt_expiry,
-    load_json,
     logged_out,
     read_contended,
     unusable,
@@ -57,35 +60,12 @@ from .host_profile import (
 
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
-_NOT_REFRESHABLE = "Codex auth.json does not contain a refresh-capable ChatGPT session"
-_NOT_SUBSCRIPTION = "Codex auth.json is not in the ChatGPT subscription auth_mode"
-_FORMAT_MISMATCH = "Codex auth.json does not match the pinned Codex CLI auth format"
-#: Pinned Codex (rust-v0.144.6) `AuthMode` wire values; any other value fails to load.
-_CLI_AUTH_MODES = frozenset(
-    {
-        "apikey",
-        "chatgpt",
-        "chatgptAuthTokens",
-        "headers",
-        "agentIdentity",
-        "personalAccessToken",
-        "bedrockApiKey",
-    }
-)
-_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$")
-_BASE64URL_NO_PAD = re.compile(r"^[A-Za-z0-9_-]+$")
-#: `header.payload.signature`; the pinned parser ignores any further segments.
-_JWT_PARTS = 3
 #: The advisory lock `worker_wrapper.wrapper.codex_profile_lock` holds exclusively
 #: for each whole Codex process sharing this profile.
 CODEX_PROFILE_LOCK_NAME = ".codegen-codex.lock"
 #: While a CLI holds the lock, this bounds the wait for one stable read (~0.25s).
 STABLE_READ_ATTEMPTS = 5
 STABLE_READ_PAUSE_SECONDS = 0.05
-_CHATGPT_AUTH_MODE = "chatgpt"
-#: Stored credentials pinned Codex (rust-v0.144.6) `AuthDotJson::resolved_mode`
-#: prefers over ChatGPT when `auth_mode` is absent.
-_NON_CHATGPT_CREDENTIALS = ("personal_access_token", "bedrock_api_key", "OPENAI_API_KEY")
 
 
 def _mode(path: Path) -> int:
@@ -108,23 +88,23 @@ def inspect_codex_host_session(profile_path: str | None, *, now: datetime) -> Pr
     auth_data = _read_auth(profile)
     if isinstance(auth_data, ProfileInspection):
         return auth_data
-    format_refusal = _format_refusal(auth_data)
-    if format_refusal is not None:
-        return unusable(format_refusal)
-    mode_refusal = _auth_mode_refusal(auth_data)
+    format_error = format_refusal(auth_data)
+    if format_error is not None:
+        return unusable(format_error)
+    mode_refusal = auth_mode_refusal(auth_data)
     if mode_refusal is not None:
         return unusable(mode_refusal)
-    tokens = _session_tokens(auth_data)
+    tokens = session_tokens(auth_data)
     if isinstance(tokens, ProfileInspection):
         return tokens
     access_token, refresh_token = tokens
 
     facts = _facts(auth_data, access_token, refresh_token, now)
     if not refresh_token:
-        return facts.refresh_missing(now, _NOT_REFRESHABLE)
+        return facts.refresh_missing(now, NOT_REFRESHABLE)
     if not access_token:
         # Codex writes both tokens together; a lone refresh token is not its format.
-        return unusable(_NOT_REFRESHABLE)
+        return unusable(NOT_REFRESHABLE)
     config_refusal = _config_refusal(profile / "config.toml")
     if config_refusal is not None:
         return unusable(config_refusal)
@@ -242,7 +222,7 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
         after.st_mtime_ns,
     ):
         return None
-    auth_data = _strict_json_loads(raw_auth)
+    auth_data = parse_json(raw_auth)
     if auth_data is JSON_PARSE_FAILURE:
         return unusable("Codex auth.json is unreadable or invalid JSON")
     if not isinstance(auth_data, dict):
@@ -250,190 +230,6 @@ def _read_auth_once(auth_path: Path) -> dict | ProfileInspection | None:
     if not auth_data:
         return logged_out("Codex auth.json does not contain a cached session")
     return auth_data
-
-
-def _format_refusal(auth_data: dict) -> str | None:
-    """Step 2: the file loads as pinned Codex `AuthDotJson`, as the CLI would load it.
-
-    Mirrors rust-v0.144.6 `login/src/auth/storage.rs`, `login/src/token_data.rs`,
-    `protocol/src/auth.rs` and `protocol/src/account.rs`. Unknown fields stay
-    ignored (no `deny_unknown_fields`); `Option` fields may be absent or null;
-    required fields must be present with their real JSON types; enums are
-    strings. A malformed optional credential makes the whole file unusable,
-    because the CLI rejects the file before it resolves the auth mode.
-    Sequence (array) encodings of structs, which serde also accepts but Codex
-    never writes, are refused: the only divergence, and it fails closed.
-    """
-    if not (
-        # auth_mode: Option<AuthMode>, one of the pinned wire strings.
-        _optional(auth_data, "auth_mode", lambda value: _is_str(value) and value in _CLI_AUTH_MODES)
-        # OPENAI_API_KEY, personal_access_token: Option<String>.
-        and _optional(auth_data, "OPENAI_API_KEY", _is_str)
-        and _optional(auth_data, "personal_access_token", _is_str)
-        # last_refresh: Option<DateTime<Utc>> from an RFC 3339 string with an offset.
-        and _optional(auth_data, "last_refresh", _is_rfc3339)
-        # agent_identity: Option<AgentIdentityStorage>, untagged Jwt(String) | Record.
-        and _optional(auth_data, "agent_identity", _is_agent_identity)
-        # bedrock_api_key: Option<BedrockApiKeyAuth { api_key: String, region: String }>.
-        and _optional(auth_data, "bedrock_api_key", _is_bedrock_api_key)
-    ):
-        return _FORMAT_MISMATCH
-    tokens = auth_data.get("tokens")
-    # tokens: Option<TokenData>.
-    if tokens is None:
-        return None
-    if not isinstance(tokens, dict):
-        return _FORMAT_MISMATCH
-    if not isinstance(tokens.get("refresh_token"), str):
-        return _NOT_REFRESHABLE
-    if not (
-        isinstance(tokens.get("access_token"), str)
-        and _is_cli_id_token(tokens.get("id_token"))
-        and _optional(tokens, "account_id", _is_str)
-    ):
-        return _FORMAT_MISMATCH
-    return None
-
-
-def _is_agent_identity(value: object) -> bool:
-    """`AgentIdentityStorage`: any JWT string, or a complete `AgentIdentityAuthRecord`."""
-    if isinstance(value, str):
-        return True
-    return isinstance(value, dict) and _is_agent_identity_record(value)
-
-
-def _is_agent_identity_record(record: dict) -> bool:
-    return (
-        all(
-            isinstance(record.get(name), str)
-            for name in ("agent_runtime_id", "agent_private_key", "account_id", "chatgpt_user_id")
-        )
-        # plan_type: account `PlanType`, lowercase names with `#[serde(other)] Unknown`,
-        # so any string loads and nothing else does.
-        and isinstance(record.get("plan_type"), str)
-        and isinstance(record.get("chatgpt_account_is_fedramp"), bool)
-        # email: Option<String> (empty becomes None); task_id: Option<String>.
-        and _optional(record, "email", _is_str)
-        and _optional(record, "task_id", _is_str)
-    )
-
-
-def _strict_json_loads(raw: str | bytes) -> object:
-    """The single JSON trust boundary for `auth.json` and decoded JWT claims.
-
-    Delegates to the total `load_json` in pinned serde_json mode and returns
-    the parsed value or `JSON_PARSE_FAILURE`; it never raises.
-    """
-    return load_json(raw, pinned_serde_json=True)
-
-
-def _optional(data: dict, name: str, valid) -> bool:
-    return data.get(name) is None or bool(valid(data[name]))
-
-
-def _is_str(value: object) -> bool:
-    return isinstance(value, str)
-
-
-def _is_rfc3339(value: object) -> bool:
-    if not isinstance(value, str) or not _RFC3339.match(value):
-        return False
-    try:
-        iso_instant(value)
-    except MetadataError:
-        return False
-    return True
-
-
-def _is_bedrock_api_key(value: object) -> bool:
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("api_key"), str)
-        and isinstance(value.get("region"), str)
-    )
-
-
-def _is_cli_id_token(value: object) -> bool:
-    """Mirror pinned `TokenData.id_token` / `parse_chatgpt_jwt_claims` / `IdClaims`.
-
-    Three non-empty dot segments (more are ignored); a canonical base64url
-    no-pad payload holding a JSON object; optional string `email`; optional
-    profile object with optional string `email`; optional auth object with
-    optional string claims and an optional, non-null bool fedramp flag. The
-    header and signature are not interpreted, exactly as in the CLI.
-    """
-    if not isinstance(value, str):
-        return False
-    parts = value.split(".")
-    if (
-        len(parts) < _JWT_PARTS
-        or not all(parts[:_JWT_PARTS])
-        or not _BASE64URL_NO_PAD.match(parts[1])
-    ):
-        return False
-    payload = parts[1]
-    try:
-        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-    except (binascii.Error, ValueError):
-        return False
-    # URL_SAFE_NO_PAD also rejects non-canonical trailing bits, which Python ignores.
-    if base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != payload:
-        return False
-    claims = _strict_json_loads(decoded)
-    if claims is JSON_PARSE_FAILURE or not isinstance(claims, dict):
-        return False
-    profile = claims.get("https://api.openai.com/profile")
-    auth = claims.get("https://api.openai.com/auth")
-    return (
-        _optional(claims, "email", _is_str)
-        and (
-            profile is None or (isinstance(profile, dict) and _optional(profile, "email", _is_str))
-        )
-        and (auth is None or _is_auth_claims(auth))
-    )
-
-
-def _is_auth_claims(auth: object) -> bool:
-    return (
-        isinstance(auth, dict)
-        and all(
-            _optional(auth, name, _is_str)
-            for name in ("chatgpt_plan_type", "chatgpt_user_id", "user_id", "chatgpt_account_id")
-        )
-        and (
-            "chatgpt_account_is_fedramp" not in auth
-            or isinstance(auth["chatgpt_account_is_fedramp"], bool)
-        )
-    )
-
-
-def _auth_mode_refusal(auth_data: dict) -> str | None:
-    """Step 3: the CLI's authoritative mode must be the file-backed ChatGPT session.
-
-    An explicit `auth_mode` wins; when absent the CLI resolves a stored personal
-    access token, Bedrock key or OpenAI API key before ChatGPT. Any other mode
-    would run on that credential instead of the subscription, so retained
-    ChatGPT tokens are never interpreted for it.
-    """
-    mode = auth_data.get("auth_mode")
-    if mode is None:
-        if any(auth_data.get(name) is not None for name in _NON_CHATGPT_CREDENTIALS):
-            return _NOT_SUBSCRIPTION
-        return None
-    return None if mode == _CHATGPT_AUTH_MODE else _NOT_SUBSCRIPTION
-
-
-def _session_tokens(auth_data: dict) -> tuple[str | None, str | None] | ProfileInspection:
-    """Step 4: the stored ChatGPT access and refresh tokens, or the end state."""
-    tokens = auth_data.get("tokens")
-    if tokens is None:
-        return logged_out(_NOT_REFRESHABLE)
-    # Step 2 proved both are strings.
-    access_token = tokens["access_token"]
-    refresh_token = tokens["refresh_token"]
-    if not access_token and not refresh_token:
-        return logged_out(_NOT_REFRESHABLE)
-    return access_token, refresh_token
 
 
 def _facts(

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-21
 
+- Codex host-profile parsing now uses a versioned 0.144.6 format adapter with a worker-image version gate,
+  so a Codex CLI bump cannot silently drift from the admission and diagnostic parser.
 - Server inventory sync now reconciles each provider row through typed outcomes and separate phases,
   removing the server-sync complexity exemption without changing provisioning policy.
 - Level-1 evidence now captures and judges each merged file set before teardown, proving both stories carry

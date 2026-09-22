@@ -33,6 +33,7 @@ from shared.contracts.dto.executor_diagnostics import (
 from shared.contracts.vocab import AgentType
 from src.claude_auth import inspect_claude_host_session, validate_claude_host_session
 from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
+from src.codex_profile_v01446 import CODEX_CLI_VERSION
 from src.host_profile import (
     JSON_PARSE_FAILURE,
     MAX_JSON_BYTES,
@@ -47,6 +48,17 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 ACCESS_SECRET = "sk-ant-oat01-SYNTHETIC-ACCESS"  # noqa: S105 - synthetic fixture
 REFRESH_SECRET = "sk-ant-ort01-SYNTHETIC-REFRESH"  # noqa: S105 - synthetic fixture
 OPAQUE_CODEX_REFRESH = "rt_SYNTHETIC-opaque-refresh"  # noqa: S105 - synthetic fixture
+
+
+def test_codex_profile_adapter_version_matches_worker_image_pin():
+    """A Codex CLI bump must select/update the format adapter in the same change."""
+    dockerfile = (
+        ROOT_DIR / "services/worker-manager/images/worker-base-codex/Dockerfile"
+    ).read_text()
+    match = re.search(r"^ARG CODEX_CLI_VERSION=(\S+)$", dockerfile, flags=re.MULTILINE)
+
+    assert match is not None
+    assert match.group(1) == CODEX_CLI_VERSION
 
 
 def _b64(value: dict) -> str:
