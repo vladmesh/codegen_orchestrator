@@ -86,6 +86,57 @@ def test_claude_private_format_stays_in_versioned_adapter():
         assert private_name in adapter
 
 
+def test_codex_private_parser_stays_in_versioned_adapter():
+    """Keep pinned serde_json/JWT semantics out of the generic host-profile layer."""
+    root = Path(__file__).resolve().parents[2] / "src"
+    stable = (root / "host_profile.py").read_text()
+    adapter = (root / "codex_profile_v01446.py").read_text()
+
+    for private_name in (
+        "serde_json_number_out_of_range",
+        "_POW10",
+        "_NUMBER_TOKEN",
+        "pinned_serde_json",
+    ):
+        assert private_name not in stable
+        assert private_name in adapter
+    assert "def jwt_expiry(" not in stable
+    assert "def jwt_expiry(" in adapter
+
+
+def test_profile_adapter_provenance_matches_pinned_versions():
+    """The compatibility corpus must name the exact CLI/source version it mirrors."""
+    manifest_path = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "profile_adapter_provenance.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    codex = manifest["codex"]
+    assert codex["cli_version"] == CODEX_CLI_VERSION
+    assert codex["source"]["repository"] == "openai/codex"
+    assert codex["source"]["ref"] == f"rust-v{CODEX_CLI_VERSION}"
+    assert re.fullmatch(r"[0-9a-f]{40}", codex["source"]["commit"])
+    assert codex["serde_json_version"] == "1.0.149"
+    assert codex["validated_sources"] == [
+        "codex-rs/login/src/auth/storage.rs",
+        "codex-rs/login/src/token_data.rs",
+        "codex-rs/protocol/src/auth.rs",
+        "codex-rs/protocol/src/account.rs",
+        "codex-rs/Cargo.lock",
+    ]
+
+    claude = manifest["claude"]
+    assert claude["cli_version"] == CLAUDE_CODE_VERSION
+    assert claude["source"]["kind"] == "pinned-installed-cli-observation"
+    assert claude["source"]["version_output"] == CLAUDE_CODE_VERSION
+    assert set(claude["private_fields"]) == {
+        "claudeAiOauth",
+        "accessToken",
+        "refreshToken",
+        "expiresAt",
+    }
+
+
 def _b64(value: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
 
