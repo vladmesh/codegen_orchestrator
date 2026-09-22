@@ -120,7 +120,8 @@ async def test_get_installation_token_expired(client, mock_jwt):
 
 
 @pytest.mark.asyncio
-async def test_rate_limiting_handling(client):
+@pytest.mark.parametrize("status_code", [httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS])
+async def test_rate_limiting_handling(client, status_code):
     # Mocking rate limit hit then success
 
     async with respx.mock(base_url="https://api.github.com") as respx_mock:
@@ -128,7 +129,7 @@ async def test_rate_limiting_handling(client):
         route = respx_mock.get("/rate_limit_test")
         route.side_effect = [
             httpx.Response(
-                httpx.codes.FORBIDDEN,
+                status_code,
                 headers={
                     "x-ratelimit-remaining": "0",
                     "x-ratelimit-reset": str(int(time.time()) + 1),
@@ -145,8 +146,166 @@ async def test_rate_limiting_handling(client):
 
             assert resp.status_code == httpx.codes.OK
             assert resp.json() == {"ok": True}
-            # Verify sleep was called
-            assert mock_sleep.called
+            assert mock_sleep.await_count == 1
+            assert 0 < mock_sleep.await_args.args[0] <= 2
+
+
+def _mock_transport_clients(monkeypatch, transport: httpx.MockTransport) -> list[httpx.AsyncClient]:
+    """Build real clients against one transport while recording their lifecycle."""
+    async_client = httpx.AsyncClient
+    clients: list[httpx.AsyncClient] = []
+
+    def create_client() -> httpx.AsyncClient:
+        client = async_client(transport=transport)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("shared.clients.github._base.httpx.AsyncClient", create_client)
+    return clients
+
+
+@pytest.mark.asyncio
+async def test_context_reuses_one_client_for_installation_token_and_request(
+    client, mock_jwt, monkeypatch
+):
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 123})
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(
+                201,
+                json={
+                    "token": "installation-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    clients = _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+
+    async with client:
+        assert await client.get_token("owner", "repo") == "installation-token"
+        response = await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert response.json() == {"ok": True}
+    assert len(clients) == 1
+    assert clients[0].is_closed
+    assert [request.url.path for request in requests] == [
+        "/repos/owner/repo/installation",
+        "/app/installations/123/access_tokens",
+        "/user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_context_closes_client_when_body_raises(client, monkeypatch):
+    clients = _mock_transport_clients(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200))
+    )
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        async with client:
+            raise RuntimeError("body failed")
+
+    assert len(clients) == 1
+    assert clients[0].is_closed
+
+
+@pytest.mark.asyncio
+async def test_context_closes_client_when_request_raises(client, monkeypatch):
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        raise httpx.ConnectError("connection failed", request=request)
+
+    clients = _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        with pytest.raises(httpx.ConnectError, match="connection failed"):
+            async with client:
+                await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert len(clients) == 1
+    assert clients[0].is_closed
+    assert requests == 3
+    assert [call.args for call in sleep.await_args_list] == [(1,), (2,)]
+
+
+@pytest.mark.asyncio
+async def test_request_outside_context_still_completes(client, monkeypatch):
+    clients = _mock_transport_clients(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+    )
+
+    response = await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert response.json() == {"ok": True}
+    assert len(clients) == 1
+    assert clients[0].is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [500, 403, 429])
+async def test_request_retries_transient_http_statuses(client, monkeypatch, status_code):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status_code if calls < 3 else 200)
+
+    _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        response = await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert response.status_code == 200
+    assert calls == 3
+    assert [call.args for call in sleep.await_args_list] == [(1,), (2,)]
+
+
+@pytest.mark.asyncio
+async def test_long_rate_limit_uses_retry_backoff_without_waiting_for_reset(client, monkeypatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "120"},
+        )
+
+    _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr("shared.clients.github._base.time.time", lambda: 0)
+
+    with patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert [call.args for call in sleep.await_args_list] == [(1,), (2,)]
+
+
+@pytest.mark.asyncio
+async def test_request_raises_other_client_error_without_retry(client, monkeypatch):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(404)
+
+    _mock_transport_clients(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("shared.clients.github._base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._make_request("GET", "https://api.github.com/user", headers={})
+
+    assert calls == 1
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio

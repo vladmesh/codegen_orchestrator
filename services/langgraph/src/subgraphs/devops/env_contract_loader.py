@@ -24,22 +24,22 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str] | None:
 
 async def _fetch_env_contract(owner: str, repo: str, ref: str) -> dict | None:
     """Fetch and validate all committed environment-contract fragments."""
-    github = GitHubAppClient()
-    paths = await github.list_repo_files_recursive(owner, repo, ref)
-    fragment_paths = [path for path in paths if path.endswith("env.contract.yaml")]
-    if not fragment_paths:
-        return None
+    async with GitHubAppClient() as github:
+        paths = await github.list_repo_files_recursive(owner, repo, ref)
+        fragment_paths = [path for path in paths if path.endswith("env.contract.yaml")]
+        if not fragment_paths:
+            return None
 
-    try:
-        fragments = []
-        for path in fragment_paths:
-            content = await github.get_file_contents(owner, repo, path, ref)
-            if content is None:
-                raise ValueError(f"environment contract fragment disappeared: {path}")
-            fragments.append(yaml.safe_load(content))
-        return merge_env_contract_fragments(fragments).model_dump(mode="json")
-    except (EnvContractMergeError, ValueError, yaml.YAMLError) as error:
-        raise ValueError("environment contract is invalid") from error
+        try:
+            fragments = []
+            for path in fragment_paths:
+                content = await github.get_file_contents(owner, repo, path, ref)
+                if content is None:
+                    raise ValueError(f"environment contract fragment disappeared: {path}")
+                fragments.append(yaml.safe_load(content))
+            return merge_env_contract_fragments(fragments).model_dump(mode="json")
+        except (EnvContractMergeError, ValueError, yaml.YAMLError) as error:
+            raise ValueError("environment contract is invalid") from error
 
 
 async def load_environment_contract(state: DevOpsState) -> dict:

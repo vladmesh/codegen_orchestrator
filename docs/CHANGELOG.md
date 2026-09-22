@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- GitHub App operations can now share one explicitly scoped HTTP pool, while callers outside a
+  lifecycle retain per-request clients and environment-contract loading uses the bounded path.
 - The live-test sweep now has a fail-closed read-only inventory for each contour prefix, so the PO
   can prove retired-prefix residue is absent from production before its legacy entry is retired.
 - Docs now match the code: `engineering_attempt_ledger`, not `runs`, owns token and cost accounting, and the
