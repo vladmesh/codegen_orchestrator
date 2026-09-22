@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -325,13 +325,14 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
             "voided": 0,
         },
         "supervise_testing_stories": {},
-        "supervise_temporary_access": {},
     }
     for name, result in checks.items():
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
 
-    late_supervisor = AsyncMock(return_value={})
-    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", late_supervisor)
+    late_supervisor = AsyncMock(return_value={"entered": 0, "still_there": 0, "unaddressable": 0})
+    sweep = AsyncMock()
+    monkeypatch.setattr(task_dispatcher, "supervise_stage_notices", late_supervisor)
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
         "sleep",
@@ -342,7 +343,147 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         await task_dispatcher.task_dispatcher_loop()
 
     late_supervisor.assert_awaited_once_with(api_client, redis)
+    sweep.assert_not_awaited()
     redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_loop_continues_after_tick_failure_without_sweeping(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    scaffold = AsyncMock(side_effect=[RuntimeError("tick failed"), 0])
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+    for name in ("dispatch_todo_tasks", "complete_stories", "poll_merged_prs"):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
+    monkeypatch.setattr(task_dispatcher, "poll_ci_failures", AsyncMock())
+    for name in (
+        "supervise_stuck_stories",
+        "supervise_stuck_tasks",
+        "supervise_failed_tasks",
+        "supervise_waiting_resource_tasks",
+        "supervise_deploying_stories",
+        "supervise_waiting_user_secret_stories",
+        "supervise_testing_stories",
+    ):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
+    for name, counts in (
+        (
+            "supervise_owed_owner_notifications",
+            {
+                "delivered": 0,
+                "retrying": 0,
+                "exhausted": 0,
+                "unaddressable": 0,
+                "voided": 0,
+            },
+        ),
+        ("supervise_state_age_bounds", {"parked": 0, "failed": 0}),
+        ("supervise_stage_notices", {"entered": 0, "still_there": 0, "unaddressable": 0}),
+    ):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=counts))
+    sweep = AsyncMock(side_effect=RuntimeError("sweep must be independent"))
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert scaffold.await_count == 2
+    log.exception.assert_called_once_with("dispatcher_cycle_error")
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+    sweep.assert_not_awaited()
+    redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_temporary_access_loop_continues_after_sweep_failure_and_closes_redis(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import temporary_access_loop
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    counts = {
+        "dispatched": 2,
+        "released": 1,
+        "revoked": 3,
+        "expired": 4,
+        "revoke_failed": 5,
+        "escalated": 6,
+    }
+    sweep = AsyncMock(side_effect=[RuntimeError("sweep failed"), counts])
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(temporary_access_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(temporary_access_loop, "supervise_temporary_access", sweep)
+    monkeypatch.setattr(temporary_access_loop, "_temporary_access_interval", lambda: 0)
+    monkeypatch.setattr(temporary_access_loop, "logger", log)
+    monkeypatch.setattr(
+        temporary_access_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await temporary_access_loop.temporary_access_loop()
+
+    assert sweep.await_count == 2
+    log.exception.assert_called_once_with("temporary_access_cycle_error")
+    log.info.assert_any_call("temporary_access_cycle", **counts)
+    log.info.assert_any_call("temporary_access_started", interval=0)
+    log.info.assert_any_call("temporary_access_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_temporary_access_loop_logs_zero_count_cycle(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.tasks import temporary_access_loop
+
+    redis = AsyncMock()
+    counts = dict.fromkeys(
+        ("dispatched", "released", "revoked", "expired", "revoke_failed", "escalated"), 0
+    )
+    log = MagicMock()
+    monkeypatch.setattr(temporary_access_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(
+        temporary_access_loop, "supervise_temporary_access", AsyncMock(return_value=counts)
+    )
+    monkeypatch.setattr(temporary_access_loop, "_temporary_access_interval", lambda: 0)
+    monkeypatch.setattr(temporary_access_loop, "logger", log)
+    monkeypatch.setattr(
+        temporary_access_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await temporary_access_loop.temporary_access_loop()
+
+    log.info.assert_any_call("temporary_access_cycle", **counts)
 
 
 @pytest.mark.asyncio

@@ -469,14 +469,6 @@ async def task_dispatcher_loop() -> None:
                 owner_notifications = await supervise_owed_owner_notifications(
                     api_client, redis_client
                 )
-                # Stories are routed on their QA runs before the access sweep
-                # runs, and that order is the delivery guarantee: a product QA
-                # has passed is handed to its owner on the tick that reads the
-                # verdict, and the cleanup of the identity it borrowed happens
-                # afterwards. Sweeping first would let a cleanup that ran out of
-                # attempts during a gap in this loop write its incident on the QA
-                # run before the story had been routed, turning a passed product
-                # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
                 # Last of the story supervisors on purpose: every routing above
                 # has had this tick's chance to move a story on, so a wait this
@@ -485,7 +477,7 @@ async def task_dispatcher_loop() -> None:
                 # After every supervisor that can move a story on this tick, so
                 # a stage is announced only for a story that is really in it.
                 stage_notices = await supervise_stage_notices(api_client, redis_client)
-                temporary_access = await supervise_temporary_access(api_client, redis_client)
+                temporary_access = {}
 
                 # Always log the cycle summary for observability
                 logger.info(
