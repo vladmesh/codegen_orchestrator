@@ -8,6 +8,7 @@ pass the version gate in test_host_profile_readers.py.
 
 import base64
 import binascii
+from datetime import datetime
 import json
 import math
 import re
