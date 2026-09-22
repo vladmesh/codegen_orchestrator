@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at 144b50cd5938bbb27d974ce58942c479726e361b (after PR #560)  
+Audited branch: main at 45b0cb9f5c5748ab080a554a30026342c8a09b3a (after PR #562)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -30,11 +30,11 @@ Of the original sixteen H/M/L findings:
 
 This refresh adds three findings:
 
-- **M9 — partially remediated via PRs #559 and #560:** Codex 0.144.6 and Claude Code 2.1.278 now both have named versioned profile adapters and worker-image version gates; lower-level Codex serde_json compatibility and explicit parser-provenance work remain.
+- **M9 — complete via PRs #559, #560 and #562:** Codex 0.144.6 and Claude Code 2.1.278 have named versioned profile adapters and worker-image version gates; PR #562 moved the remaining Codex serde_json/JWT behavior behind the Codex adapter and added explicit compatibility provenance.
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-So the current actionable set is one High finding, two Medium findings and four Low findings. M9 remains partial rather than wholly open: both executor CLI upgrade boundaries are now explicit, while the remaining work is concentrated in Codex-specific parser coupling and version provenance. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, one Medium finding and four Low findings. M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -55,8 +55,9 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #558 replaced ConfigStore's global unbounded last-known-good fallback with fail-closed defaults plus an explicit 15-minute bounded-stale allowlist for safe scheduler cadence keys, and removed the unused `get_category()` fallback surface.
 - PR #559 moved Codex 0.144.6's private `AuthDotJson`/`TokenData`/`AuthMode` and JWT-format mirror into `codex_profile_v01446.py`, left stable reads/locking/health routing in `codex_auth.py`, and added a CI test that requires the worker image's `CODEX_CLI_VERSION` pin to match the adapter version.
 - PR #560 pinned the Claude worker image to Claude Code 2.1.278, moved private `.credentials.json` / `claudeAiOauth` field interpretation into `claude_profile_v21278.py`, and added adapter-version and private-format boundary guards.
+- PR #562 moved Codex 0.144.6's remaining serde_json 1.0.149 and JWT compatibility into `codex_profile_v01446.py`, left `host_profile.py` vendor-neutral, and added explicit source/version provenance for the pinned Codex and Claude compatibility contracts.
 
-These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex half of M9 an explicit versioned compatibility boundary, and PR #560 did the same for Claude. M9 now remains only for the lower-level Codex parser/provenance residue.
+These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex private-format boundary explicit, PR #560 did the same for Claude, and PR #562 closed M9 by moving the remaining Codex parser/JWT compatibility behind the versioned adapter and pinning compatibility provenance.
 
 ---
 
@@ -76,7 +77,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M6 | Medium | Complete | PO tools use owner modules; retired compatibility re-exports remain removed. |
 | M7 | Medium | Complete | PR #558 made stale reads opt-in and bounded; unclassified config fails closed and only a small scheduler cadence allowlist may use a 15-minute last-known value. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
-| M9 | Medium | Partial via PRs #559/#560 | Codex 0.144.6 and Claude Code 2.1.278 are both version-pinned behind named profile adapters/gates; shared `host_profile.py` still contains Codex-specific serde_json emulation and explicit version-provenance coverage remains incomplete. |
+| M9 | Medium | Complete via PRs #559/#560/#562 | Codex 0.144.6 owns its private serde_json/JWT compatibility behind the versioned adapter, Claude Code 2.1.278 has the corresponding credential adapter, and both pins have explicit provenance and upgrade gates. |
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
@@ -269,48 +270,47 @@ category or prefix.
 **Severity:** Medium  
 **Removal safety:** 2/5  
 **Removal simplicity:** 2/5  
-**Status:** Partially complete via PRs #559 and #560; both CLI format boundaries are version-bound, parser/provenance residue remains.
+**Status:** Complete via PRs #559, #560 and #562.
 
 ### What PR #559 completed
 
-The Codex worker image still pins `@openai/codex` to `0.144.6`. PR #559 now makes the matching parser contract explicit:
+The Codex worker image pins `@openai/codex` to `0.144.6`. PR #559 made the matching high-level profile contract explicit:
 
-- `services/worker-manager/src/codex_profile_v01446.py` is the named ~231-line compatibility adapter for Codex 0.144.6. It owns the private `AuthDotJson` / `TokenData` / `AuthMode` shape, JWT claim compatibility and the pinned format refusals.
-- `services/worker-manager/src/codex_auth.py` shrank from roughly 492 lines to roughly 288 lines. It keeps the non-format responsibilities: stable file reads, advisory locking, file permissions, config checks, metadata interpretation and health classification.
-- a regression test reads `services/worker-manager/images/worker-base-codex/Dockerfile` and requires its `CODEX_CLI_VERSION` to equal the adapter's `CODEX_CLI_VERSION`. A future Codex version bump therefore fails CI until the adapter is deliberately updated/replaced.
-- the existing admission/diagnostic compatibility matrix still exercises malformed/accepted fields, auth-mode precedence, JWT claims, serde_json edge cases, lock races and credential-safe refusal behavior through the same public reader.
+- `services/worker-manager/src/codex_profile_v01446.py` became the named compatibility adapter for Codex 0.144.6 and owns the private `AuthDotJson` / `TokenData` / `AuthMode` shape, JWT claim compatibility and pinned format refusals.
+- `services/worker-manager/src/codex_auth.py` kept non-format responsibilities: stable file reads, advisory locking, file permissions, config checks, metadata interpretation and health classification.
+- a regression test requires the worker image's `CODEX_CLI_VERSION` pin to equal the adapter version, so a future Codex bump cannot silently reuse the old adapter.
+- the admission/diagnostic compatibility matrix continued to cover malformed/accepted fields, auth-mode precedence, JWT claims, serde_json edge cases, lock races and credential-safe refusal behavior through the public reader.
 
-The final PR #559 gate passed Ruff formatting/lint, the full unit suite, shared freshness, offline live regressions, Redis cleanup, worker-manager service tests, applicable integration/template checks and production service-image entrypoint imports. It merged as `a741e2901e20c0395db701428f948aba6b781fff`.
-
-This materially reduces Codex upgrade blast radius: the private vendor format is a named replaceable boundary, and the image version cannot silently drift away from that boundary.
+PR #559 merged as `a741e2901e20c0395db701428f948aba6b781fff`.
 
 ### What PR #560 completed
 
-The Claude worker image now pins Claude Code to `2.1.278` and asks the official installer for that exact release. The image build also executes `claude --version` and checks the pinned version, so a mismatched installer result fails the build.
+The Claude worker image pins Claude Code to `2.1.278`, asks the official installer for that exact release and checks `claude --version` during the image build.
 
-`services/worker-manager/src/claude_profile_v21278.py` is now the named compatibility adapter for the private Claude credential shape. It owns the `.credentials.json` / `claudeAiOauth` fields, including `accessToken`, `refreshToken` and `expiresAt`. `claude_auth.py` keeps stable file reads, the total standard-JSON boundary, health classification and admission semantics instead of vendor-format field knowledge.
+`services/worker-manager/src/claude_profile_v21278.py` is the named compatibility adapter for the private `.credentials.json` / `claudeAiOauth` shape, including `accessToken`, `refreshToken` and `expiresAt`. `claude_auth.py` keeps stable file reads, standard-JSON totality, health classification and admission semantics instead of vendor-format field knowledge.
 
-Regression coverage requires the Dockerfile's `CLAUDE_CODE_VERSION` to equal the adapter's version and structurally prevents the private field names from leaking back into the stable reader. The existing compatibility matrix still covers logged-out, malformed, refresh-missing, expiry-metadata and JSON-boundary behavior through the public reader.
+Regression coverage requires the Dockerfile's `CLAUDE_CODE_VERSION` to equal the adapter version and keeps the private field names out of the stable reader.
 
-The final PR #560 gate passed Ruff formatting/lint, the full unit suite, shared freshness, offline live regressions, Redis cleanup, worker-manager service tests, template compatibility and production service-image entrypoint imports. It merged as `144b50cd5938bbb27d974ce58942c479726e361b`.
+PR #560 merged as `144b50cd5938bbb27d974ce58942c479726e361b`.
 
-### What remains
+### What PR #562 completed
 
-M9 is not complete yet, but the remaining work is now narrower.
+PR #562 closed the remaining parser/provenance residue:
 
-The shared `services/worker-manager/src/host_profile.py` still contains Codex-specific serde_json 1.0.149 emulation, including duplicate-key, surrogate, numeric-range and nesting semantics. PR #559 moved the high-level Codex file-format mirror out of the generic reader, but this lower-level vendor parser behavior remains shared infrastructure.
+- `services/worker-manager/src/host_profile.py` is vendor-neutral again: it owns bounded standard-JSON parsing and shared metadata/inspection helpers, not Codex serde_json or JWT behavior.
+- `services/worker-manager/src/codex_profile_v01446.py` now owns the pinned serde_json 1.0.149 duplicate-key, surrogate, numeric-range and nesting semantics plus the Codex-only JWT expiry parser.
+- `services/worker-manager/tests/fixtures/profile_adapter_provenance.json` binds the Codex contract to CLI 0.144.6, upstream `rust-v0.144.6`, source commit `5d1fbf26c43abc65a203928b2e31561cb039e06d`, serde_json 1.0.149 and the audited source paths. The same manifest records the pinned installed-observation provenance for Claude Code 2.1.278.
+- structural tests keep Codex parser primitives and JWT parsing out of the generic host-profile layer, while the existing admission/diagnostic matrix continues to exercise the public behavior.
 
-The tests are strong synthetic compatibility tests, but the audit recommendation to keep fixtures with explicit provenance from the exact pinned CLI versions, or an equivalent provenance contract, is not yet fully realized.
+The TDD red commit failed the unit suite in CI run #2062 as intended. The final CI run #2073 passed the Required CI Gate, including Ruff, the full unit/offline regressions, worker-manager service tests, template compatibility and production service-image entrypoint imports.
 
-### Remaining recommendation
+PR #562 merged as `45b0cb9f5c5748ab080a554a30026342c8a09b3a`.
 
-Finish M9 incrementally:
+### Retention guidance
 
-1. keep the generic stable-read / credential-safe observation layer vendor-neutral, moving or encapsulating the remaining Codex-only serde_json emulation behind the Codex adapter boundary;
-2. add version-provenance fixtures or an equivalent compatibility contract for each pinned CLI;
-3. prefer an official CLI introspection command if either vendor exposes one that provides the same fail-closed facts.
+Keep `host_profile.py` vendor-neutral. A CLI version bump should update the worker-image pin, its versioned adapter and the provenance contract in the same change. Keep compatibility fixtures synthetic and credential-safe.
 
-Do not replace these checks with permissive parsing.
+If either vendor later exposes an official introspection API that proves the same fail-closed facts, it can replace the private-format mirror. Do not trade the current explicit boundary for permissive parsing.
 
 ---
 
@@ -591,19 +591,18 @@ PR #558 now enforces this split: stale use is exact-key opt-in with a maximum ag
 
 These are small and should not alter product state-machine semantics.
 
-## Phase 2 — bounded compatibility/layer cleanup
+## Phase 2 — bounded compatibility cleanup
 
 1. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
-2. **M9:** finish the remaining parser/provenance residue after PRs #559/#560: move the Codex-only serde_json behavior behind the Codex boundary and add explicit version provenance or an equivalent compatibility contract.
 
-Each item can be delivered incrementally without a rewrite.
+This remains a migration-with-proof task rather than a rewrite. M9 is complete and no longer belongs in the cleanup queue.
 
 ## Phase 3 — scheduler boundary decomposition
 
 1. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
 2. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
-M10 is complete. H1 is now the remaining architectural destination, and it should still be approached one responsibility at a time rather than as a scheduler rewrite.
+M9 and M10 are complete. H1 is now the remaining architectural destination, and it should still be approached one responsibility at a time rather than as a scheduler rewrite.
 
 ---
 
@@ -616,7 +615,8 @@ The remaining debt is concentrated rather than diffuse:
 - **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows remain;
-- **vendor-format coupling:** Codex 0.144.6 and Claude Code 2.1.278 now both have explicit versioned adapters/gates, while lower-level Codex serde_json compatibility and fixture provenance still sit outside the ideal vendor boundary;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
+
+Executor private-format coupling is no longer an open finding: the pinned Codex and Claude contracts now have explicit versioned adapters, upgrade gates and provenance.
 
 The next cleanup should continue the repository's existing direction: preserve typed contracts and durable evidence, then make ownership boundaries match them. The evidence does not support a rewrite.
