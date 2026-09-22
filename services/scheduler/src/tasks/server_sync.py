@@ -139,18 +139,21 @@ async def sync_servers_worker():
                 failure_reason = "time4vps_credentials_missing"
                 logger.warning("time4vps_credentials_missing")
             else:
-                # Basic sync every iteration
-                (
-                    servers_discovered,
-                    servers_updated,
-                    servers_missing,
-                ) = await _sync_server_list(client)
+                # Provider reads within one tick share a connection pool. The context
+                # is bounded to provider I/O so credential rotation still takes effect
+                # on the next cycle and unrelated scheduler work does not retain it.
+                async with client:
+                    (
+                        servers_discovered,
+                        servers_updated,
+                        servers_missing,
+                    ) = await _sync_server_list(client)
 
-                # Detailed specs sync less frequently
-                now = time.monotonic()
-                if now - last_details_sync > _details_sync_interval():
-                    details_updated = await _sync_server_details(client)
-                    last_details_sync = now
+                    # Detailed specs sync less frequently
+                    now = time.monotonic()
+                    if now - last_details_sync > _details_sync_interval():
+                        details_updated = await _sync_server_details(client)
+                        last_details_sync = now
 
                 # Check for servers requiring provisioning
                 triggers_published = await _check_provisioning_triggers()
