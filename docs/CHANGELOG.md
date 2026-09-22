@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- One `EmbeddingClient.generate` call now sends all of its batches through a single HTTP pool that closes
+  when the call ends, instead of opening a new client for each batch.
 - GitHub App operations can now share one explicitly scoped HTTP pool, while callers outside a
   lifecycle retain per-request clients and environment-contract loading uses the bounded path.
 - The live-test sweep now has a fail-closed read-only inventory for each contour prefix, so the PO
