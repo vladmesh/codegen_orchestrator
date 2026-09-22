@@ -23,6 +23,7 @@ from .host_profile import (
 )
 
 CODEX_CLI_VERSION = "0.144.6"
+CODEX_SOURCE_COMMIT = "5d1fbf26c43abc65a203928b2e31561cb039e06d"
 SERDE_JSON_VERSION = "1.0.149"
 NOT_REFRESHABLE = "Codex auth.json does not contain a refresh-capable ChatGPT session"
 _NOT_SUBSCRIPTION = "Codex auth.json is not in the ChatGPT subscription auth_mode"
