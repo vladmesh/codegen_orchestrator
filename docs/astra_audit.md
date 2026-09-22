@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at 45b0cb9f5c5748ab080a554a30026342c8a09b3a (after PR #562)  
+Audited branch: main at f2368cc58ce6691ab3466ad1c0850f92cb823b0c (after PR #563)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -18,14 +18,14 @@ The repository changed substantially after the 2026-09-12 refresh: more than two
 - generated-product and live-test evidence now checks substantially more residue and artifact boundaries;
 - CI imports production service entrypoints from built images, catching missing runtime dependencies before merge.
 
-Those improvements do not invalidate the main architectural concern from the original audit. The scheduler process split from PR #485 remains useful, but scheduler-pipeline still owns one large ordered cycle whose sequencing is part of the product contract. That cycle has grown since the last refresh.
+Those improvements do not invalidate the main architectural concern from the original audit. The scheduler process split from PR #485 remains useful, and PR #563 removed terminal/gave-up worker teardown reconciliation from the order-sensitive dispatcher tick into its own scheduler-pipeline worker. The remaining dispatcher still owns one large ordered routing/supervision cycle whose sequencing is part of the product contract.
 
 ### Current status
 
 Of the original sixteen H/M/L findings:
 
 - **11 remain complete:** H2, H3, H4, M1, M2, M3, M4, M6, M7, M8 and L1.
-- **H1 remains partially complete.**
+- **H1 remains partially complete:** PR #563 extracted durable worker teardown reconciliation, while the order-sensitive routing/supervision tick remains.
 - **4 remain open:** M5 and L2-L4.
 
 This refresh adds three findings:
@@ -56,8 +56,9 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #559 moved Codex 0.144.6's private `AuthDotJson`/`TokenData`/`AuthMode` and JWT-format mirror into `codex_profile_v01446.py`, left stable reads/locking/health routing in `codex_auth.py`, and added a CI test that requires the worker image's `CODEX_CLI_VERSION` pin to match the adapter version.
 - PR #560 pinned the Claude worker image to Claude Code 2.1.278, moved private `.credentials.json` / `claudeAiOauth` field interpretation into `claude_profile_v21278.py`, and added adapter-version and private-format boundary guards.
 - PR #562 moved Codex 0.144.6's remaining serde_json 1.0.149 and JWT compatibility into `codex_profile_v01446.py`, left `host_profile.py` vendor-neutral, and added explicit source/version provenance for the pinned Codex and Claude compatibility contracts.
+- PR #563 extracted terminal-story and gave-up-attempt worker teardown reconciliation from `task_dispatcher_loop` into an independent scheduler-pipeline worker. The two durable scans now also have sibling failure isolation, so one broken reconciliation pass does not suppress the other or the dispatcher tick.
 
-These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex private-format boundary explicit, PR #560 did the same for Claude, and PR #562 closed M9 by moving the remaining Codex parser/JWT compatibility behind the versioned adapter and pinning compatibility provenance.
+These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility routing/supervision cycle, although PR #563 removed worker teardown reconciliation from that positional boundary. M10 is complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, PR #559 made the Codex private-format boundary explicit, PR #560 did the same for Claude, and PR #562 closed M9 by moving the remaining Codex parser/JWT compatibility behind the versioned adapter and pinning compatibility provenance.
 
 ---
 
@@ -65,7 +66,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 
 | ID | Severity | Status on 2026-09-22 | Current conclusion |
 |---|---|---|---|
-| H1 | High | Partial | Three scheduler services exist, but scheduler-pipeline still has one ordered dispatcher/supervisor/reconciliation cycle and one cycle failure boundary. |
+| H1 | High | Partial | Three scheduler services exist and worker teardown reconciliation now has its own worker/failure boundary, but scheduler-pipeline still has one ordered dispatcher/routing/supervision cycle. |
 | H2 | High | Complete | System config is canonical for PO summarization tuning; retired numeric env plumbing remains absent. |
 | H3 | High | Complete | GitHub expected failures remain status-driven rather than exception-string/empty-result fallbacks. |
 | H4 | High | Complete | Worker services remain under the root Ruff policy. |
@@ -108,7 +109,7 @@ PR #485 correctly replaced the aggregate scheduler process with:
 
 That part of the original finding is closed.
 
-The remaining scheduler-pipeline entrypoint still runs services/scheduler/src/tasks/task_dispatcher.py::task_dispatcher_loop. On current main that module is about 594 lines and the loop performs, in one ordered tick:
+The remaining scheduler-pipeline entrypoint still runs services/scheduler/src/tasks/task_dispatcher.py::task_dispatcher_loop. On current main the loop performs, in one ordered tick:
 
 1. scaffold triggering;
 2. engineering dispatch admission/publication;
@@ -120,29 +121,30 @@ The remaining scheduler-pipeline entrypoint still runs services/scheduler/src/ta
 8. QA/testing supervision;
 9. state-age watchdogs;
 10. stage notices;
-11. temporary-access cleanup;
-12. terminal and gave-up worker reconciliation.
+11. temporary-access cleanup.
+
+PR #563 moved terminal-story and gave-up-attempt worker reconciliation out of this tick. `scheduler-pipeline` now starts a sibling `worker_reconciliation` loop on the same cadence; each of its two durable scans has a contained failure boundary, and the dispatcher no longer waits for Redis worker scans.
 
 The code comments still document ordering as correctness, not just an implementation preference. In particular, owed notifications are swept before routing that can create new notices, QA routing happens before access cleanup, and stage notices run after state-moving supervisors.
 
-The whole tick remains inside one broad dispatcher_cycle_error boundary.
+The remaining routing/supervision tick stays inside one broad `dispatcher_cycle_error` boundary. Worker teardown reconciliation is no longer inside it.
 
 ### What improved since 2026-09-12
 
 PR #491 prevents one broken todo task from aborting dispatch of all later todo tasks. Later work added transactional parks, worker reconciliation, state-age supervision and stage notices. These are correctness wins.
 
-They also increased the number of independently meaningful workflows inside the same periodic cycle. task_dispatcher.py grew from roughly 21.6 KB at the previous refresh to roughly 27.1 KB now.
+PR #563 is the first H1 extraction after the process split: worker teardown reconciliation now consumes only durable terminal/settled-attempt facts in a sibling loop, and a failure in one teardown scan does not suppress the other. This removes one independent recovery workflow from the positional dispatcher cycle without changing teardown business logic.
 
 ### Why it still matters
 
-A process split is only part of the boundary. The remaining cycle still has:
+A process split is only part of the boundary. The remaining dispatcher cycle still has:
 
 - one clock;
-- one process lifecycle;
-- ordering encoded by call order and comments;
+- one process lifecycle shared with the sibling reconciliation worker;
+- ordering encoded by call order and comments for several routing/supervision edges;
 - latency coupling between unrelated supervisors;
-- a broad cycle-level failure boundary;
-- difficult independent scaling and recovery semantics.
+- a broad dispatcher-cycle failure boundary;
+- difficult independent scaling and recovery semantics for the responsibilities still inside that tick.
 
 Blindly turning every call into its own loop would be unsafe because some orderings are real contracts.
 
@@ -156,7 +158,7 @@ First turn the required ordering into explicit durable facts and tests. A useful
 2. story-state supervision;
 3. owed notification delivery;
 4. QA handoff and verdict routing;
-5. temporary-access and worker cleanup.
+5. temporary-access cleanup.
 
 For every edge that currently depends on call order, define the durable precondition that makes it safe to run independently. Then split one responsibility at a time.
 
@@ -599,7 +601,7 @@ This remains a migration-with-proof task rather than a rewrite. M9 is complete a
 
 ## Phase 3 — scheduler boundary decomposition
 
-1. **H1:** after ordering is durable rather than positional, separate one scheduler-pipeline responsibility from the shared tick.
+1. **H1:** PR #563 already extracted durable worker teardown reconciliation. For the next slice, first make the relevant ordering edge durable rather than positional, then separate one remaining scheduler-pipeline responsibility from the shared dispatcher tick.
 2. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
 M9 and M10 are complete. H1 is now the remaining architectural destination, and it should still be approached one responsibility at a time rather than as a scheduler rewrite.
@@ -612,7 +614,7 @@ The repository is healthier than the original audit snapshot. A large amount of 
 
 The remaining debt is concentrated rather than diffuse:
 
-- **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
+- **coordination concentration:** scheduler-pipeline still has a large ordered routing/supervision cycle, though worker teardown reconciliation is now independent;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows remain;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
