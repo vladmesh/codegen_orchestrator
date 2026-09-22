@@ -58,7 +58,7 @@ _I32_MAX = 2**31 - 1
 _I32_MIN = -(2**31)
 #: serde_json's `POW10` table contains correctly rounded literals 1e0..1e308.
 _POW10 = tuple(float(f"1e{power}") for power in range(309))
-_NUMBER_TOKEN = re.compile(r"-?(\\d+)(?:\\.(\\d+))?(?:[eE]([+-]?)(\\d+))?")
+_NUMBER_TOKEN = re.compile(r"-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?)(\d+))?")
 _JWT_METADATA_SEGMENTS = 3
 _JWT_METADATA_SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
 _JWT_METADATA_SIGNATURE = re.compile(r"^[A-Za-z0-9_-]*$")
