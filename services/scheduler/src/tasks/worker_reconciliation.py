@@ -9,7 +9,8 @@ of their correctness contract.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -25,7 +26,7 @@ from .. import startup
 
 logger = structlog.get_logger(__name__)
 
-_Reconciler = Callable[[SchedulerAPIClient, RedisStreamClient], Awaitable[int]]
+_Reconciler = Callable[..., Awaitable[int]]
 
 
 def _reconciliation_interval() -> int:
