@@ -442,10 +442,8 @@ def _run_against_prior_schema(session, rows: str, check) -> None:
         )
 
     def ids() -> list[str]:
-        return (
-            connection.execute(text("SELECT id FROM temporary_access_grants ORDER BY id"))
-            .scalars()
-            .all()
+        return sorted(
+            connection.execute(text("SELECT id FROM temporary_access_grants")).scalars().all()
         )
 
     def index_definition() -> str:
