@@ -1634,7 +1634,9 @@ def test_nesting_at_the_pinned_limit_keeps_the_session(tmp_path):
     auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(SERDE_JSON_MAX_NESTING - 1))
     profile = _codex_profile(tmp_path, auth)
     (profile / "auth.json").write_bytes(
-        (json.dumps(auth)[:-1] + ', "future": ' + _nested(SERDE_JSON_MAX_NESTING - 1) + "}").encode()
+        (
+            json.dumps(auth)[:-1] + ', "future": ' + _nested(SERDE_JSON_MAX_NESTING - 1) + "}"
+        ).encode()
     )
 
     inspection = inspect_codex_host_session(str(profile), now=NOW)
