@@ -22,6 +22,9 @@ from shared.contracts.queues.qa import QAMessage
 # run_metadata keys the handoff is recovered from and stamped into.
 QA_HANDOFF_KEY = "qa_handoff"
 QA_DISPATCHED_AT_KEY = "qa_dispatched_at"
+# Written on a terminal QA run by the story transition that consumed its verdict,
+# in that transition's transaction. Cleanup escalation waits for it.
+QA_ROUTED_KEY = "qa_routed"
 
 
 class TemporaryAccessRequest(BaseModel):

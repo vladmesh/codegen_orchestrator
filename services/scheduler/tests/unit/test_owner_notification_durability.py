@@ -170,8 +170,10 @@ class World:
         stored = self.record
         self.journal.append(f"story_record:{stored.state.value}:{stored.attempts}")
 
-    def _transition_story(self, story_id: str, action: str):
+    def _transition_story(self, story_id: str, action: str, *, qa_run_id: str | None = None):
         assert story_id == self.story.id
+        # QA routing names the verdict it consumes; it can only be this world's run.
+        assert qa_run_id in (None, self.run.id)
         if self.transition_failures:
             self.transition_failures -= 1
             self.journal.append(f"transition_uncommitted:{action}")

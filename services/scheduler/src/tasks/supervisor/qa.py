@@ -129,7 +129,7 @@ async def supervise_testing_stories(
             # The completion endpoint writes this record in the same transaction
             # as COMPLETED, so direct operator completion and QA completion owe
             # exactly the same durable PO instruction.
-            await api_client.transition_story(story_id, "complete")
+            await api_client.transition_story(story_id, "complete", qa_run_id=run.id)
             owed = await api_client.get_story_owner_notification(story_id)
             log.info("qa_supervisor_completed", run_id=run.id)
             await deliver_owed_notification(
@@ -301,7 +301,7 @@ async def _quarantine_unverified_application(
         terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
         log=log,
     )
-    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION, qa_run_id=run.id)
     await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
     harness = _harness_blocker(result)
     if harness is not None:
@@ -425,7 +425,7 @@ async def _handle_qa_failed(
     if any(item.get("qa_run_id") == qa_run_id for item in prior_evidence):
         # create_task commits before this transition. Retry the transition when
         # a transient error left the already-created fix task behind.
-        await api_client.transition_story(story_id, "start")
+        await api_client.transition_story(story_id, "start", qa_run_id=qa_run_id)
         log.info("qa_supervisor_failure_transition_recovered", qa_run_id=qa_run_id)
         return None
 
@@ -469,7 +469,7 @@ async def _handle_qa_failed(
             terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
             log=log,
         )
-        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION, qa_run_id=run.id)
         await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         await notify_admins_best_effort(
             f"QA failure {fingerprint} exhausted {exhausted_limit} fix attempts "
@@ -510,7 +510,7 @@ async def _handle_qa_failed(
     )
 
     # Transition story back to IN_PROGRESS for engineering
-    await api_client.transition_story(story_id, "start")
+    await api_client.transition_story(story_id, "start", qa_run_id=qa_run_id)
 
     log.info(
         "qa_supervisor_fix_task_created",

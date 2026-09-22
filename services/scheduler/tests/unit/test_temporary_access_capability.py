@@ -692,3 +692,60 @@ async def test_exhausted_revoke_escalates_once_and_never_republishes_access() ->
 
     assert api.escalate_temporary_access_grant.await_count == 1
     assert counts["dispatched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exhausted_revoke_awaiting_qa_routing_keeps_cleaning_up_without_an_incident() -> None:
+    """The API refuses the incident while the QA verdict is unrouted; that is a wait.
+
+    No administrator is told and no attempt is spent, but a revoke still goes
+    out. Once routing is recorded the next failed revoke escalates exactly once.
+    """
+    from src.tasks.temporary_access import _max_revoke_attempts, _settle_revoke
+
+    attempts = _max_revoke_attempts()
+    grant = _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-last",
+        revoke_attempts=attempts,
+    )
+    api = AsyncMock()
+    api.latest_deployed_commit_sha = AsyncMock(return_value="e" * 40)
+    api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.FAILED)
+    api.escalate_temporary_access_grant.return_value = None
+    redis = AsyncMock()
+    counts = {
+        "dispatched": 0,
+        "released": 0,
+        "revoked": 0,
+        "expired": 0,
+        "revoke_failed": 0,
+        "escalated": 0,
+    }
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", new=AsyncMock()) as notify:
+        await _settle_revoke(api, redis, grant, counts, AsyncMock())
+
+        notify.assert_not_awaited()
+        update = api.update_temporary_access_grant.await_args.args[1]
+        assert update.status is TemporaryAccessStatus.REVOKING
+        assert update.revoke_attempts == attempts
+        assert update.revoke_run_id != grant.revoke_run_id
+        assert update.revoke_reason is TemporaryAccessRevokeReason.RUN_TERMINAL
+        assert [call.args[0] for call in redis.publish_message.await_args_list] == [DEPLOY_QUEUE]
+        assert counts["escalated"] == 0
+        assert counts["dispatched"] == 1
+
+        # The story has routed the verdict: the redispatched revoke failing
+        # again now produces the one incident.
+        api.escalate_temporary_access_grant.return_value = _grant(
+            status=TemporaryAccessStatus.REVOKE_FAILED, escalated_at=datetime.now(UTC)
+        )
+        retried = grant.model_copy(update={"revoke_run_id": update.revoke_run_id})
+        await _settle_revoke(api, redis, retried, counts, AsyncMock())
+
+    notify.assert_awaited_once()
+    assert api.escalate_temporary_access_grant.await_count == 2
+    assert redis.publish_message.await_count == 1
+    assert counts["escalated"] == 1

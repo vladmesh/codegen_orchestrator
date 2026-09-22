@@ -1368,6 +1368,19 @@ before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
 grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
 
+`POST /api/temporary-access-grants/{grant_id}/escalate` waits for QA routing.
+A story transition out of TESTING that routes a QA verdict (`complete`,
+`human-review`, `start`) names the run in `qa_run_id`, and in the transition's
+transaction, under the story and QA run row locks, the API stamps
+`run_metadata.qa_routed` (`QA_ROUTED_KEY`: story id, landing status, time). Only
+that path writes the stamp: the run PATCH refuses it, and a transition that names
+no run leaves the run unstamped. While the grant's QA run is terminal with a
+verdict, linked to a story, unstamped and not superseded by a newer QA run of that
+story, escalation answers 409 `qa_routing_pending` (`QA_ROUTING_PENDING`) and
+writes nothing. The reconciler then sends no alert and redispatches the revoke
+without spending an attempt; it asks again when that revoke fails. A QA run with
+no verdict yet still receives the routable `qa_cleanup_failed` blocker.
+
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
 boundary. Under the grant row lock it accepts only a complete target-backed row
 already stamped `revoke_failed` and escalated by the bounded reconciler; the generic lifecycle update cannot stamp escalation. It

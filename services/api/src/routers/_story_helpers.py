@@ -6,16 +6,25 @@ Story has exactly one locking reader and one transition validator no matter
 which endpoint moves it.
 """
 
+from datetime import UTC, datetime
+
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
     WAITING_ON_BY_STATUS,
     StoryStatus,
 )
+from shared.models.run import Run
 from shared.models.story import Story
+
+_TERMINAL_RUN_STATUSES = frozenset(
+    {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+)
 
 
 async def _load_story(story_id: str, db: AsyncSession, *, for_update: bool) -> Story:
@@ -87,3 +96,41 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
     """Apply one validated hop to a locked story row."""
     _validate_transition(story.status, to_status.value)
     _land_on(story, to_status)
+
+
+async def _record_qa_routing(
+    story: Story, qa_run_id: str | None, to_status: StoryStatus, db: AsyncSession
+) -> None:
+    """Stamp the QA run whose verdict moves a TESTING story, in the move's transaction.
+
+    Temporary-access cleanup escalation waits for this stamp before it records
+    an incident against a QA run with a verdict, so the stamp has to mean
+    exactly "this story consumed this run's verdict". It is written only here,
+    under the story lock and the run lock, and only by a transition out of
+    TESTING; any other status change leaves the run unstamped.
+    """
+    if qa_run_id is None:
+        return
+    run = await db.get(Run, qa_run_id, with_for_update=True)
+    if (
+        story.status != StoryStatus.TESTING.value
+        or run is None
+        or run.type != RunType.QA.value
+        or run.story_id != story.id
+        or run.status not in _TERMINAL_RUN_STATUSES
+        or not isinstance(run.result, dict)
+        or run.result.get("qa_outcome") is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"QA run {qa_run_id} is not a verdict this TESTING story can route",
+        )
+    # A fresh dict is required: run_metadata is a plain JSON column.
+    run.run_metadata = {
+        **(run.run_metadata or {}),
+        QA_ROUTED_KEY: {
+            "story_id": story.id,
+            "story_status": to_status.value,
+            "routed_at": datetime.now(UTC).isoformat(),
+        },
+    }

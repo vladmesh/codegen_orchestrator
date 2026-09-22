@@ -28,6 +28,7 @@ from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
     OwnerNotificationState,
 )
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.models import EngineeringAttemptLedger, Project, Run, User
@@ -619,6 +620,16 @@ async def update_run(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run executor decision is immutable after paid-run creation",
+            )
+        # Only the story transition that consumed the verdict writes this stamp.
+        if (
+            isinstance(metadata_update, dict)
+            and QA_ROUTED_KEY in metadata_update
+            and metadata_update[QA_ROUTED_KEY] != existing_metadata.get(QA_ROUTED_KEY)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A QA run's routing stamp is written only by its story transition",
             )
 
     for field, value in update_data.items():
