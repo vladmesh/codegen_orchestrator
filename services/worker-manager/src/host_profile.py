@@ -99,6 +99,7 @@ def _nesting_exceeds(text: str, limit: int) -> bool:
 def _reject_json_constant(_name: str) -> object:
     raise _JsonRejected("standard JSON has no NaN, Infinity or -Infinity literal")
 
+
 #: A last-refresh stamp further ahead than this contradicts the local clock.
 LAST_REFRESH_CLOCK_SKEW = timedelta(minutes=5)
 
