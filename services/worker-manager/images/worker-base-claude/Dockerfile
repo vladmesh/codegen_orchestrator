@@ -21,7 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN useradd -m -s /bin/bash worker
 USER worker
 
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+RUN installer=$(mktemp) \
+    && curl --retry 3 --retry-connrefused -fsSL -o "$installer" https://claude.ai/install.sh \
+    && test -s "$installer" \
+    && bash -s -- "${CLAUDE_CODE_VERSION}" < "$installer" \
+    && rm "$installer" \
     && /home/worker/.local/bin/claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
 # --- Stage 2: Final image ---

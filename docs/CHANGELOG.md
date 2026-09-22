@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- The Claude worker image retries transient installer fetch failures and checks the downloaded script before execution, keeping its pinned version check.
 - Live-test cleanup and inventory now require `API_BASE_URL`; inventory names servers skipped by cleanup policy and fails when all registered servers are skipped.
 - Each scaffold operation enters one `GitHubAppClient` context for all its GitHub calls, replacing the
   scaffolder's process singleton, so its HTTP pool closes on success, failure and cancellation.
