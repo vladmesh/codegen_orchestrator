@@ -1,7 +1,7 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at acd44c68aed61a3c1d0383ab826a4ab3b63c8eea (after PR #558)  
+Audited branch: main at a741e2901e20c0395db701428f948aba6b781fff (after PR #559)  
 Previous refresh: 2026-09-12, through f9ac3eb8b8137ee7dcbb5b976946e4c12e1b8c9f  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
@@ -30,11 +30,11 @@ Of the original sixteen H/M/L findings:
 
 This refresh adds three findings:
 
-- **M9 — new since the old audit:** executor-profile health now mirrors private Codex/Claude credential formats closely enough that updating a pinned CLI carries adapter-maintenance risk.
+- **M9 — partially remediated via PR #559:** Codex's private 0.144.6 profile format now has a named versioned adapter and a worker-image version gate; Claude is still installed from a floating installer and its private credential format is not version-bound.
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — newly identified documentation drift:** ARCHITECTURE.md still says Run rows hold engineering token/cost accounting even though M4 made engineering_attempt_ledger canonical.
 
-So the current actionable set is one High finding, two Medium findings and four Low findings. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding, two Medium findings and four Low findings. M9 is now partial rather than wholly open: the Codex upgrade boundary is explicit, while the Claude side and remaining parser-coupling/provenance work remain. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -53,8 +53,9 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #555 decomposed `process_deploy_job` into explicit claim, access-validation, resource-preparation, precheck, execution and typed result-routing phases, removing its C901/PLR0911/PLR0912/PLR0915 suppression while keeping the queue/result and teardown boundaries intact.
 - PR #557 decomposed scheduler `supervise_deploying_stories` into thin selection/aggregation, per-story run-state gating and closed `DeployOutcome` routing, removing its C901/PLR0912/PLR0915 suppression and adding structural outcome-coverage guards.
 - PR #558 replaced ConfigStore's global unbounded last-known-good fallback with fail-closed defaults plus an explicit 15-minute bounded-stale allowlist for safe scheduler cadence keys, and removed the unused `get_category()` fallback surface.
+- PR #559 moved Codex 0.144.6's private `AuthDotJson`/`TokenData`/`AuthMode` and JWT-format mirror into `codex_profile_v01446.py`, left stable reads/locking/health routing in `codex_auth.py`, and added a CI test that requires the worker image's `CODEX_CLI_VERSION` pin to match the adapter version.
 
-These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, and PR #558 closed M7 by making stale config use explicit, bounded and key-classified.
+These changes mostly harden correctness. H1 remains because scheduler-pipeline still owns one ordered multi-responsibility cycle, but M10 is now complete: the server-sync, LangGraph deploy-consumer and scheduler deploy-supervisor hotspots all use bounded routing phases without local complexity suppressions. PR #553 closed the M2 production-to-harness dependency, PR #558 closed M7 by making stale config use explicit, bounded and key-classified, and PR #559 made the Codex half of M9 an explicit versioned compatibility boundary.
 
 ---
 
@@ -74,7 +75,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M6 | Medium | Complete | PO tools use owner modules; retired compatibility re-exports remain removed. |
 | M7 | Medium | Complete | PR #558 made stale reads opt-in and bounded; unclassified config fails closed and only a small scheduler cadence allowlist may use a 15-minute last-known value. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
-| M9 | Medium | New | Worker-manager mirrors detailed private executor credential/profile formats, especially Codex auth.json/serde_json behavior. |
+| M9 | Medium | Partial via PR #559 | Codex 0.144.6 now has a named format adapter and a CLI-pin mismatch gate; Claude remains floating/unversioned and some Codex-specific serde_json emulation still lives in the shared parser layer. |
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Open | The production live contour still sweeps the legacy mega-test prefix. |
@@ -267,42 +268,42 @@ category or prefix.
 **Severity:** Medium  
 **Removal safety:** 2/5  
 **Removal simplicity:** 2/5  
-**Status:** New since the previous audit.
+**Status:** Partially complete via PR #559; Codex is version-bound, Claude is not.
 
-### Current evidence
+### What PR #559 completed
 
-The Codex worker image intentionally pins @openai/codex to 0.144.6, which is good reproducibility.
+The Codex worker image still pins `@openai/codex` to `0.144.6`. PR #559 now makes the matching parser contract explicit:
 
-But services/worker-manager/src/codex_auth.py is now roughly 492 lines / 19.5 KB and validates detailed auth/profile structure. It grew from about 2.5 KB at the previous refresh.
+- `services/worker-manager/src/codex_profile_v01446.py` is the named ~231-line compatibility adapter for Codex 0.144.6. It owns the private `AuthDotJson` / `TokenData` / `AuthMode` shape, JWT claim compatibility and the pinned format refusals.
+- `services/worker-manager/src/codex_auth.py` shrank from roughly 492 lines to roughly 288 lines. It keeps the non-format responsibilities: stable file reads, advisory locking, file permissions, config checks, metadata interpretation and health classification.
+- a regression test reads `services/worker-manager/images/worker-base-codex/Dockerfile` and requires its `CODEX_CLI_VERSION` to equal the adapter's `CODEX_CLI_VERSION`. A future Codex version bump therefore fails CI until the adapter is deliberately updated/replaced.
+- the existing admission/diagnostic compatibility matrix still exercises malformed/accepted fields, auth-mode precedence, JWT claims, serde_json edge cases, lock races and credential-safe refusal behavior through the same public reader.
 
-services/worker-manager/src/host_profile.py is a new roughly 414-line / 14.9 KB parser layer that deliberately mirrors details of the CLI parser, including:
+The final PR #559 gate passed Ruff formatting/lint, the full unit suite, shared freshness, offline live regressions, Redis cleanup, worker-manager service tests, applicable integration/template checks and production service-image entrypoint imports. It merged as `a741e2901e20c0395db701428f948aba6b781fff`.
 
-- duplicate-key rejection;
-- nesting limits;
-- lone-surrogate rejection;
-- integer range handling;
-- floating-point/serde_json behavior;
-- JWT/session expiry extraction.
+This materially reduces Codex upgrade blast radius: the private vendor format is a named replaceable boundary, and the image version cannot silently drift away from that boundary.
 
-shared/contracts/dto/executor_diagnostics.py also grew substantially to carry these observations and alert state.
+### What remains
 
-The implementation is careful and well tested. The debt is the coupling, not sloppy code.
+M9 is not complete yet.
 
-### Why it matters
+The Claude worker image does **not** currently pin an exact Claude Code version. Its installer stage runs `curl -fsSL https://claude.ai/install.sh | bash`, so a rebuild can pick up a newer CLI without a repository change.
 
-The worker manager is now a compatibility adapter for a private on-disk format owned by external CLIs. A CLI update can be semantically compatible for normal use but still break the diagnostic mirror.
+`services/worker-manager/src/claude_auth.py` is only about 110 lines, but it still directly understands Claude's private `.credentials.json` / `claudeAiOauth` fields such as `accessToken`, `refreshToken` and `expiresAt`. There is no named versioned Claude adapter and no image-version-to-adapter gate comparable to Codex.
 
-Because admission may use these diagnostics, drift can refuse healthy executors or admit unusable ones.
+The shared `services/worker-manager/src/host_profile.py` also still contains Codex-specific serde_json 1.0.149 emulation (duplicate-key, surrogate, numeric-range and nesting semantics). PR #559 moved the high-level Codex file-format mirror out of the generic reader, but this lower-level vendor parser behavior remains shared infrastructure.
 
-### Recommendation
+Finally, the tests are strong synthetic compatibility tests, but the audit recommendation to keep fixtures with explicit provenance from the exact pinned CLI version is not yet fully realized.
 
-Keep the fail-closed diagnostics, but make the compatibility boundary explicit:
+### Remaining recommendation
 
-1. put each CLI format behind a named versioned adapter;
-2. bind the adapter to the exact CLI version installed in the worker image;
-3. maintain fixture files generated/read by that pinned CLI version;
-4. make a CLI version bump fail CI until the corresponding adapter fixtures pass;
-5. prefer an official CLI introspection command if/when one can provide the same facts.
+Finish M9 incrementally:
+
+1. pin the Claude Code worker image to an exact reproducible CLI release/artifact;
+2. put Claude's private credential format behind a named adapter bound to that exact version;
+3. keep the generic stable-read / credential-safe observation layer vendor-neutral, moving or encapsulating the remaining Codex-only serde_json emulation behind the Codex adapter boundary;
+4. add version-provenance fixtures or an equivalent compatibility contract for each pinned CLI;
+5. prefer an official CLI introspection command if either vendor exposes one that provides the same fail-closed facts.
 
 Do not replace these checks with permissive parsing.
 
@@ -588,7 +589,7 @@ These are small and should not alter product state-machine semantics.
 ## Phase 2 — bounded compatibility/layer cleanup
 
 1. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
-2. **M9:** formalize versioned executor-profile adapters and fixture/version gates.
+2. **M9:** finish the compatibility boundary after PR #559: pin Claude, add its versioned adapter/gate, then move the remaining Codex-only serde_json emulation/provenance behind the vendor boundary.
 
 Each item can be delivered incrementally without a rewrite.
 
@@ -610,7 +611,7 @@ The remaining debt is concentrated rather than diffuse:
 - **coordination concentration:** scheduler-pipeline still has a large ordered cycle;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** temporary-access legacy rows remain;
-- **vendor-format coupling:** executor diagnostics now understand private CLI profile formats in detail;
+- **vendor-format coupling:** Codex now has a versioned 0.144.6 adapter/gate, but Claude remains floating and unversioned and lower-level Codex serde_json compatibility still leaks into the shared parser layer;
 - **small hygiene debt:** HTTP client ownership, one legacy sweep prefix and two documentation-policy mismatches.
 
 The next cleanup should continue the repository's existing direction: preserve typed contracts and durable evidence, then make ownership boundaries match them. The evidence does not support a rewrite.
