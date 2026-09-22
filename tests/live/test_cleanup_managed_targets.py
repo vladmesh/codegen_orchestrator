@@ -45,6 +45,7 @@ def _unrelated_server() -> dict[str, object]:
 
 def test_final_cleanup_skips_unrelated_inventory_before_key_or_ssh(monkeypatch):
     module = _load_clean_live_tests()
+    monkeypatch.setenv("API_BASE_URL", "http://test")
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     requested: list[str] = []
@@ -161,6 +162,7 @@ async def test_managed_target_without_key_fails_closed(monkeypatch, tmp_path):
 
 def test_final_cleanup_fails_when_inventory_has_no_managed_target(monkeypatch):
     module = _load_clean_live_tests()
+    monkeypatch.setenv("API_BASE_URL", "http://test")
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
@@ -178,6 +180,7 @@ def test_final_cleanup_fails_when_inventory_has_no_managed_target(monkeypatch):
 
 def test_final_cleanup_fails_closed_when_managed_target_has_no_key(monkeypatch):
     module = _load_clean_live_tests()
+    monkeypatch.setenv("API_BASE_URL", "http://test")
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     requested: list[str] = []
