@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- Each scaffold operation enters one `GitHubAppClient` context for all its GitHub calls, replacing the
+  scaffolder's process singleton, so its HTTP pool closes on success, failure and cancellation.
 - Temporary QA access cleanup now runs on its own scheduler loop and logs each sweep, so dispatcher
   failures cannot delay cleanup and sweep failures cannot stop dispatcher ticks.
 - Cleanup escalation waits for `runs.qa_routed_at`, set only by the story transition that routes the QA run,
