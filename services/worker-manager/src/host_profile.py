@@ -23,7 +23,7 @@ from shared.contracts.dto.executor_diagnostics import (
 
 _EARLIEST = datetime(2000, 1, 1, tzinfo=UTC)
 _LATEST = datetime(2200, 1, 1, tzinfo=UTC)
-_FRACTION = re.compile(r"(\\.\\d{6})\\d+")
+_FRACTION = re.compile(r"(\.\d{6})\d+")
 
 #: Profile files are a few kilobytes; the bound keeps every diagnostics tick bounded.
 MAX_JSON_BYTES = 1 << 20
