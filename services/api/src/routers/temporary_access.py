@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     LIVE_TEMPORARY_ACCESS_STATUSES,
     QA_ROUTING_PENDING,
@@ -66,33 +66,21 @@ async def _existing_drain_audit(db: AsyncSession, grant_id: str) -> WorkAdmissio
     )
 
 
-async def _awaits_story_routing(db: AsyncSession, run: Run) -> bool:
+def _awaits_story_routing(run: Run) -> bool:
     """Whether a QA verdict is still owed to its story's routing.
 
     Called under the QA run's row lock. The only proof is ``Run.qa_routed_at``,
     which the story transition that consumes the verdict writes under the same
-    lock (see ``_record_qa_routing``); run metadata never counts. So this cannot
-    read "unrouted" and then have the escalation commit after a routing that
-    already happened.
-    A run a newer QA run of the story has superseded is never routed: routing
-    reads the newest run only.
+    lock (see ``_record_qa_routing``). Nothing else stands in for it: not run
+    metadata, not a newer QA run of the story, not a story status move. So this
+    cannot read "unrouted" and then have the escalation commit after a routing
+    that already happened, and an unrouted verdict defers its incident for good.
     """
     if run.story_id is None or run.status not in _TERMINAL_RUN_STATUSES:
         return False
     if not isinstance(run.result, dict) or run.result.get("qa_outcome") is None:
         return False
-    if run.qa_routed_at is not None:
-        return False
-    newer = await db.scalar(
-        select(Run.id)
-        .where(
-            Run.story_id == run.story_id,
-            Run.type == RunType.QA.value,
-            Run.created_at > run.created_at,
-        )
-        .limit(1)
-    )
-    return newer is None
+    return run.qa_routed_at is None
 
 
 def _admin_user_id(actor: str) -> int | None:
@@ -315,7 +303,7 @@ async def escalate_grant(
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
     run = await db.get(Run, grant.qa_run_id, with_for_update=True)
-    if grant.escalated_at is None and run is not None and await _awaits_story_routing(db, run):
+    if grant.escalated_at is None and run is not None and _awaits_story_routing(run):
         # The cleanup incident waits until the story has consumed this verdict;
         # the scheduler keeps cleaning up and asks again on a later cycle.
         raise HTTPException(

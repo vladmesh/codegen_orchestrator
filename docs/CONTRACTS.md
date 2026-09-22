@@ -1379,12 +1379,13 @@ command have no such field. Run metadata never proves routing: the reserved key
 `qa_routed` (`QA_ROUTED_KEY`) is refused with 422 by `POST /api/runs/` and the run
 PATCH (`reserved_run_metadata`) and by `start_paid_run` (`paid_run_reserved_metadata`,
 before any audit or Run row). Escalation locks the grant then the QA run; while
-that run is terminal with a verdict, linked to a story, `qa_routed_at` is unset
-and no newer canonical QA run of that story has superseded it, it answers 409
+that run is terminal with a verdict, linked to a story and `qa_routed_at` is
+unset, it answers 409
 `qa_routing_pending` (`QA_ROUTING_PENDING`) and writes nothing. The reconciler
 then sends no alert and redispatches the revoke without spending an attempt; it
-asks again when that revoke fails. A QA run with no verdict yet still receives
-the routable `qa_cleanup_failed` blocker.
+asks again when that revoke fails. Nothing else stands in for the column: not a
+newer QA run of the story, not a story status move. A QA run with no verdict yet
+still receives the routable `qa_cleanup_failed` blocker.
 
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
 boundary. Under the grant row lock it accepts only a complete target-backed row

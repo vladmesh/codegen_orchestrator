@@ -352,19 +352,37 @@ async def test_the_stamp_cannot_be_seeded_by_a_paid_run_start(async_client) -> N
 
 
 @pytest.mark.asyncio
-async def test_a_superseded_verdict_no_longer_holds_the_incident(async_client) -> None:
-    """Routing reads the newest QA run only, so an older one is never consumed."""
+async def test_a_newer_qa_run_does_not_stand_in_for_this_runs_routing(async_client) -> None:
+    """Only this run's own routing fact releases its incident, not a newer run."""
     story_id, run_id, grant_id = await _passed_story_with_grant(async_client)
     project_id = (await async_client.get(f"/api/stories/{story_id}")).json()["project_id"]
     newer = await _qa_run(async_client, project_id, story_id)
 
-    escalated = await _escalate(async_client, grant_id)
+    deferred = await _escalate(async_client, grant_id)
 
-    assert escalated.status_code == status.HTTP_200_OK, escalated.text
-    assert escalated.json()["escalated_at"] is not None
-    run = (await async_client.get(f"/api/runs/{run_id}")).json()
-    assert run["result"]["qa_outcome"] == "passed"
+    assert deferred.status_code == status.HTTP_409_CONFLICT
+    assert deferred.json()["detail"] == QA_ROUTING_PENDING
+    assert (await async_client.get(f"/api/stories/{story_id}")).json()["status"] == "testing"
+
+    # The story's current QA route goes through the newer run, untouched.
     await _settle(async_client, newer)
+    routed = await async_client.post(f"/api/stories/{story_id}/complete", json={"qa_run_id": newer})
+    assert routed.status_code == status.HTTP_200_OK, routed.text
+    story = (await async_client.get(f"/api/stories/{story_id}")).json()
+    assert story["status"] == "completed"
+    assert story["quarantine_reason"] is None
+    assert (await async_client.get(f"/api/runs/{newer}")).json()["qa_routed_at"] is not None
+
+    # The older verdict was never consumed, so its incident still waits.
+    still = await _escalate(async_client, grant_id)
+    assert still.status_code == status.HTTP_409_CONFLICT
+    assert still.json()["detail"] == QA_ROUTING_PENDING
+    grant = (await async_client.get(f"/api/temporary-access-grants/{grant_id}")).json()
+    assert grant["escalated_at"] is None
+    run = (await async_client.get(f"/api/runs/{run_id}")).json()
+    assert run["qa_routed_at"] is None
+    assert run["status"] == "completed"
+    assert run["result"]["qa_outcome"] == "passed"
 
 
 @pytest.mark.asyncio
