@@ -50,8 +50,7 @@ def session_material(credentials: object) -> ClaudeSessionMaterial | None:
     access_token = oauth.get("accessToken")
     refresh_token = oauth.get("refreshToken")
     if any(
-        value is not None and not isinstance(value, str)
-        for value in (access_token, refresh_token)
+        value is not None and not isinstance(value, str) for value in (access_token, refresh_token)
     ):
         raise ClaudeProfileFormatError
     if not access_token and not refresh_token:
