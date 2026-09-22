@@ -1,8 +1,8 @@
 # Astra architecture audit
 
 Date: 2026-09-22  
-Audited branch: main at c83380f5 (after PR #570, sprint:1453)  
-Previous refresh: 2026-09-22 morning, through 2e946d4b82474e54bac925c79ae2e5f22e4c375c (after PR #564)  
+Audited branch: main at 92b1e1ed (after PR #571, sprint:1454), deployed to production 2026-09-22T19:00Z  
+Previous refresh: 2026-09-22 midday, through c83380f5 (after PR #570)  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
 ## Executive summary
@@ -26,9 +26,9 @@ Those improvements do not invalidate the main architectural concern from the ori
 
 Of the original sixteen H/M/L findings:
 
-- **13 are complete:** H2, H3, H4, M1, M2, M3, M4, M6, M7, M8, L1, L2 and L4.
+- **14 are complete:** H2, H3, H4, M1, M2, M3, M4, M5, M6, M7, M8, L1, L2 and L4.
 - **H1 remains partially complete:** PR #563 extracted durable worker teardown reconciliation, while the order-sensitive routing/supervision tick remains.
-- **M5 remains open.**
+- **M5 is complete via PR #571 (sprint:1454):** the legacy temporary-access schema, model fields, router branches, tests and contract text are gone; production runs migration 4d8e1f2a3b5c.
 - **L3 remains open with three bounded slices done** (Time4VPS scheduler sync, GitHub App client, embedding client); what is left is adoption by callers and the deliberate one-shot probes, which are not a cleanup task.
 
 This refresh adds three findings:
@@ -37,7 +37,7 @@ This refresh adds three findings:
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — complete via PR #567:** ARCHITECTURE.md now attributes lifecycle/status/timing to `runs` and engineering token/cost accounting to `engineering_attempt_ledger`.
 
-So the current actionable set is one High finding, one Medium finding and one partially open Low finding (L3 caller adoption). Sprint:1453 (2026-09-22, cards 1332-1336) closed the audit's Phase 1 in one day; the two follow-ups it filed are issue:11af3167eb3d888181f1 (the sweep's hard-coded `localhost:8000` API address) and issue:e3b4bea6544eac7dfe24 (the inventory skips unmanaged servers), plus issue:6a835ce0d0b4965221a7 (two `shared/config.py` defaults against the new L4 rule) and issue:53c6c4413943e22db0b8 (scaffolder's cached GitHub client on concurrent entry). M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is one High finding (H1) and one partially open Low finding (L3 caller adoption); no Medium finding is open. Sprint:1454 closed M5 the same day as Phase 1: one card, one PR, a migration with a refuse-if-live guard, a PO archive of the three revoked slot-era rows and a production readback. Sprint:1453 (2026-09-22, cards 1332-1336) closed the audit's Phase 1 in one day; the two follow-ups it filed are issue:11af3167eb3d888181f1 (the sweep's hard-coded `localhost:8000` API address) and issue:e3b4bea6544eac7dfe24 (the inventory skips unmanaged servers), plus issue:6a835ce0d0b4965221a7 (two `shared/config.py` defaults against the new L4 rule) and issue:53c6c4413943e22db0b8 (scaffolder's cached GitHub client on concurrent entry). M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -83,7 +83,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M2 | Medium | Complete | PR #553 moved the undeploy/recovery primitive to shared.deployment_cleanup and added a guard forbidding production service imports from shared.live_harness*. |
 | M3 | Medium | Complete | Production PO startup requires durable checkpoint configuration; MemorySaver remains an explicit graph/test-capable path rather than the enabled production downgrade. |
 | M4 | Medium | Complete | Run accounting compatibility is gone and the engineering attempt ledger is canonical. |
-| M5 | Medium | Open; safer remediation | Legacy temporary-access columns/branches remain, but operator drain now provides a supported path to eliminate unreconcilable live legacy rows. |
+| M5 | Medium | Complete via PR #571 | `env_key`/`subject` dropped, both target columns NOT NULL, the three revoked target-less rows archived and deleted, no legacy branch in the router; drain remains only for escalated target-backed `revoke_failed` rows. |
 | M6 | Medium | Complete | PO tools use owner modules; retired compatibility re-exports remain removed. |
 | M7 | Medium | Complete | PR #558 made stale reads opt-in and bounded; unclassified config fails closed and only a small scheduler cadence allowlist may use a 15-minute last-known value. |
 | M8 | Medium | Complete | Frontend images use plain npm ci; legacy-peer-deps is absent. |
@@ -175,47 +175,25 @@ For every edge that currently depends on call order, define the durable precondi
 
 # Medium severity
 
-## M5. Legacy temporary-access schema and runtime branches still exist
+## M5. Legacy temporary-access schema and runtime branches are gone
 
 **Severity:** Medium  
-**Removal safety:** 3/5  
-**Removal simplicity:** 3/5  
-**Status:** Open, but the safe removal path improved.
+**Status:** Complete via PR #571 (sprint:1454, migration 4d8e1f2a3b5c), deployed to production 2026-09-22T19:00Z.
 
-### Current evidence
+The owner chose full removal over keeping revoked slot-era history: production held exactly three target-less rows, all revoked in 2026-08 (two by `run_terminal`, one by a manual drain on 2026-09-12), and no supported producer could create another because `TemporaryAccessGrantCreate` already required both target fields.
 
-shared/models/temporary_access_grant.py still maps the retired columns as:
+What PR #571 did, in one reviewed step:
 
-- legacy_env_key -> env_key;
-- legacy_subject -> subject.
+- alembic revision 4d8e1f2a3b5c refuses to run if any target-less row is not `revoked`, deletes the revoked target-less rows, makes `target_application_id` and `target_base_url` NOT NULL and drops `env_key` and `subject`; the downgrade restores nullability only;
+- `shared/models/temporary_access_grant.py` has no `legacy_env_key`/`legacy_subject` and non-optional targets;
+- `services/api/src/routers/temporary_access.py` has no `_is_legacy`, `_reject_legacy_record`, `_LEGACY_REMEDIATION`, no target-less filter in the list route; `POST /{grant_id}/drain` accepts only a complete target-backed row stamped `revoke_failed` and escalated by the reconciler, with the same audit row;
+- the service tests build only current-lifecycle rows and include a real-Postgres migration test; `docs/CONTRACTS.md` describes one lifecycle.
 
-services/api/src/routers/temporary_access.py still contains:
+Operational record on sprint:1454: the PO archived the three rows to the production backup location before the merge (`[po:archive]`), the owner agreed to the deploy (`[po:deploy-ok]`), and the readback after deploy run 35768804207 shows alembic 4d8e1f2a3b5c, the two columns absent, both targets `is_nullable = NO`, two rows and zero target-less (`[po:readback]`).
 
-- _LEGACY_REMEDIATION;
-- _is_legacy();
-- _reject_legacy_record();
-- special behavior for target-less legacy rows.
+### Retention guidance
 
-This is not dead code: a live target-less row still changes API behavior.
-
-### What changed since the old audit
-
-PR #495 narrowed contention to an exact known target and added an audited operator drain. The drain can close either a live legacy row or a properly escalated target-backed revoke failure without manual SQL.
-
-That makes this finding less risky to finish: the repository now has a supported operational escape hatch.
-
-### Recommendation
-
-Treat this as a migration with proof:
-
-1. use the drain path for any remaining live legacy rows;
-2. prove no supported producer can create target-less rows;
-3. decide whether revoked historical rows need to stay queryable;
-4. migrate/archive history if required;
-5. remove legacy runtime branches;
-6. drop env_key and subject in a final schema migration.
-
-The operator drain should survive if it still has a purpose for current target-backed revoke failures; only its legacy branch should disappear.
+The operator drain survives for its remaining purpose (escalated target-backed revoke failures). K1-K4 are unaffected.
 
 ---
 
@@ -557,9 +535,7 @@ Complete. Sprint:1453 (2026-09-22, PRs #566-#570) closed L5, L4 and L2 and did t
 
 ## Phase 2 — bounded compatibility cleanup
 
-1. **M5:** use the supported drain/proof path, then retire the legacy temporary-access schema.
-
-This remains a migration-with-proof task rather than a rewrite. M9 is complete and no longer belongs in the cleanup queue.
+Complete. Sprint:1454 (2026-09-22, PR #571) retired the legacy temporary-access lifecycle as a migration with proof; nothing else of the audit needs a compatibility cleanup.
 
 ## Phase 3 — scheduler boundary decomposition
 
@@ -578,7 +554,7 @@ The remaining debt is concentrated rather than diffuse:
 
 - **coordination concentration:** scheduler-pipeline still has a large ordered routing/supervision cycle, though worker teardown reconciliation is now independent;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
-- **compatibility residue:** temporary-access legacy rows remain;
+- **compatibility residue:** none left; the temporary-access legacy rows and schema are gone (sprint:1454);
 - **small hygiene debt:** only caller adoption of the GitHub client lifecycle; the legacy sweep prefix and both documentation-policy mismatches are gone (sprint:1453).
 
 Executor private-format coupling is no longer an open finding: the pinned Codex and Claude contracts now have explicit versioned adapters, upgrade gates and provenance.
