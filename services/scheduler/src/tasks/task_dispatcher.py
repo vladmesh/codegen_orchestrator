@@ -35,7 +35,6 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
-from .gave_up_worker_reconciliation import reconcile_gave_up_attempt_workers
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -61,7 +60,6 @@ from .supervisor import (
     supervise_waiting_user_secret_stories,
 )
 from .temporary_access import supervise_temporary_access
-from .terminal_worker_reconciliation import reconcile_terminal_story_workers
 from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
@@ -488,8 +486,6 @@ async def task_dispatcher_loop() -> None:
                 # a stage is announced only for a story that is really in it.
                 stage_notices = await supervise_stage_notices(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
-                terminal_workers = await reconcile_terminal_story_workers(api_client, redis_client)
-                gave_up_workers = await reconcile_gave_up_attempt_workers(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -498,8 +494,6 @@ async def task_dispatcher_loop() -> None:
                     stories_completed=completed,
                     scaffolds_triggered=scaffolds,
                     prs_merged=merged,
-                    terminal_workers_requested=terminal_workers,
-                    gave_up_workers_requested=gave_up_workers,
                 )
                 supervisor_active = (
                     stuck_stories.get("retried", 0)
