@@ -1,8 +1,8 @@
-# Worker base image with Claude CLI pre-installed
-# Inherits from worker-base-common
+# Worker base image with a pinned Claude Code CLI.
+# Inherits from worker-base-common.
 #
-# Uses a separate stage to install Claude CLI so that the expensive
-# curl | bash download is cached independently of base image changes.
+# Uses a separate stage to install Claude Code so the expensive download is
+# cached independently of base image changes.
 
 # Global ARG must be before any FROM to be usable in FROM instructions.
 # No default: the builder names the worker-base-common tag it just produced, so this
@@ -10,8 +10,10 @@
 # A build without --build-arg BASE_IMAGE fails on a blank base name.
 ARG BASE_IMAGE
 
-# --- Stage 1: Install Claude CLI (cached unless install.sh changes) ---
+# --- Stage 1: Install pinned Claude Code (cached unless version changes) ---
 FROM python:3.12.13-slim AS claude-installer
+
+ARG CLAUDE_CODE_VERSION=2.1.278
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
@@ -19,7 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN useradd -m -s /bin/bash worker
 USER worker
 
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+    && /home/worker/.local/bin/claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
 # --- Stage 2: Final image ---
 FROM ${BASE_IMAGE}
