@@ -22,15 +22,23 @@ class _StubAsyncClient:
     def __init__(self, response: httpx.Response):
         self._response = response
         self.calls: list[tuple[str, str]] = []
+        self.entered = 0
+        self.exited = 0
+        self.closed = 0
 
     def __call__(self, *args, **kwargs):
         return self
 
     async def __aenter__(self):
+        self.entered += 1
         return self
 
     async def __aexit__(self, *exc_info):
+        self.exited += 1
         return False
+
+    async def aclose(self):
+        self.closed += 1
 
     async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
         self.calls.append((method, url))
@@ -306,3 +314,48 @@ async def test_successful_response_is_parsed():
 
     assert [s.id for s in servers] == [1001]
     assert stub.calls == [("GET", "https://billing.time4vps.com/api/server")]
+    assert stub.entered == 1
+    assert stub.exited == 1
+    assert stub.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_context_reuses_one_http_client_and_closes_it():
+    stub = _StubAsyncClient(
+        httpx.Response(
+            200,
+            json=[],
+            request=httpx.Request("GET", "https://billing.time4vps.com/api/server"),
+        )
+    )
+    client = Time4VPSClient("user", "secret")
+
+    with patch("shared.clients.time4vps.httpx.AsyncClient", stub):
+        async with client:
+            await client.get_servers()
+            await client.get_servers()
+
+    assert stub.calls == [
+        ("GET", "https://billing.time4vps.com/api/server"),
+        ("GET", "https://billing.time4vps.com/api/server"),
+    ]
+    assert stub.entered == 0
+    assert stub.exited == 0
+    assert stub.closed == 1
+    assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_context_closes_pool_when_provider_request_fails():
+    stub = _stub(500, "upstream exploded")
+    client = Time4VPSClient("user", "secret")
+
+    with (
+        patch("shared.clients.time4vps.httpx.AsyncClient", stub),
+        pytest.raises(Time4VPSAPIError),
+    ):
+        async with client:
+            await client.get_servers()
+
+    assert stub.closed == 1
+    assert client._client is None

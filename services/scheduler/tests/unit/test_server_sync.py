@@ -25,6 +25,8 @@ def mock_api_client():
 @pytest.fixture
 def mock_time4vps_client():
     mock = AsyncMock()
+    mock.__aenter__.return_value = mock
+    mock.__aexit__.return_value = False
     return mock
 
 
@@ -1018,6 +1020,8 @@ async def test_failed_cycle_is_not_logged_as_a_completed_sync(
     assert len(incomplete) == 1
     assert incomplete[0]["log_level"] == "error"
     assert "ipnotallowed" in incomplete[0]["reason"]
+    mock_time4vps_client.__aenter__.assert_awaited_once_with()
+    mock_time4vps_client.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1037,3 +1041,5 @@ async def test_successful_empty_cycle_still_reports_completion(
     events = [entry["event"] for entry in logs]
     assert "server_sync_complete" in events
     assert "server_sync_incomplete" not in events
+    mock_time4vps_client.__aenter__.assert_awaited_once_with()
+    mock_time4vps_client.__aexit__.assert_awaited_once_with(None, None, None)

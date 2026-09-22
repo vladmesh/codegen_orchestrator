@@ -49,11 +49,10 @@ def inspect_claude_host_session(profile_path: str | None, *, now: datetime) -> P
         raw = credentials.read_text(encoding="utf-8")
     except (OSError, ValueError):
         return unusable(_UNREADABLE)
-    # The same total boundary as Codex: standard JSON (no NaN/Infinity literals)
-    # within the shared size, depth and totality bounds. Claude Code is not a
-    # serde_json reader, so Codex's pinned number-range, duplicate-key and
-    # surrogate policies do not apply here.
-    data = load_json(raw, pinned_serde_json=False)
+    # The shared total boundary is standard JSON (no NaN/Infinity literals)
+    # within generic size, depth and totality bounds. Private Claude field
+    # interpretation stays in the versioned adapter.
+    data = load_json(raw)
     if data is JSON_PARSE_FAILURE:
         return unusable(_UNREADABLE)
 
