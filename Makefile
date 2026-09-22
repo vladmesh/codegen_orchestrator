@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-mega-brief-package test-live-matrix test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-inventory test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-mega-brief-package test-live-matrix test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -39,6 +39,7 @@ help:
 	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
 	@echo "  make test-live            - Run all live tests (from host, no LLM)"
+	@echo "  make test-live-inventory PREFIX=name - Read-only residue inventory"
 	@echo "  make test-live N=health   - Run specific live test file"
 	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
 	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
@@ -430,6 +431,12 @@ stand-clean:
 test-live-clean:
 	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
 	@uv run python -m scripts.clean_live_tests
+
+# Read every cleanup surface without changing it. PREFIX must name one prefix in
+# the selected contour; the script validates that boundary before it inspects anything.
+test-live-inventory:
+	@test -n "$(PREFIX)" || (echo "PREFIX is required" >&2; exit 2)
+	@uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)
 
 # Destroys production and rebuilds it from the deployed revision. Ordinary
 # cleanup is `test-live-clean`; this is for when a live run on production has

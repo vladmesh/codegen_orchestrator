@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- The live-test sweep now has a fail-closed read-only inventory for each contour prefix, so the PO
+  can prove retired-prefix residue is absent from production before its legacy entry is retired.
 - Executor profile compatibility is version-bound end to end: Codex owns its serde/JWT parser and both
   adapters carry pinned provenance, so vendor upgrades cannot silently reuse a stale private-format contract.
 

@@ -1,4 +1,5 @@
 import ast
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -845,3 +846,209 @@ def test_the_sweep_never_deletes_from_the_append_only_ledger():
 
     assert "DELETE FROM engineering_attempt_ledger" not in source
     assert "NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger" in source
+
+
+def test_inventory_returns_zero_and_names_every_empty_surface(monkeypatch, capsys):
+    projects: list[dict[str, str]] = []
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 0
+
+    output = capsys.readouterr().out
+    for surface in (
+        "database_projects",
+        "github_repositories",
+        "deployed_stacks",
+        "redis_capability_messages",
+        "redis_worker_meta",
+        "local_docker_containers",
+        "local_workspaces",
+    ):
+        assert f"{surface}: 0" in output
+
+
+def test_inventory_returns_nonzero_and_names_matches(monkeypatch, capsys):
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    slug_prefix = clean_live_tests._inventory_slug_prefixes([prefix])[0]
+    projects = [{"id": "project-1", "title": f"{prefix}-old", "slug": slug_prefix + "1" * 32}]
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_github_repositories", lambda prefixes: [slug_prefix + "1" * 32]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_remote_stacks",
+        lambda prefixes: {"vps-1": ["directory /opt/services/" + slug_prefix + "1" * 32]},
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_redis",
+        lambda projects: (["project-1: engineering/1-0"], ["worker:meta:w1"]),
+    )
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_docker", lambda prefixes: [f"{prefix}-worker"]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_local_workspaces",
+        lambda projects, prefixes: ["/data/workspaces/repo-1"],
+    )
+
+    assert clean_live_tests.inventory([prefix]) == 1
+
+    output = capsys.readouterr().out
+    assert f"{prefix}-old" in output
+    assert slug_prefix + "1" * 32 in output
+    assert "worker:meta:w1" in output
+    assert "/data/workspaces/repo-1" in output
+
+
+def test_inventory_returns_nonzero_when_a_surface_is_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_github_repositories",
+        lambda prefixes: (_ for _ in ()).throw(
+            clean_live_tests.CleanupFailure("GitHub unavailable")
+        ),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+
+    assert "github_repositories: unreadable (GitHub unavailable)" in capsys.readouterr().out
+
+
+def test_inventory_never_reaches_a_destructive_helper(monkeypatch):
+    _live_harness_modules()
+    import capability_cleanup
+
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+    slug_prefix = clean_live_tests._inventory_slug_prefixes([prefix])[0]
+
+    for name in (
+        "clean_database",
+        "clean_redis_queues",
+        "clean_remote_servers",
+        "clean_local_docker",
+        "clean_local_workspaces",
+        "delete_github_repos",
+        "fence_run_work",
+        "recover_ownership_manifests",
+        "cleanup_manifest_resources",
+        "cleanup_run_scoped_resources",
+    ):
+        monkeypatch.setattr(
+            clean_live_tests,
+            name,
+            lambda *args, _name=name, **kwargs: pytest.fail(f"inventory reached {_name}"),
+        )
+    monkeypatch.setattr(
+        capability_cleanup,
+        "cleanup_owned_capability_messages",
+        lambda *args, **kwargs: pytest.fail("inventory reached capability cleanup"),
+    )
+
+    def fake_run_cmd(command, **kwargs):
+        if "psql" in command:
+            sql = command[-1]
+            if sql.startswith("SELECT id, title, slug"):
+                return _result(stdout=f"project-1|{prefix}-old|{slug_prefix}{'1' * 32}\n")
+            if sql.startswith("SELECT r.id"):
+                return _result(stdout="repo-1\n")
+        if "redis-cli" in command:
+            if "EVAL" in command:
+                return _result(stdout="[]\n")
+            return _result(stdout="")
+        return _result(stdout="")
+
+    @contextmanager
+    def fake_server_key_file(handle):
+        yield "/tmp/inventory-key"  # noqa: S108
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(
+        clean_live_tests,
+        "_fetch_remote_servers",
+        lambda: [{"handle": "server-1", "ssh_user": "root", "public_ip": "203.0.113.1"}],
+    )
+    monkeypatch.setattr(clean_live_tests, "_server_key_file", fake_server_key_file)
+    monkeypatch.setattr(clean_live_tests, "_ssh", lambda *args, **kwargs: _result(stdout=""))
+    monkeypatch.setattr(clean_live_tests, "_inventory_directory_entries", lambda path: [])
+
+    assert clean_live_tests.inventory([prefix]) == 1
+
+
+def test_inventory_reports_redis_unreadable_when_projects_are_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_projects",
+        lambda prefixes: (_ for _ in ()).throw(
+            clean_live_tests.CleanupFailure("database unavailable")
+        ),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_redis",
+        lambda projects: pytest.fail("Redis cannot be attributed without projects"),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory([clean_live_tests.PROJECT_PREFIXES[-1]]) == 1
+
+    output = capsys.readouterr().out
+    assert "redis_capability_messages: unreadable (database projects unreadable)" in output
+    assert "redis_worker_meta: unreadable (database projects unreadable)" in output
+
+
+def test_inventory_rejects_a_prefix_outside_the_current_contour(capsys):
+    assert clean_live_tests.inventory(["not-a-contour-prefix"]) == 1
+    assert "inventory_prefixes: unreadable" in capsys.readouterr().out
+
+
+def test_inventory_local_docker_reads_names_without_removing_containers(monkeypatch):
+    commands: list[list[str]] = []
+    prefix = clean_live_tests.PROJECT_PREFIXES[-1]
+
+    def fake_run_cmd(command, **kwargs):
+        commands.append(command)
+        return _result(stdout=f"{prefix}-worker\n")
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+
+    assert clean_live_tests.inventory_local_docker([prefix]) == [f"{prefix}-worker"]
+    assert commands == [
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            f"name={prefix}",
+        ]
+    ]
+
+
+def test_live_inventory_make_target_uses_the_project_environment():
+    makefile = (Path(__file__).resolve().parents[2] / "Makefile").read_text()
+
+    assert "test-live-inventory" in makefile
+    assert "uv run python -m scripts.clean_live_tests --inventory --prefix $(PREFIX)" in makefile
