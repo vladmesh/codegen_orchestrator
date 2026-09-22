@@ -1570,7 +1570,7 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["completed"] == 1
-        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        api_client.transition_story.assert_called_once_with("story-1", "complete", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     async def test_passed_run_with_a_refused_empty_input_is_not_quarantined(
@@ -1606,7 +1606,7 @@ class TestSuperviseTestingStories:
 
         assert result["completed"] == 1
         assert result["failed"] == 0
-        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        api_client.transition_story.assert_called_once_with("story-1", "complete", qa_run_id="qa-1")
         api_client.stop_application.assert_not_called()
         api_client.update_story.assert_not_called()
         api_client.create_task.assert_not_called()
@@ -1635,7 +1635,7 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
-        api_client.transition_story.assert_called_once_with("story-1", "start")
+        api_client.transition_story.assert_called_once_with("story-1", "start", qa_run_id="qa-1")
         api_client.create_task.assert_called_once()
         task_data = api_client.create_task.call_args[0][0]
         assert task_data["story_id"] == "story-1"
@@ -1707,7 +1707,7 @@ class TestSuperviseTestingStories:
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+        api_client.transition_story.assert_awaited_once_with("story-1", "start", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     async def test_three_identical_failures_create_two_fixes_then_wait_for_human(
@@ -1777,7 +1777,7 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_with("story-1", "human-review", qa_run_id="qa-3")
 
     @pytest.mark.asyncio
     async def test_qa_fix_ceiling_escalates_even_for_a_new_failure_signature(
@@ -1822,7 +1822,7 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_with("story-1", "human-review", qa_run_id="qa-3")
 
     @pytest.mark.asyncio
     async def test_a_mixed_failure_fixes_only_the_product_checks(self, api_client, redis_client):
@@ -1879,7 +1879,7 @@ class TestSuperviseTestingStories:
             {"name": "bot /start", "detail": "bot ignores QA", "cause": "qa_access"},
         ]
         api_client.stop_application.assert_not_called()
-        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+        api_client.transition_story.assert_awaited_once_with("story-1", "start", qa_run_id="qa-1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1924,7 +1924,9 @@ class TestSuperviseTestingStories:
         assert result == {"completed": 0, "redispatched": 0, "failed": 1, "recovered": 0}
         api_client.create_task.assert_not_called()
         api_client.stop_application.assert_awaited_once_with(42)
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
         category = QABlockerCategory(reason["blocker"]["category"])
         assert category is QABlockerCategory.QA_CHECKS_UNVERIFIABLE
@@ -1979,7 +1981,9 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.fail_story.assert_not_called()
         event = redis_client.publish_flat.await_args.args[1]
         assert event["event"] == "story_quarantined"
@@ -2019,7 +2023,9 @@ class TestSuperviseTestingStories:
                 }
             },
         )
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2081,7 +2087,9 @@ class TestSuperviseTestingStories:
                 },
             }
         ]
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
 
@@ -2125,7 +2133,9 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.create_task.assert_not_awaited()
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-telegram-1"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2173,7 +2183,9 @@ class TestSuperviseTestingStories:
         assert result["failed"] == 1
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         admins.assert_awaited_once()
         message = admins.await_args.args[0]
         assert category in message
@@ -2264,7 +2276,9 @@ class TestSuperviseTestingStories:
 
         assert result["failed"] == 1
         api_client.stop_application.assert_awaited_once_with(42)
-        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.transition_story.assert_awaited_once_with(
+            "story-1", "human-review", qa_run_id="qa-1"
+        )
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
 

@@ -36,6 +36,7 @@ from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, S
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.temporary_access import (
+    QA_ROUTING_PENDING,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
@@ -429,28 +430,36 @@ class SchedulerAPIClient(InternalAPIClient):
         error: str,
         run_error_message: str,
         run_result: QARunResult,
-    ) -> TemporaryAccessGrantDTO:
+    ) -> TemporaryAccessGrantDTO | None:
         """Give up on a quiet revoke: the QA run carries the failure, in one write.
 
         The run that borrowed the identity is where the cleanup incident is
         recorded, so the record of what happened to the access is next to the run
         it was lent to rather than in a log line. It is not what decides the
-        story: by the time the sweep runs out of attempts the story has been
-        routed on the product verdict QA gave, and a completed one is not
-        reopened by anything written here.
+        story: while the QA run has a verdict its story has not routed yet, the
+        API refuses the escalation and this returns None, so the incident is
+        only ever written after the story consumed that verdict.
 
         Doing this through the ordinary run patch would be refused, and rightly —
         that path is where a stale worker verdict would overwrite a supervisor's.
         """
-        resp = await self.request(
-            "POST",
-            f"temporary-access-grants/{grant_id}/escalate",
-            json={
-                "error": error,
-                "run_error_message": run_error_message,
-                "run_result": run_result.model_dump(mode="json"),
-            },
-        )
+        try:
+            resp = await self.request(
+                "POST",
+                f"temporary-access-grants/{grant_id}/escalate",
+                json={
+                    "error": error,
+                    "run_error_message": run_error_message,
+                    "run_result": run_result.model_dump(mode="json"),
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if (
+                exc.response.status_code == httpx.codes.CONFLICT
+                and exc.response.json().get("detail") == QA_ROUTING_PENDING
+            ):
+                return None
+            raise
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     async def update_temporary_access_grant(
@@ -535,16 +544,22 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return EngineeringInfrastructureParkRead.model_validate(resp.json())
 
-    async def transition_story(self, story_id: str, action: str) -> StoryDTO:
+    async def transition_story(
+        self, story_id: str, action: str, *, qa_run_id: str | None = None
+    ) -> StoryDTO:
         """Apply one Story transition. action: 'start', 'complete', 'archive'.
 
         Single hops only.  A move that needs more than one hop is a composite
         action in ``services/api/src/routers/_story_actions.py`` and gets its
         own client method above; never call this twice for the same story.
+
+        ``qa_run_id`` names the terminal QA run whose verdict this move routes;
+        the API stamps that run as routed in the same transaction.
         """
-        resp = await self.request(
-            "POST", f"stories/{story_id}/{action}", json={"actor": "architect"}
-        )
+        body: dict[str, str] = {"actor": "architect"}
+        if qa_run_id is not None:
+            body["qa_run_id"] = qa_run_id
+        resp = await self.request("POST", f"stories/{story_id}/{action}", json=body)
         return StoryDTO.model_validate(resp.json())
 
     async def update_story(self, story_id: str, data: dict) -> StoryDTO:

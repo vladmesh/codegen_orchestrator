@@ -62,6 +62,12 @@ class Run(Base):
     )
     iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # When the story transition that consumed this QA run's verdict moved the
+    # run's story out of TESTING. Server-owned: that transition is the only
+    # writer, in its own transaction under the story and run row locks, and no
+    # create or update schema carries it. Cleanup escalation waits for it.
+    qa_routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Runtime observability artifacts that belong to the Run itself. Engineering
     # token and cost facts live only in the append-only engineering-attempt ledger.
     agent_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)

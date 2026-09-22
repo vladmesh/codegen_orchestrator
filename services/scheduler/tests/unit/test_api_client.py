@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
+from shared.contracts.dto.temporary_access import QA_ROUTING_PENDING
+from shared.contracts.queues.qa import QAOutcome
 from shared.log_config.correlation import clear_context, set_correlation_id
 
 _INTERNAL_KEY = "test-internal-key"
@@ -512,3 +516,77 @@ class TestGetLatestRunByStory:
         run = await api_client.get_latest_run_by_story("story-1", run_type="deploy")
 
         assert run is None
+
+
+def _http_answering(status_code: int, body: dict) -> AsyncMock:
+    """A mock httpx.AsyncClient whose one request answers with a real response."""
+    request = httpx.Request("POST", "http://localhost:8000/api/x")
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        return_value=httpx.Response(status_code, json=body, request=request)
+    )
+    mock_client.is_closed = False
+    return mock_client
+
+
+def _cleanup_blocker() -> QARunResult:
+    return QARunResult(
+        qa_outcome=QAOutcome.BLOCKED,
+        summary="temporary QA access could not be revoked",
+        blocker=QABlocker(
+            category=QABlockerCategory.QA_CLEANUP_FAILED,
+            attempted="revoke temporary QA access",
+            sent="capability revoke",
+            received="inactive readback was not proved",
+        ),
+    )
+
+
+class TestTemporaryAccessEscalation:
+    @pytest.mark.asyncio
+    async def test_a_verdict_awaiting_story_routing_is_a_deferral_not_an_error(self, api_client):
+        api_client._client = _http_answering(409, {"detail": QA_ROUTING_PENDING})
+
+        escalated = await api_client.escalate_temporary_access_grant(
+            "tempaccess-qa-1",
+            error="revoke proof failed",
+            run_error_message="temporary QA access could not be revoked",
+            run_result=_cleanup_blocker(),
+        )
+
+        assert escalated is None
+
+    @pytest.mark.asyncio
+    async def test_any_other_conflict_still_raises(self, api_client):
+        api_client._client = _http_answering(409, {"detail": "something else"})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await api_client.escalate_temporary_access_grant(
+                "tempaccess-qa-1",
+                error="revoke proof failed",
+                run_error_message="temporary QA access could not be revoked",
+                run_result=_cleanup_blocker(),
+            )
+
+
+class TestTransitionStoryNamesTheRoutedQARun:
+    @pytest.mark.asyncio
+    async def test_a_qa_routing_transition_names_the_run_it_consumes(self, api_client):
+        mock = _mock_http(_story_data(status="completed"))
+        api_client._client = mock
+
+        await api_client.transition_story("story-1", "complete", qa_run_id="qa-1")
+
+        assert mock.request.await_args.kwargs["json"] == {
+            "actor": "architect",
+            "qa_run_id": "qa-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_transition_names_no_run(self, api_client):
+        mock = _mock_http(_story_data(status="completed"))
+        api_client._client = mock
+
+        await api_client.transition_story("story-1", "complete")
+
+        assert mock.request.await_args.kwargs["json"] == {"actor": "architect"}

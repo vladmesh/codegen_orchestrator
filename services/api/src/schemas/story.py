@@ -84,6 +84,9 @@ class StoryTransition(BaseModel):
     """Schema for story status transition actions."""
 
     actor: str = "system"
+    # The terminal QA run whose verdict this transition routes. The API stamps
+    # that run as routed in the transition's own transaction.
+    qa_run_id: str | None = None
 
 
 class StoryOwnerNotificationRead(BaseModel):

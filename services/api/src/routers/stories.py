@@ -50,7 +50,13 @@ from ..schemas.story import (
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from ._story_actions import action_router
-from ._story_helpers import _do_transition, _get_story, _get_story_for_update, _land_on
+from ._story_helpers import (
+    _do_transition,
+    _get_story,
+    _get_story_for_update,
+    _land_on,
+    _record_qa_routing,
+)
 from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
@@ -629,6 +635,7 @@ async def human_review_story(
     """Move a blocked active story to the visible human-review queue."""
     body = body or StoryTransition()
     story = await _get_story_for_update(story_id, db)
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
@@ -676,6 +683,7 @@ async def start_story(
                 ),
             )
 
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.IN_PROGRESS, db)
     _do_transition(story, StoryStatus.IN_PROGRESS)
     await db.commit()
     await db.refresh(story)
@@ -697,6 +705,7 @@ async def complete_story(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Use accept-result to complete a story in waiting_human_review",
         )
+    await _record_qa_routing(story, body.qa_run_id, StoryStatus.COMPLETED, db)
     logger.info("story_completed", story_id=story.id, actor=body.actor)
     return await _complete_story(story, db)
 

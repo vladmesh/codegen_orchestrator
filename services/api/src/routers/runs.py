@@ -28,6 +28,7 @@ from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
     OwnerNotificationState,
 )
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.models import EngineeringAttemptLedger, Project, Run, User
@@ -176,6 +177,20 @@ async def _check_run_access(
         )
 
 
+def _refuse_reserved_metadata(metadata: dict) -> None:
+    """Refuse a caller-supplied imitation of the QA routing fact.
+
+    Whether a story consumed a QA verdict is ``Run.qa_routed_at``, which only
+    the routing story transition writes and no run schema accepts. Metadata
+    never proves it; the key is refused so nothing can look as if it did.
+    """
+    if QA_ROUTED_KEY in metadata:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "reserved_run_metadata", "key": QA_ROUTED_KEY},
+        )
+
+
 @router.post("/", response_model=RunRead, status_code=status.HTTP_201_CREATED)
 async def create_run(
     run: RunCreate,
@@ -188,6 +203,7 @@ async def create_run(
             status_code=status.HTTP_409_CONFLICT,
             detail="Paid coding-agent runs must use the paid-run start command",
         )
+    _refuse_reserved_metadata(run.run_metadata)
     run_data = run.model_dump()
     if run.project_id is not None:
         project = await db.get(Project, run.project_id)
@@ -620,6 +636,8 @@ async def update_run(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run executor decision is immutable after paid-run creation",
             )
+        if isinstance(metadata_update, dict):
+            _refuse_reserved_metadata(metadata_update)
 
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:

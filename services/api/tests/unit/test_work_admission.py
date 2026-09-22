@@ -14,6 +14,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
 )
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -25,6 +26,7 @@ from shared.contracts.dto.work_admission import (
 from shared.contracts.vocab import AgentType
 from shared.tests.executor_diagnostic_cases import host_profile_for_reason
 from src.work_admission import (
+    PaidRunReservedMetadata,
     _executor_diagnostic_allows_admission,
     admit_project_creation,
     start_paid_run,
@@ -71,6 +73,29 @@ def _rows(values: dict[str, object]) -> MagicMock:
         SimpleNamespace(key=key, value=value) for key, value in values.items()
     ]
     return result
+
+
+@pytest.mark.asyncio
+async def test_paid_run_start_refuses_the_qa_routing_stamp_before_touching_the_database():
+    """Only the story transition writes the stamp; no creation path may seed it."""
+    db = AsyncMock()
+
+    with pytest.raises(PaidRunReservedMetadata):
+        await start_paid_run(
+            PaidRunStartCommand(
+                id="qa-forged-stamp",
+                type=RunType.QA,
+                project_id="00000000-0000-0000-0000-000000000001",
+                story_id="00000000-0000-0000-0000-000000000002",
+                run_metadata={QA_ROUTED_KEY: {"story_id": "00000000-0000-0000-0000-000000000002"}},
+            ),
+            db,
+        )
+
+    db.scalar.assert_not_called()
+    db.scalars.assert_not_called()
+    db.execute.assert_not_called()
+    db.add.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     LIVE_TEMPORARY_ACCESS_STATUSES,
+    QA_ROUTING_PENDING,
     TemporaryAccessDrainReason,
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
@@ -63,6 +64,23 @@ async def _existing_drain_audit(db: AsyncSession, grant_id: str) -> WorkAdmissio
         )
         .limit(1)
     )
+
+
+def _awaits_story_routing(run: Run) -> bool:
+    """Whether a QA verdict is still owed to its story's routing.
+
+    Called under the QA run's row lock. The only proof is ``Run.qa_routed_at``,
+    which the story transition that consumes the verdict writes under the same
+    lock (see ``_record_qa_routing``). Nothing else stands in for it: not run
+    metadata, not a newer QA run of the story, not a story status move. So this
+    cannot read "unrouted" and then have the escalation commit after a routing
+    that already happened, and an unrouted verdict defers its incident for good.
+    """
+    if run.story_id is None or run.status not in _TERMINAL_RUN_STATUSES:
+        return False
+    if not isinstance(run.result, dict) or run.result.get("qa_outcome") is None:
+        return False
+    return run.qa_routed_at is None
 
 
 def _admin_user_id(actor: str) -> int | None:
@@ -285,6 +303,13 @@ async def escalate_grant(
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
     run = await db.get(Run, grant.qa_run_id, with_for_update=True)
+    if grant.escalated_at is None and run is not None and _awaits_story_routing(run):
+        # The cleanup incident waits until the story has consumed this verdict;
+        # the scheduler keeps cleaning up and asks again on a later cycle.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=QA_ROUTING_PENDING,
+        )
     if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
         run.error_message = escalation.run_error_message

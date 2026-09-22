@@ -1368,6 +1368,25 @@ before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
 grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
 
+`POST /api/temporary-access-grants/{grant_id}/escalate` waits for QA routing.
+The routing fact is the server-owned `runs.qa_routed_at` column (the run's own
+`story_id` names the story). Its sole writer is `_record_qa_routing`: a story
+transition out of TESTING that routes a QA verdict (`complete`, `human-review`,
+`start`) names the run in `qa_run_id` and, in the transition's transaction under
+the story then QA run row locks, sets it; a transition that names no run leaves
+it unset. `RunRead` exposes it read-only; `RunCreate`, `RunUpdate` and the paid-run
+command have no such field. Run metadata never proves routing: the reserved key
+`qa_routed` (`QA_ROUTED_KEY`) is refused with 422 by `POST /api/runs/` and the run
+PATCH (`reserved_run_metadata`) and by `start_paid_run` (`paid_run_reserved_metadata`,
+before any audit or Run row). Escalation locks the grant then the QA run; while
+that run is terminal with a verdict, linked to a story and `qa_routed_at` is
+unset, it answers 409
+`qa_routing_pending` (`QA_ROUTING_PENDING`) and writes nothing. The reconciler
+then sends no alert and redispatches the revoke without spending an attempt; it
+asks again when that revoke fails. Nothing else stands in for the column: not a
+newer QA run of the story, not a story status move. A QA run with no verdict yet
+still receives the routable `qa_cleanup_failed` blocker.
+
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
 boundary. Under the grant row lock it accepts only a complete target-backed row
 already stamped `revoke_failed` and escalated by the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
