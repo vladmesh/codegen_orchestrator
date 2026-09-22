@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- The production sweep now owns only its two active title prefixes after retiring the legacy third
+  production sweep prefix, whose inventory proved no residual resources remained.
 - One `EmbeddingClient.generate` call now sends all of its batches through a single HTTP pool that closes
   when the call ends, instead of opening a new client for each batch.
 - GitHub App operations can now share one explicitly scoped HTTP pool, while callers outside a

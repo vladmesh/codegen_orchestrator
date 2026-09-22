@@ -18,7 +18,6 @@ class Contour:
     name: str
     pipeline: str
     crud: str
-    legacy: tuple[str, ...] = ()
     #: Only an owning contour may create live-run resources.
     allows_live_runs: bool = True
 
@@ -30,7 +29,7 @@ class Contour:
     @property
     def project_prefixes(self) -> list[str]:
         """Every title prefix this contour owns, for creation and for sweeping."""
-        return [self.pipeline, self.crud, *self.legacy]
+        return [self.pipeline, self.crud]
 
     @property
     def slug_prefixes(self) -> list[str]:
@@ -44,7 +43,6 @@ CONTOURS: dict[str, Contour] = {
         name="prod",
         pipeline="live-test",
         crud="live-crud",
-        legacy=("mega-test",),
         allows_live_runs=False,
     ),
     # Stack-name slugs must remain distinct after Compose truncation.
