@@ -241,6 +241,56 @@ async def test_the_stamp_cannot_be_written_through_the_run_patch(async_client) -
 
 
 @pytest.mark.asyncio
+async def test_the_stamp_cannot_be_seeded_by_a_paid_run_start(async_client) -> None:
+    """The routing stamp is reserved at creation, so no run is born already routed."""
+    project_id, story_id = await _testing_story(async_client)
+    run_id = f"qa-{uuid.uuid4().hex[:8]}"
+
+    forged = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": run_id,
+            "type": "qa",
+            "project_id": project_id,
+            "story_id": story_id,
+            "run_metadata": {QA_ROUTED_KEY: {"story_id": story_id}},
+        },
+    )
+
+    assert forged.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert forged.json()["detail"] == {
+        "code": "paid_run_reserved_metadata",
+        "key": QA_ROUTED_KEY,
+    }
+    assert (await async_client.get(f"/api/runs/{run_id}")).status_code == (
+        status.HTTP_404_NOT_FOUND
+    )
+    # Nor did the refusal leave a command identity that would block a clean start.
+    assert (
+        await async_client.get(f"/api/work-admission/paid-runs/{run_id}/admission")
+    ).status_code == status.HTTP_404_NOT_FOUND
+
+    # The ordinary start still works, and its escalation still waits for routing.
+    started = await _qa_run(async_client, project_id, story_id)
+    grant_id = await _grant(async_client, project_id, started)
+    await _settle(async_client, started)
+    deferred = await _escalate(async_client, grant_id)
+    assert deferred.status_code == status.HTTP_409_CONFLICT
+    assert deferred.json()["detail"] == QA_ROUTING_PENDING
+    grant = (await async_client.get(f"/api/temporary-access-grants/{grant_id}")).json()
+    assert grant["escalated_at"] is None
+
+    routed = await async_client.post(
+        f"/api/stories/{story_id}/complete", json={"qa_run_id": started}
+    )
+    assert routed.status_code == status.HTTP_200_OK, routed.text
+    escalated = await _escalate(async_client, grant_id)
+    assert escalated.status_code == status.HTTP_200_OK, escalated.text
+    story = (await async_client.get(f"/api/stories/{story_id}")).json()
+    assert story["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_verdict_no_longer_holds_the_incident(async_client) -> None:
     """Routing reads the newest QA run only, so an older one is never consumed."""
     story_id, run_id, grant_id = await _passed_story_with_grant(async_client)

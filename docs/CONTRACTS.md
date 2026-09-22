@@ -1373,8 +1373,11 @@ A story transition out of TESTING that routes a QA verdict (`complete`,
 `human-review`, `start`) names the run in `qa_run_id`, and in the transition's
 transaction, under the story and QA run row locks, the API stamps
 `run_metadata.qa_routed` (`QA_ROUTED_KEY`: story id, landing status, time). Only
-that path writes the stamp: the run PATCH refuses it, and a transition that names
-no run leaves the run unstamped. While the grant's QA run is terminal with a
+that path writes the stamp: the run PATCH refuses it, `start_paid_run` (every
+paid QA creation path, including `POST /api/work-admission/paid-runs`) rejects a
+command whose `run_metadata` carries it with 422 `paid_run_reserved_metadata`
+before any audit or Run row, and a transition that names no run leaves the run
+unstamped. While the grant's QA run is terminal with a
 verdict, linked to a story, unstamped and not superseded by a newer QA run of that
 story, escalation answers 409 `qa_routing_pending` (`QA_ROUTING_PENDING`) and
 writes nothing. The reconciler then sends no alert and redispatches the revoke

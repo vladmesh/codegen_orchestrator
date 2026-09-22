@@ -13,6 +13,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorDiagnosticSnapshot,
 )
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
@@ -72,6 +73,10 @@ class PaidRunCommandConflict(Exception):
 
 class PaidRunIdentityExpired(Exception):
     """A terminal attempt id cannot be reused for a new paid attempt."""
+
+
+class PaidRunReservedMetadata(Exception):
+    """A paid-run command tried to supply metadata only the server writes."""
 
 
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
@@ -311,6 +316,11 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     The config-row lock is retained through the Run INSERT and caller commit, so
     no successful decision can escape without occupying a counted slot.
     """
+    # Only the story transition that consumed a QA verdict writes the routing
+    # stamp; cleanup escalation trusts it. Refuse it here, before any audit or
+    # Run row exists, so no creation path can seed it.
+    if QA_ROUTED_KEY in command.run_metadata:
+        raise PaidRunReservedMetadata(QA_ROUTED_KEY)
     payload = command.model_dump(mode="json")
     replay = await _replay_paid_start(command, payload, db)
     if replay is not None:

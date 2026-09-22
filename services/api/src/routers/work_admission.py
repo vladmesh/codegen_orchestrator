@@ -53,6 +53,7 @@ from ..work_admission import (
     QA_EXECUTOR_OVERRIDE_KEY,
     PaidRunCommandConflict,
     PaidRunIdentityExpired,
+    PaidRunReservedMetadata,
     _controls,
     _limit,
     _override,
@@ -333,6 +334,11 @@ async def start_paid_run_endpoint(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "paid_run_identity_expired", "id": str(exc)},
+        ) from exc
+    except PaidRunReservedMetadata as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "paid_run_reserved_metadata", "key": str(exc)},
         ) from exc
     await db.commit()
     return result

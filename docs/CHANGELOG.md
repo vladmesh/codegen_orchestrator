@@ -7,6 +7,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - Cleanup escalation now waits for a `qa_routed` stamp that the routing story transition writes on the QA run,
   so the access sweep may run before or after QA routing without an incident preceding a passed verdict.
+  A paid-run start that supplies `qa_routed` in its metadata is refused with 422 before any run exists.
 - Migration `4d8e1f2a3b5c` deletes revoked target-less temporary access rows, makes both target columns NOT NULL
   and drops `env_key`/`subject`; the API loses its legacy-record rejection, list filter and legacy drain.
 - The production sweep now owns only its two active title prefixes after retiring the legacy third
