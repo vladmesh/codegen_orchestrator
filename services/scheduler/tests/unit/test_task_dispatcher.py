@@ -261,7 +261,7 @@ def redis_client():
 
 @pytest.mark.asyncio
 async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(monkeypatch):
-    """A contained task error still permits terminal worker reconciliation this tick."""
+    """A contained task error still permits later order-sensitive supervisors this tick."""
     import asyncio
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
@@ -330,10 +330,8 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
     for name, result in checks.items():
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
 
-    terminal_workers = AsyncMock(return_value=1)
-    monkeypatch.setattr(task_dispatcher, "reconcile_terminal_story_workers", terminal_workers)
-    gave_up_workers = AsyncMock(return_value=1)
-    monkeypatch.setattr(task_dispatcher, "reconcile_gave_up_attempt_workers", gave_up_workers)
+    late_supervisor = AsyncMock(return_value={})
+    monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", late_supervisor)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
         "sleep",
@@ -343,8 +341,85 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
     with pytest.raises(asyncio.CancelledError):
         await task_dispatcher.task_dispatcher_loop()
 
-    terminal_workers.assert_awaited_once_with(api_client, redis)
-    gave_up_workers.assert_awaited_once_with(api_client, redis)
+    late_supervisor.assert_awaited_once_with(api_client, redis)
+    redis.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciliation_cycle_runs_both_durable_scans(monkeypatch):
+    from src.tasks import worker_reconciliation
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    terminal = AsyncMock(return_value=2)
+    gave_up = AsyncMock(return_value=3)
+    monkeypatch.setattr(worker_reconciliation, "reconcile_terminal_story_workers", terminal)
+    monkeypatch.setattr(worker_reconciliation, "reconcile_gave_up_attempt_workers", gave_up)
+
+    counts = await worker_reconciliation.reconcile_workers_once(api, redis)
+
+    assert counts == {
+        "terminal_workers_requested": 2,
+        "gave_up_workers_requested": 3,
+    }
+    terminal.assert_awaited_once_with(api, redis)
+    gave_up.assert_awaited_once_with(api, redis)
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciliation_scan_failure_does_not_skip_sibling(monkeypatch):
+    from src.tasks import worker_reconciliation
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    terminal = AsyncMock(side_effect=RuntimeError("terminal scan failed"))
+    gave_up = AsyncMock(return_value=1)
+    monkeypatch.setattr(worker_reconciliation, "reconcile_terminal_story_workers", terminal)
+    monkeypatch.setattr(worker_reconciliation, "reconcile_gave_up_attempt_workers", gave_up)
+
+    counts = await worker_reconciliation.reconcile_workers_once(api, redis)
+
+    assert counts == {
+        "terminal_workers_requested": 0,
+        "gave_up_workers_requested": 1,
+    }
+    gave_up.assert_awaited_once_with(api, redis)
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciliation_loop_owns_redis_lifecycle(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import worker_reconciliation
+
+    api = AsyncMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    monkeypatch.setattr(worker_reconciliation, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(worker_reconciliation, "_reconciliation_interval", lambda: 0)
+    cycle = AsyncMock(
+        return_value={
+            "terminal_workers_requested": 0,
+            "gave_up_workers_requested": 0,
+        }
+    )
+    monkeypatch.setattr(worker_reconciliation, "reconcile_workers_once", cycle)
+    monkeypatch.setattr(
+        worker_reconciliation.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_reconciliation.worker_reconciliation_loop()
+
+    redis.connect.assert_awaited_once()
+    cycle.assert_awaited_once_with(api, redis)
     redis.close.assert_awaited_once()
 
 
