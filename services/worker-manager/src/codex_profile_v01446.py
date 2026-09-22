@@ -233,9 +233,7 @@ def _contains_lone_surrogate(value: object) -> bool:
 
 
 def _u64_overflows(significand: int, digit: int) -> bool:
-    return significand >= _U64_MAX // 10 and (
-        significand > _U64_MAX // 10 or digit > _U64_MAX % 10
-    )
+    return significand >= _U64_MAX // 10 and (significand > _U64_MAX // 10 or digit > _U64_MAX % 10)
 
 
 def serde_json_number_out_of_range(token: str) -> bool:
@@ -267,9 +265,7 @@ def serde_json_number_out_of_range(token: str) -> bool:
         exp = int(exponent_digits[0])
         for char in exponent_digits[1:]:
             digit = int(char)
-            if exp >= _I32_MAX // 10 and (
-                exp > _I32_MAX // 10 or digit > _I32_MAX % 10
-            ):
+            if exp >= _I32_MAX // 10 and (exp > _I32_MAX // 10 or digit > _I32_MAX % 10):
                 return significand != 0 and exponent_sign != "-"
             exp = exp * 10 + digit
         exponent = exponent - exp if exponent_sign == "-" else exponent + exp
