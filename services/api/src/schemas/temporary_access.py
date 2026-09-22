@@ -55,8 +55,8 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     project_id: uuid.UUID
     channel: str | None = None
     external_id: str | None = None
-    target_application_id: int | None = None
-    target_base_url: str | None = None
+    target_application_id: int
+    target_base_url: str
     head_sha: str
     qa_run_id: str
     grant_run_id: str

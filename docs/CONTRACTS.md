@@ -91,14 +91,12 @@ The reconciler retries only the record's immutable target. Missing or stale gran
 and revoke operation Runs consume their separately recorded, bounded attempt
 budgets. A revoke that exceeds its attempt or unrevoked-time bound receives one
 persisted administrator escalation and never releases or republishes QA access.
-A non-revoked record with a known `(project_id, target_application_id)` blocks
-only a capability-backed QA handoff for that exact target. A target-less legacy
-record blocks no current handoff; it remains fail-closed when read as a current
-capability record, and terminal legacy history remains readable. An internal or
-administrator operator may explicitly drain such an unreconcilable legacy record,
-or a target-backed revoke only after the reconciler persisted its terminal
-`revoke_failed` escalation. That command records acceptance of unproved remote
-cleanup and its resolved actor in the durable work-admission audit.
+Every record carries its target. A non-revoked record blocks only a
+capability-backed QA handoff for its exact `(project_id, target_application_id)`.
+An internal or administrator operator may explicitly drain a revoke only after the
+reconciler persisted its terminal `revoke_failed` escalation. That command records
+acceptance of unproved remote cleanup and its resolved actor in the durable
+work-admission audit.
 
 ### Deploy diagnostic redaction
 
@@ -1358,13 +1356,9 @@ Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 Persist the immutable QA identity and exact deployed-service target before the
 capability operation is dispatched. The post-health deploy worker resolves the
 generated capability only in `secret_values`, then proves grant or revoke with
-the matching access readback. Legacy live records without a target remain fail-closed
-when a caller tries to hydrate them as capability records, but do not block a
-different target's admission; revoked legacy history remains readable. The target
-lock and partial unique index scope contention to `(project_id,
-target_application_id)`, including a legacy row whose target application is known.
-An id-colliding legacy record is never hydrated as a capability record, while a
-narrow QA-run history lookup still sees it so recovery cannot replay its handoff.
+the matching access readback. Both target columns are NOT NULL: every record has
+a target. The target lock and partial unique index scope contention to
+`(project_id, target_application_id)`.
 Cancelled deploy-lock or fence operations are redispatched against their stored
 target without consuming a grant or revoke proof budget; failed, missing, and
 stale operations remain independently bounded. Immediately before either remote
@@ -1375,9 +1369,8 @@ grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
 
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
-boundary. Under the grant row lock it accepts only a live target-less legacy row
-or a complete target-backed row already stamped `revoke_failed` and escalated by
-the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
+boundary. Under the grant row lock it accepts only a complete target-backed row
+already stamped `revoke_failed` and escalated by the bounded reconciler; the generic lifecycle update cannot stamp escalation. It
 writes `revoked`, `revoked_at`, the typed
 `operator_drain` reason, and one actor audit in the same transaction. Equal
 repeats return the settled record without a second audit. It does not prove that
