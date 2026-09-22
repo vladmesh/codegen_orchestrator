@@ -283,6 +283,7 @@ async def test_contract_fetch_failure_is_a_resolution_failure(_fetch_contract):
 async def test_repository_without_contract_has_an_invalid_contract_outcome(github_class):
     github = AsyncMock()
     github.list_repo_files_recursive.return_value = []
+    github.__aenter__.return_value = github
 
     github_class.return_value = github
     state = {
@@ -295,6 +296,8 @@ async def test_repository_without_contract_has_an_invalid_contract_outcome(githu
 
     assert result["resolution_outcome"] == "environment_contract_invalid"
     assert result["errors"] == ["environment contract is required"]
+    github.__aenter__.assert_awaited_once()
+    github.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio

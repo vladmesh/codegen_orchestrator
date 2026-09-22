@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 import os
 import time
-from typing import Any
+from typing import Any, Self
 
 import httpx
 import jwt
@@ -36,9 +36,26 @@ class GitHubAppClientBase:
         # shape differs so a broad token is never served where a scoped one was asked
         # for, nor the other way round.
         self._token_cache: dict[int | tuple[int, str], tuple[str, datetime]] = {}
+        self._http_client: httpx.AsyncClient | None = None
 
         if not self.app_id:
             logger.warning("github_app_id_missing", env_var="GITHUB_APP_ID")
+
+    async def __aenter__(self) -> Self:
+        """Open the HTTP pool for one bounded GitHub operation."""
+        if self._http_client is not None:
+            raise RuntimeError("GitHub App client lifecycle is already active")
+        self._http_client = httpx.AsyncClient()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        """Close the HTTP pool, including when the operation raises."""
+        if self._http_client is None:
+            return
+        try:
+            await self._http_client.aclose()
+        finally:
+            self._http_client = None
 
     async def _make_request(
         self,
@@ -48,55 +65,70 @@ class GitHubAppClientBase:
         **kwargs: Any,
     ) -> httpx.Response:
         """Make HTTP request with rate limit handling."""
-        max_retries = 3
+        if self._http_client is not None:
+            return await self._request_with_client(
+                self._http_client, method, url, headers, **kwargs
+            )
 
         async with httpx.AsyncClient() as client:
-            for attempt in range(max_retries):
-                try:
-                    resp = await client.request(method, url, headers=headers, **kwargs)
+            return await self._request_with_client(client, method, url, headers, **kwargs)
 
-                    # Handle Rate Limiting
-                    if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
-                        remaining = resp.headers.get("x-ratelimit-remaining")
-                        if remaining == "0":
-                            reset_time = int(resp.headers.get("x-ratelimit-reset", 0))
-                            wait_seconds = max(reset_time - time.time(), 0) + 1
+    async def _request_with_client(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        **kwargs: Any,
+    ) -> httpx.Response:
+        max_retries = 3
 
-                            if wait_seconds > 60:  # noqa: PLR2004
-                                # Fail fast if wait is too long
-                                logger.error(
-                                    "github_rate_limit_exceeded_long_wait",
-                                    wait_seconds=wait_seconds,
-                                )
-                                resp.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                resp = await client.request(method, url, headers=headers, **kwargs)
 
-                            logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
-                            await asyncio.sleep(wait_seconds)
-                            continue
+                # Handle Rate Limiting
+                if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
+                    remaining = resp.headers.get("x-ratelimit-remaining")
+                    if remaining == "0":
+                        reset_time = int(resp.headers.get("x-ratelimit-reset", 0))
+                        wait_seconds = max(reset_time - time.time(), 0) + 1
 
-                    resp.raise_for_status()
-                    return resp
+                        if wait_seconds > 60:  # noqa: PLR2004
+                            # Fail fast if wait is too long
+                            logger.error(
+                                "github_rate_limit_exceeded_long_wait",
+                                wait_seconds=wait_seconds,
+                            )
+                            resp.raise_for_status()
 
-                except httpx.HTTPStatusError as e:
-                    if attempt == max_retries - 1:
-                        raise
-                    # Only retry server errors or rate limits (if not handled above)
-                    if (
-                        e.response.status_code < httpx.codes.INTERNAL_SERVER_ERROR
-                        and e.response.status_code
-                        not in (
-                            httpx.codes.FORBIDDEN,
-                            httpx.codes.TOO_MANY_REQUESTS,
-                        )
-                    ):
-                        raise
-                    await asyncio.sleep(2**attempt)  # Exponential backoff
-                except httpx.RequestError:
-                    if attempt == max_retries - 1:
-                        raise
-                    await asyncio.sleep(2**attempt)
+                        logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
+                        await asyncio.sleep(wait_seconds)
+                        continue
 
-            raise RuntimeError("Unreachable")
+                resp.raise_for_status()
+                return resp
+
+            except httpx.HTTPStatusError as e:
+                if attempt == max_retries - 1:
+                    raise
+                # Only retry server errors or rate limits (if not handled above)
+                if (
+                    e.response.status_code < httpx.codes.INTERNAL_SERVER_ERROR
+                    and e.response.status_code
+                    not in (
+                        httpx.codes.FORBIDDEN,
+                        httpx.codes.TOO_MANY_REQUESTS,
+                    )
+                ):
+                    raise
+                await asyncio.sleep(2**attempt)  # Exponential backoff
+            except httpx.RequestError:
+                if attempt == max_retries - 1:
+                    raise
+                await asyncio.sleep(2**attempt)
+
+        raise RuntimeError("Unreachable")
 
     def _load_private_key(self) -> str:
         if self._private_key:
