@@ -12,7 +12,14 @@ import uuid
 import httpx
 import pytest
 
+from shared.contracts.dto.qa_handoff import (
+    QA_DISPATCHED_AT_KEY,
+    QA_HANDOFF_KEY,
+    QAHandoffPlan,
+    TemporaryAccessRequest,
+)
 from shared.contracts.dto.temporary_access import TemporaryAccessRevokeReason, TemporaryAccessStatus
+from shared.contracts.queues.qa import QAMessage
 from shared.redis import RedisStreamClient
 from shared.tests.ssh_key_fixtures import fleet_private_key
 from src.tasks.supervisor import supervise_testing_stories
@@ -135,20 +142,43 @@ async def _passed_story_with_exhausted_grant(api_client) -> tuple[str, str, str]
         moved = await _call(api_client, "POST", f"stories/{story_id}/{action}")
         assert moved.is_success, moved.text
 
+    qa_run_id = f"qa-order-{suffix}"
+    # The deploy handoff's plan, already dispatched: completing the story on a
+    # passed verdict reads the deployed address from it.
+    handoff = QAHandoffPlan(
+        qa_message=QAMessage(
+            story_id=story_id,
+            project_id=project_id,
+            initiating_run_id=f"deploy-{qa_run_id}",
+            deployed_url=TARGET_URL,
+            application_id=application_id,
+            acceptance_criteria="the bot answers /start",
+            run_id=qa_run_id,
+        ),
+        access=TemporaryAccessRequest(
+            target_application_id=application_id,
+            target_base_url=TARGET_URL,
+            head_sha=HEAD_SHA,
+        ),
+    ).model_dump(mode="json")
     qa = await _call(
         api_client,
         "POST",
         "work-admission/paid-runs",
         json={
-            "id": f"qa-order-{suffix}",
+            "id": qa_run_id,
             "type": "qa",
             "project_id": project_id,
             "story_id": story_id,
-            "run_metadata": {"application_id": application_id},
+            "run_metadata": {
+                "application_id": application_id,
+                QA_HANDOFF_KEY: handoff,
+                QA_DISPATCHED_AT_KEY: "2026-09-22T00:00:00+00:00",
+            },
         },
     )
     assert qa.status_code == httpx.codes.OK, qa.text
-    qa_run_id = qa.json()["run_id"]
+    assert qa.json()["run_id"] == qa_run_id
 
     grant_id = f"tempaccess-{qa_run_id}"
     created = await _call(

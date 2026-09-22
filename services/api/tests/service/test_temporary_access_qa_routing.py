@@ -14,8 +14,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QA_ROUTED_KEY, QAHandoffPlan
 from shared.contracts.dto.temporary_access import QA_ROUTING_PENDING
+from shared.contracts.queues.qa import QAMessage
 from shared.models import Run, TemporaryAccessGrant
 
 HEAD_SHA = "b" * 40
@@ -66,13 +67,28 @@ async def _testing_story(async_client) -> tuple[str, str]:
 
 
 async def _qa_run(async_client, project_id: str, story_id: str) -> str:
+    run_id = f"qa-{uuid.uuid4().hex[:8]}"
+    # A real QA run is created with its handoff plan; completing a story on a
+    # passed verdict reads the deployed address from it.
+    handoff = QAHandoffPlan(
+        qa_message=QAMessage(
+            story_id=story_id,
+            project_id=project_id,
+            initiating_run_id="live-1",
+            deployed_url="https://exact.example.com",
+            application_id=42,
+            acceptance_criteria="the bot answers /start",
+            run_id=run_id,
+        )
+    ).model_dump(mode="json")
     run = await async_client.post(
         "/api/work-admission/paid-runs",
         json={
-            "id": f"qa-{uuid.uuid4().hex[:8]}",
+            "id": run_id,
             "type": "qa",
             "project_id": project_id,
             "story_id": story_id,
+            "run_metadata": {QA_HANDOFF_KEY: handoff},
         },
     )
     assert run.status_code == status.HTTP_200_OK, run.text
