@@ -263,13 +263,20 @@ The `monitoring` role installs the exporters during provisioning. An existing se
 baseline by a separate operation, see [docs/DEPLOY.md](docs/DEPLOY.md). Metrics freshness is a meaningful
 value: the allocator uses it to decide whether a server's load is known.
 
-**Runs.** `runs` stores not only the status and the timings but also a measure of effort: the tokens spent,
-the cost, the head profile. The agent transcript is saved as an artifact on disk with a link from `runs`,
-with secrets scrubbed and a size limit; the path and the lifetime are set by `WORKER_TRANSCRIPT_*`.
+**Runs.** `runs` owns the lifecycle of an attempt: its type, status, timing (`started_at`,
+`completed_at`) and result identity (the run id, `result`, the error). It also keeps the runtime artifacts
+that belong to the run itself: the head profile (`agent_profile`) and the transcript link. The agent
+transcript is saved as an artifact on disk with a link from `runs` (`transcript_path`,
+`transcript_truncated`), with secrets scrubbed and a size limit; the path and the lifetime are set by
+`WORKER_TRANSCRIPT_*`. `runs` holds no tokens and no cost: engineering token and cost accounting is owned by
+the append-only `engineering_attempt_ledger`, one record per engineering run (see
+[docs/CONTRACTS.md](docs/CONTRACTS.md#engineering-attempt-ledger)).
 
 **Dashboards.** Grafana is provisioned from the repository (`infra/grafana/`) with two datasources, Loki and
 Postgres (a read-only role), and three dashboards: "Service Logs", "Server capacity",
-"Run operations". It is proxied through admin-frontend at `/grafana/`.
+"Run operations". In "Run operations" the outcome, failure-rate, duration and retry panels read `runs`;
+the token and cost panels read `engineering_attempt_ledger` and join `runs` only for the head profile
+label. Grafana is proxied through admin-frontend at `/grafana/`.
 
 - **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 
