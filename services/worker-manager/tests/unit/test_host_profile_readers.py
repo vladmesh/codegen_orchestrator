@@ -34,15 +34,15 @@ from shared.contracts.vocab import AgentType
 from src.claude_auth import inspect_claude_host_session, validate_claude_host_session
 from src.claude_profile_v21278 import CLAUDE_CODE_VERSION
 from src.codex_auth import inspect_codex_host_session, validate_codex_host_session
-from src.codex_profile_v01446 import CODEX_CLI_VERSION
-from src.host_profile import (
-    JSON_PARSE_FAILURE,
-    MAX_JSON_BYTES,
-    MAX_JSON_NESTING,
+from src.codex_profile_v01446 import (
+    CODEX_CLI_VERSION,
+    SERDE_JSON_MAX_NESTING,
+    SERDE_JSON_VERSION,
     jwt_expiry,
-    load_json,
+    parse_json,
     serde_json_number_out_of_range,
 )
+from src.host_profile import JSON_PARSE_FAILURE, MAX_JSON_BYTES, load_json
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -92,14 +92,10 @@ def test_codex_private_parser_stays_in_versioned_adapter():
     stable = (root / "host_profile.py").read_text()
     adapter = (root / "codex_profile_v01446.py").read_text()
 
-    for private_name in (
-        "serde_json_number_out_of_range",
-        "_POW10",
-        "_NUMBER_TOKEN",
-        "pinned_serde_json",
-    ):
+    for private_name in ("serde_json_number_out_of_range", "_POW10", "_NUMBER_TOKEN"):
         assert private_name not in stable
         assert private_name in adapter
+    assert "pinned_serde_json" not in stable
     assert "def jwt_expiry(" not in stable
     assert "def jwt_expiry(" in adapter
 
@@ -116,7 +112,7 @@ def test_profile_adapter_provenance_matches_pinned_versions():
     assert codex["source"]["repository"] == "openai/codex"
     assert codex["source"]["ref"] == f"rust-v{CODEX_CLI_VERSION}"
     assert re.fullmatch(r"[0-9a-f]{40}", codex["source"]["commit"])
-    assert codex["serde_json_version"] == "1.0.149"
+    assert codex["serde_json_version"] == SERDE_JSON_VERSION
     assert codex["validated_sources"] == [
         "codex-rs/login/src/auth/storage.rs",
         "codex-rs/login/src/token_data.rs",
@@ -1611,7 +1607,7 @@ def test_the_number_mirror_matches_the_pinned_serde_json_algorithm(token, out_of
     assert serde_json_number_out_of_range(token) is out_of_range
 
 
-@pytest.mark.parametrize("depth", [MAX_JSON_NESTING, 5000])
+@pytest.mark.parametrize("depth", [SERDE_JSON_MAX_NESTING, 5000])
 def test_deeply_nested_unknown_auth_json_data_is_refused_everywhere(tmp_path, monkeypatch, depth):
     profile = _codex_profile(tmp_path, _codex_auth())
     # The top-level object is one level; this value reaches `depth + 1`.
@@ -1622,7 +1618,7 @@ def test_deeply_nested_unknown_auth_json_data_is_refused_everywhere(tmp_path, mo
     )
 
 
-@pytest.mark.parametrize("depth", [MAX_JSON_NESTING, 5000])
+@pytest.mark.parametrize("depth", [SERDE_JSON_MAX_NESTING, 5000])
 def test_deeply_nested_unknown_jwt_claims_are_refused_everywhere(tmp_path, monkeypatch, depth):
     auth = _codex_auth()
     auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(depth))
@@ -1634,10 +1630,10 @@ def test_deeply_nested_unknown_jwt_claims_are_refused_everywhere(tmp_path, monke
 
 def test_nesting_at_the_pinned_limit_keeps_the_session(tmp_path):
     auth = _codex_auth()
-    auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(MAX_JSON_NESTING - 1))
+    auth["tokens"]["id_token"] = _id_token_with_unknown(_nested(SERDE_JSON_MAX_NESTING - 1))
     profile = _codex_profile(tmp_path, auth)
     (profile / "auth.json").write_bytes(
-        (json.dumps(auth)[:-1] + ', "future": ' + _nested(MAX_JSON_NESTING - 1) + "}").encode()
+        (json.dumps(auth)[:-1] + ', "future": ' + _nested(SERDE_JSON_MAX_NESTING - 1) + "}").encode()
     )
 
     inspection = inspect_codex_host_session(str(profile), now=NOW)
@@ -1660,20 +1656,19 @@ def test_nesting_at_the_pinned_limit_keeps_the_session(tmp_path):
         pytest.param(b" " * (MAX_JSON_BYTES + 1), id="over-the-size-bound"),
     ],
 )
-def test_the_json_boundary_returns_one_failure_result_and_never_raises(raw):
-    assert load_json(raw, pinned_serde_json=True) is JSON_PARSE_FAILURE
+def test_the_codex_json_boundary_returns_one_failure_result_and_never_raises(raw):
+    assert parse_json(raw) is JSON_PARSE_FAILURE
 
 
-def test_the_json_boundary_returns_parsed_values_distinct_from_failure():
-    assert load_json(b"null", pinned_serde_json=True) is None
-    assert load_json('{"n": 1e308, "i": 18446744073709551616}', pinned_serde_json=True) == {
+def test_codex_and_generic_json_boundaries_keep_distinct_contracts():
+    assert parse_json(b"null") is None
+    assert parse_json('{"n": 1e308, "i": 18446744073709551616}') == {
         "n": 1e308,
         "i": 18446744073709551616,
     }
-    # Claude's standard-JSON mode shares the bounds and refuses non-standard constants.
     for constant in ("NaN", "Infinity", "-Infinity"):
-        assert load_json('{"a": ' + constant + "}", pinned_serde_json=False) is JSON_PARSE_FAILURE
-    assert load_json("[" * 200_000, pinned_serde_json=False) is JSON_PARSE_FAILURE
+        assert load_json('{"a": ' + constant + "}") is JSON_PARSE_FAILURE
+    assert load_json("[" * 200_000) is JSON_PARSE_FAILURE
 
 
 def test_jwt_expiry_never_raises_on_deep_or_out_of_range_claims():
@@ -1701,6 +1696,7 @@ def test_every_reader_json_parse_goes_through_the_total_boundary():
             "claude_auth.py",
             "claude_profile_v21278.py",
             "codex_auth.py",
+            "codex_profile_v01446.py",
             "host_profile.py",
         )
     }
@@ -1709,6 +1705,7 @@ def test_every_reader_json_parse_goes_through_the_total_boundary():
         "claude_auth.py": 0,
         "claude_profile_v21278.py": 0,
         "codex_auth.py": 0,
+        "codex_profile_v01446.py": 1,
         "host_profile.py": 1,
     }
 
