@@ -150,11 +150,11 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 
 ### Production residue inventory
 
-On the production host that normally runs the sweep, the PO can prove the retired
-`mega-test` prefix has no residue without changing any resource:
+On the production host that normally runs the sweep, the PO can prove a retired
+prefix has no residue without changing any resource:
 
 ```bash
-python scripts/clean_live_tests.py --inventory --prefix mega-test
+make test-live-inventory PREFIX=<prefix>
 ```
 
 The command reads database projects, GitHub repositories, every registered deploy

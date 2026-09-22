@@ -989,8 +989,6 @@ def inventory(prefixes: list[str] | None = None) -> int:
             f"{project['title']} ({project['id']}, {project['slug']})" for project in rows
         ],
     )
-    if project_rows is None:
-        project_rows = []
     inspect("github_repositories", lambda: inventory_github_repositories(selected))
     inspect(
         "deployed_stacks",
@@ -999,20 +997,24 @@ def inventory(prefixes: list[str] | None = None) -> int:
             f"{handle}: {finding}" for handle, items in findings.items() for finding in items
         ],
     )
-    try:
-        capability_messages, worker_meta = inventory_redis(project_rows)
-    except Exception as exc:
-        has_failure = True
-        print(f"redis: unreadable ({exc})")
-        print("redis_capability_messages: unreadable (Redis inventory failed)")
-        print("redis_worker_meta: unreadable (Redis inventory failed)")
+    if project_rows is None:
+        print("redis_capability_messages: unreadable (database projects unreadable)")
+        print("redis_worker_meta: unreadable (database projects unreadable)")
     else:
-        _print_inventory_surface("redis_capability_messages", capability_messages)
-        _print_inventory_surface("redis_worker_meta", worker_meta)
-        if capability_messages or worker_meta:
+        try:
+            capability_messages, worker_meta = inventory_redis(project_rows)
+        except Exception as exc:
             has_failure = True
+            print(f"redis: unreadable ({exc})")
+            print("redis_capability_messages: unreadable (Redis inventory failed)")
+            print("redis_worker_meta: unreadable (Redis inventory failed)")
+        else:
+            _print_inventory_surface("redis_capability_messages", capability_messages)
+            _print_inventory_surface("redis_worker_meta", worker_meta)
+            if capability_messages or worker_meta:
+                has_failure = True
     inspect("local_docker_containers", lambda: inventory_local_docker(selected))
-    inspect("local_workspaces", lambda: inventory_local_workspaces(project_rows, selected))
+    inspect("local_workspaces", lambda: inventory_local_workspaces(project_rows or [], selected))
     return int(has_failure)
 
 
