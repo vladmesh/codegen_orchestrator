@@ -31,25 +31,7 @@ router = APIRouter(prefix="/temporary-access-grants", tags=["temporary-access"])
 _TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 )
-_LEGACY_REMEDIATION = (
-    "A legacy temporary QA access grant is still live. Let the prior release drain it before "
-    "enabling capability-backed QA access."
-)
 _DRAIN_AUDIT_SUBJECT = "temporary_access_drain"
-
-
-def _is_legacy(grant: TemporaryAccessGrant) -> bool:
-    """A target-less row belongs to the retired environment-slot lifecycle."""
-    return grant.target_base_url is None
-
-
-def _reject_legacy_record(
-    grant: TemporaryAccessGrant, *, allow_revoked_history: bool = False
-) -> None:
-    if _is_legacy(grant) and not (
-        allow_revoked_history and grant.status == TemporaryAccessStatus.REVOKED.value
-    ):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LEGACY_REMEDIATION)
 
 
 async def _load(grant_id: str, db: AsyncSession, *, lock: bool = False) -> TemporaryAccessGrant:
@@ -67,9 +49,7 @@ def _is_complete_current_target(grant: TemporaryAccessGrant) -> bool:
         and bool(grant.channel.strip())
         and grant.external_id is not None
         and bool(grant.external_id.strip())
-        and grant.target_application_id is not None
         and grant.target_application_id > 0
-        and grant.target_base_url is not None
         and bool(grant.target_base_url.strip())
     )
 
@@ -121,10 +101,6 @@ async def create_grant(
     """Persist the exact identity and target before a capability call is queued."""
     existing = await db.get(TemporaryAccessGrant, grant_in.id)
     if existing is not None:
-        # An id from the retired slot lifecycle can collide with the durable
-        # capability id for the same QA run. It is history, not a record a
-        # capability caller may hydrate or continue.
-        _reject_legacy_record(existing)
         return existing
     held = await db.scalar(
         select(TemporaryAccessGrant).where(
@@ -171,15 +147,7 @@ async def list_grants(
     grant_status: list[TemporaryAccessStatus] | None = Query(None, alias="status"),
     live: bool = Query(False),
 ) -> list[TemporaryAccessGrant]:
-    # A live legacy row blocks only capability-backed creation. It must not
-    # prevent this sweep from reconciling unrelated, target-bound records.
     query = select(TemporaryAccessGrant)
-    # Recovery asks whether this QA run ever had a lifecycle. Include legacy
-    # history for that narrow lookup so it cannot re-publish a handoff after a
-    # recorded slot lifecycle. General capability reconciliation never obtains
-    # target-less rows.
-    if qa_run_id is None:
-        query = query.where(TemporaryAccessGrant.target_base_url.is_not(None))
     if project_id is not None:
         query = query.where(TemporaryAccessGrant.project_id == project_id)
     if qa_run_id is not None:
@@ -200,9 +168,7 @@ async def get_grant(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
-    grant = await _load(grant_id, db)
-    _reject_legacy_record(grant, allow_revoked_history=True)
-    return grant
+    return await _load(grant_id, db)
 
 
 @router.post("/{grant_id}/drain", response_model=TemporaryAccessGrantRead)
@@ -212,7 +178,7 @@ async def drain_grant(
     db: AsyncSession = Depends(get_async_session),
     actor: str = Depends(get_internal_or_admin_actor),
 ) -> TemporaryAccessGrant:
-    """Close only unreconcilable legacy or already-escalated cleanup."""
+    """Close only cleanup the reconciler already escalated as unprovable."""
     grant = await _load(grant_id, db, lock=True)
     if grant.status == TemporaryAccessStatus.REVOKED.value:
         audit = await _existing_drain_audit(db, grant.id)
@@ -245,7 +211,6 @@ async def drain_grant(
     except ValueError:
         stored_revoke_reason = None
 
-    legacy_eligible = _is_legacy(grant) and stored_status is not TemporaryAccessStatus.REVOKED
     escalated_eligible = (
         _is_complete_current_target(grant)
         and stored_status is TemporaryAccessStatus.REVOKE_FAILED
@@ -255,13 +220,10 @@ async def drain_grant(
         and stored_revoke_reason is not None
         and bool(grant.last_error)
     )
-    if not (legacy_eligible or escalated_eligible):
+    if not escalated_eligible:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Operator drain requires a live legacy grant or an escalated "
-                "target-backed revoke_failed grant"
-            ),
+            detail="Operator drain requires an escalated target-backed revoke_failed grant",
         )
 
     before_status = grant.status
@@ -295,7 +257,6 @@ async def update_grant(
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
-    _reject_legacy_record(grant)
     for field, value in update.model_dump(exclude_unset=True).items():
         if field == "qa_dispatched":
             if value and grant.qa_dispatched_at is None:
@@ -323,7 +284,6 @@ async def escalate_grant(
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
-    _reject_legacy_record(grant)
     run = await db.get(Run, grant.qa_run_id, with_for_update=True)
     if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value

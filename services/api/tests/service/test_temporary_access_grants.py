@@ -2,11 +2,15 @@
 
 import asyncio
 from datetime import UTC, datetime
+import importlib.util
+from pathlib import Path
 import uuid
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from fastapi import status
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shared.models import TemporaryAccessGrant, WorkAdmissionAudit
@@ -118,30 +122,14 @@ async def test_live_target_holder_is_refused_without_creating_a_second_grant(asy
 
 
 @pytest.mark.asyncio
-async def test_live_legacy_with_a_known_target_blocks_only_that_exact_target(
-    async_client, db_engine
-) -> None:
+async def test_live_target_holder_blocks_only_that_exact_target(async_client) -> None:
     project_a_id, run_a_id = await _project_with_qa_run(async_client)
     project_b_id, run_b_id = await _project_with_qa_run(async_client)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_a_id,
-                legacy_env_key="retired-slot",
-                legacy_subject="8202532144",
-                target_application_id=41,
-                head_sha=HEAD_SHA,
-                qa_run_id=run_a_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_a_id, run_a_id)["qa_message"],
-                status="granted",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
+    holder = await async_client.post(
+        "/api/temporary-access-grants/",
+        json=_payload(project_a_id, run_a_id, target_application_id=41),
+    )
+    assert holder.status_code == status.HTTP_201_CREATED
 
     unrelated = await async_client.post(
         "/api/temporary-access-grants/", json=_payload(project_b_id, run_b_id)
@@ -153,148 +141,11 @@ async def test_live_legacy_with_a_known_target_blocks_only_that_exact_target(
 
     assert unrelated.status_code == status.HTTP_201_CREATED
     assert matching.status_code == status.HTTP_409_CONFLICT
-    assert legacy_id in matching.json()["detail"]
+    assert holder.json()["id"] in matching.json()["detail"]
 
 
-@pytest.mark.asyncio
-async def test_wholly_targetless_legacy_row_blocks_no_capability_target(
-    async_client, db_engine
-) -> None:
+async def _escalated_revoke_failed_grant(async_client, db_engine) -> str:
     project_id, run_id = await _project_with_qa_run(async_client)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                legacy_subject="8202532144",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="revoking",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
-
-    listed = await async_client.get("/api/temporary-access-grants/", params={"live": "true"})
-    created = await async_client.post(
-        "/api/temporary-access-grants/", json=_payload(project_id, run_id)
-    )
-    legacy = await async_client.get(f"/api/temporary-access-grants/{legacy_id}")
-
-    assert listed.status_code == status.HTTP_200_OK
-    assert legacy_id not in [grant["id"] for grant in listed.json()]
-    assert created.status_code == status.HTTP_201_CREATED
-    assert legacy.status_code == status.HTTP_409_CONFLICT
-
-    async with sessions() as session:
-        grant = await session.get(TemporaryAccessGrant, legacy_id)
-        assert grant is not None
-        grant.status = "revoked"
-        grant.revoked_at = datetime.now(UTC)
-        await session.commit()
-
-    history = await async_client.get(f"/api/temporary-access-grants/{legacy_id}")
-    assert history.status_code == status.HTTP_200_OK
-    assert history.json()["status"] == "revoked"
-
-
-@pytest.mark.asyncio
-async def test_legacy_id_collision_is_refused_and_its_history_stays_visible_to_recovery(
-    async_client, db_engine
-) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
-    legacy_id = f"tempaccess-{run_id}"
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                legacy_subject="8202532144",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="revoked",
-                granted_at=datetime.now(UTC),
-                revoked_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
-
-    collision = await async_client.post(
-        "/api/temporary-access-grants/", json=_payload(project_id, run_id, id=legacy_id)
-    )
-    recovery_history = await async_client.get(
-        "/api/temporary-access-grants/", params={"qa_run_id": run_id}
-    )
-
-    assert collision.status_code == status.HTTP_409_CONFLICT
-    assert "prior release drain" in collision.json()["detail"]
-    assert recovery_history.status_code == status.HTTP_200_OK
-    assert [grant["id"] for grant in recovery_history.json()] == [legacy_id]
-
-
-@pytest.mark.asyncio
-async def test_admin_drains_a_live_legacy_row_with_one_durable_audit(
-    async_client, db_engine
-) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
-    admin_id, headers = await _operator(async_client, is_admin=True)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                legacy_subject="8202532144",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="revoking",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
-
-    drained = await async_client.post(
-        f"/api/temporary-access-grants/{legacy_id}/drain",
-        json={"reason": "operator_drain"},
-        headers=headers,
-    )
-
-    assert drained.status_code == status.HTTP_200_OK
-    assert drained.json()["status"] == "revoked"
-    assert drained.json()["revoke_reason"] == "operator_drain"
-    assert drained.json()["revoked_at"] is not None
-    async with sessions() as session:
-        audit = await session.scalar(
-            select(WorkAdmissionAudit).where(
-                WorkAdmissionAudit.subject == "temporary_access_drain",
-                WorkAdmissionAudit.reference_id == legacy_id,
-            )
-        )
-        assert audit is not None
-        assert audit.user_id == admin_id
-        assert audit.actor == f"admin:{admin_id}"
-        assert audit.command_payload == {"reason": "operator_drain"}
-        assert audit.before_value == {"status": "revoking"}
-        assert audit.after_value == {"status": "revoked"}
-
-
-@pytest.mark.asyncio
-async def test_admin_drains_an_escalated_target_backed_revoke(async_client, db_engine) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
-    _, headers = await _operator(async_client, is_admin=True)
     created = await async_client.post(
         "/api/temporary-access-grants/", json=_payload(project_id, run_id)
     )
@@ -311,6 +162,15 @@ async def test_admin_drains_an_escalated_target_backed_revoke(async_client, db_e
         grant.escalated_at = datetime.now(UTC)
         grant.last_error = "revoke proof failed"
         await session.commit()
+    return grant_id
+
+
+@pytest.mark.asyncio
+async def test_admin_drains_an_escalated_target_backed_revoke_with_one_durable_audit(
+    async_client, db_engine
+) -> None:
+    admin_id, headers = await _operator(async_client, is_admin=True)
+    grant_id = await _escalated_revoke_failed_grant(async_client, db_engine)
 
     drained = await async_client.post(
         f"/api/temporary-access-grants/{grant_id}/drain",
@@ -321,6 +181,34 @@ async def test_admin_drains_an_escalated_target_backed_revoke(async_client, db_e
     assert drained.status_code == status.HTTP_200_OK
     assert drained.json()["status"] == "revoked"
     assert drained.json()["revoke_reason"] == "operator_drain"
+    assert drained.json()["revoked_at"] is not None
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as session:
+        audit = await session.scalar(
+            select(WorkAdmissionAudit).where(
+                WorkAdmissionAudit.subject == "temporary_access_drain",
+                WorkAdmissionAudit.reference_id == grant_id,
+            )
+        )
+        assert audit is not None
+        assert audit.user_id == admin_id
+        assert audit.actor == f"admin:{admin_id}"
+        assert audit.command_payload == {"reason": "operator_drain"}
+        assert audit.before_value == {"status": "revoke_failed"}
+        assert audit.after_value == {"status": "revoked"}
+
+
+@pytest.mark.asyncio
+async def test_drain_of_an_unknown_grant_is_not_found(async_client) -> None:
+    _, headers = await _operator(async_client, is_admin=True)
+
+    missing = await async_client.post(
+        f"/api/temporary-access-grants/tempaccess-missing-{uuid.uuid4().hex[:8]}/drain",
+        json={"reason": "operator_drain"},
+        headers=headers,
+    )
+
+    assert missing.status_code == status.HTTP_404_NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -400,28 +288,11 @@ async def test_drain_refuses_malformed_or_unescalated_failed_target_state(
 
 @pytest.mark.asyncio
 async def test_drain_requires_an_administrator(async_client, db_engine) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
     _, headers = await _operator(async_client, is_admin=False)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="granted",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
+    grant_id = await _escalated_revoke_failed_grant(async_client, db_engine)
 
     refused = await async_client.post(
-        f"/api/temporary-access-grants/{legacy_id}/drain",
+        f"/api/temporary-access-grants/{grant_id}/drain",
         json={"reason": "operator_drain"},
         headers=headers,
     )
@@ -433,27 +304,11 @@ async def test_drain_requires_an_administrator(async_client, db_engine) -> None:
 async def test_concurrent_and_repeated_drain_calls_converge_on_one_audit(
     async_client, db_engine
 ) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
     _, headers = await _operator(async_client, is_admin=True)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
+    grant_id = await _escalated_revoke_failed_grant(async_client, db_engine)
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="granted",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
 
-    url = f"/api/temporary-access-grants/{legacy_id}/drain"
+    url = f"/api/temporary-access-grants/{grant_id}/drain"
     calls = await asyncio.gather(
         *[
             async_client.post(url, json={"reason": "operator_drain"}, headers=headers)
@@ -468,7 +323,7 @@ async def test_concurrent_and_repeated_drain_calls_converge_on_one_audit(
         audit_count = await session.scalar(
             select(func.count(WorkAdmissionAudit.id)).where(
                 WorkAdmissionAudit.subject == "temporary_access_drain",
-                WorkAdmissionAudit.reference_id == legacy_id,
+                WorkAdmissionAudit.reference_id == grant_id,
             )
         )
         assert audit_count == 1
@@ -478,25 +333,9 @@ async def test_concurrent_and_repeated_drain_calls_converge_on_one_audit(
 async def test_drain_commit_failure_rolls_back_status_and_audit(
     async_client, db_engine, monkeypatch
 ) -> None:
-    project_id, run_id = await _project_with_qa_run(async_client)
     _, headers = await _operator(async_client, is_admin=True)
-    legacy_id = f"legacy-{uuid.uuid4().hex[:8]}"
+    grant_id = await _escalated_revoke_failed_grant(async_client, db_engine)
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as session:
-        session.add(
-            TemporaryAccessGrant(
-                id=legacy_id,
-                project_id=project_id,
-                legacy_env_key="retired-slot",
-                head_sha=HEAD_SHA,
-                qa_run_id=run_id,
-                grant_run_id="legacy-grant-run",
-                qa_message=_payload(project_id, run_id)["qa_message"],
-                status="granted",
-                granted_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
 
     async def fail_commit(session) -> None:
         await session.flush()
@@ -505,22 +344,22 @@ async def test_drain_commit_failure_rolls_back_status_and_audit(
     monkeypatch.setattr(AsyncSession, "commit", fail_commit)
     with pytest.raises(RuntimeError, match="forced drain commit failure"):
         await async_client.post(
-            f"/api/temporary-access-grants/{legacy_id}/drain",
+            f"/api/temporary-access-grants/{grant_id}/drain",
             json={"reason": "operator_drain"},
             headers=headers,
         )
     monkeypatch.undo()
 
     async with sessions() as session:
-        grant = await session.get(TemporaryAccessGrant, legacy_id)
+        grant = await session.get(TemporaryAccessGrant, grant_id)
         audit_count = await session.scalar(
             select(func.count(WorkAdmissionAudit.id)).where(
                 WorkAdmissionAudit.subject == "temporary_access_drain",
-                WorkAdmissionAudit.reference_id == legacy_id,
+                WorkAdmissionAudit.reference_id == grant_id,
             )
         )
         assert grant is not None
-        assert grant.status == "granted"
+        assert grant.status == "revoke_failed"
         assert grant.revoked_at is None
         assert audit_count == 0
 
@@ -555,3 +394,150 @@ async def test_a_skipped_capability_run_never_proves_a_grant(async_client) -> No
     assert "has not proved" in refused.json()["detail"]
     stored = await async_client.get(f"/api/temporary-access-grants/{payload['id']}")
     assert stored.json()["status"] == "granting"
+
+
+def _load_retirement_migration():
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations/versions/4d8e1f2a3b5c_retire_targetless_temporary_access.py"
+    )
+    spec = importlib.util.spec_from_file_location("retire_targetless_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def _run_against_prior_schema(session, rows: str, check) -> None:
+    """Build the pre-revision table in an isolated schema, seed it and run ``check``."""
+    migration = _load_retirement_migration()
+    schema = f"tempaccess_migration_{uuid.uuid4().hex}"
+    connection = session.connection()
+    quoted_schema = f'"{schema}"'
+    connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
+    connection.execute(text(f"SET LOCAL search_path TO {quoted_schema}, public"))
+    for sql in (
+        """CREATE TABLE temporary_access_grants (
+            id varchar(255) PRIMARY KEY, project_id uuid NOT NULL,
+            env_key varchar(255), subject varchar(255),
+            target_application_id integer, target_base_url varchar(2048),
+            status varchar(50) NOT NULL
+        )""",
+        """CREATE UNIQUE INDEX uq_temporary_access_grants_live_target
+            ON temporary_access_grants (project_id, target_application_id)
+            WHERE status != 'revoked' AND target_application_id IS NOT NULL""",
+        rows,
+    ):
+        connection.execute(text(sql))
+
+    def columns() -> dict[str, str]:
+        return dict(
+            connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = :schema AND table_name = 'temporary_access_grants'"
+                ),
+                {"schema": schema},
+            ).all()
+        )
+
+    def ids() -> list[str]:
+        return (
+            connection.execute(text("SELECT id FROM temporary_access_grants ORDER BY id"))
+            .scalars()
+            .all()
+        )
+
+    def index_definition() -> str:
+        return connection.execute(
+            text(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = :schema "
+                "AND indexname = 'uq_temporary_access_grants_live_target'"
+            ),
+            {"schema": schema},
+        ).scalar_one()
+
+    original_op = migration.op
+    migration.op = Operations(MigrationContext.configure(connection))
+    try:
+        check(migration, columns, ids, index_definition)
+    finally:
+        migration.op = original_op
+        connection.execute(text(f"DROP SCHEMA {quoted_schema} CASCADE"))
+
+
+_PROJECT = "'00000000-0000-0000-0000-000000000001'"
+
+
+@pytest.mark.asyncio
+async def test_retirement_migration_deletes_revoked_targetless_history_and_round_trips(
+    db_session,
+) -> None:
+    rows = f"""INSERT INTO temporary_access_grants
+        (id, project_id, env_key, subject, target_application_id, target_base_url, status)
+        VALUES
+        ('targetless-revoked', {_PROJECT}, 'retired-slot', '8202532144', NULL, NULL, 'revoked'),
+        ('half-target-revoked', {_PROJECT}, 'retired-slot', NULL, 41, NULL, 'revoked'),
+        ('target-live', {_PROJECT}, NULL, NULL, 42, 'https://exact.example.com', 'granted'),
+        ('target-revoked', {_PROJECT}, NULL, NULL, 42, 'https://exact.example.com', 'revoked')
+    """
+
+    def check(migration, columns, ids, index_definition) -> None:
+        index_before = index_definition()
+
+        migration.upgrade()
+
+        assert ids() == ["target-live", "target-revoked"]
+        upgraded = columns()
+        assert "env_key" not in upgraded
+        assert "subject" not in upgraded
+        assert upgraded["target_application_id"] == "NO"
+        assert upgraded["target_base_url"] == "NO"
+        assert index_definition() == index_before
+
+        migration.downgrade()
+
+        downgraded = columns()
+        assert downgraded["env_key"] == "YES"
+        assert downgraded["subject"] == "YES"
+        assert downgraded["target_application_id"] == "YES"
+        assert downgraded["target_base_url"] == "YES"
+        assert ids() == ["target-live", "target-revoked"]
+        assert index_definition() == index_before
+
+    await db_session.run_sync(lambda session: _run_against_prior_schema(session, rows, check))
+
+
+@pytest.mark.asyncio
+async def test_retirement_migration_refuses_live_targetless_grants_and_changes_nothing(
+    db_session,
+) -> None:
+    rows = f"""INSERT INTO temporary_access_grants
+        (id, project_id, env_key, subject, target_application_id, target_base_url, status)
+        VALUES
+        ('targetless-revoked', {_PROJECT}, 'retired-slot', NULL, NULL, NULL, 'revoked'),
+        ('targetless-revoking', {_PROJECT}, 'retired-slot', NULL, NULL, NULL, 'revoking'),
+        ('half-target-granted', {_PROJECT}, 'retired-slot', NULL, 41, NULL, 'granted'),
+        ('target-live', {_PROJECT}, NULL, NULL, 42, 'https://exact.example.com', 'granted')
+    """
+
+    def check(migration, columns, ids, index_definition) -> None:
+        before = columns()
+
+        with pytest.raises(RuntimeError, match="refuses to delete live target-less") as refused:
+            migration.upgrade()
+
+        assert "half-target-granted" in str(refused.value)
+        assert "targetless-revoking" in str(refused.value)
+        assert "targetless-revoked" not in str(refused.value)
+        assert columns() == before
+        assert before["env_key"] == "YES"
+        assert before["target_base_url"] == "YES"
+        assert ids() == [
+            "half-target-granted",
+            "target-live",
+            "targetless-revoked",
+            "targetless-revoking",
+        ]
+
+    await db_session.run_sync(lambda session: _run_against_prior_schema(session, rows, check))

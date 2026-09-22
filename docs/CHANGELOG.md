@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-22
 
+- Migration `4d8e1f2a3b5c` deletes revoked target-less temporary access rows, makes both target columns NOT NULL
+  and drops `env_key`/`subject`; the API loses its legacy-record rejection, list filter and legacy drain.
 - The production sweep now owns only its two active title prefixes after retiring the legacy third
   production sweep prefix, whose inventory proved no residual resources remained.
 - One `EmbeddingClient.generate` call now sends all of its batches through a single HTTP pool that closes
