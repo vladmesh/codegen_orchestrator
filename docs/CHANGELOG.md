@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-22
+
+- Executor profile compatibility is version-bound end to end: Codex owns its serde/JWT parser and both
+  adapters carry pinned provenance, so vendor upgrades cannot silently reuse a stale private-format contract.
+
 ## 2026-09-21
 
 - Codex host-profile parsing now uses a versioned 0.144.6 format adapter with a worker-image version gate,
