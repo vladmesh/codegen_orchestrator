@@ -1369,20 +1369,22 @@ grant cannot restore access after revoke proof. Cancelled revoke redispatches
 retain their attempt budget only before the absolute unrevoked deadline.
 
 `POST /api/temporary-access-grants/{grant_id}/escalate` waits for QA routing.
-A story transition out of TESTING that routes a QA verdict (`complete`,
-`human-review`, `start`) names the run in `qa_run_id`, and in the transition's
-transaction, under the story and QA run row locks, the API stamps
-`run_metadata.qa_routed` (`QA_ROUTED_KEY`: story id, landing status, time). Only
-that path writes the stamp: the run PATCH refuses it, `start_paid_run` (every
-paid QA creation path, including `POST /api/work-admission/paid-runs`) rejects a
-command whose `run_metadata` carries it with 422 `paid_run_reserved_metadata`
-before any audit or Run row, and a transition that names no run leaves the run
-unstamped. While the grant's QA run is terminal with a
-verdict, linked to a story, unstamped and not superseded by a newer QA run of that
-story, escalation answers 409 `qa_routing_pending` (`QA_ROUTING_PENDING`) and
-writes nothing. The reconciler then sends no alert and redispatches the revoke
-without spending an attempt; it asks again when that revoke fails. A QA run with
-no verdict yet still receives the routable `qa_cleanup_failed` blocker.
+The routing fact is the server-owned `runs.qa_routed_at` column (the run's own
+`story_id` names the story). Its sole writer is `_record_qa_routing`: a story
+transition out of TESTING that routes a QA verdict (`complete`, `human-review`,
+`start`) names the run in `qa_run_id` and, in the transition's transaction under
+the story then QA run row locks, sets it; a transition that names no run leaves
+it unset. `RunRead` exposes it read-only; `RunCreate`, `RunUpdate` and the paid-run
+command have no such field. Run metadata never proves routing: the reserved key
+`qa_routed` (`QA_ROUTED_KEY`) is refused with 422 by `POST /api/runs/` and the run
+PATCH (`reserved_run_metadata`) and by `start_paid_run` (`paid_run_reserved_metadata`,
+before any audit or Run row). Escalation locks the grant then the QA run; while
+that run is terminal with a verdict, linked to a story, `qa_routed_at` is unset
+and no newer canonical QA run of that story has superseded it, it answers 409
+`qa_routing_pending` (`QA_ROUTING_PENDING`) and writes nothing. The reconciler
+then sends no alert and redispatches the revoke without spending an attempt; it
+asks again when that revoke fails. A QA run with no verdict yet still receives
+the routable `qa_cleanup_failed` blocker.
 
 `POST /api/temporary-access-grants/{grant_id}/drain` is the sole unproved-close
 boundary. Under the grant row lock it accepts only a complete target-backed row

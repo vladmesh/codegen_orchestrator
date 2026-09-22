@@ -12,7 +12,6 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
@@ -105,9 +104,10 @@ async def _record_qa_routing(
 
     Temporary-access cleanup escalation waits for this stamp before it records
     an incident against a QA run with a verdict, so the stamp has to mean
-    exactly "this story consumed this run's verdict". It is written only here,
-    under the story lock and the run lock, and only by a transition out of
-    TESTING; any other status change leaves the run unstamped.
+    exactly "this story consumed this run's verdict". ``Run.qa_routed_at`` is
+    written only here, under the story lock and then the run lock, and only by
+    a transition out of TESTING that names the run; no run create or update
+    schema carries the column, and any other status change leaves it unset.
     """
     if qa_run_id is None:
         return
@@ -125,12 +125,4 @@ async def _record_qa_routing(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"QA run {qa_run_id} is not a verdict this TESTING story can route",
         )
-    # A fresh dict is required: run_metadata is a plain JSON column.
-    run.run_metadata = {
-        **(run.run_metadata or {}),
-        QA_ROUTED_KEY: {
-            "story_id": story.id,
-            "story_status": to_status.value,
-            "routed_at": datetime.now(UTC).isoformat(),
-        },
-    }
+    run.qa_routed_at = datetime.now(UTC)

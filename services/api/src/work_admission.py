@@ -316,9 +316,9 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     The config-row lock is retained through the Run INSERT and caller commit, so
     no successful decision can escape without occupying a counted slot.
     """
-    # Only the story transition that consumed a QA verdict writes the routing
-    # stamp; cleanup escalation trusts it. Refuse it here, before any audit or
-    # Run row exists, so no creation path can seed it.
+    # The QA routing fact is Run.qa_routed_at, written only by the story
+    # transition that consumed the verdict. Refuse a metadata imitation of it
+    # here, before any audit or Run row exists.
     if QA_ROUTED_KEY in command.run_metadata:
         raise PaidRunReservedMetadata(QA_ROUTED_KEY)
     payload = command.model_dump(mode="json")

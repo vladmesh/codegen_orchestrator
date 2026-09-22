@@ -46,6 +46,9 @@ class RunBase(BaseModel):
 class RunRead(RunBase, TimestampedDTO):
     """Schema for reading a run."""
 
+    # Read-only: written only by the story transition that routed this QA run.
+    qa_routed_at: datetime | None = None
+
 
 class RunUpdate(BaseModel):
     """Schema for updating a run."""

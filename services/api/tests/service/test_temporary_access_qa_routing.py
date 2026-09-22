@@ -1,9 +1,11 @@
 """Cleanup escalation waits until the story consumed this QA run's verdict.
 
-The routing stamp is written on the QA run by the story transition that routes
-it, in that transition's transaction, and the escalation reads it under the
-same run row lock. So escalation and routing can race in any order and the
-cleanup incident never lands on a verdict its story has not consumed.
+The routing fact is the QA run's server-owned ``qa_routed_at`` column. Only the
+story transition that routes the run writes it, in that transition's
+transaction, and the escalation reads it under the same run row lock; no run
+create or update path can set it, and run metadata never stands in for it. So
+escalation and routing can race in any order and the cleanup incident never
+lands on a verdict its story has not consumed.
 """
 
 import asyncio
@@ -162,8 +164,8 @@ async def test_escalation_waits_for_the_story_to_route_this_passed_verdict(async
     )
     assert routed.status_code == status.HTTP_200_OK, routed.text
     run = (await async_client.get(f"/api/runs/{run_id}")).json()
-    assert run["run_metadata"][QA_ROUTED_KEY]["story_id"] == story_id
-    assert run["run_metadata"][QA_ROUTED_KEY]["story_status"] == "completed"
+    assert run["qa_routed_at"] is not None
+    assert run["story_id"] == story_id
 
     escalated = await _escalate(async_client, grant_id)
 
@@ -212,7 +214,7 @@ async def test_the_stamp_names_only_a_terminal_verdict_of_this_testing_story(asy
         assert (await async_client.get(f"/api/stories/{sid}")).json()["status"] == "testing"
     for rid in (run_id, other_run, unsettled):
         run = (await async_client.get(f"/api/runs/{rid}")).json()
-        assert QA_ROUTED_KEY not in run["run_metadata"]
+        assert run["qa_routed_at"] is None
 
     # A story out of TESTING cannot claim a verdict afterwards either.
     parked = await async_client.post(f"/api/stories/{story_id}/human-review")
@@ -223,21 +225,80 @@ async def test_the_stamp_names_only_a_terminal_verdict_of_this_testing_story(asy
         "waiting_human_review"
     )
     run = (await async_client.get(f"/api/runs/{run_id}")).json()
-    assert QA_ROUTED_KEY not in run["run_metadata"]
+    assert run["qa_routed_at"] is None
 
 
 @pytest.mark.asyncio
-async def test_the_stamp_cannot_be_written_through_the_run_patch(async_client) -> None:
-    story_id, run_id, _grant_id = await _passed_story_with_grant(async_client)
+async def test_the_routing_fact_cannot_be_written_through_the_run_patch(async_client) -> None:
+    story_id, run_id, grant_id = await _passed_story_with_grant(async_client)
 
     forged = await async_client.patch(
         f"/api/runs/{run_id}",
         json={"run_metadata": {QA_ROUTED_KEY: {"story_id": story_id}}},
     )
+    assert forged.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert forged.json()["detail"] == {"code": "reserved_run_metadata", "key": QA_ROUTED_KEY}
 
-    assert forged.status_code == status.HTTP_409_CONFLICT
+    # The column is not part of the update schema: supplying it changes nothing.
+    ignored = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"qa_routed_at": "2026-09-22T00:00:00Z", "run_metadata": {"note": "x"}},
+    )
+    assert ignored.status_code == status.HTTP_200_OK, ignored.text
     run = (await async_client.get(f"/api/runs/{run_id}")).json()
+    assert run["qa_routed_at"] is None
     assert QA_ROUTED_KEY not in run["run_metadata"]
+
+    deferred = await _escalate(async_client, grant_id)
+    assert deferred.status_code == status.HTTP_409_CONFLICT
+    assert deferred.json()["detail"] == QA_ROUTING_PENDING
+
+
+@pytest.mark.asyncio
+async def test_a_generic_run_with_a_qa_alias_cannot_prove_routing(async_client) -> None:
+    """``POST /api/runs/`` accepts a noncanonical type such as ``"qa "``.
+
+    Neither forged metadata nor a supplied ``qa_routed_at`` makes such a run
+    look routed: the reserved key is refused with no Run row, the column is not
+    part of the create schema, and escalation keeps waiting while the story is
+    still TESTING.
+    """
+    project_id, story_id = await _testing_story(async_client)
+    run_id = f"qa-alias-{uuid.uuid4().hex[:8]}"
+    body = {"id": run_id, "type": "qa ", "project_id": project_id, "story_id": story_id}
+
+    forged = await async_client.post(
+        "/api/runs/",
+        json={**body, "run_metadata": {QA_ROUTED_KEY: {"story_id": story_id}}},
+    )
+    assert forged.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert forged.json()["detail"] == {"code": "reserved_run_metadata", "key": QA_ROUTED_KEY}
+    assert (await async_client.get(f"/api/runs/{run_id}")).status_code == (
+        status.HTTP_404_NOT_FOUND
+    )
+
+    created = await async_client.post(
+        "/api/runs/", json={**body, "qa_routed_at": "2026-09-22T00:00:00Z"}
+    )
+    assert created.status_code == status.HTTP_201_CREATED, created.text
+    assert created.json()["qa_routed_at"] is None
+    grant_id = await _grant(async_client, project_id, run_id)
+    await _settle(async_client, run_id)
+
+    deferred = await _escalate(async_client, grant_id)
+
+    assert deferred.status_code == status.HTTP_409_CONFLICT
+    assert deferred.json()["detail"] == QA_ROUTING_PENDING
+    grant = (await async_client.get(f"/api/temporary-access-grants/{grant_id}")).json()
+    assert grant["escalated_at"] is None
+    assert (await async_client.get(f"/api/stories/{story_id}")).json()["status"] == "testing"
+    # Nor can the story route it: routing names only a canonical QA run.
+    routed = await async_client.post(
+        f"/api/stories/{story_id}/complete", json={"qa_run_id": run_id}
+    )
+    assert routed.status_code == status.HTTP_409_CONFLICT
+    run = (await async_client.get(f"/api/runs/{run_id}")).json()
+    assert run["qa_routed_at"] is None
 
 
 @pytest.mark.asyncio
@@ -353,7 +414,8 @@ async def test_escalation_racing_routing_never_commits_before_the_stamp(
         run = await session.get(Run, run_id)
         grant = await session.get(TemporaryAccessGrant, grant_id)
         assert run is not None and grant is not None
-        assert run.run_metadata[QA_ROUTED_KEY]["story_id"] == story_id
+        assert run.qa_routed_at is not None
+        assert run.story_id == story_id
         assert run.result["qa_outcome"] == "passed"
     if escalated.status_code == status.HTTP_200_OK:
         # It ran after the routing commit and saw the stamp.

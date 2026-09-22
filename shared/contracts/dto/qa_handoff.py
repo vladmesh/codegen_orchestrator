@@ -22,8 +22,10 @@ from shared.contracts.queues.qa import QAMessage
 # run_metadata keys the handoff is recovered from and stamped into.
 QA_HANDOFF_KEY = "qa_handoff"
 QA_DISPATCHED_AT_KEY = "qa_dispatched_at"
-# Written on a terminal QA run by the story transition that consumed its verdict,
-# in that transition's transaction. Cleanup escalation waits for it.
+# Reserved: no run creation or update may carry it in run_metadata. Whether a
+# story consumed a QA verdict is the server-owned Run.qa_routed_at column, which
+# only the routing story transition writes; this key only names the imitation
+# the API refuses.
 QA_ROUTED_KEY = "qa_routed"
 
 

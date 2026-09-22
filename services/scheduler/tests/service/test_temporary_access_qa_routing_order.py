@@ -270,6 +270,8 @@ async def _assert_story_kept_its_pass(api_client, story_id: str, qa_run_id: str)
     run = (await _call(api_client, "GET", f"runs/{qa_run_id}")).json()
     assert run["status"] == "completed"
     assert run["result"]["qa_outcome"] == "passed"
+    # The routing transition recorded that this story consumed this run.
+    assert run["qa_routed_at"] is not None
 
 
 @pytest.mark.asyncio

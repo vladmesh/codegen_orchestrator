@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.temporary_access import (
     LIVE_TEMPORARY_ACCESS_STATUSES,
@@ -70,9 +69,11 @@ async def _existing_drain_audit(db: AsyncSession, grant_id: str) -> WorkAdmissio
 async def _awaits_story_routing(db: AsyncSession, run: Run) -> bool:
     """Whether a QA verdict is still owed to its story's routing.
 
-    Called under the QA run's row lock. The story transition that consumes the
-    verdict stamps the run under the same lock, so this cannot read "unrouted"
-    and then have the escalation commit after a routing that already happened.
+    Called under the QA run's row lock. The only proof is ``Run.qa_routed_at``,
+    which the story transition that consumes the verdict writes under the same
+    lock (see ``_record_qa_routing``); run metadata never counts. So this cannot
+    read "unrouted" and then have the escalation commit after a routing that
+    already happened.
     A run a newer QA run of the story has superseded is never routed: routing
     reads the newest run only.
     """
@@ -80,8 +81,7 @@ async def _awaits_story_routing(db: AsyncSession, run: Run) -> bool:
         return False
     if not isinstance(run.result, dict) or run.result.get("qa_outcome") is None:
         return False
-    routed = (run.run_metadata or {}).get(QA_ROUTED_KEY)
-    if isinstance(routed, dict) and routed.get("story_id") == run.story_id:
+    if run.qa_routed_at is not None:
         return False
     newer = await db.scalar(
         select(Run.id)
