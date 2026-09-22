@@ -325,6 +325,7 @@ def jwt_expiry(token: str) -> datetime | None:
         raise MetadataError
     return expires_at
 
+
 def _optional(data: dict, name: str, valid) -> bool:
     return data.get(name) is None or bool(valid(data[name]))
 
