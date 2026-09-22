@@ -845,3 +845,142 @@ def test_the_sweep_never_deletes_from_the_append_only_ledger():
 
     assert "DELETE FROM engineering_attempt_ledger" not in source
     assert "NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger" in source
+
+
+def test_inventory_returns_zero_and_names_every_empty_surface(monkeypatch, capsys):
+    projects: list[dict[str, str]] = []
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory(["mega-test"]) == 0
+
+    output = capsys.readouterr().out
+    for surface in (
+        "database_projects",
+        "github_repositories",
+        "deployed_stacks",
+        "redis_capability_messages",
+        "redis_worker_meta",
+        "local_docker_containers",
+        "local_workspaces",
+    ):
+        assert f"{surface}: 0" in output
+
+
+def test_inventory_returns_nonzero_and_names_matches(monkeypatch, capsys):
+    projects = [{"id": "project-1", "title": "mega-test-old", "slug": "mega-te-" + "1" * 32}]
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: projects)
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_github_repositories", lambda prefixes: ["mega-te-" + "1" * 32]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_remote_stacks",
+        lambda prefixes: {"vps-1": ["directory /opt/services/mega-te-" + "1" * 32]},
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_redis",
+        lambda projects: (["project-1: engineering/1-0"], ["worker:meta:w1"]),
+    )
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_docker", lambda prefixes: ["mega-te-worker"]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_local_workspaces",
+        lambda projects, prefixes: ["/data/workspaces/repo-1"],
+    )
+
+    assert clean_live_tests.inventory(["mega-test"]) == 1
+
+    output = capsys.readouterr().out
+    assert "mega-test-old" in output
+    assert "mega-te-" + "1" * 32 in output
+    assert "worker:meta:w1" in output
+    assert "/data/workspaces/repo-1" in output
+
+
+def test_inventory_returns_nonzero_when_a_surface_is_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests,
+        "inventory_github_repositories",
+        lambda prefixes: (_ for _ in ()).throw(
+            clean_live_tests.CleanupFailure("GitHub unavailable")
+        ),
+    )
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory(["mega-test"]) == 1
+
+    assert "github_repositories: unreadable (GitHub unavailable)" in capsys.readouterr().out
+
+
+def test_inventory_never_reaches_a_destructive_helper(monkeypatch):
+    for name in (
+        "clean_database",
+        "clean_redis_queues",
+        "clean_remote_servers",
+        "clean_local_docker",
+        "clean_local_workspaces",
+        "delete_github_repos",
+        "fence_run_work",
+        "recover_ownership_manifests",
+        "cleanup_manifest_resources",
+        "cleanup_run_scoped_resources",
+    ):
+        monkeypatch.setattr(
+            clean_live_tests,
+            name,
+            lambda *args, _name=name, **kwargs: pytest.fail(f"inventory reached {_name}"),
+        )
+    monkeypatch.setattr(clean_live_tests, "inventory_projects", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_github_repositories", lambda prefixes: [])
+    monkeypatch.setattr(clean_live_tests, "inventory_remote_stacks", lambda prefixes: {})
+    monkeypatch.setattr(clean_live_tests, "inventory_redis", lambda projects: ([], []))
+    monkeypatch.setattr(clean_live_tests, "inventory_local_docker", lambda prefixes: [])
+    monkeypatch.setattr(
+        clean_live_tests, "inventory_local_workspaces", lambda projects, prefixes: []
+    )
+
+    assert clean_live_tests.inventory(["mega-test"]) == 0
+
+
+def test_inventory_rejects_a_prefix_outside_the_current_contour(capsys):
+    assert clean_live_tests.inventory(["not-a-contour-prefix"]) == 1
+    assert "inventory_prefixes: unreadable" in capsys.readouterr().out
+
+
+def test_inventory_local_docker_reads_names_without_removing_containers(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run_cmd(command, **kwargs):
+        commands.append(command)
+        return _result(stdout="mega-test-worker\n")
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+
+    assert clean_live_tests.inventory_local_docker(["mega-test"]) == ["mega-test-worker"]
+    assert commands == [
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            "name=mega-test",
+        ]
+    ]

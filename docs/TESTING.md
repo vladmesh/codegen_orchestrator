@@ -148,6 +148,20 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 - Debug dump: captures context + last 30 lines of docker logs on failure
 - Queue flush at fixture start prevents stale message pollution
 
+### Production residue inventory
+
+On the production host that normally runs the sweep, the PO can prove the retired
+`mega-test` prefix has no residue without changing any resource:
+
+```bash
+python scripts/clean_live_tests.py --inventory --prefix mega-test
+```
+
+The command reads database projects, GitHub repositories, every registered deploy
+server, Redis capability and worker metadata, local Docker containers, and local
+workspaces. It names every match and exits non-zero for either a match or an
+unreadable surface.
+
 ### What level 1 proves — and what it does not
 
 `mega-noop` (`tests/live/test_full_pipeline.py::TestFullPipeline`) is the free deterministic
