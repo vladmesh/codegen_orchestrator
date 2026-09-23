@@ -8,6 +8,7 @@ services:
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
       - ANTHROPIC_API_KEY=test
@@ -45,6 +46,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests

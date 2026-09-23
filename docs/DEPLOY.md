@@ -396,6 +396,13 @@ would otherwise sign dashboard tokens with a known key.
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
 | `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md` |
 
+`DEFAULT_AGENT_TYPE` is required and has no default. It is policy rather than a credential, so it
+is a GitHub Environment **variable** (`vars.DEFAULT_AGENT_TYPE`), set on every contour this workflow
+deploys, e.g. `DEFAULT_AGENT_TYPE=claude`; accepted values are `claude`, `factory` and `codex`. The
+deploy writes it into the server `.env`, and its preflight refuses to run when it is empty. A blank
+value also stops `docker compose config`, and api, langgraph and telegram_bot fail at startup
+without it. It decides the coding agent of a project created without an explicit choice.
+
 ### Admin UI
 
 | Secret | Description |

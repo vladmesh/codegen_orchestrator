@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-23
+
+- `DEFAULT_AGENT_TYPE` is required by api, langgraph and telegram_bot and by Compose, with no `claude`
+  fallback; the API drops its unused optional `TELEGRAM_BOT_TOKEN` setting.
+
 ## 2026-09-22
 
 - The Claude worker image retries transient installer fetch failures and checks the downloaded script before execution, keeping its pinned version check.

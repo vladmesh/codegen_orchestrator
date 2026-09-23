@@ -509,6 +509,7 @@ jobs:
           HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
           GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
           LIVE_CONTOUR: stand
+          DEFAULT_AGENT_TYPE: claude
         run: |
           set -euo pipefail
           umask 077
@@ -526,7 +527,7 @@ jobs:
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
               "WORKER_BROKER_INTERNAL_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT", "HOST_CODEX_HOME", "HOST_CODEX_VALIDATION_PATH", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
-              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR",
+              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR", "DEFAULT_AGENT_TYPE",
           )
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:

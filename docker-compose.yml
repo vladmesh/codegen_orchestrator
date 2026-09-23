@@ -17,6 +17,7 @@ services:
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LK_JWT_SECRET: ${LK_JWT_SECRET}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-codex}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: api
@@ -58,7 +59,7 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
-      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       GITHUB_ORG: ${GITHUB_ORG}
       PO_LLM_MODEL: ${PO_LLM_MODEL:-}
       PO_LLM_BASE_URL: ${PO_LLM_BASE_URL:-}
@@ -264,7 +265,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
-      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:?DEFAULT_AGENT_TYPE must be set to claude, factory or codex}
       LK_DOMAIN: ${LK_DOMAIN}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: telegram-bot

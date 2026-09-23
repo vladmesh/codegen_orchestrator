@@ -1,6 +1,6 @@
 """LangGraph service configuration.
 
-Requires: REDIS_URL, API_BASE_URL
+Requires: REDIS_URL, API_BASE_URL, DEFAULT_AGENT_TYPE
 PO consumer additionally requires CHECKPOINT_DATABASE_URL for durable conversation state.
 """
 
@@ -78,6 +78,6 @@ def get_settings() -> Settings:
     """Get cached settings instance.
 
     Validates required env vars on first call.
-    Raises ValidationError if REDIS_URL or API_BASE_URL are missing.
+    Raises ValidationError if REDIS_URL, API_BASE_URL or DEFAULT_AGENT_TYPE is missing.
     """
     return Settings()

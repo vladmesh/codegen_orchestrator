@@ -23,6 +23,7 @@ services:
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000
@@ -44,6 +45,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["python", "-m", "src.consumers.engineering"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
@@ -66,6 +68,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["python", "-m", "src.consumers.architect"]
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
@@ -183,6 +186,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     # Uses default entrypoint.sh which runs alembic migrations before uvicorn
     environment:
+      - DEFAULT_AGENT_TYPE=claude
       - ENVIRONMENT=test
       - SEED_SYSTEM_CONFIGS_ON_START=true
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres

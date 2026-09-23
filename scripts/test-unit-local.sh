@@ -48,6 +48,7 @@ CLEAN_ENV=(
     LK_DOMAIN="https://lk.test.example.com"
     INTERNAL_API_KEY="test-internal-key"
     LK_JWT_SECRET="test-lk-jwt-secret"
+    DEFAULT_AGENT_TYPE="claude"
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )
 

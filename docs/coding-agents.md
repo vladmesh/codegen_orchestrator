@@ -3,12 +3,12 @@
 For development tasks we use production-ready tools instead of writing our own agents.
 
 Three are implemented and interchangeable: Claude Code, Factory.ai Droid and OpenAI Codex.
-A project picks one at creation time; when it does not, `DEFAULT_AGENT_TYPE` decides, and that
-default is `claude`.
+A project picks one at creation time; when it does not, the required `DEFAULT_AGENT_TYPE`
+setting decides. It has no fallback; deployments set it explicitly (production uses `claude`).
 
 ## Claude Code
 
-The default. A CLI tool from Anthropic for agentic coding.
+The production choice. A CLI tool from Anthropic for agentic coding.
 
 ```bash
 # Installation (native installer)
