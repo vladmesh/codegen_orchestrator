@@ -37,9 +37,13 @@ WORKER_RELEASE_MARKER_IMAGE="worker-base-release"
 # base64-encoded so it survives a Dockerfile LABEL unquoted and unescaped.
 WORKER_RELEASE_LABEL="org.codegen.worker_release"
 
+# The marker protocol itself is shared with the service image chain.
+# shellcheck source=infra/scripts/release-chain.sh
+source "$(dirname "${BASH_SOURCE[0]}")/release-chain.sh"
+
 # Where the chain lives, given the GitHub org/user that owns the packages.
 worker_image_registry() {
-    printf 'ghcr.io/%s/codegen-orchestrator' "$1"
+    release_image_registry "$1"
 }
 
 # What one published tag resolves to in the registry right now, or non-zero if the
@@ -50,7 +54,7 @@ worker_image_registry() {
 # of the same mutable tag can answer differently, and then the digest a deploy writes
 # down is not provably the image it verified.
 worker_image_digest() {
-    docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'
+    release_image_digest "$1"
 }
 
 # Write the machine-readable record of one release: the revision, the source hash its
@@ -60,34 +64,7 @@ worker_image_digest() {
 worker_image_record() {
     local git_sha="$1" source_hash="$2" digest_file="$3"
     shift 3
-
-    GIT_SHA="${git_sha}" SOURCE_HASH="${source_hash}" DIGEST_FILE="${digest_file}" \
-        python3 - "$@" <<'PY'
-import json
-import os
-import sys
-
-images = {}
-for record in sys.argv[1:]:
-    name, _, reference = record.partition("=")
-    repository, _, digest = reference.partition("@")
-    images[name] = {"reference": reference, "repository": repository, "digest": digest}
-
-path = os.environ["DIGEST_FILE"]
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(
-        {
-            "git_sha": os.environ["GIT_SHA"],
-            "source_hash": os.environ["SOURCE_HASH"],
-            "images": images,
-        },
-        handle,
-        indent=2,
-        sort_keys=True,
-    )
-    handle.write("\n")
-print(f"Wrote {path}")
-PY
+    release_record "${git_sha}" "${source_hash}" "${digest_file}" "" "$@"
 }
 
 # Publish the release marker for one SHA: the single registry write that turns four
@@ -95,73 +72,24 @@ PY
 #
 # Usage: worker_release_marker_publish <marker_reference> <digest_file>
 worker_release_marker_publish() {
-    local reference="$1" digest_file="$2"
-    local context payload
-    context="$(mktemp -d)"
-    payload="$(base64 < "${digest_file}" | tr -d '\n')"
-    cp "${digest_file}" "${context}/worker-images.json"
-    {
-        echo "FROM scratch"
-        echo "COPY worker-images.json /worker-images.json"
-        echo "LABEL ${WORKER_RELEASE_LABEL}=\"${payload}\""
-    } > "${context}/Dockerfile"
-    docker build -t "${reference}" "${context}"
-    docker push "${reference}"
-    rm -rf "${context}"
+    release_marker_publish "${WORKER_RELEASE_LABEL}" worker-images.json "$1" "$2"
 }
 
 # Read a release marker's payload and print one `<image>=<repository>@<digest>` line
-# per image of the chain, in build order.
+# per image of the chain, in build order; non-zero when the marker is not a usable
+# record of exactly this chain for this SHA and this tree's source hash
+# (release_marker_images).
 #
-# Everything a consumer acts on comes from here, so everything is checked here: the
-# record has to be readable, to be the record of this SHA, to name exactly this chain
-# and to name images in this registry. A marker failing any of those is corruption of
-# a committed release rather than a retryable state, so this fails non-zero and the
-# caller refuses with its own exit code.
-#
-# Usage: worker_release_images <base64_payload> <git_sha> <registry>
+# Usage: worker_release_images <base64_payload> <git_sha> <registry> <source_hash>
 worker_release_images() {
-    local payload="$1" git_sha="$2" registry="$3"
+    release_marker_images "$1" "$2" "$4" "$3" "" "${WORKER_BASE_IMAGES[@]}"
+}
 
-    RELEASE_PAYLOAD="${payload}" RELEASE_GIT_SHA="${git_sha}" RELEASE_REGISTRY="${registry}" \
-        RELEASE_CHAIN="${WORKER_BASE_IMAGES[*]}" python3 - <<'PY'
-import base64
-import binascii
-import json
-import os
-import sys
-
-
-def refuse(message):
-    print(f"the release marker is not a usable record: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-try:
-    record = json.loads(base64.b64decode(os.environ["RELEASE_PAYLOAD"], validate=True))
-except (binascii.Error, ValueError, UnicodeDecodeError) as error:
-    refuse(f"it does not decode ({error})")
-
-chain = os.environ["RELEASE_CHAIN"].split()
-registry = os.environ["RELEASE_REGISTRY"]
-expected_sha = os.environ["RELEASE_GIT_SHA"]
-
-if not isinstance(record, dict) or not isinstance(record.get("images"), dict):
-    refuse("it carries no images map")
-if record.get("git_sha") != expected_sha:
-    refuse(f"it is the release of {record.get('git_sha')!r}, not of {expected_sha!r}")
-
-images = record["images"]
-if sorted(images) != sorted(chain):
-    refuse(f"it names {sorted(images)}, the chain is {sorted(chain)}")
-
-for name in chain:
-    reference = images[name].get("reference", "")
-    repository, _, digest = reference.partition("@")
-    if repository != f"{registry}/{name}":
-        refuse(f"{name} is {repository!r}, which is not {registry}/{name}")
-    if not digest.startswith("sha256:"):
-        refuse(f"{name} is not named by digest ({reference!r})")
-    print(f"{name}={reference}")
-PY
+# Re-verify the committed worker release of a SHA whose marker resolved
+# (release_verify_committed), printing its `<image>=<repository>@<digest>` lines.
+#
+# Usage: worker_release_verify <marker_digest_reference> <git_sha> <registry> <source_hash>
+worker_release_verify() {
+    release_verify_committed "$1" "${WORKER_RELEASE_LABEL}" "$2" "$4" \
+        "${WORKER_SOURCE_HASH_LABEL}" "$3" "" "${WORKER_BASE_IMAGES[@]}"
 }

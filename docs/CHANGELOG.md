@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Main CI pushes the 10 service images by merge SHA and, after a green gate, a `service-release:<sha>` marker;
+  both release chains push only on a registry 404 for the marker and validate a committed record whole.
 - The PR poller merges product PRs itself (no GitHub auto-merge) after writing their `REGISTRY_*` secrets
   and rewrites them each tick a PR stays armed for auto-merge, so push-main CI never builds on stale ones.
 - Resource-wait park/resume and the secret ask (the only entry to `waiting_user_secret`) owe their owner notice

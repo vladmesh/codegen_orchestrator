@@ -240,6 +240,10 @@ INFRA_MARKER_JOBS: dict[str, str | None] = {
     # Downstream of merge-gate: the gate cannot repeat this marker, so it stays on the
     # job's own annotations, summary and output (docs/TESTING.md).
     "publish-worker-images": None,
+    # Push-to-main only and outside the gate's needs, like the release job after it: both
+    # keep their marker on their own annotations, summary and output.
+    "build-service-images": None,
+    "publish-service-release": None,
 }
 INSTALL_UV_COMMAND = (
     "bash scripts/ci-infra.sh retry --step install-uv --cause uv-download --attempt-timeout 60s "
@@ -321,6 +325,8 @@ BOUNDED_DOCKER_STEPS = {
     ],
     "test-backend-dind-integration": ["Run integration tests"],
     "publish-worker-images": ["Build and publish the worker chain"],
+    "build-service-images": ["Build and push the service image candidates"],
+    "publish-service-release": ["Verify the candidates and publish the service release marker"],
 }
 REDIS_CLEANUP_COMMAND = "bash scripts/ci-redis-cleanup-regression.sh"
 

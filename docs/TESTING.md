@@ -118,10 +118,10 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 | `fast-checks`, `ci-contract` | `install-uv` | `uv-download`, `uv-download-timeout` | `pip install uv`, 3 attempts of at most 60 s each, 10 s then 20 s apart |
 | `fast-checks` | `redis-pull` | `image-pull`, `image-pull-timeout` | `docker pull` of the Redis image the cleanup regression runs, 3 attempts of at most 90 s each |
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
-| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
+| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration`, `build-service-images` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
 | `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull`, `image-pull-timeout` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts of at most 90 s per image, before the tests start |
 | `test-backend-dind-integration` | `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker |
-| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
+| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images`, `build-service-images`, `publish-service-release` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish`, `build-candidates` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
 
 A cause ending in `-timeout` means the last attempt did not fail but hung until its bound stopped
 it; a hung attempt is a failed attempt, and the next one starts after it. Only the bound's own timer
@@ -133,6 +133,11 @@ names a timeout: a command that exits 124 or 137 by itself before its bound (the
 `step-timeout` marker of its `publish` step, or the `claude-installer-fetch` marker of the worker image
 it builds, into its own annotations and job summary, and its own `always()` expose step hands it to
 the job output `infra-marker`, like every other job. Read a failed release there, not in the gate.
+
+The service image release has the same shape: `publish-service-release` runs after the gate, and
+`build-service-images` is push-to-main only and outside the gate's `needs` (a pull request must not wait
+for it), so neither marker is repeated by the gate. Both write it on their own job, under the output
+`infra-marker`: `step-timeout` of `build-candidates` or `publish`, or `buildx-registry` of the builder.
 
 What the marker never does:
 
@@ -187,6 +192,8 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 | `test-backend-dind-integration` | 8.5 min (suite 8.1) | 50 (3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
 | `merge-gate` | 0.6 min | — | 5 | — |
 | `publish-worker-images` | 4.0 min (publish 3.9) | 19.5 | 20 | publish 15 min |
+| `build-service-images` | new, not yet measured (the 8 Python images build in 6 min in `service-image-imports`) | 37.5 | 40 | Buildx 3 × 120 s; candidates 25 min |
+| `publish-service-release` | new, not yet measured | 19.5 | 20 | publish 15 min |
 
 The non-docker steps inside a sum carry step bounds of 1–10 minutes against measured maxima of
 seconds: checkout 2 (measured 6 s), Python setup 2 (1 s), `uv sync` 5 (4 s), the unit tests 10

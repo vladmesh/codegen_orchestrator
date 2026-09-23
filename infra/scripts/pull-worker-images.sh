@@ -203,7 +203,8 @@ if [ -z "${payload}" ] || [ "${payload}" = "<no value>" ]; then
     echo "       so it does not say which images the release of ${WORKER_IMAGE_TAG} is." >&2
     exit "${EXIT_BROKEN_RELEASE}"
 fi
-if ! released="$(worker_release_images "${payload}" "${WORKER_IMAGE_TAG}" "${REGISTRY}")"; then
+if ! released="$(worker_release_images "${payload}" "${WORKER_IMAGE_TAG}" "${REGISTRY}" \
+    "${EXPECTED_HASH}")"; then
     echo "FATAL: the release marker of ${WORKER_IMAGE_TAG} (${marker_reference})" >&2
     echo "       does not name a deployable chain; see the reason above." >&2
     exit "${EXIT_BROKEN_RELEASE}"

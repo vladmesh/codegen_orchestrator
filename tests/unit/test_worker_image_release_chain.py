@@ -244,6 +244,10 @@ case "${command}" in
         ;;
     inspect)
         name="$(image_of "$1")"
+        if [ "${name}" = "${FAKE_UNINSPECTABLE_IMAGE:-}" ]; then
+            echo "Error response from daemon: no such object: $1" >&2
+            exit 1
+        fi
         if [[ "$*" == *worker_release* ]]; then
             cat "${FAKE_REGISTRY}/${name}.label"
         elif [ "${name}" = "${FAKE_ODD_IMAGE:-}" ]; then
@@ -289,7 +293,13 @@ done
 
 if [[ "${url}" == *"/token"* ]]; then
     printf '{"token":"fake-registry-token"}' > "${output}"
-    printf '200'
+    printf '%s' "${FAKE_TOKEN_HTTP_STATUS:-200}"
+elif [ -n "${FAKE_MARKER_CURL_EXIT:-}" ]; then
+    : > "${output}"
+    exit "${FAKE_MARKER_CURL_EXIT}"
+elif [ -n "${FAKE_MARKER_HTTP_STATUS:-}" ]; then
+    : > "${output}"
+    printf '%s' "${FAKE_MARKER_HTTP_STATUS}"
 elif [ -f "${FAKE_REGISTRY}/worker-base-release" ]; then
     : > "${output}"
     printf '200'
@@ -304,6 +314,8 @@ REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
 
 EXIT_RELEASED_LABEL = 7
 EXIT_PUBLISH_BROKEN_RELEASE = 10
+EXIT_PUBLISH_MARKER_LOOKUP = 11
+EXIT_PUBLISH_MARKER_PUBLISH = 12
 EXIT_PULL_NO_RELEASE = 9
 
 
@@ -381,7 +393,7 @@ class ReleaseChain:
         payload = (self.registry / f"{MARKER_IMAGE}.label").read_text().strip()
         return json.loads(base64.b64decode(payload))
 
-    def seed_release(self) -> None:
+    def seed_release(self, **record_overrides) -> None:
         """A SHA already released: the four images, and the marker that commits them."""
         images = {}
         for image in CHAIN:
@@ -396,6 +408,7 @@ class ReleaseChain:
             "source_hash": self.source_hash,
             "images": images,
         }
+        record.update(record_overrides)
         (self.registry / MARKER_IMAGE).write_text(f"sha256:{MARKER_IMAGE}\n")
         (self.registry / f"{MARKER_IMAGE}.label").write_text(
             base64.b64encode(json.dumps(record).encode()).decode()
@@ -529,3 +542,104 @@ def test_a_released_sha_whose_image_is_gone_is_refused_not_repaired(chain):
     assert not [call for call in calls if call.startswith("make ")], (
         "a committed release is not rebuilt over"
     )
+
+
+def _images(**entries) -> dict:
+    """The images map of a full worker record, with some entries replaced."""
+    images = {
+        image: {
+            "reference": f"{REGISTRY}/{image}@sha256:{image}",
+            "repository": f"{REGISTRY}/{image}",
+            "digest": f"sha256:{image}",
+        }
+        for image in CHAIN
+    }
+    images.update(entries)
+    return images
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        {"source_hash": "WRONG"},
+        {
+            "images": _images(
+                **{
+                    "worker-base-codex": {
+                        "reference": f"{REGISTRY}/worker-base-codex@sha256:worker-base-codex",
+                        "repository": "WRONG",
+                        "digest": "sha256:worker-base-codex",
+                    }
+                }
+            )
+        },
+        {
+            "images": _images(
+                **{
+                    "worker-base-codex": {
+                        "reference": f"{REGISTRY}/worker-base-codex@sha256:worker-base-codex",
+                        "repository": f"{REGISTRY}/worker-base-codex",
+                        "digest": "WRONG",
+                    }
+                }
+            )
+        },
+        {
+            "images": _images(
+                **{
+                    "worker-base-codex": {
+                        "reference": f"{REGISTRY}/worker-base-codex@sha256:worker-base-codex",
+                    }
+                }
+            )
+        },
+    ],
+    ids=["wrong-source-hash", "wrong-repository", "wrong-digest", "missing-fields"],
+)
+def test_a_released_sha_whose_record_contradicts_itself_is_refused(chain, corruption):
+    """The worker record has no schema version, and is still validated whole."""
+    chain.seed_release(**corruption)
+    result, calls = chain.publish()
+
+    assert result.returncode == EXIT_PUBLISH_BROKEN_RELEASE, result.stderr
+    assert "not a usable record" in result.stderr
+    assert not _pushes(calls)
+    assert not chain.published_record.exists()
+
+
+@pytest.mark.parametrize(
+    "registry_error",
+    [
+        {"FAKE_MARKER_HTTP_STATUS": "401"},
+        {"FAKE_MARKER_HTTP_STATUS": "500"},
+        {"FAKE_MARKER_CURL_EXIT": "28"},
+        {"FAKE_TOKEN_HTTP_STATUS": "403"},
+    ],
+    ids=["manifest-401", "manifest-500", "manifest-timeout", "token-403"],
+)
+def test_a_registry_that_cannot_answer_for_a_released_sha_pushes_nothing(chain, registry_error):
+    """Only a registry 404 on the marker means "not released"; anything else fails closed."""
+    chain.seed_release()
+    before = chain.release_marker_record()
+    result, calls = chain.publish(**registry_error)
+
+    assert result.returncode == EXIT_PUBLISH_MARKER_LOOKUP, result.stderr
+    assert not _pushes(calls), f"a lookup error must never lead to a push: {calls}"
+    assert not [call for call in calls if call.startswith("make ")]
+    assert chain.release_marker_record() == before
+    assert not chain.published_record.exists()
+
+
+def test_a_released_sha_whose_marker_cannot_be_inspected_is_refused(chain):
+    chain.seed_release()
+    result, calls = chain.publish(FAKE_UNINSPECTABLE_IMAGE=MARKER_IMAGE)
+
+    assert result.returncode == EXIT_PUBLISH_BROKEN_RELEASE, result.stderr
+    assert not _pushes(calls)
+
+
+def test_a_marker_that_cannot_be_pushed_has_its_own_exit_code(chain):
+    result, _calls = chain.publish(FAKE_FAILING_PUSH=MARKER_IMAGE)
+
+    assert result.returncode == EXIT_PUBLISH_MARKER_PUBLISH, result.stderr
+    assert not chain.resolves(MARKER_IMAGE), "a failed marker push releases nothing"
