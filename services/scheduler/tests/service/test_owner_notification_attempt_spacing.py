@@ -17,17 +17,15 @@ the one thing this test does to the record that the API does not.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
 
-import asyncpg
+from _owner_notification_clock import age_last_attempt_by_one_interval
 import httpx
 import pytest
 import structlog
 
 from shared.contracts.dto.owner_notification import (
-    OWNER_NOTIFICATION_ATTEMPT_INTERVAL,
     OWNER_NOTIFICATION_KEY,
     OwnerNotification,
     OwnerNotificationState,
@@ -96,27 +94,9 @@ class _Owed:
         """Move the API's view of this record one delivery interval into the past."""
         stamp = (await self.record()).last_attempt_at
         assert stamp is not None
-        aged = json.dumps((stamp - OWNER_NOTIFICATION_ATTEMPT_INTERVAL).isoformat())
-        connection = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
-        try:
-            if self.story_record:
-                await connection.execute(
-                    "UPDATE stories SET owner_notification = jsonb_set("
-                    "owner_notification::jsonb, '{last_attempt_at}', $2::jsonb)::json "
-                    "WHERE id = $1",
-                    self.source_id,
-                    aged,
-                )
-            else:
-                await connection.execute(
-                    "UPDATE runs SET metadata = jsonb_set("
-                    "metadata::jsonb, '{owner_notification,last_attempt_at}', $2::jsonb)::json "
-                    "WHERE id = $1",
-                    self.source_id,
-                    aged,
-                )
-        finally:
-            await connection.close()
+        await age_last_attempt_by_one_interval(
+            self.source_id, stamp, story_record=self.story_record
+        )
 
 
 async def _sweep(api_client, po: _PoInput) -> None:
