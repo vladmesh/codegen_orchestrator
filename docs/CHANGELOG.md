@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- The prod overlay resets every source bind-mount, so prod and stand run the released image code only;
+  shared freshness now compares those images, and `service_release.py readback` checks it on the host.
+
 - Deploy pulls the revision's service release by digest beside the worker release and runs compose on it
   with `--no-build`, so the host builds nothing; a `revision` input redeploys a previous release (rollback).
 - Deploy verifies both releases from a staged worktree into a pending set; one `Switch` step alone changes

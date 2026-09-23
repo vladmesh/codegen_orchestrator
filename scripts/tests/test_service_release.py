@@ -26,6 +26,7 @@ from scripts.service_release import (
     main,
     parse_release,
     plan_cleanup,
+    readback,
     rotate_previous_record,
 )
 
@@ -366,3 +367,186 @@ def test_cleanup_dry_run_and_docker_refusal_remove_nothing(tmp_path, capsys):
     )
     assert docker.removed == []
     assert "KEEP id-stale reason=docker_refused" in capsys.readouterr().out
+
+
+# --- readback ------------------------------------------------------------------------------
+
+DEPLOY_PATH = Path("/opt/codegen_orchestrator")
+
+
+def _live_config(release: Release) -> dict:
+    """The live stack as `docker compose config` renders it with the override applied."""
+    return {
+        "name": "codegen_orchestrator",
+        "services": {
+            "api": {
+                "build": {"context": str(DEPLOY_PATH)},
+                "image": release.references["api"],
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": "/opt/secrets/github_app.pem",
+                        "target": "/app/keys/github_app.pem",
+                        "read_only": True,
+                    }
+                ],
+            },
+            "telegram_bot": {
+                "build": {"context": str(DEPLOY_PATH)},
+                "image": release.references["telegram_bot"],
+                "scale": 0,
+            },
+            "caddy": {
+                "image": "caddy:2.11.4-alpine",
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": f"{DEPLOY_PATH}/infra/Caddyfile",
+                        "target": "/etc/caddy/Caddyfile",
+                    }
+                ],
+            },
+        },
+    }
+
+
+class ReadbackDocker:
+    """docker ps / inspect, faked: one api container, and whatever a test changes on it."""
+
+    def __init__(self, release: Release, source_hash: str) -> None:
+        self.image_ids = {
+            reference: f"sha256:id-{name}" for name, reference in release.references.items()
+        }
+        self.api = {
+            "Image": "sha256:id-api",
+            "Config": {"Labels": {"org.codegen.worker_source_hash": source_hash}},
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/opt/secrets/github_app.pem",
+                    "Destination": "/app/keys/github_app.pem",
+                }
+            ],
+        }
+        self.calls: list[list[str]] = []
+
+    def __call__(self, command: list[str]) -> str:
+        self.calls.append(command)
+        if command[:2] == ["image", "inspect"]:
+            return self.image_ids[command[-1]] + "\n"
+        if command[:1] == ["ps"]:
+            service = command[-1].rpartition("=")[2]
+            return "c0ffee00api1\n" if service == "api" else ""
+        if command[:2] == ["container", "inspect"]:
+            return json.dumps([self.api])
+        raise AssertionError(f"unexpected docker call {command}")
+
+
+def _readback(tmp_path: Path, docker: ReadbackDocker, config: dict | None = None) -> list[str]:
+    record = tmp_path / "deployed-service-images.json"
+    record.write_text(json.dumps(REAL_RECORD))
+    release = parse_release(REAL_RECORD)
+
+    return readback(
+        compose_config=config or _live_config(release),
+        record=record,
+        deploy_path=DEPLOY_PATH,
+        run_docker=docker,
+    )
+
+
+def test_readback_confirms_a_container_running_the_recorded_digest(tmp_path, capsys):
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+
+    assert _readback(tmp_path, docker) == []
+    out = capsys.readouterr().out
+    assert f"OK api c0ffee00api1 image={REAL_RECORD['images']['api']['reference']}" in out
+    assert "SKIP telegram_bot scale=0" in out
+    assert all(call[:1] in (["ps"], ["image"], ["container"]) for call in docker.calls)
+    assert not [call for call in docker.calls if call[:2] in (["image", "rm"], ["compose", "up"])]
+
+
+def test_readback_reads_the_configuration_with_or_without_the_override(tmp_path):
+    release = parse_release(REAL_RECORD)
+    config = _live_config(release)
+    config["services"]["api"]["image"] = "codegen-orchestrator/api:local"
+    docker = ReadbackDocker(release, REAL_RECORD["source_hash"])
+
+    assert _readback(tmp_path, docker, config) == []
+
+
+def test_readback_fails_a_container_on_another_image(tmp_path):
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+    docker.api["Image"] = "sha256:built-on-the-host"
+
+    (problem,) = _readback(tmp_path, docker)
+
+    assert problem.startswith("api c0ffee00api1: runs image sha256:built-on-the-host")
+
+
+@pytest.mark.parametrize("stamped", [None, "", "0123456789abcdef"])
+def test_readback_fails_an_empty_or_foreign_source_hash(tmp_path, stamped):
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+    labels = docker.api["Config"]["Labels"]
+    labels.pop("org.codegen.worker_source_hash")
+    if stamped is not None:
+        labels["org.codegen.worker_source_hash"] = stamped
+
+    (problem,) = _readback(tmp_path, docker)
+
+    assert f"carries org.codegen.worker_source_hash={stamped!r}" in problem
+
+
+def test_readback_fails_a_source_mount_in_the_config_and_in_the_container(tmp_path):
+    release = parse_release(REAL_RECORD)
+    config = _live_config(release)
+    config["services"]["api"]["volumes"].append(
+        {"type": "bind", "source": f"{DEPLOY_PATH}/shared", "target": "/app/shared"}
+    )
+    docker = ReadbackDocker(release, REAL_RECORD["source_hash"])
+    docker.api["Mounts"].append(
+        {"Type": "bind", "Source": f"{DEPLOY_PATH}/services/api/src", "Destination": "/app/src"}
+    )
+
+    problems = _readback(tmp_path, docker, config)
+
+    assert problems == [
+        "config: service api bind-mounts checkout source shared at /app/shared",
+        "api c0ffee00api1: bind-mounts checkout source services/api/src at /app/src",
+    ]
+
+
+def test_readback_fails_a_build_service_with_no_running_container(tmp_path):
+    release = parse_release(REAL_RECORD)
+    config = _live_config(release)
+    del config["services"]["telegram_bot"]["scale"]
+
+    problems = _readback(tmp_path, ReadbackDocker(release, REAL_RECORD["source_hash"]), config)
+
+    assert problems == ["telegram_bot: no running container"]
+
+
+def test_readback_command_exits_non_zero_on_a_problem(tmp_path, monkeypatch, capsys):
+    release = parse_release(REAL_RECORD)
+    docker = ReadbackDocker(release, REAL_RECORD["source_hash"])
+    docker.api["Image"] = "sha256:other"
+    monkeypatch.setattr("scripts.service_release._run_docker", docker)
+    record = tmp_path / "deployed-service-images.json"
+    record.write_text(json.dumps(REAL_RECORD))
+    config = tmp_path / "compose.json"
+    config.write_text(json.dumps(_live_config(release)))
+
+    status = main(
+        [
+            "readback",
+            "--compose-config",
+            str(config),
+            "--record",
+            str(record),
+            "--deploy-path",
+            str(DEPLOY_PATH),
+        ]
+    )
+
+    assert status == 1
+    assert "FAIL api c0ffee00api1: runs image sha256:other" in capsys.readouterr().out

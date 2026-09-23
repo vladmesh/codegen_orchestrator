@@ -29,7 +29,9 @@ only source, and it reaches consumers through three channels.
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
 `scheduler-pipeline`, `scheduler-infrastructure`, `scheduler-maintenance`, `scaffolder`. An edit
 under `shared/` is picked up by restarting the containers
-(`docker compose restart <service>`), no image rebuild is needed.
+(`docker compose restart <service>`), no image rebuild is needed. That is the development stack
+only: the production overlay (`docker-compose.prod.yml`, which the stand stacks its own overlay on)
+resets every source mount, so production and the stand run the `shared` their released image baked.
 The three scheduler services declare the same build route and tag; Compose builds that shared image
 once and starts it with three explicit module commands.
 
@@ -138,16 +140,21 @@ pass:
   asks docker anything, so both hold on a clean machine. A compose file that has `services:` and cannot
   be parsed fails the check too.
 - **The images it compares** are the ones whose baked copy is what actually runs: every route that does
-  not mount `./shared` over the baked copy. That is the four worker base images, read off the
-  `rebuild-worker-images` recipe, `worker-manager` in the dev stack, and the `:test` images the compose
+  not mount `./shared` over the baked copy on every contour that runs it. That is the four worker base
+  images, read off the `rebuild-worker-images` recipe, every `:local` service image of
+  `docker-compose.yml` (production runs each of them from its image), and the `:test` images the compose
   files under `tests/compose/` build. A build that stamps `SOURCE_HASH` without copying `shared` itself is
   compared too — `worker-base-claude` and its siblings are `FROM ${BASE_IMAGE}` over the common image, so
   they carry the `shared` it baked and say which one by stamping the label. An image that is compared and
   cannot say what it baked (no label, an empty label, a value that is not a hash) fails by name and
   reason. There is no third answer where the check shrugs and passes.
-- **A mount is not staleness.** A compose service with `./shared:/app/shared` runs the tree, not the
-  copy in its image, so its image is not compared. It still has to be nameable and to stamp its hash,
-  so the day the mount goes away the check works without being taught anything.
+- **A mount is not staleness — outside production.** A compose service with `./shared:/app/shared`
+  runs the tree, not the copy in its image, so its image is not compared — but only when every contour
+  that runs the service mounts it. The production contours (`PRODUCTION_CONTOURS` in the module: the
+  base file under `docker-compose.prod.yml`, and the stand overlay on top) reset every source mount and
+  run the released image, so a service of the base file is compared even though the development stack
+  mounts the tree over it. A production contour that mounts `./shared` over a baked copy again fails
+  the check by name: it would run the checkout while the image's label vouches for another tree.
 - **Not built is not behind.** An image absent from the local docker holds no copy of `shared`, so it
   is reported as not built and does not fail the check. That is what makes the check green on a clean
   machine and in CI, where nothing is built, and it is why it can run in `fast-checks`. A machine with
