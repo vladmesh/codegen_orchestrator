@@ -406,6 +406,8 @@ fi
 
 PUBLISHED_SHA = "0123456789abcdef0123456789abcdef01234567"
 SAME_TREE_SHA = "89abcdef0123456789abcdef0123456789abcdef"
+# A revision released before content keying: a commit marker, and no hash marker.
+LEGACY_SHA = "fedcba9876543210fedcba9876543210fedcba98"
 REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
 
 EXIT_BUILT_LABEL = 2
@@ -636,6 +638,53 @@ def test_a_second_commit_with_the_same_hash_builds_nothing_and_resolves_to_the_s
     assert first_deploy["images"] == second_deploy["images"], "one hash, one digest set"
     assert first_deploy["source_hash"] == second_deploy["source_hash"]
     assert (first_deploy["git_sha"], second_deploy["git_sha"]) == (PUBLISHED_SHA, SAME_TREE_SHA)
+
+
+def test_a_hash_only_legacy_revisions_carry_is_built_once_and_legacy_keeps_its_digests(chain):
+    """The content key covers revisions released after it; a legacy release is never adopted.
+
+    A legacy revision of hash H has a commit marker and no hash marker. The first new
+    commit of H builds once and commits `source-<H>` and then its own marker; the legacy
+    revision still pulls its original digests; a third commit of H builds nothing and
+    aliases the new hash release, not the legacy one.
+    """
+    chain.seed_release(LEGACY_SHA)
+    legacy = chain.marker_record(LEGACY_SHA)
+
+    built, calls = chain.candidates(PUBLISHED_SHA)
+
+    assert built.returncode == 0, built.stderr
+    assert len([call for call in calls if call.startswith("make ")]) == 1, "built exactly once"
+    assert len(_image_pushes(calls)) == len(CHAIN)
+    released, calls = chain.release(PUBLISHED_SHA)
+    assert released.returncode == 0, released.stderr
+    _assert_marker_only(calls)
+    pushes = _pushes(calls)
+    assert len(pushes) == 2, pushes
+    assert f"/{MARKER_IMAGE}:{chain.source_key}" in pushes[0], "the hash marker first"
+    assert f"/{MARKER_IMAGE}:{PUBLISHED_SHA}" in pushes[1], "the commit marker last"
+    hash_release = chain.marker_record(chain.source_key)["images"]
+    assert chain.marker_record(PUBLISHED_SHA)["images"] == hash_release
+    assert hash_release != legacy["images"], "the legacy digest set is not adopted"
+
+    rollback, _calls = chain.pull(LEGACY_SHA)
+    assert rollback.returncode == 0, rollback.stderr
+    assert json.loads(chain.deployed_record(LEGACY_SHA).read_text()) == legacy, (
+        "the legacy revision keeps, and still pulls, its original digests"
+    )
+    assert chain.marker_record(LEGACY_SHA) == legacy, "a legacy marker is never rewritten"
+
+    built, calls = chain.candidates(SAME_TREE_SHA, FAKE_BUILD="build2")
+    assert built.returncode == 0, built.stderr
+    assert not _builds(calls), f"a released hash is not built again: {calls}"
+    assert not _pushes(calls)
+    released, calls = chain.release(SAME_TREE_SHA)
+    assert released.returncode == 0, released.stderr
+    _assert_marker_only(calls)
+    assert len(_pushes(calls)) == 1 and f"/{MARKER_IMAGE}:{SAME_TREE_SHA}" in _pushes(calls)[0]
+    deploy, _calls = chain.pull(SAME_TREE_SHA)
+    assert deploy.returncode == 0, deploy.stderr
+    assert json.loads(chain.deployed_record(SAME_TREE_SHA).read_text())["images"] == hash_release
 
 
 def test_a_rerun_of_a_released_sha_pushes_nothing_and_records_the_same_release(

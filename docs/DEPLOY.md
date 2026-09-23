@@ -688,11 +688,25 @@ one validator:
 
 Deploy and the stand keep resolving by revision (`pull-worker-images.sh`, `scripts/wait_release.py`,
 the stand's pre-create check): they read the commit marker, whose record has exactly the shape it
-had before content keying. Two commits with the same hash therefore resolve to identical digests,
-and production and a stand pull the same images for the same content. A revision released before
-content keying has a commit marker and no hash marker; it still resolves unchanged, and the first
-push of a hash that only such revisions carry builds it once more (there is no hash marker to
-alias).
+had before content keying.
+
+**The invariant covers revisions released after content keying.** Every commit released since
+then with the same hash resolves to identical digests: the first green push of a hash builds it
+once and commits `source-<hash>`, and every commit of that hash, the first one included, names
+exactly those digests. So production and a stand pull the same images for the same content.
+
+Revisions released before content keying are outside it, on purpose:
+
+- Such a revision has a commit marker and no hash marker. It keeps its own original digests, is
+  never rewritten, and still resolves for a deploy or a rollback.
+- Nothing adopts an old commit marker as the release of its hash. Several old revisions of one hash
+  carry different digest sets (each push built its own), and choosing one of them as "the" content
+  would be a guess.
+- So the first push after the change of a hash that only old revisions carry builds that hash once
+  more and commits `source-<hash>`; later commits of the hash alias that release. That costs at
+  most one build per hash during the transition.
+- An old revision and a newer one of the same hash may therefore name different digests. Old
+  releases are only rollback targets, and no consumer compares them with newer ones.
 
 **Two jobs, one writer of the markers.** Candidate tags without a marker are inert, so the chain is
 built before the gate and only committed after it, the shape of the service release below:
