@@ -77,9 +77,19 @@ worker_release_marker_publish() {
 
 # Read a release marker's payload and print one `<image>=<repository>@<digest>` line
 # per image of the chain, in build order; non-zero when the marker is not a usable
-# record of exactly this chain for this SHA (release_marker_images).
+# record of exactly this chain for this SHA and this tree's source hash
+# (release_marker_images).
 #
-# Usage: worker_release_images <base64_payload> <git_sha> <registry>
+# Usage: worker_release_images <base64_payload> <git_sha> <registry> <source_hash>
 worker_release_images() {
-    release_marker_images "$1" "$2" "$3" "" "${WORKER_BASE_IMAGES[@]}"
+    release_marker_images "$1" "$2" "$4" "$3" "" "${WORKER_BASE_IMAGES[@]}"
+}
+
+# Re-verify the committed worker release of a SHA whose marker resolved
+# (release_verify_committed), printing its `<image>=<repository>@<digest>` lines.
+#
+# Usage: worker_release_verify <marker_digest_reference> <git_sha> <registry> <source_hash>
+worker_release_verify() {
+    release_verify_committed "$1" "${WORKER_RELEASE_LABEL}" "$2" "$4" \
+        "${WORKER_SOURCE_HASH_LABEL}" "$3" "" "${WORKER_BASE_IMAGES[@]}"
 }

@@ -47,6 +47,8 @@ EXIT_BUILD = 4
 EXIT_RELEASED_LABEL = 7
 EXIT_UNRESOLVED = 8
 EXIT_BROKEN_RELEASE = 10
+EXIT_MARKER_LOOKUP = 11
+EXIT_MARKER_PUBLISH = 12
 
 
 def _listed() -> list[tuple[str, str, str]]:
@@ -290,7 +292,8 @@ def test_the_release_record_is_uploaded_and_summarised():
 # `buildx build --push` writes the first two from --tag and --build-arg SOURCE_HASH, and
 # fails for FAKE_FAILING_BUILD, which is how a run that dies mid-publish is injected.
 # `buildx imagetools inspect` fails for a tag nothing pushed, `pull` fails for an image
-# the registry does not hold, as a real registry answers. Nothing reaches a daemon.
+# the registry does not hold, as a real registry answers. `push` fails for
+# FAKE_FAILING_PUSH and `inspect` for FAKE_UNINSPECTABLE_IMAGE. Nothing reaches a daemon.
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 set -uo pipefail
 command="$1"
@@ -340,6 +343,10 @@ case "${command}" in
         ;;
     push)
         name="$(image_of "$1")"
+        if [ "${name}" = "${FAKE_FAILING_PUSH:-}" ]; then
+            echo "ERROR: $1: denied" >&2
+            exit 1
+        fi
         echo "sha256:${name}" > "${FAKE_REGISTRY}/${name}"
         ;;
     pull)
@@ -350,6 +357,10 @@ case "${command}" in
         ;;
     inspect)
         name="$(image_of "$1")"
+        if [ "${name}" = "${FAKE_UNINSPECTABLE_IMAGE:-}" ]; then
+            echo "Error response from daemon: no such object: $1" >&2
+            exit 1
+        fi
         if [[ "$*" == *service_release* ]]; then
             cat "${FAKE_REGISTRY}/${name}.label"
         elif [ -f "${FAKE_REGISTRY}/${name}.source" ]; then
@@ -364,6 +375,50 @@ case "${command}" in
         exit 99
         ;;
 esac
+"""
+
+# The registry API the marker lookup asks (release_marker_lookup): the token endpoint,
+# then the marker's manifest, which answers 200 when the registry directory holds the
+# marker and 404 when it does not. FAKE_MARKER_HTTP_STATUS / FAKE_MARKER_CURL_EXIT /
+# FAKE_TOKEN_HTTP_STATUS inject a registry that cannot answer, whatever it holds.
+FAKE_CURL = r"""#!/usr/bin/env bash
+set -uo pipefail
+echo "curl $*" >> "${FAKE_DOCKER_LOG}"
+
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output) output="$2"; shift 2 ;;
+        http*) url="$1"; shift ;;
+        *) shift ;;
+    esac
+done
+
+if [[ "${url}" == *"/token"* ]]; then
+    status="${FAKE_TOKEN_HTTP_STATUS:-200}"
+    if [ "${status}" = 200 ]; then
+        printf '{"token":"fake-registry-token"}' > "${output}"
+    else
+        : > "${output}"
+    fi
+    printf '%s' "${status}"
+    exit 0
+fi
+
+: > "${output}"
+if [ -n "${FAKE_MARKER_CURL_EXIT:-}" ]; then
+    exit "${FAKE_MARKER_CURL_EXIT}"
+fi
+image="${url%/manifests/*}"
+image="${image##*/}"
+if [ -n "${FAKE_MARKER_HTTP_STATUS:-}" ]; then
+    printf '%s' "${FAKE_MARKER_HTTP_STATUS}"
+elif [ -f "${FAKE_REGISTRY}/${image}" ]; then
+    printf '200'
+else
+    printf '404'
+fi
 """
 
 
@@ -387,9 +442,10 @@ class ServiceRelease:
         self.source_hash = source_hash
         binaries = tmp_path / "bin"
         binaries.mkdir()
-        docker = binaries / "docker"
-        docker.write_text(FAKE_DOCKER)
-        docker.chmod(0o755)
+        for name, body in (("docker", FAKE_DOCKER), ("curl", FAKE_CURL)):
+            executable = binaries / name
+            executable.write_text(body)
+            executable.chmod(0o755)
         self.binaries = binaries
         self.registry = tmp_path / "registry"
         self.registry.mkdir()
@@ -502,7 +558,13 @@ def test_a_fresh_sha_pushes_every_candidate_once_and_the_marker_only_after_them(
         assert entry["reference"] == f"{REGISTRY}/{image}@sha256:{image}"
     assert release.marker_record() == written, "the marker carries exactly the published record"
     resolutions = [call for call in calls if call.startswith("buildx imagetools")]
-    assert len(resolutions) == len(_names()) + 1, "every tag is resolved exactly once"
+    assert len(resolutions) == len(_names()), "every candidate tag is resolved exactly once"
+    assert not [call for call in resolutions if f"/{MARKER_IMAGE}:" in call], (
+        "an absent marker is known from the registry's 404, never from a failed tool"
+    )
+    assert [call for call in calls if call.startswith("curl ") and "/manifests/" in call], (
+        "whether the SHA is released is asked of the registry API"
+    )
 
 
 def test_a_rerun_of_a_released_sha_verifies_and_pushes_nothing(release, tree_source_hash):
@@ -574,45 +636,198 @@ def test_a_candidate_absent_the_label_entirely_is_never_released(release):
     assert not release.resolves(MARKER_IMAGE)
 
 
+BOTH_STAGES = pytest.mark.parametrize("stage", ["candidates", "release"])
+
+
+@BOTH_STAGES
 @pytest.mark.parametrize("label", ["", "dead0000dead0000"], ids=["empty", "wrong"])
-def test_a_released_sha_with_a_bad_label_is_refused_not_rewritten(release, label):
+def test_a_released_sha_with_a_bad_label_is_refused_not_rewritten(release, label, stage):
     release.seed_release()
     release.set_label("worker-broker", label)
 
-    result, calls = release.run("release")
+    result, calls = release.run(stage)
 
     assert result.returncode == EXIT_RELEASED_LABEL, result.stderr
     assert "worker-broker" in result.stderr
     assert not _pushes(calls)
 
 
-def test_a_released_sha_whose_image_is_gone_is_refused_not_repaired(release):
+@BOTH_STAGES
+def test_a_released_sha_whose_image_is_gone_is_refused_not_repaired(release, stage):
     release.seed_release()
     (release.registry / "user-dashboard").unlink()
 
-    result, calls = release.run("release")
+    result, calls = release.run(stage)
 
     assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
     assert "user-dashboard" in result.stderr
     assert not _pushes(calls)
 
 
+def _entry(image: str, **fields) -> dict:
+    entry = {
+        "reference": f"{REGISTRY}/{image}@sha256:{image}",
+        "repository": f"{REGISTRY}/{image}",
+        "digest": f"sha256:{image}",
+    }
+    entry.update(fields)
+    return {key: value for key, value in entry.items() if value is not None}
+
+
+def _images(**entries) -> dict:
+    """The images map of a full record, with some entries replaced."""
+    images = {image: _entry(image) for image in _names()}
+    images.update(entries)
+    return images
+
+
+@BOTH_STAGES
 @pytest.mark.parametrize(
     "corruption",
     [
         {"git_sha": "f" * 40},
         {"schema_version": 2},
         {"images": {}},
+        {"source_hash": "WRONG"},
+        {"source_hash": ""},
+        {"images": _images(api=_entry("api", repository="WRONG"))},
+        {"images": _images(api=_entry("api", digest="WRONG"))},
+        {"images": _images(api=_entry("api", digest="sha256:scheduler"))},
+        {"images": _images(api=_entry("api", repository=None))},
+        {"images": _images(api=_entry("api", digest=None))},
     ],
-    ids=["other-sha", "other-schema", "other-chain"],
+    ids=[
+        "other-sha",
+        "other-schema",
+        "other-chain",
+        "wrong-source-hash",
+        "empty-source-hash",
+        "wrong-repository",
+        "wrong-digest",
+        "other-images-digest",
+        "missing-repository",
+        "missing-digest",
+    ],
 )
-def test_a_marker_that_is_not_this_releases_record_is_refused(release, corruption):
+def test_a_marker_that_is_not_this_releases_record_is_refused(release, corruption, stage):
+    """A committed record is refused whole: no stage passes a record it contradicts."""
     release.seed_release(**corruption)
 
-    result, calls = release.run("release")
+    result, calls = release.run(stage)
+
+    assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
+    assert "not a usable record" in result.stderr
+    assert not _pushes(calls)
+    assert not release.record.exists(), "a refused release writes no record"
+
+
+@BOTH_STAGES
+def test_a_marker_that_cannot_be_inspected_is_a_broken_release(release, stage):
+    release.seed_release()
+
+    result, calls = release.run(stage, FAKE_UNINSPECTABLE_IMAGE=MARKER_IMAGE)
 
     assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
     assert not _pushes(calls)
+    assert not release.record.exists()
+
+
+@BOTH_STAGES
+def test_a_released_image_that_cannot_be_inspected_is_a_broken_release(release, stage):
+    release.seed_release()
+
+    result, calls = release.run(stage, FAKE_UNINSPECTABLE_IMAGE="scaffolder")
+
+    assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
+    assert "scaffolder" in result.stderr
+    assert not _pushes(calls)
+
+
+# Every registry answer that is not a typed "the marker is unknown" is an error: the
+# marker may exist, so it must never lead to a push.
+REGISTRY_ERRORS = pytest.mark.parametrize(
+    "registry_error",
+    [
+        {"FAKE_MARKER_HTTP_STATUS": "401"},
+        {"FAKE_MARKER_HTTP_STATUS": "403"},
+        {"FAKE_MARKER_HTTP_STATUS": "429"},
+        {"FAKE_MARKER_HTTP_STATUS": "500"},
+        {"FAKE_MARKER_HTTP_STATUS": "503"},
+        {"FAKE_MARKER_CURL_EXIT": "28"},
+        {"FAKE_MARKER_CURL_EXIT": "6"},
+        {"FAKE_TOKEN_HTTP_STATUS": "401"},
+        {"FAKE_TOKEN_HTTP_STATUS": "404"},
+        {"FAKE_TOKEN_HTTP_STATUS": "500"},
+    ],
+    ids=[
+        "manifest-401",
+        "manifest-403",
+        "manifest-429",
+        "manifest-500",
+        "manifest-503",
+        "manifest-timeout",
+        "manifest-dns",
+        "token-401",
+        "token-404",
+        "token-500",
+    ],
+)
+
+
+@BOTH_STAGES
+@REGISTRY_ERRORS
+def test_a_registry_that_cannot_answer_for_a_released_sha_pushes_nothing(
+    release, stage, registry_error
+):
+    release.seed_release()
+    before = release.marker_record()
+
+    result, calls = release.run(stage, **registry_error)
+
+    assert result.returncode == EXIT_MARKER_LOOKUP, result.stderr
+    assert not _pushes(calls), f"a lookup error must never lead to a push: {calls}"
+    assert not [call for call in calls if call.startswith("build ")]
+    assert release.marker_record() == before, "the committed release is untouched"
+    assert not release.record.exists()
+
+
+@BOTH_STAGES
+@REGISTRY_ERRORS
+def test_a_registry_that_cannot_answer_for_a_fresh_sha_pushes_nothing(
+    release, stage, registry_error
+):
+    release.seed_candidates()
+
+    result, calls = release.run(stage, **registry_error)
+
+    assert result.returncode == EXIT_MARKER_LOOKUP, result.stderr
+    assert not _pushes(calls), "only a registry 404 on the marker may lead to a push"
+    assert not release.resolves(MARKER_IMAGE)
+
+
+def test_a_marker_answered_but_unresolvable_is_a_lookup_error_not_an_absence(release):
+    """The registry says 200, the one resolution fails: the SHA may be released."""
+    release.seed_candidates()
+
+    result, calls = release.run("release", FAKE_MARKER_HTTP_STATUS="200")
+
+    assert result.returncode == EXIT_MARKER_LOOKUP, result.stderr
+    assert not _pushes(calls)
+    assert not release.resolves(MARKER_IMAGE)
+
+
+def test_a_marker_that_cannot_be_pushed_has_its_own_exit_code(release):
+    release.seed_candidates()
+
+    result, _calls = release.run("release", FAKE_FAILING_PUSH=MARKER_IMAGE)
+
+    assert result.returncode == EXIT_MARKER_PUBLISH, result.stderr
+    assert result.returncode != EXIT_USAGE, "Docker's own 1 would read as a usage error"
+    assert not release.resolves(MARKER_IMAGE), "a failed marker push releases nothing"
+
+    completed, calls = release.run("release")
+    assert completed.returncode == 0, completed.stderr
+    assert _pushes(calls) == [f"push {REGISTRY}/{MARKER_IMAGE}:{PUBLISHED_SHA}"]
 
 
 def test_usage_errors_have_their_own_exit_code(release):

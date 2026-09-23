@@ -22,6 +22,10 @@
 #                       Build, verify, push all four, then publish the marker. A run
 #                       cancelled or failed mid-chain is recovered by rerunning this
 #                       job, with nobody deleting anything in the registry.
+#   lookup fails     -> the registry cannot say (credentials, transport, 5xx): the SHA
+#                       may be released, so nothing is built or pushed (exit 11).
+#                       Only a registry 404 on the marker's manifest means absent
+#                       (release_marker_lookup in release-chain.sh).
 #
 # A marker that resolves but names an image that does not, or one built from other
 # sources, is corruption of a committed release: it is refused and never repaired,
@@ -38,14 +42,17 @@
 #   2   what was just built does not carry the source hash of this tree
 #   7   an image of an already-released SHA carries the wrong source hash
 #   8   a tag that was just pushed does not resolve to a digest
-#   10  the release marker of this SHA is unreadable or names an image that is gone
+#   10  the release marker of this SHA is unreadable, is not a valid record of this
+#       release, or names an image that is gone
+#   11  the registry cannot say whether this SHA is released: nothing is pushed
+#   12  building or pushing the release marker failed: the SHA is not released
+# 7, 10, 11 and 12 are the release protocol's own codes (release-chain.sh), the same in
+# every chain.
 
 set -euo pipefail
 
 EXIT_BUILT_LABEL=2
-EXIT_RELEASED_LABEL=7
 EXIT_UNRESOLVED=8
-EXIT_BROKEN_RELEASE=10
 
 : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
 : "${GHCR_OWNER:?GHCR_OWNER is required}"
@@ -56,6 +63,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=infra/scripts/worker-images.sh
 source "${SCRIPT_DIR}/worker-images.sh"
+EXIT_MARKER_LOOKUP="${RELEASE_EXIT_MARKER_LOOKUP}"
 
 SOURCE_HASH="$(python3 "${REPO_ROOT}/scripts/shared_freshness.py" hash)"
 REGISTRY="$(worker_image_registry "${GHCR_OWNER}")"
@@ -65,47 +73,26 @@ echo "Logging in to GHCR..."
 echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_OWNER}" --password-stdin
 
 # Is this SHA released? Ask the marker, and only the marker, before building anything.
-if marker_digest="$(worker_image_digest "${MARKER}" 2>/dev/null)" && [ -n "${marker_digest}" ]; then
-    marker_reference="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}@${marker_digest}"
-    echo "${GIT_SHA} is already released (${marker_reference}); nothing will be pushed."
-
-    if ! docker pull "${marker_reference}" >/dev/null; then
-        echo "FATAL: the release marker of ${GIT_SHA} resolves to ${marker_digest}" >&2
-        echo "       but cannot be pulled, so the release cannot be re-verified." >&2
-        exit "${EXIT_BROKEN_RELEASE}"
-    fi
-    payload="$(docker inspect "${marker_reference}" \
-        --format "{{index .Config.Labels \"${WORKER_RELEASE_LABEL}\"}}")"
-    if ! released="$(worker_release_images "${payload}" "${GIT_SHA}" "${REGISTRY}")"; then
-        echo "FATAL: the release marker of ${GIT_SHA} does not carry a usable record." >&2
-        exit "${EXIT_BROKEN_RELEASE}"
-    fi
-
-    records=()
-    while IFS= read -r record; do
-        image="${record%%=*}"
-        reference="${record#*=}"
-        if ! docker pull "${reference}" >/dev/null; then
-            echo "FATAL: the release of ${GIT_SHA} names ${reference}," >&2
-            echo "       which is not in the registry. A committed release is not repaired" >&2
-            echo "       here: publish the next commit instead." >&2
-            exit "${EXIT_BROKEN_RELEASE}"
-        fi
-        found="$(docker inspect "${reference}" \
-            --format "{{index .Config.Labels \"${WORKER_SOURCE_HASH_LABEL}\"}}")"
-        if [ "${found}" != "${SOURCE_HASH}" ]; then
-            echo "FATAL: the released ${image} of ${GIT_SHA} (${reference})" >&2
-            echo "       carries ${WORKER_SOURCE_HASH_LABEL}=${found:-(no label)}," >&2
-            echo "       the tree is ${SOURCE_HASH}. A released SHA is never rewritten." >&2
-            exit "${EXIT_RELEASED_LABEL}"
-        fi
-        echo "  ${image}: ${WORKER_SOURCE_HASH_LABEL}=${found}"
-        records+=("${record}")
-    done <<< "${released}"
-
-    worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${records[@]}"
-    exit 0
-fi
+# Only an "absent" answer gets past this point, so every push below is reached through
+# it alone.
+release_marker_lookup "${MARKER}" "${GHCR_OWNER}" "${GHCR_TOKEN}"
+case "${RELEASE_MARKER_STATE}" in
+    present)
+        marker_reference="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}@${RELEASE_MARKER_DIGEST}"
+        echo "${GIT_SHA} is already released (${marker_reference}); nothing will be pushed."
+        released="$(worker_release_verify "${marker_reference}" "${GIT_SHA}" "${REGISTRY}" \
+            "${SOURCE_HASH}")" || exit "$?"
+        mapfile -t records <<< "${released}"
+        worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${records[@]}"
+        exit 0
+        ;;
+    absent) ;;
+    *)
+        echo "FATAL: the registry cannot say whether ${GIT_SHA} is released (${MARKER});" >&2
+        echo "       see the reason above. Nothing is pushed: rerun once the registry answers." >&2
+        exit "${EXIT_MARKER_LOOKUP}"
+        ;;
+esac
 
 # No marker: this SHA is not released. Anything of it already in the registry is
 # residue of a run that did not finish, and pushing over it releases nothing by itself.
@@ -150,5 +137,5 @@ worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${records[@]
 # is the release: before it, nothing may deploy this SHA; after it, nothing may
 # change it.
 echo "Publishing the release marker ${MARKER}..."
-worker_release_marker_publish "${MARKER}" "${DIGEST_FILE}"
+worker_release_marker_publish "${MARKER}" "${DIGEST_FILE}" || exit "$?"
 echo "${GIT_SHA} is released."

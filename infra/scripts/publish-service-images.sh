@@ -15,15 +15,22 @@
 #
 # The marker, and only the marker, is the state both stages branch on:
 #
-#   marker resolves  -> this SHA is released and frozen. `candidates` pushes nothing;
-#                       `release` re-verifies the digests the marker names, rewrites the
-#                       record and pushes nothing.
+#   marker resolves  -> this SHA is released and frozen. Both stages re-verify the
+#                       release the marker names (release_verify_committed) and push
+#                       nothing; they succeed only if it verifies, and `release` then
+#                       rewrites the record.
 #   marker absent    -> this SHA is not released, however many candidate tags exist.
 #                       `candidates` builds and pushes over them; `release` verifies
 #                       them and commits the release. A run that died in between is
 #                       recovered by rerunning, with nobody deleting anything.
+#   lookup fails     -> the registry cannot say (credentials, transport, 5xx): the SHA
+#                       may be released, so neither stage pushes anything (exit 11).
+#                       Only a registry 404 on the marker's manifest means absent
+#                       (release_marker_lookup in release-chain.sh).
 #
-# A marker that resolves but is unreadable, or names an image that is gone or carries
+# A marker that resolves but is unreadable, is not a valid record of this release
+# (another SHA, source hash or schema, another set of images, a reference its own
+# repository/digest fields contradict), or names an image that is gone or carries
 # another source hash, is corruption of a committed release: refused, never repaired.
 #
 # Usage: publish-service-images.sh candidates|release
@@ -41,7 +48,12 @@
 #   4   building or pushing a candidate failed
 #   7   an image of an already-released SHA carries a wrong or empty source hash
 #   8   a candidate tag does not resolve to a digest, or that digest cannot be pulled
-#   10  the release marker of this SHA is unreadable or names an image that is gone
+#   10  the release marker of this SHA is unreadable, is not a valid record of this
+#       release, or names an image that is gone
+#   11  the registry cannot say whether this SHA is released: nothing is pushed
+#   12  building or pushing the release marker failed: the SHA is not released
+# 7, 10, 11 and 12 are the release protocol's own codes (release-chain.sh), the same in
+# every chain.
 
 set -euo pipefail
 
@@ -49,9 +61,7 @@ EXIT_USAGE=1
 EXIT_CANDIDATE_LABEL=2
 EXIT_CANDIDATE_NO_LABEL=3
 EXIT_BUILD=4
-EXIT_RELEASED_LABEL=7
 EXIT_UNRESOLVED=8
-EXIT_BROKEN_RELEASE=10
 
 STAGE="${1:-}"
 case "${STAGE}" in
@@ -79,6 +89,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=infra/scripts/service-images.sh
 source "${SCRIPT_DIR}/service-images.sh"
+EXIT_MARKER_LOOKUP="${RELEASE_EXIT_MARKER_LOOKUP}"
 
 SOURCE_HASH="$(python3 "${REPO_ROOT}/scripts/shared_freshness.py" hash)"
 if [ -z "${SOURCE_HASH}" ]; then
@@ -88,68 +99,39 @@ fi
 REGISTRY="$(release_image_registry "${GHCR_OWNER}")"
 MARKER="${REGISTRY}/${SERVICE_RELEASE_MARKER_IMAGE}:${GIT_SHA}"
 
-# The source hash label of one pulled image, empty when it has none.
-source_hash_of() {
-    local found
-    found="$(docker inspect "$1" --format "{{index .Config.Labels \"${SERVICE_SOURCE_HASH_LABEL}\"}}")"
-    if [ "${found}" = "<no value>" ]; then
-        found=""
-    fi
-    echo "${found}"
-}
-
 echo "Logging in to GHCR..."
 echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_OWNER}" --password-stdin
 
 # Is this SHA released? Ask the marker, and only the marker, before anything else.
-if marker_digest="$(release_image_digest "${MARKER}" 2>/dev/null)" && [ -n "${marker_digest}" ]; then
-    marker_reference="${REGISTRY}/${SERVICE_RELEASE_MARKER_IMAGE}@${marker_digest}"
-    echo "${GIT_SHA} is already released (${marker_reference}); nothing will be pushed."
-    if [ "${STAGE}" = candidates ]; then
-        # The candidate tags of a released SHA are the images its marker names: a push
-        # now would move them under a committed release.
+# Only an "absent" answer gets past this point, so every push below — the candidates and
+# the marker — is reached through it alone.
+release_marker_lookup "${MARKER}" "${GHCR_OWNER}" "${GHCR_TOKEN}"
+case "${RELEASE_MARKER_STATE}" in
+    present)
+        marker_reference="${REGISTRY}/${SERVICE_RELEASE_MARKER_IMAGE}@${RELEASE_MARKER_DIGEST}"
+        echo "${GIT_SHA} is already released (${marker_reference}); nothing will be pushed."
+        # Both stages run the same re-verification: the candidate tags of a released
+        # SHA are the images its marker names, and a stage that succeeds here says they
+        # still are this tree's release.
+        # shellcheck disable=SC2046 # one word per image name
+        released="$(release_verify_committed "${marker_reference}" "${SERVICE_RELEASE_LABEL}" \
+            "${GIT_SHA}" "${SOURCE_HASH}" "${SERVICE_SOURCE_HASH_LABEL}" "${REGISTRY}" \
+            "${SERVICE_RELEASE_SCHEMA_VERSION}" $(service_image_names))" || exit "$?"
+        if [ "${STAGE}" = release ]; then
+            mapfile -t records <<< "${released}"
+            release_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" \
+                "${SERVICE_RELEASE_SCHEMA_VERSION}" "${records[@]}"
+        fi
+        echo "The release of ${GIT_SHA} verifies."
         exit 0
-    fi
-
-    if ! docker pull "${marker_reference}" >/dev/null; then
-        echo "FATAL: the release marker of ${GIT_SHA} resolves to ${marker_digest}" >&2
-        echo "       but cannot be pulled, so the release cannot be re-verified." >&2
-        exit "${EXIT_BROKEN_RELEASE}"
-    fi
-    payload="$(docker inspect "${marker_reference}" \
-        --format "{{index .Config.Labels \"${SERVICE_RELEASE_LABEL}\"}}")"
-    # shellcheck disable=SC2046 # one word per image name
-    if ! released="$(release_marker_images "${payload}" "${GIT_SHA}" "${REGISTRY}" \
-        "${SERVICE_RELEASE_SCHEMA_VERSION}" $(service_image_names))"; then
-        echo "FATAL: the release marker of ${GIT_SHA} does not carry a usable record." >&2
-        exit "${EXIT_BROKEN_RELEASE}"
-    fi
-
-    records=()
-    while IFS= read -r record; do
-        image="${record%%=*}"
-        reference="${record#*=}"
-        if ! docker pull "${reference}" >/dev/null; then
-            echo "FATAL: the release of ${GIT_SHA} names ${reference}," >&2
-            echo "       which is not in the registry. A committed release is not repaired" >&2
-            echo "       here: publish the next commit instead." >&2
-            exit "${EXIT_BROKEN_RELEASE}"
-        fi
-        found="$(source_hash_of "${reference}")"
-        if [ -z "${found}" ] || [ "${found}" != "${SOURCE_HASH}" ]; then
-            echo "FATAL: the released ${image} of ${GIT_SHA} (${reference})" >&2
-            echo "       carries ${SERVICE_SOURCE_HASH_LABEL}=${found:-(no label)}," >&2
-            echo "       the tree is ${SOURCE_HASH}. A released SHA is never rewritten." >&2
-            exit "${EXIT_RELEASED_LABEL}"
-        fi
-        echo "  ${image}: ${SERVICE_SOURCE_HASH_LABEL}=${found}"
-        records+=("${record}")
-    done <<< "${released}"
-
-    release_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" \
-        "${SERVICE_RELEASE_SCHEMA_VERSION}" "${records[@]}"
-    exit 0
-fi
+        ;;
+    absent) ;;
+    *)
+        echo "FATAL: the registry cannot say whether ${GIT_SHA} is released (${MARKER});" >&2
+        echo "       see the reason above. Nothing is pushed: rerun once the registry answers." >&2
+        exit "${EXIT_MARKER_LOOKUP}"
+        ;;
+esac
 
 # No marker: this SHA is not released. Any candidate of it already in the registry is
 # residue of a run that did not finish, and pushing over it releases nothing by itself.
@@ -195,7 +177,10 @@ for image in $(service_image_names); do
         echo "FATAL: ${remote} resolves to ${digest}, which cannot be pulled." >&2
         exit "${EXIT_UNRESOLVED}"
     fi
-    found="$(source_hash_of "${reference}")"
+    if ! found="$(release_source_hash_of "${reference}" "${SERVICE_SOURCE_HASH_LABEL}")"; then
+        echo "FATAL: ${reference} (${image}) was pulled but cannot be inspected." >&2
+        exit "${EXIT_UNRESOLVED}"
+    fi
     if [ -z "${found}" ]; then
         echo "FATAL: ${reference} carries no ${SERVICE_SOURCE_HASH_LABEL} label," >&2
         echo "       so it cannot say which sources it was built from. Nothing is released." >&2
@@ -216,5 +201,6 @@ release_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" \
 # written. This last write is the release: before it nothing may consume this SHA's
 # service images; after it nothing may change them.
 echo "Publishing the service release marker ${MARKER}..."
-release_marker_publish "${SERVICE_RELEASE_LABEL}" service-images.json "${MARKER}" "${DIGEST_FILE}"
+release_marker_publish "${SERVICE_RELEASE_LABEL}" service-images.json "${MARKER}" "${DIGEST_FILE}" \
+    || exit "$?"
 echo "${GIT_SHA} is released."

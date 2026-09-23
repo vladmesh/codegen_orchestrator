@@ -668,8 +668,24 @@ release, and it is the only thing the deploy consults.
 | what the registry has for a SHA | what happens |
 | --- | --- |
 | a marker | released and frozen: re-verify the digests it names, record them, push nothing, exit 0 |
-| no marker | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
-| a marker naming an image that is gone or built from other sources | refused (exit 7 or 10), never repaired |
+| no marker (the registry answers 404 for its manifest) | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
+| a marker that is not a valid record of this release, or names an image that is gone or built from other sources | refused (exit 10 or 7), never repaired |
+| no answer: credentials refused, transport, rate limit, 5xx | the SHA may be released: nothing is built or pushed (exit 11); rerun once the registry answers |
+
+A failed marker build or push is exit 12 and releases nothing; a rerun writes it. The lookup, the
+record validation and the re-verification of a released SHA live once in
+`infra/scripts/release-chain.sh` and are the same for the service release below:
+
+- **Is the SHA released?** `release_marker_lookup` asks the registry API (token, then the marker's
+  manifest) and has three answers. Only a typed 404 on the manifest is *absent*, and only *absent*
+  leads to any push. A failed `buildx imagetools inspect` is never read as absence: an auth or
+  transport failure reads the same as a missing tag.
+- **Is the record this release?** `release_marker_images` refuses a record of another SHA or
+  another source hash than the tree's, of another schema version (service chain), naming another
+  set of images, naming an image outside this registry or not by digest, or whose `repository` and
+  `digest` fields contradict its `reference`.
+- **Does it still hold?** `release_verify_committed` pulls the marker and every image it names by
+  digest and requires each to carry the tree's non-empty source hash.
 
 The middle row is what a run that failed or was cancelled between two pushes leaves behind. Those
 tags are inert residue, not a half-release: nothing will ever deploy them, and **rerunning the
@@ -743,9 +759,14 @@ as the run artifact `service-images-<sha>` and printed in the job summary.
 
 | what the registry has for a SHA | `candidates` | `release` |
 | --- | --- | --- |
-| a marker | pushes nothing, exit 0 | re-verifies the digests it names and records them, pushes nothing, exit 0 |
-| no marker | builds and pushes every candidate, over any residue | verifies every candidate, then writes the marker |
-| a marker naming an image that is gone, or unreadable (exit 10), or an image with a wrong or empty source hash (exit 7) | pushes nothing | refused, never repaired |
+| a marker | re-verifies the release it names, pushes nothing, exit 0 | re-verifies the release it names and records it, pushes nothing, exit 0 |
+| no marker (the registry answers 404 for its manifest) | builds and pushes every candidate, over any residue | verifies every candidate, then writes the marker |
+| a marker that is unreadable or not a valid record of this release, or names an image that is gone (exit 10), or an image with a wrong or empty source hash (exit 7) | refused, pushes nothing | refused, never repaired |
+| no answer from the registry (exit 11) | pushes nothing | pushes nothing |
+
+Both stages run the same re-verification of a released SHA (`release_verify_committed`), so a
+candidate job never reports success over a broken committed release. A failed marker build or push
+is exit 12.
 
 Candidate tags without a marker are inert: a run that failed between two pushes, or a commit whose
 gate went red, leaves them behind, and a rerun pushes over them. The release job refuses, and writes
