@@ -621,11 +621,12 @@ Deploy is triggered manually via GitHub Actions:
 1. Go to Actions > "Deploy" > Run workflow, pick the environment, and leave `revision` empty to
    deploy the commit the workflow is dispatched on (or give a released SHA: see
    [Rolling back](#rolling-back))
-2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`
-   and secret files, checks out that revision on the host, pulls and verifies both image releases
-   of it concurrently, starts the services from the service release by digest (nothing is built on
-   the host), runs migrations in the released api container, verifies health, seeds configs,
-   reconciles deploy targets and cleans up old images
+2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`,
+   stages that revision on the host and pulls and verifies both image releases of it concurrently
+   from the stage — and only then switches the host: writes the secret files, resets the deploy
+   path to the revision and starts the services from the service release by digest (nothing is
+   built on the host). It then runs migrations in the released api container, verifies health,
+   seeds configs, reconciles deploy targets and cleans up old images
 
 ### The deploy waits for its release, and survives one SSH timeout
 
@@ -804,14 +805,33 @@ of the same revision keeps the previous one), and each image gets the local name
 | 10 | the marker is unreadable, not a valid record of this release, or names an image that is gone |
 | 11 | the registry could not say whether the revision is released |
 
-The step `Pull and verify this revision's worker and service releases` runs the worker pull, the
-service pull and a pull of any third-party image compose names by tag that the host does not have
-yet (`--ignore-buildable --policy missing`) concurrently, and fails if any of them fails — before
-any container changes. Only then does `scripts/service_release.py compose-override` write
-`deployed-service-images.compose.yml` from the service record and the contour's resolved compose
-configuration: every service compose would build locally (all `codegen-orchestrator/<image>:local`
-services, both frontends included) gets `image: <repository>@sha256:…` from the record. A build
-service the release does not contain fails the deploy there instead of being built. Every compose
+**Verify first, then switch.** Running containers bind-mount the deploy path's sources, `shared`
+and `/opt/secrets/github_app.pem`, so nothing that can still refuse the revision may touch those.
+The workflow has one boundary, the first step that does (`Write secrets files to server`):
+
+- Before it, the host is written only where no container looks. `Write .env to server` writes
+  `.env`, which a container reads only when it is created; it stays early because compose needs it
+  to resolve the configuration. The step `Pull and verify this revision's worker and service
+  releases` fetches the revision into the live repository (into `.git` only), stages it as a git
+  worktree at `~/.codegen-release-stage` of the SSH user — outside the deploy path and every mount —
+  and runs everything that can refuse from there. A stage a crashed run left behind is replaced,
+  and the stage is removed however the step ends.
+- At it, adjacent and with no check in between: the secret file is written, `git reset --hard
+  <revision>` moves the deploy path, and `up` starts the release. Only after `up` does
+  `infra/scripts/retag-worker-images.sh` move the local `worker-base-*:latest` names to the worker
+  release the pull verified (`pull-worker-images.sh` runs with `RELEASE_DEFER_RETAG=true`), so a
+  refusal before the switch leaves worker-manager building from its current images.
+
+From the stage, the pull step runs the worker pull, the service pull and a pull of any third-party
+image compose names by tag that the host does not have yet (`--ignore-buildable --policy missing`)
+concurrently, and fails if any of them fails. Then `scripts/service_release.py compose-override`
+generates `deployed-service-images.compose.yml` from the service record and the contour's resolved
+compose configuration: every service compose would build locally (all
+`codegen-orchestrator/<image>:local` services, both frontends included) gets
+`image: <repository>@sha256:…` from the record, and compose checks the result. A build service the
+release does not contain fails the deploy there instead of being built. The records and the override
+are written in the stage and move to the deploy path — untracked files no container mounts — only
+once every pull and check has passed; a refusal leaves the deploy path as it was. Every compose
 call after that adds `-f deployed-service-images.compose.yml`, and every `up` runs with
 `--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations and the
 config seeder run in the api container that `up` started from the release; nothing is built for

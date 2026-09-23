@@ -87,14 +87,18 @@ def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again(
 
     Resolving the same tag a second time can answer with a different digest, and then
     the deploy's record is not evidence about the images it verified. The verification
-    writes the record on the host; this step only carries that file back.
+    writes the record on the host — staged, and moved to its place in the deploy path
+    once every pull and check passed; this step only carries that file back.
     """
     steps = _deploy_steps()
     pull = _index_of(steps, "pull-worker-images.sh")
     record = _index_of(steps, "GITHUB_STEP_SUMMARY")
     script = steps[record][1]
 
-    assert f"DIGEST_FILE='{HOST_RECORD}'" in steps[pull][1]
+    pull_script = steps[pull][1]
+    assert 'DIGEST_FILE="${out}/deployed-worker-images.json"' in pull_script
+    assert "live=${{ env.DEPLOY_PATH }}" in pull_script
+    assert 'mv -f "${out}/${file}" "${live}/${file}"' in pull_script
     assert pull < record < min(_indices_of(steps, "up -d"))
     assert HOST_RECORD in script
     assert "imagetools" not in script, "the record must not be a second resolution"

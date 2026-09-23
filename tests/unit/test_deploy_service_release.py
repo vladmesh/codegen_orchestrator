@@ -7,9 +7,12 @@ Held down over the real `.github/workflows/deploy.yml`:
   host checkout, both pulls, the records and the target reconcile;
 * a revision from before the service release was consumed is refused before the host;
 * no step builds an image on the host, or prunes a build cache it no longer has;
-* the worker and service releases are pulled and verified, concurrently, before the
-  first step that changes a running container, and a failure of either fails the step
-  with nothing written;
+* one boundary, the first step that touches what a running container sees: before it,
+  the host is written only in a staged worktree of the revision outside the deploy path
+  and in files no container mounts; the worker and service releases are pulled and
+  verified there, concurrently, and a failure of either fails the step with nothing
+  moved; after it come, adjacent and in this order, the bind-mounted secret files, the
+  reset of the bind-mounted source tree, and `up`;
 * every compose call from the pull on runs the release override, and every `up` runs
   with `--no-build --pull never`.
 
@@ -22,7 +25,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
 
 import pytest
@@ -38,6 +40,7 @@ OVERRIDE = "-f ${{ env.SERVICE_RELEASE_COMPOSE }}"
 PULL_STEP = "Pull and verify this revision's worker and service releases"
 VALIDATE_STEP = "Validate the deployed revision"
 PREDATES_STEP = "Refuse a revision that predates pulled service releases"
+BOUNDARY_STEPS = ("Write secrets files to server", "Check out deployed revision", "Deploy")
 WAIT_STEP = "Wait for this revision's worker and service releases"
 EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 CHANGING_SUBCOMMANDS = ("up", "down", "restart", "exec", "run", "stop", "start", "rm", "kill")
@@ -121,13 +124,12 @@ def test_no_step_reads_the_dispatched_commit_instead_of_the_deployed_revision():
 def test_every_step_that_names_a_revision_names_the_deployed_one():
     assert _step("Checkout code")["with"]["ref"] == REVISION
     assert '--revision "${DEPLOY_REVISION}"' in _step(WAIT_STEP)["run"]
-    checkout = _step("Check out deployed revision")["run"]
-    assert f"git fetch --no-tags origin {REVISION}" in checkout
-    assert f"git reset --hard {REVISION}" in checkout
+    assert f"git reset --hard {REVISION}" in _step("Check out deployed revision")["run"]
     pull = _script(_step(PULL_STEP))
+    assert f'git -C "${{live}}" fetch --no-tags origin {REVISION}' in pull
+    assert f'git -C "${{live}}" worktree add --detach "${{stage}}" {REVISION}' in pull
     assert f"WORKER_IMAGE_TAG='{REVISION}'" in pull
     assert f"SERVICE_IMAGE_TAG='{REVISION}'" in pull
-    assert f'[ "${{deployed}}" != "{REVISION}" ]' in pull
     assert f"--revision {REVISION}" in _script(_step("Reconcile managed deploy targets"))
     for upload in ("Upload deployed worker image digests", "Upload deployed service image digests"):
         assert _step(upload)["with"]["name"].endswith(f"-{REVISION}")
@@ -163,14 +165,19 @@ def test_a_revision_that_predates_the_service_release_pull_is_refused_before_the
     assert names.index("Checkout code") < names.index(PREDATES_STEP) < names.index(WAIT_STEP)
     assert names.index(WAIT_STEP) < first_host_step
     script = _step(PREDATES_STEP)["run"]
+    tooling = _job()["env"]["RELEASE_TOOLING"]
+    env = {"DEPLOY_REVISION": "x", "RELEASE_TOOLING": tooling}
 
-    assert _run_bash(script, {"DEPLOY_REVISION": "x"}, REPO_ROOT).returncode == 0
+    assert "infra/scripts/pull-service-images.sh" in tooling.split()
+    assert _run_bash(script, env, REPO_ROOT).returncode == 0
     old_checkout = tmp_path / "checkout"
     (old_checkout / "scripts").mkdir(parents=True)
     (old_checkout / "scripts" / "wait_worker_release.py").write_text("")
-    result = _run_bash(script, {"DEPLOY_REVISION": "x"}, old_checkout)
+    result = _run_bash(script, env, old_checkout)
     assert result.returncode == 1
     assert "predates" in result.stderr
+    # The host checks the revision it staged against the same list.
+    assert "for path in ${{ env.RELEASE_TOOLING }}; do" in _script(_step(PULL_STEP))
 
 
 # --- no build on the host --------------------------------------------------------------
@@ -210,19 +217,66 @@ def test_every_compose_call_after_the_pull_runs_the_release():
             assert OVERRIDE in call, f"{step['name']} runs compose without the release: {call}"
 
 
-def test_both_releases_are_pulled_and_verified_before_any_container_changes():
-    steps = _steps()
-    names = _names()
-    pull = names.index(PULL_STEP)
-    changing = [i for i, step in enumerate(steps) if _changes_containers(step)]
+def _boundary() -> int:
+    """The index of the first step that touches what a running container sees."""
+    return _names().index(BOUNDARY_STEPS[0])
 
-    assert changing, "the deploy must change containers somewhere"
-    assert pull < min(changing)
-    assert names.index("Check out deployed revision") < pull
-    script = _script(steps[pull])
-    assert "bash infra/scripts/pull-worker-images.sh" in script
-    assert "bash infra/scripts/pull-service-images.sh" in script
-    assert not _changes_containers(steps[pull])
+
+def test_nothing_before_the_boundary_touches_what_a_running_container_sees():
+    """Mounted secrets, the mounted source tree, and the containers themselves.
+
+    Before the boundary a step may write to the runner, to the staged worktree, and to
+    files no container mounts. So none of them writes /opt/secrets, moves the live tree
+    (the one git operations allowed there write only into .git: a fetch and the stage's
+    worktree), or runs a compose subcommand that changes a container.
+    """
+    for step in _steps()[: _boundary()]:
+        script = _script(step)
+        # .env names the key's path as a value; writing there is what is refused.
+        writes = re.findall(
+            r"(?:>|\b(?:mkdir|chown|chmod|cp|mv|install|tee)\b)[^\n]*/opt/secrets", script
+        )
+        assert not writes, f"{step['name']} writes the mounted secrets: {writes}"
+        for command in ("git reset", "git checkout", "git pull", "git clean", "git merge"):
+            assert command not in script, f"{step['name']} moves the live tree: {command}"
+        assert not _changes_containers(step), step["name"]
+    pull = _script(_step(PULL_STEP))
+    git_calls = re.findall(r"\bgit\s+-C\s+\"\$\{live\}\"\s+(\w+)", pull)
+    assert set(git_calls) == {"fetch", "worktree"}, git_calls
+
+
+def test_the_switch_follows_every_pull_and_check_adjacent_and_in_order():
+    names = _names()
+    steps = _steps()
+    boundary = _boundary()
+
+    assert names[boundary : boundary + 3] == list(BOUNDARY_STEPS)
+    assert names.index(PULL_STEP) < boundary
+    assert names.index(WAIT_STEP) < boundary
+    assert all(
+        names.index(step) < boundary
+        for step in names
+        if "pull-" in _script(_step(step)) or "compose-override" in _script(_step(step))
+    )
+    changing = [i for i, step in enumerate(steps) if _changes_containers(step)]
+    assert min(changing) == names.index("Deploy")
+    secrets, checkout, deploy = (_script(_step(name)) for name in BOUNDARY_STEPS)
+    assert "/opt/secrets/github_app.pem" in secrets
+    assert f"git reset --hard {REVISION}" in checkout
+    up = deploy.index("up -d --remove-orphans --no-build --pull never")
+    assert up < deploy.index(
+        "bash infra/scripts/retag-worker-images.sh deployed-worker-images.json"
+    )
+
+
+def test_the_worker_release_is_verified_before_the_boundary_and_retagged_after_it():
+    pull = _script(_step(PULL_STEP))
+
+    assert "bash infra/scripts/pull-worker-images.sh" in pull
+    assert "bash infra/scripts/pull-service-images.sh" in pull
+    assert "RELEASE_DEFER_RETAG=true" in pull
+    for step in _steps()[: _boundary()]:
+        assert "retag-worker-images.sh" not in _script(step), step["name"]
 
 
 def test_migrations_and_the_seeder_run_in_the_released_api_container():
@@ -247,9 +301,8 @@ def test_cleanup_is_last_and_bounded():
     assert "previous-deployed-service-images.json" in _script(cleanup)
 
 
-# --- the pull step, rendered and run -----------------------------------------------------
+# --- the pull step, rendered and run against a real git deploy path -----------------------
 
-DEPLOYED = REAL_RECORD["git_sha"]
 CONFIG = {
     "services": {
         "api": {"image": "codegen-orchestrator/api:local", "build": {"context": "."}},
@@ -261,121 +314,231 @@ CONFIG = {
         "redis": {"image": "redis:7.4.10-alpine"},
     }
 }
+RECORDS = (
+    "deployed-worker-images.json",
+    "previous-deployed-worker-images.json",
+    "deployed-service-images.json",
+    "previous-deployed-service-images.json",
+)
 
 # Each consumer announces its start and then waits for the other's: run one after the
-# other, the first would give up and the step would fail.
+# other, the first would give up and the step would fail. Both check they run from the
+# stage — the revision's tree, not the live one — and write only where they are told.
 FAKE_WORKER_PULL = r"""#!/usr/bin/env bash
+[ "${RELEASE_DEFER_RETAG:-}" = true ] || { echo "live worker tags would move" >&2; exit 1; }
+[ "$(cat shared/marker.txt)" = new ] || { echo "not run from the stage" >&2; exit 1; }
 touch "${FAKE_HOST}/worker.started"
 for _ in $(seq 50); do [ -f "${FAKE_HOST}/service.started" ] && break; sleep 0.1; done
 [ -f "${FAKE_HOST}/service.started" ] || { echo "worker pull ran alone" >&2; exit 1; }
-echo "{\"git_sha\": \"${WORKER_IMAGE_TAG}\"}" > "${DIGEST_FILE}"
+echo '{"git_sha": "worker"}' > "${DIGEST_FILE}"
 exit "${FAKE_WORKER_EXIT:-0}"
 """
 FAKE_SERVICE_PULL = r"""#!/usr/bin/env bash
+[ "$(cat shared/marker.txt)" = new ] || { echo "not run from the stage" >&2; exit 1; }
 touch "${FAKE_HOST}/service.started"
 for _ in $(seq 50); do [ -f "${FAKE_HOST}/worker.started" ] && break; sleep 0.1; done
 [ -f "${FAKE_HOST}/worker.started" ] || { echo "service pull ran alone" >&2; exit 1; }
 [ -n "${PREVIOUS_DIGEST_FILE}" ] || exit 1
+if [ -f "${DIGEST_FILE}" ]; then cp "${DIGEST_FILE}" "${PREVIOUS_DIGEST_FILE}"; fi
 cp "${FAKE_HOST}/release.json" "${DIGEST_FILE}"
 exit "${FAKE_SERVICE_EXIT:-0}"
 """
 FAKE_DOCKER = r"""#!/usr/bin/env bash
-echo "$*" >> "${FAKE_HOST}/docker.log"
+echo "$(pwd) $*" >> "${FAKE_HOST}/docker.log"
+[ -f .env ] || { echo "compose has no .env here" >&2; exit 1; }
 case " $* " in
     *" pull "*) exit "${FAKE_THIRD_PARTY_EXIT:-0}" ;;
     *" config --format json "*) cat "${FAKE_HOST}/config.json" ;;
-    *" config --quiet "*) exit 0 ;;
+    *" config --quiet "*) exit "${FAKE_CONFIG_EXIT:-0}" ;;
     *) echo "unexpected docker $*" >&2; exit 99 ;;
 esac
 """
-FAKE_GIT = """#!/usr/bin/env bash
-echo "${FAKE_HEAD}"
-"""
+GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
 
 
-def _render(script: str, deploy_path: Path) -> str:
-    values = {
-        "env.DEPLOY_PATH": str(deploy_path),
-        "env.DEPLOY_REVISION": DEPLOYED,
-        "env.COMPOSE_ARGS": "-f docker-compose.yml -f docker-compose.prod.yml",
-        "env.SERVICE_RELEASE_COMPOSE": "deployed-service-images.compose.yml",
-        "secrets.GHCR_TOKEN || github.token": "test-token",
-        "github.repository_owner": "vladmesh",
-    }
-    return EXPRESSION.sub(lambda match: values[match.group(1)], script)
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        env={"PATH": "/usr/bin:/bin", **GIT_ENV},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+class DeployHost:
+    """A deploy path running revision `old`, asked to deploy `new`."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.live = root / "live"
+        self.home = root / "home"
+        self.home.mkdir()
+        files = {
+            "infra/scripts/pull-worker-images.sh": FAKE_WORKER_PULL,
+            "infra/scripts/pull-service-images.sh": FAKE_SERVICE_PULL,
+            "infra/scripts/retag-worker-images.sh": "",
+            "scripts/wait_release.py": "",
+            "scripts/shared_freshness.py": "print('tree-hash')\n",
+            "scripts/service_release.py": (
+                REPO_ROOT / "scripts" / "service_release.py"
+            ).read_text(),
+            "scripts/rotate_worker_image_records.py": (
+                REPO_ROOT / "scripts" / "rotate_worker_image_records.py"
+            ).read_text(),
+            "scripts/cleanup_worker_images.py": (
+                REPO_ROOT / "scripts" / "cleanup_worker_images.py"
+            ).read_text(),
+            "shared/marker.txt": "old\n",
+            ".gitignore": ".env\n*.json\n*.compose.yml\n",
+        }
+        for name, body in files.items():
+            (self.live / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.live / name).write_text(body)
+        _git(self.live, "init", "-q")
+        _git(self.live, "add", "-A")
+        _git(self.live, "commit", "-qm", "old")
+        self.old = _git(self.live, "rev-parse", "HEAD")
+        (self.live / "shared" / "marker.txt").write_text("new\n")
+        _git(self.live, "commit", "-qam", "new")
+        self.new = _git(self.live, "rev-parse", "HEAD")
+        _git(self.live, "reset", "-q", "--hard", self.old)
+        _git(self.live, "remote", "add", "origin", str(self.live))
+        (self.live / ".env").write_text("POSTGRES_DB=x\n")
+        # What the running deployment recorded, and must keep until the switch.
+        for record in RECORDS:
+            (self.live / record).write_text(f'{{"running": "{record}"}}\n')
+        binaries = root / "bin"
+        binaries.mkdir()
+        (binaries / "docker").write_text(FAKE_DOCKER)
+        (binaries / "docker").chmod(0o755)
+        (root / "config.json").write_text(json.dumps(CONFIG))
+        (root / "release.json").write_text(json.dumps(REAL_RECORD))
+        (root / "docker.log").write_text("")
+
+    @property
+    def stage(self) -> Path:
+        return self.home / ".stage"
+
+    def pull(self, revision: str | None = None, **overrides: str):
+        values = {
+            "env.DEPLOY_PATH": str(self.live),
+            "env.DEPLOY_REVISION": revision or self.new,
+            "env.RELEASE_STAGE": ".stage",
+            "env.RELEASE_TOOLING": _job()["env"]["RELEASE_TOOLING"],
+            "env.COMPOSE_ARGS": "-f docker-compose.yml -f docker-compose.prod.yml",
+            "env.SERVICE_RELEASE_COMPOSE": "deployed-service-images.compose.yml",
+            "secrets.GHCR_TOKEN || github.token": "test-token",
+            "github.repository_owner": "vladmesh",
+        }
+        script = EXPRESSION.sub(lambda m: values[m.group(1)], _script(_step(PULL_STEP)))
+        env = {
+            "PATH": f"{self.root / 'bin'}:/usr/bin:/bin",
+            "HOME": str(self.home),
+            "FAKE_HOST": str(self.root),
+            **GIT_ENV,
+            **overrides,
+        }
+        return subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60
+        )
+
+    def assert_live_tree_untouched(self) -> None:
+        assert _git(self.live, "rev-parse", "HEAD") == self.old
+        assert (self.live / "shared" / "marker.txt").read_text() == "old\n"
+        assert _git(self.live, "status", "--porcelain", "--untracked-files=no") == ""
+        assert not self.stage.exists(), "the stage is removed however the step ends"
+        assert _git(self.live, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
 @pytest.fixture
-def host(tmp_path: Path) -> Path:
-    deploy = tmp_path / "deploy"
-    (deploy / "scripts").mkdir(parents=True)
-    (deploy / "infra" / "scripts").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "scripts" / "service_release.py", deploy / "scripts")
-    (deploy / "scripts" / "shared_freshness.py").write_text("print('tree-hash')\n")
-    (deploy / "scripts" / "rotate_worker_image_records.py").write_text("")
-    (deploy / "infra" / "scripts" / "pull-worker-images.sh").write_text(FAKE_WORKER_PULL)
-    (deploy / "infra" / "scripts" / "pull-service-images.sh").write_text(FAKE_SERVICE_PULL)
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    for name, body in (("docker", FAKE_DOCKER), ("git", FAKE_GIT)):
-        (binaries / name).write_text(body)
-        (binaries / name).chmod(0o755)
-    (tmp_path / "config.json").write_text(json.dumps(CONFIG))
-    (tmp_path / "release.json").write_text(json.dumps(REAL_RECORD))
-    (tmp_path / "docker.log").write_text("")
-    return tmp_path
+def deploy_host(tmp_path: Path) -> DeployHost:
+    return DeployHost(tmp_path)
 
 
-def _pull(host: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
-    script = _render(_script(_step(PULL_STEP)), host / "deploy")
-    env = {
-        "PATH": f"{host / 'bin'}:/usr/bin:/bin",
-        "FAKE_HOST": str(host),
-        "FAKE_HEAD": DEPLOYED,
-        **overrides,
-    }
-    return subprocess.run(
-        ["bash", "-c", script], env=env, capture_output=True, text=True, check=False, timeout=60
-    )
+def _override(host: DeployHost) -> Path:
+    return host.live / "deployed-service-images.compose.yml"
 
 
-def _override(host: Path) -> Path:
-    return host / "deploy" / "deployed-service-images.compose.yml"
-
-
-def test_both_releases_are_pulled_concurrently_and_then_compose_runs_the_record(host: Path):
-    result = _pull(host)
+def test_the_revision_is_verified_from_a_stage_and_only_the_records_reach_the_live_path(
+    deploy_host: DeployHost,
+):
+    result = deploy_host.pull()
 
     assert result.returncode == 0, result.stdout + result.stderr
-    services = yaml.safe_load(_override(host).read_text())["services"]
+    deploy_host.assert_live_tree_untouched()
+    services = yaml.safe_load(_override(deploy_host).read_text())["services"]
     assert services == {
         "api": {"image": REAL_RECORD["images"]["api"]["reference"]},
         "architect": {"image": REAL_RECORD["images"]["langgraph"]["reference"]},
         "user-dashboard": {"image": REAL_RECORD["images"]["user-dashboard"]["reference"]},
     }
-    docker = (host / "docker.log").read_text()
-    assert "pull --ignore-buildable --policy missing --quiet" in docker
-    assert "-f deployed-service-images.compose.yml config --quiet" in docker
+    live = deploy_host.live
+    assert json.loads((live / "deployed-service-images.json").read_text()) == REAL_RECORD
+    assert (live / "previous-deployed-service-images.json").read_text() == (
+        '{"running": "deployed-service-images.json"}\n'
+    )
+    assert json.loads((live / "deployed-worker-images.json").read_text()) == {"git_sha": "worker"}
+    docker = (deploy_host.root / "docker.log").read_text().splitlines()
+    assert docker, "compose ran"
+    assert all(line.startswith(str(deploy_host.stage)) for line in docker), docker
+    assert any("pull --ignore-buildable --policy missing --quiet" in line for line in docker)
+    assert any(
+        ".release-out/deployed-service-images.compose.yml config --quiet" in line for line in docker
+    )
 
 
 @pytest.mark.parametrize(
     "failure",
-    [{"FAKE_WORKER_EXIT": "5"}, {"FAKE_SERVICE_EXIT": "9"}, {"FAKE_THIRD_PARTY_EXIT": "1"}],
+    [
+        {"FAKE_WORKER_EXIT": "5"},
+        {"FAKE_SERVICE_EXIT": "9"},
+        {"FAKE_THIRD_PARTY_EXIT": "1"},
+        {"FAKE_CONFIG_EXIT": "1"},
+    ],
 )
-def test_a_failure_of_either_pull_fails_the_step_before_compose_is_pointed_anywhere(
-    host: Path, failure: dict[str, str]
+def test_a_refusal_leaves_the_live_path_exactly_as_it_was(
+    deploy_host: DeployHost, failure: dict[str, str]
 ):
-    result = _pull(host, **failure)
+    before = {record: (deploy_host.live / record).read_text() for record in RECORDS}
+
+    result = deploy_host.pull(**failure)
+
+    assert result.returncode != 0
+    deploy_host.assert_live_tree_untouched()
+    assert not _override(deploy_host).exists()
+    assert {record: (deploy_host.live / record).read_text() for record in RECORDS} == before
+
+
+def test_a_stage_left_by_a_crashed_run_is_replaced(deploy_host: DeployHost):
+    deploy_host.stage.mkdir()
+    (deploy_host.stage / "leftover").write_text("from a run that died\n")
+
+    result = deploy_host.pull()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    deploy_host.assert_live_tree_untouched()
+
+
+def test_a_revision_without_the_release_tooling_is_refused_on_the_host_before_any_pull(
+    deploy_host: DeployHost,
+):
+    (deploy_host.live / "scripts" / "service_release.py").unlink()
+    _git(deploy_host.live, "commit", "-qam", "predates")
+    predates = _git(deploy_host.live, "rev-parse", "HEAD")
+    _git(deploy_host.live, "reset", "-q", "--hard", deploy_host.old)
+
+    result = deploy_host.pull(revision=predates)
 
     assert result.returncode == 1
-    assert "pulling the release failed" in result.stderr
-    assert not _override(host).exists()
-    assert "config --format json" not in (host / "docker.log").read_text()
-
-
-def test_a_host_at_another_revision_is_refused_before_anything_is_pulled(host: Path):
-    result = _pull(host, FAKE_HEAD="0" * 40)
-
-    assert result.returncode == 1
-    assert not (host / "worker.started").exists()
-    assert not (host / "service.started").exists()
+    assert "predates pulled service releases" in result.stderr
+    assert not (deploy_host.root / "worker.started").exists()
+    assert not (deploy_host.root / "service.started").exists()
+    deploy_host.assert_live_tree_untouched()

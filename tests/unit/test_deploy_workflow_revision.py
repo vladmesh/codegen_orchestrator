@@ -8,11 +8,14 @@ uses that one value.
 """
 
 from pathlib import Path
+import re
 
 import yaml
 
 DEPLOY_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yml"
 DEPLOY_SHA = "${{ env.DEPLOY_REVISION }}"
+# `git fetch`, or `git -C <path> fetch` for a fetch into another tree.
+GIT_FETCH = re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?fetch\b")
 
 
 def _step_scripts() -> dict[str, str]:
@@ -43,10 +46,19 @@ def test_deploy_does_not_take_its_revision_from_origin_main():
 
 
 def test_deploy_checks_out_the_deployed_revision():
-    scripts = _step_scripts()
-    revision_steps = [name for name, script in scripts.items() if "git fetch" in script]
+    """Fetched and staged first, the live tree reset to it only at the switch.
 
-    assert len(revision_steps) == 1, f"expected one revision step, got {revision_steps}"
-    script = scripts[revision_steps[0]]
-    assert f"git fetch --no-tags origin {DEPLOY_SHA}" in script
-    assert f"git reset --hard {DEPLOY_SHA}" in script
+    The fetch writes only into .git, which no container mounts; the reset moves the
+    bind-mounted sources, so it is a later step (tests/unit/test_deploy_service_release.py
+    pins that it follows every pull and check).
+    """
+    scripts = _step_scripts()
+    names = list(scripts)
+    fetch_steps = [name for name, script in scripts.items() if GIT_FETCH.search(script)]
+    reset_steps = [name for name, script in scripts.items() if "git reset" in script]
+
+    assert len(fetch_steps) == 1, f"expected one fetch step, got {fetch_steps}"
+    assert len(reset_steps) == 1, f"expected one reset step, got {reset_steps}"
+    assert f"fetch --no-tags origin {DEPLOY_SHA}" in scripts[fetch_steps[0]]
+    assert f"git reset --hard {DEPLOY_SHA}" in scripts[reset_steps[0]]
+    assert names.index(fetch_steps[0]) < names.index(reset_steps[0])

@@ -26,6 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PULL_SCRIPT = REPO_ROOT / "infra" / "scripts" / "pull-worker-images.sh"
+RETAG_SCRIPT = REPO_ROOT / "infra" / "scripts" / "retag-worker-images.sh"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 DEPLOYED_SHA = "0123456789abcdef0123456789abcdef01234567"
 REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
@@ -90,7 +91,14 @@ case "${command}" in
             echo "${FAKE_LABEL_DEFAULT}"
         fi
         ;;
-    tag|images)
+    tag)
+        # An image that is not on the host cannot be named either.
+        if [ "$(image_of "$1")" = "${FAKE_UNPULLABLE_IMAGE:-}" ]; then
+            echo "Error response from daemon: No such image: $1" >&2
+            exit 1
+        fi
+        ;;
+    images)
         ;;
     *)
         echo "fake docker: unexpected command ${command}" >&2
@@ -480,3 +488,78 @@ def test_the_script_declares_no_fallback_tag():
     assert "WORKER_IMAGE_TAG:?" in script
     assert "Authorization: Bearer ${registry_token}" not in script
     assert '"@${AUTH_HEADER_FILE}"' in script
+
+
+# --- a deferred retag: verify before the deploy's switch, move the names after it ---
+
+
+def test_a_deferred_retag_verifies_and_records_but_moves_no_local_name(run_pull):
+    result, calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert [call for call in calls if call.startswith("pull ") and "@sha256:" in call]
+    assert set(json.loads(record.read_text())["images"]) == set(CHAIN)
+
+
+def _retag(tmp_path, record_path, **overrides):
+    """retag-worker-images.sh against the same fake docker the pull tests use."""
+    binaries = tmp_path / "bin"
+    log = tmp_path / "docker.log"
+    log.write_text("")
+    environment = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "FAKE_DOCKER_LOG": str(log),
+        **overrides,
+    }
+    result = subprocess.run(
+        ["bash", str(RETAG_SCRIPT), str(record_path)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=tmp_path,
+    )
+    return result, log.read_text().splitlines()
+
+
+def test_the_retag_after_the_switch_names_exactly_the_verified_digests(run_pull, tmp_path):
+    pulled, _calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+    assert pulled.returncode == 0, pulled.stderr
+
+    result, calls = _retag(tmp_path, record)
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(calls) == sorted(
+        f"tag {REGISTRY}/{image}@sha256:{image} {image}:latest" for image in CHAIN
+    )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "{ not json",
+        json.dumps({"images": {}}),
+        json.dumps(
+            {"images": {image: {"reference": f"{REGISTRY}/{image}:latest"} for image in CHAIN}}
+        ),
+    ],
+)
+def test_the_retag_refuses_a_record_that_is_not_the_chain_by_digest(run_pull, tmp_path, record):
+    run_pull()  # creates the fake docker
+    path = tmp_path / "record.json"
+    path.write_text(record)
+
+    result, calls = _retag(tmp_path, path)
+
+    assert result.returncode == 2, result.stderr
+    assert calls == []
+
+
+def test_the_retag_fails_loudly_when_a_verified_image_is_gone(run_pull, tmp_path):
+    _pulled, _calls, record = run_pull(RELEASE_DEFER_RETAG="true")
+
+    result, _calls = _retag(tmp_path, record, FAKE_UNPULLABLE_IMAGE="worker-base-codex")
+
+    assert result.returncode == 3, result.stderr
+    assert "worker-base-codex" in result.stderr
