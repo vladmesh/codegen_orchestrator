@@ -28,7 +28,16 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRetryRead,
     infrastructure_refusal_detail,
 )
-from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_KEY, OwnerNotification
+from shared.contracts.dto.lifecycle_wait import (
+    UserSecretWaitCommand,
+    UserSecretWaitDisposition,
+    UserSecretWaitRead,
+)
+from shared.contracts.dto.owner_notification import (
+    OWNER_NOTIFICATION_KEY,
+    OwnerNotification,
+    OwnerNotificationState,
+)
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
 from shared.contracts.dto.state_wait import (
@@ -41,6 +50,7 @@ from shared.contracts.dto.state_wait import (
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.models import Project, Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.models.story import Story
@@ -414,6 +424,84 @@ async def park_infrastructure_refusal(
     if disposition is EngineeringInfrastructureParkDisposition.PARKED:
         await db.commit()
     return _park_read(disposition, story, task, park)
+
+
+@action_router.post(
+    "/{story_id}/park-waiting-user-secret",
+    response_model=UserSecretWaitRead,
+)
+async def park_waiting_user_secret(
+    story_id: str,
+    command: UserSecretWaitCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> UserSecretWaitRead:
+    """Park a deploying story on a missing user secret and owe the owner the ask.
+
+    The deploy supervisor's path for a deploy Run that reported missing secrets.
+    On the locked Story and then that Run, the ``waiting_user_secret`` transition
+    and the owed ask on the Run commit together or not at all, so a story never
+    waits on an ask nobody owes, and an ask is never owed for a wait that did
+    not start. The ask is ``story_waiting_user_secret``, true while the story is
+    in ``waiting_user_secret``; its ``delivered_at`` is what the state-age
+    watchdog measures the wait from, and nothing here sets it.
+
+    An ask already on the Run is kept, not replaced: this Run's wait is asked
+    for once, and a delivery in flight is never reset. A story already waiting
+    is a repeat whose answer was lost: nothing is written, and the Run's ask is
+    returned for delivery.
+    """
+    story = await _get_story_for_update(story_id, db)
+    run = await db.scalar(select(Run).where(Run.id == command.run_id).with_for_update())
+    if run is None or run.type != RunType.DEPLOY.value or run.story_id != story.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "stale_attempt_fence",
+                "message": "The named Run is not a deploy Run of this story.",
+            },
+        )
+    stored = (run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY)
+    existing = None if stored is None else OwnerNotification.model_validate(stored)
+    if story.status == StoryStatus.WAITING_USER_SECRET.value:
+        return UserSecretWaitRead(
+            disposition=UserSecretWaitDisposition.ALREADY_WAITING,
+            story_id=story.id,
+            story_status=StoryStatus.WAITING_USER_SECRET,
+            run_id=run.id,
+            owner_notification=existing,
+        )
+    _do_transition(story, StoryStatus.WAITING_USER_SECRET)
+    ask = existing
+    if existing is None or existing.state is OwnerNotificationState.VOIDED:
+        ask = OwnerNotification(
+            event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+            text=command.text,
+            story_id=story.id,
+            project_id=str(story.project_id),
+            terminal_status=StoryStatus.WAITING_USER_SECRET,
+            state=OwnerNotificationState.OWED,
+            owed_at=datetime.now(UTC),
+        )
+        run.run_metadata = {
+            **(run.run_metadata or {}),
+            OWNER_NOTIFICATION_KEY: ask.model_dump(mode="json"),
+        }
+    await db.commit()
+    logger.info(
+        "story_waiting_user_secret",
+        story_id=story.id,
+        run_id=run.id,
+        actor=command.actor,
+        ask_state=ask.state.value,
+    )
+    return UserSecretWaitRead(
+        disposition=UserSecretWaitDisposition.WAITING,
+        story_id=story.id,
+        story_status=StoryStatus.WAITING_USER_SECRET,
+        run_id=run.id,
+        owner_notification=ask,
+    )
 
 
 def _missing_secrets_saved(run: Run, project: Project) -> bool:

@@ -17,6 +17,7 @@ from shared.allocation_disposition import (
     may_terminate_story,
     refusal_routing,
 )
+from shared.contracts.dto.lifecycle_wait import UserSecretWaitCommand
 from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
@@ -1384,17 +1385,20 @@ async def _handle_deploy_waiting_user_secret(
 ) -> None:
     """Deploy is blocked on a required user secret — park the story, ask the owner once.
 
-    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED), and the request
-    goes through the durable owner-notification seam in its mandated order: owe
-    the ask on this Run, transition, deliver. The record is what the wait's age
-    bound reads: its clock starts only when the record says the ask was
-    delivered, so a publish that failed, an owner nobody can reach, or a process
-    that died before asking can never start it.
+    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED) in one API
+    transaction with the ask owed on this Run
+    (`POST /stories/{id}/park-waiting-user-secret`), so the wait and its ask
+    commit together or not at all; this tick then spends one delivery attempt
+    and the owner-notification sweep owns the rest. The record is what the
+    wait's age bound reads: its clock starts only when the record says the ask
+    was delivered, so a publish that failed, an owner nobody can reach, or a
+    process that died before asking can never start it.
 
-    Repeating this for the same Run owes nothing new — `owe_owner_notification`
-    returns the record already there — so a tick that retries an entry whose
-    transition was lost cannot ask twice. supervise_waiting_user_secret_stories
-    only checks for the secret's arrival; it never re-sends the request.
+    Repeating this for the same Run owes nothing new — the API keeps an ask the
+    Run already carries and answers a story already waiting with that ask — so
+    a tick that retries an entry whose answer was lost cannot ask twice.
+    supervise_waiting_user_secret_stories only checks for the secret's arrival;
+    it never re-sends the request.
     """
     missing = run.result.missing_user_secrets
     log.info(
@@ -1403,9 +1407,21 @@ async def _handle_deploy_waiting_user_secret(
         missing=[m.key for m in missing],
     )
 
-    owed = await owe_user_secret_request(api_client, run, story_id, project_id, log)
-    await api_client.wait_user_secret_story(story_id)
-    await deliver_user_secret_request(api_client, redis_client, run, owed, log)
+    parked = await api_client.park_waiting_user_secret(
+        story_id,
+        UserSecretWaitCommand(
+            run_id=run.id, text=_user_secret_request_text(missing), actor="supervisor"
+        ),
+    )
+    log.info(
+        "deploy_waiting_user_secret_parked",
+        run_id=run.id,
+        disposition=parked.disposition.value,
+    )
+    if parked.owner_notification is not None:
+        await deliver_user_secret_request(
+            api_client, redis_client, run, parked.owner_notification, log
+        )
 
 
 def _user_secret_request_text(missing) -> str:
@@ -1439,6 +1455,10 @@ async def owe_user_secret_request(
     is WAITING_USER_SECRET, so the seam publishes it only while the story is
     really waiting, and voids it — sending nothing — if the secret arrived and
     the story moved on first.
+
+    Entering the wait owes the ask in the transition's own API transaction
+    (`_handle_deploy_waiting_user_secret`); this is for a story already waiting
+    without one, which the state-age watchdog asks once.
     """
     return await owe_owner_notification(
         api_client,

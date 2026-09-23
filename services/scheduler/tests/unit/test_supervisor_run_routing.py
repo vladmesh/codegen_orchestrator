@@ -28,6 +28,7 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
     EngineeringBudgetReservationState,
 )
+from shared.contracts.dto.lifecycle_wait import UserSecretWaitDisposition, UserSecretWaitRead
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
@@ -53,6 +54,7 @@ from shared.contracts.dto.work_admission import (
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, QA_QUEUE
 from shared.tests.allocation_routing_cases import (
     REFUSAL_ROUTING_CASES,
@@ -163,7 +165,7 @@ def api_client():
         admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="qa-test"
     )
     # The API grants the delivery attempt on whatever record it holds.
-    ClaimsFromWrites(client)
+    client.claims = ClaimsFromWrites(client)
     return client
 
 
@@ -1388,22 +1390,46 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_latest_run_by_story.return_value = _make_run(
-            status=RunStatus.FAILED,
-            result=_WAITING_SECRET_RESULT,
-        )
+        run = _make_run(status=RunStatus.FAILED, result=_WAITING_SECRET_RESULT)
+        api_client.get_latest_run_by_story.return_value = run
         api_client.get_project.return_value = SimpleNamespace(owner_id=555)
         # The ask is a durable owner notification now, and the seam publishes it
         # only once the story reads back in the status the transition put it in.
         api_client.get_story.return_value = _make_story(id="story-1", status="waiting_user_secret")
 
+        async def park(story_id, command):
+            # The API action: the transition and the ask on the Run, together.
+            ask = OwnerNotification(
+                event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+                text=command.text,
+                story_id=story_id,
+                project_id="00000000-0000-0000-0000-000000000001",
+                terminal_status=StoryStatus.WAITING_USER_SECRET,
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+            )
+            api_client.claims.owe_run(command.run_id, ask)
+            return UserSecretWaitRead(
+                disposition=UserSecretWaitDisposition.WAITING,
+                story_id=story_id,
+                story_status=StoryStatus.WAITING_USER_SECRET,
+                run_id=command.run_id,
+                owner_notification=ask,
+            )
+
+        api_client.park_waiting_user_secret.side_effect = park
+
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["waiting"] == 1
         assert result["failed"] == 0
-        # Parked, not failed.
+        # Parked, not failed: one API action moves the story and owes the ask.
         api_client.fail_story.assert_not_called()
-        api_client.wait_user_secret_story.assert_called_once_with("story-1")
+        api_client.park_waiting_user_secret.assert_awaited_once()
+        story_id, command = api_client.park_waiting_user_secret.await_args.args
+        assert story_id == "story-1"
+        assert command.run_id == run.id
+        api_client.transition_story.assert_not_called()
 
         # Exactly one PO request on po:input, carrying the key + description, not consumers.
         po_calls = [

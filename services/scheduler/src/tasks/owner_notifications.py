@@ -26,6 +26,18 @@ finished while it is still in testing. The same check covers the opposite
 failure for free: a transition that committed and lost its response leaves the
 story terminal, so its message is delivered.
 
+The lifecycle waits go through the same seam for the same reason: a task parked
+in ``waiting_resources`` or resumed from it, and a story parked in
+``waiting_user_secret``, are announced once, and nothing scans for a wait whose
+announcement was lost. Their records are not written ahead of the transition —
+the API action that makes the move writes the owed record on the Run it was
+decided on, in the move's own transaction (``/tasks/{id}/park-waiting-resources``,
+``/tasks/{id}/resume-from-resource-wait``, ``/stories/{id}/park-waiting-user-secret``),
+so a failed move leaves no record and a committed one always has its record.
+A task-level record also names the task statuses it is true in, and the
+delivery checks those too: a "waiting" record whose task has already resumed is
+voided, never published, and the resume's record replaces it on the Run.
+
 Four endings, and they are deliberately not interchangeable:
 
 * delivered — ``po:input`` accepted the event; nothing publishes it again.
@@ -529,6 +541,29 @@ async def deliver_owed_notification(
     return outcome
 
 
+async def deliver_in_tick(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    run_id: str,
+    record: OwnerNotification,
+    log: structlog.stdlib.BoundLogger,
+) -> OwnerNotificationOutcome | None:
+    """Spend the routing tick's attempt on a record its move just committed.
+
+    The move is already durable with its record, so this attempt is an
+    optimisation, not the delivery guarantee: whatever it misses — a failed
+    publish, a refused claim, the API unreachable for the claim itself — is
+    still owed and ``supervise_owed_owner_notifications`` recovers it. An
+    exception is therefore contained here, and ``None`` says no outcome was
+    recorded, rather than ending the tick for unrelated rows.
+    """
+    try:
+        return await deliver_owed_notification(api_client, redis_client, run_id, record, log)
+    except Exception:
+        log.warning("owner_notification_in_tick_attempt_failed", run_id=run_id, exc_info=True)
+        return None
+
+
 async def _spend_failed_admin_attempt(
     api_client: SchedulerAPIClient,
     source_id: str,
@@ -673,6 +708,11 @@ async def _deliver_to_owner(
     Reading the story is itself an API call, so a lookup that failed is treated
     as the transient failure it is, not as proof of a missing transition.
 
+    A record that names ``expected_task_statuses`` — a task's resource wait or
+    its resumption — is checked against its task as well, the same way: a task
+    that has moved out of those statuses voids it, and a task read that failed
+    spends an attempt. A record without them keeps exactly the story check.
+
     Resolving the recipient and publishing are then one attempt on purpose: both
     sit between the committed transition and the owner, and both fail the same
     way — a lookup that timed out is no more delivered than a stream that refused
@@ -694,13 +734,38 @@ async def _deliver_to_owner(
             story_record=story_record,
         )
 
-    if story.status is not record.terminal_status:
+    untrue = (
+        None
+        if story.status is record.terminal_status
+        else f"story is {story.status.value}, not {record.terminal_status.value}"
+    )
+    task_status = None
+    if untrue is None and record.expected_task_statuses is not None:
+        # A task-level notice is true only while the task is where it was
+        # announced to be; the story can stay put while the task moves on.
+        try:
+            task_status = (await api_client.get_task(record.task_id)).status
+        except Exception as exc:
+            return await _spend_failed_attempt(
+                api_client,
+                source_id,
+                record,
+                attempts=attempts,
+                error=f"{type(exc).__name__}: {exc}",
+                log=log,
+                story_record=story_record,
+            )
+        if task_status not in record.expected_task_statuses:
+            expected = ", ".join(status.value for status in record.expected_task_statuses)
+            untrue = f"task is {task_status.value}, not {expected}"
+
+    if untrue is not None:
         settled = await _settle(
             api_client,
             source_id,
             record,
             state=OwnerNotificationState.VOIDED,
-            detail=f"story is {story.status.value}, not {record.terminal_status.value}",
+            detail=untrue,
             story_record=story_record,
         )
         log.warning(
@@ -710,6 +775,7 @@ async def _deliver_to_owner(
             project_id=record.project_id,
             story_status=story.status.value,
             terminal_status=record.terminal_status.value,
+            task_status=None if task_status is None else task_status.value,
             **_source_log_fields(source_id, story_record=story_record),
         )
         return OwnerNotificationOutcome.VOIDED, settled

@@ -343,7 +343,31 @@ means never attempted. A voided record keeps its stamp and spends no attempt; an
 again is a fresh record with a new `owed_at` and no stamp. The run `PATCH` and the story
 owner-notification `PATCH` answer 409 `owner_notification_attempt_superseded` to a write of the
 same obligation (same `owed_at`) carrying an older or missing stamp than the stored one, so a
-visit that outlived its claim cannot overwrite what a newer one settled.
+visit that outlived its claim cannot overwrite what a newer one settled. They answer the same 409
+to a write naming an older obligation (an earlier `owed_at`) than the stored one: a later notice
+on the same Run replaced it, and the visit to the replaced record may not write it back.
+
+The non-terminal lifecycle notices are owed records too, written by the API in the transaction of
+the move they announce (`shared/contracts/dto/lifecycle_wait.py`), never published directly:
+
+| Move (internal/admin) | State change | Record on | True while |
+|---|---|---|---|
+| `POST /api/tasks/{id}/park-waiting-resources` | wait facts in `failure_metadata`, task → `waiting_resources` | the refused engineering Run (`run_id`) | task `waiting_resources`, story in its status at the park |
+| `POST /api/tasks/{id}/resume-from-resource-wait` | task `waiting_resources → backlog → todo` | the task's latest engineering Run, replacing the wait's record | task `todo`/`in_dev`, story in its status at the resume |
+| `POST /api/stories/{id}/park-waiting-user-secret` | story `deploying → waiting_user_secret` | the deploy Run that reported the missing secrets (`run_id`) | story `waiting_user_secret` |
+
+The caller sends only the words (`event`/`text`); the API mints the record's facts from the locked
+rows, so an illegal hop or a Run that is not the task's (`stale_attempt_fence`) writes neither
+the move nor the record. A park is announced (`task_waiting_resources`, or
+`task_waiting_infrastructure` for an unprovisioned host) only when it starts a wait — the locked
+task carries no `resource_wait_started_at` yet — so a wait spanning several refused attempts is
+announced once. A repeat answers `already_waiting` and a resume of a task no longer waiting
+answers `not_waiting`, writing nothing. The secret ask keeps an ask the Run already carries; its
+`delivered_at` stays the state-age anchor. A task-level record names the task statuses it is true
+in (`OwnerNotification.expected_task_statuses`); delivery voids it, publishing nothing and
+spending no attempt, when the task has left them. Records without that field keep exactly the
+story check. The scheduler spends one attempt in the routing tick and the `owner_notifications`
+loop recovers the rest, with the terminal endings' bound, spacing and escalation.
 
 ### The Product Brief coverage-to-dispatch boundary
 
@@ -815,9 +839,10 @@ its in-flight ids so one process does not reclaim its own active dispatch.
    no longer safely stoppable, then writes its typed terminal result.
 5. The supervisor reads that typed result, creates QA work only with resolved
    repository criteria, and routes the typed QA outcome.
-6. A terminal owner notification is persisted before it is published to PO.
-   Recovery retries the owned notification record; it does not duplicate an
-   already settled owner event.
+6. A terminal owner notification is persisted before it is published to PO, and
+   a lifecycle-wait notice (resource wait, resume, secret ask) is persisted in
+   the transaction of the move it announces. Recovery retries the owned
+   notification record; it does not duplicate an already settled owner event.
 
 ## REST DTO registry
 
@@ -854,6 +879,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |
 | Engineering attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by engineering Run |
 | Owner notification | `shared/contracts/dto/owner_notification.py` | `schemas/story.py`, `routers/stories.py` | persist notification obligation before PO publish; retry from that record |
+| Lifecycle-wait moves | `shared/contracts/dto/lifecycle_wait.py` | `routers/_resource_wait_actions.py`, `routers/_story_actions.py` | the move and its owed owner notice on the deciding Run commit in one transaction; the API mints the record's facts |
 
 **Story lifecycle ownership.** A Story's status is written in exactly two places,
 both in `services/api`: `_do_transition` in `routers/_story_helpers.py` for a
@@ -873,6 +899,8 @@ The locked infrastructure park,
 `POST /api/stories/{id}/park-infrastructure-refusal`, moves a Story one hop but
 its Task up to two (`todo → in_dev → waiting_human_review`) in the same
 transaction, so no caller sequences task and story status for that park.
+`POST /api/stories/{id}/park-waiting-user-secret` moves a Story one hop together
+with the owed ask on its deploy Run (see the lifecycle-wait table above).
 
 The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
 (`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a
@@ -1461,7 +1489,9 @@ site-packages off; a new invocation is covered by that parse automatically.
 ### Terminal owner notification
 
 `dto/owner_notification.py` and `shared/contracts/queues/po.py` define the
-handoff. Persist the owed owner notification before PO publication. Recovery
+handoff. Persist the owed owner notification before PO publication; the
+lifecycle-wait notices (`dto/lifecycle_wait.py`) are persisted by the API in the
+transaction of their move. Recovery
 publishes the durable obligation once; it does not turn a duplicate queue event
 into a second owner notification. A deployed address is included only when the
 typed lifecycle state authorises it.

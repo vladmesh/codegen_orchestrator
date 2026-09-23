@@ -29,7 +29,13 @@ again from scratch if routing later does finish the story.
 
 This is deliberately narrow. It is not an outbox for every producer in the
 project — it covers the terminal owner notifications the supervisor emits, which
-are the ones whose story is unreachable the moment the transition lands.
+are the ones whose story is unreachable the moment the transition lands, and the
+lifecycle waits whose announcement is equally lost to a failed publish: a task
+parked for, or resumed from, a resource wait, and a story waiting for a user
+secret. Those are written by the API in the transaction of the state change
+they announce, and a task-level one also names the task statuses in which it is
+still true (`expected_task_statuses`). Progress notices
+(`NON_DURABLE_OWNER_EVENTS`) stay outside it.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEvent
 
 #: JSON key for run-backed terminal notices; completed-story notices live on Story.
@@ -102,6 +109,14 @@ class OwnerNotification(BaseModel):
     #: story as a whole. `None` means the story is the subject, which is what
     #: every story-level ending records.
     task_id: str | None = None
+    #: The statuses the task named by ``task_id`` must be in for this message to
+    #: be true, checked at delivery next to ``terminal_status``. A notice about a
+    #: task's lifecycle — "waiting for capacity", "resumed" — is made false by the
+    #: task moving on while the story stays where it was, so the story alone
+    #: cannot say whether it may still be published. `None` on every story-level
+    #: ending and on every record written before this field existed: those keep
+    #: exactly the story check.
+    expected_task_statuses: tuple[TaskStatus, ...] | None = None
     state: OwnerNotificationState
     owed_at: datetime
     #: When the owner audience was marked delivered: the moment `po:input`
@@ -139,6 +154,14 @@ class OwnerNotification(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _task_expectation_names_a_task(self) -> OwnerNotification:
+        if self.expected_task_statuses is not None and (
+            self.task_id is None or not self.expected_task_statuses
+        ):
+            raise ValueError("expected_task_statuses needs a task_id and at least one status")
+        return self
+
+    @model_validator(mode="after")
     def _admin_audience_is_whole(self) -> OwnerNotification:
         if (self.admin_text is None) != (self.admin_state is None):
             raise ValueError("admin_text and admin_state are present together or not at all")
@@ -167,9 +190,14 @@ class OwnerNotification(BaseModel):
         """True when ``incoming`` is a write from an attempt older than this record's.
 
         The same obligation is recognised by its ``owed_at``: a record owed
-        afresh — a voided ending that became real — is a new obligation and
-        replaces this one whatever it carries.
+        afresh — a voided ending that became real, or a later lifecycle notice
+        on the same Run — is a new obligation and replaces this one whatever it
+        carries. The converse is refused: a write naming an obligation older
+        than the stored one comes from a visit to a record this one replaced,
+        and letting it land would put the replaced message back in its place.
         """
+        if incoming.owed_at < self.owed_at:
+            return True
         if incoming.owed_at != self.owed_at or self.last_attempt_at is None:
             return False
         return incoming.last_attempt_at is None or incoming.last_attempt_at < self.last_attempt_at

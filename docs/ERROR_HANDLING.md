@@ -79,8 +79,9 @@ order of magnitude longer, so it never takes a story that bound already governs.
 
 The secret wait's clock starts only when the request for the secrets is delivered to the owner.
 The ask is itself a durable owner notification (`story_waiting_user_secret`) on the deploy Run
-that reported the missing keys, owed before the transition and retried by the recovery sweep
-while it is owed. An ask that settles `unaddressable` or `abandoned` never starts the clock: the
+that reported the missing keys, owed in the transition's own transaction
+(`POST /api/stories/{id}/park-waiting-user-secret`) and retried by the recovery sweep while it is
+owed. An ask that settles `unaddressable` or `abandoned` never starts the clock: the
 story is not failed, it carries `quarantine_reason.reason = user_secret_request_undelivered`, and
 administrators are told it will not end on its own. A wait entered before the ask was durable is
 asked once, and its clock starts at that delivery.
@@ -323,7 +324,7 @@ Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the 
 `_check_project_lock()` in the engineering consumer verifies `worker:status` in Redis. Workers in terminal states (`DEAD`/`FAILED`/`STOPPED`) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
 
 ### Resource Allocation Capacity
-Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` means the platform cannot evaluate its own fleet: it escalates too, with an operator alert and no owner-facing message, because neither waiting nor retrying the code can end it.
+Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. The park and the resume are API actions (`park-waiting-resources`, `resume-from-resource-wait`) that commit the owner's announcement as an owed owner notification on the refused engineering Run in the same transaction; the first park of a wait owes it, the resume replaces it with `task_resources_resumed`, and delivery voids either one whose task has already left the status it describes. A Redis or recipient failure after the move therefore leaves the notice owed for the `owner_notifications` loop, never lost. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` means the platform cannot evaluate its own fleet: it escalates too, with an operator alert and no owner-facing message, because neither waiting nor retrying the code can end it.
 
 ### An Allocation Refusal Never Terminates a Story
 Every member of `AllocationFailureReason` is a statement about the platform's servers, never about the user's project, so none of them may fail a story or raise a product-failure alert. That decision lives once, in `shared/allocation_disposition.py::attempt_disposition`, which classifies a failed attempt as `INFRASTRUCTURE_WAIT`, `OPERATOR_REVIEW`, `TECHNICAL_FAILURE` or `PRODUCT_FAILURE`, and states the precedence: when one attempt carries both an allocation refusal and a product failure, the allocation refusal wins. Neither routing path keeps a reason list of its own — the engineering path (`_park_task_waiting_resources`) and the deploy path (`consumers/deploy.py::_record_infrastructure_wait` producing the outcome, `supervise_deploying_stories` routing it) both call that function. On the deploy path the refusal is recorded as `DeployOutcome.WAITING_INFRASTRUCTURE` with its reason and admission budget instead of `GIVE_UP`.

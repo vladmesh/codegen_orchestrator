@@ -26,6 +26,14 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
+from shared.contracts.dto.lifecycle_wait import (
+    TaskResourceResumeCommand,
+    TaskResourceResumeRead,
+    TaskResourceWaitCommand,
+    TaskResourceWaitRead,
+    UserSecretWaitCommand,
+    UserSecretWaitRead,
+)
 from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationAttemptClaim,
@@ -526,12 +534,20 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("POST", f"stories/{story_id}/fail", json={"actor": "supervisor"})
         return StoryDTO.model_validate(resp.json())
 
-    async def wait_user_secret_story(self, story_id: str) -> StoryDTO:
-        """Park a deploying story in WAITING_USER_SECRET until the secret appears."""
+    async def park_waiting_user_secret(
+        self, story_id: str, command: UserSecretWaitCommand
+    ) -> UserSecretWaitRead:
+        """Park a deploying story in WAITING_USER_SECRET, owing the owner the ask.
+
+        The transition and the ask on the deploy Run commit in one API
+        transaction; a repeat returns `already_waiting` with the Run's ask.
+        """
         resp = await self.request(
-            "POST", f"stories/{story_id}/wait-user-secret", json={"actor": "supervisor"}
+            "POST",
+            f"stories/{story_id}/park-waiting-user-secret",
+            json=command.model_dump(mode="json"),
         )
-        return StoryDTO.model_validate(resp.json())
+        return UserSecretWaitRead.model_validate(resp.json())
 
     async def retry_story_after_ci_failure(self, story_id: str) -> StoryDTO:
         """Hand a story whose CI run failed back to engineering in one server-side move.
@@ -660,6 +676,32 @@ class SchedulerAPIClient(InternalAPIClient):
             json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
+
+    async def park_task_waiting_resources(
+        self, task_id: str, command: TaskResourceWaitCommand
+    ) -> TaskResourceWaitRead:
+        """Park a refused engineering task in WAITING_RESOURCES in one API transaction.
+
+        The wait's facts, the transition and — when the park starts the wait —
+        the owed announcement on the refused Run commit together.
+        """
+        resp = await self.request(
+            "POST",
+            f"tasks/{task_id}/park-waiting-resources",
+            json=command.model_dump(mode="json"),
+        )
+        return TaskResourceWaitRead.model_validate(resp.json())
+
+    async def resume_task_from_resource_wait(
+        self, task_id: str, command: TaskResourceResumeCommand
+    ) -> TaskResourceResumeRead:
+        """Release a waiting task to TODO and owe the "resumed" notice, atomically."""
+        resp = await self.request(
+            "POST",
+            f"tasks/{task_id}/resume-from-resource-wait",
+            json=command.model_dump(mode="json"),
+        )
+        return TaskResourceResumeRead.model_validate(resp.json())
 
     async def create_task_event(self, task_id: str, event: dict) -> TaskEventDTO:
         resp = await self.request("POST", f"tasks/{task_id}/events", json=event)
