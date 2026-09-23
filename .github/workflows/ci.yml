@@ -722,6 +722,52 @@ jobs:
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
         run: bash scripts/ci-infra.sh expose --output infra-marker
 
+  # The first half of the service image release (infra/scripts/publish-service-images.sh):
+  # every image of infra/scripts/service-images.sh built once and pushed under this
+  # commit's SHA. It runs beside the suites, before anything is known to be green,
+  # because a candidate is not a release: only publish-service-release, after the gate,
+  # may commit these tags with the release marker. A red commit leaves inert candidates.
+  # Push to main only, so a pull request never gets packages: write and never waits.
+  build-service-images:
+    name: Build Service Image Candidates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Nothing downstream of this job repeats its marker in the gate; like the release
+    # job it reports a hang on its own annotations, summary and this output.
+    outputs:
+      infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+
+      # A docker-container builder: it pushes straight from buildx and exports the
+      # registry layer cache the candidates build from.
+      - name: Set up Docker Buildx with retry
+        id: buildx
+        uses: ./.github/actions/setup-buildx-with-retry
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+          simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
+
+      - name: Build and push the service image candidates
+        run: >-
+          bash scripts/ci-infra.sh bound --step build-candidates --timeout 25m --
+          bash infra/scripts/publish-service-images.sh candidates
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GIT_SHA: ${{ github.sha }}
+
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker
+
   merge-gate:
     name: Required CI Gate
     runs-on: ubuntu-latest
@@ -853,6 +899,65 @@ jobs:
             echo
             echo '```json'
             cat "${RUNNER_TEMP}/worker-images.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker
+
+  # The second half of the service image release, and the only writer of its marker
+  # (infra/scripts/publish-service-images.sh release). It commits the candidates of
+  # build-service-images only once every one of them resolves to a digest whose
+  # org.codegen.worker_source_hash is this tree's hash. `always()` has the reason given
+  # for publish-worker-images above: without it a skipped conditional suite upstream of
+  # the gate would skip this job, and the gate's own success is checked right after it.
+  # A failed candidate build does not skip it either: the job then refuses loudly on the
+  # tag that does not resolve. Nothing consumes the release yet (docs/DEPLOY.md).
+  publish-service-release:
+    name: Publish Service Image Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [merge-gate, build-service-images]
+    if: >-
+      always() && needs.merge-gate.result == 'success'
+      && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+
+      - name: Verify the candidates and publish the service release marker
+        run: >-
+          bash scripts/ci-infra.sh bound --step publish --timeout 15m --
+          bash infra/scripts/publish-service-images.sh release
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GIT_SHA: ${{ github.sha }}
+          DIGEST_FILE: ${{ runner.temp }}/service-images.json
+
+      - name: Upload published service image digests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: service-images-${{ github.sha }}
+          path: ${{ runner.temp }}/service-images.json
+          if-no-files-found: error
+
+      - name: Record the release in the run summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Service images published"
+            echo
+            echo '```json'
+            cat "${RUNNER_TEMP}/service-images.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

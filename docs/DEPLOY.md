@@ -703,6 +703,56 @@ rate-limit, and registry-tool errors remain distinct failures. The workflow
 does not wait and does not build worker images on a billed Stand machine. After
 the gate passes, the Stand only pulls and fully verifies that immutable release.
 
+### Service images are a release too (published, not consumed yet)
+
+Every green commit on `main` also publishes the control-plane service images as one immutable
+release keyed by that commit's SHA, with the worker chain's protocol and helpers
+(`infra/scripts/release-chain.sh`). **Nothing consumes it yet:** the production deploy and the
+Stand still build their service images on the host; switching them to this release is later work.
+
+**What is published.** One image per production Dockerfile, listed once in
+`infra/scripts/service-images.sh`: `api`, `langgraph` (which also serves architect,
+engineering-worker, deploy-worker and qa-worker), `scheduler` (all three schedulers),
+`infra-service`, `telegram_bot`, `worker-manager`, `worker-broker`, `scaffolder`,
+`admin-frontend` and `user-dashboard`. A unit test fails when a production Dockerfile or a
+`docker-compose.yml` build target is missing from that list or listed twice. Each image is
+built with `--build-arg SOURCE_HASH=$(python3 scripts/shared_freshness.py hash)`, so it carries a
+non-empty `org.codegen.worker_source_hash`, and pushed as
+`ghcr.io/<owner>/codegen-orchestrator/<image>:<sha>`. No mutable `latest` or branch tag is part of
+the contract. The buildx layer cache lives in its own repository,
+`ghcr.io/<owner>/codegen-orchestrator/service-build-cache:<image>`; it is a cache, never an image to
+run.
+
+**Two jobs, one writer of the release.** Both run on push to `main` only, so a pull request gets
+no `packages: write` and waits for neither.
+
+- `build-service-images` builds and pushes every image under the SHA tag, beside the test jobs, so
+  the release does not lengthen the critical path. What it pushes are *candidates*: they may
+  belong to a red commit, and nothing may treat them as released.
+- `publish-service-release` runs after the `Required CI Gate`, only when the gate succeeded (the
+  same `always() && needs.merge-gate.result == 'success'` as `publish-worker-images`). It resolves
+  every candidate tag once, pulls that digest, and requires its source hash label to be the tree's
+  non-empty hash. Only then does it write the release marker,
+  `ghcr.io/<owner>/codegen-orchestrator/service-release:<sha>`. It is the only step that writes the
+  marker, and a unit test pins that against `ci.yml`.
+
+**The marker holds** a base64 JSON record in the label `org.codegen.service_release` (and the same
+file as `/service-images.json`): `schema_version` (1), `git_sha`, `source_hash`, and for every image
+its `repository`, `digest` and `reference` (`<repository>@sha256:…`). The same record is uploaded
+as the run artifact `service-images-<sha>` and printed in the job summary.
+
+| what the registry has for a SHA | `candidates` | `release` |
+| --- | --- | --- |
+| a marker | pushes nothing, exit 0 | re-verifies the digests it names and records them, pushes nothing, exit 0 |
+| no marker | builds and pushes every candidate, over any residue | verifies every candidate, then writes the marker |
+| a marker naming an image that is gone, or unreadable (exit 10), or an image with a wrong or empty source hash (exit 7) | pushes nothing | refused, never repaired |
+
+Candidate tags without a marker are inert: a run that failed between two pushes, or a commit whose
+gate went red, leaves them behind, and a rerun pushes over them. The release job refuses, and writes
+no marker, when a candidate tag does not resolve (exit 8), carries another tree's source hash
+(exit 2) or none (exit 3); a failed candidate build is exit 4. So a failed or partial publish is
+recovered by rerunning the failed jobs, with nobody deleting anything in the registry.
+
 ## First-Time Setup
 
 ```bash
