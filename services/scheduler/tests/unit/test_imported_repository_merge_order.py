@@ -55,10 +55,12 @@ class ImportedRepository(SecretsMixin):
         *,
         refused_secret: str | None = None,
         auto_merge: dict | None = None,
+        refuses_disable: bool = False,
         checks_passed: bool = True,
     ) -> None:
         self.events = events
         self.refused_secret = refused_secret
+        self.refuses_disable = refuses_disable
         self.secrets = dict(STALE_SECRETS)
         self.pull_request = {
             "number": 42,
@@ -91,6 +93,9 @@ class ImportedRepository(SecretsMixin):
 
     async def disable_auto_merge(self, owner: str, repo: str, pr_node_id: str) -> bool:
         assert pr_node_id == self.pull_request["node_id"]
+        if self.refuses_disable:
+            self.events.append(("auto_merge_disable_refused", pr_node_id))
+            raise RuntimeError("Resource not accessible by integration")
         self.pull_request["auto_merge"] = None
         self.events.append(("auto_merge_disabled", pr_node_id))
         return True
@@ -270,7 +275,12 @@ async def test_a_rotation_before_checks_pass_reaches_the_merge_through_the_polle
         assert await poll_merged_prs(api, redis) == 1  # images observed, deploy
 
     assert events == [
+        # Tick 1: armed, so GitHub may still merge it; the write comes first.
+        ("secret_written", "REGISTRY_URL"),
+        ("secret_written", "REGISTRY_USER"),
+        ("secret_written", "REGISTRY_PASSWORD"),
         ("auto_merge_disabled", "PR_kwDOimported"),
+        # Tick 2: the poller's own merge, straight after a write of the rotated values.
         ("secret_written", "REGISTRY_URL"),
         ("secret_written", "REGISTRY_USER"),
         ("secret_written", "REGISTRY_PASSWORD"),
@@ -315,3 +325,49 @@ async def test_a_refresh_that_fails_leaves_the_pull_request_unmerged(owe, delive
     redis.publish_message.assert_not_awaited()
     assert REGISTRY_ENV["REGISTRY_PASSWORD"] not in repr(logs)
     assert REGISTRY_ENV["REGISTRY_PASSWORD"] not in repr(api.update_story.await_args_list)
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, REGISTRY_ENV)
+async def test_an_armed_request_that_cannot_be_withdrawn_merges_on_rotated_secrets():
+    """The reviewer's scenario, ending correct.
+
+    A PR armed by the previous release: every withdrawal fails, so GitHub merges
+    it by itself when checks pass. The env rotates between ticks; the next tick
+    writes the rotated values before anything else, so the push-main CI GitHub's
+    merge starts reads current secrets, publishes, and the poller deploys it.
+    """
+    events: list = []
+    github = ImportedRepository(
+        events, auto_merge={"merge_method": "merge"}, checks_passed=False, refuses_disable=True
+    )
+    api, redis = _api(), _redis(events)
+
+    with patch("src.tasks.pr_poller.GitHubAppClient", return_value=github):
+        assert await poll_merged_prs(api, redis) == 0  # refresh, withdrawal refused
+        os.environ.update(ROTATED_ENV)
+        assert await poll_merged_prs(api, redis) == 0  # refresh rotated, withdrawal refused
+        github.checks_pass()  # GitHub merges by itself
+        github.finish_build()
+        assert await poll_merged_prs(api, redis) == 1  # merged; images observed; deploy
+
+    written = [("secret_written", name) for name in REGISTRY_SECRETS]
+    assert events == [
+        *written,
+        ("auto_merge_disable_refused", "PR_kwDOimported"),
+        *written,
+        ("auto_merge_disable_refused", "PR_kwDOimported"),
+        ("merged_by", "github_auto_merge"),
+        ("ci_started", "registry.rotated.example.com"),
+        ("images_observed", MERGE_SHA),
+        ("deploy_dispatched", MERGE_SHA),
+    ]
+    assert github.ci_run["login"] == {
+        "REGISTRY_URL": "registry.rotated.example.com",
+        "REGISTRY_USER": "rotated-user",
+        "REGISTRY_PASSWORD": "rotated-registry-password",
+    }
+    assert github.published_images == [
+        f"registry.rotated.example.com/org/imported-repo/backend:sha-{MERGE_SHA[:7]}"
+    ]
+    api.transition_story.assert_awaited_once_with("story-1", "deploy")

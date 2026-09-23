@@ -46,8 +46,9 @@ logger = structlog.get_logger(__name__)
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
-#: Logged when GitHub did not confirm withdrawing a PR's auto-merge request; the
-#: poller then neither refreshes nor merges, and asks again on the next poll.
+#: Logged when GitHub did not confirm withdrawing a PR's auto-merge request. The
+#: registry secrets were already refreshed that tick; the poller does not merge,
+#: and refreshes and asks again on the next poll.
 AUTO_MERGE_DISABLE_FAILED = "github_auto_merge_disable_failed"
 
 
@@ -585,15 +586,29 @@ async def _take_over_auto_merge(
     pull_request: dict,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Withdraw GitHub's auto-merge request so this poller is the PR's only merger.
+    """Make an armed PR's registry secrets current, then withdraw its auto-merge request.
 
     Such a request is left over from before the poller merged every product PR
-    itself. Left armed, GitHub would merge when checks pass — with whatever
-    registry secrets the repository holds by then — and nothing here would write
-    them first. False means GitHub did not confirm the withdrawal: the caller
-    neither refreshes nor merges, and the next poll asks again.
+    itself. While it is armed GitHub may merge the PR by itself whenever checks
+    pass, so the secrets are written first, on every tick the PR is still armed,
+    and no outcome of the withdrawal can skip that write. A failed write is
+    logged with its typed reason and changes nothing else; the next tick writes
+    again. Refreshing never merges.
+
+    True once GitHub confirms the withdrawal, and the PR is under this poller's
+    sole control. False otherwise: the caller does not merge, and the next tick
+    refreshes and asks again.
     """
     pr_number = pull_request["number"]
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        log.error(
+            "poll_merged_armed_pr_refresh_failed",
+            reason=error.reason.value,
+            pr_number=pr_number,
+            detail=error.detail,
+        )
     pr_node_id = pull_request.get("node_id")
     try:
         if not pr_node_id:
@@ -629,8 +644,11 @@ async def _merge_open_pr(
 ) -> dict | None:
     """Merge a green PR through the App; this poller is its only automated merger.
 
-    An auto-merge request left on the PR is withdrawn first, and while GitHub has
-    not confirmed that, nothing is refreshed or merged. Pending and CI-blocked PRs
+    A PR GitHub may still merge by itself (it carries an auto-merge request) has
+    its registry secrets refreshed on every tick before the request is withdrawn;
+    while GitHub has not confirmed the withdrawal, this poller does not merge it.
+    A PR under this poller's sole control is refreshed immediately before
+    ``merge_pull_request``, and parked if that write fails. Pending and CI-blocked PRs
     stay in the poll set for their normal next tick. A refusal observed from
     GitHub is terminal for this automatic path, so it is recorded with owner and
     administrator notices instead of being retried as a warning forever.

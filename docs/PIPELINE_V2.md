@@ -377,10 +377,25 @@ is incomplete the poller does not merge: it parks the story in `waiting_human_re
 `quarantine_reason.reason` set to `registry_secrets_env_missing` or
 `registry_secrets_write_incomplete`, naming variables and counts only.
 
-A PR still armed for auto-merge from before this rule is taken over: the poller withdraws the
-request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`) and then follows the same
-refresh-then-merge path. Until GitHub confirms the withdrawal it neither refreshes nor merges; it
-logs `github_auto_merge_disable_failed` and asks again on the next poll.
+**One invariant, enforced in one place.** A product PR that anything other than the poller's own
+call can merge is never left with stale registry secrets, and the poller's per-PR visit is the
+only code that enforces it:
+
+1. An open PR still armed for auto-merge (left over from before this rule), which GitHub may merge
+   by itself: on every tick the poller first writes the registry secrets, then tries to withdraw
+   the request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`). A failed write is
+   logged as `poll_merged_armed_pr_refresh_failed` with its typed reason and changes nothing else.
+   A failed or unconfirmed withdrawal logs `github_auto_merge_disable_failed`; the poller does not
+   merge and tries again next tick, and the secrets are current either way. No outcome of the
+   withdrawal, exception included, can skip the write, and the write never merges.
+2. An open PR under the poller's sole control: the write immediately before `merge_pull_request`,
+   parking the story on a failed write, as above.
+
+So every merge — the poller's, or GitHub's of a still-armed PR — follows a write in the same tick
+or an earlier one. What remains is a rotation between the last write and GitHub's own merge within
+one poll interval, the same order of window as the write-then-merge call pair. A PR armed by the
+previous release can also merge before the new poller's first tick; that is a deploy-time check
+(open product PRs with auto-merge enabled), not code.
 
 ---
 
