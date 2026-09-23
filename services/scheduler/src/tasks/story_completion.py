@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
+from shared.clients.github import (
+    GitHubAppClient,
+    NoCommitsBetweenError,
+    RegistrySecretsNotRefreshedError,
+)
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -138,9 +142,26 @@ async def _enable_auto_merge(
 ) -> bool:
     """Enable auto-merge on a story PR, resolving its GraphQL node id first.
 
+    GitHub merges an auto-merge PR by itself, and that merge starts the product's
+    push-main CI, whose image builds read the registry secrets when they start.
+    So the secrets are made current before auto-merge is enabled; when they
+    cannot be, auto-merge is not enabled and the merge is left to the PR poller,
+    which refreshes them again before its own merge and parks the story if it
+    still cannot.
+
     ``enable_auto_merge`` needs a GraphQL ID (e.g. "PR_kwDO..."); a numeric or
     missing one from the creation response is re-read over REST before giving up.
     """
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        log.error(
+            "story_auto_merge_withheld",
+            pr_number=pr_number,
+            reason=error.reason.value,
+            detail=error.detail,
+        )
+        return False
     if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
         return await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
     log.warning("story_pr_node_id_invalid", pr_number=pr_number, node_id_raw=repr(pr_node_id))

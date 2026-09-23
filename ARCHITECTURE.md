@@ -194,8 +194,8 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        Telegram Bot → User
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
-All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
-PR merged (PR poller, 30s) → deploy:queue → deploy
+All tasks done → Dispatcher creates PR story/* → main, writes the repo's REGISTRY_* secrets, enables auto-merge → story pr_review
+PR merged (auto-merge, or the PR poller after rewriting REGISTRY_*) → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
 Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
 QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA

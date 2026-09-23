@@ -1096,6 +1096,42 @@ class TestDeployerImageGate:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_deploy_yml_is_dispatched_only_after_the_built_commits_images_are_read(
+        self, mock_api, mock_gh_cls, deployer, base_state, published_images
+    ):
+        """deploy.yml never starts on push; this dispatch is its only start, and it waits.
+
+        The images of the exact built commit are read back first, and the run is
+        pinned to that same commit, so the deploy cannot overtake its image build.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+        gh.set_repository_secrets.return_value = 9
+        order = MagicMock()
+        order.attach_mock(published_images, "images_read")
+        order.attach_mock(gh.set_repository_secrets, "secrets_written")
+        order.attach_mock(gh.create_or_reset_tag, "commit_pinned")
+        order.attach_mock(gh.trigger_workflow_dispatch, "deploy_dispatched")
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "deployed_commit_sha": BUILT_SHA})
+
+        assert [name for name, _args, _kwargs in order.mock_calls] == [
+            "images_read",
+            "secrets_written",
+            "commit_pinned",
+            "deploy_dispatched",
+        ]
+        assert published_images.await_args.args[0]["BACKEND_IMAGE"].endswith(
+            f":sha-{BUILT_SHA[:7]}"
+        )
+        gh.create_or_reset_tag.assert_awaited_once_with("my-org", "my-repo", PIN_TAG, BUILT_SHA)
+        gh.trigger_workflow_dispatch.assert_awaited_once_with(
+            "my-org", "my-repo", "deploy.yml", ref=PIN_TAG
+        )
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_success_and_the_deployment_record_name_the_images(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):

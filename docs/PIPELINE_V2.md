@@ -348,7 +348,9 @@ attempt without a retry budget.
 1. Task Dispatcher reads the current `story/{story_id}` ref SHA, then resolves its
    `main` PR through `create_pull_request`; an open PR is reused, while later fix commits get a successor
 2. Validates the returned PR against that exact head and persists its number for the poller
-3. Attempts auto-merge; a refusal leaves the open PR visible but does not retain the worker
+3. Writes the product repository's registry secrets, then attempts auto-merge; a failed
+   secret write withholds auto-merge, and any refusal leaves the open PR visible but does not
+   retain the worker
 4. Finalizes worker teardown, including the unchanged story binding
 5. Transitions the story to `pr_review` and triggers the next queued story
 
@@ -363,6 +365,19 @@ stand in for the current completion.
 
 **PR merge detection**: `scheduler-pipeline` runs the PR poller (`scheduler/src/tasks/pr_poller.py`) for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
 
+**Registry secrets before every merge.** The merge starts the product's push-main CI, whose
+`build-and-push` jobs read `REGISTRY_URL`, `REGISTRY_USER` and `REGISTRY_PASSWORD` when they
+start. So every merge the platform performs or enables is preceded by
+`GitHubAppClient.refresh_registry_secrets`, which writes the three from `scheduler-pipeline`'s
+`ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD`: story completion does it before
+enabling auto-merge, the PR poller before its own `merge_pull_request`. This covers a repository
+the platform did not create and one created before a hostname or credential change; the deploy
+worker's own write of the same secrets comes after the merge, too late for that CI. If the write
+is incomplete, story completion leaves auto-merge off, and the poller does not merge: it parks the
+story in `waiting_human_review` with `quarantine_reason.reason` set to
+`registry_secrets_env_missing` or `registry_secrets_write_incomplete`, naming variables and
+counts only.
+
 ---
 
 ## Phase 5: Deploy
@@ -372,7 +387,10 @@ stand in for the current completion.
 **Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger OR Admin API
 
 0. (Before the deploy Run exists) The producer waits for the merged commit's
-   images — see below. No Run is created until they are published.
+   images — see below. No Run is created until they are published. The order is:
+   registry secrets written → merge → push-main CI builds and pushes with those secrets →
+   the merge commit's images observed → deploy dispatched. `deploy.yml` has only a
+   `workflow_dispatch` trigger, so nothing starts it on push.
 1. Resolve server for the project (or provision new one)
 2. Read the registry once for the images this deploy resolved
 3. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)

@@ -10,7 +10,7 @@ import uuid
 
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.users_grant import (
@@ -647,6 +647,27 @@ async def _merge_open_pr_without_auto_merge(
             pr_number=pr_number,
             mergeable_state=mergeable_state,
             detail=detail,
+            log=log,
+        )
+        return None
+
+    # The merge starts the product's push-main CI, whose image builds read the
+    # registry secrets when they start. Make them current first, on every merge:
+    # an imported repository, or one created before a hostname or credential
+    # change, would otherwise build against stale values, and the deploy
+    # worker's own write comes after the merge, too late for that CI.
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=f"the product repository's registry secrets were not refreshed: {error.detail}",
+            reason_code=error.reason.value,
             log=log,
         )
         return None

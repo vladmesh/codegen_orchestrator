@@ -53,8 +53,9 @@ It does **NOT** handle Project (L2) secrets. It does not deploy applications.
 Application deployment is fully delegated to GitHub Actions. This allows secure usage of L2 secrets without exposing them to the Orchestrator's backend.
 
 1.  **DOTENV trick**: Orchestrator collects ALL env vars → builds `.env` content → base64-encodes → stores as single GitHub Secret `DOTENV`. The deploy workflow decodes and writes the file. No per-variable enumeration needed.
-2.  **Secret Injection** (two stages):
+2.  **Secret Injection** (three stages):
     *   **Scaffolder**: Sets `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD` immediately after repo creation (before first CI push)
+    *   **scheduler-pipeline**: Rewrites the same three before every merge it performs or enables (story completion before auto-merge, the PR poller before its merge), so push-main CI never starts on stale or absent registry secrets; a failed write blocks the merge
     *   **DeployerNode**: Sets 9 secrets total — `DOTENV`, `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `PROJECT_NAME`, `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`
 3.  **CI workflow** (`ci.yml`, on push): lint → test → build images → push to self-hosted Docker registry
 4.  **Deploy workflow** (`deploy.yml`, on `workflow_dispatch` from Orchestrator): SCP compose files → write `.env` from DOTENV → pull images → `docker compose up`
@@ -74,4 +75,4 @@ Application deployment is fully delegated to GitHub Actions. This allows secure 
 3.  **Infra Service provisions Server** → Uses L1 Keys (Time4VPS API) for server setup. Ansible playbooks for Docker/firewall/users.
 4.  **Scaffolder pushes code** → CI (`ci.yml`, auto on push) → builds Docker images → pushes to self-hosted registry.
 5.  **Orchestrator triggers deploy** → DevOps subgraph: environment-contract resolution → DOTENV → GitHub Secrets → `workflow_dispatch deploy.yml` → pull images from registry → `docker compose up`.
-6.  **Feature deploy** → a merged story PR is detected by the `scheduler-pipeline` PR poller → `deploy:queue` → re-resolve env → deploy.
+6.  **Feature deploy** → `scheduler-pipeline` writes the registry secrets, then merges (or enables auto-merge) → push-main CI builds the merge commit's images → the PR poller observes them → `deploy:queue` → re-resolve env → deploy.
