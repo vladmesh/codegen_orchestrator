@@ -319,14 +319,13 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
         "supervise_deploying_stories": {},
         "supervise_waiting_user_secret_stories": {},
-        "supervise_testing_stories": {},
     }
     for name, result in checks.items():
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=result))
 
-    late_supervisor = AsyncMock(return_value={"entered": 0, "still_there": 0, "unaddressable": 0})
+    late_supervisor = AsyncMock(return_value={})
     sweep = AsyncMock()
-    monkeypatch.setattr(task_dispatcher, "supervise_stage_notices", late_supervisor)
+    monkeypatch.setattr(task_dispatcher, "supervise_testing_stories", late_supervisor)
     monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
     monkeypatch.setattr(
         task_dispatcher.asyncio,
@@ -373,11 +372,6 @@ async def test_dispatcher_loop_continues_after_tick_failure_without_sweeping(mon
         "supervise_testing_stories",
     ):
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
-    for name, counts in (
-        ("supervise_state_age_bounds", {"parked": 0, "failed": 0}),
-        ("supervise_stage_notices", {"entered": 0, "still_there": 0, "unaddressable": 0}),
-    ):
-        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=counts))
     sweep = AsyncMock(side_effect=RuntimeError("sweep must be independent"))
     monkeypatch.setattr(task_dispatcher, "supervise_temporary_access", sweep)
     monkeypatch.setattr(
@@ -486,16 +480,6 @@ def _mock_dispatcher_tick(monkeypatch, task_dispatcher, *, scaffold):
         "supervise_testing_stories",
     ):
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
-    monkeypatch.setattr(
-        task_dispatcher,
-        "supervise_state_age_bounds",
-        AsyncMock(return_value={"parked": 0, "failed": 0}),
-    )
-    monkeypatch.setattr(
-        task_dispatcher,
-        "supervise_stage_notices",
-        AsyncMock(return_value={"entered": 0, "still_there": 0, "unaddressable": 0}),
-    )
 
 
 @pytest.mark.asyncio
@@ -665,6 +649,226 @@ async def test_notification_sweep_failure_and_dispatcher_tick_failure_isolate_ea
     notification_log.info.assert_any_call("owner_notifications_cycle", **_OWNER_NOTIFICATION_COUNTS)
     dispatcher_redis.close.assert_awaited_once()
     notification_redis.close.assert_awaited_once()
+
+
+_STATE_AGE_COUNTS = {"parked": 1, "failed": 2, "skipped": 3}
+_STAGE_NOTICE_COUNTS = {"entered": 4, "still_there": 5, "unaddressable": 6}
+_STATE_AGE_CYCLE = {f"state_age_{name}": n for name, n in _STATE_AGE_COUNTS.items()}
+_STAGE_NOTICE_CYCLE = {f"stage_notices_{name}": n for name, n in _STAGE_NOTICE_COUNTS.items()}
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_tick_does_not_run_story_supervision(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import supervisor, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(return_value=0))
+    watchdog = AsyncMock(side_effect=RuntimeError("the tick must not run the watchdog"))
+    notices = AsyncMock(side_effect=RuntimeError("the tick must not announce stages"))
+    monkeypatch.setattr(supervisor, "supervise_state_age_bounds", watchdog)
+    monkeypatch.setattr(supervisor, "supervise_stage_notices", notices)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert not hasattr(task_dispatcher, "supervise_state_age_bounds")
+    assert not hasattr(task_dispatcher, "supervise_stage_notices")
+    watchdog.assert_not_awaited()
+    notices.assert_not_awaited()
+    api.get_stories_by_status.assert_not_awaited()
+    log.exception.assert_not_called()
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_sweeps_fail_independently_within_a_cycle(monkeypatch):
+    """A failing watchdog still lets that cycle's notices run, and the reverse."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import story_supervision_loop, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    # Cycle 1: the watchdog raises. Cycle 2: the notices raise.
+    watchdog = AsyncMock(side_effect=[RuntimeError("watchdog failed"), _STATE_AGE_COUNTS])
+    notices = AsyncMock(side_effect=[_STAGE_NOTICE_COUNTS, RuntimeError("notices failed")])
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(story_supervision_loop, "supervise_state_age_bounds", watchdog)
+    monkeypatch.setattr(story_supervision_loop, "supervise_stage_notices", notices)
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", log)
+    monkeypatch.setattr(
+        story_supervision_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+    # The dispatcher tick is a separate loop: nothing here reaches it.
+    scaffold = AsyncMock(return_value=0)
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+
+    with pytest.raises(asyncio.CancelledError):
+        await story_supervision_loop.story_supervision_loop()
+
+    assert watchdog.await_count == 2
+    assert notices.await_count == 2
+    watchdog.assert_awaited_with(api, redis)
+    notices.assert_awaited_with(api, redis)
+    assert [c.args for c in log.exception.call_args_list] == [
+        ("story_supervision_cycle_error",),
+        ("story_supervision_cycle_error",),
+    ]
+    assert [c.kwargs for c in log.exception.call_args_list] == [
+        {"sweep": "state_age"},
+        {"sweep": "stage_notices"},
+    ]
+    cycles = [c for c in log.info.call_args_list if c.args == ("story_supervision_cycle",)]
+    assert [c.kwargs for c in cycles] == [_STAGE_NOTICE_CYCLE, _STATE_AGE_CYCLE]
+    log.info.assert_any_call("story_supervision_started", interval=0)
+    log.info.assert_any_call("story_supervision_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+    scaffold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_logs_one_cycle_line_with_both_sweeps_counts(monkeypatch):
+    import asyncio
+
+    from src.tasks import story_supervision_loop
+
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(
+        story_supervision_loop,
+        "supervise_state_age_bounds",
+        AsyncMock(return_value=_STATE_AGE_COUNTS),
+    )
+    monkeypatch.setattr(
+        story_supervision_loop,
+        "supervise_stage_notices",
+        AsyncMock(return_value=_STAGE_NOTICE_COUNTS),
+    )
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", log)
+    monkeypatch.setattr(
+        story_supervision_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await story_supervision_loop.story_supervision_loop()
+
+    cycles = [c for c in log.info.call_args_list if c.args == ("story_supervision_cycle",)]
+    assert [c.kwargs for c in cycles] == [{**_STATE_AGE_CYCLE, **_STAGE_NOTICE_CYCLE}]
+    log.exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_story_supervision_failure_and_dispatcher_tick_failure_isolate_each_other(
+    monkeypatch,
+):
+    """Both loops run side by side; each one's failures stay inside its own cycle."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import story_supervision_loop, task_dispatcher
+
+    api = AsyncMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    dispatcher_redis = AsyncMock()
+    supervision_redis = AsyncMock()
+    dispatcher_log = MagicMock()
+    supervision_log = MagicMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: dispatcher_redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", dispatcher_log)
+    monkeypatch.setattr(story_supervision_loop, "RedisStreamClient", lambda: supervision_redis)
+    monkeypatch.setattr(story_supervision_loop, "_story_supervision_interval", lambda: 0)
+    monkeypatch.setattr(story_supervision_loop, "logger", supervision_log)
+
+    # Every other dispatcher tick fails, and so does every other supervision
+    # cycle, in both of its sweeps.
+    ticks = cycles = 0
+    enough = asyncio.Event()
+
+    async def scaffold(*_args):
+        nonlocal ticks
+        ticks += 1
+        if ticks % 2:
+            raise RuntimeError("tick failed")
+        return 0
+
+    async def watchdog(*_args):
+        nonlocal cycles
+        cycles += 1
+        if cycles >= 6 and ticks >= 6:
+            enough.set()
+        if cycles % 2:
+            raise RuntimeError("watchdog failed")
+        return _STATE_AGE_COUNTS
+
+    async def notices(*_args):
+        if cycles % 2:
+            raise RuntimeError("notices failed")
+        return _STAGE_NOTICE_COUNTS
+
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(side_effect=scaffold))
+    monkeypatch.setattr(
+        story_supervision_loop, "supervise_state_age_bounds", AsyncMock(side_effect=watchdog)
+    )
+    monkeypatch.setattr(
+        story_supervision_loop, "supervise_stage_notices", AsyncMock(side_effect=notices)
+    )
+
+    loops = [
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(story_supervision_loop.story_supervision_loop()),
+    ]
+    try:
+        await asyncio.wait_for(enough.wait(), timeout=5)
+        assert not any(loop.done() for loop in loops)
+    finally:
+        for loop in loops:
+            loop.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
+
+    tick_errors = dispatcher_log.exception.call_args_list
+    assert len(tick_errors) >= 3
+    assert all(c.args == ("dispatcher_cycle_error",) for c in tick_errors)
+    assert any(c.args[0] == "dispatcher_cycle" for c in dispatcher_log.info.call_args_list)
+    sweep_errors = supervision_log.exception.call_args_list
+    assert len(sweep_errors) >= 6
+    assert all(c.args == ("story_supervision_cycle_error",) for c in sweep_errors)
+    supervision_log.info.assert_any_call(
+        "story_supervision_cycle", **_STATE_AGE_CYCLE, **_STAGE_NOTICE_CYCLE
+    )
+    dispatcher_redis.close.assert_awaited_once()
+    supervision_redis.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
