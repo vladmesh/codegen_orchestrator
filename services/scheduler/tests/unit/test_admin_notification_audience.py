@@ -19,6 +19,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from _owner_notification_claims import ClaimClock, claim
 import httpx
 import pytest
 
@@ -69,6 +70,7 @@ class _World:
         #: Every accepted Telegram send, as (telegram_id, text).
         self.telegram: list[tuple[int, str]] = []
         self.telegram_calls = 0
+        self.clock = ClaimClock()
 
     @property
     def stored(self) -> OwnerNotification:
@@ -98,7 +100,14 @@ class _World:
         async def story(story_id: str):
             return SimpleNamespace(id=story_id, status=self.story_status)
 
+        async def claim_attempt(story_id: str):
+            assert story_id == STORY_ID
+            return claim(
+                self.clock, lambda: self.record, lambda stamped: setattr(self, "record", stamped)
+            )
+
         api.list_stories_owing_owner_notification.side_effect = owed_stories
+        api.claim_story_owner_notification_attempt.side_effect = claim_attempt
         api.update_story_owner_notification.side_effect = write
         api.get_story.side_effect = story
         api.get_project.return_value = SimpleNamespace(owner_id=7)
@@ -144,6 +153,8 @@ class _World:
         return True
 
     async def tick(self) -> dict[str, int]:
+        # Each tick is at least one delivery interval after the previous one.
+        self.clock.elapse()
         try:
             return await supervise_owed_owner_notifications(self._api(), self._redis())
         finally:

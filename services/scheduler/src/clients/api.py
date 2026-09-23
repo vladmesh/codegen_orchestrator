@@ -26,7 +26,10 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
-from shared.contracts.dto.owner_notification import OwnerNotification
+from shared.contracts.dto.owner_notification import (
+    OwnerNotification,
+    OwnerNotificationAttemptClaim,
+)
 from shared.contracts.dto.product_brief import ProductBriefRead
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
@@ -285,6 +288,20 @@ class SchedulerAPIClient(InternalAPIClient):
     async def update_story_owner_notification(self, story_id: str, notification: dict) -> None:
         """Persist one delivery attempt against a story-backed completion record."""
         await self.request("PATCH", f"stories/{story_id}/owner-notification", json=notification)
+
+    async def claim_story_owner_notification_attempt(
+        self, story_id: str
+    ) -> OwnerNotificationAttemptClaim:
+        """Ask the API for one delivery attempt on a story-backed record."""
+        resp = await self.request("POST", f"stories/{story_id}/owner-notification/attempt")
+        return OwnerNotificationAttemptClaim.model_validate(resp.json())
+
+    async def claim_run_owner_notification_attempt(
+        self, run_id: str
+    ) -> OwnerNotificationAttemptClaim:
+        """Ask the API for one delivery attempt on a run-backed record."""
+        resp = await self.request("POST", f"runs/{run_id}/owner-notification/attempt")
+        return OwnerNotificationAttemptClaim.model_validate(resp.json())
 
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""

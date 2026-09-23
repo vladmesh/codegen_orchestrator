@@ -331,6 +331,20 @@ a raised users-API failure, spends one bounded attempt and stays `owed`, then
 settlement delivery is at-least-once, because Telegram has no idempotency key,
 so a retry after partial success resends to administrators already reached.
 
+Attempts on one record are spaced by `OwnerNotification.last_attempt_at`, not by the order
+the dispatcher calls routing and the recovery sweep. Every delivery first asks the internal
+`POST /api/runs/{id}/owner-notification/attempt` or `POST /api/stories/{id}/owner-notification/attempt`
+(`OwnerNotificationAttemptClaim`). Under the row lock the API grants it only while some audience
+is `owed` and the last attempt is at least `OWNER_NOTIFICATION_ATTEMPT_INTERVAL` (60 s) old, and
+stamps `last_attempt_at` in the same write; a refusal changes nothing and the caller publishes
+nothing (`not_due`, or `skipped` when the record is settled). One stamp spaces both audiences,
+because one granted visit serves both. A missing stamp — every record written before it existed —
+means never attempted. A voided record keeps its stamp and spends no attempt; an ending owed
+again is a fresh record with a new `owed_at` and no stamp. The run `PATCH` and the story
+owner-notification `PATCH` answer 409 `owner_notification_attempt_superseded` to a write of the
+same obligation (same `owed_at`) carrying an older or missing stamp than the stored one, so a
+visit that outlived its claim cannot overwrite what a newer one settled.
+
 ### The Product Brief coverage-to-dispatch boundary
 
 A Story planned from a confirmed Product Brief is released as a whole, not task

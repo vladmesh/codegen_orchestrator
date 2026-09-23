@@ -37,6 +37,17 @@ Four endings, and they are deliberately not interchangeable:
   no attempt is spent, and the obligation is written again from scratch if
   routing later does reach that ending.
 
+Attempts are spaced by the record, not by the order of the loops that make
+them. Before anything is read or published, a visit asks the API for the attempt
+(``claim_*_owner_notification_attempt``); the API grants it only when the record
+still owes an audience and its ``last_attempt_at`` is at least
+``OWNER_NOTIFICATION_ATTEMPT_INTERVAL`` old, and stamps it in the same locked
+write. A refused visit spends nothing and publishes nothing. So routing's
+in-tick attempt and the recovery sweep may run in either order, or at the same
+moment, and a record still gets one attempt per interval. Every write the
+granted visit makes carries its stamp; a visit that outlived its claim, while a
+newer one claimed the record, is refused its writes and stops.
+
 Delivery is at-least-once, not exactly-once. A process that dies between the
 publish landing and the record being marked delivered republishes on the next
 tick. That is the honest trade for never losing the message; what the record
@@ -49,11 +60,15 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import httpx
 import structlog
 
 from shared.contracts.dto.owner_notification import (
+    OWNER_NOTIFICATION_ATTEMPT_INTERVAL,
+    OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED,
     OWNER_NOTIFICATION_KEY,
     OwnerNotification,
+    OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
 from shared.contracts.dto.story import StoryStatus
@@ -80,8 +95,10 @@ logger = structlog.get_logger(__name__)
 #: counts its deliveries on Redis' PEL rather than in memory.
 OWNER_NOTIFICATION_MAX_ATTEMPTS = 3
 
-#: Runs the recovery sweep takes per tick. The selection drains by itself, since
-#: every visit either delivers a record or spends one of its bounded attempts.
+#: Runs the recovery sweep takes per tick. The selection drains by itself: every
+#: visit either delivers a record, spends one of its bounded attempts, or is
+#: refused because the last attempt is less than an interval old, and such a
+#: record is attempted again once the interval has passed.
 OWNER_NOTIFICATION_PAGE = 100
 
 
@@ -100,6 +117,16 @@ class OwnerNotificationOutcome(StrEnum):
     VOIDED = "voided"
     #: The record was already settled by somebody else. Nothing was published.
     SKIPPED = "skipped"
+    #: The API refused the attempt: the record was attempted less than
+    #: ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL`` ago. Nothing spent, nothing published.
+    NOT_DUE = "not_due"
+    #: This visit outlived its claim and a newer attempt claimed the record; the
+    #: API refused this visit's write and it stopped. The newer attempt owns it.
+    SUPERSEDED = "superseded"
+
+
+class _AttemptSuperseded(Exception):
+    """The API refused a write because a newer attempt holds the record."""
 
 
 def _empty_counts() -> dict[str, int]:
@@ -269,10 +296,34 @@ async def _write(
     *,
     story_record: bool,
 ) -> None:
+    """Write what one granted attempt settled, carrying that attempt's stamp."""
+    try:
+        if story_record:
+            await _write_story_record(api_client, source_id, record)
+        else:
+            await _write_record(api_client, source_id, record)
+    except httpx.HTTPStatusError as exc:
+        if _is_superseded(exc.response):
+            raise _AttemptSuperseded from exc
+        raise
+
+
+def _is_superseded(response: httpx.Response) -> bool:
+    if response.status_code != httpx.codes.CONFLICT:
+        return False
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return False
+    return isinstance(detail, dict) and detail.get("code") == OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED
+
+
+async def _claim_attempt(
+    api_client: SchedulerAPIClient, source_id: str, *, story_record: bool
+) -> OwnerNotificationAttemptClaim:
     if story_record:
-        await _write_story_record(api_client, source_id, record)
-    else:
-        await _write_record(api_client, source_id, record)
+        return await api_client.claim_story_owner_notification_attempt(source_id)
+    return await api_client.claim_run_owner_notification_attempt(source_id)
 
 
 async def _settle(
@@ -396,30 +447,63 @@ async def deliver_owed_notification(
     *,
     story_record: bool = False,
 ) -> OwnerNotificationOutcome:
-    """Spend one attempt on each audience this record still owes.
+    """Spend one attempt on each audience this record still owes, if one is due.
+
+    Nothing is read, resolved or published before the API grants the attempt.
+    The grant is the single place the spacing is decided — owed, and last
+    attempted at least ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL`` ago — and it is
+    stamped in the same write, so whichever caller asks first, routing or the
+    sweep, is the only one that attempts. A refusal reports ``SKIPPED`` when the
+    record turned out settled and ``NOT_DUE`` when it was attempted too recently.
+    The visit then works from the record the grant returned, not from the copy
+    the caller read, which may already be stale.
 
     The owner and administrators are separate audiences of one ending, each with
     its own persisted state and bounded attempts, so a settled audience is never
-    published again while the other is still retried. The owner is served first
-    and the record written back after each audience, so a process that stops
-    between the two resumes with exactly the audience that is still owed.
+    published again while the other is still retried. One grant serves both, so
+    no two callers can split them. The owner is served first and the record
+    written back after each audience, so a process that stops between the two
+    resumes with exactly the audience that is still owed.
 
     The returned outcome is the owner's when the owner was owed, and otherwise
     the administrators'.
     """
     if not record.owed and not record.admin_owed:
         return OwnerNotificationOutcome.SKIPPED
+    claim = await _claim_attempt(api_client, source_id, story_record=story_record)
+    if not claim.granted:
+        current = claim.notification
+        if current is None or not (current.owed or current.admin_owed):
+            return OwnerNotificationOutcome.SKIPPED
+        log.info(
+            "owner_notification_attempt_not_due",
+            po_event=current.event,
+            last_attempt_at=current.last_attempt_at.isoformat(),
+            interval_seconds=OWNER_NOTIFICATION_ATTEMPT_INTERVAL.total_seconds(),
+            **_source_log_fields(source_id, story_record=story_record),
+        )
+        return OwnerNotificationOutcome.NOT_DUE
+    record = claim.notification
     outcome = OwnerNotificationOutcome.SKIPPED
-    if record.owed:
-        outcome, record = await _deliver_to_owner(
-            api_client, redis_client, source_id, record, log, story_record=story_record
+    try:
+        if record.owed:
+            outcome, record = await _deliver_to_owner(
+                api_client, redis_client, source_id, record, log, story_record=story_record
+            )
+        if record.admin_owed:
+            admin_outcome, record = await _deliver_to_administrators(
+                api_client, source_id, record, log, story_record=story_record
+            )
+            if outcome is OwnerNotificationOutcome.SKIPPED:
+                outcome = admin_outcome
+    except _AttemptSuperseded:
+        log.warning(
+            "owner_notification_attempt_superseded",
+            po_event=record.event,
+            last_attempt_at=record.last_attempt_at.isoformat(),
+            **_source_log_fields(source_id, story_record=story_record),
         )
-    if record.admin_owed:
-        admin_outcome, record = await _deliver_to_administrators(
-            api_client, source_id, record, log, story_record=story_record
-        )
-        if outcome is OwnerNotificationOutcome.SKIPPED:
-            outcome = admin_outcome
+        return OwnerNotificationOutcome.SUPERSEDED
     return outcome
 
 
@@ -690,9 +774,12 @@ async def supervise_owed_owner_notifications(
     really there is settled per record, against the story, inside
     ``deliver_owed_notification``.
 
-    It runs before the routing step of the tick, not after, so a record owed by
-    this tick's routing gets exactly the one in-tick attempt that routing makes
-    and is not attempted twice in the same cycle.
+    Where it runs relative to routing does not matter. Each visit asks the API
+    for the attempt, and the API grants one per record per
+    ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL``, stamped on the record: a record
+    routing has just attempted is refused here as ``not_due``, and a record this
+    sweep has just attempted is refused to routing, in either order and when
+    both ask at once.
     """
     counts = _empty_counts()
     runs = await api_client.list_runs_owing_owner_notification(limit=OWNER_NOTIFICATION_PAGE)

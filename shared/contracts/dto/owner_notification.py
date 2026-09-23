@@ -34,7 +34,7 @@ are the ones whose story is unreachable the moment the transition lands.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -44,6 +44,20 @@ from shared.contracts.vocab import NON_DURABLE_OWNER_EVENTS, OwnerNotificationEv
 
 #: JSON key for run-backed terminal notices; completed-story notices live on Story.
 OWNER_NOTIFICATION_KEY = "owner_notification"
+
+#: The least time between two delivery attempts on one record. The API grants an
+#: attempt only when this much has passed since ``last_attempt_at``, so the
+#: spacing is a fact of the record, not of which loop happens to call first or of
+#: how often it runs. A minute lets the transient failures this record survives —
+#: an API restart, a Redis failover — clear between attempts, so the bounded
+#: attempts are not all spent inside one outage.
+OWNER_NOTIFICATION_ATTEMPT_INTERVAL = timedelta(seconds=60)
+
+#: The ``detail.code`` of the 409 the API answers to a write carrying an older
+#: attempt than the one the record holds: a visit that outlived its claim, whose
+#: record has since been claimed again, may not overwrite what the newer visit
+#: settled.
+OWNER_NOTIFICATION_ATTEMPT_SUPERSEDED = "owner_notification_attempt_superseded"
 
 
 class OwnerNotificationState(StrEnum):
@@ -99,6 +113,14 @@ class OwnerNotification(BaseModel):
     attempts: int = Field(default=0, ge=0)
     #: Why the last attempt did not deliver.
     detail: str | None = None
+    #: When the last delivery attempt on this record was granted, whichever
+    #: audience it served. Stamped by the API in the same locked write that
+    #: checks ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL``, and never by a caller.
+    #: `None` means never attempted, which is what every record written before
+    #: this field existed reads as. One stamp spaces both audiences because one
+    #: granted visit serves both: two callers can never split a record's
+    #: audiences between them and overwrite each other's settlement.
+    last_attempt_at: datetime | None = None
     #: The administrator audience of the same ending, settled independently of
     #: the owner. Absent (`None`) on every record written before this audience
     #: existed and on endings that owe administrators nothing, so a released
@@ -131,3 +153,40 @@ class OwnerNotification(BaseModel):
     def admin_owed(self) -> bool:
         """True while administrators still have to be told about this ending."""
         return self.admin_state is OwnerNotificationState.OWED
+
+    def attempt_due(self, now: datetime) -> bool:
+        """True when some audience is owed and the last attempt is an interval old."""
+        if not self.owed and not self.admin_owed:
+            return False
+        return (
+            self.last_attempt_at is None
+            or now - self.last_attempt_at >= OWNER_NOTIFICATION_ATTEMPT_INTERVAL
+        )
+
+    def supersedes(self, incoming: OwnerNotification) -> bool:
+        """True when ``incoming`` is a write from an attempt older than this record's.
+
+        The same obligation is recognised by its ``owed_at``: a record owed
+        afresh — a voided ending that became real — is a new obligation and
+        replaces this one whatever it carries.
+        """
+        if incoming.owed_at != self.owed_at or self.last_attempt_at is None:
+            return False
+        return incoming.last_attempt_at is None or incoming.last_attempt_at < self.last_attempt_at
+
+
+class OwnerNotificationAttemptClaim(BaseModel):
+    """The API's answer to "may one delivery attempt be made on this record now?".
+
+    ``granted`` means the record was stamped with this attempt in the same locked
+    write that found it owed and due, and ``notification`` is the stamped record
+    the attempt must carry into every write it makes. A refusal spends nothing
+    and changes nothing; ``notification`` is then the record as it stands (a
+    settled one, or one attempted less than an interval ago), or `None` when the
+    source carries no record at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    granted: bool
+    notification: OwnerNotification | None

@@ -4,14 +4,16 @@ The governing reproduction: the first dispatcher tick is refused with
 `executor_unavailable` and the HTTP answer never reaches the scheduler. The park,
 its evidence and both notice audiences must already be committed; the next tick
 must neither admit, mint, nor publish anything for the task; owner and
-administrator delivery must retry independently and settle once across a
-restarted sweep; and one operator call must return the task to one fresh attempt.
+administrator delivery must retry independently, one delivery interval after
+the failed attempt, and settle once across a restarted sweep; and one operator
+call must return the task to one fresh attempt.
 """
 
 from datetime import UTC, datetime, timedelta
 import os
 import uuid
 
+from _owner_notification_clock import age_last_attempt_by_one_interval
 import httpx
 import pytest
 from redis.asyncio import Redis
@@ -220,6 +222,8 @@ async def test_a_lost_refusal_answer_leaves_a_recoverable_park_and_both_notices(
     assert owner_events(redis) == []
     assert admin_messages() == []
 
+    # The retry waits out one delivery interval since the failed attempt.
+    await age_last_attempt_by_one_interval(story_id, notice.last_attempt_at, story_record=True)
     restarted = _RecordingRedis()
     await supervise_owed_owner_notifications(api_client, restarted)
     await supervise_owed_owner_notifications(api_client, restarted)

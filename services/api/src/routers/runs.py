@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -26,6 +26,8 @@ from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInp
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
+    OwnerNotification,
+    OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
 from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
@@ -41,6 +43,7 @@ from ..dependencies import (
     resolve_actor,
 )
 from ..engineering_budget_admission import finalize_engineering_reservation
+from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -189,6 +192,21 @@ def _refuse_reserved_metadata(metadata: dict) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "reserved_run_metadata", "key": QA_ROUTED_KEY},
         )
+
+
+def _refuse_superseded_owner_notification(existing: dict, update: dict) -> None:
+    """Refuse an owner-notification write from an attempt older than the stored one."""
+    incoming = update.get(OWNER_NOTIFICATION_KEY)
+    if incoming is None:
+        return
+    try:
+        record = OwnerNotification.model_validate(incoming)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{OWNER_NOTIFICATION_KEY} is not an owner notification: {exc}",
+        ) from exc
+    refuse_superseded_write(existing.get(OWNER_NOTIFICATION_KEY), record)
 
 
 @router.post("/", response_model=RunRead, status_code=status.HTTP_201_CREATED)
@@ -638,6 +656,7 @@ async def update_run(
             )
         if isinstance(metadata_update, dict):
             _refuse_reserved_metadata(metadata_update)
+            _refuse_superseded_owner_notification(existing_metadata, metadata_update)
 
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:
@@ -667,6 +686,27 @@ async def update_run(
     )
 
     return run
+
+
+@router.post("/{run_id}/owner-notification/attempt", response_model=OwnerNotificationAttemptClaim)
+async def claim_run_owner_notification_attempt(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotificationAttemptClaim:
+    """Grant one delivery attempt on the run's owner notification, or refuse it.
+
+    Granted only while the record owes some audience and its last attempt is at
+    least `OWNER_NOTIFICATION_ATTEMPT_INTERVAL` old; the check and the stamp are
+    one write under the run lock, so of two callers asking at the same moment
+    exactly one is granted, whichever code path each of them is.
+    """
+    run = await _lock_run(run_id, db)
+    claim, stamped = claim_attempt((run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY))
+    if stamped is not None:
+        run.run_metadata = {**(run.run_metadata or {}), OWNER_NOTIFICATION_KEY: stamped}
+    await db.commit()
+    return claim
 
 
 def _claimed_at(run: Run) -> datetime | None:
