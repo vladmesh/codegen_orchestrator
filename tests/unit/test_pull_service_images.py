@@ -161,6 +161,7 @@ class Host:
         self.log = tmp_path / "docker.log"
         self.curl_log = tmp_path / "curl.log"
         self.record = tmp_path / "deployed-service-images.json"
+        # The puller is never given one; this proves it never writes one either.
         self.previous = tmp_path / "previous-deployed-service-images.json"
 
     def run(self, **overrides) -> tuple[subprocess.CompletedProcess, list[str]]:
@@ -177,7 +178,6 @@ class Host:
             "GHCR_OWNER": OWNER,
             "SERVICE_IMAGE_TAG": RELEASED_SHA,
             "DIGEST_FILE": str(self.record),
-            "PREVIOUS_DIGEST_FILE": str(self.previous),
         }
         environment.update(overrides)
         environment = {key: value for key, value in environment.items() if value is not None}
@@ -210,7 +210,7 @@ def _nothing_moved(host: Host, calls: list[str], *, record_before: str | None = 
         assert not host.record.exists(), "a refusal must not write a deployed record"
     else:
         assert host.record.read_text() == record_before
-    assert not host.previous.exists(), "a refusal must not rotate the previous record"
+    assert not host.previous.exists(), "the puller never writes a previous record"
 
 
 # --- a released revision --------------------------------------------------------------
@@ -245,9 +245,7 @@ def test_only_the_marker_is_resolved_and_the_token_is_read_only(host):
 
 
 def test_validation_only_reads_the_marker_without_pulling_images_or_recording(host):
-    result, calls = host.run(
-        RELEASE_VALIDATION_ONLY="true", DIGEST_FILE=None, PREVIOUS_DIGEST_FILE=None
-    )
+    result, calls = host.run(RELEASE_VALIDATION_ONLY="true", DIGEST_FILE=None)
 
     assert result.returncode == 0, result.stderr
     assert [call for call in calls if call.startswith("pull ")] == [
@@ -375,7 +373,7 @@ def test_only_a_full_sha_is_a_revision(host, tag):
     assert calls == []
 
 
-@pytest.mark.parametrize("missing", ["DIGEST_FILE", "PREVIOUS_DIGEST_FILE", "GHCR_TOKEN"])
+@pytest.mark.parametrize("missing", ["DIGEST_FILE", "GHCR_TOKEN"])
 def test_a_deploy_names_where_the_records_go(host, missing):
     result, calls = host.run(**{missing: None})
 
@@ -390,7 +388,11 @@ def test_a_release_that_cannot_be_named_locally_is_a_record_failure(host):
     assert result.returncode == EXIT_RECORD, result.stderr
 
 
-# --- the previous record ---------------------------------------------------------------
+# --- the record, and nothing else --------------------------------------------------------
+#
+# Rotating the live record into the previous one is not the puller's: the deploy points
+# DIGEST_FILE into its pending set, and only its Switch rotates and promotes, after `up`
+# (scripts/release_switch.py, scripts/tests/test_release_switch.py).
 
 
 def _other_release(source_hash: str) -> str:
@@ -399,39 +401,18 @@ def _other_release(source_hash: str) -> str:
     return json.dumps(record, indent=2, sort_keys=True) + "\n"
 
 
-def test_the_record_it_replaces_becomes_the_previous_record(host, tree_source_hash):
-    before = _other_release(tree_source_hash)
-    host.record.write_text(before)
+def test_the_puller_replaces_the_record_it_is_given_and_rotates_nothing(host, tree_source_hash):
+    host.record.write_text(_other_release(tree_source_hash))
 
     result, _calls = host.run()
 
     assert result.returncode == 0, result.stderr
-    assert host.previous.read_text() == before
     assert json.loads(host.record.read_text())["git_sha"] == RELEASED_SHA
+    assert not host.previous.exists()
+    assert sorted(path.name for path in host.root.glob("*.json*")) == [host.record.name]
 
 
-def test_redeploying_the_same_revision_keeps_the_previous_record(host, tree_source_hash):
-    assert host.run()[0].returncode == 0
-    previous = _other_release(tree_source_hash)
-    host.previous.write_text(previous)
-
-    result, _calls = host.run()
-
-    assert result.returncode == 0, result.stderr
-    assert host.previous.read_text() == previous, "a retry must not lose the rollback target"
-
-
-def test_an_unreadable_current_record_leaves_no_previous_record_trusted(host):
-    host.record.write_text("{ not json")
-    host.previous.write_text('{"stale": true}\n')
-
-    result, _calls = host.run()
-
-    assert result.returncode == 0, result.stderr
-    assert host.previous.read_text() == ""
-
-
-def test_a_refusal_leaves_both_records_as_they_were(host, tree_source_hash):
+def test_a_refusal_leaves_the_record_as_it_was(host, tree_source_hash):
     before = _other_release(tree_source_hash)
     host.record.write_text(before)
 

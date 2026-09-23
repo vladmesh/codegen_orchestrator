@@ -72,7 +72,9 @@ def fake_host(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run(fake_host: Path, script: str, plan: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    fake_host: Path, script: str, plan: str, **extra_env: str
+) -> subprocess.CompletedProcess[str]:
     state = fake_host / "state"
     return subprocess.run(
         ["bash", str(HELPER)],
@@ -87,6 +89,7 @@ def _run(fake_host: Path, script: str, plan: str) -> subprocess.CompletedProcess
             "SSH_PRIVATE_KEY": PRIVATE_KEY,
             "PROD_HOST": "deploy.example",
             "DEPLOY_SSH_USER": "deploy",
+            **extra_env,
         },
     )
 
@@ -162,3 +165,20 @@ def test_secrets_travel_on_stdin_never_as_arguments(fake_host: Path):
     assert (fake_host / "state" / "key-mode.1").read_text().strip() == "600"
     # The key file does not outlive the helper.
     assert not Path((fake_host / "state" / "key-path").read_text().strip()).exists()
+
+
+def test_a_single_attempt_caller_is_never_retried(fake_host: Path):
+    """The deploy's Switch: a dropped connection fails the step instead of re-running it."""
+    result = _run(fake_host, "echo once\n", "drop,run", DEPLOY_SSH_ATTEMPTS="1")
+
+    assert result.returncode == 255
+    assert _attempts(fake_host) == 1
+    assert _sleeps(fake_host) == []
+
+
+@pytest.mark.parametrize("attempts", ["0", "-1", "three"])
+def test_a_nonsense_attempt_count_is_refused_before_connecting(fake_host: Path, attempts: str):
+    result = _run(fake_host, "echo never\n", "run", DEPLOY_SSH_ATTEMPTS=attempts)
+
+    assert result.returncode == 2
+    assert not (fake_host / "state" / "attempts").exists()

@@ -17,27 +17,25 @@
 #      shared validator (this SHA, this tree's source hash, schema version, exactly the
 #      chain, every image by digest in this registry), then pulls every image the record
 #      names by digest and requires each to carry this tree's non-empty source hash.
-#   3. Only once every image is verified does anything local change: the deployed record
-#      rotates (the one it replaces becomes the previous record, which is the rollback
-#      target and what cleanup keeps), the new record is written, and every image gets a
-#      local name, codegen-orchestrator/<image>:<sha>, so a dangling-image prune can never
-#      take the previous release away from a rollback.
+#   3. Only once every image is verified does it write anything: the record of the verified
+#      release at DIGEST_FILE, and a local name for every image,
+#      codegen-orchestrator/<image>:<sha>, so a dangling-image prune can never take a
+#      release away from a rollback.
 #
-# Nothing here touches a running container: compose runs the release only when the deploy
-# writes its image override from the record this leaves behind
-# (scripts/service_release.py compose-override).
+# Nothing here is live host state. The deploy points DIGEST_FILE into its pending set;
+# its Switch step alone rotates the live record into the previous one and promotes this
+# record, after `up` succeeded (scripts/release_switch.py promote).
 #
 # Required env vars:
 #   GHCR_TOKEN             — a token with packages:read on the owner's packages
 #   GHCR_OWNER             — the GitHub org/user that owns the package namespace
 #   SERVICE_IMAGE_TAG      — the full git SHA of the revision being deployed
-#   DIGEST_FILE            — where the record of the deployed release is kept
-#   PREVIOUS_DIGEST_FILE   — where the record it replaces is kept
+#   DIGEST_FILE            — where to write the record of the verified release
 # Optional env vars:
 #   RELEASE_VALIDATION_ONLY=true — look the marker up and validate its record, without
 #       pulling a service image, naming one locally or writing a record. This is the
 #       read-only probe the pre-deploy wait runs on the GitHub runner
-#       (scripts/wait_release.py); DIGEST_FILE and PREVIOUS_DIGEST_FILE are not required.
+#       (scripts/wait_release.py); DIGEST_FILE is not required.
 #
 # Exit codes, one per reason so a caller can tell them apart:
 #   1   usage: a variable is missing, or the tag is not a full git SHA
@@ -65,8 +63,7 @@ require GHCR_OWNER "the GitHub org/user that owns the package namespace"
 require SERVICE_IMAGE_TAG "the full git SHA of the revision being deployed; there is no default"
 VALIDATION_ONLY="${RELEASE_VALIDATION_ONLY:-false}"
 if [ "${VALIDATION_ONLY}" != true ]; then
-    require DIGEST_FILE "where to record the deployed release"
-    require PREVIOUS_DIGEST_FILE "where to keep the record it replaces"
+    require DIGEST_FILE "where to record the verified release"
 fi
 if ! [[ "${SERVICE_IMAGE_TAG}" =~ ^[0-9a-f]{40}$ ]]; then
     echo "FATAL: SERVICE_IMAGE_TAG=${SERVICE_IMAGE_TAG} is not a full git SHA." >&2
@@ -125,13 +122,7 @@ released="$(release_verify_committed "${marker_reference}" "${SERVICE_RELEASE_LA
     "${SERVICE_RELEASE_SCHEMA_VERSION}" "${CHAIN[@]}")" || exit "$?"
 mapfile -t verified <<< "${released}"
 
-# Every image is verified; only now does anything on this host change.
-if ! python3 "${REPO_ROOT}/scripts/service_release.py" rotate \
-    --current-record "${DIGEST_FILE}" --previous-record "${PREVIOUS_DIGEST_FILE}" \
-    --next-revision "${SERVICE_IMAGE_TAG}"; then
-    echo "FATAL: the previous service release record could not be kept." >&2
-    exit "${EXIT_RECORD}"
-fi
+# Every image is verified; only now is anything written.
 staged="${DIGEST_FILE}.next"
 if ! release_record "${SERVICE_IMAGE_TAG}" "${EXPECTED_HASH}" "${staged}" \
     "${SERVICE_RELEASE_SCHEMA_VERSION}" "${verified[@]}" >&2 \

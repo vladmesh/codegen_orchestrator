@@ -623,10 +623,11 @@ Deploy is triggered manually via GitHub Actions:
    [Rolling back](#rolling-back))
 2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`,
    stages that revision on the host and pulls and verifies both image releases of it concurrently
-   from the stage — and only then switches the host: writes the secret files, resets the deploy
-   path to the revision and starts the services from the service release by digest (nothing is
-   built on the host). It then runs migrations in the released api container, verifies health,
-   seeds configs, reconciles deploy targets and cleans up old images
+   from the stage into a pending set — and only then, in one `Switch` step, changes the host:
+   writes the secret file, resets the deploy path to the revision, retags the worker base images,
+   starts the services from the service release by digest (nothing is built on the host), promotes
+   the release records, and runs migrations, the health check, the config seed and the scheduler
+   wait in the released containers. It then reconciles deploy targets and cleans up old images
 
 ### The deploy waits for its release, and survives one SSH timeout
 
@@ -649,11 +650,13 @@ when waiting cannot help:
 | 10-13 (worker), 11 (service) | the registry failed three times in a row (the probe's own codes) |
 | any other probe code | the release exists but is refused (a broken record, a wrong source hash): final |
 
-The file-only steps — writing `.env` and the secret files, checking the written `.env`, checking out
-the revision, reading back the release records — reach the host through `infra/scripts/deploy-ssh.sh`.
-It retries only a failed connection (ssh exit 255), at most three attempts with a 10 s/20 s backoff,
-and never re-runs a remote script that failed on its own. The pull, deploy, migrations, health,
-configs, scheduler wait, reconcile and cleanup keep a single attempt.
+The file-only steps — writing `.env`, checking the written `.env`, reading back the pending release
+records — reach the host through `infra/scripts/deploy-ssh.sh`. It retries only a failed connection
+(ssh exit 255), at most three attempts with a 10 s/20 s backoff, and never re-runs a remote script
+that failed on its own. The `Switch` goes through the same helper, because it carries the GitHub App
+key and its script must travel on stdin, but with `DEPLOY_SSH_ATTEMPTS=1`: a dropped connection may
+leave its first run going, and the switch must never run twice at once. The verify step, reconcile
+and cleanup keep a single attempt.
 
 ### Worker base images are a release chain
 
@@ -790,11 +793,10 @@ of `pull-worker-images.sh`, and reuses `release-chain.sh` rather than repeating 
 revision it asks `release_marker_lookup` (with a read-only `pull` token), then runs
 `release_verify_committed`: the marker is pulled by digest, its record validated whole, and every
 image it names pulled by digest and required to carry the checkout's non-empty
-`org.codegen.worker_source_hash`. Only then does anything local change: the deployed record
-`deployed-service-images.json` is written, the record it replaces becomes
-`previous-deployed-service-images.json` (when it is a valid record of another revision; a redeploy
-of the same revision keeps the previous one), and each image gets the local name
-`codegen-orchestrator/<image>:<sha>`.
+`org.codegen.worker_source_hash`. Only then does it write anything: the record of the verified
+release at the `DIGEST_FILE` it is given (the deploy's pending set), and the local name
+`codegen-orchestrator/<image>:<sha>` for each image. It rotates no record: which release is current
+and which previous is decided only by the `Switch`, after `up` (below).
 
 | exit | meaning |
 | --- | --- |
@@ -805,36 +807,64 @@ of the same revision keeps the previous one), and each image gets the local name
 | 10 | the marker is unreadable, not a valid record of this release, or names an image that is gone |
 | 11 | the registry could not say whether the revision is released |
 
-**Verify first, then switch.** Running containers bind-mount the deploy path's sources, `shared`
-and `/opt/secrets/github_app.pem`, so nothing that can still refuse the revision may touch those.
-The workflow has one boundary, the first step that does (`Write secrets files to server`):
+**Verify, then one switch.** Live host state is exactly: the `/opt/secrets` files, the deploy
+path's tracked checkout, the `worker-base-*:latest` tags worker-manager builds from, the running
+compose project, the release records (`deployed-{worker,service}-images.json` and
+`previous-deployed-{worker,service}-images.json`) and the compose override `up` reads
+(`deployed-service-images.compose.yml`). It changes in one step, `Switch`, and nowhere else; a unit
+test pins that against the real `deploy.yml`.
 
-- Before it, the host is written only where no container looks. `Write .env to server` writes
-  `.env`, which a container reads only when it is created; it stays early because compose needs it
-  to resolve the configuration. The step `Pull and verify this revision's worker and service
-  releases` fetches the revision into the live repository (into `.git` only), stages it as a git
-  worktree at `~/.codegen-release-stage` of the SSH user — outside the deploy path and every mount —
-  and runs everything that can refuse from there. A stage a crashed run left behind is replaced,
-  and the stage is removed however the step ends.
-- At it, adjacent and with no check in between: the secret file is written, `git reset --hard
-  <revision>` moves the deploy path, and `up` starts the release. Only after `up` does
-  `infra/scripts/retag-worker-images.sh` move the local `worker-base-*:latest` names to the worker
-  release the pull verified (`pull-worker-images.sh` runs with `RELEASE_DEFER_RETAG=true`), so a
-  refusal before the switch leaves worker-manager building from its current images.
+- **Verify** (`Pull and verify this revision's worker and service releases`) writes nothing live.
+  It first discards any pending set an earlier attempt left, fetches the revision into the live
+  repository (into `.git` only) and stages it as a git worktree at `~/.codegen-release-stage` of the
+  SSH user — outside the deploy path and every mount; a stage a crashed run left is replaced, and the
+  stage is removed however the step ends. From the stage it runs the worker pull
+  (`pull-worker-images.sh` with `RELEASE_DEFER_RETAG=true`, so no `:latest` name moves), the service
+  pull and a pull of any third-party image compose names by tag that the host does not have yet
+  (`--ignore-buildable --policy missing`) concurrently, and fails if any of them fails. Then
+  `scripts/service_release.py compose-override` generates the override from the service record and
+  the contour's resolved compose configuration: every service compose would build locally (all
+  `codegen-orchestrator/<image>:local` services, both frontends included) gets
+  `image: <repository>@sha256:…` from the record, and compose checks the result. A build service the
+  release does not contain fails the deploy there instead of being built. What passed becomes the
+  **pending set**, `<deploy path>/.release-pending/` (untracked, mounted by no container): both
+  records, the override, and the revision's own `scripts/release_switch.py`.
+- **Switch** is one SSH session under `set -euo pipefail`, in this order:
+  1. `release_switch.py check`, run from the pending set's copy (the checkout still holds the
+     previous revision): the pending set is complete, both records are of this revision, the worker
+     and service records carry one tree's source hash, and the override names only images of the
+     service release. This is the only check, and it precedes every write.
+  2. The mounted secret file `/opt/secrets/github_app.pem`.
+  3. `git reset --hard <revision>` in the deploy path.
+  4. `infra/scripts/retag-worker-images.sh` moves `worker-base-*:latest` to the pending worker
+     record's digests — before `up`, so the new worker-manager never sees the previous bases. The
+     old manager sees the new ones for the seconds until `up` (before this, for the whole host build).
+  5. The override is installed at its live path, then `up -d --remove-orphans --no-build --pull never`.
+  6. Only after `up` succeeded, `release_switch.py promote`: the live current records become the
+     previous ones (the existing rotations, no-ops for the same revision or source hash) and the
+     pending records become current by atomic rename.
+  7. Migrations and the config seeder in the released api container (after its health check), then
+     the schedulers are recreated after the seed and waited for — the only other `up`, so it lives here.
 
-From the stage, the pull step runs the worker pull, the service pull and a pull of any third-party
-image compose names by tag that the host does not have yet (`--ignore-buildable --policy missing`)
-concurrently, and fails if any of them fails. Then `scripts/service_release.py compose-override`
-generates `deployed-service-images.compose.yml` from the service record and the contour's resolved
-compose configuration: every service compose would build locally (all
-`codegen-orchestrator/<image>:local` services, both frontends included) gets
-`image: <repository>@sha256:…` from the record, and compose checks the result. A build service the
-release does not contain fails the deploy there instead of being built. The records and the override
-are written in the stage and move to the deploy path — untracked files no container mounts — only
-once every pull and check has passed; a refusal leaves the deploy path as it was. Every compose
-call after that adds `-f deployed-service-images.compose.yml`, and every `up` runs with
-`--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations and the
-config seeder run in the api container that `up` started from the release; nothing is built for
+The record step, the artifact upload and the run summary read the pending set, before the switch: a
+run that fails in the switch still shows what it was about to start.
+
+#### If a deploy fails
+
+- **The live `deployed-*.json` records are the only truth** of what was last brought up
+  successfully. A pending set never overrides them and is never rotated into `previous`.
+- Every deploy's verify step discards any pending set an earlier attempt left.
+- A failure before step 2 of the switch changes nothing live: production keeps running what it ran.
+- A failure after step 2 leaves the host **target partially applied** (for example new code checked
+  out, or new containers up, with the records still naming the last successful release). Recover by
+  rerunning the deploy of the same revision — every step of the switch is idempotent — or by
+  deploying the revision of the live current record (`git_sha` in `deployed-service-images.json`).
+- Cleanup runs only after a successful switch, keeps the promoted current and previous releases and
+  every image a container uses, so a failed attempt deletes nothing.
+
+Every compose call after the switch adds `-f deployed-service-images.compose.yml`, and every `up`
+runs with `--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations
+and the config seeder run in the api container `up` started from the release; nothing is built for
 them.
 
 Plain `docker compose` without that override (development) builds locally exactly as before. The
@@ -854,7 +884,8 @@ workflow: the runner checkout, both release waits, the host checkout, both pulls
 target reconcile all use that one revision. To roll back:
 
 1. Find the SHA to return to: `git_sha` in `previous-deployed-service-images.json` in the deploy
-   path on the host, or the `deployed-service-images-<sha>` artifact of an earlier Deploy run.
+   path on the host — the release that was current before the last successful switch — or the
+   `deployed-service-images-<sha>` artifact of an earlier Deploy run that succeeded.
 2. Dispatch Deploy for the same environment with `revision` set to that full SHA. Its release is
    already published, so the wait passes at once; its images are usually still on the host, because
    cleanup keeps the previous release.

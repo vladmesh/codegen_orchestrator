@@ -31,17 +31,13 @@ RELEASE_WAIT_STEP = "Wait for this revision's worker and service releases"
 FILE_ONLY_STEPS = (
     "Write .env to server",
     "Verify the deployed contour carries only its own credentials",
-    "Write secrets files to server",
-    "Check out deployed revision",
     "Record deployed revision and verified image digests",
 )
+# The Switch carries the GitHub App key, so its script travels on stdin through the same
+# helper, but with a single attempt: it must never run twice at once on the host.
+SWITCH_STEP = "Switch"
 SINGLE_SHOT_STEPS = (
     "Pull and verify this revision's worker and service releases",
-    "Deploy",
-    "Run migrations",
-    "Health check",
-    "Apply system configs",
-    "Wait for scheduler services",
     "Reconcile managed deploy targets",
     "Cleanup",
 )
@@ -115,7 +111,7 @@ def test_the_job_may_read_the_ci_run_it_waits_for():
 # --- the SSH retry ---
 
 
-@pytest.mark.parametrize("name", FILE_ONLY_STEPS)
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
 def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     step = _steps()[name]
     script = step["run"]
@@ -128,7 +124,7 @@ def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     assert call_line.rstrip().endswith("<<'REMOTE'"), "the remote script is a quoted heredoc"
 
 
-@pytest.mark.parametrize("name", FILE_ONLY_STEPS)
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
 def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
     """Everything before the heredoc runs on the runner command line; no secret is there."""
     script = _steps()[name]["run"]
@@ -136,6 +132,16 @@ def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
 
     assert "secrets." not in before_heredoc
     assert "REMOTE" in script.splitlines(), "the heredoc is closed at column 0"
+
+
+def test_the_switch_is_never_retried():
+    """A dropped connection may leave the first run going; a second must not start."""
+    step = _steps()[SWITCH_STEP]
+
+    assert str(step["env"]["DEPLOY_SSH_ATTEMPTS"]) == "1"
+    assert all(
+        "DEPLOY_SSH_ATTEMPTS" not in _steps()[name].get("env", {}) for name in FILE_ONLY_STEPS
+    )
 
 
 def test_no_step_calls_ssh_without_the_helper():
@@ -171,6 +177,8 @@ def _render(script: str, deploy_path: Path) -> str:
         expression = match.group(1)
         if expression == "env.DEPLOY_PATH":
             return str(deploy_path)
+        if expression == "env.RELEASE_PENDING":
+            return ".release-pending"
         if expression in ("github.sha", "env.DEPLOY_REVISION"):
             return DEPLOYED_SHA
         if expression.startswith("inputs.environment == 'production'"):
@@ -258,10 +266,13 @@ def test_a_contour_check_that_refuses_fails_once_and_is_not_retried(host: Path):
 
 
 def test_the_records_are_read_back_into_the_summary(host: Path):
+    """The pending records the verify step left, read before the Switch."""
     worker = '{\n  "git_sha": "abc",\n  "images": {}\n}\n'
     service = '{\n  "git_sha": "abc",\n  "schema_version": 1\n}\n'
-    (host / "deploy" / "deployed-worker-images.json").write_text(worker)
-    (host / "deploy" / "deployed-service-images.json").write_text(service)
+    pending = host / "deploy" / ".release-pending"
+    pending.mkdir()
+    (pending / "deployed-worker-images.json").write_text(worker)
+    (pending / "deployed-service-images.json").write_text(service)
 
     result = _run_step("Record deployed revision and verified image digests", host)
 
@@ -276,7 +287,9 @@ def test_the_records_are_read_back_into_the_summary(host: Path):
 
 
 def test_a_missing_service_record_fails_the_record_step(host: Path):
-    (host / "deploy" / "deployed-worker-images.json").write_text('{"git_sha": "abc"}\n')
+    pending = host / "deploy" / ".release-pending"
+    pending.mkdir()
+    (pending / "deployed-worker-images.json").write_text('{"git_sha": "abc"}\n')
 
     result = _run_step("Record deployed revision and verified image digests", host)
 

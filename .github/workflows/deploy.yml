@@ -68,12 +68,16 @@ jobs:
       RELEASE_TOOLING: >-
         infra/scripts/pull-service-images.sh
         infra/scripts/retag-worker-images.sh
+        scripts/release_switch.py
         scripts/service_release.py
         scripts/wait_release.py
       # Where the host stages the revision before the switch: a git worktree under
       # the SSH user's home, outside DEPLOY_PATH and outside every path a container
       # mounts. Everything that can refuse runs there; nothing running can see it.
       RELEASE_STAGE: .codegen-release-stage
+      # Where the verify step leaves what it verified for the Switch: under the deploy
+      # path, untracked, and outside every path a container mounts. Not live state.
+      RELEASE_PENDING: .release-pending
 
     steps:
       # The revision reaches remote scripts and git commands, so it is a full SHA or
@@ -367,22 +371,23 @@ jobs:
           echo "this contour carries only its own allowlist: ${allowlist}"
           REMOTE
 
-      # Everything that can refuse the revision runs here, before the boundary, and
-      # nothing it does is visible to a running container. The revision is staged as
-      # a git worktree outside DEPLOY_PATH (RELEASE_STAGE); the live tree is only
-      # fetched into (.git, which no container mounts). From the stage, concurrently:
-      # the worker base images (pull-worker-images.sh, local :latest names left in
-      # place) and the control-plane service images (pull-service-images.sh), each
-      # read from that exact commit's release marker, pulled by digest and refused
-      # when built from other sources; and any third-party image compose names by
-      # tag that the host does not have yet (`--policy missing`, as `up` used to, so
-      # a re-pushed tag never restarts the database). Then the compose override is
-      # generated from the service record and checked by compose.
+      # Verify. Everything that can refuse the revision runs here, and nothing it
+      # writes is live host state. The revision is staged as a git worktree outside
+      # DEPLOY_PATH (RELEASE_STAGE); the live repository is only fetched into (.git,
+      # which no container mounts). From the stage, concurrently: the worker base
+      # images (pull-worker-images.sh, local :latest names left in place) and the
+      # control-plane service images (pull-service-images.sh), each read from that
+      # exact commit's release marker, pulled by digest and refused when built from
+      # other sources; and any third-party image compose names by tag that the host
+      # does not have yet (`--policy missing`, as `up` used to, so a re-pushed tag
+      # never restarts the database). Then the compose override is generated from
+      # the service record and checked by compose.
       #
-      # The records and the override are staged too, and move to their final paths
-      # in DEPLOY_PATH — untracked files no container mounts — only once every pull
-      # and check has passed. The stage is removed however the step ends, and a stage
-      # a crashed run left behind is replaced.
+      # What passed becomes the pending set (RELEASE_PENDING): both records, the
+      # override and the revision's own release_switch.py. Any pending set an earlier
+      # attempt left is discarded first. The live records are not read or written
+      # here: only the Switch promotes, and only after `up` succeeded. The stage is
+      # removed however the step ends, and a stage a crashed run left is replaced.
       - name: Pull and verify this revision's worker and service releases
         uses: appleboy/ssh-action@v1
         timeout-minutes: 20
@@ -394,6 +399,8 @@ jobs:
           script: |
             set -euo pipefail
             live=${{ env.DEPLOY_PATH }}
+            pending="${live}/${{ env.RELEASE_PENDING }}"
+            rm -rf "${pending}" "${pending}.next"
             stage="${HOME}/${{ env.RELEASE_STAGE }}"
             unstage() {
               git -C "${live}" worktree remove --force "${stage}" 2>/dev/null || rm -rf "${stage}"
@@ -415,17 +422,6 @@ jobs:
             install -m 600 "${live}/.env" .env
             out="${stage}/.release-out"
             mkdir -m 700 "${out}"
-            records="deployed-worker-images.json previous-deployed-worker-images.json"
-            records="${records} deployed-service-images.json previous-deployed-service-images.json"
-            for record in ${records}; do
-              if [ -f "${live}/${record}" ]; then
-                cp -p "${live}/${record}" "${out}/${record}"
-              fi
-            done
-            python3 scripts/rotate_worker_image_records.py \
-              --current-record "${out}/deployed-worker-images.json" \
-              --previous-record "${out}/previous-deployed-worker-images.json" \
-              --next-source-hash "$(python3 scripts/shared_freshness.py hash)"
             export GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'
             export GHCR_OWNER='${{ github.repository_owner }}'
             WORKER_IMAGE_TAG='${{ env.DEPLOY_REVISION }}' \
@@ -435,7 +431,6 @@ jobs:
             worker_pid=$!
             SERVICE_IMAGE_TAG='${{ env.DEPLOY_REVISION }}' \
             DIGEST_FILE="${out}/deployed-service-images.json" \
-            PREVIOUS_DIGEST_FILE="${out}/previous-deployed-service-images.json" \
             bash infra/scripts/pull-service-images.sh > "${out}/service.log" 2>&1 &
             service_pid=$!
             docker compose ${{ env.COMPOSE_ARGS }} pull --ignore-buildable --policy missing --quiet \
@@ -464,17 +459,20 @@ jobs:
               --record "${out}/deployed-service-images.json" \
               --output "${out}/${{ env.SERVICE_RELEASE_COMPOSE }}"
             docker compose ${{ env.COMPOSE_ARGS }} -f "${out}/${{ env.SERVICE_RELEASE_COMPOSE }}" config --quiet
-            # Every pull and check passed: the verified records and the override take
-            # their final places. Nothing reads them before the switch below.
-            for file in ${records} ${{ env.SERVICE_RELEASE_COMPOSE }}; do
-              if [ -f "${out}/${file}" ]; then
-                mv -f "${out}/${file}" "${live}/${file}"
-              fi
+            python3 scripts/release_switch.py check --pending "${out}" --revision ${{ env.DEPLOY_REVISION }}
+            # Every pull and check passed: this is the pending set, whole or not at all.
+            mkdir -m 700 "${pending}.next"
+            for file in deployed-worker-images.json deployed-service-images.json \
+              ${{ env.SERVICE_RELEASE_COMPOSE }}; do
+              mv "${out}/${file}" "${pending}.next/${file}"
             done
+            cp scripts/release_switch.py "${pending}.next/release_switch.py"
+            mv "${pending}.next" "${pending}"
 
       # What the deploy is made of, on the record. This does not look the tags up
-      # again: it copies back the records the step above wrote from the digests it
-      # pulled and verified, so the recorded releases are the ones that were checked.
+      # again: it copies back the pending records the step above wrote from the
+      # digests it pulled and verified — read before the Switch, so a deploy that
+      # fails there still leaves the evidence of what it was about to start.
       - name: Record deployed revision and verified image digests
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -486,9 +484,9 @@ jobs:
           set -euo pipefail
           bash infra/scripts/deploy-ssh.sh > "${RECORDS}" <<'REMOTE'
           set -euo pipefail
-          cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json
+          cat ${{ env.DEPLOY_PATH }}/${{ env.RELEASE_PENDING }}/deployed-worker-images.json
           echo '#service-release-record'
-          cat ${{ env.DEPLOY_PATH }}/deployed-service-images.json
+          cat ${{ env.DEPLOY_PATH }}/${{ env.RELEASE_PENDING }}/deployed-service-images.json
           REMOTE
           sed '/^#service-release-record$/,$d' "${RECORDS}" > "${WORKER_DIGEST_FILE}"
           sed '1,/^#service-release-record$/d' "${RECORDS}" > "${SERVICE_DIGEST_FILE}"
@@ -524,123 +522,92 @@ jobs:
           path: ${{ runner.temp }}/deployed-service-images.json
           if-no-files-found: error
 
-      # ---- The boundary: the first step that touches what running containers see. ----
-      # Everything above has only written to the runner, to the stage, and to files
-      # no container mounts (.env, which a container reads only when it is created,
-      # the release records and the compose override). From here on the host is
-      # switched, in this order and with no check in between that could refuse:
-      # the bind-mounted secret files, the bind-mounted source tree, then `up`.
-      - name: Write secrets files to server
+      # ---- Switch: the one place live host state changes. ----
+      # Live host state is the /opt/secrets files, DEPLOY_PATH's tracked checkout,
+      # the worker-base-*:latest tags worker-manager builds from, the running compose
+      # project, the deployed/previous release records and the compose override `up`
+      # reads. No other step, and no script another step calls, writes any of them.
+      # One SSH session, one attempt (a dropped connection must not run it twice), in
+      # this order:
+      #   1. check the pending set is complete and is this revision's — the only check,
+      #      before any write, run from the pending set's own copy of the helper
+      #      because the checkout still holds the previous revision;
+      #   2. the mounted secret file;  3. the checkout, reset to the revision;
+      #   4. worker-base-*:latest from the pending worker record, before `up`, so the
+      #      new worker-manager never sees the previous bases;
+      #   5. the override, then `up`;
+      #   6. only after `up` succeeded: promote — the live current records become
+      #      previous, the pending records become current;
+      #   7. bring the release to service: migrations and the config seeder in the
+      #      released api container (the seeder talks to the API, so it waits for its
+      #      health; paid-work controls are initialize-only, live operator values
+      #      win), then the schedulers recreated after the seed and waited for. Their
+      #      recreate is an `up`, and `up` happens nowhere but here.
+      # A failure from 2 on leaves the target partially applied: rerun the deploy of
+      # the same revision (every step is idempotent), or deploy the revision of the
+      # live current record (docs/DEPLOY.md, "If a deploy fails").
+      - name: Switch
+        timeout-minutes: 25
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           PROD_HOST: ${{ secrets.PROD_HOST }}
+          DEPLOY_SSH_ATTEMPTS: 1
         run: |
           set -euo pipefail
           bash infra/scripts/deploy-ssh.sh <<'REMOTE'
           set -euo pipefail
+          # One group, read whole before any of it runs, with stdin from /dev/null:
+          # `bash -s` reads this script from stdin, and `compose exec` would read the
+          # rest of it as its own input.
+          {
+          live=${{ env.DEPLOY_PATH }}
+          pending="${live}/${{ env.RELEASE_PENDING }}"
+          cd "${live}"
+          python3 "${pending}/release_switch.py" check --pending "${pending}" \
+            --revision ${{ env.DEPLOY_REVISION }}
+
           sudo mkdir -p /opt/secrets
           sudo chown deploy:deploy /opt/secrets
-
           echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
           chmod 600 /opt/secrets/github_app.pem
-          REMOTE
 
-      # Moves the live tree to the revision the pull step staged and verified (its
-      # commit is already fetched), not to whatever origin/main points at by now.
-      # The bind-mounted sources are this checkout, so they are the release's own.
-      - name: Check out deployed revision
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          PROD_HOST: ${{ secrets.PROD_HOST }}
-        run: |
-          set -euo pipefail
-          bash infra/scripts/deploy-ssh.sh <<'REMOTE'
-          set -euo pipefail
-          cd ${{ env.DEPLOY_PATH }}
           git reset --hard ${{ env.DEPLOY_REVISION }}
+
+          bash infra/scripts/retag-worker-images.sh "${pending}/deployed-worker-images.json"
+
+          cp "${pending}/${{ env.SERVICE_RELEASE_COMPOSE }}" "${{ env.SERVICE_RELEASE_COMPOSE }}.next"
+          mv -f "${{ env.SERVICE_RELEASE_COMPOSE }}.next" ${{ env.SERVICE_RELEASE_COMPOSE }}
+          docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
+            up -d --remove-orphans --no-build --pull never
+
+          python3 scripts/release_switch.py promote --pending "${pending}" --live "${live}" \
+            --revision ${{ env.DEPLOY_REVISION }}
+
+          docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
+            exec -T api alembic upgrade head
+          echo "Waiting for API to be healthy..."
+          timeout=60
+          while ! docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
+            exec -T api curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1
+          do
+            if [ "${timeout}" -le 0 ]; then
+              echo "FATAL: API health check failed after 60s" >&2
+              docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} logs --tail=50 api >&2
+              exit 1
+            fi
+            sleep 2
+            timeout=$((timeout - 2))
+          done
+          echo "API is healthy"
+          docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} exec -T api \
+            python /app/scripts/seed_system_configs.py \
+            --api-base-url http://localhost:8000 \
+            --configs-path /app/scripts/system_configs.yaml
+          docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
+            up -d --force-recreate --no-deps --wait --wait-timeout 180 --no-build --pull never \
+            scheduler-pipeline scheduler-infrastructure scheduler-maintenance
+          } < /dev/null
           REMOTE
-
-      # The release starts from its digests; only then do the worker-base-*:latest
-      # names worker-manager builds workers from move to the verified worker release.
-      - name: Deploy
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
-              up -d --remove-orphans --no-build --pull never
-            bash infra/scripts/retag-worker-images.sh deployed-worker-images.json
-
-      # In the api container of the release, which the step above started from its
-      # digest: no image is built to migrate.
-      - name: Run migrations
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
-              exec -T api alembic upgrade head
-
-      - name: Health check
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            echo "Waiting for API to be healthy..."
-            cd ${{ env.DEPLOY_PATH }}
-            timeout=60
-            while ! docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
-              exec -T api curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1
-            do
-              if [ $timeout -le 0 ]; then
-                echo "FATAL: API health check failed after 60s"
-                docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
-                  logs --tail=50 api
-                exit 1
-              fi
-              sleep 2
-              timeout=$((timeout - 2))
-            done
-            echo "API is healthy"
-
-      # Runs after the health check because the seeder talks to the API, not the DB.
-      # Paid-work controls are initialize-only: live operator values always win.
-      - name: Apply system configs
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} exec -T api \
-              python /app/scripts/seed_system_configs.py \
-              --api-base-url http://localhost:8000 \
-              --configs-path /app/scripts/system_configs.yaml
-
-      - name: Wait for scheduler services
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
-              up -d --force-recreate --no-deps --wait --wait-timeout 180 --no-build --pull never \
-              scheduler-pipeline scheduler-infrastructure scheduler-maintenance
 
       # Every managed deploy target is reconciled to the QA target profile this
       # revision's `qa_identity` role defines — after the new services are healthy,

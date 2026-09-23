@@ -25,6 +25,10 @@
 #   SSH_PRIVATE_KEY   the deploy key
 #   PROD_HOST         the deploy host
 #   DEPLOY_SSH_USER   the account on it
+# Optional env vars:
+#   DEPLOY_SSH_ATTEMPTS  connection attempts, 3 by default. The deploy's Switch passes 1:
+#                        a dropped connection may leave its first run still going on the
+#                        host, and the host switch must never run twice at once.
 
 set -euo pipefail
 
@@ -32,7 +36,11 @@ set -euo pipefail
 : "${PROD_HOST:?PROD_HOST is required}"
 : "${DEPLOY_SSH_USER:?DEPLOY_SSH_USER is required}"
 
-MAX_ATTEMPTS=3
+MAX_ATTEMPTS="${DEPLOY_SSH_ATTEMPTS:-3}"
+if ! [[ "${MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FATAL: DEPLOY_SSH_ATTEMPTS=${MAX_ATTEMPTS} is not a positive number of attempts" >&2
+    exit 2
+fi
 SSH_CONNECTION_FAILURE=255
 BACKOFF_SECONDS=10
 
