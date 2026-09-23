@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - `DEFAULT_AGENT_TYPE` is required by api, langgraph and telegram_bot and by Compose, with no `claude`
   fallback; the API drops its unused optional `TELEGRAM_BOT_TOKEN` setting.
+- Owed owner notifications carry `last_attempt_at`; the API grants one delivery attempt per 60 s per record
+  under the row lock, so routing and the recovery sweep may run in any order or concurrently.
 
 ## 2026-09-22
 

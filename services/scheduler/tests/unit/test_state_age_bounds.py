@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from _owner_notification_claims import ClaimClock, claim
 from _run_routing_factories import _make_repo, _make_run, _make_story
 import pytest
 import structlog
@@ -396,6 +397,8 @@ class _SecretWait:
         api.list_stories_owing_owner_notification.return_value = []
         api.get_project.return_value = SimpleNamespace(owner_id=555)
         api.get_user.return_value = SimpleNamespace(telegram_id=owner_telegram_id)
+        api.claim_run_owner_notification_attempt.side_effect = self._claim_run
+        self.clock = ClaimClock()
         self.api = api
 
         redis = AsyncMock()
@@ -428,6 +431,14 @@ class _SecretWait:
 
     async def _update_run(self, run_id, data):
         self.run_metadata = {**self.run_metadata, **data.get("run_metadata", {})}
+
+    async def _claim_run(self, run_id):
+        assert run_id == self.RUN_ID
+        return claim(
+            self.clock,
+            lambda: self.run_metadata.get(OWNER_NOTIFICATION_KEY),
+            lambda stamped: self.run_metadata.update({OWNER_NOTIFICATION_KEY: stamped}),
+        )
 
     async def _story(self, story_id):
         return self._story_dto()
@@ -475,6 +486,8 @@ class _SecretWait:
         )
 
     async def sweep_owed_notifications(self) -> None:
+        """A later cycle's sweep: at least one delivery interval after the last attempt."""
+        self.clock.elapse()
         await supervise_owed_owner_notifications(self.api, self.redis)
 
 

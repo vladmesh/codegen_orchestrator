@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
 # Sibling test-helper module (not a test module); on sys.path via pytest prepend import mode.
+from _owner_notification_claims import ClaimsFromWrites
 from _run_routing_factories import (
     _invalid_result_error,
     _make_project,
@@ -161,6 +162,8 @@ def api_client():
     client.start_paid_run.return_value = PaidRunStartRead(
         admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="qa-test"
     )
+    # The API grants the delivery attempt on whatever record it holds.
+    ClaimsFromWrites(client)
     return client
 
 

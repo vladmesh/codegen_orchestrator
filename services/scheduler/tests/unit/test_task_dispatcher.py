@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from _owner_notification_claims import ClaimClock, claim
 import httpx
 import pytest
 
@@ -2219,6 +2220,31 @@ class _RefusalWorld:
         api_client.update_run = _AsyncMock(side_effect=self._write_run)
         api_client.get_project = _AsyncMock(return_value=self._project())
         api_client.get_user = _AsyncMock(return_value=self._owner())
+        api_client.claim_story_owner_notification_attempt = _AsyncMock(
+            side_effect=self._claim_story
+        )
+        api_client.claim_run_owner_notification_attempt = _AsyncMock(side_effect=self._claim_run)
+        self.clock = ClaimClock()
+
+    async def _claim_story(self, story_id: str):
+        assert story_id == self.story.id
+        return claim(
+            self.clock,
+            lambda: self.story_record,
+            lambda stamped: setattr(self, "story_record", stamped),
+        )
+
+    async def _claim_run(self, run_id: str):
+        assert self.initiating_run is not None and run_id == self.initiating_run.id
+
+        def stamp(stamped: dict) -> None:
+            self.initiating_run = self.initiating_run.model_copy(
+                update={"run_metadata": {"owner_notification": stamped}}
+            )
+
+        return claim(
+            self.clock, lambda: self.initiating_run.run_metadata.get("owner_notification"), stamp
+        )
 
     def _project(self):
         from uuid import UUID

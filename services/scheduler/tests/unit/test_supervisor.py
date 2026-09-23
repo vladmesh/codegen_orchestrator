@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from _owner_notification_claims import ClaimsFromWrites
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import httpx
 import pytest
@@ -68,6 +69,8 @@ def api_client():
     client.start_paid_run.return_value = PaidRunStartRead(
         admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
     )
+    # The API grants the delivery attempt on whatever record it holds.
+    ClaimsFromWrites(client)
     return client
 
 

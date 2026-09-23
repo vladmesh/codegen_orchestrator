@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
+from _owner_notification_claims import ClaimClock, ClaimsFromWrites, claim
 from _run_routing_factories import _make_story as _routing_make_story
 import pytest
 
@@ -1004,6 +1005,7 @@ async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cl
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     story = _make_story()
     api.get_stories_by_status.return_value = [story]
     api.get_primary_repository.return_value = _make_repo()
@@ -1040,6 +1042,7 @@ async def test_exhausted_failure_retries_story_transition(mock_gh_cls, notify):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     api.get_stories_by_status.return_value = [_make_story()]
     api.get_primary_repository.return_value = _make_repo()
     details = {
@@ -1232,6 +1235,7 @@ async def test_a_ci_run_that_never_published_refuses_the_story_typed_and_durably
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     api = AsyncMock()
+    ClaimsFromWrites(api)  # the API grants the delivery attempt on the record it holds
     redis = AsyncMock()
     story = _make_story(pr_number=42)
     api.get_stories_by_status.return_value = [story]
@@ -1365,6 +1369,14 @@ class _OwnerWorld:
         api.update_story_owner_notification = AsyncMock(side_effect=self._write_record)
         api.get_project = AsyncMock(return_value=self._project())
         api.get_user = AsyncMock(return_value=self._owner())
+        api.claim_story_owner_notification_attempt = AsyncMock(side_effect=self._claim)
+        self.clock = ClaimClock()
+
+    async def _claim(self, story_id: str):
+        assert story_id == self.story.id
+        return claim(
+            self.clock, lambda: self.record, lambda stamped: setattr(self, "record", stamped)
+        )
 
     def _project(self) -> ProjectDTO:
         return ProjectDTO(

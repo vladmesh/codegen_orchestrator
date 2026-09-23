@@ -12,6 +12,7 @@ import structlog
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.owner_notification import (
     OwnerNotification,
+    OwnerNotificationAttemptClaim,
     OwnerNotificationState,
 )
 from shared.contracts.dto.product_brief import ProductBriefContent
@@ -37,6 +38,7 @@ from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_accept_result_actor, get_redis_client, require_internal_or_admin
+from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryAccept,
@@ -261,9 +263,29 @@ async def update_story_owner_notification(
 ) -> OwnerNotification:
     """Settle the story-backed completion notification after one delivery attempt."""
     story = await _get_story_for_update(story_id, db)
+    refuse_superseded_write(story.owner_notification, notification)
     story.owner_notification = notification.model_dump(mode="json")
     await db.commit()
     return notification
+
+
+@router.post("/{story_id}/owner-notification/attempt", response_model=OwnerNotificationAttemptClaim)
+async def claim_story_owner_notification_attempt(
+    story_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotificationAttemptClaim:
+    """Grant one delivery attempt on the story's owner notification, or refuse it.
+
+    The story-backed twin of the run claim: the owed-and-due check and the
+    ``last_attempt_at`` stamp are one write under the story row lock.
+    """
+    story = await _get_story_for_update(story_id, db)
+    claim, stamped = claim_attempt(story.owner_notification)
+    if stamped is not None:
+        story.owner_notification = stamped
+    await db.commit()
+    return claim
 
 
 @router.get("/{story_id}", response_model=StoryRead)

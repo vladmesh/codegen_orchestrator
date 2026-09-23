@@ -87,6 +87,9 @@ services:
       - TIME4VPS_PASSWORD=test
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - LOKI_URL=http://loki:3100
+      # Only the owner-notification spacing test uses it, to age a record's
+      # last attempt by one interval: the API decides spacing on its own clock.
+      - TEST_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - PYTHONPATH=/app:/app/src
     depends_on:
       api:
