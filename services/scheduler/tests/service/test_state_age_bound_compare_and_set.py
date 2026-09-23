@@ -17,7 +17,10 @@ in the same three orders.
 
 What the tests do to the world that no production path does: age an anchor
 directly in Postgres (a Run's ``created_at``, an ask's ``delivered_at``), and
-stand in for GitHub's view of the pull request.
+stand in for GitHub's view of the pull request. And after each test, cancel the
+QA runs it left queued or running: the paid-work limit counts every live QA and
+engineering Run in the shared database, so a wait left in flight here would
+refuse the next test's admission.
 """
 
 from __future__ import annotations
@@ -63,6 +66,10 @@ AGED = {
     StoryStatus.WAITING_USER_SECRET: timedelta(minutes=1500),
 }
 ORDERS = ("watchdog_after_routing", "watchdog_before_routing", "concurrent")
+_PAID_RUN_TYPES = frozenset({RunType.QA.value, RunType.ENGINEERING.value})
+_LIVE_RUN_STATUSES = frozenset({"queued", "running"})
+#: Stories the running test created, so its teardown can settle their paid runs.
+_CREATED_STORIES: list[str] = []
 _ENDING_EVENTS = {
     OwnerNotificationEvent.STORY_BLOCKED.value,
     OwnerNotificationEvent.STORY_FAILED.value,
@@ -215,6 +222,19 @@ async def redis_client():
         await client.close()
 
 
+@pytest.fixture(autouse=True)
+async def _settle_paid_runs(api_client):
+    """Cancel the live QA runs this test's stories left behind; they hold paid-work slots."""
+    _CREATED_STORIES.clear()
+    yield
+    for story_id in _CREATED_STORIES:
+        runs = await _call(api_client, "GET", "runs/", params={"story_id": story_id})
+        for run in runs.json():
+            if run["type"] in _PAID_RUN_TYPES and run["status"] in _LIVE_RUN_STATUSES:
+                await _call(api_client, "PATCH", f"runs/{run['id']}", json={"status": "cancelled"})
+    _CREATED_STORIES.clear()
+
+
 @pytest.fixture
 def admins(monkeypatch) -> _Admins:
     alerts = _Admins()
@@ -333,6 +353,7 @@ async def _story(api_client, project_id: str, *actions: str) -> str:
         api_client, "POST", "stories/", json={"project_id": project_id, "title": "Wait"}
     )
     story_id = story.json()["id"]
+    _CREATED_STORIES.append(story_id)
     for action in actions:
         await _call(api_client, "POST", f"stories/{story_id}/{action}")
     return story_id
