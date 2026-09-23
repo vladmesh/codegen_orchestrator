@@ -36,6 +36,7 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
+from shared.contracts.dto.state_wait import StateWaitExpiryCommand, StateWaitExpiryRead
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.temporary_access import (
@@ -560,6 +561,22 @@ class SchedulerAPIClient(InternalAPIClient):
             json=command.model_dump(mode="json"),
         )
         return EngineeringInfrastructureParkRead.model_validate(resp.json())
+
+    async def expire_state_wait(
+        self, story_id: str, command: StateWaitExpiryCommand
+    ) -> StateWaitExpiryRead:
+        """End one expired wait, only if the story is still where it was observed.
+
+        The API compares the expected status and anchor on the locked rows and
+        either commits reason, owed owner record and transition together, or
+        writes nothing and names the mismatch; a repeat returns `already_ended`.
+        """
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/expire-state-wait",
+            json=command.model_dump(mode="json"),
+        )
+        return StateWaitExpiryRead.model_validate(resp.json())
 
     async def transition_story(
         self, story_id: str, action: str, *, qa_run_id: str | None = None

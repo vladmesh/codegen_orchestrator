@@ -11,6 +11,13 @@ per Story status, how long the wait may last, where its age is measured from,
 and how the wait ends; the watchdog applies all of them the same way. A new
 bounded state is one entry plus its config key.
 
+The watchdog reads first and ends a wait later, and routing may move the story
+on in between. So an ending is a compare-and-set the API applies on the locked
+rows (`shared/contracts/dto/state_wait.py`): the watchdog sends the status it
+read and the identity of the anchor it measured, and a story that is no longer
+there is skipped and logged, never parked or failed. Nothing here depends on
+where the dispatcher calls it.
+
 What a bound is measured from is the part that has to be defensible, so each
 entry names its own anchor instead of sharing the Story row's ``updated_at``,
 which any unrelated write moves:
@@ -49,7 +56,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -57,7 +63,19 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.owner_notification import OwnerNotificationState
-from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run import RunType
+from shared.contracts.dto.state_wait import (
+    IN_FLIGHT_RUN_STATUSES,
+    OWNER_EVENT_BY_ENDING,
+    TERMINAL_STATUS_BY_ENDING,
+    StateWaitAnchor,
+    StateWaitEnding,
+    StateWaitExpiryCommand,
+    StateWaitExpiryDisposition,
+    StateWaitExpiryReason,
+    StateWaitSkip,
+    StateWaitSkipReason,
+)
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
@@ -70,16 +88,13 @@ from ... import startup
 from .._github_refs import _parse_github_timestamp, _parse_owner_repo
 from ..owner_notifications import (
     deliver_owed_notification,
-    owe_story_owner_notification,
+    new_story_owner_notification,
     read_owner_notification,
 )
-from .common import STORY_HUMAN_REVIEW_ACTION, _parse_datetime
+from .common import _parse_datetime
 from .deploy import deliver_user_secret_request, owe_user_secret_request
 
 logger = structlog.get_logger(__name__)
-
-#: The typed reason a story carries when one of these bounds ended its wait.
-STATE_AGE_BOUND_REASON = "state_wait_age_bound_exceeded"
 
 #: The typed reason a `waiting_user_secret` story carries when its request never
 #: reached the owner. It names the undelivered request, not a timeout: the clock
@@ -92,35 +107,6 @@ _UNDELIVERED_ASK_STATES = frozenset(
     {OwnerNotificationState.UNADDRESSABLE, OwnerNotificationState.ABANDONED}
 )
 
-#: A Run in one of these statuses is still a wait. A terminal Run is an outcome
-#: the deploy/QA supervisors route on the same tick, never something to bound.
-_IN_FLIGHT_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
-
-
-class WaitEnding(StrEnum):
-    """How an expired wait ends.
-
-    ``PARK`` hands the story to the human-review queue: the platform could not
-    finish, which is not evidence that the product is broken. ``FAIL`` is for a
-    wait whose subject is outside the platform and simply never came — the only
-    honest ending, and the only one ``waiting_user_secret`` even has a
-    transition for.
-    """
-
-    PARK = "park"
-    FAIL = "fail"
-
-
-_TERMINAL_STATUS_BY_ENDING: dict[WaitEnding, StoryStatus] = {
-    WaitEnding.PARK: StoryStatus.WAITING_HUMAN_REVIEW,
-    WaitEnding.FAIL: StoryStatus.FAILED,
-}
-
-_OWNER_EVENT_BY_ENDING: dict[WaitEnding, OwnerNotificationEvent] = {
-    WaitEnding.PARK: OwnerNotificationEvent.STORY_BLOCKED,
-    WaitEnding.FAIL: OwnerNotificationEvent.STORY_FAILED,
-}
-
 
 @dataclass(frozen=True)
 class _Sweep:
@@ -131,7 +117,22 @@ class _Sweep:
     github: GitHubAppClient
 
 
-AnchorResolver = Callable[[_Sweep, StoryDTO], Awaitable[datetime | None]]
+@dataclass(frozen=True)
+class _Anchor:
+    """Where a wait's age is measured from, and which record that moment belongs to.
+
+    ``identity`` is what the ending sends back to the API, so the wait it ends
+    is the wait whose age was measured and not whatever replaced it since.
+    """
+
+    at: datetime
+    identity: StateWaitAnchor
+
+
+AnchorResolver = Callable[[_Sweep, StoryDTO], Awaitable[_Anchor | None]]
+#: The last look at an anchor that lives outside the API, taken immediately
+#: before the ending is asked for: a named skip when it moved, else None.
+AnchorConfirmation = Callable[[_Sweep, StoryDTO, _Anchor], Awaitable[StateWaitSkip | None]]
 
 
 @dataclass(frozen=True)
@@ -143,9 +144,10 @@ class StateAgeBound:
     #: What the age is measured from, in the words the report and the typed
     #: reason use. Not a free-text log string: it is part of the evidence.
     anchor: str
-    ending: WaitEnding
+    ending: StateWaitEnding
     resolve_anchor: AnchorResolver
     owner_text: Callable[[int], str]
+    confirm_anchor: AnchorConfirmation | None = None
 
 
 def _threshold_minutes(bound: StateAgeBound) -> int:
@@ -161,7 +163,7 @@ async def _in_flight_run_anchor(
     api_client: SchedulerAPIClient,
     story: StoryDTO,
     run_type: RunType,
-) -> datetime | None:
+) -> _Anchor | None:
     """When the Run this story is waiting on started, or None if it is not waiting."""
     log = logger.bind(story_id=story.id, run_type=run_type.value)
     try:
@@ -171,20 +173,20 @@ async def _in_flight_run_anchor(
         # story on it loudly. Nothing to bound and nothing to hide.
         log.info("state_age_bound_unreadable_run")
         return None
-    if run is None or run.status not in _IN_FLIGHT_RUN_STATUSES:
+    if run is None or run.status not in IN_FLIGHT_RUN_STATUSES:
         return None
-    return _parse_datetime(run.created_at)
+    return _Anchor(at=_parse_datetime(run.created_at), identity=StateWaitAnchor(run_id=run.id))
 
 
-async def _deploy_run_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+async def _deploy_run_anchor(sweep: _Sweep, story: StoryDTO) -> _Anchor | None:
     return await _in_flight_run_anchor(sweep.api_client, story, RunType.DEPLOY)
 
 
-async def _qa_run_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+async def _qa_run_anchor(sweep: _Sweep, story: StoryDTO) -> _Anchor | None:
     return await _in_flight_run_anchor(sweep.api_client, story, RunType.QA)
 
 
-async def _user_secret_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+async def _user_secret_request_anchor(sweep: _Sweep, story: StoryDTO) -> _Anchor | None:
     """When the request for the missing secrets was delivered to the owner.
 
     Resolved from the ask's owner-notification record alone — the record on the
@@ -229,7 +231,10 @@ async def _user_secret_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetim
         if record.delivered_at is None:
             log.error("state_age_bound_user_secret_delivered_without_moment")
             return None
-        return _parse_datetime(record.delivered_at)
+        return _Anchor(
+            at=_parse_datetime(record.delivered_at),
+            identity=StateWaitAnchor(run_id=run.id, ask_delivered_at=record.delivered_at),
+        )
     if record.state in _UNDELIVERED_ASK_STATES:
         await _record_undelivered_request(sweep, story, run.id, record.state, record.detail, log)
     return None
@@ -276,7 +281,7 @@ async def _record_undelivered_request(  # noqa: PLR0913 — one undelivered ask'
     )
 
 
-async def _pull_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | None:
+async def _pull_request_anchor(sweep: _Sweep, story: StoryDTO) -> _Anchor | None:
     """When this story's pull request last moved, as GitHub records it."""
     api_client, github = sweep.api_client, sweep.github
     log = logger.bind(story_id=story.id)
@@ -293,8 +298,30 @@ async def _pull_request_anchor(sweep: _Sweep, story: StoryDTO) -> datetime | Non
         # watchdog never ends a wait on an observation it could not make.
         log.warning("state_age_bound_pull_request_unreadable", pr_number=story.pr_number)
         return None
-    return _parse_github_timestamp(pull_request.get("updated_at")) or _parse_github_timestamp(
+    moved_at = _parse_github_timestamp(pull_request.get("updated_at")) or _parse_github_timestamp(
         pull_request.get("created_at")
+    )
+    if moved_at is None:
+        return None
+    return _Anchor(at=moved_at, identity=StateWaitAnchor(pr_number=story.pr_number))
+
+
+async def _confirm_pull_request_anchor(
+    sweep: _Sweep, story: StoryDTO, anchor: _Anchor
+) -> StateWaitSkip | None:
+    """Read the pull request again; a wait whose PR moved since is not ended.
+
+    The API can lock ``pr_number`` but not GitHub, so this re-read immediately
+    before the ending is the closest check an external anchor allows. A read
+    that fails now is not an observation either, so it skips too.
+    """
+    current = await _pull_request_anchor(sweep, story)
+    if current is not None and current.at == anchor.at:
+        return None
+    return StateWaitSkip(
+        reason=StateWaitSkipReason.PR_UPDATED_AT_MOVED,
+        expected=anchor.at.isoformat(),
+        actual=None if current is None else current.at.isoformat(),
     )
 
 
@@ -349,7 +376,7 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         status=StoryStatus.DEPLOYING,
         config_key="supervisor.deploy_wait_max_minutes",
         anchor="deploy_run_created_at",
-        ending=WaitEnding.PARK,
+        ending=StateWaitEnding.PARK,
         resolve_anchor=_deploy_run_anchor,
         owner_text=_deploy_owner_text,
     ),
@@ -360,7 +387,7 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         status=StoryStatus.TESTING,
         config_key="supervisor.qa_wait_max_minutes",
         anchor="qa_run_created_at",
-        ending=WaitEnding.PARK,
+        ending=StateWaitEnding.PARK,
         resolve_anchor=_qa_run_anchor,
         owner_text=_qa_owner_text,
     ),
@@ -372,9 +399,10 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         status=StoryStatus.PR_REVIEW,
         config_key="supervisor.pr_review_wait_max_minutes",
         anchor="github_pull_request_updated_at",
-        ending=WaitEnding.PARK,
+        ending=StateWaitEnding.PARK,
         resolve_anchor=_pull_request_anchor,
         owner_text=_pr_review_owner_text,
+        confirm_anchor=_confirm_pull_request_anchor,
     ),
     StateAgeBound(
         # 1440 min: a wait on a person, so it takes the number the pipeline
@@ -383,7 +411,7 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         status=StoryStatus.WAITING_USER_SECRET,
         config_key="supervisor.user_secret_wait_max_minutes",
         anchor="user_secret_request_delivered_at",
-        ending=WaitEnding.FAIL,
+        ending=StateWaitEnding.FAIL,
         resolve_anchor=_user_secret_request_anchor,
         owner_text=_user_secret_owner_text,
     ),
@@ -408,9 +436,16 @@ async def supervise_state_age_bounds(
 ) -> dict[str, int]:
     """Apply every state age bound once, and end the waits that are over.
 
-    Returns the number of stories parked and failed by the bounds this tick.
+    A wait is ended only through the API's compare-and-set: the story must still
+    be in the status this pass read, with the anchor its age was measured from.
+    Routing that moved the story on in between — in this tick or another loop,
+    before or after this call — makes the ending a logged skip that writes
+    nothing, so this watchdog is correct wherever it runs.
+
+    Returns the number of stories parked and failed by the bounds this pass, and
+    of expired waits skipped because the story had moved on.
     """
-    counts = {"parked": 0, "failed": 0}
+    counts = {"parked": 0, "failed": 0, "skipped": 0}
     sweep = _Sweep(api_client=api_client, redis_client=redis_client, github=GitHubAppClient())
 
     for bound in STATE_AGE_BOUNDS:
@@ -430,16 +465,17 @@ async def supervise_state_age_bounds(
                 continue
             if anchor is None:
                 continue
-            age = _age_minutes(anchor)
+            age = _age_minutes(anchor.at)
             if age < threshold:
                 continue
             # One story's ending must not stop the others: they are unrelated
             # work, and a sweep that dies on the first broken story leaves every
             # later one waiting exactly as long as the failure lasts.
             try:
-                await _end_expired_wait(
+                disposition = await _end_expired_wait(
                     api_client,
                     redis_client,
+                    sweep=sweep,
                     story=story,
                     bound=bound,
                     anchor=anchor,
@@ -450,68 +486,107 @@ async def supervise_state_age_bounds(
             except Exception:
                 log.exception("state_age_bound_ending_failed")
                 continue
-            counts["parked" if bound.ending is WaitEnding.PARK else "failed"] += 1
+            if disposition is StateWaitExpiryDisposition.SKIPPED:
+                counts["skipped"] += 1
+            elif disposition is StateWaitExpiryDisposition.EXPIRED:
+                counts["parked" if bound.ending is StateWaitEnding.PARK else "failed"] += 1
 
     return counts
+
+
+def _log_skip(
+    log: structlog.stdlib.BoundLogger,
+    bound: StateAgeBound,
+    skip: StateWaitSkip,
+    actual_status: StoryStatus,
+) -> None:
+    log.info(
+        "state_age_bound_skipped",
+        expected_status=bound.status.value,
+        actual_status=actual_status.value,
+        mismatch=skip.reason.value,
+        expected=skip.expected,
+        actual=skip.actual,
+        anchor=bound.anchor,
+    )
 
 
 async def _end_expired_wait(  # noqa: PLR0913 — one ending's evidence, each part named
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     *,
+    sweep: _Sweep,
     story: StoryDTO,
     bound: StateAgeBound,
-    anchor: datetime,
+    anchor: _Anchor,
     age_minutes: float,
     threshold_minutes: int,
     log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Record the expiry, tell the owner, and leave the status the scan reads.
+) -> StateWaitExpiryDisposition:
+    """End the wait if it is still the one that expired; then tell the owner.
 
-    The order is the one every terminal supervisor ending uses: the typed reason
-    first, then the durable owner record, then the transition, then the delivery
-    and the administrator notice. It is not ours to reorder — see
-    `tasks/owner_notifications.py` for why the record precedes the commit.
+    The typed reason, the owed owner record and the transition are one API
+    action that checks the status and anchor on the locked rows first
+    (`POST /stories/{id}/expire-state-wait`). Only an ending that committed is
+    delivered and told to administrators; a skip writes and tells nothing. The
+    record commits with its transition, so `tasks/owner_notifications.py`'s
+    order — record before the transition is observable — holds by construction.
 
     The transition is what makes this idempotent: an expired story leaves the
-    status this watchdog scans, so the next tick cannot park, owe or notify it a
-    second time. Nothing is owed on any path that does not transition.
+    status this watchdog scans, and a repeat of an ending that already committed
+    is answered `already_ended`, with nothing owed a second time.
     """
     project_id = str(story.project_id)
-    reason = {
-        "reason": STATE_AGE_BOUND_REASON,
-        "status": bound.status.value,
-        "waiting_on": WAITING_ON_BY_STATUS[bound.status].value,
-        "config_key": bound.config_key,
-        "threshold_minutes": threshold_minutes,
-        "anchor": bound.anchor,
-        "anchor_at": anchor.isoformat(),
-        "age_minutes": round(age_minutes, 1),
-        "ending": bound.ending.value,
-    }
-    log.error("state_age_bound_expired", **reason)
-    await api_client.update_story(story.id, {"quarantine_reason": reason})
-    owed = await owe_story_owner_notification(
-        api_client,
+    reason = StateWaitExpiryReason(
+        status=bound.status,
+        waiting_on=WAITING_ON_BY_STATUS[bound.status].value,
+        config_key=bound.config_key,
+        threshold_minutes=threshold_minutes,
+        anchor=bound.anchor,
+        anchor_at=anchor.at.isoformat(),
+        age_minutes=round(age_minutes, 1),
+        ending=bound.ending,
+    )
+    owed = new_story_owner_notification(
         story.id,
-        event=_OWNER_EVENT_BY_ENDING[bound.ending],
+        event=OWNER_EVENT_BY_ENDING[bound.ending],
         text=bound.owner_text(threshold_minutes),
         project_id=project_id,
-        terminal_status=_TERMINAL_STATUS_BY_ENDING[bound.ending],
-        log=log,
+        terminal_status=TERMINAL_STATUS_BY_ENDING[bound.ending],
     )
-    if bound.ending is WaitEnding.PARK:
-        await api_client.transition_story(story.id, STORY_HUMAN_REVIEW_ACTION)
-    else:
-        await api_client.fail_story(story.id)
+    if bound.confirm_anchor is not None:
+        moved = await bound.confirm_anchor(sweep, story, anchor)
+        if moved is not None:
+            _log_skip(log, bound, moved, bound.status)
+            return StateWaitExpiryDisposition.SKIPPED
+
+    ended = await api_client.expire_state_wait(
+        story.id,
+        StateWaitExpiryCommand(
+            expected_status=bound.status,
+            ending=bound.ending,
+            anchor=anchor.identity,
+            reason=reason,
+            owner_notification=owed,
+        ),
+    )
+    if ended.disposition is StateWaitExpiryDisposition.SKIPPED:
+        _log_skip(log, bound, ended.skip, ended.story_status)
+        return ended.disposition
+    if ended.disposition is StateWaitExpiryDisposition.ALREADY_ENDED:
+        log.info("state_age_bound_already_ended", story_status=ended.story_status.value)
+        return ended.disposition
+
+    log.error("state_age_bound_expired", **reason.model_dump(mode="json"))
     await deliver_owed_notification(
         api_client, redis_client, story.id, owed, log, story_record=True
     )
     await notify_admins_best_effort(
         f"Story {story.id} waited in {bound.status.value} for "
-        f"{reason['age_minutes']} minutes, past the {threshold_minutes}-minute bound measured "
+        f"{reason.age_minutes} minutes, past the {threshold_minutes}-minute bound measured "
         f"from {bound.anchor}",
         level="error",
         story_id=story.id,
         project_id=project_id,
     )
+    return ended.disposition

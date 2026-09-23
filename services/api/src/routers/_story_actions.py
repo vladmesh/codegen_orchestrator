@@ -10,7 +10,7 @@ event that happened and never sequence lifecycle state themselves.
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -28,13 +28,21 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRetryRead,
     infrastructure_refusal_detail,
 )
+from shared.contracts.dto.owner_notification import OWNER_NOTIFICATION_KEY, OwnerNotification
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import DeployRunResult, EngineeringRunResult
+from shared.contracts.dto.state_wait import (
+    ANCHOR_RUN_TYPE_BY_STATUS,
+    StateWaitExpiryCommand,
+    StateWaitExpiryDisposition,
+    StateWaitExpiryRead,
+    StateWaitObservation,
+)
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.worker_turn import AttemptTurnMetadata
-from shared.models import Run, Task, TaskEvent, WorkAdmissionAudit
+from shared.models import Project, Run, Task, TaskEvent, WorkAdmissionAudit
 from shared.models.story import Story
 
 from ..database import get_async_session
@@ -47,7 +55,12 @@ from ..infrastructure_park import (
 )
 from ..schemas.story import StoryRead, StoryTransition
 from ..work_admission import abort_paid_run_pre_handoff
-from ._story_helpers import _get_story_for_update, _land_on, _validate_transition
+from ._story_helpers import (
+    _do_transition,
+    _get_story_for_update,
+    _land_on,
+    _validate_transition,
+)
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
 from .projects_guards import load_locked_project
 
@@ -401,6 +414,118 @@ async def park_infrastructure_refusal(
     if disposition is EngineeringInfrastructureParkDisposition.PARKED:
         await db.commit()
     return _park_read(disposition, story, task, park)
+
+
+def _missing_secrets_saved(run: Run, project: Project) -> bool:
+    """Whether every secret the deploy Run reported missing is now on the project."""
+    if run.result is None:
+        return False
+    missing = {
+        secret.key for secret in DeployRunResult.model_validate(run.result).missing_user_secrets
+    }
+    # Names only: the stored values stay encrypted and are never read here.
+    saved = set((project.config or {}).get("secrets") or {})
+    return bool(missing) and missing <= saved
+
+
+async def _observe_state_wait(
+    story: Story, command: StateWaitExpiryCommand, db: AsyncSession
+) -> StateWaitObservation:
+    """What the locked rows say about the wait the command names.
+
+    Lock ladder: the Story is already held; then the Project, whose row every
+    secret write locks, then the latest Run of the anchor type.
+    """
+    observed = StateWaitObservation(status=StoryStatus(story.status), pr_number=story.pr_number)
+    run_type = ANCHOR_RUN_TYPE_BY_STATUS.get(command.expected_status)
+    if observed.status is not command.expected_status or run_type is None:
+        return observed
+    waits_on_secrets = command.expected_status is StoryStatus.WAITING_USER_SECRET
+    project = await load_locked_project(db, story.project_id) if waits_on_secrets else None
+    run = await db.scalar(
+        select(Run)
+        .where(Run.story_id == story.id, Run.type == run_type.value)
+        .order_by(Run.created_at.desc(), Run.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if run is None:
+        return observed
+    observed = observed.model_copy(update={"run_id": run.id, "run_status": RunStatus(run.status)})
+    if project is None:
+        return observed
+    # Only a secret wait is anchored on the ask this Run carries.
+    stored_ask = (run.run_metadata or {}).get(OWNER_NOTIFICATION_KEY)
+    return observed.model_copy(
+        update={
+            "ask": None if stored_ask is None else OwnerNotification.model_validate(stored_ask),
+            "secrets_saved": run.id == command.anchor.run_id
+            and _missing_secrets_saved(run, project),
+        }
+    )
+
+
+@action_router.post("/{story_id}/expire-state-wait", response_model=StateWaitExpiryRead)
+async def expire_state_wait(
+    story_id: str,
+    command: StateWaitExpiryCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> StateWaitExpiryRead:
+    """End one expired wait, only if the story is still where the watchdog saw it.
+
+    The state-age watchdog's only way to park or fail a story. On the locked
+    rows the status must be the one the watchdog read and the anchor the one its
+    age was measured from (`StateWaitExpiryCommand.mismatch`); then the typed
+    reason, the owed owner record and the transition commit together. Otherwise
+    nothing is written and the mismatch is named. A repeat of an ending that
+    already committed is `already_ended`, so it owes the owner nothing twice.
+    """
+    story = await _get_story_for_update(story_id, db)
+    if command.owner_notification.story_id != story.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The owner notification names another story.",
+        )
+    if command.is_repeat(story.status, story.quarantine_reason):
+        return StateWaitExpiryRead(
+            disposition=StateWaitExpiryDisposition.ALREADY_ENDED,
+            story_id=story.id,
+            story_status=StoryStatus(story.status),
+        )
+    skip = command.mismatch(await _observe_state_wait(story, command, db))
+    if skip is not None:
+        logger.info(
+            "state_wait_expiry_skipped",
+            story_id=story.id,
+            expected_status=command.expected_status.value,
+            story_status=story.status,
+            mismatch=skip.reason.value,
+            expected=skip.expected,
+            actual=skip.actual,
+        )
+        return StateWaitExpiryRead(
+            disposition=StateWaitExpiryDisposition.SKIPPED,
+            story_id=story.id,
+            story_status=StoryStatus(story.status),
+            skip=skip,
+        )
+    story.quarantine_reason = command.reason.model_dump(mode="json")
+    story.owner_notification = command.owner_notification.model_dump(mode="json")
+    _do_transition(story, command.terminal_status)
+    await db.commit()
+    logger.info(
+        "state_wait_expired",
+        story_id=story.id,
+        expected_status=command.expected_status.value,
+        story_status=story.status,
+        ending=command.ending.value,
+    )
+    return StateWaitExpiryRead(
+        disposition=StateWaitExpiryDisposition.EXPIRED,
+        story_id=story.id,
+        story_status=command.terminal_status,
+    )
 
 
 def _apply_chain(story: Story, chain: tuple[StoryStatus, ...]) -> None:
