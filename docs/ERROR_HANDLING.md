@@ -93,7 +93,9 @@ While a story is in work its owner is told the stage, not left in silence
 `story_stage` event on entering the stage and one more each time it is still there
 `supervisor.stage_notice_quiet_minutes` (60) after the last notice. The sweep runs once per
 dispatcher tick, so the owner hears each stage the story is *observed* in within one sweep; a stage
-entered and left between two sweeps is deliberately not announced, because it is no longer true. The event carries the
+entered and left between two sweeps is deliberately not announced, because it is no longer true. Just before
+the marker write the story is read again, and a story that has left the scanned stage gets no notice and no
+marker, whatever order the routing supervisors run in; the next sweep announces its new stage. The event carries the
 `StoryStatus`, its `WAITING_ON_BY_STATUS` value and a `StoryWaitEstimate` — the magnitude of the
 state's bound above, or `unbounded` where the map has none. Terminal states and the two states
 whose owner was already told what is needed (`waiting_user_secret`, `waiting_human_review`) get

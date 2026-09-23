@@ -63,6 +63,10 @@ class _Stories:
             if current is StoryStatus(status)
         ]
 
+    async def get(self, story_id: str):
+        """The story as it is now: what the sweep reads again before it announces."""
+        return _make_story(id=story_id, status=self.by_id[story_id].value)
+
 
 @pytest.fixture
 def stories() -> _Stories:
@@ -73,6 +77,7 @@ def stories() -> _Stories:
 def api_client(stories):
     client = AsyncMock()
     client.get_stories_by_status.side_effect = stories.by_status
+    client.get_story.side_effect = stories.get
     client.get_project.return_value = _make_project()
     client.get_user.return_value = UserDTO(id=1, telegram_id=4242, created_at=T0)
     return client
@@ -220,6 +225,115 @@ async def test_a_stage_change_restarts_the_interval(api_client, redis_client, st
         (StoryStatus.TESTING, StoryStageNoticeKind.ENTERED),
         (StoryStatus.TESTING, StoryStageNoticeKind.STILL_THERE),
     ]
+
+
+# ── a stage the story has left since the scan ────────────────────────────
+
+
+def _moves_after_the_scan(api_client, stories, to: StoryStatus, story_id: str = STORY_ID):
+    """Routing moves the story on after the sweep's scan and before its publish."""
+    scanned: set[StoryStatus] = set()
+
+    async def scanned_then_moved(status):
+        observed = await stories.by_status(status)
+        scanned.add(StoryStatus(status))
+        if scanned == STAGE_NOTICE_STATUSES:
+            stories.put(to, story_id)
+        return observed
+
+    api_client.get_stories_by_status.side_effect = scanned_then_moved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("observed", "moved_to"),
+    [
+        (StoryStatus.DEPLOYING, StoryStatus.TESTING),
+        (StoryStatus.TESTING, StoryStatus.COMPLETED),
+        (StoryStatus.PR_REVIEW, StoryStatus.DEPLOYING),
+    ],
+)
+async def test_a_stage_left_after_the_scan_is_not_announced(
+    api_client, redis_client, stories, observed, moved_to
+):
+    stories.put(observed)
+    _moves_after_the_scan(api_client, stories, moved_to)
+
+    counts = await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    assert counts == {"entered": 0, "still_there": 0, "unaddressable": 0}
+    assert await _notices(redis_client) == []
+    assert await read_stage_notice_marker(redis_client, STORY_ID) is None
+    assert await redis_client.redis.smembers(MARKED_STORIES_KEY) == set()
+
+
+@pytest.mark.asyncio
+async def test_the_next_sweep_announces_the_stage_the_story_moved_to(
+    api_client, redis_client, stories
+):
+    stories.put(StoryStatus.DEPLOYING)
+    _moves_after_the_scan(api_client, stories, StoryStatus.TESTING)
+    await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    api_client.get_stories_by_status.side_effect = stories.by_status
+    counts = await supervise_stage_notices(api_client, redis_client, now=_at(0.5))
+
+    assert counts == {"entered": 1, "still_there": 0, "unaddressable": 0}
+    [notice] = await _notices(redis_client)
+    assert notice.stage is StoryStatus.TESTING
+    assert notice.stage_notice is StoryStageNoticeKind.ENTERED
+    assert (await read_stage_notice_marker(redis_client, STORY_ID)).stage is StoryStatus.TESTING
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_for_a_stage_left_after_the_scan_keeps_the_old_marker(
+    api_client, redis_client, stories
+):
+    """No `still_there` for the old stage, and its marker is not renewed as if it were sent."""
+    stories.put(StoryStatus.IN_PROGRESS)
+    await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    _moves_after_the_scan(api_client, stories, StoryStatus.PR_REVIEW)
+    counts = await supervise_stage_notices(api_client, redis_client, now=_at(QUIET_MINUTES))
+
+    assert counts == {"entered": 0, "still_there": 0, "unaddressable": 0}
+    assert [n.stage_notice for n in await _notices(redis_client)] == [StoryStageNoticeKind.ENTERED]
+    marker = await read_stage_notice_marker(redis_client, STORY_ID)
+    assert marker.stage is StoryStatus.IN_PROGRESS
+    assert marker.notified_at == T0
+
+
+@pytest.mark.asyncio
+async def test_one_storys_move_does_not_silence_another(api_client, redis_client, stories):
+    stories.put(StoryStatus.DEPLOYING, "story-moved")
+    stories.put(StoryStatus.IN_PROGRESS, "story-staying")
+    _moves_after_the_scan(api_client, stories, StoryStatus.TESTING, "story-moved")
+
+    counts = await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    assert counts == {"entered": 1, "still_there": 0, "unaddressable": 0}
+    assert [(n.story_id, n.stage) for n in await _notices(redis_client)] == [
+        ("story-staying", StoryStatus.IN_PROGRESS)
+    ]
+    assert await redis_client.redis.smembers(MARKED_STORIES_KEY) == {"story-staying"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_re_read_is_that_storys_failed_notice(api_client, redis_client, stories):
+    stories.put(StoryStatus.DEPLOYING, "story-unreadable")
+    stories.put(StoryStatus.IN_PROGRESS, "story-readable")
+
+    async def unreadable(story_id):
+        if story_id == "story-unreadable":
+            raise RuntimeError("api unavailable")
+        return await stories.get(story_id)
+
+    api_client.get_story.side_effect = unreadable
+    counts = await supervise_stage_notices(api_client, redis_client, now=T0)
+
+    assert counts == {"entered": 1, "still_there": 0, "unaddressable": 0}
+    assert [n.story_id for n in await _notices(redis_client)] == ["story-readable"]
+    assert await read_stage_notice_marker(redis_client, "story-unreadable") is None
 
 
 # ── the two ways the notices stop ────────────────────────────────────────

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Stage notices re-read the story just before the marker write and publish and skip a stage it has left,
+  so naming the real stage no longer depends on running after every routing supervisor in the tick.
 - The state-age watchdog ends a wait only via `expire-state-wait`, a compare-and-set on status and anchor,
   so a story routing moved on is skipped and logged, never parked or failed, whatever runs first.
 - Every CI job and docker step is bounded, with job limits covering worst-case retries, so a hung Buildx or

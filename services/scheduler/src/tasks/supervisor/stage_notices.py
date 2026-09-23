@@ -43,6 +43,14 @@ never from the tick or the process start. The marker is written *before* the
 publish: a publish that fails after it costs one notice, and the reverse order
 would let a failed marker write send the same notice again on the next tick.
 
+**A notice names the stage the story is in when it is sent.** The scan and
+the publish are apart in time, and the routing supervisors may move a story on
+in between, whichever order they run in or if they run beside the sweep. So
+the story is read again just before the marker is written; if it has left the
+observed stage, nothing is written or sent, and the next sweep announces the
+stage it is in. This holds without any place in the dispatcher tick; what is
+left between the re-read and the publish is the marker write, with no API call.
+
 **The marker lives exactly as long as the story is in work.** It has no expiry,
 because any clock would reset the interval after an outage longer than itself.
 Cleanup is exact instead: every marked story id is also in one Redis set
@@ -301,6 +309,18 @@ async def _announce(
         wait_estimate=story_wait_estimate(bound_minutes),
         stage_notice=kind,
     )
+    # The scan may be a while old by now, and a routing supervisor running
+    # before or beside this sweep may have moved the story on. A notice for a
+    # stage it has left would tell the owner something false; the next sweep
+    # announces the stage it is in.
+    current = await api_client.get_story(story.id)
+    if current.status is not stage:
+        log.info(
+            "stage_notice_stage_moved",
+            observed_stage=stage.value,
+            current_stage=current.status.value,
+        )
+        return None
     # Written first: see the module docstring for why at-most-once is the order.
     # Marker and membership together, so no marker can exist that cleanup misses.
     async with redis_client.redis.pipeline(transaction=True) as pipe:
