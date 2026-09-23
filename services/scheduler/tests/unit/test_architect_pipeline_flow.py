@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+from _github_client_context import self_entering
 import pytest
 
 from shared.contracts.dto.engineering_dispatch import (
@@ -242,7 +243,9 @@ class TestDispatcherPipelineFlow:
             "head": {"ref": "story/story-1", "sha": "a" * 40},
         }
         mock_github.get_ref_sha.return_value = "a" * 40
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1

@@ -9,9 +9,10 @@ its reason recorded; every other PR-creation error keeps retrying.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+from _github_client_context import assert_one_operation_scope, entered_client, self_entering
 import pytest
 
 from shared.clients.github import NoCommitsBetweenError
@@ -99,7 +100,7 @@ async def test_no_commits_between_takes_the_story_out_of_the_retry_set(api_clien
         "Cannot open PR story/story-1->main: No commits between main and story/story-1."
     )
 
-    with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
         completed = await complete_stories(api_client, redis_client)
 
     assert completed == 0
@@ -130,7 +131,7 @@ async def test_a_parked_story_is_not_selected_by_the_next_completion_cycle(
         "Cannot open PR story/story-1->main: No commits between main and story/story-1."
     )
 
-    with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
         assert await complete_stories(api_client, redis_client) == 0
         assert await complete_stories(api_client, redis_client) == 0
 
@@ -145,7 +146,7 @@ async def test_generic_pr_creation_error_keeps_the_story_in_progress(api_client,
     github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.side_effect = RuntimeError("GitHub is having a bad day")
 
-    with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
         completed = await complete_stories(api_client, redis_client)
 
     assert completed == 0
@@ -202,3 +203,114 @@ async def test_created_pr_requires_an_unambiguous_current_head_identity(pull_req
             repo_name="repo",
             branch="story/story-1",
         )
+
+
+# --- One GitHub HTTP pool per story completion -------------------------------------
+
+
+def _story_pull_request(story_id: str, node_id: str) -> dict:
+    return {
+        "number": 7 if story_id == "story-1" else 8,
+        "node_id": node_id,
+        "merged_at": None,
+        "head": {"ref": f"story/{story_id}", "sha": _STORY_HEAD_SHA},
+    }
+
+
+def _completing_github(story_id: str, *, node_id: str = "PR_kwDOnode") -> AsyncMock:
+    github = AsyncMock()
+    github.get_ref_sha.return_value = _STORY_HEAD_SHA
+    github.create_pull_request.return_value = _story_pull_request(story_id, node_id)
+    github.get_pull_request.return_value = _story_pull_request(story_id, "PR_kwDOnode")
+    github.enable_auto_merge.return_value = True
+    return github
+
+
+@pytest.mark.asyncio
+async def test_no_story_to_complete_opens_no_github_client(api_client, redis_client):
+    api_client.get_stories_by_status.return_value = []
+
+    with patch("src.tasks.story_completion.GitHubAppClient") as client_cls:
+        assert await complete_stories(api_client, redis_client) == 0
+
+    client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_each_story_completion_enters_one_client_for_all_its_github_calls(
+    api_client, redis_client
+):
+    api_client.get_stories_by_status.return_value = [_story("story-1"), _story("story-2")]
+    recorder = MagicMock()
+    # A numeric node id makes the first completion re-read the PR before auto-merge.
+    first = _completing_github("story-1", node_id="12345")
+    second = _completing_github("story-2")
+    contexts = [
+        entered_client(first, recorder, "first"),
+        entered_client(second, recorder, "second"),
+    ]
+
+    with patch("src.tasks.story_completion.GitHubAppClient", side_effect=contexts) as client_cls:
+        assert await complete_stories(api_client, redis_client) == 2
+
+    assert client_cls.call_count == 2
+    assert assert_one_operation_scope(recorder, "first") == [
+        "get_ref_sha",
+        "create_pull_request",
+        "get_pull_request",
+        "enable_auto_merge",
+    ]
+    assert assert_one_operation_scope(recorder, "second") == [
+        "get_ref_sha",
+        "create_pull_request",
+        "enable_auto_merge",
+    ]
+    # The first completion's pool is closed before the second one opens.
+    names = [c[0] for c in recorder.mock_calls]
+    assert names.index("first_context.__aexit__") < names.index("second_context.__aenter__")
+
+
+@pytest.mark.asyncio
+async def test_github_error_closes_that_storys_pool_and_the_next_story_completes(
+    api_client, redis_client
+):
+    api_client.get_stories_by_status.return_value = [_story("story-1"), _story("story-2")]
+    recorder = MagicMock()
+    failing = _completing_github("story-1")
+    failing.create_pull_request.side_effect = RuntimeError("GitHub is having a bad day")
+    contexts = [
+        entered_client(failing, recorder, "failing"),
+        entered_client(_completing_github("story-2"), recorder, "next"),
+    ]
+
+    with patch("src.tasks.story_completion.GitHubAppClient", side_effect=contexts):
+        assert await complete_stories(api_client, redis_client) == 1
+
+    assert assert_one_operation_scope(recorder, "failing", RuntimeError) == [
+        "get_ref_sha",
+        "create_pull_request",
+    ]
+    assert assert_one_operation_scope(recorder, "next")[-1] == "enable_auto_merge"
+    # The failed story keeps retrying: only the second one moves to PR review.
+    api_client.transition_story.assert_awaited_once_with("story-2", "pr_review")
+
+
+@pytest.mark.asyncio
+async def test_no_commits_between_closes_the_pool_before_the_story_is_parked(
+    api_client, redis_client
+):
+    recorder = MagicMock()
+    github = _completing_github("story-1")
+    github.create_pull_request.side_effect = NoCommitsBetweenError(
+        "Cannot open PR story/story-1->main: No commits between main and story/story-1."
+    )
+    context = entered_client(github, recorder, "github")
+
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=context):
+        assert await complete_stories(api_client, redis_client) == 0
+
+    assert assert_one_operation_scope(recorder, "github", NoCommitsBetweenError) == [
+        "get_ref_sha",
+        "create_pull_request",
+    ]
+    api_client.transition_story.assert_awaited_once_with("story-1", "human-review")

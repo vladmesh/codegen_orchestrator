@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from _github_client_context import self_entering
 from _owner_notification_claims import ClaimClock, claim
 import httpx
 import pytest
@@ -1547,7 +1548,7 @@ class TestCompleteStories:
         github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1609,7 +1610,7 @@ class TestCompleteStories:
         github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1671,7 +1672,7 @@ class TestCompleteStories:
         github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1726,7 +1727,7 @@ class TestCompleteStories:
             github.enable_auto_merge.return_value = True
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1766,7 +1767,7 @@ class TestCompleteStories:
         github.enable_auto_merge.return_value = False
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1800,7 +1801,7 @@ class TestCompleteStories:
         github.enable_auto_merge.return_value = False
 
         with (
-            patch("src.tasks.story_completion.GitHubAppClient", return_value=github),
+            patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
             patch(
                 "src.tasks.story_completion.finalize_story_worker_teardown",
                 new_callable=AsyncMock,
@@ -1907,7 +1908,9 @@ class TestCompleteStories:
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
         github.enable_auto_merge.return_value = True
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -1951,7 +1954,9 @@ class TestCompleteStories:
         redis_client.redis.get.return_value = None
         mock_github.enable_auto_merge.return_value = True
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             await complete_stories(api_client, redis_client)
 
         # Should transition story to pr_review (not deploying)
@@ -2045,7 +2050,9 @@ class TestCompleteStories:
         redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             result = await complete_stories(api_client, redis_client)
 
         # Must transition to pr_review so poller picks up the merge
@@ -2103,7 +2110,9 @@ class TestCompletionIgnoresCancelledTasks:
         }
         mock_github.enable_auto_merge.return_value = True
 
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -2231,7 +2240,7 @@ class TestPollMergedPRs:
             "head": {"sha": "a" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -2275,7 +2284,7 @@ class TestPollMergedPRs:
             "head": {"sha": "d" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -2305,7 +2314,7 @@ class TestPollMergedPRs:
             "head": {"sha": "a" * 40},
         }
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 0
@@ -2363,7 +2372,7 @@ class TestPollMergedPRs:
             },
         ]
 
-        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=self_entering(mock_github)):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1

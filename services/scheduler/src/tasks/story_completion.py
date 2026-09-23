@@ -269,60 +269,62 @@ async def complete_stories(
 
         # Create PR from story branch to main
         try:
-            github = GitHubAppClient()
-            pr = await _resolve_current_cycle_pr(
-                github,
-                story=story,
-                owner=owner,
-                repo_name=repo_name,
-                branch=branch,
-            )
-            pr_number = pr["number"]
-            await api_client.update_story(story_id, {"pr_number": pr_number})
-            pr_node_id = pr.get("node_id", "")
-            pr_merged = pr.get("merged_at") is not None
-
-            if pr_merged:
-                # PR already merged (e.g. QA fix cycle — fix task pushed to
-                # story branch, PR auto-merged while story was in_progress).
-                # Transition to pr_review so poll_merged_prs() picks it up
-                # and triggers deploy.
-                log.info(
-                    "story_pr_already_merged",
-                    pr_number=pr_number,
+            # One GitHub HTTP pool spans every GitHub call of this completion and is
+            # closed on success and error alike.
+            async with GitHubAppClient() as github:
+                pr = await _resolve_current_cycle_pr(
+                    github,
+                    story=story,
+                    owner=owner,
+                    repo_name=repo_name,
                     branch=branch,
                 )
-                if not await finalize_story_worker_teardown(
-                    redis_client,
-                    story_id=story_id,
-                    project_id=project_id,
-                    request_id=f"pr-review-story-{story_id}",
-                ):
+                pr_number = pr["number"]
+                await api_client.update_story(story_id, {"pr_number": pr_number})
+                pr_node_id = pr.get("node_id", "")
+                pr_merged = pr.get("merged_at") is not None
+
+                if pr_merged:
+                    # PR already merged (e.g. QA fix cycle — fix task pushed to
+                    # story branch, PR auto-merged while story was in_progress).
+                    # Transition to pr_review so poll_merged_prs() picks it up
+                    # and triggers deploy.
+                    log.info(
+                        "story_pr_already_merged",
+                        pr_number=pr_number,
+                        branch=branch,
+                    )
+                    if not await finalize_story_worker_teardown(
+                        redis_client,
+                        story_id=story_id,
+                        project_id=project_id,
+                        request_id=f"pr-review-story-{story_id}",
+                    ):
+                        continue
+                    await api_client.transition_story(story_id, "pr_review")
+                    await _trigger_next_story(api_client, redis_client, project_id)
+                    completed += 1
                     continue
-                await api_client.transition_story(story_id, "pr_review")
-                await _trigger_next_story(api_client, redis_client, project_id)
-                completed += 1
-                continue
 
-            log.info(
-                "story_pr_created",
-                pr_number=pr_number,
-                branch=branch,
-                node_id=pr_node_id[:20] if pr_node_id else "",
-            )
+                log.info(
+                    "story_pr_created",
+                    pr_number=pr_number,
+                    branch=branch,
+                    node_id=pr_node_id[:20] if pr_node_id else "",
+                )
 
-            if not await _enable_auto_merge(
-                github,
-                owner=owner,
-                repo_name=repo_name,
-                pr_number=pr_number,
-                pr_node_id=pr_node_id,
-                log=log,
-            ):
-                # The PR poller re-reads this PR after checks settle. It either
-                # merges through the App or parks a GitHub refusal with notices;
-                # this creation tick deliberately owns neither decision.
-                log.info("story_auto_merge_deferred_to_poller", pr_number=pr_number)
+                if not await _enable_auto_merge(
+                    github,
+                    owner=owner,
+                    repo_name=repo_name,
+                    pr_number=pr_number,
+                    pr_node_id=pr_node_id,
+                    log=log,
+                ):
+                    # The PR poller re-reads this PR after checks settle. It either
+                    # merges through the App or parks a GitHub refusal with notices;
+                    # this creation tick deliberately owns neither decision.
+                    log.info("story_auto_merge_deferred_to_poller", pr_number=pr_number)
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets
