@@ -19,9 +19,10 @@ those records, and only once they parse as a release record:
 * ``cleanup`` removes service images of neither the current nor the previous release,
   and never one a container uses. A missing or unreadable record removes nothing.
 * ``readback`` is the read-only check after a deploy that production runs the release and
-  nothing else: the resolved compose configuration and every running container mount no
-  checkout source, each build service's container runs the image of the record's digest,
-  and that image carries the record's non-empty source hash. It changes nothing.
+  nothing else: neither the resolved compose configuration nor any container of the compose
+  project (running or not, in the configuration or orphaned) bind-mounts checkout source,
+  each build service's running container runs the image of the record's digest, and that
+  image carries the record's non-empty source hash. It changes nothing.
 
 It runs on the deploy host with the system interpreter, so it is stdlib-only.
 """
@@ -345,6 +346,64 @@ def _checkout_source(source: str, deploy_path: Path) -> str | None:
     return str(relative)
 
 
+def _inspect_container(container_id: str, run_docker: Callable[[list[str]], str]) -> dict:
+    raw = json.loads(run_docker(["container", "inspect", container_id]))
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+        raise RuntimeError(f"Docker returned an unusable inspection for {container_id}")
+    return raw[0]
+
+
+def _project_source_mounts(
+    project: str,
+    services: dict[str, Any],
+    deploy_path: Path,
+    run_docker: Callable[[list[str]], str],
+) -> tuple[list[str], set[str]]:
+    """The checkout-source bind mounts of every container of the compose project.
+
+    Every container docker keeps under the project's label counts, running or only created,
+    and whether or not the current configuration still names its service: a container left
+    from an older configuration keeps the mounts it was created with. Returns the problems
+    and the IDs of the containers that have them.
+    """
+    container_ids = sorted(
+        {
+            item
+            for item in run_docker(
+                [
+                    "ps",
+                    "-a",
+                    "-q",
+                    "--no-trunc",
+                    "--filter",
+                    f"label=com.docker.compose.project={project}",
+                ]
+            ).split()
+            if item
+        }
+    )
+    problems: list[str] = []
+    source_bound: set[str] = set()
+    for container_id in container_ids:
+        container = _inspect_container(container_id, run_docker)
+        labels = (container.get("Config") or {}).get("Labels") or {}
+        service_name = labels.get("com.docker.compose.service") or "(no service label)"
+        where = f"{service_name} {container_id[:12]}"
+        if service_name not in services:
+            where += " (orphan)"
+        for mount in container.get("Mounts") or []:
+            source = mount.get("Source", "") if mount.get("Type") == "bind" else ""
+            path = _checkout_source(source, deploy_path) if source else None
+            if path is not None:
+                problems.append(
+                    f"{where}: bind-mounts checkout source {path} at {mount.get('Destination')}"
+                )
+                source_bound.add(container_id)
+    if not source_bound:
+        print(f"OK {len(container_ids)} containers of project {project} mount no checkout source")
+    return problems, source_bound
+
+
 def _without_override(compose_config: dict[str, Any], release: Release) -> dict[str, Any]:
     """The configuration as the base files state it, whether or not the override was applied.
 
@@ -394,6 +453,11 @@ def readback(
                     f"at {volume.get('target')}"
                 )
 
+    mount_problems, source_bound = _project_source_mounts(
+        project, services, deploy_path, run_docker
+    )
+    problems.extend(mount_problems)
+
     for service_name, reference in _released_images(
         _without_override(compose_config, release), release
     ).items():
@@ -416,10 +480,7 @@ def readback(
                 problems.append(f"{service_name}: no running container")
             continue
         for container_id in containers:
-            raw = json.loads(run_docker(["container", "inspect", container_id]))
-            if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
-                raise RuntimeError(f"Docker returned an unusable inspection for {container_id}")
-            container = raw[0]
+            container = _inspect_container(container_id, run_docker)
             where = f"{service_name} {container_id[:12]}"
             failed = False
             if container.get("Image") != expected_id:
@@ -435,14 +496,8 @@ def readback(
                     f"{source_hash!r}"
                 )
                 failed = True
-            for mount in container.get("Mounts") or []:
-                source = mount.get("Source", "") if mount.get("Type") == "bind" else ""
-                path = _checkout_source(source, deploy_path) if source else None
-                if path is not None:
-                    problems.append(
-                        f"{where}: bind-mounts checkout source {path} at {mount.get('Destination')}"
-                    )
-                    failed = True
+            if container_id in source_bound:
+                failed = True
             if not failed:
                 print(f"OK {where} image={reference} {SOURCE_HASH_LABEL}={stamped}")
     return problems

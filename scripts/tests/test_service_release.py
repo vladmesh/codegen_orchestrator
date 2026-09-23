@@ -410,24 +410,57 @@ def _live_config(release: Release) -> dict:
     }
 
 
+PROJECT = "codegen_orchestrator"
+
+
+def _container(service: str, image: str, mounts: list[dict], labels: dict | None = None) -> dict:
+    return {
+        "Image": image,
+        "State": {"Running": True},
+        "Config": {
+            "Labels": {
+                "com.docker.compose.project": PROJECT,
+                "com.docker.compose.service": service,
+                **(labels or {}),
+            }
+        },
+        "Mounts": mounts,
+    }
+
+
 class ReadbackDocker:
-    """docker ps / inspect, faked: one api container, and whatever a test changes on it."""
+    """docker ps / inspect, faked: the project's api and caddy containers, and whatever a test
+    changes or adds."""
 
     def __init__(self, release: Release, source_hash: str) -> None:
         self.image_ids = {
             reference: f"sha256:id-{name}" for name, reference in release.references.items()
         }
-        self.api = {
-            "Image": "sha256:id-api",
-            "Config": {"Labels": {"org.codegen.worker_source_hash": source_hash}},
-            "Mounts": [
+        self.api = _container(
+            "api",
+            "sha256:id-api",
+            [
                 {
                     "Type": "bind",
                     "Source": "/opt/secrets/github_app.pem",
                     "Destination": "/app/keys/github_app.pem",
                 }
             ],
-        }
+            {"org.codegen.worker_source_hash": source_hash},
+        )
+        self.caddy = _container(
+            "caddy",
+            "sha256:id-caddy",
+            [
+                {
+                    "Type": "bind",
+                    "Source": f"{DEPLOY_PATH}/infra/Caddyfile",
+                    "Destination": "/etc/caddy/Caddyfile",
+                },
+                {"Type": "volume", "Source": "/var/lib/docker/volumes/caddy_data/_data"},
+            ],
+        )
+        self.containers = {"c0ffee00api1": self.api, "c0ffee0caddy": self.caddy}
         self.calls: list[list[str]] = []
 
     def __call__(self, command: list[str]) -> str:
@@ -435,10 +468,26 @@ class ReadbackDocker:
         if command[:2] == ["image", "inspect"]:
             return self.image_ids[command[-1]] + "\n"
         if command[:1] == ["ps"]:
-            service = command[-1].rpartition("=")[2]
-            return "c0ffee00api1\n" if service == "api" else ""
+            filters = {
+                key: value
+                for key, _, value in (
+                    command[index + 1].removeprefix("label=").partition("=")
+                    for index, item in enumerate(command)
+                    if item == "--filter"
+                )
+            }
+            assert filters["com.docker.compose.project"] == PROJECT
+            return "".join(
+                f"{container_id}\n"
+                for container_id, container in self.containers.items()
+                if ("-a" in command or container["State"]["Running"])
+                and all(
+                    container["Config"]["Labels"].get(key) == value
+                    for key, value in filters.items()
+                )
+            )
         if command[:2] == ["container", "inspect"]:
-            return json.dumps([self.api])
+            return json.dumps([self.containers[command[-1]]])
         raise AssertionError(f"unexpected docker call {command}")
 
 
@@ -462,6 +511,15 @@ def test_readback_confirms_a_container_running_the_recorded_digest(tmp_path, cap
     out = capsys.readouterr().out
     assert f"OK api c0ffee00api1 image={REAL_RECORD['images']['api']['reference']}" in out
     assert "SKIP telegram_bot scale=0" in out
+    assert f"OK 2 containers of project {PROJECT} mount no checkout source" in out
+    assert [
+        "ps",
+        "-a",
+        "-q",
+        "--no-trunc",
+        "--filter",
+        f"label=com.docker.compose.project={PROJECT}",
+    ] in docker.calls
     assert all(call[:1] in (["ps"], ["image"], ["container"]) for call in docker.calls)
     assert not [call for call in docker.calls if call[:2] in (["image", "rm"], ["compose", "up"])]
 
@@ -514,6 +572,61 @@ def test_readback_fails_a_source_mount_in_the_config_and_in_the_container(tmp_pa
         "config: service api bind-mounts checkout source shared at /app/shared",
         "api c0ffee00api1: bind-mounts checkout source services/api/src at /app/src",
     ]
+
+
+def test_readback_fails_a_non_build_container_with_a_drifted_source_mount(tmp_path, capsys):
+    """caddy is not a build service; its live container still may not read checkout source,
+    even when the configuration it would be created from today is clean."""
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+    docker.caddy["Mounts"].append(
+        {"Type": "bind", "Source": f"{DEPLOY_PATH}/shared", "Destination": "/srv/shared"}
+    )
+
+    problems = _readback(tmp_path, docker)
+
+    assert problems == ["caddy c0ffee0caddy: bind-mounts checkout source shared at /srv/shared"]
+    assert "mount no checkout source" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["running", "created"])
+def test_readback_fails_an_orphan_container_with_a_source_mount(tmp_path, running):
+    """A container of a service the configuration no longer names keeps the mounts it was
+    created with; running or only created, it is still the project's."""
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+    orphan = _container(
+        "old-scheduler",
+        "sha256:built-long-ago",
+        [
+            {
+                "Type": "bind",
+                "Source": f"{DEPLOY_PATH}/services/scheduler/src",
+                "Destination": "/app/src",
+            }
+        ],
+    )
+    orphan["State"]["Running"] = running
+    docker.containers["0dd0rphan001"] = orphan
+
+    problems = _readback(tmp_path, docker)
+
+    assert problems == [
+        "old-scheduler 0dd0rphan001 (orphan): bind-mounts checkout source "
+        "services/scheduler/src at /app/src"
+    ]
+
+
+def test_readback_passes_a_clean_project_with_an_orphan_that_mounts_no_source(tmp_path, capsys):
+    docker = ReadbackDocker(parse_release(REAL_RECORD), REAL_RECORD["source_hash"])
+    docker.containers["0dd0rphan001"] = _container(
+        "old-scheduler",
+        "sha256:built-long-ago",
+        [{"Type": "bind", "Source": "/data/workspaces", "Destination": "/data/workspaces"}],
+    )
+
+    assert _readback(tmp_path, docker) == []
+    assert f"OK 3 containers of project {PROJECT} mount no checkout source" in (
+        capsys.readouterr().out
+    )
 
 
 def test_readback_fails_a_build_service_with_no_running_container(tmp_path):

@@ -913,18 +913,26 @@ python3 scripts/service_release.py readback --compose-config /tmp/compose-live.j
   --record deployed-service-images.json --deploy-path "$PWD"
 ```
 
-(on the stand, add `-f docker-compose.stand.yml` before the override). It exits non-zero, one `FAIL`
-line per reason, unless all three hold:
+(on the stand, add `-f docker-compose.stand.yml` before the override). Checkout source is any bind
+mount source under the deploy path other than `infra/` and `secrets/`, so `services/`, `shared/` and
+`scripts/` among them. It exits non-zero, one `FAIL` line per reason, unless all four hold:
 
-- the resolved configuration has no bind mount of checkout source (anything under the deploy path
-  other than `infra/` and `secrets/`), and neither has any running container;
+- no service of the resolved configuration bind-mounts checkout source;
+- no container of the compose project bind-mounts checkout source. That is every container
+  `docker ps -a --filter label=com.docker.compose.project=<project>` lists: running or only created,
+  build service or third-party image (caddy, promtail, …), and orphans of a service the
+  configuration no longer names, which keep the mounts they were created with and are marked
+  `(orphan)`. `OK <n> containers of project <project> mount no checkout source` confirms it;
 - each running container of a build service runs the image the service record's digest names
   (`docker image inspect <reference>` gives the same ID as the container's `Image`);
 - that image carries a non-empty `org.codegen.worker_source_hash` equal to the record's
   `source_hash`.
 
-A service scaled to zero (the stand's `telegram_bot`) is reported as `SKIP`. The same facts by hand:
-`$COMPOSE config | grep -E 'source: .*/(services|shared|scripts)'` prints nothing,
+A build service scaled to zero (the stand's `telegram_bot`) is reported as `SKIP`. The same facts by
+hand: `$COMPOSE config | grep -E 'source: .*/(services|shared|scripts)'` prints nothing,
+`docker ps -aq --filter label=com.docker.compose.project=<project> | xargs docker inspect --format
+'{{.Name}}{{range .Mounts}} {{.Type}}:{{.Source}}{{end}}'` lists no bind under the deploy path
+outside `infra/` and `secrets/`, and
 `docker inspect --format '{{.Image}} {{index .Config.Labels "org.codegen.worker_source_hash"}}'
 <container>` against `docker image inspect --format '{{.Id}}' <record reference>`.
 
