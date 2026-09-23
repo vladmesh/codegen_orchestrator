@@ -392,6 +392,11 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      # The PR poller and story completion write these into a product repository
+      # as its registry secrets before every merge they perform or enable.
+      ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
+      REGISTRY_USER: ${REGISTRY_USER}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler-pipeline
     command: ["python", "-m", "src.pipeline"]

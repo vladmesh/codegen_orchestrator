@@ -16,7 +16,11 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import (
+    GitHubAppClient,
+    RegistrySecretsNotRefreshedError,
+    registry_repository_secrets,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
@@ -191,30 +195,18 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
         update_fields["provider_repo_id"] = github_repo.id
     await api.update_repository(msg.repository_id, **update_fields)
 
-    # Set registry secrets so CI build-and-push can work from first commit
-    registry_url = os.environ.get("ORCHESTRATOR_HOSTNAME", "")
-    registry_user = os.environ.get("REGISTRY_USER", "")
-    registry_password = os.environ.get("REGISTRY_PASSWORD", "")
-    if all([registry_url, registry_user, registry_password]):
+    # Set registry secrets so CI build-and-push can work from first commit. The PR
+    # poller writes them again before every merge, so this is not the only chance.
+    try:
+        registry_secrets = registry_repository_secrets()
+    except RegistrySecretsNotRefreshedError as error:
+        log.warning("registry_secrets_skipped", detail=error.detail)
+    else:
         github_token_for_secrets = await github.get_org_token(org)
         count = await github.set_repository_secrets(
-            org,
-            msg.project_name,
-            {
-                "REGISTRY_URL": registry_url,
-                "REGISTRY_USER": registry_user,
-                "REGISTRY_PASSWORD": registry_password,
-            },
-            token=github_token_for_secrets,
+            org, msg.project_name, registry_secrets, token=github_token_for_secrets
         )
         log.info("registry_secrets_set", count=count)
-    else:
-        log.warning(
-            "registry_secrets_skipped",
-            has_url=bool(registry_url),
-            has_user=bool(registry_user),
-            has_password=bool(registry_password),
-        )
 
     # Run scaffold
     result = await run_scaffold(

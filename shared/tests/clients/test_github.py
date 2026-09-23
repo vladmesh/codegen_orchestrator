@@ -699,63 +699,55 @@ async def test_create_pull_request_already_exists(authed_client):
             assert result["number"] == 99
 
 
+def _disable_response(auto_merge_request):
+    return httpx.Response(
+        200,
+        json={
+            "data": {
+                "disablePullRequestAutoMerge": {
+                    "pullRequest": {"number": 42, "autoMergeRequest": auto_merge_request}
+                }
+            }
+        },
+    )
+
+
 @pytest.mark.asyncio
-async def test_enable_auto_merge_success(authed_client):
+async def test_disable_auto_merge_success(authed_client):
     owner, repo = "my-org", "my-repo"
 
     with patch.object(authed_client, "get_installation_id", return_value=111):
         async with respx.mock(base_url="https://api.github.com") as respx_mock:
-            route = respx_mock.post("/graphql").mock(
-                return_value=httpx.Response(
-                    200,
-                    json={
-                        "data": {
-                            "enablePullRequestAutoMerge": {
-                                "pullRequest": {
-                                    "number": 42,
-                                    "autoMergeRequest": {"mergeMethod": "MERGE"},
-                                }
-                            }
-                        }
-                    },
-                )
-            )
+            route = respx_mock.post("/graphql").mock(return_value=_disable_response(None))
 
-            result = await authed_client.enable_auto_merge(owner, repo, pr_node_id="PR_abc")
+            result = await authed_client.disable_auto_merge(owner, repo, pr_node_id="PR_abc")
 
-            assert result is True
-            assert route.called
-
-            import json
-
-            body = json.loads(route.calls[0].request.content)
-            assert "enablePullRequestAutoMerge" in body["query"]
-            assert body["variables"]["pullRequestId"] == "PR_abc"
+    assert result is True
+    body = json.loads(route.calls[0].request.content)
+    assert "disablePullRequestAutoMerge" in body["query"]
+    assert body["variables"] == {"pullRequestId": "PR_abc"}
 
 
 @pytest.mark.asyncio
-async def test_enable_auto_merge_not_allowed(authed_client):
-    """When repo doesn't have auto-merge enabled, GraphQL returns errors."""
-    owner, repo = "my-org", "my-repo"
-
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, json={"errors": [{"message": "Resource not accessible"}]}),
+        _disable_response({"mergeMethod": "MERGE"}),
+        httpx.Response(200, json={"data": None}),
+    ],
+    ids=["graphql-error", "still-armed", "no-pull-request"],
+)
+async def test_disable_auto_merge_reports_anything_but_a_confirmed_withdrawal(
+    authed_client, response
+):
     with patch.object(authed_client, "get_installation_id", return_value=111):
         async with respx.mock(base_url="https://api.github.com") as respx_mock:
-            respx_mock.post("/graphql").mock(
-                return_value=httpx.Response(
-                    200,
-                    json={
-                        "errors": [
-                            {
-                                "message": "Pull request is not in the correct state"
-                                " to enable auto-merge"
-                            }
-                        ]
-                    },
-                )
-            )
+            respx_mock.post("/graphql").mock(return_value=response)
 
-            result = await authed_client.enable_auto_merge(owner, repo, pr_node_id="PR_abc")
-            assert result is False
+            result = await authed_client.disable_auto_merge("my-org", "my-repo", pr_node_id="PR")
+
+    assert result is False
 
 
 @pytest.mark.asyncio

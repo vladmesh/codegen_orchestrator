@@ -107,6 +107,20 @@ def test_compose_runs_independent_scheduler_processes():
         )
 
 
+def test_scheduler_pipeline_carries_the_registry_env_its_merges_write():
+    """The merging process writes the product's registry secrets, so it holds them.
+
+    `pr_poller` and `story_completion` run in scheduler-pipeline and refresh a
+    product repository's REGISTRY_* secrets before every merge they perform or
+    enable. Production composes this file, so the variables must be named here.
+    """
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    environment = compose["services"]["scheduler-pipeline"]["environment"]
+
+    for variable in ("ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"):
+        assert environment[variable] == f"${{{variable}}}"
+
+
 def test_infra_stack_waits_for_scheduler_health():
     compose = yaml.safe_load((REPO_ROOT / "tests/compose/integration/infra.yml").read_text())
     services = compose["services"]

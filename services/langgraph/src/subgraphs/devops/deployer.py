@@ -3,12 +3,16 @@
 import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
-import os
 
 from langchain_core.messages import AIMessage
 import structlog
 
-from shared.clients.github import GitHubAppClient, deploy_pin_tag
+from shared.clients.github import (
+    GitHubAppClient,
+    RegistrySecretsNotRefreshedError,
+    deploy_pin_tag,
+    registry_repository_secrets,
+)
 from shared.clients.registry import RegistryError
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
@@ -188,18 +192,13 @@ async def _write_deploy_secrets(
     diagnostic_secrets: Iterable[str] = (),
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
-    # Registry credentials for CI docker push
-    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
-    if not registry_url:
-        logger.error("registry_env_missing", var="ORCHESTRATOR_HOSTNAME")
-        return False
-    registry_user = os.getenv("REGISTRY_USER")
-    if not registry_user:
-        logger.error("registry_env_missing", var="REGISTRY_USER")
-        return False
-    registry_password = os.getenv("REGISTRY_PASSWORD")
-    if not registry_password:
-        logger.error("registry_env_missing", var="REGISTRY_PASSWORD")
+    # Registry credentials for CI docker push. The PR poller already wrote them
+    # before the merge that started this commit's build; rewriting them here keeps
+    # an administrative or capability redeploy's repository current as well.
+    try:
+        registry_secrets = registry_repository_secrets()
+    except RegistrySecretsNotRefreshedError as error:
+        logger.error("registry_env_missing", reason=error.reason.value, detail=error.detail)
         return False
 
     secrets_map = {
@@ -209,9 +208,7 @@ async def _write_deploy_secrets(
         "DEPLOY_SSH_KEY": ssh_key,
         "DEPLOY_PORT": str(port),
         "PROJECT_NAME": project_name,
-        "REGISTRY_URL": registry_url,
-        "REGISTRY_USER": registry_user,
-        "REGISTRY_PASSWORD": registry_password,
+        **registry_secrets,
     }
 
     try:

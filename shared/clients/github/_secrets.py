@@ -1,9 +1,54 @@
 import base64
+from collections.abc import Mapping
+from enum import StrEnum
+import os
 
 from shared.diagnostics import redact_diagnostic
 from shared.log_config import get_logger
 
 logger = get_logger(__name__)
+
+#: The repository secrets a generated product's push-main CI logs in to the
+#: orchestrator's registry with, each paired with the orchestrator environment
+#: variable that holds its current value.
+REGISTRY_SECRET_ENV: tuple[tuple[str, str], ...] = (
+    ("REGISTRY_URL", "ORCHESTRATOR_HOSTNAME"),
+    ("REGISTRY_USER", "REGISTRY_USER"),
+    ("REGISTRY_PASSWORD", "REGISTRY_PASSWORD"),
+)
+
+
+class RegistrySecretsRefusal(StrEnum):
+    """Why a product repository's registry secrets could not be made current."""
+
+    ENV_MISSING = "registry_secrets_env_missing"
+    WRITE_INCOMPLETE = "registry_secrets_write_incomplete"
+
+
+class RegistrySecretsNotRefreshedError(RuntimeError):
+    """The registry secrets are not known to be current, so nothing may start CI.
+
+    The message names variables and counts only, never a value.
+    """
+
+    def __init__(self, reason: RegistrySecretsRefusal, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+def registry_repository_secrets(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The registry secrets a product repository needs, read from this process's env.
+
+    Raises ``RegistrySecretsNotRefreshedError`` naming every missing variable.
+    """
+    env = os.environ if environ is None else environ
+    missing = [variable for _, variable in REGISTRY_SECRET_ENV if not env.get(variable)]
+    if missing:
+        raise RegistrySecretsNotRefreshedError(
+            RegistrySecretsRefusal.ENV_MISSING, f"{', '.join(missing)} not set"
+        )
+    return {secret: env[variable] for secret, variable in REGISTRY_SECRET_ENV}
 
 
 class SecretsMixin:
@@ -103,6 +148,30 @@ class SecretsMixin:
                     owner=owner,
                     repo=repo,
                     secret_name=name,
-                    error=redact_diagnostic(e),
+                    error=redact_diagnostic(e, secrets=secrets.values()),
                 )
         return count
+
+    async def refresh_registry_secrets(
+        self,
+        owner: str,
+        repo: str,
+        token: str | None = None,
+    ) -> None:
+        """Write the orchestrator's current registry secrets into one product repository.
+
+        Idempotent and cheap, so it runs before every merge that starts the
+        product's push-main CI: those builds read ``REGISTRY_URL`` and the
+        credentials when they start, and a repository created elsewhere, or
+        created before a hostname or credential change, would otherwise build
+        against stale values. Raises ``RegistrySecretsNotRefreshedError`` unless
+        every secret was written.
+        """
+        secrets = registry_repository_secrets()
+        written = await self.set_repository_secrets(owner, repo, secrets, token=token)
+        if written != len(secrets):
+            raise RegistrySecretsNotRefreshedError(
+                RegistrySecretsRefusal.WRITE_INCOMPLETE,
+                f"wrote {written} of {len(secrets)} registry secrets to {owner}/{repo}",
+            )
+        logger.info("registry_secrets_refreshed", owner=owner, repo=repo, count=written)

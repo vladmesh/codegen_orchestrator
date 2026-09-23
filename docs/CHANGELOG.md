@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- The PR poller merges product PRs itself (no GitHub auto-merge) after writing their `REGISTRY_*` secrets
+  and rewrites them each tick a PR stays armed for auto-merge, so push-main CI never builds on stale ones.
 - Resource-wait park/resume and the secret ask (the only entry to `waiting_user_secret`) owe their owner notice
   in the move's transaction and deliver it via the seam, so a Redis or recipient failure cannot lose it.
 - The state-age watchdog and stage notices run in their own `story_supervision` scheduler loop, each sweep

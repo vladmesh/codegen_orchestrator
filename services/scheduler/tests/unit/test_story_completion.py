@@ -222,7 +222,6 @@ def _completing_github(story_id: str, *, node_id: str = "PR_kwDOnode") -> AsyncM
     github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.return_value = _story_pull_request(story_id, node_id)
     github.get_pull_request.return_value = _story_pull_request(story_id, "PR_kwDOnode")
-    github.enable_auto_merge.return_value = True
     return github
 
 
@@ -242,7 +241,6 @@ async def test_each_story_completion_enters_one_client_for_all_its_github_calls(
 ):
     api_client.get_stories_by_status.return_value = [_story("story-1"), _story("story-2")]
     recorder = MagicMock()
-    # A numeric node id makes the first completion re-read the PR before auto-merge.
     first = _completing_github("story-1", node_id="12345")
     second = _completing_github("story-2")
     contexts = [
@@ -254,17 +252,10 @@ async def test_each_story_completion_enters_one_client_for_all_its_github_calls(
         assert await complete_stories(api_client, redis_client) == 2
 
     assert client_cls.call_count == 2
-    assert assert_one_operation_scope(recorder, "first") == [
-        "get_ref_sha",
-        "create_pull_request",
-        "get_pull_request",
-        "enable_auto_merge",
-    ]
-    assert assert_one_operation_scope(recorder, "second") == [
-        "get_ref_sha",
-        "create_pull_request",
-        "enable_auto_merge",
-    ]
+    # Completion only resolves the PR: no auto-merge (and so no node-id re-read for
+    # it), no secret write. The PR poller is the only merger.
+    assert assert_one_operation_scope(recorder, "first") == ["get_ref_sha", "create_pull_request"]
+    assert assert_one_operation_scope(recorder, "second") == ["get_ref_sha", "create_pull_request"]
     # The first completion's pool is closed before the second one opens.
     names = [c[0] for c in recorder.mock_calls]
     assert names.index("first_context.__aexit__") < names.index("second_context.__aenter__")
@@ -290,7 +281,7 @@ async def test_github_error_closes_that_storys_pool_and_the_next_story_completes
         "get_ref_sha",
         "create_pull_request",
     ]
-    assert assert_one_operation_scope(recorder, "next")[-1] == "enable_auto_merge"
+    assert assert_one_operation_scope(recorder, "next") == ["get_ref_sha", "create_pull_request"]
     # The failed story keeps retrying: only the second one moves to PR review.
     api_client.transition_story.assert_awaited_once_with("story-2", "pr_review")
 
@@ -314,3 +305,25 @@ async def test_no_commits_between_closes_the_pool_before_the_story_is_parked(
         "create_pull_request",
     ]
     api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+
+
+@pytest.mark.asyncio
+async def test_completion_hands_the_pull_request_to_the_poller_without_auto_merge(
+    api_client, redis_client
+):
+    """GitHub never merges a product PR by itself; the poller merges it after the secrets.
+
+    An auto-merge request fires whenever checks pass, possibly after a registry
+    rotation, and nothing would write the current secrets before that merge.
+    """
+    github = _completing_github("story-1")
+
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
+        assert await complete_stories(api_client, redis_client) == 1
+
+    github.enable_auto_merge.assert_not_called()
+    github.refresh_registry_secrets.assert_not_called()
+    github.merge_pull_request.assert_not_called()
+    assert "auto-merge" not in github.create_pull_request.await_args.kwargs["body"].lower()
+    api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})
+    api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")

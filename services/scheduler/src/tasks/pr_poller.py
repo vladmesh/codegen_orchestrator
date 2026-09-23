@@ -10,7 +10,7 @@ import uuid
 
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, RegistrySecretsNotRefreshedError
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.users_grant import (
@@ -46,6 +46,10 @@ logger = structlog.get_logger(__name__)
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
+#: Logged when GitHub did not confirm withdrawing a PR's auto-merge request. The
+#: registry secrets were already refreshed that tick; the poller does not merge,
+#: and refreshes and asks again on the next poll.
+AUTO_MERGE_DISABLE_FAILED = "github_auto_merge_disable_failed"
 
 
 def _ci_failure_limit() -> int:
@@ -574,7 +578,59 @@ async def _park_story_for_merge_refusal(
     )
 
 
-async def _merge_open_pr_without_auto_merge(
+async def _take_over_auto_merge(
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    pull_request: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Make an armed PR's registry secrets current, then withdraw its auto-merge request.
+
+    Such a request is left over from before the poller merged every product PR
+    itself. While it is armed GitHub may merge the PR by itself whenever checks
+    pass, so the secrets are written first, on every tick the PR is still armed,
+    and no outcome of the withdrawal can skip that write. A failed write is
+    logged with its typed reason and changes nothing else; the next tick writes
+    again. Refreshing never merges.
+
+    True once GitHub confirms the withdrawal, and the PR is under this poller's
+    sole control. False otherwise: the caller does not merge, and the next tick
+    refreshes and asks again.
+    """
+    pr_number = pull_request["number"]
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        log.error(
+            "poll_merged_armed_pr_refresh_failed",
+            reason=error.reason.value,
+            pr_number=pr_number,
+            detail=error.detail,
+        )
+    pr_node_id = pull_request.get("node_id")
+    try:
+        if not pr_node_id:
+            raise ValueError("the pull request carries no GraphQL node id")
+        withdrawn = await github.disable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+        detail = None if withdrawn else "GitHub did not confirm the auto-merge withdrawal"
+    except Exception as exc:
+        withdrawn = False
+        detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+    if not withdrawn:
+        log.warning(
+            "poll_merged_auto_merge_takeover_failed",
+            reason=AUTO_MERGE_DISABLE_FAILED,
+            pr_number=pr_number,
+            detail=detail,
+        )
+        return False
+    log.info("poll_merged_auto_merge_taken_over", pr_number=pr_number)
+    return True
+
+
+async def _merge_open_pr(
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
     redis_client: RedisStreamClient,
@@ -586,12 +642,16 @@ async def _merge_open_pr_without_auto_merge(
     pull_request: dict,
     log: structlog.stdlib.BoundLogger,
 ) -> dict | None:
-    """Merge a green PR only when GitHub did not accept an auto-merge request.
+    """Merge a green PR through the App; this poller is its only automated merger.
 
-    Pending and CI-blocked PRs stay in the poll set for their normal next tick.
-    A refusal observed from GitHub is terminal for this automatic path, so it is
-    recorded with owner and administrator notices instead of being retried as a
-    warning forever.
+    A PR GitHub may still merge by itself (it carries an auto-merge request) has
+    its registry secrets refreshed on every tick before the request is withdrawn;
+    while GitHub has not confirmed the withdrawal, this poller does not merge it.
+    A PR under this poller's sole control is refreshed immediately before
+    ``merge_pull_request``, and parked if that write fails. Pending and CI-blocked PRs
+    stay in the poll set for their normal next tick. A refusal observed from
+    GitHub is terminal for this automatic path, so it is recorded with owner and
+    administrator notices instead of being retried as a warning forever.
     """
     pr_number = pull_request["number"]
     if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
@@ -607,8 +667,14 @@ async def _merge_open_pr_without_auto_merge(
             log=log,
         )
         return None
-    if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
+    if pull_request.get("state") != "open":
         return pull_request
+    if pull_request.get("auto_merge") is not None:
+        if not await _take_over_auto_merge(
+            github, owner=owner, repo_name=repo_name, pull_request=pull_request, log=log
+        ):
+            return pull_request
+        pull_request = {**pull_request, "auto_merge": None}
 
     mergeable_state = pull_request.get("mergeable_state")
     if mergeable_state == "behind":
@@ -647,6 +713,27 @@ async def _merge_open_pr_without_auto_merge(
             pr_number=pr_number,
             mergeable_state=mergeable_state,
             detail=detail,
+            log=log,
+        )
+        return None
+
+    # The merge starts the product's push-main CI, whose image builds read the
+    # registry secrets when they start. Make them current first, on every merge:
+    # an imported repository, or one created before a hostname or credential
+    # change, would otherwise build against stale values, and the deploy
+    # worker's own write comes after the merge, too late for that CI.
+    try:
+        await github.refresh_registry_secrets(owner, repo_name)
+    except RegistrySecretsNotRefreshedError as error:
+        await _park_story_for_merge_refusal(
+            api_client,
+            redis_client,
+            story_id=story_id,
+            project_id=project_id,
+            pr_number=pr_number,
+            mergeable_state=mergeable_state,
+            detail=f"the product repository's registry secrets were not refreshed: {error.detail}",
+            reason_code=error.reason.value,
             log=log,
         )
         return None
@@ -709,7 +796,7 @@ async def _current_pull_request(
     except Exception:
         log.exception("poll_merged_github_error", pr_number=pr_number)
         return None
-    return await _merge_open_pr_without_auto_merge(
+    return await _merge_open_pr(
         api_client,
         github,
         redis_client,

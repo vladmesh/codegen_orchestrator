@@ -348,20 +348,54 @@ attempt without a retry budget.
 1. Task Dispatcher reads the current `story/{story_id}` ref SHA, then resolves its
    `main` PR through `create_pull_request`; an open PR is reused, while later fix commits get a successor
 2. Validates the returned PR against that exact head and persists its number for the poller
-3. Attempts auto-merge; a refusal leaves the open PR visible but does not retain the worker
+3. Does **not** enable GitHub auto-merge: the PR poller is the only automated merger (see
+   below); the open PR stays visible and does not retain the worker
 4. Finalizes worker teardown, including the unchanged story binding
 5. Transitions the story to `pr_review` and triggers the next queued story
 
-If an armed PR merges while teardown is pending, the next no-commits response
+If the PR merges while teardown is pending, the next no-commits response
 recovers only the stored merged PR whose branch and head SHA still equal the
 current story ref. An earlier fix-cycle PR or ambiguous GitHub response cannot
 stand in for the current completion.
 
 **CI runs on the PR:**
-- **Green CI** → auto-merge → PR poller detects merged PR → deploy
+- **Green CI** → PR poller writes the registry secrets and merges → observes the merge commit's images → deploy
 - **Red CI** → PR poller detects CI failure → creates fix task → one `retry-after-ci-failure` call walks the story `failed → reopened → in_progress` server-side
 
 **PR merge detection**: `scheduler-pipeline` runs the PR poller (`scheduler/src/tasks/pr_poller.py`) for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
+
+**The pipeline merges product PRs itself, never through GitHub auto-merge.** The merge starts
+the product's push-main CI, whose `build-and-push` jobs read `REGISTRY_URL`, `REGISTRY_USER` and
+`REGISTRY_PASSWORD` when they start. GitHub auto-merge fires whenever checks pass, possibly after a
+registry hostname or credential rotation, and nothing would write the current values before that
+merge. So the PR poller merges every product PR, and in the same tick immediately before its
+`merge_pull_request` it calls `GitHubAppClient.refresh_registry_secrets`, which writes the three
+from `scheduler-pipeline`'s `ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD`. This
+covers a repository the platform did not create and one created before a rotation; the deploy
+worker's own write of the same secrets comes after the merge, too late for that CI. If the write
+is incomplete the poller does not merge: it parks the story in `waiting_human_review` with
+`quarantine_reason.reason` set to `registry_secrets_env_missing` or
+`registry_secrets_write_incomplete`, naming variables and counts only.
+
+**One invariant, enforced in one place.** A product PR that anything other than the poller's own
+call can merge is never left with stale registry secrets, and the poller's per-PR visit is the
+only code that enforces it:
+
+1. An open PR still armed for auto-merge (left over from before this rule), which GitHub may merge
+   by itself: on every tick the poller first writes the registry secrets, then tries to withdraw
+   the request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`). A failed write is
+   logged as `poll_merged_armed_pr_refresh_failed` with its typed reason and changes nothing else.
+   A failed or unconfirmed withdrawal logs `github_auto_merge_disable_failed`; the poller does not
+   merge and tries again next tick, and the secrets are current either way. No outcome of the
+   withdrawal, exception included, can skip the write, and the write never merges.
+2. An open PR under the poller's sole control: the write immediately before `merge_pull_request`,
+   parking the story on a failed write, as above.
+
+So every merge — the poller's, or GitHub's of a still-armed PR — follows a write in the same tick
+or an earlier one. What remains is a rotation between the last write and GitHub's own merge within
+one poll interval, the same order of window as the write-then-merge call pair. A PR armed by the
+previous release can also merge before the new poller's first tick; that is a deploy-time check
+(open product PRs with auto-merge enabled), not code.
 
 ---
 
@@ -372,7 +406,10 @@ stand in for the current completion.
 **Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger OR Admin API
 
 0. (Before the deploy Run exists) The producer waits for the merged commit's
-   images — see below. No Run is created until they are published.
+   images — see below. No Run is created until they are published. The order is:
+   registry secrets written → merge → push-main CI builds and pushes with those secrets →
+   the merge commit's images observed → deploy dispatched. `deploy.yml` has only a
+   `workflow_dispatch` trigger, so nothing starts it on push.
 1. Resolve server for the project (or provision new one)
 2. Read the registry once for the images this deploy resolved
 3. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
@@ -559,7 +596,7 @@ created → in_progress → pr_review → deploying → testing → completed
          completed → reopened → in_progress
          failed → reopened
 ```
-`pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
+`pr_review` — all tasks done, PR created from story branch to main. Waiting for CI and the PR poller's merge.
 `deploying` is a deploy gate — story waits for successful deploy before QA.
 `testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
 on the management host (Codex by default, with Claude Code as an explicit `QA_EXECUTOR_AGENT_TYPE=claude` override).
@@ -586,7 +623,7 @@ client, and never derived by a reader:
 | Story status | `waiting_on` | What has to happen |
 |---|---|---|
 | `created`, `in_progress`, `reopened` | `none` | the pipeline itself is working |
-| `pr_review` | `ci` | CI on the story branch, then auto-merge |
+| `pr_review` | `ci` | CI on the story branch, then the PR poller's merge |
 | `deploying` | `deploy` | the deploy run |
 | `testing` | `qa` | the QA verdict |
 | `waiting_human_review` | `human_review` | an admin |

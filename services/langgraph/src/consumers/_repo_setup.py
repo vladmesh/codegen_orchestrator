@@ -17,8 +17,6 @@ from ..runtime_identity import project_runtime_slug
 
 logger = structlog.get_logger(__name__)
 
-EXPECTED_REGISTRY_SECRETS_COUNT = 3
-
 
 async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     """Create GitHub repo and set registry secrets for a draft project.
@@ -27,7 +25,11 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     setup happen inline, while copier + make setup are deferred to
     worker-manager's scaffold phase.
     """
-    from shared.clients.github import GitHubAppClient
+    from shared.clients.github import (
+        GitHubAppClient,
+        RegistrySecretsNotRefreshedError,
+        registry_repository_secrets,
+    )
 
     project_id = str(project.id)
     project_name = project.title
@@ -73,36 +75,21 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     except Exception as exc:
         raise RuntimeError(f"GitHub repository creation failed: {exc}") from exc
 
-    # Step 2: Set registry secrets so CI can push Docker images
-    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
-    registry_user = os.getenv("REGISTRY_USER")
-    registry_password = os.getenv("REGISTRY_PASSWORD")
-
-    if all([registry_url, registry_user, registry_password]):
+    # Step 2: Set registry secrets so CI can push Docker images. The PR poller
+    # writes them again before every merge, so this is not the only chance.
+    try:
+        registry_secrets = registry_repository_secrets()
+    except RegistrySecretsNotRefreshedError as error:
+        logger.warning("registry_secrets_env_missing", detail=error.detail)
+    else:
         token = await github_client.get_org_token(org_name)
         count = await github_client.set_repository_secrets(
-            org_name,
-            repo_name,
-            {
-                "REGISTRY_URL": registry_url,
-                "REGISTRY_USER": registry_user,
-                "REGISTRY_PASSWORD": registry_password,
-            },
-            token=token,
+            org_name, repo_name, registry_secrets, token=token
         )
-        if count < EXPECTED_REGISTRY_SECRETS_COUNT:
+        if count < len(registry_secrets):
             logger.warning(
-                "registry_secrets_incomplete",
-                expected=EXPECTED_REGISTRY_SECRETS_COUNT,
-                actual=count,
+                "registry_secrets_incomplete", expected=len(registry_secrets), actual=count
             )
-    else:
-        logger.warning(
-            "registry_secrets_env_missing",
-            has_url=bool(registry_url),
-            has_user=bool(registry_user),
-            has_password=bool(registry_password),
-        )
 
     # Step 3: Create Repository entity (project stays DRAFT until scaffold completes)
     repo_url = f"https://github.com/{repo_full_name}"
