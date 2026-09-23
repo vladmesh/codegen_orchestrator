@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from _github_client_context import self_entering
 from _owner_notification_claims import ClaimsFromWrites
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import httpx
@@ -265,7 +266,9 @@ class TestCompleteStoriesTriggersNext:
             "head": {"ref": "story/story-done", "sha": "a" * 40},
         }
         mock_github.get_ref_sha.return_value = "a" * 40
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -305,7 +308,9 @@ class TestCompleteStoriesTriggersNext:
             "head": {"ref": "story/story-done", "sha": "a" * 40},
         }
         mock_github.get_ref_sha.return_value = "a" * 40
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             await complete_stories(api_client, redis_client)
 
         from shared.queues import ARCHITECT_QUEUE
@@ -1263,7 +1268,9 @@ class TestStoryWorkerCleanup:
         }
         mock_github.get_ref_sha.return_value = "a" * 40
         mock_github.enable_auto_merge.return_value = auto_merge_enabled
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             await complete_stories(api_client, redis_client)
 
         assert redis_client.redis.hget.await_count == 2
@@ -1302,7 +1309,9 @@ class TestStoryWorkerCleanup:
             "head": {"ref": "story/story-1", "sha": "a" * 40},
         }
         mock_github.get_ref_sha.return_value = "a" * 40
-        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+        with patch(
+            "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
+        ):
             await complete_stories(api_client, redis_client)
 
         # Should not send delete command or clear registry
