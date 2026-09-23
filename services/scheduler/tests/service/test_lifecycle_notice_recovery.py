@@ -43,6 +43,7 @@ from shared.tests.ssh_key_fixtures import fleet_private_key
 
 _PAID_RUN_TYPES = frozenset({RunType.QA.value, RunType.ENGINEERING.value})
 _LIVE_RUN_STATUSES = frozenset({"queued", "running"})
+_SETTLED_TASK_STATUSES = frozenset({TaskStatus.DONE.value, TaskStatus.CANCELLED.value})
 #: Stories the running test created, so its teardown can settle their paid runs.
 _CREATED_STORIES: list[str] = []
 
@@ -106,10 +107,20 @@ class _Scoped:
 
 @pytest.fixture(autouse=True)
 async def _settle_paid_runs(api_client):
-    """Cancel the live QA and engineering runs this test's stories left behind."""
+    """Take this test's tasks out of dispatch and cancel the paid runs they left live.
+
+    A resumed task is left in ``todo``, and later suites run the real
+    ``dispatch_todo_tasks`` against the shared database: a task left there would
+    be admitted by their tick and hold a paid-work slot their own admission
+    needs. So every task of a story this test created is cancelled first.
+    """
     _CREATED_STORIES.clear()
     yield
     for story_id in _CREATED_STORIES:
+        tasks = await _call(api_client, "GET", "tasks/", params={"story_id": story_id})
+        for task in tasks.json():
+            if task["status"] not in _SETTLED_TASK_STATUSES:
+                await _call(api_client, "DELETE", f"tasks/{task['id']}")
         runs = await _call(api_client, "GET", "runs/", params={"story_id": story_id})
         for run in runs.json():
             if run["type"] in _PAID_RUN_TYPES and run["status"] in _LIVE_RUN_STATUSES:
