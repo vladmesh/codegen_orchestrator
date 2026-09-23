@@ -92,7 +92,7 @@ While a story is in work its owner is told the stage, not left in silence
 `in_progress`, `reopened`, `pr_review`, `deploying` or `testing` gets one non-terminal
 `story_stage` event on entering the stage and one more each time it is still there
 `supervisor.stage_notice_quiet_minutes` (60) after the last notice. The sweep runs once per
-dispatcher tick, so the owner hears each stage the story is *observed* in within one sweep; a stage
+cycle of the `story_supervision` loop, right after the state-age watchdog, so the owner hears each stage the story is *observed* in within one sweep; a stage
 entered and left between two sweeps is deliberately not announced, because it is no longer true. Just before
 the marker write the story is read again, and a story that has left the scanned stage gets no notice and no
 marker, whatever order the routing supervisors run in; the next sweep announces its new stage. The event carries the

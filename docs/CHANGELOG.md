@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- The state-age watchdog and stage notices run in their own `story_supervision` scheduler loop, each sweep
+  in its own failure boundary, since neither depends on its position in the dispatcher tick any more.
 - Stage notices re-read the story just before the marker write and publish and skip a stage it has left,
   so naming the real stage no longer depends on running after every routing supervisor in the tick.
 - The state-age watchdog ends a wait only via `expire-state-wait`, a compare-and-set on status and anchor,

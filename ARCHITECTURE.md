@@ -74,7 +74,7 @@ taken from the default value.
 | `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
-| `scheduler-pipeline` | One ordered dispatcher cycle: scaffold and engineering admission, story completion, PR/CI, supervisors, owed notifications, QA routing, then temporary-access cleanup. A container of the shared `scheduler` image |
+| `scheduler-pipeline` | Five loops, each its own failure boundary: `task_dispatcher` (one ordered tick: scaffold and engineering admission, story completion, PR/CI, supervisors, QA routing), `worker_reconciliation`, `temporary_access` cleanup, `owner_notifications` recovery and `story_supervision` (state-age watchdog, stage notices). A container of the shared `scheduler` image |
 | `scheduler-infrastructure` | Fail-closed Time4VPS server sync, health checks, provisioner trigger and restart-safe result consumption. A container of the shared `scheduler` image |
 | `scheduler-maintenance` | GitHub project sync, RAG summarization, analytics aggregation and queue cleanup. A container of the shared `scheduler` image |
 | `infra-service` | An Ansible runner and SSH operations |
