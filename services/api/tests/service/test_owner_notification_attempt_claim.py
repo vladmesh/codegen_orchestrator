@@ -35,16 +35,16 @@ SOURCES = ("run", "story")
 
 def _legacy_record(story_id: str, project_id: str, **overrides) -> dict:
     """A record as production stored it before ``last_attempt_at`` existed."""
-    record = OwnerNotification(
-        event="story_completed",
-        text="The story is finished.",
-        story_id=story_id,
-        project_id=project_id,
-        terminal_status=StoryStatus.COMPLETED,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
-        **overrides,
-    ).model_dump(mode="json")
+    fields = {
+        "event": "story_completed",
+        "text": "The story is finished.",
+        "story_id": story_id,
+        "project_id": project_id,
+        "terminal_status": StoryStatus.COMPLETED,
+        "state": OwnerNotificationState.OWED,
+        "owed_at": datetime.now(UTC),
+    }
+    record = OwnerNotification(**{**fields, **overrides}).model_dump(mode="json")
     del record["last_attempt_at"]
     return record
 
