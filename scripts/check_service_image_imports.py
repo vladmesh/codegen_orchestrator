@@ -49,6 +49,7 @@ IMPORT_ENV = {
     "API_BASE_URL": "http://127.0.0.1:9",
     "BROKER_INTERNAL_TOKEN": "test-worker-broker-internal-token",
     "DATABASE_URL": "postgresql+asyncpg://test:test@127.0.0.1:5432/test",
+    "DEFAULT_AGENT_TYPE": "claude",
     "GITHUB_APP_ID": "12345",
     "GITHUB_APP_PRIVATE_KEY_PATH": "/dev/null",
     "HEALTH_CHECK_INTERVAL": "60",

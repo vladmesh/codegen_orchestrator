@@ -18,6 +18,7 @@ services:
           SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
+      DEFAULT_AGENT_TYPE: claude
       TELEGRAM_BOT_TOKEN: "123:test"
       REDIS_URL: redis://redis:6379/0
       API_BASE_URL: http://api:8000
@@ -49,6 +50,7 @@ services:
         args:
           SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      DEFAULT_AGENT_TYPE: claude
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: "123:test"
       API_BASE_URL: http://api:8000
