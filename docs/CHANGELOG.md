@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Owed owner-notification recovery runs on its own scheduler loop and logs every outcome per sweep, so
+  its failures cannot stop dispatcher ticks and tick failures cannot delay it.
 - `DEFAULT_AGENT_TYPE` is required by api, langgraph and telegram_bot and by Compose, with no `claude`
   fallback; the API drops its unused optional `TELEGRAM_BOT_TOKEN` setting.
 - Owed owner notifications carry `last_attempt_at`; the API grants one delivery attempt per 60 s per record

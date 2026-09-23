@@ -39,7 +39,6 @@ from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
     owe_story_owner_notification,
-    supervise_owed_owner_notifications,
 )
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
@@ -460,15 +459,6 @@ async def task_dispatcher_loop() -> None:
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
                 )
-                # Messages a committed terminal transition still owes are
-                # re-attempted before the routing that owes new ones. Ordered
-                # this way round, a record written by this tick's routing gets
-                # exactly the one in-tick attempt routing makes; the other way
-                # round the sweep would immediately spend a second attempt of
-                # the bound on it, in the same second.
-                owner_notifications = await supervise_owed_owner_notifications(
-                    api_client, redis_client
-                )
                 testing = await supervise_testing_stories(api_client, redis_client)
                 # Last of the story supervisors on purpose: every routing above
                 # has had this tick's chance to move a story on, so a wait this
@@ -516,11 +506,6 @@ async def task_dispatcher_loop() -> None:
                     + temporary_access.get("revoked", 0)
                     + temporary_access.get("revoke_failed", 0)
                     + temporary_access.get("escalated", 0)
-                    + owner_notifications["delivered"]
-                    + owner_notifications["retrying"]
-                    + owner_notifications["exhausted"]
-                    + owner_notifications["unaddressable"]
-                    + owner_notifications["voided"]
                 )
                 if supervisor_active:
                     logger.info(
@@ -558,18 +543,6 @@ async def task_dispatcher_loop() -> None:
                         # Still being chased vs. given up on and handed to a human.
                         temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
                         temporary_access_escalated=temporary_access.get("escalated", 0),
-                        # Owner notifications recovered from a committed
-                        # terminal transition whose publish did not land. Still
-                        # being chased vs. given up on and handed to a human vs.
-                        # refused because the owner has no chat to write to.
-                        owner_notify_recovered=owner_notifications["delivered"],
-                        owner_notify_retrying=owner_notifications["retrying"],
-                        owner_notify_exhausted=owner_notifications["exhausted"],
-                        owner_notify_unaddressable=owner_notifications["unaddressable"],
-                        # A record whose transition never committed: nothing was
-                        # sent, nothing was spent, and the ending is owed again
-                        # if routing does reach it.
-                        owner_notify_voided=owner_notifications["voided"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")
