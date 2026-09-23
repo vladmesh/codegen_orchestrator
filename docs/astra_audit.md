@@ -1,8 +1,8 @@
 # Astra architecture audit
 
-Date: 2026-09-22  
-Audited branch: main at 92b1e1ed (after PR #571, sprint:1454), deployed to production 2026-09-22T19:00Z  
-Previous refresh: 2026-09-22 midday, through c83380f5 (after PR #570)  
+Date: 2026-09-23  
+Audited branch: main at 9e8a4f00 (after PR #577, sprint:1456), deployed to production 2026-09-23T02:36Z  
+Previous refresh: 2026-09-22 evening, through 92b1e1ed (after PR #571)  
 Scope: architecture, service/process boundaries, legacy and compatibility code, fallbacks, hidden coupling, operational complexity, and removable technical debt.
 
 ## Executive summary
@@ -27,9 +27,9 @@ Those improvements do not invalidate the main architectural concern from the ori
 Of the original sixteen H/M/L findings:
 
 - **14 are complete:** H2, H3, H4, M1, M2, M3, M4, M5, M6, M7, M8, L1, L2 and L4.
-- **H1 remains partially complete:** PR #563 extracted durable worker teardown reconciliation, while the order-sensitive routing/supervision tick remains.
+- **H1 remains partially complete, two responsibilities out:** PR #563 extracted worker teardown reconciliation; PRs #572/#573 (sprint:1456) made the QA-routing edge of temporary-access cleanup a durable per-run guard and moved the sweep into its own `temporary_access` loop. Ten ordered steps remain in the dispatcher tick.
 - **M5 is complete via PR #571 (sprint:1454):** the legacy temporary-access schema, model fields, router branches, tests and contract text are gone; production runs migration 4d8e1f2a3b5c.
-- **L3 remains open with three bounded slices done** (Time4VPS scheduler sync, GitHub App client, embedding client); what is left is adoption by callers and the deliberate one-shot probes, which are not a cleanup task.
+- **L3 is effectively closed:** Time4VPS scheduler sync, the GitHub App client, the embedding client, and now the scaffolder as the first multi-call adopter of the GitHub lifecycle (PR #574, singleton removed). Remaining per-call clients are deliberate one-shot probes; further adoption happens when a caller is touched, not as audit work.
 
 This refresh adds three findings:
 
@@ -37,7 +37,7 @@ This refresh adds three findings:
 - **M10 — complete:** PR #554 removed the server-sync exemption, PR #555 decomposed the LangGraph deploy consumer, and PR #557 decomposed scheduler `supervise_deploying_stories`; all three audited orchestration hotspots are back under the normal complexity gates.
 - **L5 — complete via PR #567:** ARCHITECTURE.md now attributes lifecycle/status/timing to `runs` and engineering token/cost accounting to `engineering_attempt_ledger`.
 
-So the current actionable set is one High finding (H1) and one partially open Low finding (L3 caller adoption); no Medium finding is open. Sprint:1454 closed M5 the same day as Phase 1: one card, one PR, a migration with a refuse-if-live guard, a PO archive of the three revoked slot-era rows and a production readback. Sprint:1453 (2026-09-22, cards 1332-1336) closed the audit's Phase 1 in one day; the two follow-ups it filed are issue:11af3167eb3d888181f1 (the sweep's hard-coded `localhost:8000` API address) and issue:e3b4bea6544eac7dfe24 (the inventory skips unmanaged servers), plus issue:6a835ce0d0b4965221a7 (two `shared/config.py` defaults against the new L4 rule) and issue:53c6c4413943e22db0b8 (scaffolder's cached GitHub client on concurrent entry). M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
+So the current actionable set is H1 alone: the dispatcher tick with ten ordered steps. Sprint:1456 also closed the four follow-up issues sprint:1453 had filed (config defaults now explicit: `DEFAULT_AGENT_TYPE` is required and a GitHub Environment variable, PR #577; the live sweep reads `API_BASE_URL` and reports skipped servers, PR #575) and added a bounded retry to the Claude worker-base installer download (PR #576). Sprint:1454 closed M5 the same day as Phase 1: one card, one PR, a migration with a refuse-if-live guard, a PO archive of the three revoked slot-era rows and a production readback. Sprint:1453 (2026-09-22, cards 1332-1336) closed the audit's Phase 1 in one day; the two follow-ups it filed are issue:11af3167eb3d888181f1 (the sweep's hard-coded `localhost:8000` API address) and issue:e3b4bea6544eac7dfe24 (the inventory skips unmanaged servers), plus issue:6a835ce0d0b4965221a7 (two `shared/config.py` defaults against the new L4 rule) and issue:53c6c4413943e22db0b8 (scaffolder's cached GitHub client on concurrent entry). M9 is complete: both executor CLI private-format boundaries, the lower-level Codex parser behavior and compatibility provenance are explicit and version-bound. The completed work should stay completed; no rewrite is justified.
 
 ---
 
@@ -60,6 +60,12 @@ The most architecture-relevant changes since the previous refresh are:
 - PR #560 pinned the Claude worker image to Claude Code 2.1.278, moved private `.credentials.json` / `claudeAiOauth` field interpretation into `claude_profile_v21278.py`, and added adapter-version and private-format boundary guards.
 - PR #562 moved Codex 0.144.6's remaining serde_json 1.0.149 and JWT compatibility into `codex_profile_v01446.py`, left `host_profile.py` vendor-neutral, and added explicit source/version provenance for the pinned Codex and Claude compatibility contracts.
 - PR #563 extracted terminal-story and gave-up-attempt worker teardown reconciliation from `task_dispatcher_loop` into an independent scheduler-pipeline worker. The two durable scans now also have sibling failure isolation, so one broken reconciliation pass does not suppress the other or the dispatcher tick.
+- PR #572 made the temporary-access sweep's dependency on QA routing a durable, run-specific guard: the sweep cannot escalate or write an incident on a QA run whose story has not consumed its verdict, in either call order, with a contract test for both orders.
+- PR #573 moved `supervise_temporary_access` out of `task_dispatcher_loop` into a third scheduler-pipeline loop (`pipeline.py`: `task_dispatcher`, `worker_reconciliation`, `temporary_access`) with its own failure boundary and cycle log; the other ten steps and their comments are unchanged.
+- PR #574 removed the scaffolder's process-cached `GitHubAppClient` singleton; each scaffold operation enters `async with GitHubAppClient()` once and closes it on error.
+- PR #575 made `scripts/clean_live_tests.py` read the API address from `API_BASE_URL` and made `--inventory` report skipped registered servers, failing distinctly when every server was skipped.
+- PR #576 gave the worker-base-claude installer download a bounded retry and a non-empty check before execution.
+- PR #577 made `DEFAULT_AGENT_TYPE` required in api, langgraph and telegram_bot (and in Compose), sourced from a GitHub Environment variable in `deploy.yml`, and removed the api's unused Telegram token field.
 - PR #564 added an explicit bounded async lifecycle to `Time4VPSClient` and made scheduler server-sync reuse one `httpx.AsyncClient` across inventory/detail reads in a tick, while preserving one-shot behavior for callers that do not opt into the context. The owned pool closes on both success and provider failure.
 - PR #566 added a read-only `--inventory --prefix` mode to `scripts/clean_live_tests.py` (`make test-live-inventory PREFIX=…`), reusing the sweep's collectors and never reaching a clean/delete/fence/recover path, so a retired prefix can be proven empty on production without a destructive run.
 - PR #567 rewrote the ARCHITECTURE.md monitoring section around ledger ownership (L5) and narrowed the AGENTS.md environment-variable rule to what `shared/config.py` does (L4).
@@ -75,7 +81,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 
 | ID | Severity | Status on 2026-09-22 | Current conclusion |
 |---|---|---|---|
-| H1 | High | Partial | Three scheduler services exist and worker teardown reconciliation now has its own worker/failure boundary, but scheduler-pipeline still has one ordered dispatcher/routing/supervision cycle. |
+| H1 | High | Partial; two responsibilities extracted | Worker teardown reconciliation (PR #563) and temporary-access cleanup (PRs #572/#573) run as their own loops on durable facts; the dispatcher tick still has ten ordered routing/supervision steps. |
 | H2 | High | Complete | System config is canonical for PO summarization tuning; retired numeric env plumbing remains absent. |
 | H3 | High | Complete | GitHub expected failures remain status-driven rather than exception-string/empty-result fallbacks. |
 | H4 | High | Complete | Worker services remain under the root Ruff policy. |
@@ -91,7 +97,7 @@ These changes mostly harden correctness. H1 remains because scheduler-pipeline s
 | M10 | Medium | Complete | PRs #554, #555 and #557 decomposed all three audited orchestration hotspots; server-sync, LangGraph deploy consumption and scheduler deploy supervision no longer carry the relevant complexity suppressions. |
 | L1 | Low | Complete | Retired live-test Makefile entrypoints remain removed; only regression comments/guards name them. |
 | L2 | Low | Complete via PRs #566/#570 | Read-only production inventory recorded zero `mega-test` matches; `Contour.legacy` and the prefix are gone. |
-| L3 | Low | Open; three slices done (PRs #564/#568/#569) | Time4VPS sync, the GitHub App client and the embedding client own bounded pools; remaining per-request clients are deliberate one-shot probes or callers that have not yet entered the GitHub lifecycle. |
+| L3 | Low | Effectively closed (PRs #564/#568/#569/#574) | Time4VPS sync, the GitHub App client, the embedding client and the scaffolder own bounded pools; what remains is deliberate one-shot probes. |
 | L4 | Low | Complete via PR #567 | AGENTS.md states the narrowed rule; two `shared/config.py` defaults that now contradict it are tracked as issue:6a835ce0d0b4965221a7. |
 | L5 | Low | Complete via PR #567 | ARCHITECTURE.md attributes token/cost accounting to engineering_attempt_ledger. |
 
@@ -130,13 +136,15 @@ The remaining scheduler-pipeline entrypoint still runs services/scheduler/src/ta
 8. QA/testing supervision;
 9. state-age watchdogs;
 10. stage notices;
-11. temporary-access cleanup.
+11. ~~temporary-access cleanup~~ (moved out by PRs #572/#573, sprint:1456).
 
 PR #563 moved terminal-story and gave-up-attempt worker reconciliation out of this tick. `scheduler-pipeline` now starts a sibling `worker_reconciliation` loop on the same cadence; each of its two durable scans has a contained failure boundary, and the dispatcher no longer waits for Redis worker scans.
 
 The code comments still document ordering as correctness, not just an implementation preference. In particular, owed notifications are swept before routing that can create new notices, QA routing happens before access cleanup, and stage notices run after state-moving supervisors.
 
-The remaining routing/supervision tick stays inside one broad `dispatcher_cycle_error` boundary. Worker teardown reconciliation is no longer inside it.
+The remaining routing/supervision tick stays inside one broad `dispatcher_cycle_error` boundary. Worker teardown reconciliation and temporary-access cleanup are no longer inside it: `pipeline.py` now starts three loops (`task_dispatcher`, `worker_reconciliation`, `temporary_access`), and production logs after the 2026-09-23 deploy show all three cycling independently.
+
+PRs #572/#573 are the template for every further slice: first the ordering edge became a durable guard on the record (the sweep checks, per QA run, that the story has consumed the verdict, in any call order, with a test for both orders), and only then did the call leave the tick.
 
 ### What improved since 2026-09-12
 
@@ -167,7 +175,7 @@ First turn the required ordering into explicit durable facts and tests. A useful
 2. story-state supervision;
 3. owed notification delivery;
 4. QA handoff and verdict routing;
-5. temporary-access cleanup.
+5. ~~temporary-access cleanup~~ (done).
 
 For every edge that currently depends on call order, define the durable precondition that makes it safe to run independently. Then split one responsibility at a time.
 
@@ -539,10 +547,11 @@ Complete. Sprint:1454 (2026-09-22, PR #571) retired the legacy temporary-access 
 
 ## Phase 3 — scheduler boundary decomposition
 
-1. **H1:** PR #563 already extracted durable worker teardown reconciliation. For the next slice, first make the relevant ordering edge durable rather than positional, then separate one remaining scheduler-pipeline responsibility from the shared dispatcher tick.
-2. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
+1. **H1, done so far:** PR #563 (worker teardown reconciliation) and PRs #572/#573 (temporary-access cleanup, sprint:1456) each turned one ordering edge into a durable guard and then moved one responsibility into its own scheduler-pipeline loop.
+2. **H1, next slices, one per sprint:** owed owner-notification delivery (its edge is attempt accounting per tick, which becomes a per-record attempt timestamp), then story-state supervision (state-age watchdog and stage notices, whose edge is "after every state-moving supervisor"), then QA handoff and verdict routing, leaving dispatch / PR lifecycle as the tick's core.
+3. Repeat only where tests prove the new boundary preserves at-least-once/retry/notification behavior.
 
-M9 and M10 are complete. H1 is now the remaining architectural destination, and it should still be approached one responsibility at a time rather than as a scheduler rewrite.
+H1 is the only open finding; it should still be approached one responsibility at a time rather than as a scheduler rewrite.
 
 ---
 
@@ -552,10 +561,10 @@ The repository is healthier than the original audit snapshot. A large amount of 
 
 The remaining debt is concentrated rather than diffuse:
 
-- **coordination concentration:** scheduler-pipeline still has a large ordered routing/supervision cycle, though worker teardown reconciliation is now independent;
+- **coordination concentration:** scheduler-pipeline still has an ordered routing/supervision cycle of ten steps, though worker teardown reconciliation and temporary-access cleanup are now independent loops;
 - **harness concentration:** live-harness remains oversized, but PR #553 removed the production import dependency and pinned that boundary;
 - **compatibility residue:** none left; the temporary-access legacy rows and schema are gone (sprint:1454);
-- **small hygiene debt:** only caller adoption of the GitHub client lifecycle; the legacy sweep prefix and both documentation-policy mismatches are gone (sprint:1453).
+- **small hygiene debt:** none open; the scaffolder adopted the GitHub client lifecycle, the config defaults are explicit and the live sweep reports honestly (sprint:1456).
 
 Executor private-format coupling is no longer an open finding: the pinned Codex and Claude contracts now have explicit versioned adapters, upgrade gates and provenance.
 
