@@ -95,7 +95,7 @@ logger = structlog.get_logger(__name__)
 #: counts its deliveries on Redis' PEL rather than in memory.
 OWNER_NOTIFICATION_MAX_ATTEMPTS = 3
 
-#: Runs the recovery sweep takes per tick. The selection drains by itself: every
+#: Runs the recovery sweep takes per cycle. The selection drains by itself: every
 #: visit either delivers a record, spends one of its bounded attempts, or is
 #: refused because the last attempt is less than an interval old, and such a
 #: record is attempted again once the interval has passed.
@@ -774,12 +774,14 @@ async def supervise_owed_owner_notifications(
     really there is settled per record, against the story, inside
     ``deliver_owed_notification``.
 
-    Where it runs relative to routing does not matter. Each visit asks the API
-    for the attempt, and the API grants one per record per
-    ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL``, stamped on the record: a record
-    routing has just attempted is refused here as ``not_due``, and a record this
-    sweep has just attempted is refused to routing, in either order and when
-    both ask at once.
+    It runs on its own scheduler loop, apart from the dispatcher tick whose
+    routing makes the in-tick attempts, and neither the loop's cadence nor its
+    timing against routing spaces the attempts. The spacing is the record's
+    ``last_attempt_at`` claim at the API: each visit asks for the attempt, and
+    the API grants one per record per ``OWNER_NOTIFICATION_ATTEMPT_INTERVAL``,
+    stamped on the record under its row lock. A record routing has just
+    attempted is refused here as ``not_due``, and a record this sweep has just
+    attempted is refused to routing, in either order and when both ask at once.
     """
     counts = _empty_counts()
     runs = await api_client.list_runs_owing_owner_notification(limit=OWNER_NOTIFICATION_PAGE)

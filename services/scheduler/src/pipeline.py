@@ -8,6 +8,7 @@ from shared.log_config import setup_logging
 
 from . import runtime
 from .startup import PIPELINE_REQUIRED_KEYS
+from .tasks.owner_notification_loop import owner_notification_loop
 from .tasks.task_dispatcher import task_dispatcher_loop
 from .tasks.temporary_access_loop import temporary_access_loop
 from .tasks.worker_reconciliation import worker_reconciliation_loop
@@ -24,6 +25,7 @@ async def main() -> None:
             ("task_dispatcher", task_dispatcher_loop),
             ("worker_reconciliation", worker_reconciliation_loop),
             ("temporary_access", temporary_access_loop),
+            ("owner_notifications", owner_notification_loop),
         ],
         service_name="scheduler-pipeline",
     )

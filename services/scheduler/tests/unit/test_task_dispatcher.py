@@ -318,13 +318,6 @@ async def test_failed_task_poison_does_not_skip_later_dispatcher_supervisors(mon
         "supervise_waiting_resource_tasks": {"resumed": 0, "expired": 0},
         "supervise_deploying_stories": {},
         "supervise_waiting_user_secret_stories": {},
-        "supervise_owed_owner_notifications": {
-            "delivered": 0,
-            "retrying": 0,
-            "exhausted": 0,
-            "unaddressable": 0,
-            "voided": 0,
-        },
         "supervise_testing_stories": {},
     }
     for name, result in checks.items():
@@ -380,16 +373,6 @@ async def test_dispatcher_loop_continues_after_tick_failure_without_sweeping(mon
     ):
         monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
     for name, counts in (
-        (
-            "supervise_owed_owner_notifications",
-            {
-                "delivered": 0,
-                "retrying": 0,
-                "exhausted": 0,
-                "unaddressable": 0,
-                "voided": 0,
-            },
-        ),
         ("supervise_state_age_bounds", {"parked": 0, "failed": 0}),
         ("supervise_stage_notices", {"entered": 0, "still_there": 0, "unaddressable": 0}),
     ):
@@ -485,6 +468,202 @@ async def test_temporary_access_loop_logs_zero_count_cycle(monkeypatch):
         await temporary_access_loop.temporary_access_loop()
 
     log.info.assert_any_call("temporary_access_cycle", **counts)
+
+
+def _mock_dispatcher_tick(monkeypatch, task_dispatcher, *, scaffold):
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+    for name in ("dispatch_todo_tasks", "complete_stories", "poll_merged_prs"):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value=0))
+    monkeypatch.setattr(task_dispatcher, "poll_ci_failures", AsyncMock())
+    for name in (
+        "supervise_stuck_stories",
+        "supervise_stuck_tasks",
+        "supervise_failed_tasks",
+        "supervise_waiting_resource_tasks",
+        "supervise_deploying_stories",
+        "supervise_waiting_user_secret_stories",
+        "supervise_testing_stories",
+    ):
+        monkeypatch.setattr(task_dispatcher, name, AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        task_dispatcher,
+        "supervise_state_age_bounds",
+        AsyncMock(return_value={"parked": 0, "failed": 0}),
+    )
+    monkeypatch.setattr(
+        task_dispatcher,
+        "supervise_stage_notices",
+        AsyncMock(return_value={"entered": 0, "still_there": 0, "unaddressable": 0}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_tick_does_not_sweep_owed_owner_notifications(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notifications, task_dispatcher
+
+    api = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", log)
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(return_value=0))
+    sweep = AsyncMock(side_effect=RuntimeError("the tick must not sweep"))
+    monkeypatch.setattr(owner_notifications, "supervise_owed_owner_notifications", sweep)
+    monkeypatch.setattr(
+        task_dispatcher.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await task_dispatcher.task_dispatcher_loop()
+
+    assert not hasattr(task_dispatcher, "supervise_owed_owner_notifications")
+    sweep.assert_not_awaited()
+    api.list_runs_owing_owner_notification.assert_not_awaited()
+    api.list_stories_owing_owner_notification.assert_not_awaited()
+    log.exception.assert_not_called()
+    assert any(call.args[0] == "dispatcher_cycle" for call in log.info.call_args_list)
+
+
+_OWNER_NOTIFICATION_COUNTS = {
+    "delivered": 1,
+    "retrying": 2,
+    "exhausted": 3,
+    "unaddressable": 4,
+    "voided": 5,
+    "skipped": 6,
+    "not_due": 7,
+    "superseded": 8,
+}
+
+
+@pytest.mark.asyncio
+async def test_owner_notification_loop_continues_after_sweep_failure_and_closes_redis(
+    monkeypatch,
+):
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notification_loop, task_dispatcher
+    from src.tasks.owner_notifications import OwnerNotificationOutcome
+
+    assert set(_OWNER_NOTIFICATION_COUNTS) == {
+        outcome.value for outcome in OwnerNotificationOutcome
+    }
+    api = AsyncMock()
+    redis = AsyncMock()
+    sweep = AsyncMock(side_effect=[RuntimeError("sweep failed"), _OWNER_NOTIFICATION_COUNTS])
+    log = MagicMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    monkeypatch.setattr(owner_notification_loop, "RedisStreamClient", lambda: redis)
+    monkeypatch.setattr(owner_notification_loop, "supervise_owed_owner_notifications", sweep)
+    monkeypatch.setattr(owner_notification_loop, "_owner_notification_interval", lambda: 0)
+    monkeypatch.setattr(owner_notification_loop, "logger", log)
+    monkeypatch.setattr(
+        owner_notification_loop.asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, asyncio.CancelledError]),
+    )
+    # The dispatcher tick is a separate loop: nothing here reaches it.
+    scaffold = AsyncMock(return_value=0)
+    monkeypatch.setattr(task_dispatcher, "trigger_scaffolds", scaffold)
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner_notification_loop.owner_notification_loop()
+
+    assert sweep.await_count == 2
+    sweep.assert_awaited_with(api, redis)
+    log.exception.assert_called_once_with("owner_notifications_cycle_error")
+    log.info.assert_any_call("owner_notifications_cycle", **_OWNER_NOTIFICATION_COUNTS)
+    log.info.assert_any_call("owner_notifications_started", interval=0)
+    log.info.assert_any_call("owner_notifications_stopped")
+    redis.connect.assert_awaited_once()
+    redis.close.assert_awaited_once()
+    scaffold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notification_sweep_failure_and_dispatcher_tick_failure_isolate_each_other(
+    monkeypatch,
+):
+    """Both loops run side by side; each one's failures stay inside its own cycle."""
+    import asyncio
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("API_BASE_URL", "http://127.0.0.1:9")
+    from src.clients import api as api_module
+    from src.tasks import owner_notification_loop, task_dispatcher
+
+    api = AsyncMock()
+    monkeypatch.setattr(api_module, "api_client", api)
+    dispatcher_redis = AsyncMock()
+    notification_redis = AsyncMock()
+    dispatcher_log = MagicMock()
+    notification_log = MagicMock()
+    monkeypatch.setattr(task_dispatcher, "RedisStreamClient", lambda: dispatcher_redis)
+    monkeypatch.setattr(task_dispatcher, "_dispatch_interval", lambda: 0)
+    monkeypatch.setattr(task_dispatcher, "logger", dispatcher_log)
+    monkeypatch.setattr(owner_notification_loop, "RedisStreamClient", lambda: notification_redis)
+    monkeypatch.setattr(owner_notification_loop, "_owner_notification_interval", lambda: 0)
+    monkeypatch.setattr(owner_notification_loop, "logger", notification_log)
+
+    # Every other dispatcher tick fails, and so does every other sweep.
+    ticks = sweeps = 0
+    enough = asyncio.Event()
+
+    async def scaffold(*_args):
+        nonlocal ticks
+        ticks += 1
+        if ticks % 2:
+            raise RuntimeError("tick failed")
+        return 0
+
+    async def sweep(*_args):
+        nonlocal sweeps
+        sweeps += 1
+        if sweeps >= 6 and ticks >= 6:
+            enough.set()
+        if sweeps % 2:
+            raise RuntimeError("sweep failed")
+        return _OWNER_NOTIFICATION_COUNTS
+
+    _mock_dispatcher_tick(monkeypatch, task_dispatcher, scaffold=AsyncMock(side_effect=scaffold))
+    monkeypatch.setattr(
+        owner_notification_loop, "supervise_owed_owner_notifications", AsyncMock(side_effect=sweep)
+    )
+
+    loops = [
+        asyncio.create_task(task_dispatcher.task_dispatcher_loop()),
+        asyncio.create_task(owner_notification_loop.owner_notification_loop()),
+    ]
+    try:
+        await asyncio.wait_for(enough.wait(), timeout=5)
+        assert not any(loop.done() for loop in loops)
+    finally:
+        for loop in loops:
+            loop.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
+
+    tick_errors = dispatcher_log.exception.call_args_list
+    assert len(tick_errors) >= 3
+    assert all(c.args == ("dispatcher_cycle_error",) for c in tick_errors)
+    assert any(c.args[0] == "dispatcher_cycle" for c in dispatcher_log.info.call_args_list)
+    sweep_errors = notification_log.exception.call_args_list
+    assert len(sweep_errors) >= 3
+    assert all(c.args == ("owner_notifications_cycle_error",) for c in sweep_errors)
+    notification_log.info.assert_any_call("owner_notifications_cycle", **_OWNER_NOTIFICATION_COUNTS)
+    dispatcher_redis.close.assert_awaited_once()
+    notification_redis.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

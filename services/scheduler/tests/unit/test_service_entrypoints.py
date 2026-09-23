@@ -212,6 +212,7 @@ async def test_pipeline_starts_without_loki(monkeypatch):
         ("task_dispatcher", pipeline.task_dispatcher_loop),
         ("worker_reconciliation", pipeline.worker_reconciliation_loop),
         ("temporary_access", pipeline.temporary_access_loop),
+        ("owner_notifications", pipeline.owner_notification_loop),
     ]
 
 
@@ -242,6 +243,7 @@ async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
         "task_dispatcher",
         "worker_reconciliation",
         "temporary_access",
+        "owner_notifications",
         "server_sync",
         "health_checker",
         "provisioner_results",
