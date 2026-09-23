@@ -29,10 +29,13 @@ concurrency:
   cancel-in-progress: true
 
 # Every job carries a timeout-minutes, so nothing waits for GitHub's 360-minute default;
-# the CI contract refuses a job without one. The values come from the green runs of
-# 2026-08-11..2026-09-23 with margin (docs/TESTING.md, "Time bounds"). A docker step
-# carries its own, shorter bound through scripts/ci-infra.sh, so a step that hangs is
-# stopped inside the job and the always() expose step still names it.
+# the CI contract refuses a job without one. A docker step carries its own bound through
+# scripts/ci-infra.sh, and every step that can run before it carries one too, so the worst
+# case of all of them (each retry attempt at its bound, backoff, kill-after, plus a margin)
+# fits inside the job: a step that hangs is stopped and named inside the job, and the
+# always() expose step still runs. The CI contract sums that worst case per job and matrix
+# leg; the step bounds come from the green runs of 2026-08-11..2026-09-23 with margin
+# (docs/TESTING.md, "Time bounds").
 jobs:
   detect-changes:
     name: Detect Changed Services
@@ -58,6 +61,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Check for changes
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
@@ -104,38 +108,48 @@ jobs:
   fast-checks:
     name: Fast Checks (Ruff & Unit Tests)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     needs: detect-changes
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        timeout-minutes: 2
         with:
           python-version: '3.12'
 
       - name: Install uv
-        run: bash scripts/ci-infra.sh retry --step install-uv --cause uv-download -- pip install uv
+        run: >-
+          bash scripts/ci-infra.sh retry --step install-uv --cause uv-download --attempt-timeout 60s
+          -- pip install uv
 
       - name: Install dependencies
+        timeout-minutes: 5
         run: uv sync --locked
 
       - name: Check formatting with Ruff
+        timeout-minutes: 1
         run: uv run ruff format --check .
 
       - name: Lint with Ruff
+        timeout-minutes: 1
         run: uv run ruff check .
 
       - name: Run unit tests
+        timeout-minutes: 10
         run: make test-unit
 
       - name: Check nothing built is behind the tree on shared
+        timeout-minutes: 1
         run: make check-shared-freshness
 
       - name: Run offline live regressions
+        timeout-minutes: 3
         run: make test-live
 
       - name: Pull Redis image with retry
@@ -144,16 +158,7 @@ jobs:
           -- docker pull redis:7.4.10-alpine
 
       - name: Run Redis capability cleanup regression
-        run: |
-          docker run --detach --rm --name redis-cleanup-contract redis:7.4.10-alpine
-          trap 'docker rm --force redis-cleanup-contract' EXIT
-          for _ in {1..10}; do
-            docker exec redis-cleanup-contract redis-cli --raw ping | grep -qx PONG && break
-            sleep 1
-          done
-          docker exec redis-cleanup-contract redis-cli --raw ping | grep -qx PONG
-          LIVE_REDIS_CONTAINER=redis-cleanup-contract \
-            uv run pytest -q tests/live/test_capability_cleanup_redis.py
+        run: bash scripts/ci-infra.sh bound --step redis-cleanup --timeout 3m -- bash scripts/ci-redis-cleanup-regression.sh
 
       - name: Expose CI infrastructure failure
         id: infra
@@ -163,23 +168,28 @@ jobs:
   ci-contract:
     name: CI Contract
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     needs: detect-changes
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        timeout-minutes: 2
         with:
           python-version: '3.12'
 
       - name: Install uv
-        run: bash scripts/ci-infra.sh retry --step install-uv --cause uv-download -- pip install uv
+        run: >-
+          bash scripts/ci-infra.sh retry --step install-uv --cause uv-download --attempt-timeout 60s
+          -- pip install uv
 
       - name: Install dependencies
+        timeout-minutes: 5
         run: uv sync --locked
 
       - name: Validate CI gate contract
@@ -193,7 +203,7 @@ jobs:
   service-image-imports:
     name: Service Image Entrypoint Imports
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     needs: [fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     outputs:
@@ -201,13 +211,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        timeout-minutes: 2
         with:
           python-version: '3.12'
 
       - name: Install Compose parser
+        timeout-minutes: 2
         run: python -m pip install pyyaml==6.0.3
 
       - name: Set up Docker Buildx with retry
@@ -229,7 +242,7 @@ jobs:
   test-service:
     name: Service Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     needs: [detect-changes, fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     env:
@@ -328,6 +341,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Docker Buildx with retry
         id: buildx
@@ -353,6 +367,7 @@ jobs:
           BUILDX_CACHE_FROM: type=gha,scope=service-${{ matrix.service }}
 
       - name: Assert required service test ran
+        timeout-minutes: 1
         if: always() && matrix.should_run == 'true'
         run: |
           if [ "${{ steps.buildx.outcome }}" != "success" ]; then
@@ -383,7 +398,7 @@ jobs:
   test-integration:
     name: Integration Tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     needs: [detect-changes, fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     env:
@@ -468,6 +483,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
         if: matrix.should_run == 'true'
 
       - name: Set up Docker Buildx with retry
@@ -481,6 +497,7 @@ jobs:
       - name: Set up uv for template smoke
         id: setup-uv
         if: matrix.should_run == 'true' && matrix.suite == 'template'
+        timeout-minutes: 3
         uses: ./.github/actions/setup-uv-with-retry
 
       - name: Pull test images with retry
@@ -499,6 +516,7 @@ jobs:
           BUILDX_CACHE_FROM: type=gha,scope=integration-${{ matrix.suite }}
 
       - name: Assert required integration test ran
+        timeout-minutes: 1
         if: always() && matrix.should_run == 'true'
         run: |
           if [ "${{ steps.buildx.outcome }}" != "success" ]; then
@@ -526,6 +544,7 @@ jobs:
         run: echo "No relevant changes for ${{ matrix.suite }} integration tests"
 
       - name: Cleanup test containers
+        timeout-minutes: 2
         if: always() && matrix.should_run == 'true'
         run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f tests/compose/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
 
@@ -557,9 +576,11 @@ jobs:
       - name: Checkout code
         if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up uv with retry
         if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
+        timeout-minutes: 3
         uses: ./.github/actions/setup-uv-with-retry
 
       - name: Run baseline compatibility smoke
@@ -581,6 +602,7 @@ jobs:
         run: echo "No candidate ref was requested; production pin is unchanged"
 
       - name: Upload compatibility result
+        timeout-minutes: 2
         if: always() && (matrix.candidate == false || inputs.service_template_candidate_ref != '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -609,6 +631,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -633,7 +656,7 @@ jobs:
   test-backend-dind-integration:
     name: Backend Docker-in-Docker Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     needs: [fast-checks, ci-contract]
     if: >-
       always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -644,6 +667,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       - name: Set up Docker Buildx with retry
         id: buildx
@@ -670,6 +694,7 @@ jobs:
           BUILDX_CACHE_FROM: type=gha,scope=integration-backend-dind
 
       - name: Assert backend Docker-in-Docker integration test ran
+        timeout-minutes: 1
         if: always()
         run: |
           if [ "${{ steps.buildx.outcome }}" != "success" ]; then
@@ -688,6 +713,7 @@ jobs:
           fi
 
       - name: Cleanup test containers
+        timeout-minutes: 2
         if: always()
         run: docker compose -p codegen_orchestrator_test_backend-dind -f tests/compose/integration/backend-dind.yml down -v --remove-orphans 2>/dev/null || true
 
@@ -787,12 +813,18 @@ jobs:
     if: >-
       always() && needs.merge-gate.result == 'success'
       && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # The gate runs before this job, so it cannot repeat this marker: a publish that hit
+    # its bound or an exhausted installer fetch is named on this job's own annotations
+    # and summary, and in this output.
+    outputs:
+      infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
 
       # Deliberately no buildx builder: the chain is built with the runner's own
       # docker daemon, so the built images can be inspected and pushed by tag.
@@ -823,3 +855,8 @@ jobs:
             cat "${RUNNER_TEMP}/worker-images.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker

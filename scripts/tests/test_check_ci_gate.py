@@ -474,6 +474,16 @@ def test_a_matrix_leg_without_its_marker_output_fails_the_gate(gate):
         gate.assert_infra_marker_exposed(jobs)
 
 
+def test_the_publish_job_exposes_its_own_marker(gate):
+    """Downstream of the gate, the publish job names its marker on itself."""
+    jobs = gate.load_workflow()["jobs"]
+    publish = jobs["publish-worker-images"]
+    publish["steps"].remove(gate.step_by_name(publish, "Expose CI infrastructure failure"))
+
+    with pytest.raises(SystemExit, match="missing step Expose CI infrastructure failure"):
+        gate.assert_infra_marker_exposed(jobs)
+
+
 def test_a_gate_that_does_not_repeat_markers_fails(gate):
     jobs = gate.load_workflow()["jobs"]
     gate.step_by_name(jobs["merge-gate"], "Check required jobs").pop("env")
@@ -515,10 +525,11 @@ def test_a_job_timeout_above_the_ceiling_fails_the_gate(gate):
 def test_a_step_bound_not_shorter_than_its_job_fails_the_gate(gate):
     """The job limit would stop the step before the step could name the timeout."""
     jobs = gate.load_workflow()["jobs"]
+    minutes = jobs["test-integration"]["timeout-minutes"]
     step = gate.step_by_id(jobs["test-integration"], "integration-tests")
-    step["run"] = step["run"].replace("--timeout 10m", "--timeout 15m")
+    step["run"] = step["run"].replace("--timeout 10m", f"--timeout {minutes}m")
 
-    with pytest.raises(SystemExit, match="not shorter than the job's 15 minutes"):
+    with pytest.raises(SystemExit, match=f"not shorter than the job's {minutes} minutes"):
         gate.assert_job_timeouts(jobs)
 
 
@@ -556,3 +567,101 @@ def test_a_buildx_setup_without_the_pull_hang_simulation_fails_the_gate(gate):
 
     with pytest.raises(SystemExit, match="simulate_first_attempt_pull_hang"):
         gate.assert_service_tests(jobs)
+
+
+# --- the worst case of a job fits inside its limit ----------------------------
+
+
+def _budget_minutes(gate, jobs, job_name, **leg_values):
+    job = jobs[job_name]
+    (leg,) = [
+        leg
+        for leg in gate.matrix_legs(job)
+        if all(leg.get(key) == value for key, value in leg_values.items())
+    ]
+    return gate.job_budget_seconds(job_name, job, leg) / 60
+
+
+def test_a_bounded_retry_costs_every_attempt_at_its_bound_plus_kill_after_and_backoff(gate):
+    # 3 x (120 s + 30 s kill-after) + 10 s + 20 s of backoff.
+    assert gate.retry_worst_seconds("120s") == 480
+    assert gate.retry_worst_seconds("90s") == 390
+
+
+def test_the_budget_sums_every_step_up_to_the_bound_and_the_always_steps_after(gate):
+    """test-integration/backend: checkout 2, Buildx 8, two images at 6.5, the tests'
+    10 min plus kill-after, the always() assert 1 and cleanup 2, the 2-minute margin."""
+    jobs = gate.load_workflow()["jobs"]
+
+    assert _budget_minutes(gate, jobs, "test-integration", suite="backend") == 38.5
+    # The template leg pulls nothing but sets up uv; its uv step is skipped elsewhere.
+    assert _budget_minutes(gate, jobs, "test-integration", suite="template") == 28.5
+
+
+def test_a_job_whose_worst_case_retries_and_test_bound_exceed_its_limit_fails(gate):
+    """A job limit only above each step bound still stops the job before the bound can
+    name a hang when earlier retries used their bounds: the round-1 limit of 15."""
+    jobs = gate.load_workflow()["jobs"]
+    jobs["test-integration"]["timeout-minutes"] = 15
+
+    with pytest.raises(
+        SystemExit, match="test-integration suite=backend can take 38.5 minutes .* 15"
+    ):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_the_leg_that_pulls_the_most_images_decides(gate):
+    jobs = gate.load_workflow()["jobs"]
+    assert _budget_minutes(gate, jobs, "test-service", service="scheduler") == 48
+    jobs["test-service"]["timeout-minutes"] = 45
+
+    with pytest.raises(SystemExit, match="test-service service=scheduler can take 48 minutes"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_a_longer_retry_attempt_bound_is_counted_three_times(gate):
+    jobs = gate.load_workflow()["jobs"]
+    pull = gate.step_by_name(jobs["fast-checks"], "Pull Redis image with retry")
+    pull["run"] = pull["run"].replace("--attempt-timeout 90s", "--attempt-timeout 300s")
+
+    with pytest.raises(SystemExit, match="fast-checks can take 52.5 minutes"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_an_unbounded_step_before_a_bounded_one_fails_the_gate(gate):
+    """Its worst case is unknown, so no sum can show the bound fires inside the job."""
+    jobs = gate.load_workflow()["jobs"]
+    del gate.step_by_name(jobs["fast-checks"], "Run unit tests")["timeout-minutes"]
+
+    with pytest.raises(SystemExit, match="fast-checks step Run unit tests has no bound"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_an_unbounded_always_step_after_the_bound_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    del gate.step_by_name(jobs["test-integration"], "Cleanup test containers")["timeout-minutes"]
+
+    with pytest.raises(SystemExit, match="step Cleanup test containers has no bound"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_a_step_the_check_cannot_rule_out_counts_as_running(gate):
+    """An `if` beyond a plain matrix comparison errs long: the step is counted."""
+    jobs = gate.load_workflow()["jobs"]
+    job = jobs["template-compatibility"]
+    baseline = _budget_minutes(gate, jobs, "template-compatibility", entry="baseline")
+    candidate = gate.step_by_name(job, "Run candidate compatibility smoke")
+    candidate["if"] = "matrix.candidate == true || github.event_name == 'workflow_dispatch'"
+
+    assert _budget_minutes(gate, jobs, "template-compatibility", entry="baseline") == (
+        baseline + 15.5
+    )
+
+
+def test_the_redis_regression_outside_its_bound_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    step = gate.step_by_name(jobs["fast-checks"], "Run Redis capability cleanup regression")
+    step["run"] = gate.bounded_command(step)
+
+    with pytest.raises(SystemExit, match="step Run Redis capability cleanup regression must run"):
+        gate.assert_job_timeouts(jobs)

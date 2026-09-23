@@ -249,6 +249,32 @@ def test_bound_leaves_a_command_that_finished_in_time_unmarked(runner, body, sta
     assert runner.markers() == []
 
 
+@pytest.mark.parametrize("status", [124, 137])
+def test_bound_does_not_take_a_command_own_timeout_status_for_its_bound(runner, status):
+    """124 and 137 are what timeout exits with, but a command can exit so itself: only
+    the bound's own timer names a step-timeout, and the command's status is kept."""
+    runner.fake("quick", f"exit {status}")
+
+    result = runner.helper("bound", "--step", "service-tests", "--timeout", "30s", "--", "quick")
+
+    assert result.returncode == status
+    assert runner.markers() == []
+    assert "ran past its bound" not in result.stdout
+
+
+def test_retry_counts_a_command_own_status_124_as_a_failure_not_a_timeout(runner):
+    runner.fake("quick", "exit 124")
+
+    result = runner.helper(
+        "retry", "--step", "dl", "--cause", "registry", "--attempt-timeout", "30s", "--", "quick"
+    )
+
+    assert result.returncode == 124
+    assert "attempt 1 of 3 failed with status 124" in result.stdout
+    assert "timed out" not in result.stdout
+    _assert_one_marker(result, runner, "CI-INFRA-FAILURE: job=fast-checks step=dl cause=registry")
+
+
 @pytest.mark.parametrize("duration", ["0", "10x", "1.5m", "-1"])
 def test_a_duration_timeout_cannot_read_is_refused(runner, duration):
     runner.fake("quick", "exit 0")
@@ -512,10 +538,14 @@ esac""",
     )
 
 
-def test_buildx_bootstraps_one_builder_and_names_it(runner):
+# A push or pull_request run has no workflow_dispatch inputs: ci.yml's
+# ${{ inputs.simulate_* }} is empty there, and job 107167875626 of run 35856811121 lost
+# its first attempt to that before the empty value meant "not requested".
+@pytest.mark.parametrize("simulation", ["", "false"])
+def test_buildx_bootstraps_one_builder_and_names_it(runner, simulation):
     _fake_buildx(runner, bootstrap="exit 0")
 
-    result = _buildx_setup(runner)
+    result = _buildx_setup(runner, registry_failure=simulation, pull_hang=simulation)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert runner.call_lines("docker buildx") == [
@@ -525,7 +555,18 @@ def test_buildx_bootstraps_one_builder_and_names_it(runner):
         "docker buildx inspect --bootstrap ci-builder-1",
     ]
     assert runner.github_env.read_text() == "BUILDX_BUILDER=ci-builder-1\n"
+    assert "retrying" not in result.stdout
     assert runner.markers() == []
+
+
+def test_a_simulation_value_that_is_not_a_boolean_fails_every_attempt(runner):
+    _fake_buildx(runner, bootstrap="exit 0")
+
+    result = _buildx_setup(runner, pull_hang="yes")
+
+    assert result.returncode == 2
+    assert result.stderr.count("SIMULATE_PULL_HANG is 'yes'") == 3
+    assert runner.call_lines("docker buildx") == []
 
 
 def test_a_first_buildx_attempt_whose_pull_hangs_is_bounded_and_the_next_proceeds(runner):
@@ -608,6 +649,80 @@ def test_a_docker_step_that_hangs_is_stopped_inside_the_job_and_named(
     _assert_one_marker(
         result, runner, f"CI-INFRA-FAILURE: job={leg or job_name} step={step_id} cause=step-timeout"
     )
+
+
+def _fake_redis_docker(runner, *, run):
+    runner.fake(
+        "docker",
+        f"""case "$1" in
+  run) {run} ;;
+  exec) echo PONG ;;
+  rm) exit 0 ;;
+  *) exit 99 ;;
+esac""",
+    )
+
+
+def test_the_redis_regression_runs_its_container_test_and_cleanup_under_its_bound(runner):
+    _fake_redis_docker(runner, run="exit 0")
+    runner.fake("uv", 'echo "LIVE_REDIS_CONTAINER=$LIVE_REDIS_CONTAINER" >> "$FAKE_CALLS"')
+    run = _step(_jobs()["fast-checks"], name="Run Redis capability cleanup regression")["run"]
+    assert len(STEP_BOUND.findall(run)) == 1
+
+    result = runner.run(run, GITHUB_JOB="fast-checks")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert runner.calls.read_text().splitlines() == [
+        "docker run --detach --rm --name redis-cleanup-contract redis:7.4.10-alpine",
+        "docker exec redis-cleanup-contract redis-cli --raw ping",
+        "docker exec redis-cleanup-contract redis-cli --raw ping",
+        "uv run pytest -q tests/live/test_capability_cleanup_redis.py",
+        "LIVE_REDIS_CONTAINER=redis-cleanup-contract",
+        "docker rm --force redis-cleanup-contract",
+    ]
+    assert runner.markers() == []
+
+
+def test_a_redis_run_that_hangs_is_stopped_inside_fast_checks_and_named(runner):
+    _fake_redis_docker(runner, run="exec sleep 60")
+    run = _step(_jobs()["fast-checks"], name="Run Redis capability cleanup regression")["run"]
+
+    result = runner.run(STEP_BOUND.sub("--timeout 1s --", run), GITHUB_JOB="fast-checks")
+
+    assert result.returncode == 124
+    _assert_one_marker(
+        result, runner, "CI-INFRA-FAILURE: job=fast-checks step=redis-cleanup cause=step-timeout"
+    )
+
+
+def test_a_hung_publish_names_itself_on_its_own_job(runner):
+    """publish-worker-images runs after the gate: its own expose step carries the marker."""
+    runner.fake("publish", "exec sleep 60")
+    job = _jobs()["publish-worker-images"]
+    run = _step(job, name="Build and publish the worker chain")["run"]
+    publish = "bash infra/scripts/publish-worker-images.sh"
+    assert run.count(publish) == 1
+
+    result = runner.run(
+        STEP_BOUND.sub("--timeout 1s --", run).replace(publish, "publish"),
+        GITHUB_JOB="publish-worker-images",
+    )
+
+    assert result.returncode == 124
+    _assert_one_marker(
+        result,
+        runner,
+        "CI-INFRA-FAILURE: job=publish-worker-images step=publish cause=step-timeout",
+    )
+    expose = _step(job, name="Expose CI infrastructure failure")
+    assert expose is job["steps"][-1] and expose["if"].startswith("always()")
+    assert runner.run(expose["run"], GITHUB_JOB="publish-worker-images").returncode == 0
+    assert runner.outputs() == {
+        "infra-marker": (
+            "CI-INFRA-FAILURE: job=publish-worker-images step=publish cause=step-timeout\n"
+        )
+    }
+    assert job["outputs"]["infra-marker"] == "${{ steps.infra.outputs['infra-marker'] }}"
 
 
 def test_a_hung_step_travels_through_the_gate_and_the_gate_stays_red(runner):

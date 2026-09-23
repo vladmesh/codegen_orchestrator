@@ -115,19 +115,24 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 
 | Job | Step | Cause | What was retried |
 |-----|------|-------|------------------|
-| `fast-checks`, `ci-contract` | `install-uv` | `uv-download` | `pip install uv`, 3 attempts, 10 s then 20 s apart |
+| `fast-checks`, `ci-contract` | `install-uv` | `uv-download`, `uv-download-timeout` | `pip install uv`, 3 attempts of at most 60 s each, 10 s then 20 s apart |
 | `fast-checks` | `redis-pull` | `image-pull`, `image-pull-timeout` | `docker pull` of the Redis image the cleanup regression runs, 3 attempts of at most 90 s each |
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
 | `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
 | `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull`, `image-pull-timeout` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts of at most 90 s per image, before the tests start |
 | `test-backend-dind-integration` | `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker |
-| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images` | `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
+| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
 
 A cause ending in `-timeout` means the last attempt did not fail but hung until its bound stopped
-it; a hung attempt is a failed attempt, and the next one starts after it.
+it; a hung attempt is a failed attempt, and the next one starts after it. Only the bound's own timer
+names a timeout: a command that exits 124 or 137 by itself before its bound (the statuses coreutils
+`timeout` uses) is a plain failure with that status.
 
-`publish-worker-images` builds the same image, so it can write the `claude-installer-fetch` marker to
-its own summary; it is downstream of the gate and does not feed it.
+**A job after the gate reports its marker on itself.** `publish-worker-images` runs after the
+`Required CI Gate` (it `needs: merge-gate`), so the gate can never repeat its marker. It writes the
+`step-timeout` marker of its `publish` step, or the `claude-installer-fetch` marker of the worker image
+it builds, into its own annotations and job summary, and its own `always()` expose step hands it to
+the job output `infra-marker`, like every other job. Read a failed release there, not in the gate.
 
 What the marker never does:
 
@@ -144,30 +149,49 @@ What the marker never does:
 ### Time bounds
 
 Every job in `ci.yml` has a `timeout-minutes`, so none of them waits for GitHub's 360-minute
-default, and every step that builds, pulls or runs docker images has a bound of its own that is
-shorter than its job's. The step bound is what names a hang: `ci-infra.sh bound` runs the step under
-coreutils `timeout`, stops it with its whole process group when the bound passes, and writes the
-`step-timeout` marker, so the job's `always()` expose step still runs and the gate repeats the marker.
-A job-level limit is the last resort for everything else; when it fires, the job is a plain failure.
-The CI contract (`scripts/check-ci-gate.py`) refuses a job without `timeout-minutes`, one above
-60 minutes, a listed docker step outside `ci-infra.sh bound`, and a step bound not shorter than its
-job's.
+default, and every step that builds, pulls or runs docker images has a bound of its own. The step
+bound is what names a hang: `ci-infra.sh bound` runs the step under coreutils `timeout`, stops it with
+its whole process group when the bound passes, and writes the `step-timeout` marker; a Buildx
+bootstrap and an image pull are bounded per attempt inside `ci-infra.sh retry`.
 
-The values are the green runs of 2026-08-11..2026-09-23 (202 runs) with margin:
+A step bound shorter than its job is not enough: when earlier steps used their retries, a later
+bound could still start too late to fire before the job limit, and the job limit stops everything,
+the expose step included, without a marker. So the job limit covers the worst case of everything
+that can run before the expose step: every step up to the job's last bounded step, each at its bound
+(a retry at three attempts of its per-attempt bound, each with `timeout`'s 30 s kill-after, plus
+10 s and 20 s of backoff; a bound plus its kill-after; any other step at its own step-level
+`timeout-minutes`), plus the `always()` steps after it, plus a 2-minute margin for set-up, post
+steps and the expose step. The CI contract (`scripts/check-ci-gate.py`) computes that sum per job
+and matrix leg, from the constants in `scripts/ci-infra.sh` and the images each compose file pulls,
+and refuses a job whose sum exceeds its `timeout-minutes`, a step inside the sum without a bound, a
+job without `timeout-minutes` or above 60 minutes, and a listed docker step outside `ci-infra.sh
+bound`. A step whose GitHub `timeout-minutes` fires is a plain failure, with no marker: those bound
+the non-docker steps (checkout, Python and uv setup, the unit tests), whose hang is not the
+registry's.
 
-| Job | Longest measured | Job bound | Docker step bound |
-|-----|------------------|-----------|-------------------|
-| `detect-changes` | 0.1 min | 5 | — |
-| `fast-checks` | 3.5 min | 15 | Redis pull: 3 × 90 s |
-| `ci-contract` | 0.8 min | 10 | — |
-| `service-image-imports` | 6.6 min (import step 6.0) | 20 | Buildx 3 × 120 s; imports 15 min |
-| `test-service/<leg>` | 8.7 min (tests 8.4) | 20 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
-| `test-integration/<leg>` | 4.2 min (tests 3.9) | 15 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
-| `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 30 | smoke 15 min |
-| `web-checks/<app>` | 0.5 min | 10 | — |
-| `test-backend-dind-integration` | 8.5 min (suite 8.1) | 20 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
-| `merge-gate` | 0.6 min | 5 | — |
-| `publish-worker-images` | 4.0 min (publish 3.9) | 20 | publish 15 min |
+The bounds are the green runs of 2026-08-11..2026-09-23 (202 runs; per-step durations from the 40
+runs up to 2026-09-23) with margin. A retry costs 3 × (attempt + 30 s) + 30 s: 8 minutes for a
+Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts), 5 minutes for
+`pip install uv` (60 s attempts).
+
+| Job | Longest measured | Worst case before expose | Job bound | Docker step bounds |
+|-----|------------------|--------------------------|-----------|--------------------|
+| `detect-changes` | 0.1 min | — | 5 | — |
+| `fast-checks` | 3.5 min (unit tests 2.9) | 42 | 45 | Redis pull 3 × 90 s; Redis regression 3 min |
+| `ci-contract` | 0.8 min | 11 | 15 | — |
+| `service-image-imports` | 6.6 min (import step 6.0) | 31.5 | 35 | Buildx 3 × 120 s; imports 15 min |
+| `test-service/<leg>` | 8.7 min (tests 8.4) | 48 (`scheduler`, 3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
+| `test-integration/<leg>` | 4.2 min (tests 3.9) | 38.5 (2 images) | 40 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
+| `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 24.5 | 30 | smoke 15 min |
+| `web-checks/<app>` | 0.5 min | — | 10 | — |
+| `test-backend-dind-integration` | 8.5 min (suite 8.1) | 50 (3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
+| `merge-gate` | 0.6 min | — | 5 | — |
+| `publish-worker-images` | 4.0 min (publish 3.9) | 19.5 | 20 | publish 15 min |
+
+The non-docker steps inside a sum carry step bounds of 1–10 minutes against measured maxima of
+seconds: checkout 2 (measured 6 s), Python setup 2 (1 s), `uv sync` 5 (4 s), the unit tests 10
+(173 s), the offline live regressions 3 (23 s), uv setup 3 (4 s), Ruff and the other local checks 1,
+the always() assert 1, container cleanup and artifact upload 2 (2 s).
 
 A Buildx bootstrap took at most 0.6 minutes and a whole pull step under 0.3 minutes. Buildx is not
 bootstrapped by `docker/setup-buildx-action` any more: a composite action step takes no
@@ -175,7 +199,7 @@ bootstrapped by `docker/setup-buildx-action` any more: a composite action step t
 local, so neither a step bound nor a pre-pull could stop the pull that hung for 23 minutes in run
 33310621862. The `workflow_dispatch` inputs `simulate_first_attempt_registry_failure` and
 `simulate_first_attempt_pull_hang` make the first Buildx attempt fail or hang, to watch the retry and
-the bound on a real runner.
+the bound on a real runner; a push or pull_request run passes them empty, which means not requested.
 
 `stand-e2e.yml` bounds its docker steps too: bring-up 25 minutes (measured 3–14.4 over 30 green
 runs), target registration and provisioning 30 (1.7–6.2; above the provisioning wait's own

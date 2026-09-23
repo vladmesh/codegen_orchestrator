@@ -237,9 +237,13 @@ INFRA_MARKER_JOBS: dict[str, str | None] = {
     "test-integration": "suite",
     "template-compatibility": "entry",
     "test-backend-dind-integration": None,
+    # Downstream of merge-gate: the gate cannot repeat this marker, so it stays on the
+    # job's own annotations, summary and output (docs/TESTING.md).
+    "publish-worker-images": None,
 }
 INSTALL_UV_COMMAND = (
-    "bash scripts/ci-infra.sh retry --step install-uv --cause uv-download -- pip install uv"
+    "bash scripts/ci-infra.sh retry --step install-uv --cause uv-download --attempt-timeout 60s "
+    "-- pip install uv"
 )
 UV_SETUP_STEPS = {
     "test-integration": "Set up uv for template smoke",
@@ -272,23 +276,42 @@ REDIS_PULL_COMMAND = (
 # --- Time bounds ------------------------------------------------------------
 #
 # Every job names its own timeout-minutes; without one GitHub waits 360 minutes, and a
-# docker pull that neither fails nor finishes holds the job that long. The values are
-# the measured durations with margin (docs/TESTING.md, "Time bounds"). No job gets more
+# docker pull that neither fails nor finishes holds the job that long. No job gets more
 # than JOB_TIMEOUT_CEILING_MINUTES: the longest measured job takes under 9 minutes, and
 # raising the ceiling is a decision on the record, not a default.
 #
-# A step that builds, pulls or runs docker images runs under `ci-infra.sh bound`, whose
-# bound is shorter than its job's: the bound stops the step inside the job, so the
-# always() expose step still runs and hands the step-timeout marker to the gate.
+# A step that builds, pulls or runs docker images runs under `ci-infra.sh bound`, and
+# every Buildx bootstrap and image pull under a bounded `ci-infra.sh retry`. For the
+# marker such a step writes when its bound fires to reach the always() expose step, the
+# job limit must not fire first. So, per job and matrix leg, the worst case of every step
+# that can run up to its last bounded step, plus the always() steps after it, plus
+# JOB_BUDGET_MARGIN_SECONDS, must fit in timeout-minutes; a step counted there needs a
+# bound of its own (a step timeout-minutes or a ci-infra.sh bound) or the budget is
+# unknown. The step bounds are the measured durations with margin (docs/TESTING.md,
+# "Time bounds").
 JOB_TIMEOUT_CEILING_MINUTES = 60
+# Set up job, the post steps, the expose step itself, and runner jitter: measured under
+# half a minute together.
+JOB_BUDGET_MARGIN_SECONDS = 120
 CI_INFRA_BOUND = re.compile(
     r"^bash scripts/ci-infra\.sh bound --step (?P<step>[A-Za-z0-9._/-]+) "
     r"--timeout (?P<timeout>\S+) -- (?P<command>.+)$"
 )
+CI_INFRA_BOUNDED_RETRY = re.compile(
+    r"^bash scripts/ci-infra\.sh retry "
+    r"--step [A-Za-z0-9._/-]+ --cause [A-Za-z0-9._/-]+ --attempt-timeout (?P<timeout>\S+) -- "
+)
+CI_INFRA_PULL_IMAGES = re.compile(
+    r"^bash scripts/ci-infra\.sh pull-images --step [A-Za-z0-9._/-]+ (?P<compose>\S+)$"
+)
+BUILDX_RETRY_USES = "./.github/actions/setup-buildx-with-retry"
+MATRIX_EXPRESSION = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}")
+MATRIX_CONDITION = re.compile(r"^\(?\s*matrix\.([A-Za-z0-9_-]+)\s*==\s*'?([^'\s()]+)'?\s*\)?$")
 DURATION = re.compile(r"^(?P<value>[0-9]+)(?P<unit>[smh]?)$")
 DURATION_UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
 # job -> the docker steps it runs under a bound, by step name.
 BOUNDED_DOCKER_STEPS = {
+    "fast-checks": ["Run Redis capability cleanup regression"],
     "service-image-imports": ["Import every service entrypoint from its production image"],
     "test-service": ["Run service tests"],
     "test-integration": ["Run integration tests"],
@@ -299,6 +322,7 @@ BOUNDED_DOCKER_STEPS = {
     "test-backend-dind-integration": ["Run integration tests"],
     "publish-worker-images": ["Build and publish the worker chain"],
 }
+REDIS_CLEANUP_COMMAND = "bash scripts/ci-redis-cleanup-regression.sh"
 
 
 def fail(message: str) -> None:
@@ -1286,8 +1310,155 @@ def bounded_command(step: dict[str, Any]) -> str:
     return match["command"]
 
 
+def ci_infra_constant(name: str) -> str:
+    """A constant scripts/ci-infra.sh sets, with an environment override's default."""
+    match = re.search(
+        rf'^{name}=(?:"\$\{{[A-Z_]+:-(?P<default>[^}}]+)\}}"|(?P<value>\S+))$',
+        CI_INFRA_HELPER.read_text(),
+        re.MULTILINE,
+    )
+    if match is None:
+        fail(f"scripts/ci-infra.sh does not set {name}")
+    return match["default"] or match["value"]
+
+
+def retry_worst_seconds(attempt_timeout: str) -> int:
+    """The longest a bounded ci-infra.sh retry can take: every attempt runs to its bound,
+    timeout waits KILL_AFTER before its KILL, and the backoff runs between attempts."""
+    attempts = int(ci_infra_constant("RETRY_ATTEMPTS"))
+    delay = int(ci_infra_constant("RETRY_DELAY"))
+    kill_after = duration_seconds(ci_infra_constant("KILL_AFTER"))
+    backoff = sum(delay * attempt for attempt in range(1, attempts))
+    return attempts * (duration_seconds(attempt_timeout) + kill_after) + backoff
+
+
+def external_image_count(compose_file: Path) -> int:
+    """How many images ci-infra.sh pull-images pulls for a compose file: the ones a
+    service runs without building, and that no other service of the file builds."""
+    if not compose_file.is_file():
+        fail(f"{repo_path(compose_file)} is missing")
+    compose = yaml.safe_load(compose_file.read_text())
+    services = compose.get("services", {}) if isinstance(compose, dict) else {}
+    built = {service.get("image") for service in services.values() if "build" in service}
+    return len(
+        {
+            service["image"]
+            for service in services.values()
+            if "build" not in service and service.get("image") and service["image"] not in built
+        }
+    )
+
+
+def matrix_legs(job: dict[str, Any]) -> list[dict[str, Any]]:
+    include = job.get("strategy", {}).get("matrix", {}).get("include")
+    if include is None:
+        return [{}]
+    if not isinstance(include, list) or not all(isinstance(leg, dict) for leg in include):
+        fail("job matrix include is not a list of mappings")
+    return include
+
+
+def literal_matrix_value(value: Any) -> str | None:
+    """A matrix value as an `if` compares it, or None when it is itself an expression."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, str)) and "${{" not in str(value):
+        return str(value)
+    return None
+
+
+def runs_in_leg(step: dict[str, Any], leg: dict[str, Any]) -> bool:
+    """False only when the step's `if` requires a matrix value this leg does not have.
+
+    Anything the check cannot decide from the workflow alone counts as running, so the
+    budget errs long, never short.
+    """
+    condition = step.get("if")
+    if not isinstance(condition, str) or "||" in condition:
+        return True
+    for conjunct in condition.split("&&"):
+        match = MATRIX_CONDITION.match(conjunct.strip())
+        if match is None or match[1] not in leg:
+            continue
+        value = literal_matrix_value(leg[match[1]])
+        if value is not None and value != match[2]:
+            return False
+    return True
+
+
+def render_matrix(text: str, leg: dict[str, Any]) -> str:
+    return MATRIX_EXPRESSION.sub(lambda match: str(leg.get(match[1], match[0])), text)
+
+
+def buildx_attempt_timeout() -> str:
+    match = re.search(r"--attempt-timeout (\S+) --", BUILDX_SETUP_COMMAND)
+    if match is None:
+        fail("the Buildx bootstrap must bound every attempt")
+    return match[1]
+
+
+def step_bound(step: dict[str, Any], leg: dict[str, Any]) -> tuple[int | None, bool]:
+    """(the longest the step can take, whether its bound writes a marker).
+
+    The first is None when nothing bounds the step. A GitHub step timeout-minutes bounds
+    any step, but when it fires the step is a plain failure: only a ci-infra.sh bound,
+    a bounded retry, a pull-images and the Buildx action name what hung.
+    """
+    bounds: list[int] = []
+    marks = False
+    minutes = step.get("timeout-minutes")
+    if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0:
+        bounds.append(minutes * 60)
+    run = render_matrix(str(step.get("run", "")), leg)
+    if match := CI_INFRA_BOUND.match(run):
+        bounds.append(
+            duration_seconds(match["timeout"]) + duration_seconds(ci_infra_constant("KILL_AFTER"))
+        )
+        marks = True
+    elif match := CI_INFRA_BOUNDED_RETRY.match(run):
+        bounds.append(retry_worst_seconds(match["timeout"]))
+        marks = True
+    elif match := CI_INFRA_PULL_IMAGES.match(run):
+        images = external_image_count(ROOT / match["compose"])
+        bounds.append(images * retry_worst_seconds(ci_infra_constant("PULL_ATTEMPT_TIMEOUT")))
+        marks = True
+    elif step.get("uses") == BUILDX_RETRY_USES:
+        bounds.append(retry_worst_seconds(buildx_attempt_timeout()))
+        marks = True
+    return (min(bounds) if bounds else None), marks
+
+
+def job_budget_seconds(job_name: str, job: dict[str, Any], leg: dict[str, Any]) -> int | None:
+    """The worst case before this leg's always() expose step, or None without a bounded
+    step: every step up to the last one whose bound marks, and every always() step after
+    it (the steps that are not always() are skipped once a bound has failed the job)."""
+    steps = [
+        step
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+        and step.get("name") != INFRA_EXPOSE_STEP
+        and runs_in_leg(step, leg)
+    ]
+    marking = [index for index, step in enumerate(steps) if step_bound(step, leg)[1]]
+    if not marking:
+        return None
+    counted = steps[: marking[-1] + 1] + [
+        step for step in steps[marking[-1] + 1 :] if str(step.get("if", "")).startswith("always()")
+    ]
+    total = JOB_BUDGET_MARGIN_SECONDS
+    for step in counted:
+        seconds, _ = step_bound(step, leg)
+        if seconds is None:
+            fail(
+                f"{job_name} step {step.get('name')} has no bound, so the worst case of "
+                f"{job_name} is unknown: give it a timeout-minutes"
+            )
+        total += seconds
+    return total
+
+
 def assert_job_timeouts(jobs: dict[str, Any]) -> None:
-    """Every job has a timeout-minutes, and every bound in it is shorter."""
+    """Every job has a timeout-minutes, and the worst case of its bounded steps fits."""
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             fail(f"job {job_name} is not a mapping")
@@ -1314,6 +1485,20 @@ def assert_job_timeouts(jobs: dict[str, Any]) -> None:
                     f"not shorter than the job's {minutes} minutes, so the job limit would "
                     "stop it before it can name the timeout"
                 )
+        for leg in matrix_legs(job):
+            budget = job_budget_seconds(job_name, job, leg)
+            if budget is not None and budget > minutes * 60:
+                literal = {key: literal_matrix_value(value) for key, value in leg.items()}
+                name = job_name + "".join(
+                    f" {key}={value}" for key, value in literal.items() if value is not None
+                )
+                fail(
+                    f"{name} can take {budget / 60:g} minutes before its expose step in the "
+                    f"worst case (every bounded step and retry attempt at its bound, plus a "
+                    f"{JOB_BUDGET_MARGIN_SECONDS // 60}-minute margin), above its "
+                    f"timeout-minutes {minutes}: the job limit would stop it before a bound "
+                    "could name the hang"
+                )
     for job_name, step_names in BOUNDED_DOCKER_STEPS.items():
         job = require_job(jobs, job_name)
         for step_name in step_names:
@@ -1322,10 +1507,11 @@ def assert_job_timeouts(jobs: dict[str, Any]) -> None:
     pull = step_by_name(fast_checks, REDIS_PULL_STEP)
     if pull.get("run") != REDIS_PULL_COMMAND:
         fail("fast-checks must pull its Redis image through a bounded scripts/ci-infra.sh retry")
+    redis = step_by_name(fast_checks, "Run Redis capability cleanup regression")
+    if bounded_command(redis) != REDIS_CLEANUP_COMMAND:
+        fail(f"fast-checks must run the Redis regression as {REDIS_CLEANUP_COMMAND}")
     steps = fast_checks.get("steps", [])
-    if steps.index(pull) > steps.index(
-        step_by_name(fast_checks, "Run Redis capability cleanup regression")
-    ):
+    if steps.index(pull) > steps.index(redis):
         fail("fast-checks must pull its Redis image before it runs it")
 
 

@@ -51,9 +51,9 @@ RETRY_ATTEMPTS=3
 RETRY_DELAY="${CI_INFRA_RETRY_DELAY:-10}"
 # The bound on one image pull attempt. A pull that hangs (an anonymous Docker Hub rate
 # limit neither fails nor finishes) becomes a failed attempt the next one runs after.
-# Measured pull steps take under 20 s; a compose file runs at most three external
-# images, so an exhausted pull step (3 x 90 s plus backoff per image) stays within 15
-# minutes, inside the bound of every job that pulls.
+# Measured pull steps take under 20 s. An exhausted image costs at most 3 x (90 s + the
+# 30 s KILL_AFTER) plus 30 s of backoff; scripts/check-ci-gate.py reads these constants
+# and fits that worst case, for every image a job pulls, into the job's timeout-minutes.
 PULL_ATTEMPT_TIMEOUT="${CI_INFRA_PULL_ATTEMPT_TIMEOUT:-90s}"
 # How long a bounded command gets to exit after TERM before timeout sends KILL.
 KILL_AFTER=30s
@@ -122,17 +122,19 @@ duration_seconds() {
 }
 
 # Run CMD under timeout for at most $1 seconds; its status is the return status, and
-# TIMED_OUT says whether the bound stopped it. timeout exits 124 when TERM stopped the
-# command and 137 when it had to KILL; a 137 before the bound is the command's own.
+# TIMED_OUT says whether the bound stopped it. timeout exits 124 when its TERM stopped
+# the command and 137 when it had to KILL, but a command can exit 124 or 137 on its own
+# too, so a status alone proves nothing: the bound fired only if the command also ran
+# for the whole bound. Whole seconds suffice, since timeout never fires early and the
+# bound is a whole number of seconds.
 bounded() {
     local seconds=$1 status=0 started
     shift
     started=$(date +%s)
     timeout --kill-after="$KILL_AFTER" "${seconds}s" "$@" || status=$?
     TIMED_OUT=false
-    if [ "$status" -eq 124 ]; then
-        TIMED_OUT=true
-    elif [ "$status" -eq 137 ] && [ $(($(date +%s) - started)) -ge "$seconds" ]; then
+    if { [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; } \
+        && [ $(($(date +%s) - started)) -ge "$seconds" ]; then
         TIMED_OUT=true
     fi
     return "$status"

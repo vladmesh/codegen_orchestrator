@@ -7,7 +7,12 @@ description: Bootstrap a Buildx builder in bounded attempts, retrying registry f
 # pull that hangs (an anonymous Docker Hub rate limit neither fails nor finishes) held
 # the first attempt until the job limit and the retry never ran. Under retry's
 # --attempt-timeout a hung attempt is stopped and the next one starts. Measured
-# bootstraps take under 40 s; three attempts with backoff stay under 7 minutes.
+# bootstraps take under 40 s; three attempts at the bound, each with timeout's 30 s
+# kill-after, plus backoff take at most 8 minutes, which scripts/check-ci-gate.py counts
+# into the budget of every job that uses this action.
+#
+# ci.yml passes the workflow_dispatch inputs straight through, and a push or
+# pull_request run passes them empty: bootstrap.sh reads empty as false.
 inputs:
   simulate_first_attempt_registry_failure:
     description: Fail the first Buildx attempt before it reaches Docker Hub, for retry-path validation.
