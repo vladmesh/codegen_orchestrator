@@ -653,17 +653,26 @@ jobs:
   # This suite exercises the worker image chain against a real Docker daemon. It
   # is too expensive for every PR, but a worker release on main cannot bypass it:
   # merge-gate consumes this job in the same DAG before it permits the marker.
+  #
+  # It tests the images that ship: the candidate record of build-worker-images, pulled
+  # into DinD by digest, never a chain of its own. publish-worker-images commits exactly
+  # that record, handed over through the same job output, or refuses.
   test-backend-dind-integration:
     name: Backend Docker-in-Docker Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    needs: [fast-checks, ci-contract]
+    needs: [fast-checks, ci-contract, build-worker-images]
     if: >-
       always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
       && needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+      && needs.build-worker-images.result == 'success'
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
+    # packages: read is for pulling the candidates into DinD.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -680,8 +689,9 @@ jobs:
         id: pull-images
         run: bash scripts/ci-infra.sh pull-images --step pull-images tests/compose/integration/backend-dind.yml
 
-      # The suite builds the worker images inside DinD; watch marks a Claude installer
-      # fetch that failed after its retries (worker-base-claude/Dockerfile) as CI infrastructure.
+      # The suite pulls the candidates of this push into DinD and builds no worker image
+      # (WORKER_BASE_IMAGE_SOURCE=candidates). watch still marks a Claude installer fetch
+      # that failed after its retries, for the local runs that build the chain themselves.
       - name: Run integration tests
         id: integration-tests
         run: >-
@@ -690,6 +700,10 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
+          WORKER_BASE_IMAGE_SOURCE: candidates
+          WORKER_BASE_CANDIDATES: ${{ needs.build-worker-images.outputs.candidates }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-backend-dind
           BUILDX_CACHE_FROM: type=gha,scope=integration-backend-dind
 
@@ -716,6 +730,64 @@ jobs:
         timeout-minutes: 2
         if: always()
         run: docker compose -p codegen_orchestrator_test_backend-dind -f tests/compose/integration/backend-dind.yml down -v --remove-orphans 2>/dev/null || true
+
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker
+
+  # The first half of the worker base image release (infra/scripts/publish-worker-images.sh
+  # candidates), keyed by the worker source hash. A released commit or hash is re-verified
+  # and its digests handed on; only a hash with no release is built, once, and pushed
+  # under this commit's SHA as candidates. It runs beside the suites, before anything is
+  # known to be green, because a candidate is not a release. Its `candidates` output is
+  # the one record both test-backend-dind-integration (which pulls and tests it) and
+  # publish-worker-images (which commits it) read. It runs wherever the DinD suite runs.
+  build-worker-images:
+    name: Build Worker Base Image Candidates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
+    outputs:
+      candidates: ${{ steps.candidates.outputs.candidates }}
+      infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+
+      # Deliberately no buildx builder: the chain is built with the runner's own docker
+      # daemon, so the built images can be inspected and pushed by tag. watch marks a
+      # Claude installer fetch that failed after its retries as CI infrastructure.
+      - name: Build and push the worker image candidates
+        run: >-
+          bash scripts/ci-infra.sh bound --step build-candidates --timeout 15m --
+          bash scripts/ci-infra.sh watch --step build-candidates --
+          bash infra/scripts/publish-worker-images.sh candidates
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GIT_SHA: ${{ github.sha }}
+          CANDIDATE_FILE: ${{ runner.temp }}/worker-candidates.json
+
+      - name: Hand the candidate record on
+        id: candidates
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          echo "candidates=$(base64 -w0 "${RUNNER_TEMP}/worker-candidates.json")" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Worker base image candidates"
+            echo
+            echo '```json'
+            cat "${RUNNER_TEMP}/worker-candidates.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Expose CI infrastructure failure
         id: infra
@@ -834,15 +906,18 @@ jobs:
             exit 1
           fi
 
-  # The publishing half of the worker base image release chain. Every green commit on
-  # main gets its own immutable set of worker images, tagged with that commit's SHA;
-  # the production deploy pulls exactly the tag of the revision it deploys and refuses
-  # anything else (infra/scripts/pull-worker-images.sh). Nothing publishes a mutable
-  # :latest: that is what put stale workers on a green deploy in GitHub #278.
+  # The second half of the worker base image release chain, and the only writer of its
+  # markers (infra/scripts/publish-worker-images.sh release). Every green commit on main
+  # gets its own release marker; the production deploy and the stand read the marker of
+  # the exact revision they run and refuse anything else
+  # (infra/scripts/pull-worker-images.sh). Nothing publishes a mutable :latest: that is
+  # what put stale workers on a green deploy in GitHub #278.
   #
-  # A rerun of this job for an already-published SHA re-verifies and records that
-  # release without pushing; it never rewrites a published tag. A SHA left half
-  # published by a failed push is refused rather than completed — see the script.
+  # It builds nothing and pushes no image. It takes the candidate record DinD tested,
+  # through the same build-worker-images output, and commits exactly those digests: a
+  # fresh source hash gets its content marker and then the commit marker, an already
+  # released hash only the commit marker (the alias), and a release of other digests is
+  # refused. A rerun for an already-released SHA re-verifies it and pushes nothing.
   # `always()` is what makes this job reachable at all, not a way to publish a red
   # commit: the gate's own result is checked right after it. `merge-gate` runs with
   # `if: always()` because the suites above it are conditional, and a job downstream
@@ -854,14 +929,13 @@ jobs:
   publish-worker-images:
     name: Publish Worker Base Images
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: merge-gate
+    timeout-minutes: 15
+    needs: [merge-gate, build-worker-images]
     if: >-
       always() && needs.merge-gate.result == 'success'
       && github.event_name == 'push' && github.ref == 'refs/heads/main'
     # The gate runs before this job, so it cannot repeat this marker: a publish that hit
-    # its bound or an exhausted installer fetch is named on this job's own annotations
-    # and summary, and in this output.
+    # its bound is named on this job's own annotations and summary, and in this output.
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     permissions:
@@ -872,16 +946,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         timeout-minutes: 2
 
-      # Deliberately no buildx builder: the chain is built with the runner's own
-      # docker daemon, so the built images can be inspected and pushed by tag.
-      - name: Build and publish the worker chain
+      - name: Verify the tested candidates and publish the worker release marker
         run: >-
-          bash scripts/ci-infra.sh bound --step publish --timeout 15m --
-          bash scripts/ci-infra.sh watch --step publish -- bash infra/scripts/publish-worker-images.sh
+          bash scripts/ci-infra.sh bound --step publish --timeout 10m --
+          bash infra/scripts/publish-worker-images.sh release
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_OWNER: ${{ github.repository_owner }}
           GIT_SHA: ${{ github.sha }}
+          WORKER_CANDIDATES: ${{ needs.build-worker-images.outputs.candidates }}
           DIGEST_FILE: ${{ runner.temp }}/worker-images.json
 
       - name: Upload published worker image digests

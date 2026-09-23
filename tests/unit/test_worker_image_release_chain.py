@@ -31,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 BACKEND_INTEGRATION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "backend-integration.yml"
+DIND_COMPOSE = REPO_ROOT / "tests" / "compose" / "integration" / "backend-dind.yml"
 SCRIPTS = REPO_ROOT / "infra" / "scripts"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 MARKER_IMAGE = "worker-base-release"
@@ -115,12 +116,18 @@ def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again(
     assert all(step["with"]["if-no-files-found"] == "error" for step in uploads)
 
 
+def _step_running(job: dict, needle: str) -> dict:
+    matches = [step for step in job["steps"] if needle in step.get("run", "")]
+    assert len(matches) == 1, f"expected exactly one step running {needle!r}, got {matches}"
+    return matches[0]
+
+
 def test_ci_publishes_the_whole_chain_for_the_commit_it_builds():
     workflow = yaml.safe_load(CI_WORKFLOW.read_text())
     job = workflow["jobs"]["publish-worker-images"]
 
     condition = " ".join(job["if"].split())
-    assert job["needs"] == "merge-gate", "only a green main is published"
+    assert job["needs"] == ["merge-gate", "build-worker-images"], "only a green main is published"
     assert "needs.merge-gate.result == 'success'" in condition, "only a green main is published"
     assert "github.event_name == 'push'" in condition
     assert "github.ref == 'refs/heads/main'" in condition
@@ -129,10 +136,8 @@ def test_ci_publishes_the_whole_chain_for_the_commit_it_builds():
     assert condition.startswith("always()"), "a skipped ancestor must not skip the release"
     assert job["permissions"]["packages"] == "write"
 
-    publish = next(
-        step for step in job["steps"] if "publish-worker-images.sh" in step.get("run", "")
-    )
-    assert publish["env"]["GIT_SHA"] == DEPLOY_SHA, "the tag is the SHA being built"
+    publish = _step_running(job, "publish-worker-images.sh release")
+    assert publish["env"]["GIT_SHA"] == DEPLOY_SHA, "the marker is keyed by the SHA being built"
 
     upload = next(
         step
@@ -141,6 +146,71 @@ def test_ci_publishes_the_whole_chain_for_the_commit_it_builds():
     )
     assert upload["with"]["if-no-files-found"] == "error"
     assert upload["with"]["path"] == publish["env"]["DIGEST_FILE"]
+
+
+def test_candidates_are_built_beside_the_suites_and_nothing_is_built_after_the_gate():
+    """The chain is built once, before the gate; after it only markers are written."""
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    build = jobs["build-worker-images"]
+    publish = jobs["publish-worker-images"]
+
+    assert "needs" not in build, "the candidates run beside the suites, not after them"
+    condition = " ".join(build["if"].split())
+    assert "github.event_name == 'push'" in condition
+    assert "github.ref == 'refs/heads/main'" in condition
+    assert build["permissions"]["packages"] == "write"
+    candidates = _step_running(build, "publish-worker-images.sh candidates")
+    assert candidates["env"]["GIT_SHA"] == DEPLOY_SHA
+
+    after_gate = " ".join(step.get("run", "") for step in publish["steps"])
+    assert "publish-worker-images.sh release" in after_gate
+    for building in ("make ", "docker build", "docker push", " candidates"):
+        assert building not in after_gate, f"the post-gate job must build nothing: {building!r}"
+    assert "watch" not in after_gate, "no Claude installer is fetched after the gate"
+
+
+def test_the_marker_job_commits_exactly_the_digests_the_dind_suite_pulled():
+    """Tested equals released: DinD and the marker job read one and the same record.
+
+    build-worker-images resolves the candidates once and hands their record on as the
+    job output `candidates`; the DinD suite pulls that record into DinD instead of
+    building a chain, and the post-gate job commits that record or refuses
+    (publish-worker-images.sh release, exit 14 when a release of other digests exists).
+    """
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    build = jobs["build-worker-images"]
+    dind = jobs["test-backend-dind-integration"]
+    publish = jobs["publish-worker-images"]
+    handed_over = "${{ needs.build-worker-images.outputs.candidates }}"
+
+    exposing = next(step for step in build["steps"] if step.get("id") == "candidates")
+    assert build["outputs"]["candidates"] == "${{ steps.candidates.outputs.candidates }}"
+    assert "CANDIDATE_FILE" in _step_running(build, "publish-worker-images.sh candidates")["env"]
+    assert 'base64 -w0 "${RUNNER_TEMP}/worker-candidates.json"' in exposing["run"]
+    assert (
+        _step_running(build, "publish-worker-images.sh candidates")["env"]["CANDIDATE_FILE"]
+        == "${{ runner.temp }}/worker-candidates.json"
+    )
+
+    assert "build-worker-images" in dind["needs"]
+    assert "needs.build-worker-images.result == 'success'" in " ".join(dind["if"].split())
+    assert dind["permissions"]["packages"] == "read"
+    suite = next(step for step in dind["steps"] if step.get("id") == "integration-tests")
+    assert suite["env"]["WORKER_BASE_IMAGE_SOURCE"] == "candidates"
+    assert suite["env"]["WORKER_BASE_CANDIDATES"] == handed_over
+
+    release = _step_running(publish, "publish-worker-images.sh release")
+    assert release["env"]["WORKER_CANDIDATES"] == handed_over
+
+    compose = yaml.safe_load(DIND_COMPOSE.read_text())
+    runner_env = compose["services"]["integration-test-runner"]["environment"]
+    for passed in (
+        "WORKER_BASE_IMAGE_SOURCE",
+        "WORKER_BASE_CANDIDATES",
+        "GHCR_OWNER",
+        "GHCR_TOKEN",
+    ):
+        assert any(item.startswith(f"{passed}=${{{passed}") for item in runner_env), passed
 
 
 def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
@@ -159,7 +229,7 @@ def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
     assert not BACKEND_INTEGRATION_WORKFLOW.exists(), (
         "the required backend DinD suite cannot live in a parallel workflow"
     )
-    assert backend["needs"] == ["fast-checks", "ci-contract"]
+    assert backend["needs"] == ["fast-checks", "ci-contract", "build-worker-images"]
     assert "github.event_name == 'push'" in backend["if"]
     assert "github.event_name == 'workflow_dispatch'" in backend["if"]
     assert "github.ref == 'refs/heads/main'" in backend["if"]
@@ -176,7 +246,7 @@ def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
     assert (
         '"$job" = "test-backend-dind-integration" ] && [ "${GITHUB_REF}" != "refs/heads/main"'
     ) in required_results
-    assert publish["needs"] == "merge-gate"
+    assert "merge-gate" in publish["needs"]
 
 
 def test_the_chain_is_listed_once_and_both_halves_read_it():
@@ -200,19 +270,28 @@ def test_publish_reuses_the_makefile_chain_and_publishes_no_mutable_tag():
     )
 
 
-# A fake docker with a directory standing in for the registry: one file per published
-# image holding the digest its tag resolves to, and one `<image>.label` file holding
-# the release record a marker was built with. `push` writes the digest file (and fails
-# for FAKE_FAILING_PUSH, which is how a run that dies mid-chain is injected), `build`
-# writes the label file, `buildx imagetools inspect` reads the digest file and fails
-# when it is absent, exactly as a registry answers for a tag nothing pushed. Both
-# halves of the chain run against this, so the registry state one leaves is the state
-# the other finds. Nothing here reaches a daemon or a network.
+# A fake docker with a directory standing in for the registry:
+#
+#   tags/<image>:<tag>        the digest a tag resolves to;
+#   labels/<image>@<digest>   the release record a marker was built with;
+#   built/<image>:<tag>       a marker built locally and not pushed yet.
+#
+# `push` writes the tag (and fails for FAKE_FAILING_PUSH, an image name or one
+# `<image>:<tag>`, which is how a run that dies mid-chain is injected). A pushed worker
+# image gets the digest `sha256:<image>-<FAKE_BUILD>`, so two builds of the same sources
+# are two digest sets, as they are in a real registry. `buildx imagetools inspect` reads
+# a tag and fails when it is absent, exactly as a registry answers for a tag nothing
+# pushed. Every stage runs against this, so the registry state one leaves is the state
+# the next finds. Nothing here reaches a daemon or a network.
 FAKE_DOCKER = """#!/usr/bin/env bash
 set -uo pipefail
 command="$1"
 shift
 echo "${command} $*" >> "${FAKE_DOCKER_LOG}"
+
+key_of() {
+    echo "${1##*/}"
+}
 
 image_of() {
     local reference="${1##*/}"
@@ -225,7 +304,7 @@ case "${command}" in
         cat > /dev/null
         ;;
     buildx)
-        published="${FAKE_REGISTRY}/$(image_of "$3")"
+        published="${FAKE_REGISTRY}/tags/$(key_of "$3")"
         if [ ! -f "${published}" ]; then
             echo "ERROR: $3: manifest unknown" >&2
             exit 1
@@ -233,16 +312,23 @@ case "${command}" in
         cat "${published}"
         ;;
     build)
-        sed -n 's/^LABEL [^=]*="\\(.*\\)"$/\\1/p' "$3/Dockerfile" \
-            > "${FAKE_REGISTRY}/$(image_of "$2").label"
+        sed -n 's/^LABEL [^=]*="\\(.*\\)"$/\\1/p' "$3/Dockerfile" \\
+            > "${FAKE_REGISTRY}/built/$(key_of "$2")"
         ;;
     push)
+        key="$(key_of "$1")"
         name="$(image_of "$1")"
-        if [ "${name}" = "${FAKE_FAILING_PUSH:-}" ]; then
+        if [ "${name}" = "${FAKE_FAILING_PUSH:-}" ] || [ "${key}" = "${FAKE_FAILING_PUSH:-}" ]; then
             echo "ERROR: $1: upload failed" >&2
             exit 1
         fi
-        echo "sha256:${name}" > "${FAKE_REGISTRY}/${name}"
+        if [ -f "${FAKE_REGISTRY}/built/${key}" ]; then
+            digest="sha256:${key//:/-}"
+            cp "${FAKE_REGISTRY}/built/${key}" "${FAKE_REGISTRY}/labels/${name}@${digest}"
+        else
+            digest="sha256:${name}-${FAKE_BUILD:-build1}"
+        fi
+        echo "${digest}" > "${FAKE_REGISTRY}/tags/${key}"
         ;;
     pull)
         if [ "$(image_of "$1")" = "${FAKE_UNPULLABLE_IMAGE:-}" ]; then
@@ -257,7 +343,7 @@ case "${command}" in
             exit 1
         fi
         if [[ "$*" == *worker_release* ]]; then
-            cat "${FAKE_REGISTRY}/${name}.label"
+            cat "${FAKE_REGISTRY}/labels/$(key_of "$1")"
         elif [ "${name}" = "${FAKE_ODD_IMAGE:-}" ]; then
             echo "${FAKE_ODD_LABEL}"
         else
@@ -299,6 +385,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+repository="${url%/manifests/*}"
 if [[ "${url}" == *"/token"* ]]; then
     printf '{"token":"fake-registry-token"}' > "${output}"
     printf '%s' "${FAKE_TOKEN_HTTP_STATUS:-200}"
@@ -308,7 +395,7 @@ elif [ -n "${FAKE_MARKER_CURL_EXIT:-}" ]; then
 elif [ -n "${FAKE_MARKER_HTTP_STATUS:-}" ]; then
     : > "${output}"
     printf '%s' "${FAKE_MARKER_HTTP_STATUS}"
-elif [ -f "${FAKE_REGISTRY}/worker-base-release" ]; then
+elif [ -f "${FAKE_REGISTRY}/tags/${repository##*/}:${url##*/}" ]; then
     : > "${output}"
     printf '200'
 else
@@ -318,12 +405,17 @@ fi
 """
 
 PUBLISHED_SHA = "0123456789abcdef0123456789abcdef01234567"
+SAME_TREE_SHA = "89abcdef0123456789abcdef0123456789abcdef"
 REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
 
+EXIT_BUILT_LABEL = 2
+EXIT_CANDIDATE_PUSH = 4
 EXIT_RELEASED_LABEL = 7
 EXIT_PUBLISH_BROKEN_RELEASE = 10
 EXIT_PUBLISH_MARKER_LOOKUP = 11
 EXIT_PUBLISH_MARKER_PUBLISH = 12
+EXIT_BAD_CANDIDATES = 13
+EXIT_NOT_TESTED = 14
 EXIT_PULL_NO_RELEASE = 9
 
 
@@ -340,11 +432,17 @@ def tree_source_hash() -> str:
 
 
 class ReleaseChain:
-    """Both halves of the chain, run for real against one fake registry directory."""
+    """Every stage of the chain, run for real against one fake registry directory.
+
+    `candidates` and `release` are the two stages of publish-worker-images.sh, with the
+    record handed from one to the other the way ci.yml hands it (base64, one line);
+    `pull` is the consuming half on a deployment host or a stand.
+    """
 
     def __init__(self, tmp_path: Path, source_hash: str) -> None:
         self.root = tmp_path
         self.source_hash = source_hash
+        self.source_key = f"source-{source_hash}"
         binaries = tmp_path / "bin"
         binaries.mkdir()
         for name, body in (("curl", FAKE_CURL), ("docker", FAKE_DOCKER), ("make", FAKE_MAKE)):
@@ -353,12 +451,13 @@ class ReleaseChain:
             executable.chmod(0o755)
         self.binaries = binaries
         self.registry = tmp_path / "registry"
-        self.registry.mkdir()
+        for part in ("tags", "labels", "built"):
+            (self.registry / part).mkdir(parents=True)
         self.log = tmp_path / "docker.log"
-        self.published_record = tmp_path / "worker-images.json"
-        self.deployed_record = tmp_path / "deployed-worker-images.json"
 
-    def _run(self, script: str, environment: dict) -> tuple[subprocess.CompletedProcess, list[str]]:
+    def _run(
+        self, script: str, arguments: list[str], environment: dict
+    ) -> tuple[subprocess.CompletedProcess, list[str]]:
         self.log.write_text("")
         base = {
             "PATH": f"{self.binaries}:/usr/bin:/bin",
@@ -371,7 +470,7 @@ class ReleaseChain:
         }
         base.update({key: value for key, value in environment.items() if value is not None})
         result = subprocess.run(
-            ["bash", str(SCRIPTS / script)],
+            ["bash", str(SCRIPTS / script), *arguments],
             capture_output=True,
             text=True,
             env=base,
@@ -379,46 +478,69 @@ class ReleaseChain:
         )
         return result, self.log.read_text().splitlines()
 
-    def publish(self, **overrides):
-        environment = {"GIT_SHA": PUBLISHED_SHA, "DIGEST_FILE": str(self.published_record)}
-        environment.update(overrides)
-        return self._run("publish-worker-images.sh", environment)
+    def candidate_record(self, sha: str = PUBLISHED_SHA) -> Path:
+        return self.root / f"candidates-{sha}.json"
 
-    def pull(self, **overrides):
+    def published_record(self, sha: str = PUBLISHED_SHA) -> Path:
+        return self.root / f"worker-images-{sha}.json"
+
+    def deployed_record(self, sha: str = PUBLISHED_SHA) -> Path:
+        return self.root / f"deployed-worker-images-{sha}.json"
+
+    def handed_over(self, sha: str = PUBLISHED_SHA) -> str:
+        """What ci.yml hands on: `base64 -w0` of the candidate record."""
+        return base64.b64encode(self.candidate_record(sha).read_bytes()).decode()
+
+    def candidates(self, sha: str = PUBLISHED_SHA, **overrides):
+        environment = {"GIT_SHA": sha, "CANDIDATE_FILE": str(self.candidate_record(sha))}
+        environment.update(overrides)
+        return self._run("publish-worker-images.sh", ["candidates"], environment)
+
+    def release(self, sha: str = PUBLISHED_SHA, handed_over: str | None = None, **overrides):
         environment = {
-            "WORKER_IMAGE_TAG": PUBLISHED_SHA,
-            "DIGEST_FILE": str(self.deployed_record),
+            "GIT_SHA": sha,
+            "WORKER_CANDIDATES": handed_over or self.handed_over(sha),
+            "DIGEST_FILE": str(self.published_record(sha)),
         }
         environment.update(overrides)
-        return self._run("pull-worker-images.sh", environment)
+        return self._run("publish-worker-images.sh", ["release"], environment)
 
-    def resolves(self, image: str) -> bool:
-        """Whether the registry answers for that image's tag, as a real one would."""
-        return (self.registry / image).exists()
+    def publish(self, sha: str = PUBLISHED_SHA, **overrides):
+        """One green push: the candidate stage, then the release stage after the gate."""
+        built, _calls = self.candidates(sha, **overrides)
+        assert built.returncode == 0, built.stderr
+        return self.release(sha, **overrides)
 
-    def release_marker_record(self) -> dict:
-        """What the published marker says the release is."""
-        payload = (self.registry / f"{MARKER_IMAGE}.label").read_text().strip()
+    def pull(self, sha: str = PUBLISHED_SHA, **overrides):
+        environment = {"WORKER_IMAGE_TAG": sha, "DIGEST_FILE": str(self.deployed_record(sha))}
+        environment.update(overrides)
+        return self._run("pull-worker-images.sh", [], environment)
+
+    def resolves(self, key: str) -> bool:
+        """Whether the registry answers for `<image>:<tag>`, as a real one would."""
+        return (self.registry / "tags" / key).exists()
+
+    def marker_record(self, key: str = PUBLISHED_SHA) -> dict:
+        """What the marker of a key (a SHA, or the source key) says the release is."""
+        digest = (self.registry / "tags" / f"{MARKER_IMAGE}:{key}").read_text().strip()
+        payload = (self.registry / "labels" / f"{MARKER_IMAGE}@{digest}").read_text().strip()
         return json.loads(base64.b64decode(payload))
 
-    def seed_release(self, **record_overrides) -> None:
-        """A SHA already released: the four images, and the marker that commits them."""
+    def seed_release(self, key: str = PUBLISHED_SHA, **record_overrides) -> None:
+        """A key already released: the four images, and the marker that commits them."""
         images = {}
         for image in CHAIN:
-            (self.registry / image).write_text(f"sha256:{image}\n")
+            (self.registry / "tags" / f"{image}:seed").write_text(f"sha256:{image}\n")
             images[image] = {
                 "reference": f"{REGISTRY}/{image}@sha256:{image}",
                 "repository": f"{REGISTRY}/{image}",
                 "digest": f"sha256:{image}",
             }
-        record = {
-            "git_sha": PUBLISHED_SHA,
-            "source_hash": self.source_hash,
-            "images": images,
-        }
+        record = {"git_sha": key, "source_hash": self.source_hash, "images": images}
         record.update(record_overrides)
-        (self.registry / MARKER_IMAGE).write_text(f"sha256:{MARKER_IMAGE}\n")
-        (self.registry / f"{MARKER_IMAGE}.label").write_text(
+        digest = f"sha256:seeded-{key}"
+        (self.registry / "tags" / f"{MARKER_IMAGE}:{key}").write_text(f"{digest}\n")
+        (self.registry / "labels" / f"{MARKER_IMAGE}@{digest}").write_text(
             base64.b64encode(json.dumps(record).encode()).decode()
         )
 
@@ -432,68 +554,135 @@ def _pushes(calls: list[str]) -> list[str]:
     return [call for call in calls if call.startswith("push ")]
 
 
-def test_an_unreleased_sha_is_built_pushed_and_committed_by_the_marker_last(chain):
-    result, calls = chain.publish()
+def _builds(calls: list[str]) -> list[str]:
+    """Every call that builds anything: the Makefile chain or an image build."""
+    return [call for call in calls if call.startswith(("make ", "build "))]
 
-    assert result.returncode == 0, result.stderr
-    assert any(call.startswith("make ") for call in calls), "the chain has to be built"
-    pushes = _pushes(calls)
+
+def _image_pushes(calls: list[str]) -> list[str]:
+    return [push for push in _pushes(calls) if f"/{MARKER_IMAGE}:" not in push]
+
+
+def _assert_marker_only(calls: list[str]) -> None:
+    """The post-gate stage builds nothing and pushes no image, whatever it decides."""
+    assert not [call for call in calls if call.startswith("make ")], calls
+    assert not _image_pushes(calls), calls
+
+
+def test_a_fresh_hash_is_built_once_as_candidates_and_committed_after_the_gate(chain):
+    built, calls = chain.candidates()
+
+    assert built.returncode == 0, built.stderr
+    assert [call for call in calls if call.startswith("make ")], "a fresh hash is built"
     for image in CHAIN:
-        assert any(f"/{image}:{PUBLISHED_SHA}" in push for push in pushes)
-    assert f"/{MARKER_IMAGE}:{PUBLISHED_SHA}" in pushes[-1], (
-        f"the marker is the commit point and must be written last: {pushes}"
+        assert any(f"/{image}:{PUBLISHED_SHA}" in push for push in _pushes(calls))
+    assert not [push for push in _pushes(calls) if f"/{MARKER_IMAGE}:" in push], (
+        "the candidate stage never writes a marker"
     )
-
-    written = json.loads(chain.published_record.read_text())
-    assert written["git_sha"] == PUBLISHED_SHA
-    assert set(written["images"]) == set(CHAIN)
+    candidates = json.loads(chain.candidate_record().read_text())
+    assert candidates["git_sha"] == PUBLISHED_SHA
+    assert candidates["source_hash"] == chain.source_hash
     for image in CHAIN:
-        entry = written["images"][image]
-        assert entry["digest"] == f"sha256:{image}"
+        entry = candidates["images"][image]
+        assert entry["digest"] == f"sha256:{image}-build1"
         assert entry["reference"] == f"{entry['repository']}@{entry['digest']}"
-        assert entry["repository"].endswith(f"/{image}")
+        assert entry["repository"] == f"{REGISTRY}/{image}"
 
-    assert chain.release_marker_record() == written, (
-        "the release marker carries the digest record of exactly what was published"
+    released, calls = chain.release()
+
+    assert released.returncode == 0, released.stderr
+    _assert_marker_only(calls)
+    pushes = _pushes(calls)
+    assert len(pushes) == 2, pushes
+    assert f"/{MARKER_IMAGE}:{chain.source_key}" in pushes[0], "the content key first"
+    assert f"/{MARKER_IMAGE}:{PUBLISHED_SHA}" in pushes[1], (
+        f"the commit marker is the commit point and must be written last: {pushes}"
     )
+    written = json.loads(chain.published_record().read_text())
+    assert chain.marker_record(PUBLISHED_SHA) == written
+    assert written["images"] == candidates["images"], "released is exactly what was tested"
+    assert chain.marker_record(chain.source_key) == {**written, "git_sha": chain.source_key}
+
+
+def test_a_second_commit_with_the_same_hash_builds_nothing_and_resolves_to_the_same_digests(
+    chain,
+):
+    """The content key: the second push of one worker tree only writes its alias."""
+    first, _calls = chain.publish(PUBLISHED_SHA)
+    assert first.returncode == 0, first.stderr
+
+    built, calls = chain.candidates(SAME_TREE_SHA, FAKE_BUILD="build2")
+
+    assert built.returncode == 0, built.stderr
+    assert not _builds(calls), f"an unchanged hash is not built: {calls}"
+    assert not _pushes(calls), f"an unchanged hash pushes nothing: {calls}"
+    assert (
+        json.loads(chain.candidate_record(SAME_TREE_SHA).read_text())["images"]
+        == chain.marker_record(chain.source_key)["images"]
+    ), "the candidates of an unchanged hash are its released digests"
+
+    released, calls = chain.release(SAME_TREE_SHA)
+
+    assert released.returncode == 0, released.stderr
+    _assert_marker_only(calls)
+    assert len(_pushes(calls)) == 1 and f"/{MARKER_IMAGE}:{SAME_TREE_SHA}" in _pushes(calls)[0]
+    assert not chain.resolves(f"worker-base-common:{SAME_TREE_SHA}"), "an alias tags no image"
+
+    for sha in (PUBLISHED_SHA, SAME_TREE_SHA):
+        deploy, _calls = chain.pull(sha)
+        assert deploy.returncode == 0, deploy.stderr
+    first_deploy = json.loads(chain.deployed_record(PUBLISHED_SHA).read_text())
+    second_deploy = json.loads(chain.deployed_record(SAME_TREE_SHA).read_text())
+    assert first_deploy["images"] == second_deploy["images"], "one hash, one digest set"
+    assert first_deploy["source_hash"] == second_deploy["source_hash"]
+    assert (first_deploy["git_sha"], second_deploy["git_sha"]) == (PUBLISHED_SHA, SAME_TREE_SHA)
 
 
 def test_a_rerun_of_a_released_sha_pushes_nothing_and_records_the_same_release(
     chain, tree_source_hash
 ):
-    """A released SHA is frozen: a rerun re-verifies it from the marker, it does not rewrite it."""
+    """A released SHA is frozen: a rerun re-verifies it from the marker, it does not rewrite it.
+
+    The seeded marker is also the shape every revision released before content keying
+    has: a commit marker and no hash marker. It still resolves, and a rerun of its CI
+    hands its own digests on instead of building new ones.
+    """
     chain.seed_release()
-    result, calls = chain.publish()
+    built, calls = chain.candidates()
 
-    assert result.returncode == 0, result.stderr
+    assert built.returncode == 0, built.stderr
     assert not _pushes(calls), f"an already-released SHA must not be pushed over: {calls}"
-    assert not [call for call in calls if call.startswith("make ")], (
-        "an already-released SHA does not even need to be rebuilt"
-    )
-    written = json.loads(chain.published_record.read_text())
+    assert not _builds(calls), "an already-released SHA does not even need to be rebuilt"
+
+    released, calls = chain.release()
+
+    assert released.returncode == 0, released.stderr
+    assert not _pushes(calls)
+    written = json.loads(chain.published_record().read_text())
     assert written["source_hash"] == tree_source_hash
-    assert set(written["images"]) == set(CHAIN)
+    assert written == chain.marker_record(PUBLISHED_SHA)
+
+    deploy, _calls = chain.pull()
+    assert deploy.returncode == 0, deploy.stderr
 
 
-def test_a_push_that_fails_mid_chain_releases_nothing_and_the_deploy_refuses_that_sha(chain):
+def test_a_push_that_fails_mid_candidate_releases_nothing_and_the_deploy_refuses_that_sha(chain):
     """The failure the whole protocol exists for, injected after a successful push.
 
-    The first image lands in the registry and the second push fails. What must hold is
-    not that the registry is clean — it is not, and no shell can make four pushes one
+    The other images land in the registry and one push fails. What must hold is not
+    that the registry is clean — it is not, and no shell can make four pushes one
     transaction — but that nothing claims to be a release, and that the consumer acts
     on nothing.
     """
-    result, calls = chain.publish(FAKE_FAILING_PUSH="worker-base-claude")
+    result, calls = chain.candidates(FAKE_FAILING_PUSH="worker-base-claude")
 
-    assert result.returncode != 0
-    assert chain.resolves("worker-base-common"), "the first push landed; this is the residue"
-    assert not chain.resolves(MARKER_IMAGE), (
+    assert result.returncode == EXIT_CANDIDATE_PUSH, result.stderr
+    assert chain.resolves(f"worker-base-common:{PUBLISHED_SHA}"), "this is the residue"
+    assert not list((chain.registry / "tags").glob(f"{MARKER_IMAGE}:*")), (
         "a run that died mid-chain must not have committed a release"
     )
-    assert not chain.published_record.exists(), "nothing may be recorded as published"
-    assert not any(call.startswith("build ") for call in calls), (
-        "the marker is never built once a push has failed"
-    )
+    assert not chain.candidate_record().exists(), "nothing is handed on to test or release"
+    assert not any(call.startswith("build ") for call in calls), "no marker is ever built"
 
     deploy, deploy_calls = chain.pull()
 
@@ -502,18 +691,19 @@ def test_a_push_that_fails_mid_chain_releases_nothing_and_the_deploy_refuses_tha
     assert not [call for call in deploy_calls if call.startswith("tag ")], (
         "residue must not move a single local worker-base-*:latest name"
     )
-    assert not chain.deployed_record.exists()
+    assert not chain.deployed_record().exists()
 
 
 def test_a_retry_after_a_failed_push_completes_that_sha_with_no_hand_in_the_registry(chain):
-    """Rule 2: with no marker the SHA is not released, so a rerun may finish it."""
-    chain.publish(FAKE_FAILING_PUSH="worker-base-claude")
+    """With no marker the SHA is not released, so a rerun may finish it."""
+    chain.candidates(FAKE_FAILING_PUSH="worker-base-claude")
 
-    result, calls = chain.publish()
-
-    assert result.returncode == 0, result.stderr
+    built, calls = chain.candidates()
+    assert built.returncode == 0, built.stderr
     assert _pushes(calls), "the retry re-pushes over its own residue"
-    assert chain.resolves(MARKER_IMAGE), "the retry commits the release it could not commit before"
+    released, _calls = chain.release()
+    assert released.returncode == 0, released.stderr
+    assert chain.resolves(f"{MARKER_IMAGE}:{PUBLISHED_SHA}"), "the retry commits the release"
 
     deploy, deploy_calls = chain.pull()
 
@@ -522,15 +712,92 @@ def test_a_retry_after_a_failed_push_completes_that_sha_with_no_hand_in_the_regi
         assert any(
             call.startswith("tag ") and call.endswith(f"{image}:latest") for call in deploy_calls
         ), f"{image} was not retagged for worker-manager: {deploy_calls}"
-    assert json.loads(chain.deployed_record.read_text()) == chain.release_marker_record(), (
+    assert json.loads(chain.deployed_record().read_text()) == chain.marker_record(), (
         "the deploy records exactly the release the marker committed"
     )
 
 
-def test_a_released_sha_with_a_stale_label_is_refused_not_overwritten(chain):
-    chain.seed_release()
-    result, calls = chain.publish(
+def test_a_release_that_dies_between_its_two_markers_is_completed_by_a_rerun(chain):
+    """The hash is released and the commit is not: a rerun writes only the alias."""
+    chain.candidates()
+    released, _calls = chain.release(FAKE_FAILING_PUSH=f"{MARKER_IMAGE}:{PUBLISHED_SHA}")
+
+    assert released.returncode == EXIT_PUBLISH_MARKER_PUBLISH, released.stderr
+    assert chain.resolves(f"{MARKER_IMAGE}:{chain.source_key}")
+    assert not chain.resolves(f"{MARKER_IMAGE}:{PUBLISHED_SHA}")
+    refused, _calls = chain.pull()
+    assert refused.returncode == EXIT_PULL_NO_RELEASE, refused.stderr
+
+    rerun, calls = chain.release()
+
+    assert rerun.returncode == 0, rerun.stderr
+    _assert_marker_only(calls)
+    assert len(_pushes(calls)) == 1 and f"/{MARKER_IMAGE}:{PUBLISHED_SHA}" in _pushes(calls)[0]
+    deploy, _calls = chain.pull()
+    assert deploy.returncode == 0, deploy.stderr
+
+
+def test_tested_candidates_that_are_not_the_hash_release_are_refused(chain):
+    """Two pushes of one new tree race: the second built other bytes than were released.
+
+    Its suites tested those bytes, so its release refuses to alias the first push's
+    digests (exit 14) and writes nothing. Rerunning its workflow hands the committed
+    release to the suites, and then the alias is written.
+    """
+    first, _calls = chain.candidates(PUBLISHED_SHA)
+    racing, _calls = chain.candidates(SAME_TREE_SHA, FAKE_BUILD="build2")
+    assert first.returncode == racing.returncode == 0
+    assert chain.release(PUBLISHED_SHA)[0].returncode == 0
+
+    refused, calls = chain.release(SAME_TREE_SHA)
+
+    assert refused.returncode == EXIT_NOT_TESTED, refused.stderr
+    assert "build2" in refused.stderr and "build1" in refused.stderr
+    assert not _pushes(calls)
+    assert not chain.resolves(f"{MARKER_IMAGE}:{SAME_TREE_SHA}")
+
+    rerun, _calls = chain.candidates(SAME_TREE_SHA)
+    assert rerun.returncode == 0, rerun.stderr
+    released, _calls = chain.release(SAME_TREE_SHA)
+    assert released.returncode == 0, released.stderr
+    assert (
+        chain.marker_record(SAME_TREE_SHA)["images"] == chain.marker_record(PUBLISHED_SHA)["images"]
+    )
+
+
+def test_a_handed_over_record_of_another_commit_is_refused(chain):
+    chain.candidates(PUBLISHED_SHA)
+
+    refused, calls = chain.release(SAME_TREE_SHA, handed_over=chain.handed_over(PUBLISHED_SHA))
+
+    assert refused.returncode == EXIT_BAD_CANDIDATES, refused.stderr
+    assert "not a usable record" in refused.stderr
+    assert not _pushes(calls)
+
+
+def test_a_tested_candidate_of_another_tree_is_not_released(chain):
+    chain.candidates()
+
+    refused, calls = chain.release(
         FAKE_ODD_IMAGE="worker-base-codex", FAKE_ODD_LABEL="dead0000dead0000"
+    )
+
+    assert refused.returncode == EXIT_BUILT_LABEL, refused.stderr
+    assert "dead0000dead0000" in refused.stderr
+    assert not _pushes(calls)
+    assert not chain.resolves(f"{MARKER_IMAGE}:{chain.source_key}")
+
+
+@pytest.mark.parametrize("stage", ["candidates", "release"])
+def test_a_released_sha_with_a_stale_label_is_refused_not_overwritten(chain, stage):
+    chain.seed_release()
+    handed_over = {}
+    if stage == "release":
+        # What its candidate stage handed on: the release it names.
+        record = json.dumps(chain.marker_record()).encode()
+        handed_over = {"handed_over": base64.b64encode(record).decode()}
+    result, calls = getattr(chain, stage)(
+        FAKE_ODD_IMAGE="worker-base-codex", FAKE_ODD_LABEL="dead0000dead0000", **handed_over
     )
 
     assert result.returncode == EXIT_RELEASED_LABEL, result.stderr
@@ -540,16 +807,37 @@ def test_a_released_sha_with_a_stale_label_is_refused_not_overwritten(chain):
 
 
 def test_a_released_sha_whose_image_is_gone_is_refused_not_repaired(chain):
-    """Rule 3: corruption of a committed release is a decision, not a retry."""
+    """Corruption of a committed release is a decision, not a retry."""
     chain.seed_release()
-    result, calls = chain.publish(FAKE_UNPULLABLE_IMAGE="worker-base-factory")
+    result, calls = chain.candidates(FAKE_UNPULLABLE_IMAGE="worker-base-factory")
 
     assert result.returncode == EXIT_PUBLISH_BROKEN_RELEASE, result.stderr
     assert "worker-base-factory" in result.stderr
     assert not _pushes(calls)
-    assert not [call for call in calls if call.startswith("make ")], (
-        "a committed release is not rebuilt over"
-    )
+    assert not _builds(calls), "a committed release is not rebuilt over"
+
+
+@pytest.mark.parametrize(
+    "broken,expected",
+    [
+        ({"FAKE_UNPULLABLE_IMAGE": "worker-base-factory"}, EXIT_PUBLISH_BROKEN_RELEASE),
+        (
+            {"FAKE_ODD_IMAGE": "worker-base-claude", "FAKE_ODD_LABEL": "dead0000dead0000"},
+            EXIT_RELEASED_LABEL,
+        ),
+    ],
+    ids=["image-gone", "stale-label"],
+)
+def test_a_broken_hash_release_is_refused_for_every_later_commit(chain, broken, expected):
+    """A new commit of a released hash neither builds over a broken release nor aliases it."""
+    chain.seed_release(chain.source_key)
+
+    result, calls = chain.candidates(SAME_TREE_SHA, **broken)
+
+    assert result.returncode == expected, result.stderr
+    assert not _builds(calls), "a broken hash release is not rebuilt over"
+    assert not _pushes(calls)
+    assert not chain.candidate_record(SAME_TREE_SHA).exists()
 
 
 def _images(**entries) -> dict:
@@ -601,18 +889,21 @@ def _images(**entries) -> dict:
                 }
             )
         },
+        {"git_sha": "not-this-key"},
     ],
-    ids=["wrong-source-hash", "wrong-repository", "wrong-digest", "missing-fields"],
+    ids=["wrong-source-hash", "wrong-repository", "wrong-digest", "missing-fields", "wrong-key"],
 )
-def test_a_released_sha_whose_record_contradicts_itself_is_refused(chain, corruption):
+@pytest.mark.parametrize("released", ["commit", "hash"])
+def test_a_release_whose_record_contradicts_itself_is_refused(chain, corruption, released):
     """The worker record has no schema version, and is still validated whole."""
-    chain.seed_release(**corruption)
-    result, calls = chain.publish()
+    chain.seed_release(PUBLISHED_SHA if released == "commit" else chain.source_key, **corruption)
+    result, calls = chain.candidates()
 
     assert result.returncode == EXIT_PUBLISH_BROKEN_RELEASE, result.stderr
     assert "not a usable record" in result.stderr
     assert not _pushes(calls)
-    assert not chain.published_record.exists()
+    assert not _builds(calls)
+    assert not chain.candidate_record().exists()
 
 
 @pytest.mark.parametrize(
@@ -625,29 +916,35 @@ def test_a_released_sha_whose_record_contradicts_itself_is_refused(chain, corrup
     ],
     ids=["manifest-401", "manifest-500", "manifest-timeout", "token-403"],
 )
-def test_a_registry_that_cannot_answer_for_a_released_sha_pushes_nothing(chain, registry_error):
-    """Only a registry 404 on the marker means "not released"; anything else fails closed."""
-    chain.seed_release()
-    before = chain.release_marker_record()
-    result, calls = chain.publish(**registry_error)
+def test_a_registry_that_cannot_answer_pushes_nothing_in_either_stage(chain, registry_error):
+    """Only a registry 404 on a marker means "not released"; anything else fails closed."""
+    chain.candidates()
+    handed_over = chain.handed_over()
 
-    assert result.returncode == EXIT_PUBLISH_MARKER_LOOKUP, result.stderr
+    built, calls = chain.candidates(**registry_error)
+    assert built.returncode == EXIT_PUBLISH_MARKER_LOOKUP, built.stderr
     assert not _pushes(calls), f"a lookup error must never lead to a push: {calls}"
-    assert not [call for call in calls if call.startswith("make ")]
-    assert chain.release_marker_record() == before
-    assert not chain.published_record.exists()
+    assert not _builds(calls)
+
+    released, calls = chain.release(handed_over=handed_over, **registry_error)
+    assert released.returncode == EXIT_PUBLISH_MARKER_LOOKUP, released.stderr
+    assert not _pushes(calls)
+    assert not chain.published_record().exists()
 
 
 def test_a_released_sha_whose_marker_cannot_be_inspected_is_refused(chain):
     chain.seed_release()
-    result, calls = chain.publish(FAKE_UNINSPECTABLE_IMAGE=MARKER_IMAGE)
+    result, calls = chain.candidates(FAKE_UNINSPECTABLE_IMAGE=MARKER_IMAGE)
 
     assert result.returncode == EXIT_PUBLISH_BROKEN_RELEASE, result.stderr
     assert not _pushes(calls)
 
 
 def test_a_marker_that_cannot_be_pushed_has_its_own_exit_code(chain):
-    result, _calls = chain.publish(FAKE_FAILING_PUSH=MARKER_IMAGE)
+    chain.candidates()
+    result, _calls = chain.release(FAKE_FAILING_PUSH=MARKER_IMAGE)
 
     assert result.returncode == EXIT_PUBLISH_MARKER_PUBLISH, result.stderr
-    assert not chain.resolves(MARKER_IMAGE), "a failed marker push releases nothing"
+    assert not list((chain.registry / "tags").glob(f"{MARKER_IMAGE}:*")), (
+        "a failed marker push releases nothing"
+    )

@@ -695,34 +695,56 @@ def test_a_redis_run_that_hangs_is_stopped_inside_fast_checks_and_named(runner):
     )
 
 
-def test_a_hung_publish_names_itself_on_its_own_job(runner):
-    """publish-worker-images runs after the gate: its own expose step carries the marker."""
+@pytest.mark.parametrize(
+    "job_name,step_name,step",
+    [
+        (
+            "publish-worker-images",
+            "Verify the tested candidates and publish the worker release marker",
+            "publish",
+        ),
+        ("build-worker-images", "Build and push the worker image candidates", "build-candidates"),
+    ],
+)
+def test_a_hung_publish_names_itself_on_its_own_job(runner, job_name, step_name, step):
+    """Neither worker release job is in the gate's needs: each expose step carries its marker."""
     runner.fake("publish", "exec sleep 60")
-    job = _jobs()["publish-worker-images"]
-    run = _step(job, name="Build and publish the worker chain")["run"]
+    job = _jobs()[job_name]
+    run = _step(job, name=step_name)["run"]
     publish = "bash infra/scripts/publish-worker-images.sh"
     assert run.count(publish) == 1
 
     result = runner.run(
         STEP_BOUND.sub("--timeout 1s --", run).replace(publish, "publish"),
-        GITHUB_JOB="publish-worker-images",
+        GITHUB_JOB=job_name,
     )
 
     assert result.returncode == 124
+    marker = f"CI-INFRA-FAILURE: job={job_name} step={step} cause=step-timeout"
+    _assert_one_marker(result, runner, marker)
+    expose = _step(job, name="Expose CI infrastructure failure")
+    assert expose is job["steps"][-1] and expose["if"].startswith("always()")
+    assert runner.run(expose["run"], GITHUB_JOB=job_name).returncode == 0
+    assert runner.outputs() == {"infra-marker": f"{marker}\n"}
+    assert job["outputs"]["infra-marker"] == "${{ steps.infra.outputs['infra-marker'] }}"
+
+
+def test_the_worker_candidates_mark_an_exhausted_claude_installer_fetch(runner):
+    """The chain is built in build-worker-images now, so that is where the fetch is named."""
+    runner.fake("publish", 'echo "CI-INFRA-CAUSE=claude-installer-fetch"; exit 2')
+    job = _jobs()["build-worker-images"]
+    run = _step(job, name="Build and push the worker image candidates")["run"]
+    publish = "bash infra/scripts/publish-worker-images.sh"
+
+    result = runner.run(run.replace(publish, "publish"), GITHUB_JOB="build-worker-images")
+
+    assert result.returncode == 2
     _assert_one_marker(
         result,
         runner,
-        "CI-INFRA-FAILURE: job=publish-worker-images step=publish cause=step-timeout",
+        "CI-INFRA-FAILURE: job=build-worker-images step=build-candidates "
+        "cause=claude-installer-fetch",
     )
-    expose = _step(job, name="Expose CI infrastructure failure")
-    assert expose is job["steps"][-1] and expose["if"].startswith("always()")
-    assert runner.run(expose["run"], GITHUB_JOB="publish-worker-images").returncode == 0
-    assert runner.outputs() == {
-        "infra-marker": (
-            "CI-INFRA-FAILURE: job=publish-worker-images step=publish cause=step-timeout\n"
-        )
-    }
-    assert job["outputs"]["infra-marker"] == "${{ steps.infra.outputs['infra-marker'] }}"
 
 
 def test_a_hung_step_travels_through_the_gate_and_the_gate_stays_red(runner):

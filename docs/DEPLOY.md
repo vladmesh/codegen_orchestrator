@@ -660,9 +660,9 @@ and cleanup keep a single attempt.
 
 ### Worker base images are a release chain
 
-Every green commit on `main` publishes the whole worker chain to GHCR under that commit's SHA
-(`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
-The tag is the SHA; nothing publishes a mutable `:latest`.
+Every green commit on `main` gets a worker release: a marker `worker-base-release:<sha>` that names
+the digests of the whole chain (`infra/scripts/publish-worker-images.sh`, run by
+`.github/workflows/ci.yml`). Nothing publishes a mutable `:latest`.
 
 On `main`, "green" includes the required `test-backend-dind-integration` job in the same CI DAG.
 `merge-gate` consumes that result before `publish-worker-images` is eligible to run, so a failed,
@@ -671,38 +671,87 @@ The expensive job remains skipped outside `main`; that skip is accepted only the
 release authorization.
 
 **The release is the marker, not the tags.** Four tag pushes cannot be one registry transaction, so
-a pushed tag does not mean a commit was released. After all four images resolve, the publish job
-writes one more object — `worker-base-release:<sha>`, carrying the digest record of that release
-(git SHA, source hash, and every image's `<repository>@sha256:…`). That single write is the
-release, and it is the only thing the deploy consults.
+a pushed tag does not mean anything was released. A marker is one more object, written last, that
+carries the digest record of the release (a key, the source hash, and every image's
+`<repository>@sha256:…`) as a base64 JSON label. That single write is the release, and a marker is
+the only thing a deploy or a stand consults.
 
-| what the registry has for a SHA | what happens |
-| --- | --- |
-| a marker | released and frozen: re-verify the digests it names, record them, push nothing, exit 0 |
-| no marker (the registry answers 404 for its manifest) | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
-| a marker that is not a valid record of this release, or names an image that is gone or built from other sources | refused (exit 10 or 7), never repaired |
-| no answer: credentials refused, transport, rate limit, 5xx | the SHA may be released: nothing is built or pushed (exit 11); rerun once the registry answers |
+**The images are keyed by content.** What the four images bake is exactly the trees of the worker
+source hash (`scripts/shared_freshness.py hash`), so two commits with the same hash need the same
+images. The release therefore has two markers in the same repository, with one record shape and
+one validator:
 
-A failed marker build or push is exit 12 and releases nothing; a rerun writes it. The lookup, the
-record validation and the re-verification of a released SHA live once in
-`infra/scripts/release-chain.sh` and are the same for the service release below:
+| marker | written | names |
+| --- | --- | --- |
+| `worker-base-release:source-<hash>` | once per source hash, by the first green commit that built it | the chain it built; the record's key (`git_sha`) is `source-<hash>` |
+| `worker-base-release:<sha>` | for every green push to `main` | the digests of its hash's release; the record's key is the SHA |
 
-- **Is the SHA released?** `release_marker_lookup` asks the registry API (token, then the marker's
+Deploy and the stand keep resolving by revision (`pull-worker-images.sh`, `scripts/wait_release.py`,
+the stand's pre-create check): they read the commit marker, whose record has exactly the shape it
+had before content keying. Two commits with the same hash therefore resolve to identical digests,
+and production and a stand pull the same images for the same content. A revision released before
+content keying has a commit marker and no hash marker; it still resolves unchanged, and the first
+push of a hash that only such revisions carry builds it once more (there is no hash marker to
+alias).
+
+**Two jobs, one writer of the markers.** Candidate tags without a marker are inert, so the chain is
+built before the gate and only committed after it, the shape of the service release below:
+
+- `build-worker-images` (push or dispatch on `main`, no `needs`, `packages: write`) runs beside the
+  suites (`publish-worker-images.sh candidates`). If the commit or its hash is already released, it
+  re-verifies that release and hands its digests on, building and pushing nothing. Otherwise it
+  builds the chain once (`make rebuild-worker-images`, the only Claude installer fetch of the push),
+  checks every image's source hash label, pushes the four images in parallel under the SHA tag, and
+  resolves each tag once. Its output `candidates` is the record of those digests.
+- `test-backend-dind-integration` needs that job and pulls exactly that record into DinD by digest
+  (`WORKER_BASE_IMAGE_SOURCE=candidates`); it builds no chain of its own. The fixture checks each
+  image's source hash label and gives the images the local names its build path would, the
+  content-hash child tags included. A local run with no candidates builds from the tree as before.
+- `publish-worker-images` runs after the `Required CI Gate` (`always() &&
+  needs.merge-gate.result == 'success'`, push to `main`) and builds nothing
+  (`publish-worker-images.sh release`). It reads the same `candidates` output and commits exactly
+  those digests: a fresh hash gets its hash marker and then the commit marker; an already released
+  hash only the commit marker, the *alias*.
+
+**Tested equals released.** The release stage never names digests the DinD suite did not test. If
+the commit or the hash is already released with other digests than the tested ones (two pushes of
+one new tree raced and each built its own chain), it refuses with exit 14 and writes nothing;
+rerunning the whole workflow makes its candidate stage hand the committed release to the suites,
+and the alias follows. The CI contract (`scripts/check-ci-gate.py`) pins that the DinD step and the
+release step read the one `needs.build-worker-images.outputs.candidates`, and that the post-gate
+job runs no build.
+
+| what the registry has | `candidates` | `release` |
+| --- | --- | --- |
+| a commit marker | re-verify it, hand its digests on, push nothing | re-verify it; it must name the tested digests (exit 14); record it, push nothing |
+| a hash marker, no commit marker | re-verify it, hand its digests on, build and push nothing | re-verify it; it must name the tested digests (exit 14); write the commit marker |
+| neither (the registry answers 404 for both manifests) | build, verify each source hash, push all four, hand them on | pull every tested digest and check its source hash (exit 8, 2), write the hash marker, then the commit marker |
+| a marker that is not a valid record of its release, or names an image that is gone or built from other sources | refused (exit 10 or 7), never repaired; nothing is built | refused (exit 10 or 7), never repaired |
+| no answer: credentials refused, transport, rate limit, 5xx | the key may be released: nothing is built or pushed (exit 11) | nothing is pushed (exit 11) |
+
+A failed candidate push is exit 4, a handed-over record that is not a record of this commit's chain
+exit 13, and a failed marker build or push exit 12. The lookup, the record validation and the
+re-verification of a released key live once in `infra/scripts/release-chain.sh` and are the same
+for the service release below:
+
+- **Is the key released?** `release_marker_lookup` asks the registry API (token, then the marker's
   manifest) and has three answers. Only a typed 404 on the manifest is *absent*, and only *absent*
   leads to any push. A failed `buildx imagetools inspect` is never read as absence: an auth or
   transport failure reads the same as a missing tag.
-- **Is the record this release?** `release_marker_images` refuses a record of another SHA or
+- **Is the record this release?** `release_marker_images` refuses a record of another key or
   another source hash than the tree's, of another schema version (service chain), naming another
   set of images, naming an image outside this registry or not by digest, or whose `repository` and
-  `digest` fields contradict its `reference`.
+  `digest` fields contradict its `reference`. The release stage reads the handed-over candidate
+  record with the same validator.
 - **Does it still hold?** `release_verify_committed` pulls the marker and every image it names by
   digest and requires each to carry the tree's non-empty source hash.
 
-The middle row is what a run that failed or was cancelled between two pushes leaves behind. Those
-tags are inert residue, not a half-release: nothing will ever deploy them, and **rerunning the
-publish job completes that SHA with nobody deleting anything in the registry**. Once the marker
-exists the SHA is frozen — rebuilding an already-released commit pushes nothing by design, because
-the digests the marker names are what a deploy verifies and replacing them would change what an
+A run that failed or was cancelled between two pushes leaves candidate tags behind. They are inert
+residue, not a half-release: nothing will ever deploy them, and **rerunning the failed jobs completes
+that SHA with nobody deleting anything in the registry**. A release stage that died after the hash
+marker and before the commit marker is completed by its rerun as an alias. Once a marker exists its
+key is frozen — rebuilding an already-released commit or hash pushes nothing by design, because the
+digests the marker names are what a deploy verifies and replacing them would change what an
 already-recorded release means.
 
 The deploy resolves the marker of the revision it is deploying *first*, pulls the digests that
@@ -718,8 +767,9 @@ all name the `<repository>@sha256:…` the marker holds. The pull writes its rec
 the deploy copies that file back into the run summary and an artifact, so what is reported as
 deployed is the release that was verified rather than a second lookup of a mutable tag.
 
-So a commit can only be deployed once its CI publish job has released it. Deploying an unreleased
-revision is refused rather than falling back to a different worker release.
+So a commit can only be deployed once its CI publish job has released it — with fresh images or as
+an alias of its hash's release. Deploying an unreleased revision is refused rather than falling back
+to a different worker release.
 
 The ephemeral Stand E2E workflow applies the same rule before it invokes
 BitLaunch preflight or creation, or creates a DNS record. It checks the exact
