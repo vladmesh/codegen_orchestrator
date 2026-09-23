@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- The deploy waits up to 45 min for the dispatched SHA's CI run to publish its worker release before touching
+  the host, and its file-only SSH steps retry a dropped connection up to three times, never a failed script.
 - `poll_merged_prs`, `poll_ci_failures` and each story completion enter one `GitHubAppClient` per operation,
   so their GitHub calls share one HTTP pool, closed on success and error, not one pool per request.
 - Owed owner-notification recovery runs on its own scheduler loop and logs every outcome per sweep, so

@@ -28,12 +28,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    # Only what the deploy actually does: read the worker image release. The
-    # automatic token stands in for GHCR_TOKEN where no environment defines one,
-    # so a contour needs no registry credential of its own.
+    # Only what the deploy actually does: read the worker image release, and the
+    # CI run that publishes it. The automatic token stands in for GHCR_TOKEN where
+    # no environment defines one, so a contour needs no registry credential of its own.
     permissions:
       contents: read
       packages: read
+      actions: read
     # Environment-scoped variables resolve only inside a job that declares the
     # environment, so the per-contour paths live here and not at workflow level.
     # The defaults are production's values: an environment that sets nothing
@@ -42,6 +43,9 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/codegen_orchestrator' }}
       DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'deploy' }}
       COMPOSE_ARGS: ${{ vars.COMPOSE_ARGS || '-f docker-compose.yml -f docker-compose.prod.yml' }}
+      # How long a deploy dispatched right after a merge waits for that commit's
+      # push-to-main CI run to publish its worker release (45 minutes).
+      WORKER_RELEASE_WAIT_SECONDS: 2700
 
     steps:
       - name: Checkout code
@@ -141,113 +145,136 @@ jobs:
           fi
           echo "allowlist matches this contour's declaration"
 
+      # Nothing may touch the host for a revision that has no worker release. The
+      # release is published by the push-to-main CI run of this exact commit, so a
+      # deploy dispatched while that run is still queued or running waits for it,
+      # up to WORKER_RELEASE_WAIT_SECONDS, re-probing the marker read-only. A commit
+      # with no such run, a run that failed or was cancelled, and a run that
+      # succeeded without a marker are refused at once, each with its own exit code
+      # (scripts/wait_worker_release.py).
+      - name: Wait for this revision's worker release
+        timeout-minutes: 50
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          WORKER_IMAGE_TAG: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/wait_worker_release.py --timeout-seconds "${WORKER_RELEASE_WAIT_SECONDS}"
+
+      # The file-only steps below reach the host through infra/scripts/deploy-ssh.sh,
+      # which retries a dropped SSH connection (exit 255) a bounded number of times
+      # and never re-runs a remote script that failed on its own. The remote script
+      # travels on stdin, so what it carries never reaches a process list.
       - name: Write .env to server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            umask 077
-            cat > ${{ env.DEPLOY_PATH }}/.env << 'ENVEOF'
-            # Database
-            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          set -euo pipefail
+          bash infra/scripts/deploy-ssh.sh <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          cat > ${{ env.DEPLOY_PATH }}/.env << 'ENVEOF'
+          # Database
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
 
-            # Internal service authentication
-            INTERNAL_API_KEY=${{ secrets.INTERNAL_API_KEY }}
+          # Internal service authentication
+          INTERNAL_API_KEY=${{ secrets.INTERNAL_API_KEY }}
 
-            # LLM
-            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-            OPEN_ROUTER_KEY=${{ secrets.OPEN_ROUTER_KEY }}
-            PO_LLM_MODEL=${{ secrets.PO_LLM_MODEL }}
-            PO_LLM_BASE_URL=${{ secrets.PO_LLM_BASE_URL }}
-            PO_LLM_API_KEY=${{ secrets.PO_LLM_API_KEY }}
+          # LLM
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          OPEN_ROUTER_KEY=${{ secrets.OPEN_ROUTER_KEY }}
+          PO_LLM_MODEL=${{ secrets.PO_LLM_MODEL }}
+          PO_LLM_BASE_URL=${{ secrets.PO_LLM_BASE_URL }}
+          PO_LLM_API_KEY=${{ secrets.PO_LLM_API_KEY }}
 
-            ARCHITECT_LLM_MODEL=${{ secrets.ARCHITECT_LLM_MODEL }}
-            ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
-            ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
+          ARCHITECT_LLM_MODEL=${{ secrets.ARCHITECT_LLM_MODEL }}
+          ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
+          ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
 
-            # Summarization model selection; numeric tuning is seeded as system config below.
-            SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
+          # Summarization model selection; numeric tuning is seeded as system config below.
+          SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
 
-            # GitHub
-            GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
-            GITHUB_ORG=${{ secrets.GH_ORG }}
+          # GitHub
+          GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+          GITHUB_ORG=${{ secrets.GH_ORG }}
 
-            # Telegram
-            # Same inheritance, worse consequence: two long-polling clients on one
-            # token steal each other's updates, so a contour that is not the bot's
-            # owner must not receive it. The stand runs no telegram_bot at all.
-            TELEGRAM_BOT_TOKEN=${{ inputs.environment == 'production' && secrets.TELEGRAM_BOT_TOKEN || '' }}
-            TELETHON_API_ID=${{ secrets.TELETHON_API_ID }}
-            TELETHON_API_HASH=${{ secrets.TELETHON_API_HASH }}
-            TELETHON_SESSION=${{ secrets.TELETHON_SESSION }}
-            ADMIN_TELEGRAM_IDS=${{ secrets.ADMIN_TELEGRAM_IDS }}
-            TELEGRAM_ID_ADMIN=${{ secrets.TELEGRAM_ID_ADMIN }}
+          # Telegram
+          # Same inheritance, worse consequence: two long-polling clients on one
+          # token steal each other's updates, so a contour that is not the bot's
+          # owner must not receive it. The stand runs no telegram_bot at all.
+          TELEGRAM_BOT_TOKEN=${{ inputs.environment == 'production' && secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELETHON_API_ID=${{ secrets.TELETHON_API_ID }}
+          TELETHON_API_HASH=${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION=${{ secrets.TELETHON_SESSION }}
+          ADMIN_TELEGRAM_IDS=${{ secrets.ADMIN_TELEGRAM_IDS }}
+          TELEGRAM_ID_ADMIN=${{ secrets.TELEGRAM_ID_ADMIN }}
 
-            # Encryption
-            SECRETS_ENCRYPTION_KEY=${{ secrets.SECRETS_ENCRYPTION_KEY }}
+          # Encryption
+          SECRETS_ENCRYPTION_KEY=${{ secrets.SECRETS_ENCRYPTION_KEY }}
 
-            # Which contour this installation is. Empty means production, so an
-            # environment that sets nothing keeps production's resource names.
-            LIVE_CONTOUR=${{ vars.LIVE_CONTOUR }}
+          # Which contour this installation is. Empty means production, so an
+          # environment that sets nothing keeps production's resource names.
+          LIVE_CONTOUR=${{ vars.LIVE_CONTOUR }}
 
-            # Infrastructure
-            ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
-            ORCHESTRATOR_PUBLIC_IP=${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
-            # Each contour provisions its own servers. The allowlist is fail-closed
-            # and per-ID, so a contour can act only on the servers it names — which
-            # is why it must be its own list and not an inherited one. The step
-            # below refuses the deploy when it is not.
-            # The repository secret remains the input source. Services consume
-            # the provider-scoped policy key below.
-            PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
-            TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
-            TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
+          # Infrastructure
+          ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
+          ORCHESTRATOR_PUBLIC_IP=${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
+          # Each contour provisions its own servers. The allowlist is fail-closed
+          # and per-ID, so a contour can act only on the servers it names — which
+          # is why it must be its own list and not an inherited one. The step
+          # below refuses the deploy when it is not.
+          # The repository secret remains the input source. Services consume
+          # the provider-scoped policy key below.
+          PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+          TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
+          TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
 
-            # Registry
-            REGISTRY_USER=${{ secrets.REGISTRY_USER }}
-            REGISTRY_PASSWORD=${{ secrets.REGISTRY_PASSWORD }}
-            REGISTRY_PASSWORD_HASH=${{ secrets.REGISTRY_PASSWORD_HASH }}
+          # Registry
+          REGISTRY_USER=${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD=${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_PASSWORD_HASH=${{ secrets.REGISTRY_PASSWORD_HASH }}
 
-            # Worker agents
-            # Engineering executor for new projects; required, no fallback.
-            DEFAULT_AGENT_TYPE=${{ vars.DEFAULT_AGENT_TYPE }}
-            FACTORY_API_KEY=${{ secrets.FACTORY_API_KEY }}
-            HOST_CLAUDE_DIR=${{ secrets.HOST_CLAUDE_DIR }}
-            HOST_CODEX_HOME=${{ secrets.HOST_CODEX_HOME }}
-            # Shared manager-to-broker credential. Generate: openssl rand -hex 32
-            WORKER_BROKER_INTERNAL_TOKEN=${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          # Worker agents
+          # Engineering executor for new projects; required, no fallback.
+          DEFAULT_AGENT_TYPE=${{ vars.DEFAULT_AGENT_TYPE }}
+          FACTORY_API_KEY=${{ secrets.FACTORY_API_KEY }}
+          HOST_CLAUDE_DIR=${{ secrets.HOST_CLAUDE_DIR }}
+          HOST_CODEX_HOME=${{ secrets.HOST_CODEX_HOME }}
+          # Shared manager-to-broker credential. Generate: openssl rand -hex 32
+          WORKER_BROKER_INTERNAL_TOKEN=${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
 
-            # Observability
-            LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
-            LOKI_PUSH_USER=${{ secrets.LOKI_PUSH_USER }}
-            LOKI_PUSH_PASSWORD=${{ secrets.LOKI_PUSH_PASSWORD }}
-            LOKI_PUSH_PASSWORD_HASH=${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
-            GRAFANA_DB_USER=${{ secrets.GRAFANA_DB_USER }}
-            GRAFANA_DB_PASSWORD=${{ secrets.GRAFANA_DB_PASSWORD }}
-            GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-            # Loki read address for the analytics aggregator (internal network name)
-            LOKI_URL=http://loki:3100
+          # Observability
+          LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
+          LOKI_PUSH_USER=${{ secrets.LOKI_PUSH_USER }}
+          LOKI_PUSH_PASSWORD=${{ secrets.LOKI_PUSH_PASSWORD }}
+          LOKI_PUSH_PASSWORD_HASH=${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          GRAFANA_DB_USER=${{ secrets.GRAFANA_DB_USER }}
+          GRAFANA_DB_PASSWORD=${{ secrets.GRAFANA_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          # Loki read address for the analytics aggregator (internal network name)
+          LOKI_URL=http://loki:3100
 
-            # Admin UI
-            ADMIN_USER=${{ secrets.ADMIN_USER }}
-            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+          # Admin UI
+          ADMIN_USER=${{ secrets.ADMIN_USER }}
+          ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
 
-            # LK (user dashboard)
-            LK_DOMAIN=${{ secrets.LK_DOMAIN }}
-            LK_JWT_SECRET=${{ secrets.LK_JWT_SECRET }}
+          # LK (user dashboard)
+          LK_DOMAIN=${{ secrets.LK_DOMAIN }}
+          LK_JWT_SECRET=${{ secrets.LK_JWT_SECRET }}
 
-            # Prod secret paths (used by docker-compose.prod.yml)
-            GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
-            # In-container path of the same key; services fail fast without it
-            GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
-            ENVEOF
-            chmod 600 ${{ env.DEPLOY_PATH }}/.env
+          # Prod secret paths (used by docker-compose.prod.yml)
+          GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
+          # In-container path of the same key; services fail fast without it
+          GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
+          ENVEOF
+          chmod 600 ${{ env.DEPLOY_PATH }}/.env
+          REMOTE
 
       # Checked on the file that was actually written, because that is what the
       # services read. An allowlist is the only thing that authorizes reinstalling
@@ -255,52 +282,56 @@ jobs:
       # not own, and a bot token would fight production's for its updates.
       - name: Verify the deployed contour carries only its own credentials
         if: ${{ inputs.environment != 'production' }}
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            token=$(grep -m1 "^TELEGRAM_BOT_TOKEN=" ${{ env.DEPLOY_PATH }}/.env | cut -d= -f2- || true)
-            if [ -n "${token}" ]; then
-              echo "FATAL: TELEGRAM_BOT_TOKEN must be empty outside production" >&2
-              exit 1
-            fi
-            allowlist=$(grep -m1 "^PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=" ${{ env.DEPLOY_PATH }}/.env \
-              | cut -d= -f2- || true)
-            if [ "${allowlist}" != "${{ vars.MANAGED_SERVER_IDS_DECLARED }}" ]; then
-              echo "FATAL: the deployed allowlist is not the one this contour declared" >&2
-              exit 1
-            fi
-            echo "this contour carries only its own allowlist: ${allowlist}"
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          set -euo pipefail
+          bash infra/scripts/deploy-ssh.sh <<'REMOTE'
+          set -euo pipefail
+          token=$(grep -m1 "^TELEGRAM_BOT_TOKEN=" ${{ env.DEPLOY_PATH }}/.env | cut -d= -f2- || true)
+          if [ -n "${token}" ]; then
+            echo "FATAL: TELEGRAM_BOT_TOKEN must be empty outside production" >&2
+            exit 1
+          fi
+          allowlist=$(grep -m1 "^PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=" ${{ env.DEPLOY_PATH }}/.env \
+            | cut -d= -f2- || true)
+          if [ "${allowlist}" != "${{ vars.MANAGED_SERVER_IDS_DECLARED }}" ]; then
+            echo "FATAL: the deployed allowlist is not the one this contour declared" >&2
+            exit 1
+          fi
+          echo "this contour carries only its own allowlist: ${allowlist}"
+          REMOTE
 
       - name: Write secrets files to server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            sudo mkdir -p /opt/secrets
-            sudo chown deploy:deploy /opt/secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          set -euo pipefail
+          bash infra/scripts/deploy-ssh.sh <<'REMOTE'
+          set -euo pipefail
+          sudo mkdir -p /opt/secrets
+          sudo chown deploy:deploy /opt/secrets
 
-            echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
-            chmod 600 /opt/secrets/github_app.pem
+          echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
+          chmod 600 /opt/secrets/github_app.pem
+          REMOTE
 
       # Deploys the exact commit this workflow run was dispatched on, not whatever
       # origin/main points at by the time the step runs.
       - name: Check out deployed revision
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            git fetch --no-tags origin ${{ github.sha }}
-            git reset --hard ${{ github.sha }}
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          set -euo pipefail
+          bash infra/scripts/deploy-ssh.sh <<'REMOTE'
+          set -euo pipefail
+          cd ${{ env.DEPLOY_PATH }}
+          git fetch --no-tags origin ${{ github.sha }}
+          git reset --hard ${{ github.sha }}
+          REMOTE
 
       # The worker base images are one release chain keyed by the commit being
       # deployed (.github/workflows/ci.yml, publish-worker-images). This reads the
@@ -341,12 +372,9 @@ jobs:
           DIGEST_FILE: ${{ runner.temp }}/deployed-worker-images.json
         run: |
           set -euo pipefail
-          key="$(mktemp)"
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
-          chmod 600 "${key}"
-          ssh -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-            "${DEPLOY_SSH_USER}@${PROD_HOST}" \
-            "cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json" > "${DIGEST_FILE}"
+          bash infra/scripts/deploy-ssh.sh > "${DIGEST_FILE}" <<'REMOTE'
+          cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json
+          REMOTE
           {
             echo "### Deployed revision ${GIT_SHA}"
             echo
