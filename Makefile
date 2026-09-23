@@ -81,6 +81,7 @@ lock-deps:
 	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
 	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
 	uv pip compile services/scaffolder/pyproject.toml -o services/scaffolder/requirements.lock
+	uv pip compile services/worker-broker/pyproject.toml -o services/worker-broker/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===

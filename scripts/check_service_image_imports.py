@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build each backend service image and import its runtime module inside it."""
+"""Build each backend service image, import its runtime modules and check its lock inside it.
+
+One build per image serves both checks: the entrypoint imports, and the lock check of
+scripts/service_image_locks.py (the image's installed distributions equal its
+requirements.lock, and the lock still satisfies its pyproject.toml).
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import time
 
 import yaml
 
+try:
+    from scripts import service_image_locks
+except ModuleNotFoundError:  # Script execution puts scripts/, not the root, on sys.path.
+    import service_image_locks
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "docker-compose.yml"
+SERVICE_IMAGE_LIST = ROOT / "infra" / "scripts" / "service-images.sh"
 
 
 @dataclass(frozen=True)
@@ -24,6 +36,14 @@ class ServiceImage:
     @property
     def tag(self) -> str:
         return f"codegen-orchestrator/{self.name}:entrypoint-import"
+
+    @property
+    def lock(self) -> Path:
+        return ROOT / Path(self.dockerfile).parent / service_image_locks.LOCK
+
+    @property
+    def pyproject(self) -> Path:
+        return ROOT / Path(self.dockerfile).parent / service_image_locks.PYPROJECT
 
 
 # Keep this to production services. Test-runner images do not ship an application
@@ -72,6 +92,61 @@ IMPORT_ENV = {
 
 def run(command: list[str]) -> None:
     subprocess.run(command, check=True, cwd=ROOT)
+
+
+def capture(command: list[str]) -> str:
+    return subprocess.run(command, check=True, cwd=ROOT, capture_output=True, text=True).stdout
+
+
+def listed_service_images() -> list[tuple[str, str, str]]:
+    """(image, dockerfile, context) of every image of the release chain's one list."""
+    listing = capture(
+        [
+            "bash",
+            "-c",
+            'source "$1"; printf "%s\\n" "${SERVICE_IMAGES[@]}"',
+            "_",
+            str(SERVICE_IMAGE_LIST),
+        ]
+    )
+    entries = []
+    for line in listing.splitlines():
+        image, dockerfile, context = line.split()
+        entries.append((image, dockerfile, context))
+    return entries
+
+
+def npm_locked(dockerfile: str, context: str) -> bool:
+    """A frontend image: ``npm ci`` installs its package-lock.json and fails on any drift."""
+    return (ROOT / context / "package-lock.json").is_file() and "npm ci" in (
+        ROOT / dockerfile
+    ).read_text()
+
+
+def assert_every_listed_image_is_locked() -> None:
+    """Fail before Docker work when a released image would escape the lock check.
+
+    Every image of infra/scripts/service-images.sh is either a Python image this script
+    builds and checks against its requirements.lock, or a frontend whose ``npm ci``
+    enforces its package-lock.json. Anything else has no lock anybody checks.
+    """
+    guarded = {service.name: service.dockerfile for service in SERVICE_IMAGES}
+    listed_python = {}
+    for image, dockerfile, context in listed_service_images():
+        lock = ROOT / Path(dockerfile).parent / service_image_locks.LOCK
+        if lock.is_file():
+            listed_python[image] = dockerfile
+        elif not npm_locked(dockerfile, context):
+            raise RuntimeError(
+                f"{image} ({dockerfile}) has neither a requirements.lock nor an npm ci "
+                "package-lock.json, so nothing checks what it installs"
+            )
+    if listed_python != guarded:
+        raise RuntimeError(
+            f"The Python images of {SERVICE_IMAGE_LIST.relative_to(ROOT)} "
+            f"{sorted(listed_python.items())} are not the images this check builds "
+            f"{sorted(guarded.items())}"
+        )
 
 
 def command_module(command: str | list[str]) -> str | None:
@@ -154,7 +229,8 @@ def assert_compose_modules_covered(coverage: dict[str, tuple[str, ...]]) -> None
             )
 
 
-def check_service_image(service: ServiceImage, modules: tuple[str, ...]) -> float:
+def check_service_image(service: ServiceImage, modules: tuple[str, ...]) -> tuple[float, list[str]]:
+    """Build one image, import its modules in it, and return its lock problems."""
     started_at = time.monotonic()
     run(
         [
@@ -185,18 +261,46 @@ def check_service_image(service: ServiceImage, modules: tuple[str, ...]) -> floa
             "; ".join(f"import {module}" for module in modules),
         ]
     )
-    return time.monotonic() - started_at
+    probe = capture(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            service.tag,
+            "-c",
+            service_image_locks.PROBE,
+        ]
+    )
+    problems = service_image_locks.check_image(
+        service.name, service.lock.read_text(), service.pyproject.read_text(), probe
+    )
+    return time.monotonic() - started_at, problems
 
 
 def main() -> None:
     started_at = time.monotonic()
     coverage = {service.name: modules_for(service.name) for service in SERVICE_IMAGES}
     assert_compose_modules_covered(coverage)
+    assert_every_listed_image_is_locked()
+    drifted = []
     for service in SERVICE_IMAGES:
         modules = coverage[service.name]
-        duration = check_service_image(service, modules)
-        print(f"{service.name}: imported {', '.join(modules)} from its image in {duration:.1f}s")
+        duration, problems = check_service_image(service, modules)
+        verdict = "matches its lock" if not problems else f"{len(problems)} lock problem(s)"
+        print(
+            f"{service.name}: imported {', '.join(modules)} from its image, {verdict}, "
+            f"in {duration:.1f}s"
+        )
+        drifted += problems
     print(f"Checked {len(SERVICE_IMAGES)} service images in {time.monotonic() - started_at:.1f}s")
+    if drifted:
+        print("Service images whose installed dependencies are not their lock:", file=sys.stderr)
+        for problem in drifted:
+            print(f"  {problem}", file=sys.stderr)
+        print("Regenerate the locks with `make lock-deps` and rebuild.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

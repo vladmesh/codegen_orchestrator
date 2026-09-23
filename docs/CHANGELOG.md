@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Every Python service image installs its `requirements.lock` before `COPY shared`/`src`, infra-service's
+  Ansible collections are exact pins, and `service-image-imports` fails on any image-vs-lock drift.
+
 - The prod overlay resets every source bind-mount, so prod and stand run the released image code only;
   shared freshness now compares those images, and `service_release.py readback` checks it on the host.
 

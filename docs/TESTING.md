@@ -90,6 +90,16 @@ directory no longer exists. It currently holds three entries: `services/langgrap
 `services/infra-service/tests/integration` (red) and `tests/integration/worker_wrapper` (red,
 needs a checkout that exists only inside a worker container).
 
+## Service images install exactly their lock
+
+`service-image-imports` builds every Python service image once and, in the same image, imports its
+entry modules and compares its installed distributions with its `requirements.lock`: any added,
+missing or re-versioned package, or a lock that no longer satisfies its `pyproject.toml`, fails the
+job and so the Required CI Gate. `make test-unit` carries the cheap half (each lock pins every
+direct requirement, `make lock-deps` covers every lock, the lock is installed before any source).
+The frontends' `npm ci` enforces their `package-lock.json` already. The rule and the check are
+described in [DEPLOY.md](DEPLOY.md#service-images-are-a-release-too).
+
 ## CI infrastructure failures
 
 A CI job can fail because a download or a registry did not answer, not because of the code.

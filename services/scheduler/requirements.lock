@@ -69,7 +69,7 @@ pydantic==2.13.4
     #   pydantic-settings
 pydantic-core==2.46.4
     # via pydantic
-pydantic-settings==2.12.0
+pydantic-settings==2.15.0
     # via scheduler (services/scheduler/pyproject.toml)
 pyjwt==2.13.0
     # via scheduler (services/scheduler/pyproject.toml)
@@ -79,7 +79,7 @@ python-dotenv==1.2.1
     # via pydantic-settings
 pyyaml==6.0.3
     # via scheduler (services/scheduler/pyproject.toml)
-redis==8.0.0
+redis==8.1.0
     # via scheduler (services/scheduler/pyproject.toml)
 regex==2025.11.3
     # via tiktoken

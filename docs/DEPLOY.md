@@ -751,6 +751,34 @@ the contract. The buildx layer cache lives in its own repository,
 `ghcr.io/<owner>/codegen-orchestrator/service-build-cache:<image>`; it is a cache, never an image to
 run.
 
+**What an image installs is its lock.** Every Python image installs its third-party dependencies
+from its own `services/<svc>/requirements.lock` (`pip install -r`, with a pip cache mount), in a
+layer before `COPY shared` and `COPY …/src`, and resolves nothing else: the service's own code runs
+from `PYTHONPATH=/app` and is not pip-installed. So a released image carries exactly the versions CI
+tested, and a `shared/` or `src/` edit reuses the dependency layer. The locks come from
+`make lock-deps` (`uv pip compile services/<svc>/pyproject.toml`), which covers every service; a
+`pyproject.toml` change goes with a regenerated lock. infra-service's Ansible collections
+(`services/infra-service/ansible/requirements.yml`) are exact versions too, installed in a layer
+before its source. The two frontends need no Python lock: `npm ci` installs `package-lock.json`
+exactly and fails when it disagrees with `package.json`.
+
+The `service-image-imports` job, which already builds every Python image on each pull request,
+enforces this with no build of its own (`scripts/check_service_image_imports.py`, the comparison in
+`scripts/service_image_locks.py`). In each image it has just built it reads the installed
+distributions and fails the `Required CI Gate` on:
+
+- **drift** — an installed distribution the lock does not pin, a pinned one that is missing, or one
+  at another version, each named with the image, the package and both versions. Only `pip`,
+  `setuptools`, `wheel` and the service's own package are ignored;
+- **a stale lock** — a `pyproject.toml` requirement, followed through every installed distribution's
+  own requirements and extras, that the installed (that is, locked) set does not satisfy.
+
+Before any build it also fails when an image of `infra/scripts/service-images.sh` is neither a
+Python image it checks nor an `npm ci` frontend. The cheap half of the freshness check runs earlier,
+in `make test-unit` (`scripts/tests/test_service_image_locks.py`): every lock pins each direct
+`pyproject.toml` requirement at a version it allows, `make lock-deps` generates every lock, and each
+Dockerfile installs its lock with a cache mount before any source.
+
 **Two jobs, one writer of the release.** Both run on push to `main` only, so a pull request gets
 no `packages: write` and waits for neither.
 
