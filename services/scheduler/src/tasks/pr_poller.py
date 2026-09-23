@@ -46,6 +46,9 @@ logger = structlog.get_logger(__name__)
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 _CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 _MERGE_PENDING_STATES = {"unknown", "unstable", "blocked"}
+#: Logged when GitHub did not confirm withdrawing a PR's auto-merge request; the
+#: poller then neither refreshes nor merges, and asks again on the next poll.
+AUTO_MERGE_DISABLE_FAILED = "github_auto_merge_disable_failed"
 
 
 def _ci_failure_limit() -> int:
@@ -574,7 +577,45 @@ async def _park_story_for_merge_refusal(
     )
 
 
-async def _merge_open_pr_without_auto_merge(
+async def _take_over_auto_merge(
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    pull_request: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Withdraw GitHub's auto-merge request so this poller is the PR's only merger.
+
+    Such a request is left over from before the poller merged every product PR
+    itself. Left armed, GitHub would merge when checks pass — with whatever
+    registry secrets the repository holds by then — and nothing here would write
+    them first. False means GitHub did not confirm the withdrawal: the caller
+    neither refreshes nor merges, and the next poll asks again.
+    """
+    pr_number = pull_request["number"]
+    pr_node_id = pull_request.get("node_id")
+    try:
+        if not pr_node_id:
+            raise ValueError("the pull request carries no GraphQL node id")
+        withdrawn = await github.disable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+        detail = None if withdrawn else "GitHub did not confirm the auto-merge withdrawal"
+    except Exception as exc:
+        withdrawn = False
+        detail = redact_diagnostic(exc, secrets=tuple(secret_env_values(dict(os.environ))))
+    if not withdrawn:
+        log.warning(
+            "poll_merged_auto_merge_takeover_failed",
+            reason=AUTO_MERGE_DISABLE_FAILED,
+            pr_number=pr_number,
+            detail=detail,
+        )
+        return False
+    log.info("poll_merged_auto_merge_taken_over", pr_number=pr_number)
+    return True
+
+
+async def _merge_open_pr(
     api_client: SchedulerAPIClient,
     github: GitHubAppClient,
     redis_client: RedisStreamClient,
@@ -586,12 +627,13 @@ async def _merge_open_pr_without_auto_merge(
     pull_request: dict,
     log: structlog.stdlib.BoundLogger,
 ) -> dict | None:
-    """Merge a green PR only when GitHub did not accept an auto-merge request.
+    """Merge a green PR through the App; this poller is its only automated merger.
 
-    Pending and CI-blocked PRs stay in the poll set for their normal next tick.
-    A refusal observed from GitHub is terminal for this automatic path, so it is
-    recorded with owner and administrator notices instead of being retried as a
-    warning forever.
+    An auto-merge request left on the PR is withdrawn first, and while GitHub has
+    not confirmed that, nothing is refreshed or merged. Pending and CI-blocked PRs
+    stay in the poll set for their normal next tick. A refusal observed from
+    GitHub is terminal for this automatic path, so it is recorded with owner and
+    administrator notices instead of being retried as a warning forever.
     """
     pr_number = pull_request["number"]
     if pull_request.get("state") == "closed" and not pull_request.get("merged_at"):
@@ -607,8 +649,14 @@ async def _merge_open_pr_without_auto_merge(
             log=log,
         )
         return None
-    if pull_request.get("state") != "open" or pull_request.get("auto_merge") is not None:
+    if pull_request.get("state") != "open":
         return pull_request
+    if pull_request.get("auto_merge") is not None:
+        if not await _take_over_auto_merge(
+            github, owner=owner, repo_name=repo_name, pull_request=pull_request, log=log
+        ):
+            return pull_request
+        pull_request = {**pull_request, "auto_merge": None}
 
     mergeable_state = pull_request.get("mergeable_state")
     if mergeable_state == "behind":
@@ -730,7 +778,7 @@ async def _current_pull_request(
     except Exception:
         log.exception("poll_merged_github_error", pr_number=pr_number)
         return None
-    return await _merge_open_pr_without_auto_merge(
+    return await _merge_open_pr(
         api_client,
         github,
         redis_client,

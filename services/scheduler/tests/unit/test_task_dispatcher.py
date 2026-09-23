@@ -1749,7 +1749,6 @@ class TestCompleteStories:
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
         github.get_ref_sha.return_value = STORY_HEAD_SHA
-        github.enable_auto_merge.return_value = True
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -1811,7 +1810,6 @@ class TestCompleteStories:
             "merged_at": "2026-09-13T15:00:00Z",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -1873,7 +1871,6 @@ class TestCompleteStories:
             "node_id": "PR_fix",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -1888,9 +1885,8 @@ class TestCompleteStories:
         github.create_pull_request.assert_awaited_once()
         github.get_pull_request.assert_not_awaited()
         api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 5})
-        github.enable_auto_merge.assert_awaited_once_with(
-            "my-org", "weather-bot", pr_node_id="PR_fix"
-        )
+        # The successor is merged by the PR poller, never by GitHub auto-merge.
+        github.enable_auto_merge.assert_not_called()
         api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
@@ -1928,7 +1924,6 @@ class TestCompleteStories:
                 "node_id": "PR_new",
                 "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
             }
-            github.enable_auto_merge.return_value = True
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -1946,7 +1941,7 @@ class TestCompleteStories:
             finalize.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_auto_merge_refusal_still_finalizes_teardown_and_handoff(
+    async def test_completion_still_finalizes_teardown_and_handoff_for_the_open_pr(
         self, api_client, redis_client
     ):
         """A visible open PR must not retain the story's project worker forever."""
@@ -1968,7 +1963,6 @@ class TestCompleteStories:
             "node_id": "PR_new",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = False
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -1984,7 +1978,7 @@ class TestCompleteStories:
         api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")
 
     @pytest.mark.asyncio
-    async def test_auto_merge_refusal_persists_pr_for_the_poller_handoff(
+    async def test_completion_persists_the_open_pr_for_the_poller_handoff(
         self, api_client, redis_client
     ):
         from src.tasks.task_dispatcher import complete_stories
@@ -2002,7 +1996,6 @@ class TestCompleteStories:
             "node_id": "PR_new",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = False
 
         with (
             patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
@@ -2111,7 +2104,6 @@ class TestCompleteStories:
             "node_id": "PR_abc",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        github.enable_auto_merge.return_value = True
         with patch(
             "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)
         ):
@@ -2122,7 +2114,7 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
-        """Story with all tasks done -> creates PR, enables auto-merge, transitions to pr_review."""
+        """Story with all tasks done -> creates PR, no auto-merge, transitions to pr_review."""
 
         from src.tasks.task_dispatcher import complete_stories
 
@@ -2156,7 +2148,6 @@ class TestCompleteStories:
         redis_client.redis.hgetall.return_value = {}
         redis_client.redis.eval.return_value = 1
         redis_client.redis.get.return_value = None
-        mock_github.enable_auto_merge.return_value = True
 
         with patch(
             "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)
@@ -2173,13 +2164,11 @@ class TestCompleteStories:
             head="story/story-1",
             base="main",
             title="Add weather API",
-            body="All tasks completed. Auto-merge enabled.",
+            body="All tasks completed. The pipeline merges it once checks pass.",
         )
 
-        # Should enable auto-merge
-        mock_github.enable_auto_merge.assert_called_once_with(
-            "my-org", "weather-bot", pr_node_id="PR_abc"
-        )
+        # Should not enable auto-merge: the PR poller is the only automated merger
+        mock_github.enable_auto_merge.assert_not_called()
 
         # Should NOT publish deploy message (webhook handles it after merge)
         deploy_calls = [
@@ -2312,7 +2301,6 @@ class TestCompletionIgnoresCancelledTasks:
             "node_id": "PR_x",
             "head": {"ref": "story/story-1", "sha": STORY_HEAD_SHA},
         }
-        mock_github.enable_auto_merge.return_value = True
 
         with patch(
             "src.tasks.story_completion.GitHubAppClient", return_value=self_entering(mock_github)

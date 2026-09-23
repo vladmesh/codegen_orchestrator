@@ -14,13 +14,8 @@ from uuid import UUID
 
 from _github_client_context import assert_one_operation_scope, entered_client, self_entering
 import pytest
-from structlog.testing import capture_logs
 
-from shared.clients.github import (
-    NoCommitsBetweenError,
-    RegistrySecretsNotRefreshedError,
-    RegistrySecretsRefusal,
-)
+from shared.clients.github import NoCommitsBetweenError
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskDTO
@@ -227,7 +222,6 @@ def _completing_github(story_id: str, *, node_id: str = "PR_kwDOnode") -> AsyncM
     github.get_ref_sha.return_value = _STORY_HEAD_SHA
     github.create_pull_request.return_value = _story_pull_request(story_id, node_id)
     github.get_pull_request.return_value = _story_pull_request(story_id, "PR_kwDOnode")
-    github.enable_auto_merge.return_value = True
     return github
 
 
@@ -247,7 +241,6 @@ async def test_each_story_completion_enters_one_client_for_all_its_github_calls(
 ):
     api_client.get_stories_by_status.return_value = [_story("story-1"), _story("story-2")]
     recorder = MagicMock()
-    # A numeric node id makes the first completion re-read the PR before auto-merge.
     first = _completing_github("story-1", node_id="12345")
     second = _completing_github("story-2")
     contexts = [
@@ -259,20 +252,10 @@ async def test_each_story_completion_enters_one_client_for_all_its_github_calls(
         assert await complete_stories(api_client, redis_client) == 2
 
     assert client_cls.call_count == 2
-    # The registry secrets are written before auto-merge is enabled, in the same pool.
-    assert assert_one_operation_scope(recorder, "first") == [
-        "get_ref_sha",
-        "create_pull_request",
-        "refresh_registry_secrets",
-        "get_pull_request",
-        "enable_auto_merge",
-    ]
-    assert assert_one_operation_scope(recorder, "second") == [
-        "get_ref_sha",
-        "create_pull_request",
-        "refresh_registry_secrets",
-        "enable_auto_merge",
-    ]
+    # Completion only resolves the PR: no auto-merge (and so no node-id re-read for
+    # it), no secret write. The PR poller is the only merger.
+    assert assert_one_operation_scope(recorder, "first") == ["get_ref_sha", "create_pull_request"]
+    assert assert_one_operation_scope(recorder, "second") == ["get_ref_sha", "create_pull_request"]
     # The first completion's pool is closed before the second one opens.
     names = [c[0] for c in recorder.mock_calls]
     assert names.index("first_context.__aexit__") < names.index("second_context.__aenter__")
@@ -298,7 +281,7 @@ async def test_github_error_closes_that_storys_pool_and_the_next_story_completes
         "get_ref_sha",
         "create_pull_request",
     ]
-    assert assert_one_operation_scope(recorder, "next")[-1] == "enable_auto_merge"
+    assert assert_one_operation_scope(recorder, "next") == ["get_ref_sha", "create_pull_request"]
     # The failed story keeps retrying: only the second one moves to PR review.
     api_client.transition_story.assert_awaited_once_with("story-2", "pr_review")
 
@@ -325,27 +308,22 @@ async def test_no_commits_between_closes_the_pool_before_the_story_is_parked(
 
 
 @pytest.mark.asyncio
-async def test_auto_merge_is_not_enabled_when_the_registry_secrets_were_not_refreshed(
+async def test_completion_hands_the_pull_request_to_the_poller_without_auto_merge(
     api_client, redis_client
 ):
-    """GitHub would merge by itself and start push-main CI on stale secrets.
+    """GitHub never merges a product PR by itself; the poller merges it after the secrets.
 
-    The story still reaches PR review, where the poller refreshes the secrets
-    again before its own merge and parks the story if it still cannot.
+    An auto-merge request fires whenever checks pass, possibly after a registry
+    rotation, and nothing would write the current secrets before that merge.
     """
-    api_client.get_stories_by_status.return_value = [_story("story-1")]
     github = _completing_github("story-1")
-    github.refresh_registry_secrets.side_effect = RegistrySecretsNotRefreshedError(
-        RegistrySecretsRefusal.ENV_MISSING, "REGISTRY_PASSWORD not set"
-    )
 
-    with (
-        patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)),
-        capture_logs() as logs,
-    ):
+    with patch("src.tasks.story_completion.GitHubAppClient", return_value=self_entering(github)):
         assert await complete_stories(api_client, redis_client) == 1
 
-    github.enable_auto_merge.assert_not_awaited()
-    withheld = next(entry for entry in logs if entry["event"] == "story_auto_merge_withheld")
-    assert withheld["reason"] == "registry_secrets_env_missing"
+    github.enable_auto_merge.assert_not_called()
+    github.refresh_registry_secrets.assert_not_called()
+    github.merge_pull_request.assert_not_called()
+    assert "auto-merge" not in github.create_pull_request.await_args.kwargs["body"].lower()
+    api_client.update_story.assert_awaited_once_with("story-1", {"pr_number": 7})
     api_client.transition_story.assert_awaited_once_with("story-1", "pr_review")

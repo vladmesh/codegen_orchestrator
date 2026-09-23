@@ -6,11 +6,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.clients.github import (
-    GitHubAppClient,
-    NoCommitsBetweenError,
-    RegistrySecretsNotRefreshedError,
-)
+from shared.clients.github import GitHubAppClient, NoCommitsBetweenError
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -68,7 +64,7 @@ async def _resolve_current_cycle_pr(
             head=branch,
             base="main",
             title=story.title,
-            body="All tasks completed. Auto-merge enabled.",
+            body="All tasks completed. The pipeline merges it once checks pass.",
         )
     except NoCommitsBetweenError as no_commits:
         if not story.pr_number:
@@ -131,48 +127,6 @@ async def _has_live_deploy_fix(api_client: SchedulerAPIClient, story_id: str) ->
     )
 
 
-async def _enable_auto_merge(
-    github: GitHubAppClient,
-    *,
-    owner: str,
-    repo_name: str,
-    pr_number: int,
-    pr_node_id: object,
-    log: structlog.stdlib.BoundLogger,
-) -> bool:
-    """Enable auto-merge on a story PR, resolving its GraphQL node id first.
-
-    GitHub merges an auto-merge PR by itself, and that merge starts the product's
-    push-main CI, whose image builds read the registry secrets when they start.
-    So the secrets are made current before auto-merge is enabled; when they
-    cannot be, auto-merge is not enabled and the merge is left to the PR poller,
-    which refreshes them again before its own merge and parks the story if it
-    still cannot.
-
-    ``enable_auto_merge`` needs a GraphQL ID (e.g. "PR_kwDO..."); a numeric or
-    missing one from the creation response is re-read over REST before giving up.
-    """
-    try:
-        await github.refresh_registry_secrets(owner, repo_name)
-    except RegistrySecretsNotRefreshedError as error:
-        log.error(
-            "story_auto_merge_withheld",
-            pr_number=pr_number,
-            reason=error.reason.value,
-            detail=error.detail,
-        )
-        return False
-    if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
-        return await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
-    log.warning("story_pr_node_id_invalid", pr_number=pr_number, node_id_raw=repr(pr_node_id))
-    pr_details = await github.get_pull_request(owner, repo_name, pr_number)
-    pr_node_id = pr_details.get("node_id", "")
-    if pr_node_id and not pr_node_id.isdigit():
-        return await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
-    log.error("story_pr_node_id_fetch_failed", pr_number=pr_number)
-    return False
-
-
 async def _park_story_without_commits(
     api_client: SchedulerAPIClient,
     story_id: str,
@@ -216,7 +170,8 @@ async def complete_stories(
 
     When all live tasks in a story are done:
     1. Read story/{story_id} HEAD and resolve its exact current-cycle PR
-    2. Persist that PR number and attempt auto-merge
+    2. Persist that PR number; GitHub auto-merge is never enabled, because the PR
+       poller is the only automated merger (see ``pr_poller``)
     3. Finalize worker removal and its unchanged story binding
     4. Transition story to PR_REVIEW, then trigger the next story
 
@@ -306,8 +261,9 @@ async def complete_stories(
                 pr_merged = pr.get("merged_at") is not None
 
                 if pr_merged:
-                    # PR already merged (e.g. QA fix cycle — fix task pushed to
-                    # story branch, PR auto-merged while story was in_progress).
+                    # PR already merged while the story was in_progress (e.g. a
+                    # person merged it, or an auto-merge request enabled before the
+                    # PR poller became the only automated merger fired).
                     # Transition to pr_review so poll_merged_prs() picks it up
                     # and triggers deploy.
                     log.info(
@@ -327,25 +283,17 @@ async def complete_stories(
                     completed += 1
                     continue
 
+                # No GitHub auto-merge: a merge GitHub performs later, by itself,
+                # starts the product's push-main CI with whatever registry secrets
+                # the repository holds by then. The PR poller re-reads this PR after
+                # checks settle, writes the current registry secrets and merges in
+                # the same tick, or parks a GitHub refusal with notices.
                 log.info(
                     "story_pr_created",
                     pr_number=pr_number,
                     branch=branch,
                     node_id=pr_node_id[:20] if pr_node_id else "",
                 )
-
-                if not await _enable_auto_merge(
-                    github,
-                    owner=owner,
-                    repo_name=repo_name,
-                    pr_number=pr_number,
-                    pr_node_id=pr_node_id,
-                    log=log,
-                ):
-                    # The PR poller re-reads this PR after checks settle. It either
-                    # merges through the App or parks a GitHub refusal with notices;
-                    # this creation tick deliberately owns neither decision.
-                    log.info("story_auto_merge_deferred_to_poller", pr_number=pr_number)
         except NoCommitsBetweenError as no_commits:
             # Not a transient error: the branch carries no commit of its own, so
             # every later tick asks GitHub the same impossible question and gets

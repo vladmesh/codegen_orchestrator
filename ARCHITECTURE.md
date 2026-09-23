@@ -36,7 +36,7 @@ A three-level abstraction for product management:
 4. The PO publishes an `ArchitectMessage` to `architect:queue`
 5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
 6. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue`
-7. Once all tasks are done — a PR story/* → main, auto-merge → deploy → QA → story completed
+7. Once all tasks are done — a PR story/* → main, merged by the PR poller after writing the registry secrets → deploy → QA → story completed
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
@@ -140,7 +140,7 @@ graph TD
 
     Dispatcher --> |"finds unblocked tasks"| API
     Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
-    Dispatcher --> |"story complete → PR story/* → main + auto-merge"| DeployQueue
+    Dispatcher --> |"story complete → PR story/* → main, poller merges"| DeployQueue
 
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
@@ -194,8 +194,8 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        Telegram Bot → User
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
-All tasks done → Dispatcher creates PR story/* → main, writes the repo's REGISTRY_* secrets, enables auto-merge → story pr_review
-PR merged (auto-merge, or the PR poller after rewriting REGISTRY_*) → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
+All tasks done → Dispatcher creates PR story/* → main (no GitHub auto-merge) → story pr_review
+Checks green → PR poller writes the repo's REGISTRY_* secrets, then merges → push-main CI publishes the merge commit's images → PR poller observes them → deploy:queue → deploy
 Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
 QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
@@ -206,7 +206,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
-- **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
+- **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (the PR poller merges on green)
 - **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY.
 - **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally — the only executor there is, so a failure to start it ends the run as a typed infrastructure outcome. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
 - **Unified Redis Consumers**: every consumer reads through `RedisStreamClient.consume()` / `consume_typed()` with PEL recovery (`claim_pending=True`) — an entry left unacked is reclaimed by the running consumer on its next `XAUTOCLAIM` sweep, restart or no restart, and a poison entry goes to `{stream}:dlq` rather than being ACKed away. The PO consumer reads through the same client and differs only in what it does with an entry: it dispatches concurrently, and keeps the ids it has in flight so its own sweep cannot hand it work it is already running. Delivery stays at-least-once between processes, as it is for every other consumer. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)

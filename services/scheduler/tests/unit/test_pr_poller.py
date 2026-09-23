@@ -527,6 +527,102 @@ async def test_the_registry_secrets_are_refreshed_immediately_before_the_app_mer
     gh.refresh_registry_secrets.assert_awaited_once_with("org", "my-repo")
 
 
+def _armed_pull_request(mergeable_state: str = "clean") -> dict:
+    """An open PR still carrying an auto-merge request from before the poller merged alone."""
+    return {
+        **_clean_open_pull_request(),
+        "node_id": "PR_kwDOarmed",
+        "auto_merge": {"merge_method": "merge"},
+        "mergeable_state": mergeable_state,
+    }
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_a_pull_request_armed_for_auto_merge_is_taken_over_then_refreshed_then_merged(
+    mock_gh_cls,
+):
+    """GitHub must not merge it later on its own; the poller merges it after the write."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.side_effect = [_armed_pull_request(), RuntimeError("read-back")]
+    gh.disable_auto_merge.return_value = True
+    gh.merge_pull_request.return_value = {"merged": True, "sha": "e" * 40}
+
+    await poll_merged_prs(api, redis)
+
+    calls = [name for name, _args, _kwargs in gh.mock_calls if not name.startswith("__")]
+    assert calls[calls.index("disable_auto_merge") :][:3] == [
+        "disable_auto_merge",
+        "refresh_registry_secrets",
+        "merge_pull_request",
+    ]
+    gh.disable_auto_merge.assert_awaited_once_with("org", "my-repo", pr_node_id="PR_kwDOarmed")
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_armed_pull_request_still_waiting_on_checks_is_disarmed_and_left_waiting(
+    mock_gh_cls,
+):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = _armed_pull_request("blocked")
+    gh.disable_auto_merge.return_value = True
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    gh.disable_auto_merge.assert_awaited_once()
+    gh.refresh_registry_secrets.assert_not_awaited()
+    gh.merge_pull_request.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("withdrawal", "node_id"),
+    [
+        ({"return_value": False}, "PR_kwDOarmed"),
+        ({"side_effect": RuntimeError("502 Bad Gateway")}, "PR_kwDOarmed"),
+        ({"return_value": True}, None),
+    ],
+    ids=["not-confirmed", "github-error", "no-node-id"],
+)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_an_auto_merge_request_that_was_not_withdrawn_blocks_refresh_and_merge(
+    mock_gh_cls, withdrawal, node_id
+):
+    """Retry on the next poll: no secret write as if merging, no merge, no park."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = self_entering(gh)
+    api = AsyncMock()
+    redis = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story(pr_number=42)]
+    api.get_primary_repository.return_value = _make_repo()
+    gh.get_pull_request.return_value = {**_armed_pull_request(), "node_id": node_id}
+    gh.disable_auto_merge.configure_mock(**withdrawal)
+
+    with capture_logs() as logs:
+        assert await poll_merged_prs(api, redis) == 0
+
+    gh.refresh_registry_secrets.assert_not_awaited()
+    gh.merge_pull_request.assert_not_awaited()
+    failed = next(e for e in logs if e["event"] == "poll_merged_auto_merge_takeover_failed")
+    assert failed["reason"] == "github_auto_merge_disable_failed"
+    assert failed["pr_number"] == 42
+    api.update_story.assert_not_awaited()
+    api.transition_story.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_a_pull_request_still_waiting_on_checks_writes_no_secrets(mock_gh_cls):

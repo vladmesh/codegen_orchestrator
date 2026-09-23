@@ -94,7 +94,7 @@ The AI that works inside a worker container — a Developer Worker or a QA Execu
 ### Story
 A large feature or user need. Generates one or more Tasks. Lives at the level of the whole project.
 **Types:** `product` (user value) | `technical` (internal work).
-**Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI + auto-merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
+**Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI and the PR poller's merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
 **Table:** `stories`
 
 ### Epic

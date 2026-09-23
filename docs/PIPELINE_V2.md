@@ -348,35 +348,39 @@ attempt without a retry budget.
 1. Task Dispatcher reads the current `story/{story_id}` ref SHA, then resolves its
    `main` PR through `create_pull_request`; an open PR is reused, while later fix commits get a successor
 2. Validates the returned PR against that exact head and persists its number for the poller
-3. Writes the product repository's registry secrets, then attempts auto-merge; a failed
-   secret write withholds auto-merge, and any refusal leaves the open PR visible but does not
-   retain the worker
+3. Does **not** enable GitHub auto-merge: the PR poller is the only automated merger (see
+   below); the open PR stays visible and does not retain the worker
 4. Finalizes worker teardown, including the unchanged story binding
 5. Transitions the story to `pr_review` and triggers the next queued story
 
-If an armed PR merges while teardown is pending, the next no-commits response
+If the PR merges while teardown is pending, the next no-commits response
 recovers only the stored merged PR whose branch and head SHA still equal the
 current story ref. An earlier fix-cycle PR or ambiguous GitHub response cannot
 stand in for the current completion.
 
 **CI runs on the PR:**
-- **Green CI** → auto-merge → PR poller detects merged PR → deploy
+- **Green CI** → PR poller writes the registry secrets and merges → observes the merge commit's images → deploy
 - **Red CI** → PR poller detects CI failure → creates fix task → one `retry-after-ci-failure` call walks the story `failed → reopened → in_progress` server-side
 
 **PR merge detection**: `scheduler-pipeline` runs the PR poller (`scheduler/src/tasks/pr_poller.py`) for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
 
-**Registry secrets before every merge.** The merge starts the product's push-main CI, whose
-`build-and-push` jobs read `REGISTRY_URL`, `REGISTRY_USER` and `REGISTRY_PASSWORD` when they
-start. So every merge the platform performs or enables is preceded by
-`GitHubAppClient.refresh_registry_secrets`, which writes the three from `scheduler-pipeline`'s
-`ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD`: story completion does it before
-enabling auto-merge, the PR poller before its own `merge_pull_request`. This covers a repository
-the platform did not create and one created before a hostname or credential change; the deploy
+**The pipeline merges product PRs itself, never through GitHub auto-merge.** The merge starts
+the product's push-main CI, whose `build-and-push` jobs read `REGISTRY_URL`, `REGISTRY_USER` and
+`REGISTRY_PASSWORD` when they start. GitHub auto-merge fires whenever checks pass, possibly after a
+registry hostname or credential rotation, and nothing would write the current values before that
+merge. So the PR poller merges every product PR, and in the same tick immediately before its
+`merge_pull_request` it calls `GitHubAppClient.refresh_registry_secrets`, which writes the three
+from `scheduler-pipeline`'s `ORCHESTRATOR_HOSTNAME`/`REGISTRY_USER`/`REGISTRY_PASSWORD`. This
+covers a repository the platform did not create and one created before a rotation; the deploy
 worker's own write of the same secrets comes after the merge, too late for that CI. If the write
-is incomplete, story completion leaves auto-merge off, and the poller does not merge: it parks the
-story in `waiting_human_review` with `quarantine_reason.reason` set to
-`registry_secrets_env_missing` or `registry_secrets_write_incomplete`, naming variables and
-counts only.
+is incomplete the poller does not merge: it parks the story in `waiting_human_review` with
+`quarantine_reason.reason` set to `registry_secrets_env_missing` or
+`registry_secrets_write_incomplete`, naming variables and counts only.
+
+A PR still armed for auto-merge from before this rule is taken over: the poller withdraws the
+request (`disable_auto_merge`, GraphQL `disablePullRequestAutoMerge`) and then follows the same
+refresh-then-merge path. Until GitHub confirms the withdrawal it neither refreshes nor merges; it
+logs `github_auto_merge_disable_failed` and asks again on the next poll.
 
 ---
 
@@ -577,7 +581,7 @@ created → in_progress → pr_review → deploying → testing → completed
          completed → reopened → in_progress
          failed → reopened
 ```
-`pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
+`pr_review` — all tasks done, PR created from story branch to main. Waiting for CI and the PR poller's merge.
 `deploying` is a deploy gate — story waits for successful deploy before QA.
 `testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
 on the management host (Codex by default, with Claude Code as an explicit `QA_EXECUTOR_AGENT_TYPE=claude` override).
@@ -604,7 +608,7 @@ client, and never derived by a reader:
 | Story status | `waiting_on` | What has to happen |
 |---|---|---|
 | `created`, `in_progress`, `reopened` | `none` | the pipeline itself is working |
-| `pr_review` | `ci` | CI on the story branch, then auto-merge |
+| `pr_review` | `ci` | CI on the story branch, then the PR poller's merge |
 | `deploying` | `deploy` | the deploy run |
 | `testing` | `qa` | the QA verdict |
 | `waiting_human_review` | `human_review` | an admin |

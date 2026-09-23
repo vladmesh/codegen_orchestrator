@@ -6,8 +6,8 @@ Exercises the entire path from project creation to a live /health response:
   2. scaffold:queue → scaffolder → GitHub repo (+ branch protection on main)
   3. API: create story (in_progress) + task (todo)
   4. task_dispatcher → engineering:queue → worker → commit + push to story branch
-  5. All tasks done → dispatcher creates PR story/{id} → main (auto-merge enabled)
-  6. CI runs on PR → green → auto-merge → webhook → deploy:queue
+  5. All tasks done → dispatcher creates PR story/{id} → main (no GitHub auto-merge)
+  6. CI runs on PR → green → PR poller writes registry secrets, merges → deploy:queue
   7. deploy consumer → DevOps subgraph → GitHub Actions deploy.yml
   8. smoke test: GET /health → 200
 

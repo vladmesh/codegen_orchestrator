@@ -83,8 +83,8 @@ class TestEngineeringPipeline:
         """Story transitions past in_progress after all tasks done.
 
         With the PR-based CI gate, stories go to 'pr_review' after all tasks done
-        (dispatcher creates PR from story branch → main with auto-merge).
-        'deploying' happens later via webhook when PR is merged.
+        (dispatcher creates PR from story branch → main; the PR poller merges it).
+        'deploying' happens later, once the PR poller has merged it.
         """
         if engineering_ctx.get("task_status") != TaskStatus.DONE:
             pytest.skip("task not done")
