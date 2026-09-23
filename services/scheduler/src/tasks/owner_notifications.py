@@ -64,10 +64,24 @@ Delivery is at-least-once, not exactly-once. A process that dies between the
 publish landing and the record being marked delivered republishes on the next
 tick. That is the honest trade for never losing the message; what the record
 does guarantee is that a *settled* notification is never published again.
+
+The truth check has the same kind of window, and it is narrowed, not closed.
+The story (and, for a task-level record, the task) is read a last time after
+the recipient is resolved and immediately before the ``XADD``, so nothing slow
+sits between the check and the publish. What remains is the moment between
+those reads and Redis accepting the entry: a move committed inside it — a
+resume landing just as a "waiting" notice is published — is not seen, and that
+message goes out although its state has just ended. The record cannot retract
+it; the newer record's own delivery still follows. So the seam does not promise
+ordering between two notices about the same task: a "resumed" can reach PO
+before a "waiting" published inside that moment. Closing it would take
+publication coordinated with the state change across the API and PO, which
+this seam does not have.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -84,6 +98,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationState,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import (
@@ -688,6 +703,71 @@ async def _deliver_to_administrators(
     return OwnerNotificationOutcome.DELIVERED, settled
 
 
+@dataclass(frozen=True)
+class _Truth:
+    """What the story, and the task a task-level record names, say right now."""
+
+    story_status: StoryStatus
+    task_status: TaskStatus | None
+    #: Why the message is not true now, or None when it is.
+    untrue: str | None
+
+
+async def _read_truth(api_client: SchedulerAPIClient, record: OwnerNotification) -> _Truth:
+    """Read whether the state this record announces is still the state that holds.
+
+    A read that fails raises: it is a transient failure to be charged to the
+    bound, never proof that the state is gone.
+    """
+    story_status = (await api_client.get_story(record.story_id)).status
+    if story_status is not record.terminal_status:
+        return _Truth(
+            story_status,
+            None,
+            f"story is {story_status.value}, not {record.terminal_status.value}",
+        )
+    if record.expected_task_statuses is None:
+        return _Truth(story_status, None, None)
+    # A task-level notice is true only while the task is where it was announced
+    # to be; the story can stay put while the task moves on.
+    task_status = (await api_client.get_task(record.task_id)).status
+    if task_status in record.expected_task_statuses:
+        return _Truth(story_status, task_status, None)
+    expected = ", ".join(status.value for status in record.expected_task_statuses)
+    return _Truth(story_status, task_status, f"task is {task_status.value}, not {expected}")
+
+
+async def _void(
+    api_client: SchedulerAPIClient,
+    source_id: str,
+    record: OwnerNotification,
+    truth: _Truth,
+    log: structlog.stdlib.BoundLogger,
+    *,
+    story_record: bool,
+) -> tuple[OwnerNotificationOutcome, OwnerNotification]:
+    """Settle a record whose message is not true, publishing nothing and spending nothing."""
+    settled = await _settle(
+        api_client,
+        source_id,
+        record,
+        state=OwnerNotificationState.VOIDED,
+        detail=truth.untrue,
+        story_record=story_record,
+    )
+    log.warning(
+        "owner_notification_voided",
+        po_event=record.event,
+        story_id=record.story_id,
+        project_id=record.project_id,
+        story_status=truth.story_status.value,
+        terminal_status=record.terminal_status.value,
+        task_status=None if truth.task_status is None else truth.task_status.value,
+        **_source_log_fields(source_id, story_record=story_record),
+    )
+    return OwnerNotificationOutcome.VOIDED, settled
+
+
 async def _deliver_to_owner(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -713,17 +793,22 @@ async def _deliver_to_owner(
     that has moved out of those statuses voids it, and a task read that failed
     spends an attempt. A record without them keeps exactly the story check.
 
-    Resolving the recipient and publishing are then one attempt on purpose: both
-    sit between the committed transition and the owner, and both fail the same
-    way — a lookup that timed out is no more delivered than a stream that refused
-    the write. What is *not* the same is a recipient that resolved to nothing;
-    that is an answer, not a failure, and repeating the question would only
-    produce it again.
+    The check is made twice. First, before the recipient is resolved, so a
+    record whose state never held is voided without a recipient lookup (and
+    without the administrator alert an unresolvable owner raises). Then again
+    as the last reads before the publish: resolving the recipient is API calls
+    that can stall, and a state that changed meanwhile — a resume committing
+    while a "waiting" notice was being addressed — must not be announced as it
+    was. Nothing slow sits between that final check and the ``XADD``.
+
+    A recipient lookup that fails is a spent attempt like a stream that refused
+    the write: neither delivered anything. What is *not* the same is a recipient
+    that resolved to nothing; that is an answer, not a failure, and repeating
+    the question would only produce it again.
     """
     attempts = record.attempts + 1
-    try:
-        story = await api_client.get_story(record.story_id)
-    except Exception as exc:
+
+    async def spend(exc: Exception) -> tuple[OwnerNotificationOutcome, OwnerNotification]:
         return await _spend_failed_attempt(
             api_client,
             source_id,
@@ -734,76 +819,49 @@ async def _deliver_to_owner(
             story_record=story_record,
         )
 
-    untrue = (
-        None
-        if story.status is record.terminal_status
-        else f"story is {story.status.value}, not {record.terminal_status.value}"
-    )
-    task_status = None
-    if untrue is None and record.expected_task_statuses is not None:
-        # A task-level notice is true only while the task is where it was
-        # announced to be; the story can stay put while the task moves on.
-        try:
-            task_status = (await api_client.get_task(record.task_id)).status
-        except Exception as exc:
-            return await _spend_failed_attempt(
-                api_client,
-                source_id,
-                record,
-                attempts=attempts,
-                error=f"{type(exc).__name__}: {exc}",
-                log=log,
-                story_record=story_record,
-            )
-        if task_status not in record.expected_task_statuses:
-            expected = ", ".join(status.value for status in record.expected_task_statuses)
-            untrue = f"task is {task_status.value}, not {expected}"
-
-    if untrue is not None:
-        settled = await _settle(
-            api_client,
-            source_id,
-            record,
-            state=OwnerNotificationState.VOIDED,
-            detail=untrue,
-            story_record=story_record,
-        )
-        log.warning(
-            "owner_notification_voided",
-            po_event=record.event,
-            story_id=record.story_id,
-            project_id=record.project_id,
-            story_status=story.status.value,
-            terminal_status=record.terminal_status.value,
-            task_status=None if task_status is None else task_status.value,
-            **_source_log_fields(source_id, story_record=story_record),
-        )
-        return OwnerNotificationOutcome.VOIDED, settled
+    try:
+        truth = await _read_truth(api_client, record)
+    except Exception as exc:
+        return await spend(exc)
+    if truth.untrue is not None:
+        return await _void(api_client, source_id, record, truth, log, story_record=story_record)
 
     try:
         recipient = await resolve_project_recipient(
             api_client, record.project_id, event=record.event, story_id=record.story_id
         )
-        if not recipient.is_addressable:
-            settled = await _settle(
-                api_client,
-                source_id,
-                record,
-                state=OwnerNotificationState.UNADDRESSABLE,
-                detail=recipient.unaddressed_reason,
-                attempts=attempts,
-                story_record=story_record,
-            )
-            log.warning(
-                "owner_notification_unaddressable",
-                po_event=record.event,
-                story_id=record.story_id,
-                project_id=record.project_id,
-                reason=recipient.unaddressed_reason,
-                **_source_log_fields(source_id, story_record=story_record),
-            )
-            return OwnerNotificationOutcome.UNADDRESSABLE, settled
+    except Exception as exc:
+        return await spend(exc)
+    if not recipient.is_addressable:
+        settled = await _settle(
+            api_client,
+            source_id,
+            record,
+            state=OwnerNotificationState.UNADDRESSABLE,
+            detail=recipient.unaddressed_reason,
+            attempts=attempts,
+            story_record=story_record,
+        )
+        log.warning(
+            "owner_notification_unaddressable",
+            po_event=record.event,
+            story_id=record.story_id,
+            project_id=record.project_id,
+            reason=recipient.unaddressed_reason,
+            **_source_log_fields(source_id, story_record=story_record),
+        )
+        return OwnerNotificationOutcome.UNADDRESSABLE, settled
 
+    # The last reads before the publish: whatever changed while the recipient
+    # was being resolved is seen here, not after the message is out.
+    try:
+        truth = await _read_truth(api_client, record)
+    except Exception as exc:
+        return await spend(exc)
+    if truth.untrue is not None:
+        return await _void(api_client, source_id, record, truth, log, story_record=story_record)
+
+    try:
         event = POSystemEvent(
             event=record.event,
             # PO answers about the subject the record names: the task for a
@@ -817,15 +875,7 @@ async def _deliver_to_owner(
         )
         await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
     except Exception as exc:
-        return await _spend_failed_attempt(
-            api_client,
-            source_id,
-            record,
-            attempts=attempts,
-            error=f"{type(exc).__name__}: {exc}",
-            log=log,
-            story_record=story_record,
-        )
+        return await spend(exc)
 
     settled = await _settle(
         api_client,

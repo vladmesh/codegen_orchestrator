@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
-- Resource-wait park/resume and the secret ask commit their owner notice with the move in one API transaction
-  and deliver it through the owed-notification seam, so a Redis or recipient failure no longer loses it.
+- Resource-wait park/resume and the secret ask (the only entry to `waiting_user_secret`) owe their owner notice
+  in the move's transaction and deliver it via the seam, so a Redis or recipient failure cannot lose it.
 - The state-age watchdog and stage notices run in their own `story_supervision` scheduler loop, each sweep
   in its own failure boundary, since neither depends on its position in the dispatcher tick any more.
 - Stage notices re-read the story just before the marker write and publish and skip a stage it has left,

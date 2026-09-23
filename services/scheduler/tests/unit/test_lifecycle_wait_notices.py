@@ -284,3 +284,75 @@ async def test_a_failed_in_tick_claim_does_not_end_the_tick_or_lose_the_notice()
     world.api.claim_run_owner_notification_attempt.side_effect = world.claims._claim_run
     await world.later_sweep()
     assert world.po.events() == ["task_waiting_resources"]
+
+
+def _move_while_the_recipient_is_resolved(world: _World, status: TaskStatus) -> None:
+    """The owner lookup stalls, and in that time a move commits the task elsewhere."""
+    owner = world.api.get_user.return_value
+
+    async def lookup(user_id):
+        world.task.status = status
+        return owner
+
+    world.api.get_user.side_effect = lookup
+
+
+@pytest.mark.asyncio
+async def test_a_resume_committing_while_the_wait_notice_is_addressed_is_not_announced_as_waiting():
+    """The check is the last read before the publish, not only the first one."""
+    world = _World()
+    world.po.failures = 1
+    await world.park()
+    assert world.record().owed
+
+    _move_while_the_recipient_is_resolved(world, TaskStatus.TODO)
+    await world.later_sweep()
+
+    world.api.get_user.assert_awaited()
+    record = world.record()
+    assert record.state is OwnerNotificationState.VOIDED
+    assert "task is todo" in record.detail
+    assert record.attempts == 1  # the failed publish; the void spent nothing
+    assert world.po.published == []
+
+
+@pytest.mark.asyncio
+async def test_a_task_leaving_todo_while_the_resume_notice_is_addressed_is_not_announced():
+    world = _World()
+    await world.park()
+    world.po.failures = 1
+    await world.resume()
+    assert world.record().event == "task_resources_resumed"
+    assert world.record().owed
+
+    _move_while_the_recipient_is_resolved(world, TaskStatus.WAITING_HUMAN_REVIEW)
+    await world.later_sweep()
+
+    world.api.get_user.assert_awaited()
+    record = world.record()
+    assert record.state is OwnerNotificationState.VOIDED
+    assert "task is waiting_human_review" in record.detail
+    assert world.po.events() == ["task_waiting_resources"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_final_read_spends_an_attempt_and_publishes_nothing():
+    world = _World()
+    world.po.failures = 1
+    await world.park()
+    reads = [world.task, ConnectionError("API restarting")]
+
+    async def get_task(task_id):
+        answer = reads.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    world.api.get_task.side_effect = get_task
+    await world.later_sweep()
+
+    record = world.record()
+    assert record.state is OwnerNotificationState.OWED
+    assert record.attempts == 2
+    assert "API restarting" in record.detail
+    assert world.po.published == []

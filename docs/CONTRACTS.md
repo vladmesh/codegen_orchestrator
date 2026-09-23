@@ -366,8 +366,13 @@ answers `not_waiting`, writing nothing. The secret ask keeps an ask the Run alre
 `delivered_at` stays the state-age anchor. A task-level record names the task statuses it is true
 in (`OwnerNotification.expected_task_statuses`); delivery voids it, publishing nothing and
 spending no attempt, when the task has left them. Records without that field keep exactly the
-story check. The scheduler spends one attempt in the routing tick and the `owner_notifications`
-loop recovers the rest, with the terminal endings' bound, spacing and escalation.
+story check. The truth check is read again after the recipient is resolved, as the last reads
+before the `XADD`; a move committing between those reads and Redis accepting the entry is not
+seen, so no ordering is promised between two notices about one task. `park-waiting-user-secret`
+is the only API route that lands a Story in `waiting_user_secret`; the single-hop
+`wait-user-secret` route is removed. The scheduler spends one attempt in the routing tick and the
+`owner_notifications` loop recovers the rest, with the terminal endings' bound, spacing and
+escalation.
 
 ### The Product Brief coverage-to-dispatch boundary
 
