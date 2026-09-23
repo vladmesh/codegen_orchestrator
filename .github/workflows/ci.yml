@@ -18,15 +18,26 @@ on:
         required: false
         default: false
         type: boolean
+      simulate_first_attempt_pull_hang:
+        description: Make Buildx attempt 1 hang past its bound to validate the timeout path
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job carries a timeout-minutes, so nothing waits for GitHub's 360-minute default;
+# the CI contract refuses a job without one. The values come from the green runs of
+# 2026-08-11..2026-09-23 with margin (docs/TESTING.md, "Time bounds"). A docker step
+# carries its own, shorter bound through scripts/ci-infra.sh, so a step that hangs is
+# stopped inside the job and the always() expose step still names it.
 jobs:
   detect-changes:
     name: Detect Changed Services
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -93,6 +104,7 @@ jobs:
   fast-checks:
     name: Fast Checks (Ruff & Unit Tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: detect-changes
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -126,6 +138,11 @@ jobs:
       - name: Run offline live regressions
         run: make test-live
 
+      - name: Pull Redis image with retry
+        run: >-
+          bash scripts/ci-infra.sh retry --step redis-pull --cause image-pull --attempt-timeout 90s
+          -- docker pull redis:7.4.10-alpine
+
       - name: Run Redis capability cleanup regression
         run: |
           docker run --detach --rm --name redis-cleanup-contract redis:7.4.10-alpine
@@ -146,6 +163,7 @@ jobs:
   ci-contract:
     name: CI Contract
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -175,6 +193,7 @@ jobs:
   service-image-imports:
     name: Service Image Entrypoint Imports
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     outputs:
@@ -196,10 +215,11 @@ jobs:
         uses: ./.github/actions/setup-buildx-with-retry
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+          simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
       - name: Import every service entrypoint from its production image
         id: service-image-imports
-        run: python scripts/check_service_image_imports.py
+        run: bash scripts/ci-infra.sh bound --step service-image-imports --timeout 15m -- python scripts/check_service_image_imports.py
 
       - name: Expose CI infrastructure failure
         id: infra
@@ -209,6 +229,7 @@ jobs:
   test-service:
     name: Service Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [detect-changes, fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     env:
@@ -314,6 +335,7 @@ jobs:
         if: matrix.should_run == 'true'
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+          simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
       - name: Pull test images with retry
         id: pull-images
@@ -323,7 +345,7 @@ jobs:
       - name: Run service tests
         id: service-tests
         if: matrix.should_run == 'true'
-        run: make test-service SERVICE=${{ matrix.service }}
+        run: bash scripts/ci-infra.sh bound --step service-tests --timeout 15m -- make test-service SERVICE=${{ matrix.service }}
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
@@ -361,6 +383,7 @@ jobs:
   test-integration:
     name: Integration Tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [detect-changes, fast-checks, ci-contract]
     if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
     env:
@@ -453,6 +476,7 @@ jobs:
         uses: ./.github/actions/setup-buildx-with-retry
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+          simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
       - name: Set up uv for template smoke
         id: setup-uv
@@ -467,7 +491,7 @@ jobs:
       - name: Run integration tests
         id: integration-tests
         if: matrix.should_run == 'true'
-        run: make test-integration-${{ matrix.suite }}
+        run: bash scripts/ci-infra.sh bound --step integration-tests --timeout 10m -- make test-integration-${{ matrix.suite }}
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
@@ -540,11 +564,15 @@ jobs:
 
       - name: Run baseline compatibility smoke
         if: matrix.candidate == false
-        run: make test-template-compat ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
+        run: >-
+          bash scripts/ci-infra.sh bound --step compatibility-smoke --timeout 15m --
+          make test-template-compat ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
 
       - name: Run candidate compatibility smoke
         if: matrix.candidate == true && inputs.service_template_candidate_ref != ''
-        run: make test-template-compat TEMPLATE_REF="$CANDIDATE_REF" ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
+        run: >-
+          bash scripts/ci-infra.sh bound --step compatibility-smoke --timeout 15m --
+          make test-template-compat TEMPLATE_REF="$CANDIDATE_REF" ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
         env:
           CANDIDATE_REF: ${{ inputs.service_template_candidate_ref }}
 
@@ -568,6 +596,7 @@ jobs:
   web-checks:
     name: Web Checks (${{ matrix.app }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: detect-changes
     if: needs.detect-changes.outputs.web == 'true' || needs.detect-changes.outputs.ci == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
@@ -604,6 +633,7 @@ jobs:
   test-backend-dind-integration:
     name: Backend Docker-in-Docker Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [fast-checks, ci-contract]
     if: >-
       always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -620,6 +650,7 @@ jobs:
         uses: ./.github/actions/setup-buildx-with-retry
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+          simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
       - name: Pull test images with retry
         id: pull-images
@@ -629,7 +660,9 @@ jobs:
       # fetch that failed after its retries (worker-base-claude/Dockerfile) as CI infrastructure.
       - name: Run integration tests
         id: integration-tests
-        run: bash scripts/ci-infra.sh watch --step integration-tests -- make test-integration-backend-dind
+        run: >-
+          bash scripts/ci-infra.sh bound --step integration-tests --timeout 15m --
+          bash scripts/ci-infra.sh watch --step integration-tests -- make test-integration-backend-dind
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
@@ -666,6 +699,7 @@ jobs:
   merge-gate:
     name: Required CI Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - detect-changes
       - fast-checks
@@ -748,6 +782,7 @@ jobs:
   publish-worker-images:
     name: Publish Worker Base Images
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: merge-gate
     if: >-
       always() && needs.merge-gate.result == 'success'
@@ -762,7 +797,9 @@ jobs:
       # Deliberately no buildx builder: the chain is built with the runner's own
       # docker daemon, so the built images can be inspected and pushed by tag.
       - name: Build and publish the worker chain
-        run: bash scripts/ci-infra.sh watch --step publish -- bash infra/scripts/publish-worker-images.sh
+        run: >-
+          bash scripts/ci-infra.sh bound --step publish --timeout 15m --
+          bash scripts/ci-infra.sh watch --step publish -- bash infra/scripts/publish-worker-images.sh
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_OWNER: ${{ github.repository_owner }}

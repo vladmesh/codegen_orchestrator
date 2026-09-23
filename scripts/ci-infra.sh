@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Retry CI downloads and name a failure that is the infrastructure's, not the code's.
+# Retry CI downloads, bound the docker steps in time, and name a failure that is the
+# infrastructure's, not the code's.
 #
-# A job that fails because a download or registry did not answer writes one line:
+# A job that fails because a download or registry did not answer, or because a step ran
+# past its time bound, writes one line:
 #
 #   CI-INFRA-FAILURE: job=<job> step=<step> cause=<cause>
 #
@@ -12,11 +14,20 @@
 #
 # Subcommands:
 #   mark  --step S --cause C                   write the marker and succeed
-#   retry --step S --cause C -- CMD...         run CMD up to 3 times with backoff;
+#   retry --step S --cause C [--attempt-timeout D] -- CMD...
+#                                              run CMD up to 3 times with backoff;
 #                                              mark and fail with its status when
-#                                              every attempt failed
+#                                              every attempt failed. With D, each
+#                                              attempt that runs past D is stopped
+#                                              and counts as a failed attempt; when
+#                                              the last one timed out, the cause is
+#                                              C-timeout
 #   pull-images --step S COMPOSE_FILE          pull every image COMPOSE_FILE runs but
-#                                              does not build, each through retry
+#                                              does not build, each through retry with
+#                                              a bound on every attempt
+#   bound --step S --timeout D -- CMD...       run CMD for at most D; if it runs past
+#                                              D, stop it, mark cause=step-timeout and
+#                                              fail with timeout's status
 #   watch --step S -- CMD...                   run CMD; if it fails and its output
 #                                              carries a known CI-INFRA-CAUSE=<cause>
 #                                              line, mark with that cause
@@ -25,6 +36,11 @@
 #
 # The job is $CI_INFRA_JOB, or $GITHUB_JOB when that is unset. Every field is one
 # word of [A-Za-z0-9._/-], so the marker parses back with one regular expression.
+#
+# A duration D is a whole number with an optional s, m or h suffix (seconds without
+# one), the form timeout(1) takes. A bounded command runs under coreutils timeout, which
+# stops the command's whole process group, so a docker CLI a script started goes with
+# the script. retry exports the attempt number as CI_INFRA_ATTEMPT to the command.
 
 set -euo pipefail
 
@@ -33,6 +49,14 @@ FIELD_PATTERN='^[A-Za-z0-9._/-]+$'
 RETRY_ATTEMPTS=3
 # Seconds before the second attempt; the third waits twice as long.
 RETRY_DELAY="${CI_INFRA_RETRY_DELAY:-10}"
+# The bound on one image pull attempt. A pull that hangs (an anonymous Docker Hub rate
+# limit neither fails nor finishes) becomes a failed attempt the next one runs after.
+# Measured pull steps take under 20 s; a compose file runs at most three external
+# images, so an exhausted pull step (3 x 90 s plus backoff per image) stays within 15
+# minutes, inside the bound of every job that pulls.
+PULL_ATTEMPT_TIMEOUT="${CI_INFRA_PULL_ATTEMPT_TIMEOUT:-90s}"
+# How long a bounded command gets to exit after TERM before timeout sends KILL.
+KILL_AFTER=30s
 # The only causes `watch` accepts from a command's output. A line a build prints is
 # trusted as infrastructure only when it names one of these.
 WATCHED_CAUSES=("claude-installer-fetch")
@@ -53,6 +77,7 @@ require_field() {
 
 mark() {
     local step=$1 cause=$2
+    local note=${3:-"The step failed on CI infrastructure after its retries; code changes are not required."}
     local job="${CI_INFRA_JOB:-${GITHUB_JOB:?GITHUB_JOB or CI_INFRA_JOB is required}}"
     require_field job "$job"
     require_field step "$step"
@@ -62,18 +87,20 @@ mark() {
     {
         echo "$marker"
         echo
-        echo "The step failed on CI infrastructure after its retries; code changes are not required."
+        echo "$note"
         echo
     } >>"${GITHUB_STEP_SUMMARY:?GITHUB_STEP_SUMMARY is required}"
     echo "$marker" >>"$(markers_file)"
 }
 
 parse_step_and_cause() {
-    STEP="" CAUSE=""
+    STEP="" CAUSE="" TIMEOUT="" ATTEMPT_TIMEOUT=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --step) STEP=${2:-}; shift 2 ;;
             --cause) CAUSE=${2:-}; shift 2 ;;
+            --timeout) TIMEOUT=${2:-}; shift 2 ;;
+            --attempt-timeout) ATTEMPT_TIMEOUT=${2:-}; shift 2 ;;
             --) shift; break ;;
             *) break ;;
         esac
@@ -81,23 +108,83 @@ parse_step_and_cause() {
     REST=("$@")
 }
 
+# A duration in seconds, or die: a whole number with an optional s, m or h suffix.
+duration_seconds() {
+    local duration=$1
+    [[ "$duration" =~ ^([0-9]+)([smh]?)$ ]] || die "duration '$duration' is not N, Ns, Nm or Nh"
+    local value=${BASH_REMATCH[1]}
+    case "${BASH_REMATCH[2]}" in
+        m) value=$((value * 60)) ;;
+        h) value=$((value * 3600)) ;;
+    esac
+    [ "$value" -gt 0 ] || die "duration '$duration' is not positive"
+    echo "$value"
+}
+
+# Run CMD under timeout for at most $1 seconds; its status is the return status, and
+# TIMED_OUT says whether the bound stopped it. timeout exits 124 when TERM stopped the
+# command and 137 when it had to KILL; a 137 before the bound is the command's own.
+bounded() {
+    local seconds=$1 status=0 started
+    shift
+    started=$(date +%s)
+    timeout --kill-after="$KILL_AFTER" "${seconds}s" "$@" || status=$?
+    TIMED_OUT=false
+    if [ "$status" -eq 124 ]; then
+        TIMED_OUT=true
+    elif [ "$status" -eq 137 ] && [ $(($(date +%s) - started)) -ge "$seconds" ]; then
+        TIMED_OUT=true
+    fi
+    return "$status"
+}
+
 retry() {
-    local step=$1 cause=$2
-    shift 2
+    local step=$1 cause=$2 timeout=$3
+    shift 3
     [ $# -gt 0 ] || die "retry needs a command after --"
-    local attempt status=0
+    local seconds=""
+    [ -z "$timeout" ] || seconds=$(duration_seconds "$timeout")
+    local attempt status=0 failure
+    TIMED_OUT=false
     for ((attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++)); do
         if [ "$attempt" -gt 1 ]; then
             local wait=$((RETRY_DELAY * (attempt - 1)))
-            echo "ci-infra: attempt $((attempt - 1)) of $RETRY_ATTEMPTS failed with status $status; retrying in ${wait}s"
+            echo "ci-infra: attempt $((attempt - 1)) of $RETRY_ATTEMPTS $failure; retrying in ${wait}s"
             sleep "$wait"
         fi
         status=0
-        "$@" || status=$?
+        if [ -n "$seconds" ]; then
+            CI_INFRA_ATTEMPT=$attempt bounded "$seconds" "$@" || status=$?
+        else
+            CI_INFRA_ATTEMPT=$attempt "$@" || status=$?
+        fi
         [ "$status" -eq 0 ] && return 0
+        if [ "$TIMED_OUT" = true ]; then
+            failure="timed out after $timeout"
+        else
+            failure="failed with status $status"
+        fi
     done
-    echo "ci-infra: all $RETRY_ATTEMPTS attempts failed; the last exited with status $status"
-    mark "$step" "$cause"
+    echo "ci-infra: all $RETRY_ATTEMPTS attempts failed; the last $failure"
+    if [ "$TIMED_OUT" = true ]; then
+        mark "$step" "$cause-timeout"
+    else
+        mark "$step" "$cause"
+    fi
+    return "$status"
+}
+
+bound() {
+    local step=$1 timeout=$2
+    shift 2
+    [ $# -gt 0 ] || die "bound needs a command after --"
+    local seconds status=0
+    seconds=$(duration_seconds "$timeout")
+    bounded "$seconds" "$@" || status=$?
+    if [ "$TIMED_OUT" = true ]; then
+        echo "ci-infra: the step ran past its bound of $timeout and was stopped"
+        mark "$step" step-timeout "The step ran past its bound of $timeout and was stopped. A registry or download that hangs is the usual cause; a hang in the code under test is possible too, so read the step log before rerunning."
+    fi
     return "$status"
 }
 
@@ -119,7 +206,7 @@ pull_images() {
     # Reading the file is not a download: a broken compose file fails here, unmarked.
     images=$(external_images "$compose_file")
     for image in $images; do
-        retry "$step" image-pull docker pull "$image"
+        retry "$step" image-pull "$PULL_ATTEMPT_TIMEOUT" docker pull "$image"
     done
 }
 
@@ -157,7 +244,7 @@ expose() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die "usage: ci-infra.sh mark|retry|pull-images|watch|expose ..."
+[ -n "$command" ] || die "usage: ci-infra.sh mark|retry|pull-images|bound|watch|expose ..."
 shift
 case "$command" in
     mark)
@@ -168,12 +255,17 @@ case "$command" in
     retry)
         parse_step_and_cause "$@"
         [ -n "$STEP" ] && [ -n "$CAUSE" ] || die "retry needs --step and --cause"
-        retry "$STEP" "$CAUSE" "${REST[@]}"
+        retry "$STEP" "$CAUSE" "$ATTEMPT_TIMEOUT" "${REST[@]}"
         ;;
     pull-images)
         parse_step_and_cause "$@"
         [ -n "$STEP" ] && [ ${#REST[@]} -eq 1 ] || die "pull-images needs --step and one compose file"
         pull_images "$STEP" "${REST[0]}"
+        ;;
+    bound)
+        parse_step_and_cause "$@"
+        [ -n "$STEP" ] && [ -n "$TIMEOUT" ] || die "bound needs --step and --timeout"
+        bound "$STEP" "$TIMEOUT" "${REST[@]}"
         ;;
     watch)
         parse_step_and_cause "$@"

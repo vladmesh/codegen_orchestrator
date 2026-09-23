@@ -23,6 +23,7 @@ from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
+BUILDX_BOOTSTRAP = BUILDX_RETRY_ACTION.parent / "bootstrap.sh"
 UV_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-uv-with-retry" / "action.yml"
 CI_INFRA_HELPER = ROOT / "scripts" / "ci-infra.sh"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
@@ -175,6 +176,14 @@ HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integra
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
 BUILDX_RETRY_ATTEMPTS = 3
 SIMULATED_REGISTRY_FAILURE_INPUT = "simulate_first_attempt_registry_failure"
+SIMULATED_PULL_HANG_INPUT = "simulate_first_attempt_pull_hang"
+SIMULATION_INPUTS = (SIMULATED_REGISTRY_FAILURE_INPUT, SIMULATED_PULL_HANG_INPUT)
+BUILDX_SETUP_STEP = "Set up Docker Buildx in bounded attempts"
+BUILDX_SETUP_COMMAND = (
+    'bash "${GITHUB_WORKSPACE}/scripts/ci-infra.sh" retry --step setup-buildx '
+    "--cause buildx-registry --attempt-timeout 120s -- "
+    'bash "${GITHUB_ACTION_PATH}/bootstrap.sh"'
+)
 OFFLINE_LIVE_IGNORES = {
     "tests/live/test_api_crud.py",
     "tests/live/test_capability_cleanup_redis.py",
@@ -254,6 +263,42 @@ PULL_IMAGES_COMMANDS = {
 BACKEND_DIND_COMMAND = (
     "bash scripts/ci-infra.sh watch --step integration-tests -- make test-integration-backend-dind"
 )
+REDIS_PULL_STEP = "Pull Redis image with retry"
+REDIS_PULL_COMMAND = (
+    "bash scripts/ci-infra.sh retry --step redis-pull --cause image-pull --attempt-timeout 90s "
+    "-- docker pull redis:7.4.10-alpine"
+)
+
+# --- Time bounds ------------------------------------------------------------
+#
+# Every job names its own timeout-minutes; without one GitHub waits 360 minutes, and a
+# docker pull that neither fails nor finishes holds the job that long. The values are
+# the measured durations with margin (docs/TESTING.md, "Time bounds"). No job gets more
+# than JOB_TIMEOUT_CEILING_MINUTES: the longest measured job takes under 9 minutes, and
+# raising the ceiling is a decision on the record, not a default.
+#
+# A step that builds, pulls or runs docker images runs under `ci-infra.sh bound`, whose
+# bound is shorter than its job's: the bound stops the step inside the job, so the
+# always() expose step still runs and hands the step-timeout marker to the gate.
+JOB_TIMEOUT_CEILING_MINUTES = 60
+CI_INFRA_BOUND = re.compile(
+    r"^bash scripts/ci-infra\.sh bound --step (?P<step>[A-Za-z0-9._/-]+) "
+    r"--timeout (?P<timeout>\S+) -- (?P<command>.+)$"
+)
+DURATION = re.compile(r"^(?P<value>[0-9]+)(?P<unit>[smh]?)$")
+DURATION_UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
+# job -> the docker steps it runs under a bound, by step name.
+BOUNDED_DOCKER_STEPS = {
+    "service-image-imports": ["Import every service entrypoint from its production image"],
+    "test-service": ["Run service tests"],
+    "test-integration": ["Run integration tests"],
+    "template-compatibility": [
+        "Run baseline compatibility smoke",
+        "Run candidate compatibility smoke",
+    ],
+    "test-backend-dind-integration": ["Run integration tests"],
+    "publish-worker-images": ["Build and publish the worker chain"],
+}
 
 
 def fail(message: str) -> None:
@@ -877,7 +922,7 @@ def assert_service_tests(jobs: dict[str, Any]) -> None:
     if set(SERVICE_COMPOSE_ROOTS) != compose_suites(SERVICE_COMPOSE_DIR):
         fail("SERVICE_COMPOSE_ROOTS does not match tests/compose/service")
     run_step = step_by_id(job, "service-tests")
-    if run_step.get("run") != "make test-service SERVICE=${{ matrix.service }}":
+    if bounded_command(run_step) != "make test-service SERVICE=${{ matrix.service }}":
         fail("service tests must call make test-service")
     if run_step.get("if") != "matrix.should_run == 'true'":
         fail("service test command must be guarded by matrix.should_run")
@@ -912,7 +957,7 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
     if "run-integration-tests" in job_if:
         fail("integration tests must not depend on a PR label")
     run_step = step_by_id(job, "integration-tests")
-    if run_step.get("run") != "make test-integration-${{ matrix.suite }}":
+    if bounded_command(run_step) != "make test-integration-${{ matrix.suite }}":
         fail("integration tests must call make test-integration-<suite>")
     assert_buildx_retry(job)
     assert_step = step_by_name(job, "Assert required integration test ran")
@@ -964,7 +1009,7 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     if job.get("continue-on-error"):
         fail("backend Docker-in-Docker job must fail its run, not report advisory")
     run_step = step_by_id(job, "integration-tests")
-    if run_step.get("run") != BACKEND_DIND_COMMAND:
+    if bounded_command(run_step) != BACKEND_DIND_COMMAND:
         fail(
             "backend Docker-in-Docker workflow must run the Docker-in-Docker suite "
             "through scripts/ci-infra.sh watch"
@@ -978,11 +1023,7 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
         fail("backend Docker-in-Docker assertion must run with always()")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
         fail("backend Docker-in-Docker assertion must inspect the test outcome")
-    buildx = step_by_id(job, "buildx")
-    if buildx.get("with", {}).get(SIMULATED_REGISTRY_FAILURE_INPUT) != (
-        "${{ inputs.simulate_first_attempt_registry_failure }}"
-    ):
-        fail("backend Docker-in-Docker job must receive the Buildx retry simulation input")
+    assert_buildx_retry(job)
 
 
 def assert_service_image_imports(jobs: dict[str, Any]) -> None:
@@ -1003,7 +1044,7 @@ def assert_service_image_imports(jobs: dict[str, Any]) -> None:
         fail("service image imports must install its pinned Compose parser")
     assert_buildx_retry(job)
     step = step_by_id(job, "service-image-imports")
-    if step.get("run") != "python scripts/check_service_image_imports.py":
+    if bounded_command(step) != "python scripts/check_service_image_imports.py":
         fail("service image imports must run the production-image import check")
     if step.get("continue-on-error"):
         fail("service image imports must fail the job they belong to")
@@ -1013,33 +1054,36 @@ def assert_buildx_retry(job: dict[str, Any]) -> None:
     step = step_by_name(job, "Set up Docker Buildx with retry")
     if step.get("uses") != "./.github/actions/setup-buildx-with-retry":
         fail("Docker Buildx setup must use the local retry action")
-    if step.get("with", {}).get(SIMULATED_REGISTRY_FAILURE_INPUT) != (
-        "${{ inputs.simulate_first_attempt_registry_failure }}"
-    ):
-        fail("Docker Buildx setup must receive the workflow-dispatch failure simulation input")
+    for name in SIMULATION_INPUTS:
+        if step.get("with", {}).get(name) != f"${{{{ inputs.{name} }}}}":
+            fail(f"Docker Buildx setup must receive the workflow-dispatch input {name}")
     if not BUILDX_RETRY_ACTION.is_file():
         fail("Docker Buildx retry action is missing")
     action = yaml.safe_load(BUILDX_RETRY_ACTION.read_text())
     inputs = action.get("inputs", {}) if isinstance(action, dict) else {}
-    if SIMULATED_REGISTRY_FAILURE_INPUT not in inputs:
-        fail("Docker Buildx retry action must support first-attempt registry failure simulation")
+    for name in SIMULATION_INPUTS:
+        if name not in inputs or inputs[name].get("default") != "false":
+            fail(f"Docker Buildx retry action must support the opt-in simulation {name}")
     steps = action.get("runs", {}).get("steps", []) if isinstance(action, dict) else []
-    simulation = step_by_name({"steps": steps}, "Simulate unavailable registry on first attempt")
-    if simulation.get("if") != f"inputs.{SIMULATED_REGISTRY_FAILURE_INPUT} == 'true'":
-        fail("registry failure simulation must be opt-in")
-    if simulation.get("continue-on-error") is not True:
-        fail("registry failure simulation must allow the retry to continue")
-    attempts = assert_retry_action(
-        BUILDX_RETRY_ACTION, "docker/setup-buildx-action", "setup-buildx", "buildx-registry"
-    )
-    if attempts[0].get("if") != (
-        "inputs.simulate_first_attempt_registry_failure != 'true' || "
-        "steps.simulate-registry-failure.outcome == 'success'"
+    setup = step_by_name({"steps": steps}, BUILDX_SETUP_STEP)
+    if setup.get("run") != BUILDX_SETUP_COMMAND or setup.get("continue-on-error"):
+        fail(
+            "Docker Buildx setup must bootstrap through scripts/ci-infra.sh retry with a bound "
+            "on every attempt, and fail the job when every attempt failed"
+        )
+    if setup.get("env", {}) != {
+        "SIMULATE_REGISTRY_FAILURE": f"${{{{ inputs.{SIMULATED_REGISTRY_FAILURE_INPUT} }}}}",
+        "SIMULATE_PULL_HANG": f"${{{{ inputs.{SIMULATED_PULL_HANG_INPUT} }}}}",
+    }:
+        fail("Docker Buildx setup must hand both simulations to its bootstrap")
+    if any(
+        action_name(candidate.get("uses", "")) == "docker/setup-buildx-action"
+        for candidate in steps
+        if isinstance(candidate, dict)
     ):
-        fail("first Buildx attempt must be replaced by the simulated registry failure")
-    verify = step_by_name({"steps": steps}, "Fail as CI infrastructure after retry exhaustion")
-    if "Docker image registry" not in verify.get("run", ""):
-        fail("Docker Buildx retry exhaustion must identify the registry infrastructure failure")
+        fail("docker/setup-buildx-action puts no bound on the buildkit pull; bootstrap instead")
+    if not BUILDX_BOOTSTRAP.is_file():
+        fail(f"{repo_path(BUILDX_BOOTSTRAP)} is missing")
 
 
 def action_name(reference: str) -> str:
@@ -1226,6 +1270,65 @@ def assert_download_retries(jobs: dict[str, Any]) -> None:
             fail(f"{job_name} must assert the image pull outcome")
 
 
+def duration_seconds(duration: str) -> int:
+    """A ci-infra.sh duration in seconds: a whole number with an optional s, m or h."""
+    match = DURATION.match(duration)
+    if match is None or int(match["value"]) == 0:
+        fail(f"duration {duration!r} is not a positive N, Ns, Nm or Nh")
+    return int(match["value"]) * DURATION_UNIT_SECONDS[match["unit"]]
+
+
+def bounded_command(step: dict[str, Any]) -> str:
+    """The command a step runs under ci-infra.sh bound; fail if it runs unbounded."""
+    match = CI_INFRA_BOUND.match(str(step.get("run", "")))
+    if match is None:
+        fail(f"step {step.get('name')} must run under scripts/ci-infra.sh bound")
+    return match["command"]
+
+
+def assert_job_timeouts(jobs: dict[str, Any]) -> None:
+    """Every job has a timeout-minutes, and every bound in it is shorter."""
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            fail(f"job {job_name} is not a mapping")
+        minutes = job.get("timeout-minutes")
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes <= 0:
+            fail(
+                f"{job_name} has no timeout-minutes; without one GitHub waits 360 minutes. "
+                "Set one from measured durations with margin"
+            )
+        if minutes > JOB_TIMEOUT_CEILING_MINUTES:
+            fail(
+                f"{job_name} timeout-minutes {minutes} is above the "
+                f"{JOB_TIMEOUT_CEILING_MINUTES}-minute ceiling"
+            )
+        for step in job.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            match = CI_INFRA_BOUND.match(str(step.get("run", "")))
+            if match is None:
+                continue
+            if duration_seconds(match["timeout"]) >= minutes * 60:
+                fail(
+                    f"{job_name} step {step.get('name')} is bounded at {match['timeout']}, "
+                    f"not shorter than the job's {minutes} minutes, so the job limit would "
+                    "stop it before it can name the timeout"
+                )
+    for job_name, step_names in BOUNDED_DOCKER_STEPS.items():
+        job = require_job(jobs, job_name)
+        for step_name in step_names:
+            bounded_command(step_by_name(job, step_name))
+    fast_checks = require_job(jobs, "fast-checks")
+    pull = step_by_name(fast_checks, REDIS_PULL_STEP)
+    if pull.get("run") != REDIS_PULL_COMMAND:
+        fail("fast-checks must pull its Redis image through a bounded scripts/ci-infra.sh retry")
+    steps = fast_checks.get("steps", [])
+    if steps.index(pull) > steps.index(
+        step_by_name(fast_checks, "Run Redis capability cleanup regression")
+    ):
+        fail("fast-checks must pull its Redis image before it runs it")
+
+
 def assert_gate(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "merge-gate")
     if job.get("name") != "Required CI Gate":
@@ -1278,8 +1381,9 @@ def main() -> None:
     if not isinstance(jobs, dict):
         fail("workflow has no jobs mapping")
     dispatch_inputs = workflow.get(True, {}).get("workflow_dispatch", {}).get("inputs", {})
-    if SIMULATED_REGISTRY_FAILURE_INPUT not in dispatch_inputs:
-        fail("workflow_dispatch must expose the registry failure simulation input")
+    for name in SIMULATION_INPUTS:
+        if name not in dispatch_inputs:
+            fail(f"workflow_dispatch must expose the Buildx simulation input {name}")
     assert_detect_changes(jobs)
     assert_fast_checks(jobs)
     assert_offline_live_make_target()
@@ -1295,6 +1399,7 @@ def main() -> None:
     assert_pinned_actions()
     assert_download_retries(jobs)
     assert_infra_marker_exposed(jobs)
+    assert_job_timeouts(jobs)
     print("CI gate contract ok")
 
 

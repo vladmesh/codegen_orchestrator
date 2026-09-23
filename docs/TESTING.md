@@ -93,8 +93,8 @@ needs a checkout that exists only inside a worker container).
 ## CI infrastructure failures
 
 A CI job can fail because a download or a registry did not answer, not because of the code.
-`.github/workflows/ci.yml` retries those downloads, and when the retries are exhausted it names the
-failure with one line:
+`.github/workflows/ci.yml` retries those downloads, bounds its docker steps in time, and when the
+retries are exhausted or a bound is hit it names the failure with one line:
 
 ```
 CI-INFRA-FAILURE: job=<job> step=<step> cause=<cause>
@@ -116,10 +116,15 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 | Job | Step | Cause | What was retried |
 |-----|------|-------|------------------|
 | `fast-checks`, `ci-contract` | `install-uv` | `uv-download` | `pip install uv`, 3 attempts, 10 s then 20 s apart |
+| `fast-checks` | `redis-pull` | `image-pull`, `image-pull-timeout` | `docker pull` of the Redis image the cleanup regression runs, 3 attempts of at most 90 s each |
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
-| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `setup-buildx` | `buildx-registry` | `docker/setup-buildx-action`, 3 attempts (`.github/actions/setup-buildx-with-retry`) |
-| `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts per image, before the tests start |
+| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
+| `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull`, `image-pull-timeout` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts of at most 90 s per image, before the tests start |
 | `test-backend-dind-integration` | `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker |
+| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images` | `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
+
+A cause ending in `-timeout` means the last attempt did not fail but hung until its bound stopped
+it; a hung attempt is a failed attempt, and the next one starts after it.
 
 `publish-worker-images` builds the same image, so it can write the `claude-installer-fetch` marker to
 its own summary; it is downstream of the gate and does not feed it.
@@ -132,6 +137,58 @@ What the marker never does:
   succeeded writes no marker and fails exactly as before. A compose file that does not parse, an image
   build that fails for any reason but the installer fetch, and a failure before the job has checked out
   the repository (a GitHub Actions outage at `Set up job`) write none either: those stay plain failures.
+  The one marker that can stand next to a product defect is `step-timeout`: it says a bound was hit,
+  and a hung registry pull is its usual cause, but a test that hangs hits the same bound. Read the
+  step log before rerunning.
+
+### Time bounds
+
+Every job in `ci.yml` has a `timeout-minutes`, so none of them waits for GitHub's 360-minute
+default, and every step that builds, pulls or runs docker images has a bound of its own that is
+shorter than its job's. The step bound is what names a hang: `ci-infra.sh bound` runs the step under
+coreutils `timeout`, stops it with its whole process group when the bound passes, and writes the
+`step-timeout` marker, so the job's `always()` expose step still runs and the gate repeats the marker.
+A job-level limit is the last resort for everything else; when it fires, the job is a plain failure.
+The CI contract (`scripts/check-ci-gate.py`) refuses a job without `timeout-minutes`, one above
+60 minutes, a listed docker step outside `ci-infra.sh bound`, and a step bound not shorter than its
+job's.
+
+The values are the green runs of 2026-08-11..2026-09-23 (202 runs) with margin:
+
+| Job | Longest measured | Job bound | Docker step bound |
+|-----|------------------|-----------|-------------------|
+| `detect-changes` | 0.1 min | 5 | — |
+| `fast-checks` | 3.5 min | 15 | Redis pull: 3 × 90 s |
+| `ci-contract` | 0.8 min | 10 | — |
+| `service-image-imports` | 6.6 min (import step 6.0) | 20 | Buildx 3 × 120 s; imports 15 min |
+| `test-service/<leg>` | 8.7 min (tests 8.4) | 20 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
+| `test-integration/<leg>` | 4.2 min (tests 3.9) | 15 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
+| `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 30 | smoke 15 min |
+| `web-checks/<app>` | 0.5 min | 10 | — |
+| `test-backend-dind-integration` | 8.5 min (suite 8.1) | 20 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
+| `merge-gate` | 0.6 min | 5 | — |
+| `publish-worker-images` | 4.0 min (publish 3.9) | 20 | publish 15 min |
+
+A Buildx bootstrap took at most 0.6 minutes and a whole pull step under 0.3 minutes. Buildx is not
+bootstrapped by `docker/setup-buildx-action` any more: a composite action step takes no
+`timeout-minutes`, and buildx pulls the builder image on every bootstrap even when it is already
+local, so neither a step bound nor a pre-pull could stop the pull that hung for 23 minutes in run
+33310621862. The `workflow_dispatch` inputs `simulate_first_attempt_registry_failure` and
+`simulate_first_attempt_pull_hang` make the first Buildx attempt fail or hang, to watch the retry and
+the bound on a real runner.
+
+`stand-e2e.yml` bounds its docker steps too: bring-up 25 minutes (measured 3–14.4 over 30 green
+runs), target registration and provisioning 30 (1.7–6.2; above the provisioning wait's own
+25-minute deadline, so that wait still reports), worker images 30 (0.8–18.7).
+
+**A docker step that still hangs.** Cancelling is cooperative: `gh run cancel` waits for the step to
+react, and a step blocked inside a docker pull can stay `in_progress` long after it. Force the
+cancel, then rerun only what failed:
+
+```bash
+gh api -X POST repos/{owner}/{repo}/actions/runs/<run-id>/force-cancel
+gh run rerun <run-id> --failed
+```
 
 Every third-party action `ci.yml` reaches, including through a local action, is pinned to a 40-character
 commit SHA with the tag it was resolved from as a `# vX` comment; the CI contract refuses anything else.

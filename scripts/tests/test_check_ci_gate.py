@@ -480,3 +480,79 @@ def test_a_gate_that_does_not_repeat_markers_fails(gate):
 
     with pytest.raises(SystemExit, match="toJSON"):
         gate.assert_gate(jobs)
+
+
+def test_the_repository_workflow_bounds_every_job(gate):
+    gate.assert_job_timeouts(gate.load_workflow()["jobs"])
+
+
+@pytest.mark.parametrize("job_name", ["test-service", "publish-worker-images", "web-checks"])
+def test_a_job_without_timeout_minutes_fails_the_gate(gate, job_name):
+    """A new job, docker or not, cannot fall back to GitHub's 360-minute default."""
+    jobs = gate.load_workflow()["jobs"]
+    del jobs[job_name]["timeout-minutes"]
+
+    with pytest.raises(SystemExit, match=f"{job_name} has no timeout-minutes"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_a_new_job_without_timeout_minutes_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["build-images"] = {"runs-on": "ubuntu-latest", "steps": [{"run": "docker build ."}]}
+
+    with pytest.raises(SystemExit, match="build-images has no timeout-minutes"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_a_job_timeout_above_the_ceiling_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["test-integration"]["timeout-minutes"] = 360
+
+    with pytest.raises(SystemExit, match="above the 60-minute ceiling"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_a_step_bound_not_shorter_than_its_job_fails_the_gate(gate):
+    """The job limit would stop the step before the step could name the timeout."""
+    jobs = gate.load_workflow()["jobs"]
+    step = gate.step_by_id(jobs["test-integration"], "integration-tests")
+    step["run"] = step["run"].replace("--timeout 10m", "--timeout 15m")
+
+    with pytest.raises(SystemExit, match="not shorter than the job's 15 minutes"):
+        gate.assert_job_timeouts(jobs)
+
+
+@pytest.mark.parametrize(
+    "job_name,step_name",
+    [
+        ("publish-worker-images", "Build and publish the worker chain"),
+        ("template-compatibility", "Run baseline compatibility smoke"),
+    ],
+)
+def test_a_docker_step_without_its_bound_fails_the_gate(gate, job_name, step_name):
+    jobs = gate.load_workflow()["jobs"]
+    step = gate.step_by_name(jobs[job_name], step_name)
+    step["run"] = gate.bounded_command(step)
+
+    with pytest.raises(SystemExit, match=f"step {step_name} must run under"):
+        gate.assert_job_timeouts(jobs)
+
+
+def test_an_unbounded_test_step_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    gate.step_by_id(jobs["test-service"], "service-tests")["run"] = (
+        "make test-service SERVICE=${{ matrix.service }}"
+    )
+
+    with pytest.raises(SystemExit, match="must run under scripts/ci-infra.sh bound"):
+        gate.assert_service_tests(jobs)
+
+
+def test_a_buildx_setup_without_the_pull_hang_simulation_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    del gate.step_by_name(jobs["test-service"], "Set up Docker Buildx with retry")["with"][
+        "simulate_first_attempt_pull_hang"
+    ]
+
+    with pytest.raises(SystemExit, match="simulate_first_attempt_pull_hang"):
+        gate.assert_service_tests(jobs)
