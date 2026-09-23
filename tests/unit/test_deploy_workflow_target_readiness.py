@@ -11,7 +11,8 @@ from pathlib import Path
 import yaml
 
 DEPLOY_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yml"
-DEPLOY_SHA = "${{ github.sha }}"
+# The one revision a deploy run deploys: the dispatched commit or the `revision` input.
+DEPLOY_SHA = "${{ env.DEPLOY_REVISION }}"
 RECONCILE = "python -m src.provisioner.target_readiness"
 STEP = "Reconcile managed deploy targets"
 

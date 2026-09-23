@@ -1,7 +1,10 @@
-"""The production deploy must run the commit the workflow was dispatched on.
+"""The production deploy must run the one revision the workflow run deploys.
 
 `git pull origin main` on the host deploys whatever the branch tip happens to be
-when the step runs, which is not necessarily the revision that was validated.
+when the step runs, which is not necessarily the revision that was validated. The
+revision is the dispatched commit or, for a rollback, the `revision` input
+(`DEPLOY_REVISION`); tests/unit/test_deploy_service_release.py pins that every step
+uses that one value.
 """
 
 from pathlib import Path
@@ -9,7 +12,7 @@ from pathlib import Path
 import yaml
 
 DEPLOY_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yml"
-DEPLOY_SHA = "${{ github.sha }}"
+DEPLOY_SHA = "${{ env.DEPLOY_REVISION }}"
 
 
 def _step_scripts() -> dict[str, str]:
@@ -39,7 +42,7 @@ def test_deploy_does_not_take_its_revision_from_origin_main():
     assert not offenders, f"deploy steps must not deploy origin/main: {offenders}"
 
 
-def test_deploy_checks_out_the_dispatched_commit():
+def test_deploy_checks_out_the_deployed_revision():
     scripts = _step_scripts()
     revision_steps = [name for name, script in scripts.items() if "git fetch" in script]
 

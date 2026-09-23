@@ -618,34 +618,41 @@ the host cannot back up. Every task is a state, so re-running it changes nothing
 
 Deploy is triggered manually via GitHub Actions:
 
-1. Go to Actions > "Deploy to Production" > Run workflow
-2. The workflow: waits for the worker release of the dispatched revision, writes `.env` and secret
-   files, checks out the dispatched revision, pulls and verifies the worker base images of that
-   revision, builds service images, starts services, runs migrations, verifies health
+1. Go to Actions > "Deploy" > Run workflow, pick the environment, and leave `revision` empty to
+   deploy the commit the workflow is dispatched on (or give a released SHA: see
+   [Rolling back](#rolling-back))
+2. The workflow: validates the revision, waits for its worker and service releases, writes `.env`
+   and secret files, checks out that revision on the host, pulls and verifies both image releases
+   of it concurrently, starts the services from the service release by digest (nothing is built on
+   the host), runs migrations in the released api container, verifies health, seeds configs,
+   reconciles deploy targets and cleans up old images
 
 ### The deploy waits for its release, and survives one SSH timeout
 
-Before any step touches the host, the runner checks that the dispatched SHA has a worker release
-marker (`scripts/wait_worker_release.py`, probing read-only through `pull-worker-images.sh` with
-`RELEASE_VALIDATION_ONLY=true`). A deploy dispatched right after a merge no longer fails while that
-commit's push-to-main CI run is still publishing: while the run is queued or in progress the check
-re-probes every 30 s, for at most `WORKER_RELEASE_WAIT_SECONDS` (45 minutes, set in `deploy.yml`).
-It refuses at once, before the host, when waiting cannot help:
+Before any step touches the host, the runner checks out the deployed revision and checks that it
+has both a worker release marker and a service release marker (`scripts/wait_release.py --chain
+worker --chain service`, probing read-only through `pull-worker-images.sh` and
+`pull-service-images.sh` with `RELEASE_VALIDATION_ONLY=true`). A deploy dispatched right after a
+merge does not fail while that commit's push-to-main CI run is still publishing: while the run is
+queued or in progress the check re-probes every 30 s, for at most `RELEASE_WAIT_SECONDS` (45
+minutes, set in `deploy.yml`, one deadline for both chains). It refuses at once, before the host,
+when waiting cannot help:
 
 | exit | meaning |
 | --- | --- |
 | 20 | no push-to-main `ci.yml` run for this SHA (e.g. a branch that was never merged) |
 | 21 | the CI run completed without success (failed, cancelled, timed out) |
-| 22 | the CI run succeeded but the SHA has no marker: look at its Publish Worker Base Images job |
+| 22 | the CI run succeeded but the SHA has no marker: look at its Publish Worker Base Images or Publish Service Image Release job (the message names it) |
 | 23 | the 45 minutes passed with the run still going: dispatch again once it finishes |
 | 24 | the GitHub API did not answer three times in a row |
-| 10-13 | the registry failed three times in a row (the probe's own codes) |
+| 10-13 (worker), 11 (service) | the registry failed three times in a row (the probe's own codes) |
+| any other probe code | the release exists but is refused (a broken record, a wrong source hash): final |
 
 The file-only steps — writing `.env` and the secret files, checking the written `.env`, checking out
-the revision, reading back the release record — reach the host through `infra/scripts/deploy-ssh.sh`.
+the revision, reading back the release records — reach the host through `infra/scripts/deploy-ssh.sh`.
 It retries only a failed connection (ssh exit 255), at most three attempts with a 10 s/20 s backoff,
-and never re-runs a remote script that failed on its own. Build, deploy, migrations, health, configs,
-scheduler wait, reconcile and cleanup keep a single attempt.
+and never re-runs a remote script that failed on its own. The pull, deploy, migrations, health,
+configs, scheduler wait, reconcile and cleanup keep a single attempt.
 
 ### Worker base images are a release chain
 
@@ -719,12 +726,13 @@ rate-limit, and registry-tool errors remain distinct failures. The workflow
 does not wait and does not build worker images on a billed Stand machine. After
 the gate passes, the Stand only pulls and fully verifies that immutable release.
 
-### Service images are a release too (published, not consumed yet)
+### Service images are a release too
 
 Every green commit on `main` also publishes the control-plane service images as one immutable
 release keyed by that commit's SHA, with the worker chain's protocol and helpers
-(`infra/scripts/release-chain.sh`). **Nothing consumes it yet:** the production deploy and the
-Stand still build their service images on the host; switching them to this release is later work.
+(`infra/scripts/release-chain.sh`). The deploy workflow runs exactly that release and builds
+nothing on the host ([below](#the-deploy-runs-the-service-release-by-digest)). The ephemeral Stand
+E2E workflow still builds on its machine; switching it is later work.
 
 **What is published.** One image per production Dockerfile, listed once in
 `infra/scripts/service-images.sh`: `api`, `langgraph` (which also serves architect,
@@ -774,6 +782,78 @@ no marker, when a candidate tag does not resolve (exit 8), carries another tree'
 (exit 2) or none (exit 3); a failed candidate build is exit 4. So a failed or partial publish is
 recovered by rerunning the failed jobs, with nobody deleting anything in the registry.
 
+### The deploy runs the service release by digest
+
+`infra/scripts/pull-service-images.sh` is the consuming half of the service chain, the counterpart
+of `pull-worker-images.sh`, and reuses `release-chain.sh` rather than repeating it. For the deployed
+revision it asks `release_marker_lookup` (with a read-only `pull` token), then runs
+`release_verify_committed`: the marker is pulled by digest, its record validated whole, and every
+image it names pulled by digest and required to carry the checkout's non-empty
+`org.codegen.worker_source_hash`. Only then does anything local change: the deployed record
+`deployed-service-images.json` is written, the record it replaces becomes
+`previous-deployed-service-images.json` (when it is a valid record of another revision; a redeploy
+of the same revision keeps the previous one), and each image gets the local name
+`codegen-orchestrator/<image>:<sha>`.
+
+| exit | meaning |
+| --- | --- |
+| 1 | usage: a variable is missing, or the revision is not a full 40-character SHA |
+| 7 | a released image carries a wrong or empty source hash |
+| 8 | the verified release could not be recorded on the host |
+| 9 | no release marker for this revision (registry 404): it was never released as a whole |
+| 10 | the marker is unreadable, not a valid record of this release, or names an image that is gone |
+| 11 | the registry could not say whether the revision is released |
+
+The step `Pull and verify this revision's worker and service releases` runs the worker pull, the
+service pull and a pull of any third-party image compose names by tag that the host does not have
+yet (`--ignore-buildable --policy missing`) concurrently, and fails if any of them fails — before
+any container changes. Only then does `scripts/service_release.py compose-override` write
+`deployed-service-images.compose.yml` from the service record and the contour's resolved compose
+configuration: every service compose would build locally (all `codegen-orchestrator/<image>:local`
+services, both frontends included) gets `image: <repository>@sha256:…` from the record. A build
+service the release does not contain fails the deploy there instead of being built. Every compose
+call after that adds `-f deployed-service-images.compose.yml`, and every `up` runs with
+`--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations and the
+config seeder run in the api container that `up` started from the release; nothing is built for
+them.
+
+Plain `docker compose` without that override (development) builds locally exactly as before. The
+source bind-mounts stay for now: with the checkout at the deployed revision, the mounted code is the
+code in the images.
+
+**Cleanup** runs last, bounded to 10 minutes, after the deploy is live. `scripts/service_release.py
+cleanup` keeps every service image of the current and the previous record and any image a container
+uses, and removes the rest of the chain's images — older releases and the `:local` images earlier
+host builds left. A missing or unreadable record removes nothing. The worker cleanup is unchanged,
+and a dangling-image prune follows; there is no build cache to prune any more.
+
+### Rolling back
+
+The `revision` input of the Deploy workflow deploys any released `main` SHA through the current
+workflow: the runner checkout, both release waits, the host checkout, both pulls, the records and the
+target reconcile all use that one revision. To roll back:
+
+1. Find the SHA to return to: `git_sha` in `previous-deployed-service-images.json` in the deploy
+   path on the host, or the `deployed-service-images-<sha>` artifact of an earlier Deploy run.
+2. Dispatch Deploy for the same environment with `revision` set to that full SHA. Its release is
+   already published, so the wait passes at once; its images are usually still on the host, because
+   cleanup keeps the previous release.
+3. To come back, dispatch Deploy again with `revision` set to the newer SHA, or empty for the tip of
+   the branch the workflow is dispatched from.
+
+Two limits:
+
+- **A revision released before this workflow consumed service releases is refused** by the step
+  `Refuse a revision that predates pulled service releases`, before any wait and before the host is
+  touched: its tree has no `infra/scripts/pull-service-images.sh` (and its compose would build on the
+  host). That includes the revisions that only published a service release (from main's 7f93d8b7 on)
+  up to the merge of this change. Roll back only to a revision deployed by this workflow.
+- **Migrations only go forward.** The deploy runs `alembic upgrade head` in the api container of the
+  target revision. Rolling back across a migration fails at `Run migrations` after `up` has already
+  started the older services. Before a rollback, check
+  `git diff <target>..<current> -- services/api/migrations`; if it is not empty, downgrade the
+  database first, from the current release, or do not roll back.
+
 ## First-Time Setup
 
 ```bash
@@ -814,16 +894,19 @@ docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
 
 ## Updating
 
-Standard deploys happen via the GitHub Actions workflow. For manual intervention:
+Standard deploys happen via the GitHub Actions workflow, and a rollback is the same workflow with
+the `revision` input ([Rolling back](#rolling-back)). For manual intervention on the host, run the
+deployed release through its override and never build:
 
 ```bash
 cd /opt/codegen_orchestrator
-git pull origin main
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
-docker image prune -f
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f deployed-service-images.compose.yml"
+$COMPOSE up -d --remove-orphans --no-build --pull never
+$COMPOSE exec -T api alembic upgrade head
 ```
+
+Without `-f deployed-service-images.compose.yml`, compose falls back to the `:local` build names and
+would build from the checkout.
 
 ### What the production overlay adds
 

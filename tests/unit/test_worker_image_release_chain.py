@@ -35,6 +35,8 @@ SCRIPTS = REPO_ROOT / "infra" / "scripts"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 MARKER_IMAGE = "worker-base-release"
 DEPLOY_SHA = "${{ github.sha }}"
+# The one revision a deploy run deploys: the dispatched commit or the `revision` input.
+DEPLOY_REVISION = "${{ env.DEPLOY_REVISION }}"
 # Where the verification writes down what it verified, on the deployment host.
 HOST_RECORD = "${{ env.DEPLOY_PATH }}/deployed-worker-images.json"
 
@@ -77,7 +79,7 @@ def test_deploy_pulls_the_exact_revision_it_deploys():
     steps = _deploy_steps()
     script = steps[_index_of(steps, "pull-worker-images.sh")][1]
 
-    assert f"WORKER_IMAGE_TAG='{DEPLOY_SHA}'" in script
+    assert f"WORKER_IMAGE_TAG='{DEPLOY_REVISION}'" in script
 
 
 def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again():

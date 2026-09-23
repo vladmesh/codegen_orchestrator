@@ -604,6 +604,7 @@ services:
     restart: unless-stopped
 
   admin-frontend:
+    image: codegen-orchestrator/admin-frontend:local
     build:
       context: services/admin-frontend
       dockerfile: Dockerfile
@@ -624,6 +625,7 @@ services:
     restart: unless-stopped
 
   user-dashboard:
+    image: codegen-orchestrator/user-dashboard:local
     build:
       context: services/user-dashboard
       dockerfile: Dockerfile

@@ -11,14 +11,20 @@ def _cleanup_script() -> str:
     return cleanup.split("          script: |\n", maxsplit=1)[1]
 
 
-def test_cleanup_prunes_cache_and_dangling_images_after_worker_cleanup_failure_is_saved():
+def test_cleanup_prunes_dangling_images_after_release_cleanup_failures_are_saved():
     script = _cleanup_script()
 
     worker_cleanup = script.index(
         "--previous-release-record previous-deployed-worker-images.json || cleanup_status=$?"
     )
-    build_cache_prune = script.index("docker builder prune --all --force --filter until=24h")
+    service_cleanup = script.index(
+        "--previous-record previous-deployed-service-images.json || cleanup_status=$?"
+    )
     dangling_image_prune = script.index("docker image prune -f")
     saved_status_exit = script.index('if [ "${cleanup_status}" -ne 0 ]; then')
 
-    assert worker_cleanup < build_cache_prune < dangling_image_prune < saved_status_exit
+    assert worker_cleanup < service_cleanup < dangling_image_prune < saved_status_exit
+
+
+def test_cleanup_prunes_no_build_cache_because_the_host_builds_nothing():
+    assert "builder prune" not in _cleanup_script()

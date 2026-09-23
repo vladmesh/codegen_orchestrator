@@ -1,0 +1,57 @@
+{
+  "git_sha": "7f93d8b746cac389f7639fa847daca0bfa36daf5",
+  "images": {
+    "admin-frontend": {
+      "digest": "sha256:230db67c5350bb59299a2e661f4f0c1dd06f59e70f074137acd45cc45c58707e",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/admin-frontend@sha256:230db67c5350bb59299a2e661f4f0c1dd06f59e70f074137acd45cc45c58707e",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/admin-frontend"
+    },
+    "api": {
+      "digest": "sha256:7a72293d93592b16abc2aad039ba770ca2b9ccf305f9382682ac574854ee11e2",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/api@sha256:7a72293d93592b16abc2aad039ba770ca2b9ccf305f9382682ac574854ee11e2",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/api"
+    },
+    "infra-service": {
+      "digest": "sha256:6ca2ccbfdfbbb8f8f2f0f1266d90fa7793157bd579675e0201527b9786b609d3",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/infra-service@sha256:6ca2ccbfdfbbb8f8f2f0f1266d90fa7793157bd579675e0201527b9786b609d3",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/infra-service"
+    },
+    "langgraph": {
+      "digest": "sha256:9babb02f1313eb59ff70644b817d17c45c7aed795338d5876f39df5c77a5136f",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/langgraph@sha256:9babb02f1313eb59ff70644b817d17c45c7aed795338d5876f39df5c77a5136f",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/langgraph"
+    },
+    "scaffolder": {
+      "digest": "sha256:0107b56fa84d2de0477bd88fd9cc7c109052ec8b12beed0378b63bff7d1ed801",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/scaffolder@sha256:0107b56fa84d2de0477bd88fd9cc7c109052ec8b12beed0378b63bff7d1ed801",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/scaffolder"
+    },
+    "scheduler": {
+      "digest": "sha256:87b99a0022f0b5b546c704d6a11dbffff2d14ca011cde1cbc5dcacf63c09f57a",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/scheduler@sha256:87b99a0022f0b5b546c704d6a11dbffff2d14ca011cde1cbc5dcacf63c09f57a",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/scheduler"
+    },
+    "telegram_bot": {
+      "digest": "sha256:21b8d7ae23010a351d35d353a0cbb27aae9c28dd396dd24cbf1c80d0580f688e",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/telegram_bot@sha256:21b8d7ae23010a351d35d353a0cbb27aae9c28dd396dd24cbf1c80d0580f688e",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/telegram_bot"
+    },
+    "user-dashboard": {
+      "digest": "sha256:3e830ec58c25e2281d02855e3d91d7f8fcb110a941bb63735ee8dc7d3198808f",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/user-dashboard@sha256:3e830ec58c25e2281d02855e3d91d7f8fcb110a941bb63735ee8dc7d3198808f",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/user-dashboard"
+    },
+    "worker-broker": {
+      "digest": "sha256:52e641c9c42f3d9e61e10c4d741cc86b8426335779d295b4eac81d12a9b79311",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/worker-broker@sha256:52e641c9c42f3d9e61e10c4d741cc86b8426335779d295b4eac81d12a9b79311",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/worker-broker"
+    },
+    "worker-manager": {
+      "digest": "sha256:69e8d38fcafbe685425c1e8b9ae615a1c4704bd2a570e1763622b3b3a8bad1d9",
+      "reference": "ghcr.io/vladmesh/codegen-orchestrator/worker-manager@sha256:69e8d38fcafbe685425c1e8b9ae615a1c4704bd2a570e1763622b3b3a8bad1d9",
+      "repository": "ghcr.io/vladmesh/codegen-orchestrator/worker-manager"
+    }
+  },
+  "schema_version": 1,
+  "source_hash": "baf21129a4e249ca"
+}

@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Deploy pulls the revision's service release by digest beside the worker release and runs compose on it
+  with `--no-build`, so the host builds nothing; a `revision` input redeploys a previous release (rollback).
 - Main CI pushes the 10 service images by merge SHA and, after a green gate, a `service-release:<sha>` marker;
   both release chains push only on a registry 404 for the marker and validate a committed record whole.
 - The PR poller merges product PRs itself (no GitHub auto-merge) after writing their `REGISTRY_*` secrets

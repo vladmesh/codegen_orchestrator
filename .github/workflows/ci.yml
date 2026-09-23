@@ -914,7 +914,7 @@ jobs:
   # for publish-worker-images above: without it a skipped conditional suite upstream of
   # the gate would skip this job, and the gate's own success is checked right after it.
   # A failed candidate build does not skip it either: the job then refuses loudly on the
-  # tag that does not resolve. Nothing consumes the release yet (docs/DEPLOY.md).
+  # tag that does not resolve. The deploy runs this release by digest (docs/DEPLOY.md).
   publish-service-release:
     name: Publish Service Image Release
     runs-on: ubuntu-latest

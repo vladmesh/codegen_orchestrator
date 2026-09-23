@@ -60,16 +60,18 @@ release_image_digest() {
 #
 # A failed `buildx imagetools inspect` is not "absent": its wording is not a registry
 # contract, and an auth or transport failure reads the same as a missing tag. So the
-# registry API is asked directly, the way pull-worker-images.sh asks it, and the token
-# is requested for pull and push: the token `docker push` itself obtains, which is
-# issued before the marker's package exists, on the very first release.
+# registry API is asked directly, the way pull-worker-images.sh asks it. A publisher
+# requests the token for `pull,push`: the token `docker push` itself obtains, which is
+# issued before the marker's package exists, on the very first release. A consumer
+# holds a read-only credential and requests `pull`.
 #
 # The answer is left in RELEASE_MARKER_STATE and RELEASE_MARKER_DIGEST, and the reason
 # of an error on stderr; call it directly, not in a subshell.
 #
-# Usage: release_marker_lookup <marker_tag_reference> <registry_user> <registry_token>
+# Usage: release_marker_lookup <marker_tag_reference> <registry_user> <registry_token> \
+#            <token_actions>
 release_marker_lookup() {
-    local marker="$1" user="$2" password="$3"
+    local marker="$1" user="$2" password="$3" actions="$4"
     local repository="${marker%:*}" tag="${marker##*:}"
     local path="${repository#ghcr.io/}"
     local workdir status curl_exit token digest
@@ -83,7 +85,7 @@ release_marker_lookup() {
     if status="$(curl --silent --show-error --max-time 60 --retry 3 --retry-delay 2 \
         --output "${workdir}/token" --write-out '%{http_code}' \
         --netrc-file "${workdir}/netrc" --get --data-urlencode 'service=ghcr.io' \
-        --data-urlencode "scope=repository:${path}:pull,push" https://ghcr.io/token)"; then
+        --data-urlencode "scope=repository:${path}:${actions}" https://ghcr.io/token)"; then
         curl_exit=0
     else
         curl_exit=$?
@@ -306,12 +308,46 @@ release_source_hash_of() {
     echo "${found}"
 }
 
+# Read the committed record of a SHA whose marker resolved, and print its
+# `<image>=<repository>@<digest>` lines on stdout: the marker is pulled by digest and its
+# record validated (release_marker_images). No image it names is pulled here; that is
+# release_verify_committed, which starts with exactly this. A consumer that only has to
+# know whether a revision is released and deployable (a pre-deploy wait) stops here.
+#
+# Returns 0 or RELEASE_EXIT_BROKEN_RELEASE. Run it in a command substitution.
+#
+# Usage: release_marker_read <marker_digest_reference> <release_label> <git_sha> \
+#            <source_hash> <registry> <schema_version> <image>...
+release_marker_read() {
+    local marker="$1" release_label="$2" git_sha="$3" source_hash="$4" registry="$5"
+    local schema_version="$6"
+    shift 6
+    local payload
+
+    if ! docker pull "${marker}" >/dev/null; then
+        echo "FATAL: the release marker of ${git_sha} (${marker}) cannot be pulled," >&2
+        echo "       so the release cannot be re-verified." >&2
+        return "${RELEASE_EXIT_BROKEN_RELEASE}"
+    fi
+    if ! payload="$(docker inspect "${marker}" \
+        --format "{{index .Config.Labels \"${release_label}\"}}")"; then
+        echo "FATAL: the release marker of ${git_sha} (${marker}) cannot be inspected," >&2
+        echo "       so the release cannot be re-verified." >&2
+        return "${RELEASE_EXIT_BROKEN_RELEASE}"
+    fi
+    if ! release_marker_images "${payload}" "${git_sha}" "${source_hash}" \
+        "${registry}" "${schema_version}" "$@"; then
+        echo "FATAL: the release marker of ${git_sha} does not carry a usable record." >&2
+        return "${RELEASE_EXIT_BROKEN_RELEASE}"
+    fi
+}
+
 # Re-verify the committed release of a SHA whose marker resolved, and print its
 # `<image>=<repository>@<digest>` lines on stdout. Every stage of every chain that finds
 # the marker present runs exactly this, so none of them can claim a broken release is
-# fine: the marker is pulled by digest, its record is validated (release_marker_images),
-# and every image it names is pulled by digest and has to carry this tree's non-empty
-# source hash. Nothing is pushed, whatever the outcome.
+# fine: the marker is read (release_marker_read), and every image it names is pulled by
+# digest and has to carry this tree's non-empty source hash. Nothing is pushed, whatever
+# the outcome.
 #
 # Returns 0, RELEASE_EXIT_BROKEN_RELEASE (the marker cannot be read, is not a valid
 # record of this release, or names an image that is gone) or
@@ -325,24 +361,10 @@ release_verify_committed() {
     local marker="$1" release_label="$2" git_sha="$3" source_hash="$4" hash_label="$5"
     local registry="$6" schema_version="$7"
     shift 7
-    local payload released record image reference found
+    local released record image reference found
 
-    if ! docker pull "${marker}" >/dev/null; then
-        echo "FATAL: the release marker of ${git_sha} (${marker}) cannot be pulled," >&2
-        echo "       so the release cannot be re-verified." >&2
-        return "${RELEASE_EXIT_BROKEN_RELEASE}"
-    fi
-    if ! payload="$(docker inspect "${marker}" \
-        --format "{{index .Config.Labels \"${release_label}\"}}")"; then
-        echo "FATAL: the release marker of ${git_sha} (${marker}) cannot be inspected," >&2
-        echo "       so the release cannot be re-verified." >&2
-        return "${RELEASE_EXIT_BROKEN_RELEASE}"
-    fi
-    if ! released="$(release_marker_images "${payload}" "${git_sha}" "${source_hash}" \
-        "${registry}" "${schema_version}" "$@")"; then
-        echo "FATAL: the release marker of ${git_sha} does not carry a usable record." >&2
-        return "${RELEASE_EXIT_BROKEN_RELEASE}"
-    fi
+    released="$(release_marker_read "${marker}" "${release_label}" "${git_sha}" \
+        "${source_hash}" "${registry}" "${schema_version}" "$@")" || return "$?"
 
     while IFS= read -r record; do
         image="${record%%=*}"

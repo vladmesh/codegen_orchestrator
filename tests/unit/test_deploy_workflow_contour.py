@@ -179,7 +179,7 @@ def test_a_contour_needs_no_registry_credential_of_its_own():
     scoped to this repository. Production keeps using its own secret.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    pull = steps["Pull and verify worker base images for this revision"]
+    pull = steps["Pull and verify this revision's worker and service releases"]
 
     assert "GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'" in pull["with"]["script"]
     assert _deploy_job()["permissions"]["packages"] == "read"

@@ -2,9 +2,9 @@
 # The control-plane service image release chain, named once.
 #
 # Sourced by every half that has to agree on it: publish-service-images.sh (build the
-# candidates, then commit the release) today, and the puller that deploy and the stand
-# will read the release through later. Listing the images in one place is what keeps an
-# image from being published and never verified, or verified and never published.
+# candidates, then commit the release) and pull-service-images.sh (the deploy's puller).
+# Listing the images in one place is what keeps an image from being published and never
+# verified, or verified and never published.
 #
 # One entry per Dockerfile, not per compose service: the langgraph image serves
 # langgraph, architect, engineering-worker, deploy-worker and qa-worker, and the
