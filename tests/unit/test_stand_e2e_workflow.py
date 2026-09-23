@@ -20,6 +20,9 @@ from scripts.stand_run import (
     STAND_PROVISIONING_TIMEOUT_SECONDS,
     SUITES,
 )
+from scripts.wait_stand_provisioning import (
+    DEFAULT_TIMEOUT_SECONDS as WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS,
+)
 from shared.ssh_keys import normalize_admin_private_key
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
@@ -1120,3 +1123,18 @@ def test_a_secret_that_kept_its_newline_still_yields_one_accepted_key():
     assert normalize_admin_private_key(delivered).fingerprint == (
         normalize_admin_private_key(key_text).fingerprint
     )
+
+
+def test_the_docker_steps_of_the_stand_have_their_own_bounds():
+    """A hung pull fails its step, not the 360-minute job with two paid machines under it."""
+    steps = _steps()
+
+    assert steps["Bring up dynamic orchestrator and wait for API"]["timeout-minutes"] == 25
+    assert steps["Provide worker base images on the stand"]["timeout-minutes"] == 30
+    # The provisioning wait keeps its own deadline and reports on it; the step bound
+    # only catches what hangs outside the wait.
+    target = steps["Register and provision dynamic target"]["timeout-minutes"]
+    assert target == 30
+    assert target * 60 > WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS
+    for step in steps.values():
+        assert step.get("timeout-minutes", 0) < STAND_JOB_TIMEOUT_MINUTES

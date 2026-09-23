@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Every CI job and docker step is bounded, with job limits covering worst-case retries, so a hung Buildx or
+  image pull fails, is retried and marks `step-timeout` instead of holding CI for up to 6 h.
 - CI retries uv, Buildx and image-pull downloads and writes one `CI-INFRA-FAILURE:` marker when they are
   exhausted; the Required CI Gate repeats it but still fails. Every third-party action is SHA-pinned.
 - The deploy waits up to 45 min for the dispatched SHA's CI run to publish its worker release before touching
