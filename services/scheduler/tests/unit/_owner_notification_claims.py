@@ -84,9 +84,14 @@ class ClaimsFromWrites:
         self.clock = clock or ClaimClock()
         self.runs: dict[str, dict | OwnerNotification] = {}
         self.stories: dict[str, dict | OwnerNotification] = {}
-        # Claim stamps, with how many writes of that kind had happened when they
-        # were made: a later write carries the stamp itself and wins.
-        self._stamps: dict[tuple[str, str], tuple[int, dict]] = {}
+        # Claim stamps, and records an API action owed on a Run in its own
+        # transaction, each with how many writes of that kind had happened when
+        # it was made and a sequence number: a later write carries the stamp
+        # itself and wins, and between a stamp and an owed record made after the
+        # same write the later one holds.
+        self._stamps: dict[tuple[str, str], tuple[int, int, dict]] = {}
+        self._owed: dict[str, tuple[int, int, dict]] = {}
+        self._sequence = 0
         client.claim_run_owner_notification_attempt.side_effect = self._claim_run
         client.claim_story_owner_notification_attempt.side_effect = self._claim_story
 
@@ -110,11 +115,30 @@ class ClaimsFromWrites:
     def _writes(self, kind: str, source_id: str) -> list[dict]:
         return self._run_writes(source_id) if kind == "run" else self._story_writes(source_id)
 
+    def _next(self) -> int:
+        self._sequence += 1
+        return self._sequence
+
+    def owe_run(self, run_id: str, record: OwnerNotification) -> None:
+        """A record an API action wrote on the Run, replacing whatever it held."""
+        self._owed[run_id] = (
+            len(self._run_writes(run_id)),
+            self._next(),
+            record.model_dump(mode="json"),
+        )
+
     def _current(self, kind: str, source_id: str) -> dict | OwnerNotification | None:
         writes = self._writes(kind, source_id)
-        stamp = self._stamps.get((kind, source_id))
-        if stamp is not None and stamp[0] == len(writes):
-            return stamp[1]
+        held = [
+            entry
+            for entry in (
+                self._stamps.get((kind, source_id)),
+                self._owed.get(source_id) if kind == "run" else None,
+            )
+            if entry is not None and entry[0] == len(writes)
+        ]
+        if held:
+            return max(held, key=lambda entry: entry[1])[2]
         if writes:
             return writes[-1]
         if kind == "run":
@@ -130,7 +154,9 @@ class ClaimsFromWrites:
         return claim(
             self.clock,
             lambda: self._current(kind, source_id),
-            lambda stamped: self._stamps.__setitem__((kind, source_id), (writes, stamped)),
+            lambda stamped: self._stamps.__setitem__(
+                (kind, source_id), (writes, self._next(), stamped)
+            ),
         )
 
     async def _claim_run(self, run_id: str) -> OwnerNotificationAttemptClaim:

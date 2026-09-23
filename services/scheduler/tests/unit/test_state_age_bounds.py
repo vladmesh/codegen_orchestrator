@@ -18,6 +18,11 @@ import pytest
 import structlog
 from structlog.testing import capture_logs
 
+from shared.contracts.dto.lifecycle_wait import (
+    UserSecretWaitCommand,
+    UserSecretWaitDisposition,
+    UserSecretWaitRead,
+)
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
     OwnerNotification,
@@ -521,7 +526,7 @@ class _SecretWait:
         api.update_story.side_effect = self._update_story
         api.fail_story.side_effect = self._fail_story
         api.expire_state_wait.side_effect = self._expire_state_wait
-        api.wait_user_secret_story.side_effect = self._wait_user_secret_story
+        api.park_waiting_user_secret.side_effect = self._park_waiting_user_secret
         api.list_runs_owing_owner_notification.side_effect = self._runs_owing
         api.list_stories_owing_owner_notification.return_value = []
         api.get_project.return_value = SimpleNamespace(owner_id=555)
@@ -591,9 +596,46 @@ class _SecretWait:
             self.story_status = command.terminal_status.value
         return ended
 
-    async def _wait_user_secret_story(self, story_id):
+    async def _park_waiting_user_secret(self, story_id, command: UserSecretWaitCommand):
+        """The API action: the transition and the Run's ask in one transaction.
+
+        An ask the Run already carries is kept; a story already waiting is a
+        repeat that writes nothing.
+        """
+        assert command.run_id == self.RUN_ID
+        existing = self.record()
+        if self.story_status == "waiting_user_secret":
+            return UserSecretWaitRead(
+                disposition=UserSecretWaitDisposition.ALREADY_WAITING,
+                story_id=story_id,
+                story_status=StoryStatus.WAITING_USER_SECRET,
+                run_id=command.run_id,
+                owner_notification=existing,
+            )
+        assert self.story_status == "deploying"
+        ask = existing
+        if existing is None or existing.state is OwnerNotificationState.VOIDED:
+            ask = OwnerNotification(
+                event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
+                text=command.text,
+                story_id=story_id,
+                project_id="00000000-0000-0000-0000-000000000001",
+                terminal_status=StoryStatus.WAITING_USER_SECRET,
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+            )
+            self.run_metadata = {
+                **self.run_metadata,
+                OWNER_NOTIFICATION_KEY: ask.model_dump(mode="json"),
+            }
         self.story_status = "waiting_user_secret"
-        return self._story_dto()
+        return UserSecretWaitRead(
+            disposition=UserSecretWaitDisposition.WAITING,
+            story_id=story_id,
+            story_status=StoryStatus.WAITING_USER_SECRET,
+            run_id=command.run_id,
+            owner_notification=ask,
+        )
 
     async def _runs_owing(self, *, limit):
         record = self.record()
@@ -735,26 +777,32 @@ async def test_a_delivered_request_just_under_the_bound_is_left_alone():
 
 
 @pytest.mark.asyncio
-async def test_entering_the_wait_owes_the_ask_before_the_transition_and_delivers_it():
-    """The seam's mandated order: owe, transition, deliver."""
+async def test_entering_the_wait_owes_the_ask_with_the_transition_and_delivers_it():
+    """The ask is owed in the transition's own API action, then delivered through the seam.
+
+    Replaces the three-call order (owe on the Run, transition, deliver): the ask
+    and the wait now commit in one transaction, so no ask is owed for a wait that
+    did not start and no wait starts without its ask.
+    """
     world = _SecretWait(story_status="deploying", consumer_wrote_at=_ago(30))
     trace: list[tuple[str, ...]] = []
-    write_run, transition = world._update_run, world._wait_user_secret_story
+    write_run, park = world._update_run, world._park_waiting_user_secret
 
     async def traced_write(run_id, data):
         trace.append(("record", data["run_metadata"][OWNER_NOTIFICATION_KEY]["state"]))
         await write_run(run_id, data)
 
-    async def traced_transition(story_id):
-        trace.append(("transition",))
-        return await transition(story_id)
+    async def traced_park(story_id, command):
+        answer = await park(story_id, command)
+        trace.append(("park", world.story_status, world.record().state.value))
+        return answer
 
     world.api.update_run.side_effect = traced_write
-    world.api.wait_user_secret_story.side_effect = traced_transition
+    world.api.park_waiting_user_secret.side_effect = traced_park
 
     await world.enter_the_wait()
 
-    assert trace == [("record", "owed"), ("transition",), ("record", "delivered")]
+    assert trace == [("park", "waiting_user_secret", "owed"), ("record", "delivered")]
     record = world.record()
     assert record.state is OwnerNotificationState.DELIVERED
     assert record.delivered_at is not None

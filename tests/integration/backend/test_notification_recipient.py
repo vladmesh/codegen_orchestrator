@@ -19,7 +19,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import uuid
 
@@ -149,31 +148,45 @@ async def _pending_count(client: RedisStreamClient) -> int:
 async def test_pipeline_event_reaches_the_owner_telegram_chat(
     api_client, scheduler_api, stream_client
 ):
-    from src.tasks.supervisor.liveness import _request_resources_via_po
+    from src.tasks.owner_notifications import OwnerNotificationOutcome, deliver_owed_notification
 
     user_id, project_id = await _owner_and_project(api_client)
     # The whole point of the card: these are different numbers, and only one of
     # them addresses a chat.
     assert user_id != OWNER_TELEGRAM_ID
 
-    task = SimpleNamespace(id="task-recipient-1", project_id=project_id, story_id="story-recip-1")
-    await _request_resources_via_po(
-        scheduler_api, stream_client, task, structlog.get_logger(__name__)
+    # Every owner notification the scheduler produces goes through the durable
+    # seam; a completed story owes one on the story, written by the API.
+    story = await api_client.post(
+        "/api/stories/", json={"project_id": project_id, "title": "Recipient story"}
     )
+    assert story.status_code == 201, story.text
+    story_id = story.json()["id"]
+    for action in ("start", "complete"):
+        moved = await api_client.post(f"/api/stories/{story_id}/{action}")
+        assert moved.status_code == 200, moved.text
+    record = await scheduler_api.get_story_owner_notification(story_id)
+    outcome = await deliver_owed_notification(
+        scheduler_api,
+        stream_client,
+        story_id,
+        record,
+        structlog.get_logger(__name__),
+        story_record=True,
+    )
+    assert outcome is OwnerNotificationOutcome.DELIVERED
 
     entries = await stream_client.redis.xrange(PO_INPUT_QUEUE)
     assert len(entries) == 1, "the scheduler published exactly one PO event"
     event = decode_redis_fields(entries[0][1])
-    assert event["event"] == "task_waiting_resources"
+    assert event["event"] == "story_completed"
     assert event["telegram_chat_id"] == str(OWNER_TELEGRAM_ID)
     assert event["owner_user_id"] == str(user_id)
 
     # PO answers into the same thread the user's own messages use, and the
     # notification it emits keeps the resolved chat.
     assert po_thread_id(event["telegram_chat_id"]) == po_thread_id(str(OWNER_TELEGRAM_ID))
-    proactive = proactive_from_input(
-        event, "Engineering is waiting for server capacity.", event["telegram_chat_id"]
-    )
+    proactive = proactive_from_input(event, "Your story is finished.", event["telegram_chat_id"])
     await stream_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
 
     published = await stream_client.redis.xrange(PO_PROACTIVE_QUEUE)

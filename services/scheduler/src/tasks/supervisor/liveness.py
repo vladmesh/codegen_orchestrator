@@ -20,6 +20,11 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureParkDisposition,
     infrastructure_refusal_detail,
 )
+from shared.contracts.dto.lifecycle_wait import (
+    TaskResourceResumeCommand,
+    TaskResourceResumeDisposition,
+    TaskResourceWaitCommand,
+)
 from shared.contracts.dto.product_brief import (
     PLANNING_ATTEMPT_HEARTBEAT_TIMEOUT_SECONDS,
     ProductBriefRead,
@@ -32,12 +37,8 @@ from shared.contracts.dto.run_result import (
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.vocab import OwnerNotificationEvent
-from shared.queues import (
-    ARCHITECT_QUEUE,
-    PO_INPUT_QUEUE,
-)
+from shared.queues import ARCHITECT_QUEUE
 from shared.redis import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -46,7 +47,11 @@ if TYPE_CHECKING:
 from ... import startup
 from .._recipients import resolve_project_recipient
 from ..infrastructure_park import park_story_infrastructure_refusal
-from ..owner_notifications import deliver_owed_notification, owe_owner_notification
+from ..owner_notifications import (
+    deliver_in_tick,
+    deliver_owed_notification,
+    owe_owner_notification,
+)
 from ..worker_liveness import (
     WorkerAttemptState,
     attempt_state,
@@ -471,31 +476,37 @@ async def _park_task_waiting_resources(
         # so this is the code's own failure and the caller retries it.
         return False
 
-    metadata = dict(task.failure_metadata or {})
-    is_new_wait = "resource_wait_started_at" not in metadata
-    metadata.setdefault("resource_wait_started_at", datetime.now(UTC).isoformat())
-    metadata.update(
-        {
-            "allocation_required_ram_mb": result.allocation_required_ram_mb,
-            "allocation_min_disk_mb": result.allocation_min_disk_mb,
-            "allocation_failure_reason": reason.value,
-        }
+    # An unfinished host build waits on the same path, but the owner must not
+    # be told the platform ran out of capacity when it did not.
+    event, text = (
+        (OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE, WAITING_INFRASTRUCTURE_TASK_TEXT)
+        if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+        else (OwnerNotificationEvent.TASK_WAITING_RESOURCES, WAITING_RESOURCES_TASK_TEXT)
     )
-    await api_client.update_task(task.id, {"failure_metadata": metadata})
-    await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
-    log.info("task_waiting_resources", reason=reason.value)
-    if is_new_wait:
-        # An unfinished host build waits on the same path, but the owner must not
-        # be told the platform ran out of capacity when it did not.
-        request_via_po = (
-            _request_infrastructure_wait_via_po
-            if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
-            else _request_resources_via_po
-        )
-        try:
-            await request_via_po(api_client, redis_client, task, log)
-        except Exception:
-            log.warning("waiting_resources_request_failed", exc_info=True)
+    # The wait's facts, the transition and — when this park starts the wait —
+    # the owed announcement on this refused Run are one API transaction. Whether
+    # the wait is new is decided there, on the locked task, so it is announced
+    # once however many refused attempts it spans.
+    parked = await api_client.park_task_waiting_resources(
+        task.id,
+        TaskResourceWaitCommand(
+            run_id=run.id,
+            allocation_failure_reason=reason,
+            allocation_required_ram_mb=result.allocation_required_ram_mb,
+            allocation_min_disk_mb=result.allocation_min_disk_mb,
+            event=event,
+            text=text,
+            actor="supervisor",
+        ),
+    )
+    log.info(
+        "task_waiting_resources",
+        reason=reason.value,
+        disposition=parked.disposition.value,
+        new_wait=parked.new_wait,
+    )
+    if parked.owner_notification is not None:
+        await deliver_in_tick(api_client, redis_client, run.id, parked.owner_notification, log)
     return True
 
 
@@ -529,69 +540,26 @@ IMPOSSIBLE_CAPACITY_TASK_TEXT = (
 )
 
 
-async def _request_resources_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to tell the owner that engineering is waiting for capacity."""
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_waiting_resources", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event=OwnerNotificationEvent.TASK_WAITING_RESOURCES,
-        text=(
-            "Engineering is waiting for server capacity. Tell the user that work will resume "
-            "automatically when capacity becomes available."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("waiting_resources_requested")
+#: What the owner is told when engineering waits for server capacity.
+WAITING_RESOURCES_TASK_TEXT = (
+    "Engineering is waiting for server capacity. Tell the user that work will resume "
+    "automatically when capacity becomes available."
+)
 
+#: What the owner is told when the target machine is still being prepared.
+#: Deliberately not the capacity message: nothing is full and the user's project
+#: is not defective — the host it would run on has not finished (or has failed)
+#: its software provisioning, which operators and the provisioner resolve.
+WAITING_INFRASTRUCTURE_TASK_TEXT = (
+    "Engineering is waiting for a server whose setup is still being finished on our "
+    "side. Tell the user this is our infrastructure, not a problem with their project, "
+    "and that work will resume automatically once the server is ready."
+)
 
-async def _request_infrastructure_wait_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to tell the owner the target machine is still being prepared.
-
-    This is deliberately not the capacity message: nothing is full and the user's
-    project is not defective — the host it would run on has not finished (or has
-    failed) its software provisioning, which operators and the provisioner resolve.
-    """
-    recipient = await resolve_project_recipient(
-        api_client,
-        str(task.project_id),
-        event=OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE,
-        story_id=task.story_id,
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event="task_waiting_infrastructure",
-        text=(
-            "Engineering is waiting for a server whose setup is still being finished on our "
-            "side. Tell the user this is our infrastructure, not a problem with their project, "
-            "and that work will resume automatically once the server is ready."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("waiting_infrastructure_requested")
+#: What the owner is told when a parked task is released again.
+RESOURCES_RESUMED_TASK_TEXT = (
+    "Server capacity is available again. Tell the user that engineering has resumed."
+)
 
 
 async def supervise_waiting_resource_tasks(
@@ -632,12 +600,20 @@ async def supervise_waiting_resource_tasks(
         if not await _resources_available(api_client, metadata):
             continue
         await _clear_failed_run_iteration(api_client, task)
-        await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
-        await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
-        try:
-            await _notify_resources_resumed_via_po(api_client, redis_client, task)
-        except Exception:
-            log.warning("resources_resumed_request_failed", exc_info=True)
+        # Release and the owed "resumed" notice are one API transaction; the
+        # notice replaces the wait's own record on the refused Run, so a
+        # "waiting" message still owed is superseded instead of arriving stale.
+        released = await api_client.resume_task_from_resource_wait(
+            task.id,
+            TaskResourceResumeCommand(text=RESOURCES_RESUMED_TASK_TEXT, actor="supervisor"),
+        )
+        if released.disposition is not TaskResourceResumeDisposition.RESUMED:
+            log.info("resource_wait_resume_skipped", task_status=released.task_status.value)
+            continue
+        if released.owner_notification is not None:
+            await deliver_in_tick(
+                api_client, redis_client, released.run_id, released.owner_notification, log
+            )
         resumed += 1
     return {"resumed": resumed, "expired": expired}
 
@@ -653,10 +629,10 @@ async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> N
     for run in runs:
         if run.run_metadata.get("iteration") != task.current_iteration:
             continue
-        await api_client.update_run(
-            run.id,
-            {"run_metadata": {**run.run_metadata, "iteration": None}},
-        )
+        # Only the key: the API merges run metadata, and resending the rest
+        # would carry this read's copy of the Run's owner-notification record
+        # into a write the seam may have settled since.
+        await api_client.update_run(run.id, {"run_metadata": {"iteration": None}})
         return
 
 
@@ -675,26 +651,6 @@ async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -
     return await _admissible_target_exists(
         api_client, required_ram_mb=required_ram, min_disk_mb=min_disk
     )
-
-
-async def _notify_resources_resumed_via_po(
-    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, task
-) -> None:
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_resources_resumed", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event=OwnerNotificationEvent.TASK_RESOURCES_RESUMED,
-        text="Server capacity is available again. Tell the user that engineering has resumed.",
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def supervise_stuck_tasks(
