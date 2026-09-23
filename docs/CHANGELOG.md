@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- The state-age watchdog ends a wait only via `expire-state-wait`, a compare-and-set on status and anchor,
+  so a story routing moved on is skipped and logged, never parked or failed, whatever runs first.
 - Every CI job and docker step is bounded, with job limits covering worst-case retries, so a hung Buildx or
   image pull fails, is retried and marks `step-timeout` instead of holding CI for up to 6 h.
 - CI retries uv, Buildx and image-pull downloads and writes one `CI-INFRA-FAILURE:` marker when they are

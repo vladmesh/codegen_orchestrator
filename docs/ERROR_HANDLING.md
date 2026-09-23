@@ -62,11 +62,18 @@ bounded state is an entry plus its config key, never another timeout branch.
 | `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the ask's owner-notification record: its `delivered_at` | fail |
 
 On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
-anchor, and its owner is told through the durable seam in the mandated order (record, transition,
-deliver, administrators). Each default's provenance is recorded in its
+anchor, and its owner is told through the durable seam: record and transition commit together,
+then delivery and the administrator notice. Each default's provenance is recorded in its
 `scripts/system_configs.yaml` description and beside its map entry, so a bound can be retuned
 against the timing it was derived from. The transition is what makes it idempotent: an expired story leaves the
-status the watchdog scans. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
+status the watchdog scans, and a repeat of a committed ending is a typed `already_ended` no-op.
+
+The ending is a compare-and-set, `POST /api/stories/{id}/expire-state-wait`: on the locked rows the
+status must be the one the watchdog read and the anchor the one its age was measured from (the same
+latest QUEUED/RUNNING Run; the same delivered ask on the same deploy Run, with its secrets still
+missing; the same `pr_number`, and a pull request whose `updated_at` a re-read just before the call
+finds unmoved). Otherwise nothing is written or told and `state_age_bound_skipped` names the
+mismatch, so routing that moved the story on wins whichever runs first. `IMAGE_PUBLICATION_TIMEOUT_SECONDS` (900 s, measured from the merge)
 still owns the wait for a merged commit's images and always ends it; the `pr_review` bound is an
 order of magnitude longer, so it never takes a story that bound already governs.
 

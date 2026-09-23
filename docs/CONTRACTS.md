@@ -874,6 +874,12 @@ The locked infrastructure park,
 its Task up to two (`todo → in_dev → waiting_human_review`) in the same
 transaction, so no caller sequences task and story status for that park.
 
+The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
+(`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a
+Story one hop only if the locked rows still show the expected status and anchor
+(`StateWaitExpiryCommand.mismatch`); reason, owed story record and transition commit together.
+A mismatch is a typed `skipped` naming it, a repeat is `already_ended`, and neither writes anything.
+
 The narrow exception is the locked infrastructure recovery transaction,
 `POST /api/stories/{id}/retry-infrastructure-attempt`. It verifies the task and
 story still carry the same exact pre-agent park, settles its refused Run fence

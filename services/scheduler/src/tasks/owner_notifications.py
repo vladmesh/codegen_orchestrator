@@ -242,6 +242,30 @@ async def owe_owner_notification(
     return record
 
 
+def new_story_owner_notification(
+    story_id: str,
+    *,
+    event: OwnerNotificationEvent,
+    text: str,
+    project_id: str,
+    terminal_status: StoryStatus,
+) -> OwnerNotification:
+    """A fresh owed story record, not yet written anywhere.
+
+    For an ending whose API action writes the record in the transition's own
+    transaction; `owe_story_owner_notification` writes it ahead of one instead.
+    """
+    return OwnerNotification(
+        event=event,
+        text=text,
+        story_id=story_id,
+        project_id=project_id,
+        terminal_status=terminal_status,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+    )
+
+
 async def owe_story_owner_notification(
     api_client: SchedulerAPIClient,
     story_id: str,
@@ -268,14 +292,12 @@ async def owe_story_owner_notification(
     same ending, and a story that comes back from human review and ends this way
     again is owed the message again.
     """
-    record = OwnerNotification(
+    record = new_story_owner_notification(
+        story_id,
         event=event,
         text=text,
-        story_id=story_id,
         project_id=project_id,
         terminal_status=terminal_status,
-        state=OwnerNotificationState.OWED,
-        owed_at=datetime.now(UTC),
     )
     await _write_story_record(api_client, story_id, record)
     log.info(
