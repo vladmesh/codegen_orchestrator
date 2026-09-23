@@ -368,3 +368,115 @@ def test_service_image_imports_are_required_by_the_ci_gate(gate):
     workflow = gate.load_workflow()
 
     gate.assert_service_image_imports(workflow["jobs"])
+
+
+CHECKOUT_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+
+@pytest.fixture
+def action_tree(gate, tmp_path, monkeypatch):
+    """The gate pointed at an empty tree holding one workflow."""
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    return tmp_path
+
+
+def _write_workflow_step(root: Path, step: str) -> Path:
+    workflow = root / ".github/workflows/ci.yml"
+    workflow.write_text(
+        f"jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - {step}\n"
+    )
+    return workflow
+
+
+def _write_local_action(root: Path, uses: str) -> None:
+    (root / ".github/actions/retry").mkdir(parents=True)
+    (root / ".github/actions/retry/action.yml").write_text(
+        f"runs:\n  using: composite\n  steps:\n    - uses: {uses}\n"
+    )
+
+
+def test_an_action_pinned_to_a_commit_passes(gate, action_tree):
+    workflow = _write_workflow_step(action_tree, f"uses: actions/checkout@{CHECKOUT_SHA} # v7")
+
+    gate.assert_pinned_actions(workflow)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "actions/checkout@v7 # v7",
+        f"actions/checkout@{CHECKOUT_SHA}",
+        f"actions/checkout@{CHECKOUT_SHA[:12]} # v7",
+        f"actions/checkout@{CHECKOUT_SHA.upper()} # v7",
+        "docker://alpine:3.20",
+    ],
+)
+def test_an_unpinned_action_is_refused_by_line(gate, action_tree, reference):
+    """A tag, a SHA with no tag comment, a short SHA: each is refused where it is written."""
+    workflow = _write_workflow_step(action_tree, f"uses: {reference}")
+
+    with pytest.raises(SystemExit, match=r"\.github/workflows/ci\.yml:5 \("):
+        gate.assert_pinned_actions(workflow)
+
+
+def test_an_unpinned_action_inside_a_local_action_is_refused(gate, action_tree):
+    workflow = _write_workflow_step(action_tree, "uses: ./.github/actions/retry")
+    _write_local_action(action_tree, "docker/setup-buildx-action@v3")
+
+    with pytest.raises(
+        SystemExit,
+        match=r"\.github/actions/retry/action\.yml:4 \(docker/setup-buildx-action@v3\)",
+    ):
+        gate.assert_pinned_actions(workflow)
+
+
+def test_a_pinned_action_inside_a_local_action_passes(gate, action_tree):
+    workflow = _write_workflow_step(action_tree, "uses: ./.github/actions/retry")
+    _write_local_action(action_tree, f"docker/setup-buildx-action@{CHECKOUT_SHA} # v3")
+
+    gate.assert_pinned_actions(workflow)
+
+
+def test_a_local_action_missing_from_the_tree_fails(gate, action_tree):
+    workflow = _write_workflow_step(action_tree, "uses: ./.github/actions/missing")
+
+    with pytest.raises(SystemExit, match="which is not in the tree"):
+        gate.assert_pinned_actions(workflow)
+
+
+def test_the_repository_workflow_pins_every_action(gate):
+    gate.assert_pinned_actions()
+
+
+def test_an_install_without_retry_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    gate.step_by_name(jobs["ci-contract"], "Install uv")["run"] = "pip install uv"
+
+    with pytest.raises(SystemExit, match="ci-contract must install uv through"):
+        gate.assert_download_retries(jobs)
+
+
+def test_a_test_job_without_its_image_pull_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    steps = jobs["test-service"]["steps"]
+    steps.remove(gate.step_by_id(jobs["test-service"], "pull-images"))
+
+    with pytest.raises(SystemExit, match="missing step id pull-images"):
+        gate.assert_download_retries(jobs)
+
+
+def test_a_matrix_leg_without_its_marker_output_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    del jobs["test-integration"]["outputs"]["infra-marker-po-tools"]
+
+    with pytest.raises(SystemExit, match="test-integration outputs must be exactly one"):
+        gate.assert_infra_marker_exposed(jobs)
+
+
+def test_a_gate_that_does_not_repeat_markers_fails(gate):
+    jobs = gate.load_workflow()["jobs"]
+    gate.step_by_name(jobs["merge-gate"], "Check required jobs").pop("env")
+
+    with pytest.raises(SystemExit, match="toJSON"):
+        gate.assert_gate(jobs)

@@ -858,10 +858,19 @@ def _build_base_image(
 
         except docker.errors.BuildError as e:
             print(f"Build failed for {tag}!")
-            for chunk in e.build_log:
-                if "stream" in chunk:
-                    print(chunk["stream"], end="")
-            pytest.exit(f"Failed to build {tag}: {e}")
+            streams = [chunk["stream"] for chunk in e.build_log if "stream" in chunk]
+            for stream in streams:
+                print(stream, end="")
+            # pytest.exit drops the captured output above, so a CI-INFRA-CAUSE line the
+            # build printed (worker-base-claude's installer fetch) rides on the exit
+            # message, where the CI job can read it (scripts/ci-infra.sh watch).
+            causes = [
+                line.strip()
+                for stream in streams
+                for line in stream.splitlines()
+                if line.strip().startswith("CI-INFRA-CAUSE=")
+            ]
+            pytest.exit(f"Failed to build {tag}: {e}" + "".join(f"\n{c}" for c in causes))
         except Exception as e:
             print(f"Failed to build {tag}: {e}")
             pytest.exit(f"Failed to build {tag}: {e}")

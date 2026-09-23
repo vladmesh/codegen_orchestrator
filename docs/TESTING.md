@@ -90,6 +90,52 @@ directory no longer exists. It currently holds three entries: `services/langgrap
 `services/infra-service/tests/integration` (red) and `tests/integration/worker_wrapper` (red,
 needs a checkout that exists only inside a worker container).
 
+## CI infrastructure failures
+
+A CI job can fail because a download or a registry did not answer, not because of the code.
+`.github/workflows/ci.yml` retries those downloads, and when the retries are exhausted it names the
+failure with one line:
+
+```
+CI-INFRA-FAILURE: job=<job> step=<step> cause=<cause>
+```
+
+- `job` is the job id, with the matrix leg for a matrix job (`test-service/api`,
+  `test-integration/po-tools`, `template-compatibility/baseline`).
+- `step` and `cause` come from the table below. Every field is one word of `[A-Za-z0-9._/-]`,
+  so `CI-INFRA-FAILURE: job=[A-Za-z0-9._/-]+ step=[A-Za-z0-9._/-]+ cause=[A-Za-z0-9._/-]+`
+  matches every marker and nothing else.
+
+`scripts/ci-infra.sh` is the only writer. It puts the marker in three places in the failing job: an
+`::error title=CI infrastructure failure::` annotation (so it is also in the job log, as
+`##[error]CI-INFRA-FAILURE: ...`), a line of its own in `$GITHUB_STEP_SUMMARY`, and the job output
+`infra-marker`, or `infra-marker-<leg>` for each leg of a matrix job. The `Required CI Gate` reads every
+job output of its `needs` through `toJSON(needs)` and repeats each marker, once, as an annotation in its
+log and as a line in its own summary, so a reader of the gate alone sees it.
+
+| Job | Step | Cause | What was retried |
+|-----|------|-------|------------------|
+| `fast-checks`, `ci-contract` | `install-uv` | `uv-download` | `pip install uv`, 3 attempts, 10 s then 20 s apart |
+| `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
+| `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `setup-buildx` | `buildx-registry` | `docker/setup-buildx-action`, 3 attempts (`.github/actions/setup-buildx-with-retry`) |
+| `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts per image, before the tests start |
+| `test-backend-dind-integration` | `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker |
+
+`publish-worker-images` builds the same image, so it can write the `claude-installer-fetch` marker to
+its own summary; it is downstream of the gate and does not feed it.
+
+What the marker never does:
+
+- **It never passes the gate.** The gate's verdict comes from the `needs` results alone; the markers
+  are only repeated. A job that failed on infrastructure is still a failed required job.
+- **It is never written for a product failure.** A failing test, lint or build after the downloads
+  succeeded writes no marker and fails exactly as before. A compose file that does not parse, an image
+  build that fails for any reason but the installer fetch, and a failure before the job has checked out
+  the repository (a GitHub Actions outage at `Set up job`) write none either: those stay plain failures.
+
+Every third-party action `ci.yml` reaches, including through a local action, is pinned to a 40-character
+commit SHA with the tag it was resolved from as a `# vX` comment; the CI contract refuses anything else.
+
 ## E2E Testing
 
 Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
