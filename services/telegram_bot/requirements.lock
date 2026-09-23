@@ -61,7 +61,7 @@ pydantic==2.13.4
     #   pydantic-settings
 pydantic-core==2.46.4
     # via pydantic
-pydantic-settings==2.12.0
+pydantic-settings==2.15.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 pyjwt==2.13.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)
@@ -73,7 +73,7 @@ python-telegram-bot==22.8
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 pyyaml==6.0.3
     # via telegram-bot (services/telegram_bot/pyproject.toml)
-redis==8.0.0
+redis==8.1.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 structlog==25.5.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)

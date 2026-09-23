@@ -152,11 +152,11 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
-psycopg==3.3.2
+psycopg==3.3.6
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   langgraph-checkpoint-postgres
-psycopg-binary==3.3.2
+psycopg-binary==3.3.6
     # via psycopg
 psycopg-pool==3.3.0
     # via langgraph-checkpoint-postgres
@@ -179,7 +179,7 @@ pydantic==2.12.5
     #   pydantic-settings
 pydantic-core==2.41.5
     # via pydantic
-pydantic-settings==2.12.0
+pydantic-settings==2.15.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 pyjwt==2.13.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
@@ -191,7 +191,7 @@ pyyaml==6.0.3
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   langchain-core
-redis==8.0.0
+redis==8.1.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 regex==2025.11.3
     # via tiktoken

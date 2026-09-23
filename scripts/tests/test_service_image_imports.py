@@ -41,3 +41,28 @@ def test_compose_coverage_contract_rejects_an_unimported_module(guard):
 
     with pytest.raises(RuntimeError, match="scheduler-maintenance.*src.maintenance"):
         guard.assert_compose_modules_covered(coverage)
+
+
+def test_every_released_image_is_lock_checked_or_npm_locked(guard):
+    """The one image list: each Python image is built here, each frontend runs npm ci."""
+    guard.assert_every_listed_image_is_locked()
+
+    listed = {image for image, _dockerfile, _context in guard.listed_service_images()}
+    guarded = {image.name for image in guard.SERVICE_IMAGES}
+    assert listed - guarded == {"admin-frontend", "user-dashboard"}
+
+
+def test_a_released_python_image_the_check_does_not_build_fails(guard, monkeypatch):
+    kept = tuple(image for image in guard.SERVICE_IMAGES if image.name != "worker-broker")
+    monkeypatch.setattr(guard, "SERVICE_IMAGES", kept)
+
+    with pytest.raises(RuntimeError, match="worker-broker"):
+        guard.assert_every_listed_image_is_locked()
+
+
+def test_a_released_image_without_any_lock_fails(guard, monkeypatch):
+    listed = [*guard.listed_service_images(), ("unlocked", "services/unlocked/Dockerfile", ".")]
+    monkeypatch.setattr(guard, "listed_service_images", lambda: listed)
+
+    with pytest.raises(RuntimeError, match="unlocked .*neither a requirements.lock nor an npm ci"):
+        guard.assert_every_listed_image_is_locked()
