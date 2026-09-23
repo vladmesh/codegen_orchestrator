@@ -1,9 +1,10 @@
-"""The deploy waits for the worker release of its revision, boundedly, and only when it can help.
+"""The deploy waits for the releases of its revision, boundedly, and only when it can help.
 
-`scripts/wait_worker_release.py` re-probes the release marker while the push-to-main
+`scripts/wait_release.py` re-probes a chain's release marker while the push-to-main
 CI run that publishes it is still queued or running, and refuses at once when that
 run is absent, failed, or succeeded without a marker. The probe, the GitHub lookup,
-the clock and the sleep are injected, so nothing here waits for real.
+the clock and the sleep are injected, so nothing here waits for real. The single-chain
+tests run the worker chain; the service chain and the shared deadline follow them.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ import threading
 
 import pytest
 
-from scripts import wait_worker_release as wait
-from scripts.wait_worker_release import CiRun
+from scripts import wait_release as wait
+from scripts.wait_release import CiRun
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 RUN_URL = "https://github.com/owner/repo/actions/runs/1"
@@ -56,6 +57,7 @@ class Script:
 
 def _run(probe: Script, find_run: Script, clock: FakeClock) -> int:
     return wait.wait_for_release(
+        chain=wait.WORKER,
         sha=SHA,
         timeout_seconds=TIMEOUT,
         poll_seconds=POLL,
@@ -150,6 +152,7 @@ def test_a_deadline_that_is_not_a_multiple_of_the_poll_is_honoured():
     clock = FakeClock()
 
     result = wait.wait_for_release(
+        chain=wait.WORKER,
         sha=SHA,
         timeout_seconds=70,
         poll_seconds=POLL,
@@ -207,7 +210,7 @@ def test_the_exit_codes_are_distinct_from_each_other_and_from_the_probe():
         wait.EXIT_DEADLINE,
         wait.EXIT_GITHUB_API,
     }
-    probe = {1, 3, 4, 5, 6, wait.PROBE_NO_RELEASE, *wait.PROBE_REGISTRY_FAILURES}
+    probe = {1, 3, 4, 5, 6, wait.WORKER.no_release, *wait.WORKER.registry_failures}
 
     assert len(ours) == 5
     assert not ours & probe
@@ -226,7 +229,7 @@ def test_the_probe_runs_in_validation_only_mode(tmp_path: Path):
     )
     fake_probe.chmod(fake_probe.stat().st_mode | stat.S_IXUSR)
 
-    code = wait.run_probe({"PATH": "/usr/bin:/bin", "WORKER_IMAGE_TAG": SHA}, script=fake_probe)
+    code = wait.run_probe(wait.WORKER, SHA, {"PATH": "/usr/bin:/bin"}, script=fake_probe)
 
     assert code == 9
     mode, digest_file, tag = seen.read_text().split()
@@ -236,8 +239,8 @@ def test_the_probe_runs_in_validation_only_mode(tmp_path: Path):
 
 
 def test_the_default_probe_is_the_release_consumer():
-    assert wait.PROBE_SCRIPT.name == "pull-worker-images.sh"
-    assert wait.PROBE_SCRIPT.is_file()
+    assert wait.WORKER.probe_script.name == "pull-worker-images.sh"
+    assert wait.WORKER.probe_script.is_file()
 
 
 class _GitHub(http.server.BaseHTTPRequestHandler):
@@ -329,3 +332,105 @@ def test_an_unusable_answer_is_an_api_error(github, status, body):
 
     with pytest.raises(wait.GitHubApiError):
         _fetch(api_url)
+
+
+# --- the service chain, and several chains under one deadline ---
+
+
+def _run_chains(probes: dict[str, Script], find_run: Script, clock: FakeClock) -> int:
+    return wait.wait_for_releases(
+        chains=[wait.WORKER, wait.SERVICE],
+        sha=SHA,
+        timeout_seconds=TIMEOUT,
+        poll_seconds=POLL,
+        probe=lambda chain: probes[chain.name](),
+        find_run=find_run,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+
+def test_the_service_probe_is_the_service_release_consumer():
+    assert wait.SERVICE.probe_script.name == "pull-service-images.sh"
+    assert wait.SERVICE.probe_script.is_file()
+    assert wait.SERVICE.tag_variable == "SERVICE_IMAGE_TAG"
+
+
+def test_the_service_probe_runs_in_validation_only_mode_for_the_revision(tmp_path: Path):
+    seen = tmp_path / "seen"
+    fake_probe = tmp_path / "probe.sh"
+    fake_probe.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$RELEASE_VALIDATION_ONLY $SERVICE_IMAGE_TAG" > "{seen}"\n'
+        "exit 9\n"
+    )
+
+    assert wait.run_probe(wait.SERVICE, SHA, {"PATH": "/usr/bin:/bin"}, script=fake_probe) == 9
+    assert seen.read_text().split() == ["true", SHA]
+
+
+def test_both_chains_released_passes_without_asking_github():
+    clock = FakeClock()
+    probes = {"worker": Script([0]), "service": Script([0])}
+    find_run = Script([AssertionError("the GitHub API must not be called")])
+
+    assert _run_chains(probes, find_run, clock) == 0
+    assert probes["worker"].calls == probes["service"].calls == 1
+
+
+def test_a_revision_without_a_service_release_is_refused_after_a_released_worker_chain():
+    clock = FakeClock()
+    probes = {"worker": Script([0]), "service": Script([9])}
+
+    result = _run_chains(probes, Script([_ci("completed", "success")]), clock)
+
+    assert result == wait.EXIT_RELEASED_WITHOUT_MARKER
+    assert probes["service"].calls == 2  # one re-probe after the successful run
+
+
+def test_the_service_chain_waits_for_its_own_marker_while_the_run_is_going():
+    clock = FakeClock()
+    probes = {"worker": Script([0]), "service": Script([9, 9, 0])}
+
+    assert _run_chains(probes, Script([_ci("in_progress")]), clock) == 0
+    assert clock.sleeps == [POLL, POLL]
+
+
+def test_one_deadline_bounds_every_chain():
+    """The worker wait spends the budget; the service wait gets only what is left."""
+    clock = FakeClock()
+    probes = {"worker": Script([9] * 89 + [0]), "service": Script([9])}
+
+    result = _run_chains(probes, Script([_ci("in_progress")]), clock)
+
+    assert result == wait.EXIT_DEADLINE
+    assert sum(clock.sleeps) == TIMEOUT
+
+
+def test_a_service_registry_failure_is_retried_but_a_broken_release_is_final():
+    clock = FakeClock()
+    retried = {"worker": Script([0]), "service": Script([11, 0])}
+    assert _run_chains(retried, Script([None]), clock) == 0
+
+    clock = FakeClock()
+    broken = Script([10])
+    assert _run_chains({"worker": Script([0]), "service": broken}, Script([None]), clock) == 10
+    assert broken.calls == 1
+
+
+@pytest.mark.parametrize("chain", [wait.WORKER, wait.SERVICE])
+def test_each_chain_names_its_publish_job_when_the_run_left_no_marker(chain, capsys):
+    clock = FakeClock()
+    result = wait.wait_for_release(
+        chain=chain,
+        sha=SHA,
+        timeout_seconds=TIMEOUT,
+        poll_seconds=POLL,
+        probe=Script([chain.no_release]),
+        find_run=Script([_ci("completed", "success")]),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert result == wait.EXIT_RELEASED_WITHOUT_MARKER
+    assert chain.publish_job in capsys.readouterr().err

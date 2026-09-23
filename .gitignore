@@ -60,3 +60,6 @@ secretary-data/
 # E2E and worker run reports — regenerated artifacts, written by tests/live
 # and the stand runner
 docs/e2e_results/
+
+# The deploy host's pending release set (.github/workflows/deploy.yml, RELEASE_PENDING)
+.release-pending/

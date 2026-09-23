@@ -35,8 +35,11 @@ SCRIPTS = REPO_ROOT / "infra" / "scripts"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 MARKER_IMAGE = "worker-base-release"
 DEPLOY_SHA = "${{ github.sha }}"
-# Where the verification writes down what it verified, on the deployment host.
-HOST_RECORD = "${{ env.DEPLOY_PATH }}/deployed-worker-images.json"
+# The one revision a deploy run deploys: the dispatched commit or the `revision` input.
+DEPLOY_REVISION = "${{ env.DEPLOY_REVISION }}"
+# Where the verification writes down what it verified on the deployment host: pending,
+# until the Switch promotes it to the live record after `up`.
+PENDING_RECORD = "${{ env.DEPLOY_PATH }}/${{ env.RELEASE_PENDING }}/deployed-worker-images.json"
 
 
 def _deploy_steps() -> list[tuple[str, str]]:
@@ -77,7 +80,7 @@ def test_deploy_pulls_the_exact_revision_it_deploys():
     steps = _deploy_steps()
     script = steps[_index_of(steps, "pull-worker-images.sh")][1]
 
-    assert f"WORKER_IMAGE_TAG='{DEPLOY_SHA}'" in script
+    assert f"WORKER_IMAGE_TAG='{DEPLOY_REVISION}'" in script
 
 
 def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again():
@@ -85,16 +88,21 @@ def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again(
 
     Resolving the same tag a second time can answer with a different digest, and then
     the deploy's record is not evidence about the images it verified. The verification
-    writes the record on the host; this step only carries that file back.
+    writes the record on the host — staged, and moved into the pending set once every
+    pull and check passed; this step only carries that file back, and only the Switch
+    promotes it to the live record after `up`.
     """
     steps = _deploy_steps()
     pull = _index_of(steps, "pull-worker-images.sh")
     record = _index_of(steps, "GITHUB_STEP_SUMMARY")
     script = steps[record][1]
 
-    assert f"DIGEST_FILE='{HOST_RECORD}'" in steps[pull][1]
+    pull_script = steps[pull][1]
+    assert 'DIGEST_FILE="${out}/deployed-worker-images.json"' in pull_script
+    assert 'pending="${live}/${{ env.RELEASE_PENDING }}"' in pull_script
+    assert 'mv "${out}/${file}" "${pending}.next/${file}"' in pull_script
     assert pull < record < min(_indices_of(steps, "up -d"))
-    assert HOST_RECORD in script
+    assert PENDING_RECORD in script
     assert "imagetools" not in script, "the record must not be a second resolution"
 
     workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())

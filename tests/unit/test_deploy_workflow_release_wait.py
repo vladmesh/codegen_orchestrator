@@ -1,8 +1,9 @@
-"""The deploy waits for its worker release before the host, and survives one SSH timeout.
+"""The deploy waits for its releases before the host, and survives one SSH timeout.
 
 Two properties of `.github/workflows/deploy.yml`:
 
-- the release check (`scripts/wait_worker_release.py`) runs on the runner, for both
+- the release check (`scripts/wait_release.py`, worker and service chains) runs on the
+  runner, for both
   contours, after the secret validations and before any step that touches the host;
 - every file-only step reaches the host through `infra/scripts/deploy-ssh.sh`, whose
   retry is bounded and retries only a dropped connection (proved against the helper
@@ -26,22 +27,17 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 HELPER_CALL = "bash infra/scripts/deploy-ssh.sh"
-RELEASE_WAIT_STEP = "Wait for this revision's worker release"
+RELEASE_WAIT_STEP = "Wait for this revision's worker and service releases"
 FILE_ONLY_STEPS = (
     "Write .env to server",
     "Verify the deployed contour carries only its own credentials",
-    "Write secrets files to server",
-    "Check out deployed revision",
-    "Record deployed revision and verified worker image digests",
+    "Record deployed revision and verified image digests",
 )
+# The Switch carries the GitHub App key, so its script travels on stdin through the same
+# helper, but with a single attempt: it must never run twice at once on the host.
+SWITCH_STEP = "Switch"
 SINGLE_SHOT_STEPS = (
-    "Pull and verify worker base images for this revision",
-    "Build service images",
-    "Deploy",
-    "Run migrations",
-    "Health check",
-    "Apply system configs",
-    "Wait for scheduler services",
+    "Pull and verify this revision's worker and service releases",
     "Reconcile managed deploy targets",
     "Cleanup",
 )
@@ -91,16 +87,17 @@ def test_the_release_wait_runs_for_both_contours_on_the_runner():
 
     assert "if" not in step, "both contours deploy worker releases"
     assert "uses" not in step
-    assert "python3 scripts/wait_worker_release.py" in step["run"]
-    assert '--timeout-seconds "${WORKER_RELEASE_WAIT_SECONDS}"' in step["run"]
-    assert step["env"]["WORKER_IMAGE_TAG"] == "${{ github.sha }}"
+    assert "python3 scripts/wait_release.py" in step["run"]
+    assert '--revision "${DEPLOY_REVISION}"' in step["run"]
+    assert "--chain worker --chain service" in step["run"]
+    assert '--timeout-seconds "${RELEASE_WAIT_SECONDS}"' in step["run"]
     assert step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"  # noqa: S105
     assert step["env"]["GHCR_TOKEN"] == "${{ secrets.GHCR_TOKEN || github.token }}"  # noqa: S105
 
 
 def test_the_wait_is_bounded_and_named_in_the_workflow():
     job = _job()
-    seconds = int(job["env"]["WORKER_RELEASE_WAIT_SECONDS"])
+    seconds = int(job["env"]["RELEASE_WAIT_SECONDS"])
 
     assert seconds == 45 * 60
     # The step's own timeout is a backstop above the script's deadline, never below it.
@@ -114,7 +111,7 @@ def test_the_job_may_read_the_ci_run_it_waits_for():
 # --- the SSH retry ---
 
 
-@pytest.mark.parametrize("name", FILE_ONLY_STEPS)
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
 def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     step = _steps()[name]
     script = step["run"]
@@ -127,7 +124,7 @@ def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     assert call_line.rstrip().endswith("<<'REMOTE'"), "the remote script is a quoted heredoc"
 
 
-@pytest.mark.parametrize("name", FILE_ONLY_STEPS)
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
 def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
     """Everything before the heredoc runs on the runner command line; no secret is there."""
     script = _steps()[name]["run"]
@@ -135,6 +132,16 @@ def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
 
     assert "secrets." not in before_heredoc
     assert "REMOTE" in script.splitlines(), "the heredoc is closed at column 0"
+
+
+def test_the_switch_is_never_retried():
+    """A dropped connection may leave the first run going; a second must not start."""
+    step = _steps()[SWITCH_STEP]
+
+    assert str(step["env"]["DEPLOY_SSH_ATTEMPTS"]) == "1"
+    assert all(
+        "DEPLOY_SSH_ATTEMPTS" not in _steps()[name].get("env", {}) for name in FILE_ONLY_STEPS
+    )
 
 
 def test_no_step_calls_ssh_without_the_helper():
@@ -170,7 +177,9 @@ def _render(script: str, deploy_path: Path) -> str:
         expression = match.group(1)
         if expression == "env.DEPLOY_PATH":
             return str(deploy_path)
-        if expression == "github.sha":
+        if expression == "env.RELEASE_PENDING":
+            return ".release-pending"
+        if expression in ("github.sha", "env.DEPLOY_REVISION"):
             return DEPLOYED_SHA
         if expression.startswith("inputs.environment == 'production'"):
             return ""  # the stand contour
@@ -210,8 +219,10 @@ def _run_step(name: str, host: Path) -> subprocess.CompletedProcess[str]:
             "PROD_HOST": "deploy.example",
             "DEPLOY_SSH_USER": "deploy",
             "GITHUB_STEP_SUMMARY": str(host / "summary.md"),
-            "DIGEST_FILE": str(host / "record.json"),
-            "GIT_SHA": DEPLOYED_SHA,
+            "RECORDS": str(host / "records"),
+            "WORKER_DIGEST_FILE": str(host / "worker-record.json"),
+            "SERVICE_DIGEST_FILE": str(host / "service-record.json"),
+            "DEPLOY_REVISION": DEPLOYED_SHA,
         },
     )
 
@@ -254,11 +265,32 @@ def test_a_contour_check_that_refuses_fails_once_and_is_not_retried(host: Path):
     assert _calls(host) == 1
 
 
-def test_the_record_is_read_back_into_the_summary(host: Path):
-    (host / "deploy" / "deployed-worker-images.json").write_text('{"git_sha": "abc"}\n')
+def test_the_records_are_read_back_into_the_summary(host: Path):
+    """The pending records the verify step left, read before the Switch."""
+    worker = '{\n  "git_sha": "abc",\n  "images": {}\n}\n'
+    service = '{\n  "git_sha": "abc",\n  "schema_version": 1\n}\n'
+    pending = host / "deploy" / ".release-pending"
+    pending.mkdir()
+    (pending / "deployed-worker-images.json").write_text(worker)
+    (pending / "deployed-service-images.json").write_text(service)
 
-    result = _run_step("Record deployed revision and verified worker image digests", host)
+    result = _run_step("Record deployed revision and verified image digests", host)
 
     assert result.returncode == 0, result.stderr
-    assert (host / "record.json").read_text() == '{"git_sha": "abc"}\n'
-    assert '{"git_sha": "abc"}' in (host / "summary.md").read_text()
+    assert (host / "worker-record.json").read_text() == worker
+    assert (host / "service-record.json").read_text() == service
+    summary = (host / "summary.md").read_text()
+    assert DEPLOYED_SHA in summary
+    assert '"images": {}' in summary
+    assert '"schema_version": 1' in summary
+    assert _calls(host) == 1
+
+
+def test_a_missing_service_record_fails_the_record_step(host: Path):
+    pending = host / "deploy" / ".release-pending"
+    pending.mkdir()
+    (pending / "deployed-worker-images.json").write_text('{"git_sha": "abc"}\n')
+
+    result = _run_step("Record deployed revision and verified image digests", host)
+
+    assert result.returncode != 0

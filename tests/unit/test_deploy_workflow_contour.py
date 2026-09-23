@@ -179,7 +179,7 @@ def test_a_contour_needs_no_registry_credential_of_its_own():
     scoped to this repository. Production keeps using its own secret.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    pull = steps["Pull and verify worker base images for this revision"]
+    pull = steps["Pull and verify this revision's worker and service releases"]
 
     assert "GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'" in pull["with"]["script"]
     assert _deploy_job()["permissions"]["packages"] == "read"
@@ -195,11 +195,10 @@ def test_a_run_says_which_contour_it_deployed():
 
 
 def test_scheduler_readiness_runs_after_system_config_seed():
+    # Both are part of the Switch, the one step that runs compose `up`.
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    names = list(steps)
-    readiness = steps["Wait for scheduler services"]
+    script = _script(steps["Switch"])
 
-    script = readiness["with"]["script"]
-    assert "up -d --force-recreate --no-deps --wait --wait-timeout 180" in script
+    readiness = script.index("up -d --force-recreate --no-deps --wait --wait-timeout 180")
     assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in script
-    assert names.index("Apply system configs") < names.index("Wait for scheduler services")
+    assert script.index("seed_system_configs.py") < readiness

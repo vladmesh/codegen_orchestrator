@@ -105,7 +105,7 @@ echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_OWNER}" --password-stdin
 # Is this SHA released? Ask the marker, and only the marker, before anything else.
 # Only an "absent" answer gets past this point, so every push below — the candidates and
 # the marker — is reached through it alone.
-release_marker_lookup "${MARKER}" "${GHCR_OWNER}" "${GHCR_TOKEN}"
+release_marker_lookup "${MARKER}" "${GHCR_OWNER}" "${GHCR_TOKEN}" pull,push
 case "${RELEASE_MARKER_STATE}" in
     present)
         marker_reference="${REGISTRY}/${SERVICE_RELEASE_MARKER_IMAGE}@${RELEASE_MARKER_DIGEST}"

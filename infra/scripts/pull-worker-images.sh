@@ -33,6 +33,10 @@
 #   RELEASE_VALIDATION_ONLY=true — validate the exact immutable release marker,
 #       without pulling its worker images, changing local tags, or writing DIGEST_FILE.
 #       This is the pre-create admission used by the billed Stand workflow.
+#   RELEASE_DEFER_RETAG=true — pull, verify and record the release, but leave the local
+#       worker-base-*:latest names where they are. The production deploy verifies before
+#       its switch and moves them only after it (infra/scripts/retag-worker-images.sh),
+#       so a refusal later in the deploy leaves worker-manager on its current images.
 #
 # Exit codes, one per reason so a caller can tell them apart:
 #   1  usage: a required variable is missing, or the tag names a mutable image
@@ -260,18 +264,23 @@ while IFS= read -r record; do
     verified+=("${record}")
 done <<< "${released}"
 
-# Every image is verified; only now do the names worker-manager resolves move.
-for record in "${verified[@]}"; do
-    image="${record%%=*}"
-    reference="${record#*=}"
-    echo "Retagging ${reference} to ${image}:latest..."
-    docker tag "${reference}" "${image}:latest"
-done
+# Every image is verified; only now do the names worker-manager resolves move — unless
+# the caller moves them itself, at its own switch.
+if [ "${RELEASE_DEFER_RETAG:-false}" = "true" ]; then
+    echo "Leaving worker-base-*:latest in place; the caller retags from the record."
+else
+    for record in "${verified[@]}"; do
+        image="${record%%=*}"
+        reference="${record#*=}"
+        echo "Retagging ${reference} to ${image}:latest..."
+        docker tag "${reference}" "${image}:latest"
+    done
+fi
 
 # The record of what was deployed, written from the same digests that were verified.
 worker_image_record "${WORKER_IMAGE_TAG}" "${EXPECTED_HASH}" "${DIGEST_FILE}" "${verified[@]}"
 
 echo "Worker images ready (${WORKER_IMAGE_TAG}, source hash ${EXPECTED_HASH}):"
-for image in "${WORKER_BASE_IMAGES[@]}"; do
-    docker images --format "  {{.Repository}}:{{.Tag}} ({{.Size}})" "${image}:latest"
+for record in "${verified[@]}"; do
+    echo "  ${record}"
 done
