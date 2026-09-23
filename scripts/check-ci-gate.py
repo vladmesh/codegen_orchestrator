@@ -23,6 +23,8 @@ from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
+UV_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-uv-with-retry" / "action.yml"
+CI_INFRA_HELPER = ROOT / "scripts" / "ci-infra.sh"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
 LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
@@ -189,6 +191,69 @@ OFFLINE_LIVE_IGNORES = {
     "tests/live/test_supervisor.py",
 }
 UNIT_TEST_API_BASE_URL = "http://127.0.0.1:9"
+
+# --- Third-party action pins ------------------------------------------------
+#
+# Every action ci.yml runs that is not in this repository names one commit: a full
+# 40-character SHA, with the tag it was resolved from as a trailing "# vX" comment. A
+# tag moves, and resolving it is one more control-plane call that can fail before the
+# job starts. Local actions (./...) are followed, so an action they call is held to
+# the same rule.
+PINNED_ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@\s]+)?@[0-9a-f]{40}$")
+ACTION_VERSION_COMMENT = re.compile(r"#\s*v\d+(\.\d+)*\s*$")
+LOCAL_ACTION_PREFIX = "./"
+
+# --- CI infrastructure failure marker ---------------------------------------
+#
+# scripts/ci-infra.sh retries the downloads a job starts with and, once they are
+# exhausted, writes one marker line: CI-INFRA-FAILURE: job=<job> step=<step>
+# cause=<cause>. Each job below exposes its markers as job outputs, one per matrix
+# leg, and merge-gate repeats them. docs/TESTING.md documents the format.
+INFRA_MARKER_PREFIX = "CI-INFRA-FAILURE:"
+INFRA_MARKER_FIELD = "[A-Za-z0-9._/-]+"
+INFRA_MARKER_PATTERN = (
+    f"{INFRA_MARKER_PREFIX} job={INFRA_MARKER_FIELD} step={INFRA_MARKER_FIELD} "
+    f"cause={INFRA_MARKER_FIELD}"
+)
+INFRA_MARKER_ANNOTATION = "::error title=CI infrastructure failure::"
+INFRA_EXPOSE_STEP = "Expose CI infrastructure failure"
+INFRA_EXPOSE_CONDITION = "always() && hashFiles('scripts/ci-infra.sh') != ''"
+INFRA_OUTPUT = "infra-marker"
+# job -> the matrix key its legs are named by, or None for a single job.
+INFRA_MARKER_JOBS: dict[str, str | None] = {
+    "fast-checks": None,
+    "ci-contract": None,
+    "service-image-imports": None,
+    "test-service": "service",
+    "test-integration": "suite",
+    "template-compatibility": "entry",
+    "test-backend-dind-integration": None,
+}
+INSTALL_UV_COMMAND = (
+    "bash scripts/ci-infra.sh retry --step install-uv --cause uv-download -- pip install uv"
+)
+UV_SETUP_STEPS = {
+    "test-integration": "Set up uv for template smoke",
+    "template-compatibility": "Set up uv with retry",
+}
+PULL_IMAGES_STEP = "Pull test images with retry"
+PULL_IMAGES_COMMANDS = {
+    "test-service": (
+        "bash scripts/ci-infra.sh pull-images --step pull-images "
+        "tests/compose/service/${{ matrix.service }}.yml"
+    ),
+    "test-integration": (
+        "bash scripts/ci-infra.sh pull-images --step pull-images "
+        "tests/compose/integration/${{ matrix.suite }}.yml"
+    ),
+    "test-backend-dind-integration": (
+        "bash scripts/ci-infra.sh pull-images --step pull-images "
+        "tests/compose/integration/backend-dind.yml"
+    ),
+}
+BACKEND_DIND_COMMAND = (
+    "bash scripts/ci-infra.sh watch --step integration-tests -- make test-integration-backend-dind"
+)
 
 
 def fail(message: str) -> None:
@@ -899,8 +964,11 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     if job.get("continue-on-error"):
         fail("backend Docker-in-Docker job must fail its run, not report advisory")
     run_step = step_by_id(job, "integration-tests")
-    if run_step.get("run") != "make test-integration-backend-dind":
-        fail("backend Docker-in-Docker workflow must run the Docker-in-Docker suite")
+    if run_step.get("run") != BACKEND_DIND_COMMAND:
+        fail(
+            "backend Docker-in-Docker workflow must run the Docker-in-Docker suite "
+            "through scripts/ci-infra.sh watch"
+        )
     if run_step.get("if"):
         fail("backend Docker-in-Docker test step must not be conditional")
     if run_step.get("continue-on-error"):
@@ -926,7 +994,7 @@ def assert_service_image_imports(jobs: dict[str, Any]) -> None:
     if job.get("if") != condition:
         fail("service image imports must require fast-checks and ci-contract")
     python = step_by_name(job, "Set up Python")
-    if python.get("uses") != "actions/setup-python@v7":
+    if action_name(python.get("uses", "")) != "actions/setup-python":
         fail("service image imports must set up Python")
     if python.get("with", {}).get("python-version") != "3.12":
         fail("service image imports must use Python 3.12")
@@ -961,15 +1029,9 @@ def assert_buildx_retry(job: dict[str, Any]) -> None:
         fail("registry failure simulation must be opt-in")
     if simulation.get("continue-on-error") is not True:
         fail("registry failure simulation must allow the retry to continue")
-    attempts = [
-        step
-        for step in steps
-        if isinstance(step, dict) and step.get("uses") == "docker/setup-buildx-action@v3"
-    ]
-    if len(attempts) != BUILDX_RETRY_ATTEMPTS:
-        fail("Docker Buildx retry action must make three attempts")
-    if not all(step.get("continue-on-error") is True for step in attempts):
-        fail("Docker Buildx retry attempts must continue to the next attempt")
+    attempts = assert_retry_action(
+        BUILDX_RETRY_ACTION, "docker/setup-buildx-action", "setup-buildx", "buildx-registry"
+    )
     if attempts[0].get("if") != (
         "inputs.simulate_first_attempt_registry_failure != 'true' || "
         "steps.simulate-registry-failure.outcome == 'success'"
@@ -978,6 +1040,190 @@ def assert_buildx_retry(job: dict[str, Any]) -> None:
     verify = step_by_name({"steps": steps}, "Fail as CI infrastructure after retry exhaustion")
     if "Docker image registry" not in verify.get("run", ""):
         fail("Docker Buildx retry exhaustion must identify the registry infrastructure failure")
+
+
+def action_name(reference: str) -> str:
+    """owner/repo[/path] of a uses: reference, without its @ref."""
+    return str(reference).partition("@")[0]
+
+
+def assert_retry_action(path: Path, action: str, step: str, cause: str) -> list[dict[str, Any]]:
+    """A local retry action: bounded attempts of action, then the marker.
+
+    Returns the attempt steps. Every attempt continues on error, so the next one
+    runs; the last step runs always() and, when no attempt succeeded, writes the
+    marker through the helper and fails the job.
+    """
+    if not path.is_file():
+        fail(f"{repo_path(path)} is missing")
+    definition = yaml.safe_load(path.read_text())
+    steps = definition.get("runs", {}).get("steps", []) if isinstance(definition, dict) else []
+    attempts = [
+        candidate
+        for candidate in steps
+        if isinstance(candidate, dict) and action_name(candidate.get("uses", "")) == action
+    ]
+    if len(attempts) != BUILDX_RETRY_ATTEMPTS:
+        fail(f"{repo_path(path)} must make {BUILDX_RETRY_ATTEMPTS} attempts of {action}")
+    if not all(attempt.get("continue-on-error") is True for attempt in attempts):
+        fail(f"{repo_path(path)} attempts must continue to the next attempt")
+    ids = [attempt.get("id") for attempt in attempts]
+    if ids != [f"attempt-{number}" for number in range(1, BUILDX_RETRY_ATTEMPTS + 1)]:
+        fail(f"{repo_path(path)} attempts must be ids attempt-1..attempt-{BUILDX_RETRY_ATTEMPTS}")
+    verify = step_by_name({"steps": steps}, "Fail as CI infrastructure after retry exhaustion")
+    if verify is not steps[-1] or verify.get("if") != "always()":
+        fail(f"{repo_path(path)} must end with an always() retry-exhaustion step")
+    script = verify.get("run", "")
+    for attempt_id in ids:
+        if f"steps.{attempt_id}.outcome" not in script:
+            fail(f"{repo_path(path)} retry exhaustion does not read {attempt_id}")
+    mark = f'bash "${{GITHUB_WORKSPACE}}/scripts/ci-infra.sh" mark --step {step} --cause {cause}'
+    if mark not in script or not script.rstrip().endswith("exit 1"):
+        fail(f"{repo_path(path)} retry exhaustion must write the marker and fail")
+    return attempts
+
+
+def uses_references(path: Path) -> list[tuple[int, str]]:
+    """(line, reference) for every uses: in a workflow or action file."""
+    try:
+        document = yaml.compose(path.read_text(), Loader=yaml.SafeLoader)
+    except yaml.YAMLError as error:
+        fail(f"{repo_path(path)} does not parse as YAML: {error}")
+    references: list[tuple[int, str]] = []
+    pending = [document]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.value == "uses":
+                    if not isinstance(value, yaml.ScalarNode):
+                        fail(f"{repo_path(path)}:{key.start_mark.line + 1} uses is not a value")
+                    references.append((value.start_mark.line + 1, value.value))
+                else:
+                    pending.append(value)
+        elif isinstance(node, yaml.SequenceNode):
+            pending.extend(node.value)
+    return sorted(references)
+
+
+def local_uses_file(path: Path, number: int, reference: str) -> Path:
+    """The file a ./ reference runs: a reusable workflow, or a directory's action.yml."""
+    target = ROOT / reference.removeprefix(LOCAL_ACTION_PREFIX)
+    if target.suffix in {".yml", ".yaml"} and target.is_file():
+        return target
+    for name in ("action.yml", "action.yaml"):
+        if (target / name).is_file():
+            return target / name
+    fail(f"{repo_path(path)}:{number} uses {reference}, which is not in the tree")
+
+
+def assert_pinned_actions(workflow: Path | None = None) -> None:
+    """Every third-party action reachable from the workflow is pinned to a commit."""
+    pending = [WORKFLOW if workflow is None else workflow]
+    seen: set[Path] = set()
+    unpinned: list[str] = []
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        lines = path.read_text().splitlines()
+        for number, reference in uses_references(path):
+            if reference.startswith(LOCAL_ACTION_PREFIX):
+                pending.append(local_uses_file(path, number, reference))
+                continue
+            if not PINNED_ACTION.match(reference) or not ACTION_VERSION_COMMENT.search(
+                lines[number - 1]
+            ):
+                unpinned.append(f"{repo_path(path)}:{number} ({reference})")
+    if unpinned:
+        fail(
+            "third-party actions are not pinned: "
+            + ", ".join(unpinned)
+            + '. Use owner/repo@<40-character commit SHA> with the tag as a "# vX" comment'
+        )
+
+
+def infra_output_names(job_name: str, job: dict[str, Any]) -> set[str]:
+    matrix_key = INFRA_MARKER_JOBS[job_name]
+    if matrix_key is None:
+        return {INFRA_OUTPUT}
+    return {f"{INFRA_OUTPUT}-{value}" for value in matrix_values(job, matrix_key)}
+
+
+def assert_infra_marker_exposed(jobs: dict[str, Any]) -> None:
+    """Each job that can fail on a download hands its marker to merge-gate."""
+    helper = CI_INFRA_HELPER.read_text() if CI_INFRA_HELPER.is_file() else ""
+    if f'MARKER_PREFIX="{INFRA_MARKER_PREFIX}"' not in helper:
+        fail(f"scripts/ci-infra.sh must write the {INFRA_MARKER_PREFIX} marker")
+    for job_name, matrix_key in INFRA_MARKER_JOBS.items():
+        job = require_job(jobs, job_name)
+        steps = job.get("steps", [])
+        expose = step_by_name(job, INFRA_EXPOSE_STEP)
+        if expose is not steps[-1]:
+            fail(f"{job_name} must expose its infrastructure marker as its last step")
+        if expose.get("id") != "infra" or expose.get("if") != INFRA_EXPOSE_CONDITION:
+            fail(f"{job_name} must expose its marker from step id infra, always()")
+        suffix = "" if matrix_key is None else f"-${{{{ matrix.{matrix_key} }}}}"
+        if expose.get("run") != f"bash scripts/ci-infra.sh expose --output {INFRA_OUTPUT}{suffix}":
+            fail(f"{job_name} exposes its marker under the wrong output")
+        if matrix_key is not None:
+            leg = job.get("env", {}).get("CI_INFRA_JOB")
+            if leg != f"{job_name}/${{{{ matrix.{matrix_key} }}}}":
+                fail(f"{job_name} must name its matrix leg in CI_INFRA_JOB")
+        expected = {
+            name: f"${{{{ steps.infra.outputs['{name}'] }}}}"
+            for name in infra_output_names(job_name, job)
+        }
+        outputs = {
+            name: value
+            for name, value in job.get("outputs", {}).items()
+            if name.startswith(INFRA_OUTPUT)
+        }
+        if outputs != expected:
+            fail(f"{job_name} outputs must be exactly one infrastructure marker per leg")
+
+
+def assert_download_retries(jobs: dict[str, Any]) -> None:
+    """The downloads a job starts with are retried, and name exhaustion as infra."""
+    for job_name in ["fast-checks", "ci-contract"]:
+        if step_by_name(require_job(jobs, job_name), "Install uv").get("run") != (
+            INSTALL_UV_COMMAND
+        ):
+            fail(f"{job_name} must install uv through scripts/ci-infra.sh retry")
+    assert_retry_action(UV_RETRY_ACTION, "astral-sh/setup-uv", "setup-uv", "uv-download")
+    for job_name, step_name in UV_SETUP_STEPS.items():
+        step = step_by_name(require_job(jobs, job_name), step_name)
+        if step.get("uses") != "./.github/actions/setup-uv-with-retry":
+            fail(f"{job_name} must set up uv through the local retry action")
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("steps", []):
+            if isinstance(step, dict) and action_name(step.get("uses", "")) == (
+                "astral-sh/setup-uv"
+            ):
+                fail(f"{job_name} must set up uv through the local retry action")
+    for job_name, command in PULL_IMAGES_COMMANDS.items():
+        job = require_job(jobs, job_name)
+        steps = job.get("steps", [])
+        pull = step_by_id(job, "pull-images")
+        if pull.get("name") != PULL_IMAGES_STEP or pull.get("run") != command:
+            fail(f"{job_name} must pre-pull its compose images through scripts/ci-infra.sh")
+        if pull.get("continue-on-error"):
+            fail(f"{job_name} image pull must fail the job it belongs to")
+        tests = step_by_id(
+            job, "service-tests" if job_name == "test-service" else "integration-tests"
+        )
+        if steps.index(pull) > steps.index(tests):
+            fail(f"{job_name} must pull its images before running the tests")
+        asserts = [
+            step
+            for step in steps
+            if isinstance(step, dict) and str(step.get("name", "")).startswith("Assert ")
+        ]
+        if not any("steps.pull-images.outcome" in step.get("run", "") for step in asserts):
+            fail(f"{job_name} must assert the image pull outcome")
 
 
 def assert_gate(jobs: dict[str, Any]) -> None:
@@ -996,6 +1242,14 @@ def assert_gate(jobs: dict[str, Any]) -> None:
             fail(f"merge-gate does not inspect {need}")
     if '!= "success"' not in script:
         fail("merge-gate must fail non-success upstream results")
+    if check_step.get("env", {}).get("NEEDS_JSON") != "${{ toJSON(needs) }}":
+        fail("merge-gate must read every needed job's outputs from toJSON(needs)")
+    if INFRA_MARKER_PATTERN not in script:
+        fail("merge-gate must repeat every infrastructure marker of its needs")
+    if INFRA_MARKER_ANNOTATION not in script or "GITHUB_STEP_SUMMARY" not in script:
+        fail("merge-gate must repeat the markers in its log and its summary")
+    if script.find(INFRA_MARKER_PATTERN) > script.rfind('echo "Required CI gate failed"'):
+        fail("merge-gate must repeat the markers before it exits on its verdict")
 
 
 def assert_template_compatibility(jobs: dict[str, Any]) -> None:
@@ -1038,6 +1292,9 @@ def main() -> None:
     assert_service_image_imports(jobs)
     assert_template_compatibility(jobs)
     assert_gate(jobs)
+    assert_pinned_actions()
+    assert_download_retries(jobs)
+    assert_infra_marker_exposed(jobs)
     print("CI gate contract ok")
 
 

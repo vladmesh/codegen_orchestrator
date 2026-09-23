@@ -82,3 +82,29 @@ def test_failed_or_empty_installer_fetch_never_executes(tmp_path, statuses, empt
     assert result.returncode != 0
     assert len(requests) == (4 if statuses == [503] else 1)
     assert not marker.exists()
+
+
+INFRA_CAUSE = "CI-INFRA-CAUSE=claude-installer-fetch"
+
+
+def test_exhausted_installer_fetch_names_the_infrastructure_cause(tmp_path):
+    """scripts/ci-infra.sh watch maps this line to the CI infrastructure marker."""
+    result, requests, marker = _run_fetch(tmp_path, [503])
+
+    assert result.returncode != 0
+    assert len(requests) == 4
+    assert INFRA_CAUSE in result.stderr.splitlines()
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("statuses,empty", [([503, 200], False), ([200], True)])
+def test_a_fetch_that_answered_names_no_infrastructure_cause(tmp_path, statuses, empty):
+    """An empty script, or a retry that recovered, is not a fetch that never answered."""
+    result, _, _ = _run_fetch(tmp_path, statuses, empty=empty)
+
+    assert INFRA_CAUSE not in result.stdout + result.stderr
+
+
+def test_the_build_log_echo_of_the_command_does_not_carry_the_cause():
+    """A build log prints each RUN command, so the cause line must exist only at run time."""
+    assert INFRA_CAUSE not in DOCKERFILE.read_text()

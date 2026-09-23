@@ -20,19 +20,19 @@ runs:
     - name: Set up Docker Buildx, attempt 1
       id: attempt-1
       if: inputs.simulate_first_attempt_registry_failure != 'true' || steps.simulate-registry-failure.outcome == 'success'
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       continue-on-error: true
 
     - name: Set up Docker Buildx, attempt 2
       id: attempt-2
       if: steps.attempt-1.outcome != 'success'
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       continue-on-error: true
 
     - name: Set up Docker Buildx, attempt 3
       id: attempt-3
       if: steps.attempt-1.outcome != 'success' && steps.attempt-2.outcome != 'success'
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       continue-on-error: true
 
     - name: Fail as CI infrastructure after retry exhaustion
@@ -44,5 +44,6 @@ runs:
           [ "${{ steps.attempt-3.outcome }}" = "success" ]; then
           exit 0
         fi
-        echo "::error title=CI infrastructure failure::Docker image registry was unavailable while preparing Buildx after three attempts. Code changes are not required."
+        echo "Docker image registry was unavailable while preparing Buildx after three attempts. Code changes are not required."
+        bash "${GITHUB_WORKSPACE}/scripts/ci-infra.sh" mark --step setup-buildx --cause buildx-registry
         exit 1
