@@ -619,9 +619,33 @@ the host cannot back up. Every task is a state, so re-running it changes nothing
 Deploy is triggered manually via GitHub Actions:
 
 1. Go to Actions > "Deploy to Production" > Run workflow
-2. The workflow: writes `.env` and secret files, checks out the dispatched revision, pulls and
-   verifies the worker base images of that revision, builds service images, starts services, runs
-   migrations, verifies health
+2. The workflow: waits for the worker release of the dispatched revision, writes `.env` and secret
+   files, checks out the dispatched revision, pulls and verifies the worker base images of that
+   revision, builds service images, starts services, runs migrations, verifies health
+
+### The deploy waits for its release, and survives one SSH timeout
+
+Before any step touches the host, the runner checks that the dispatched SHA has a worker release
+marker (`scripts/wait_worker_release.py`, probing read-only through `pull-worker-images.sh` with
+`RELEASE_VALIDATION_ONLY=true`). A deploy dispatched right after a merge no longer fails while that
+commit's push-to-main CI run is still publishing: while the run is queued or in progress the check
+re-probes every 30 s, for at most `WORKER_RELEASE_WAIT_SECONDS` (45 minutes, set in `deploy.yml`).
+It refuses at once, before the host, when waiting cannot help:
+
+| exit | meaning |
+| --- | --- |
+| 20 | no push-to-main `ci.yml` run for this SHA (e.g. a branch that was never merged) |
+| 21 | the CI run completed without success (failed, cancelled, timed out) |
+| 22 | the CI run succeeded but the SHA has no marker: look at its Publish Worker Base Images job |
+| 23 | the 45 minutes passed with the run still going: dispatch again once it finishes |
+| 24 | the GitHub API did not answer three times in a row |
+| 10-13 | the registry failed three times in a row (the probe's own codes) |
+
+The file-only steps — writing `.env` and the secret files, checking the written `.env`, checking out
+the revision, reading back the release record — reach the host through `infra/scripts/deploy-ssh.sh`.
+It retries only a failed connection (ssh exit 255), at most three attempts with a 10 s/20 s backoff,
+and never re-runs a remote script that failed on its own. Build, deploy, migrations, health, configs,
+scheduler wait, reconcile and cleanup keep a single attempt.
 
 ### Worker base images are a release chain
 
