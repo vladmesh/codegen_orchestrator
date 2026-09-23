@@ -27,6 +27,15 @@
 #
 # Secret paths (SSH key, GitHub App PEM, HOST_CLAUDE_DIR, HOST_CODEX_HOME)
 # are controlled via env vars in .env — see docs/DEPLOY.md for required values.
+#
+# Image code only: docker-compose.yml bind-mounts the checkout's source
+# (services/<svc>/src, shared, api's migrations and scripts, infra-service's
+# ansible) over what each image baked, so a developer's edit runs on restart.
+# Production runs the released image digest and nothing else, so every service
+# that mounts source resets `volumes` here and restates only its runtime mounts:
+# the GitHub App key, the workspaces, the uv cache. `tests/unit/
+# test_production_compose_mounts.py` renders the prod and stand stacks and fails
+# on a source mount, or on a runtime mount of the base file that went missing.
 
 x-logging: &default-logging
   driver: json-file
@@ -34,11 +43,15 @@ x-logging: &default-logging
     max-size: "50m"
     max-file: "5"
 
+x-github-app-key: &github-app-key ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+
 services:
   api:
     restart: unless-stopped
     ports: !reset []
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
     mem_limit: 768m
 
   admin-frontend:
@@ -59,31 +72,45 @@ services:
   langgraph:
     restart: unless-stopped
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
     mem_limit: 1536m
 
   architect:
     logging: *default-logging
+    volumes: !reset []
 
   engineering-worker:
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
 
   deploy-worker:
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
 
   qa-worker:
     logging: *default-logging
+    volumes: !reset []
 
   telegram_bot:
     restart: unless-stopped
     logging: *default-logging
+    volumes: !reset []
     mem_limit: 256m
 
   infra-service:
     logging: *default-logging
+    volumes: !reset []
     mem_limit: 512m
 
   scaffolder:
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - uv-cache:/root/.cache/uv
     mem_limit: 512m
 
   worker-manager:
@@ -97,16 +124,21 @@ services:
   scheduler-pipeline:
     restart: unless-stopped
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
     mem_limit: 512m
 
   scheduler-infrastructure:
     restart: unless-stopped
     logging: *default-logging
+    volumes: !reset []
     mem_limit: 512m
 
   scheduler-maintenance:
     restart: unless-stopped
     logging: *default-logging
+    volumes: !override
+      - *github-app-key
     mem_limit: 512m
 
   caddy:

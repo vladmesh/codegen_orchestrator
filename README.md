@@ -90,8 +90,9 @@ is the fast gate and `make test-integration` needs the stack running.
 
 Two details that cost the most time when they are unknown:
 
-- `shared/` is never installed as a package. Compose bind-mounts it, images `COPY` it, tests import
-  it from the tree. Editing it needs no rebuild for bind-mounted services — see
+- `shared/` is never installed as a package. Development compose bind-mounts it, images `COPY` it
+  (production runs only the image), tests import it from the tree. Editing it needs no rebuild for
+  bind-mounted development services — see
   [docs/REBUILD.md](docs/REBUILD.md), which is also where the two separate build loops are
   explained.
 - Required settings take no default. A missing identity, credential, connection or production-policy

@@ -867,9 +867,74 @@ runs with `--no-build --pull never`, so compose runs the pulled digests and noth
 and the config seeder run in the api container `up` started from the release; nothing is built for
 them.
 
-Plain `docker compose` without that override (development) builds locally exactly as before. The
-source bind-mounts stay for now: with the checkout at the deployed revision, the mounted code is the
-code in the images.
+Plain `docker compose` without that override (development) builds locally exactly as before, and
+keeps its source bind-mounts.
+
+### Production runs image code only
+
+No container of a deploy contour reads code from the host checkout. `docker-compose.yml` bind-mounts
+each service's source over what its image baked, so a developer's edit runs on restart;
+`docker-compose.prod.yml` resets every one of those mounts (`volumes: !reset []`, or `!override` with
+only the runtime mounts), and the stand overlay stacks on top of it. What runs is exactly the released
+digest the override names. The checkout on the host is still reset to the deployed revision, because
+compose reads its files and the third-party configuration under `infra/` from it, but no container
+runs its code.
+
+The mounts production keeps are runtime state, not source: the GitHub App key
+(`${GITHUB_APP_PEM_PATH}` at `/app/keys/github_app.pem`, read-only), `/data/workspaces`, the worker
+transcripts, the docker socket, `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME` for worker-manager, the
+`uv-cache` volume and the named data volumes, and the configuration files of the third-party images
+(Caddy, Loki, Promtail, Grafana, the database init script). `tests/unit/test_production_compose_mounts.py`
+renders the prod and stand stacks with `docker compose config` and fails on a source mount, or on a
+runtime mount that went missing.
+
+What production reads from the paths it no longer mounts is in the images at the same paths:
+
+| path | read in production by | carried by |
+| --- | --- | --- |
+| `/app/src`, `/app/shared` (every service) | the service process itself | `COPY services/<svc>/src ./src`, `COPY shared ./shared` in each Dockerfile |
+| `/app/migrations`, `/app/alembic.ini` (api) | `alembic upgrade head` in the Switch and the api entrypoint | `COPY services/api/migrations`, `COPY services/api/alembic.ini` |
+| `/app/scripts` (api) | the Switch's config seeder, `scripts/danger_prod_reset.py`'s agent and system config seeders, the stand bring-up | `COPY scripts/seed_system_configs.py scripts/system_configs.yaml scripts/system_configs.service_test.yaml scripts/seed_agent_configs.py scripts/agent_configs.yaml /app/scripts/` |
+| `/app/ansible` (infra-service) | Reconcile (`src.provisioner.target_readiness`) and the provisioning playbooks, through `/app/ansible/playbooks` and `ansible.cfg` beside it | `COPY services/infra-service/ansible /app/ansible` |
+
+The api image carries only the scripts production runs, not all of `scripts/`; a unit test fails if
+a caller in `deploy.yml`, `stand-e2e.yml`, the api entrypoint or `danger_prod_reset.py` names a
+`/app/scripts/` file the image does not copy. The freshness check follows: a service is exempt from
+comparing its image's `org.codegen.worker_source_hash` only while every contour that runs it mounts
+`./shared` over the baked copy, which no production contour does ([REBUILD.md](REBUILD.md)).
+
+**The PO's check after a deploy.** Read-only, on the host, in the deploy path:
+
+```bash
+cd /opt/codegen_orchestrator
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f deployed-service-images.compose.yml"
+$COMPOSE config --format json > /tmp/compose-live.json
+python3 scripts/service_release.py readback --compose-config /tmp/compose-live.json \
+  --record deployed-service-images.json --deploy-path "$PWD"
+```
+
+(on the stand, add `-f docker-compose.stand.yml` before the override). Checkout source is any bind
+mount source under the deploy path other than `infra/` and `secrets/`, so `services/`, `shared/` and
+`scripts/` among them. It exits non-zero, one `FAIL` line per reason, unless all four hold:
+
+- no service of the resolved configuration bind-mounts checkout source;
+- no container of the compose project bind-mounts checkout source. That is every container
+  `docker ps -a --filter label=com.docker.compose.project=<project>` lists: running or only created,
+  build service or third-party image (caddy, promtail, …), and orphans of a service the
+  configuration no longer names, which keep the mounts they were created with and are marked
+  `(orphan)`. `OK <n> containers of project <project> mount no checkout source` confirms it;
+- each running container of a build service runs the image the service record's digest names
+  (`docker image inspect <reference>` gives the same ID as the container's `Image`);
+- that image carries a non-empty `org.codegen.worker_source_hash` equal to the record's
+  `source_hash`.
+
+A build service scaled to zero (the stand's `telegram_bot`) is reported as `SKIP`. The same facts by
+hand: `$COMPOSE config | grep -E 'source: .*/(services|shared|scripts)'` prints nothing,
+`docker ps -aq --filter label=com.docker.compose.project=<project> | xargs docker inspect --format
+'{{.Name}}{{range .Mounts}} {{.Type}}:{{.Source}}{{end}}'` lists no bind under the deploy path
+outside `infra/` and `secrets/`, and
+`docker inspect --format '{{.Image}} {{index .Config.Labels "org.codegen.worker_source_hash"}}'
+<container>` against `docker image inspect --format '{{.Id}}' <record reference>`.
 
 **Cleanup** runs last, bounded to 10 minutes, after the deploy is live. `scripts/service_release.py
 cleanup` keeps every service image of the current and the previous record and any image a container
@@ -899,6 +964,10 @@ Two limits:
   touched: its tree has no `infra/scripts/pull-service-images.sh` (and its compose would build on the
   host). That includes the revisions that only published a service release (from main's 7f93d8b7 on)
   up to the merge of this change. Roll back only to a revision deployed by this workflow.
+- **A revision before image-code-only production mounts its source again.** Its own
+  `docker-compose.prod.yml` still carries the source mounts. That is still a correct rollback — the
+  switch resets the checkout to that revision, so the mounted code is the code its images carry — but
+  the readback above reports those mounts until the next deploy of a newer revision.
 - **Migrations only go forward.** The deploy runs `alembic upgrade head` in the api container of the
   target revision. Rolling back across a migration fails at `Run migrations` after `up` has already
   started the older services. Before a rollback, check
@@ -970,7 +1039,8 @@ the four LangGraph agent consumers (`architect`, `engineering-worker`,
 `deploy-worker`, `qa-worker`) are deliberately left unsized until their
 footprint is measured. Every service in `docker-compose.yml` must have an entry
 in the overlay, and `tests/unit/test_production_compose_limits.py` fails if one
-does not.
+does not. The overlay also resets every source bind-mount, so production runs
+image code only ([Production runs image code only](#production-runs-image-code-only)).
 
 `worker-manager` and `worker-broker` are one control plane and roll out
 together — which the command above does, and the deploy workflow does the same.
