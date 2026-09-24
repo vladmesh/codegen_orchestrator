@@ -81,6 +81,66 @@ def _failure_detail(stderr: str, stdout: str, token: str) -> str:
     return redact_diagnostic(stderr or stdout, secrets=(token,))
 
 
+# Pauses between git fetch attempts on a repository GitHub's git transport does not
+# serve yet. GitHub's REST API sees a new repository (and accepts writes to it) before
+# its git smart-HTTP endpoint does: on 2026-09-24 the scaffolder set three Actions
+# secrets on a freshly created repository and ~2 s after creation `git fetch` with the
+# very same installation token still got "Repository not found". ~30 s in total.
+FETCH_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1, 2, 4, 8, 15)
+
+# What GitHub answers over git smart-HTTP for a repository it does not (yet) serve.
+# Authentication and permission failures read differently and are never retried.
+_NOT_YET_SERVED_MARKERS = (
+    "repository not found",
+    "the requested url returned error: 404",
+)
+
+_ORIGIN_MAIN = "refs/remotes/origin/main"
+
+
+def _remote_not_yet_served(stderr: str, stdout: str) -> bool:
+    text = f"{stderr}\n{stdout}".lower()
+    return any(marker in text for marker in _NOT_YET_SERVED_MARKERS)
+
+
+async def _fetch_new_remote(workspace: Path, token: str, log) -> tuple[int, str, str, int]:
+    """Fetch origin until it serves `main`, waiting out GitHub's post-create lag.
+
+    The repository was created with `auto_init`, so a served repository always has
+    `main`. Only "not found" answers and a fetch without `origin/main` are treated as
+    "not served yet" and retried with backoff; any other failure returns at once.
+    Returns (returncode, stdout, stderr, attempts).
+    """
+    env = _git_auth_env(token)
+    delays = iter(FETCH_RETRY_DELAYS_SECONDS)
+    attempt = 0
+    while True:
+        attempt += 1
+        rc, out, err = await _run_cmd(["git", "fetch", "origin"], cwd=workspace, env=env)
+        if rc == 0:
+            has_main, _, _ = await _run_cmd(
+                ["git", "rev-parse", "--verify", "--quiet", _ORIGIN_MAIN], cwd=workspace
+            )
+            if has_main == 0:
+                if attempt > 1:
+                    log.info("scaffold_fetch_ready", attempts=attempt)
+                return rc, out, err, attempt
+            rc, out, err = 1, "", "origin has no main branch yet\n"
+        elif not _remote_not_yet_served(err, out):
+            return rc, out, err, attempt
+
+        delay = next(delays, None)
+        if delay is None:
+            return rc, out, err, attempt
+        log.warning(
+            "scaffold_fetch_retry",
+            attempt=attempt,
+            delay_seconds=delay,
+            error=_failure_detail(err, out, token),
+        )
+        await asyncio.sleep(delay)
+
+
 async def _nothing_to_commit(workspace: Path) -> bool:
     """Tell "nothing to commit" apart from a real commit failure.
 
@@ -161,10 +221,8 @@ async def run_scaffold(  # noqa: PLR0915
         result.error = f"Git init/fetch failed: {detail}"
         log.error("scaffold_clone_failed", error=detail)
         return result
-    rc, out, err = await _run_cmd(
-        ["git", "fetch", "origin"], cwd=workspace, env=_git_auth_env(github_token)
-    )
-    result.commands_log.append(f"git init+fetch: rc={rc}")
+    rc, out, err, attempts = await _fetch_new_remote(workspace, github_token, log)
+    result.commands_log.append(f"git init+fetch: rc={rc} attempts={attempts}")
     if rc != 0:
         detail = _failure_detail(err, out, github_token)
         result.error = f"Git init/fetch failed: {detail}"
