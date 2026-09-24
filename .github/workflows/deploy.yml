@@ -54,6 +54,12 @@ jobs:
       # Where the host keeps the mounted secret files (the GitHub App key). Owned by
       # the SSH user; the default is production's historical path.
       SECRETS_PATH: ${{ vars.SECRETS_PATH || '/opt/secrets' }}
+      # The uid:gid the api container runs as (docker-compose.yml `user:`). It has to
+      # be able to read the 0600 key file the deploy writes below, so it is the SSH
+      # user's uid on a root daemon and 0 on a rootless one (container root is the
+      # rootless user on the host). The default is production's historical deploy uid.
+      HOST_UID: ${{ vars.HOST_UID || '1000' }}
+      HOST_GID: ${{ vars.HOST_GID || '1000' }}
       # The one revision every step deploys: the runner checkout, both release waits,
       # the host checkout, both pulls and the target reconcile. Validated as a full
       # SHA before anything reads it.
@@ -343,6 +349,9 @@ jobs:
           GITHUB_APP_PEM_PATH=${{ env.SECRETS_PATH }}/github_app.pem
           # In-container path of the same key; services fail fast without it
           GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
+          # Who the api container runs as; must be able to read the mounted key
+          HOST_UID=${{ env.HOST_UID }}
+          HOST_GID=${{ env.HOST_GID }}
           ENVEOF
           chmod 600 ${{ env.DEPLOY_PATH }}/.env
           REMOTE
@@ -602,6 +611,15 @@ jobs:
             timeout=$((timeout - 2))
           done
           echo "API is healthy"
+          # The key is bind-mounted 0600 from the SSH user's files; the api runs as
+          # HOST_UID. A layout where the two do not meet deploys green and then fails
+          # on the first GitHub call, so prove the read here.
+          if ! docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} \
+            exec -T api sh -c 'head -c 1 /app/keys/github_app.pem > /dev/null'; then
+            echo "FATAL: api (uid ${{ env.HOST_UID }}) cannot read /app/keys/github_app.pem; set HOST_UID/HOST_GID for this contour" >&2
+            exit 1
+          fi
+          echo "API can read the GitHub App key"
           docker compose ${{ env.COMPOSE_ARGS }} -f ${{ env.SERVICE_RELEASE_COMPOSE }} exec -T api \
             python /app/scripts/seed_system_configs.py \
             --api-base-url http://localhost:8000 \
