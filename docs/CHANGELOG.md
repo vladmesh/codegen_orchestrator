@@ -13,6 +13,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   service release instead of building, and warms both pulls and uv in the background after bootstrap.
 - `pull-worker-images.sh` takes `WORKER_IMAGE_SUBSET` (the stand skips the factory image), and both
   release pullers fetch a chain's images concurrently.
+- The stand runner's QA-switch recreate runs the release override with `--no-build --pull never` and
+  refuses a run without that override, instead of building services from the checkout.
 
 ## 2026-09-23
 

@@ -890,7 +890,10 @@ jobs:
           # (`uv sync --frozen`, the default group `uv run` uses). The join is bounded
           # and fail-closed; UV_FROZEN then keeps every `uv run` of the runner, its
           # own nested ones included, on that environment with no fresh resolve.
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          # The runner recreates services when it switches the QA executor; it does
+          # so through the release override bring-up generated, which it is named
+          # here, with --no-build --pull never, and refuses the run without it.
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && export STAND_SERVICE_RELEASE_COMPOSE=%q && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${STAND_SERVICE_RELEASE_COMPOSE}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
           printf '%s\n' "${bot_token}" | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
 

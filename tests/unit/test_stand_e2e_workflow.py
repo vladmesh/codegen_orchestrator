@@ -1552,3 +1552,144 @@ def test_the_bring_up_span_and_the_pull_durations_are_reported():
     assert timing["continue-on-error"] is True, "reporting never decides a run"
     assert steps.index("Run selected stand suite") < steps.index(TIMING_STEP)
     assert steps.index(TIMING_STEP) < steps.index("Admit cleanup handoff")
+
+
+# --- every compose call that can start a container runs the pulled release ----------------
+#
+# Bring-up leaves no `codegen-orchestrator/*:local` image on the stand. A compose `up`,
+# `create`, `run` or `start` without the release override would find none and build the
+# service from the checkout; one without `--no-build --pull never` could build or pull
+# anyway. `start`, `restart` and `run` take no `--no-build`, so on the stand they cannot
+# be reached at all. The runner's own calls are pinned in scripts/tests/test_stand_run.py.
+
+POLICED_COMPOSE_VERBS = ("up", "create", "run", "start", "restart")
+RELEASE_POLICY = "--no-build --pull never"
+_COMPOSE_CALL = re.compile(r"docker compose\b|\$\{COMPOSE\}|\$COMPOSE\b")
+_COMPOSE_ASSIGNMENT = re.compile(r'^\s*COMPOSE="([^"]*)"')
+_OVERRIDE_REFERENCES = ("${override}", "${STAND_SERVICE_RELEASE_COMPOSE}")
+
+
+def _compose_invocations(script: str) -> list[tuple[list[str], str, str]]:
+    """Every compose call a step script makes: (files, verb, the rest of the line).
+
+    `${COMPOSE}` is expanded to what the script last assigned it, the way the shell
+    reads it, so an override appended to the variable counts where it was appended.
+    """
+    compose: str | None = None
+    calls: list[tuple[list[str], str, str]] = []
+    for line in _joined(script).splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assignment = _COMPOSE_ASSIGNMENT.match(line)
+        if assignment:
+            compose = assignment.group(1).replace("${COMPOSE}", compose or "")
+            continue
+        for occurrence in _COMPOSE_CALL.finditer(line):
+            text = line[occurrence.start() :]
+            if occurrence.group() != "docker compose":
+                assert compose is not None, f"${{COMPOSE}} used before it is assigned: {line}"
+                text = compose + text[len(occurrence.group()) :]
+            tokens = text.split()[2:]
+            files: list[str] = []
+            while len(tokens) > 1 and tokens[0] in ("-f", "--file", "-p", "--project-name"):
+                if tokens[0] in ("-f", "--file"):
+                    files.append(tokens[1])
+                tokens = tokens[2:]
+            calls.append((files, tokens[0] if tokens else "", " ".join(tokens[1:])))
+    return calls
+
+
+def _release_violations(script: str) -> list[str]:
+    violations = []
+    for files, verb, rest in _compose_invocations(script):
+        if verb == "build" or re.search(r"(?<![\w-])--build\b", rest):
+            violations.append(f"{verb} {rest}: builds")
+        if verb not in POLICED_COMPOSE_VERBS:
+            continue
+        if not any(reference in files for reference in _OVERRIDE_REFERENCES):
+            violations.append(f"{verb} {rest}: without the release override")
+        if RELEASE_POLICY not in rest:
+            violations.append(f"{verb} {rest}: without {RELEASE_POLICY}")
+    return violations
+
+
+def test_the_compose_scanner_catches_a_call_that_would_build_on_the_stand():
+    """The contract below is only as good as this reader, so it is shown a bad script."""
+    base = 'COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"\n'
+    released = base + 'COMPOSE="${COMPOSE} -f ${override}"\n'
+
+    assert _release_violations(released + "${COMPOSE} up -d --no-build --pull never api\n") == []
+    assert _release_violations(base + "${COMPOSE} up -d --no-build --pull never api\n")
+    assert _release_violations(released + "${COMPOSE} up -d --force-recreate api\n")
+    assert _release_violations(released + "${COMPOSE} create --no-build --pull never\n") == []
+    assert _release_violations(released + "${COMPOSE} create api\n")
+    assert _release_violations(released + "${COMPOSE} start api\n")
+    assert _release_violations(released + "${COMPOSE} run --rm api true\n")
+    assert _release_violations("ssh host 'docker compose -f a.yml -f ${override} restart api'\n")
+    assert _release_violations(released + "${COMPOSE} build api\n")
+    assert _release_violations(base + "${COMPOSE} exec -T api true\n") == []
+    assert _release_violations("# docker compose up -d, in a comment\n") == []
+
+
+def test_every_compose_call_that_starts_a_container_runs_the_pulled_release():
+    starting = []
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run", "")
+            assert _release_violations(script) == [], step.get("name")
+            starting += [
+                verb
+                for _files, verb, _rest in _compose_invocations(script)
+                if verb in POLICED_COMPOSE_VERBS
+            ]
+    # Not vacuous: bring-up's two `up` calls are the ones the reader has to have seen.
+    assert starting == ["up", "up"]
+
+
+def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_path):
+    """The runner recreates services on a QA switch; it does so from this file."""
+    background = tmp_path / "bg"
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        "Run selected stand suite",
+        {
+            "STAND_BACKGROUND_DIR": str(background),
+            "SUITE": "matrix",
+            "WORKER": "claude",
+            "QA": "codex",
+            "TEMPLATE_SOURCE": "",
+            "TEMPLATE_REF": "",
+            "STAND_PRODUCT_BOT_TOKEN": "",
+        },
+    )
+    assert len(commands) == 1
+    host = _stand_host(tmp_path)
+    _finished_job(background, "uv", 0, "synced\n")
+    stand_bin = tmp_path / "stand-bin"
+    _write_executable(
+        stand_bin / "uv",
+        '#!/usr/bin/env bash\necho "uv $* override=${STAND_SERVICE_RELEASE_COMPOSE:-unset} '
+        'frozen=${UV_FROZEN:-unset}"\n',
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", _on_host(commands[0], host)],
+        input="\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stand_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
+    assert "python -m scripts.stand_run --suite matrix" in result.stdout
+    assert f"override={override} frozen=1" in result.stdout
+    # The same name bring-up writes the override to, in the checkout the runner resolves
+    # it against, and the same variable the runner reads.
+    bring_up = _steps()[BRING_UP_STEP]["run"]
+    assert "override=${STAND_SERVICE_RELEASE_COMPOSE}" in bring_up
+    assert '--output "${override}"' in bring_up
+    from scripts import stand_run
+
+    assert stand_run.SERVICE_RELEASE_OVERRIDE_ENV == "STAND_SERVICE_RELEASE_COMPOSE"

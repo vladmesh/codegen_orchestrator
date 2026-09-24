@@ -324,8 +324,11 @@ fails the step with its exit code and log tail: bring-up joins the service pull,
 third-party images (`compose pull --ignore-buildable`) and starts every service from its digest
 through the deploy's compose override with `--no-build --pull never`, then migrates, seeds and
 recreates the schedulers in those containers; the worker pull is joined before the suite; the suite
-joins its environment and runs with `UV_FROZEN=1`. The run summary reports the span from Bootstrap
-start to all services healthy (target five minutes) and each background job's duration.
+joins its environment and runs with `UV_FROZEN=1`. The runner's own recreates (a QA executor switch)
+use the same override, named by `STAND_SERVICE_RELEASE_COMPOSE`, and `up --no-build --pull never`;
+without the override the runner refuses the run (`release_override_missing`) rather than let compose
+build from the checkout. The run summary reports the span from Bootstrap start to all services
+healthy (target five minutes) and each background job's duration.
 
 **Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,
 `template_source` and `template_ref`, which point the live suite's scaffold at a template other
