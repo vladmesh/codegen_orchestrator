@@ -51,6 +51,9 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/codegen_orchestrator' }}
       DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'deploy' }}
       COMPOSE_ARGS: ${{ vars.COMPOSE_ARGS || '-f docker-compose.yml -f docker-compose.prod.yml' }}
+      # Where the host keeps the mounted secret files (the GitHub App key). Owned by
+      # the SSH user; the default is production's historical path.
+      SECRETS_PATH: ${{ vars.SECRETS_PATH || '/opt/secrets' }}
       # The one revision every step deploys: the runner checkout, both release waits,
       # the host checkout, both pulls and the target reconcile. Validated as a full
       # SHA before anything reads it.
@@ -337,7 +340,7 @@ jobs:
           LK_JWT_SECRET=${{ secrets.LK_JWT_SECRET }}
 
           # Prod secret paths (used by docker-compose.prod.yml)
-          GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
+          GITHUB_APP_PEM_PATH=${{ env.SECRETS_PATH }}/github_app.pem
           # In-container path of the same key; services fail fast without it
           GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
           ENVEOF
@@ -523,7 +526,7 @@ jobs:
           if-no-files-found: error
 
       # ---- Switch: the one place live host state changes. ----
-      # Live host state is the /opt/secrets files, DEPLOY_PATH's tracked checkout,
+      # Live host state is the SECRETS_PATH files, DEPLOY_PATH's tracked checkout,
       # the worker-base-*:latest tags worker-manager builds from, the running compose
       # project, the deployed/previous release records and the compose override `up`
       # reads. No other step, and no script another step calls, writes any of them.
@@ -566,10 +569,10 @@ jobs:
           python3 "${pending}/release_switch.py" check --pending "${pending}" \
             --revision ${{ env.DEPLOY_REVISION }}
 
-          sudo mkdir -p /opt/secrets
-          sudo chown deploy:deploy /opt/secrets
-          echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
-          chmod 600 /opt/secrets/github_app.pem
+          sudo mkdir -p ${{ env.SECRETS_PATH }}
+          sudo chown ${{ env.DEPLOY_SSH_USER }}:${{ env.DEPLOY_SSH_USER }} ${{ env.SECRETS_PATH }}
+          echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > ${{ env.SECRETS_PATH }}/github_app.pem
+          chmod 600 ${{ env.SECRETS_PATH }}/github_app.pem
 
           git reset --hard ${{ env.DEPLOY_REVISION }}
 

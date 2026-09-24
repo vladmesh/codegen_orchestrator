@@ -7,7 +7,7 @@ Held down over the real `.github/workflows/deploy.yml`:
   host checkout, both pulls, the records and the target reconcile;
 * a revision from before the service release was consumed is refused before the host;
 * no step builds an image on the host, or prunes a build cache it no longer has;
-* live host state — the /opt/secrets files, the deploy path's tracked checkout, the
+* live host state — the SECRETS_PATH files, the deploy path's tracked checkout, the
   worker-base-*:latest tags, the running compose project, the deployed/previous release
   records and the compose override `up` reads — changes in exactly one step, `Switch`;
 * before it, the releases are pulled and verified concurrently from a staged worktree
@@ -247,7 +247,9 @@ def _write_targets(script: str) -> list[str]:
 def _writes_live_state(script: str) -> list[str]:
     """Every write in a script to a thing the Switch alone may change."""
     found = re.findall(
-        r"(?:>|\b(?:mkdir|chown|chmod|cp|mv|install|tee)\b)[^\n]*/opt/secrets", script
+        r"(?:>|\b(?:mkdir|chown|chmod|cp|mv|install|tee)\b)[^\n]*"
+        r"(?:/opt/secrets|\$\{\{ env\.SECRETS_PATH \}\})",
+        script,
     )
     for command in ("git reset", "git checkout", "git pull", "git clean", "git merge"):
         if command in script:
@@ -284,7 +286,7 @@ def test_the_switch_changes_live_state_in_the_decided_order():
     assert names.index(PULL_STEP) < names.index(SWITCH_STEP)
     order = [
         switch.index('release_switch.py" check --pending "${pending}"'),
-        switch.index("> /opt/secrets/github_app.pem"),
+        switch.index("> ${{ env.SECRETS_PATH }}/github_app.pem"),
         switch.index(f"git reset --hard {REVISION}"),
         switch.index('retag-worker-images.sh "${pending}/deployed-worker-images.json"'),
         switch.index('mv -f "${{ env.SERVICE_RELEASE_COMPOSE }}.next"'),
@@ -545,6 +547,8 @@ class DeployHost:
             "env.RELEASE_TOOLING": _job()["env"]["RELEASE_TOOLING"],
             "env.COMPOSE_ARGS": "-f docker-compose.yml -f docker-compose.prod.yml",
             "env.SERVICE_RELEASE_COMPOSE": "deployed-service-images.compose.yml",
+            "env.SECRETS_PATH": str(self.secrets),
+            "env.DEPLOY_SSH_USER": "deploy",
             "secrets.GHCR_TOKEN || github.token": "test-token",
             "secrets.GH_APP_PRIVATE_KEY": "the-new-app-key",
             "github.repository_owner": "vladmesh",
@@ -553,7 +557,6 @@ class DeployHost:
     def _run(self, script: str, revision: str, stdin: str | None = None, **overrides: str):
         values = self._values(revision)
         rendered = EXPRESSION.sub(lambda m: values[m.group(1)], script)
-        rendered = rendered.replace("/opt/secrets", str(self.secrets))
         env = {
             "PATH": f"{self.root / 'bin'}:/usr/bin:/bin",
             "HOME": str(self.home),
