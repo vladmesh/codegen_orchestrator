@@ -24,6 +24,7 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story_failure import StoryFailure
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
@@ -384,6 +385,19 @@ class LanggraphAPIClient(InternalAPIClient):
 
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:
         resp = await self.request("POST", f"stories/{story_id}/{action}")
+        return StoryDTO.model_validate(resp.json())
+
+    async def stop_story(
+        self, story_id: str, action: str, failure: StoryFailure, *, actor: str
+    ) -> StoryDTO:
+        """Fail or park a story with the typed reason it stopped (`fail` / `human-review`)."""
+        if action not in {"fail", "human-review"}:
+            raise ValueError(f"{action} is not a stopping story action")
+        resp = await self.request(
+            "POST",
+            f"stories/{story_id}/{action}",
+            json={"actor": actor, "failure": failure.model_dump(mode="json")},
+        )
         return StoryDTO.model_validate(resp.json())
 
     # --- Phase 4: Project methods ---

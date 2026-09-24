@@ -114,3 +114,15 @@ def test_parse_response_empty_result():
     data = {"data": {"result": []}}
     entries = LokiClient._parse_response(data)
     assert entries == []
+
+
+def test_an_unknown_direction_is_refused():
+    import asyncio
+    from datetime import UTC, datetime
+
+    import pytest
+
+    client = LokiClient(base_url="http://loki:3100")
+    now = datetime.now(UTC)
+    with pytest.raises(ValueError, match="unknown Loki direction"):
+        asyncio.run(client.query_range('{a="b"}', now, now, direction="sideways"))

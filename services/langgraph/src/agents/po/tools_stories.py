@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 import json
 
@@ -418,9 +419,69 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
     )
 
 
+#: Story statuses in which work is stopped and the owner is owed the reason.
+_STOPPED_STATUSES = frozenset({"failed", "waiting_human_review"})
+
+#: How long an `in_progress` story may have no task before `get_story` says so.
+#: Planning takes minutes; the supervisor stops a planless story after an hour.
+PLANLESS_NOTICE_MINUTES = 15
+
+
+def _minutes_since(timestamp: str | None) -> float | None:
+    if not timestamp:
+        return None
+    moment = datetime.fromisoformat(timestamp)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - moment).total_seconds() / 60
+
+
+def _problem(story: dict, diagnostics: dict | None) -> str | None:
+    """What stops or threatens this story, in one line the PO must relay, or None."""
+    if diagnostics is None:
+        return None
+    failure = diagnostics.get("failure")
+    if failure:
+        return f"{failure['code']}: {failure['detail']}"
+    scaffold_error = diagnostics.get("scaffold_error")
+    if scaffold_error:
+        return f"the project repository could not be created: {scaffold_error}"
+    if story.get("status") in _STOPPED_STATUSES:
+        return diagnostics.get("quarantine_reason") or "stopped; no recorded cause"
+    if story.get("status") == "in_progress" and not diagnostics.get("work_cycle_tasks"):
+        idle = _minutes_since(story.get("updated_at"))
+        if idle is not None and idle >= PLANLESS_NOTICE_MINUTES:
+            return (
+                f"in_progress for {int(idle)} minutes and no development task exists: "
+                "work has not started"
+            )
+    return None
+
+
+async def _read_diagnostics(
+    story_id: str, headers: dict[str, str], *, include_logs: bool
+) -> dict | None:
+    response = await _get_api().get_raw(
+        f"stories/{story_id}/diagnostics",
+        headers=headers,
+        params={"include_logs": str(include_logs).lower()},
+    )
+    if not response.is_success:
+        logger.warning(
+            "po_story_diagnostics_unavailable", story_id=story_id, status=response.status_code
+        )
+        return None
+    return response.json()
+
+
 @tool
 async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     """Get story details including linked tasks, their statuses, and runs.
+
+    The result carries `problem` when something stops or threatens the story
+    (a recorded failure, a project repository that could not be created, a
+    stop, or `in_progress` with no task). When `problem` is set, work is NOT
+    going normally: tell the user so, with the cause.
 
     Args:
         story_id: Story ID (e.g. story-abc12345).
@@ -458,11 +519,32 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
             ]
         enriched_tasks.append(task_info)
 
+    diagnostics = await _read_diagnostics(story_id, headers, include_logs=False)
     result = {
         "story": story,
         "tasks": enriched_tasks,
+        "problem": _problem(story, diagnostics),
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool
+async def get_story_diagnostics(story_id: str, *, config: RunnableConfig) -> str:
+    """Read why a story failed, is blocked or is not moving: causes and recent error logs.
+
+    Read-only. Returns the recorded failure reason, the project's scaffold error,
+    failed runs, task failures and the newest error/warning log lines about the
+    story or its project (bounded and with secrets redacted). Call it whenever
+    `get_story` shows `problem`, status `failed` or `waiting_human_review`, or
+    the user asks what went wrong.
+
+    Args:
+        story_id: Story ID (e.g. story-abc12345).
+    """
+    diagnostics = await _read_diagnostics(story_id, _user_headers(config), include_logs=True)
+    if diagnostics is None:
+        return f"Diagnostics for {story_id} could not be read."
+    return json.dumps(diagnostics, indent=2, ensure_ascii=False)
 
 
 @tool

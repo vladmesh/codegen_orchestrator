@@ -43,6 +43,17 @@ which any unrelated write moves:
   unrelated writes the story row. A pull request nothing is doing anything to is
   precisely one whose ``updated_at`` stands still.
 
+* ``in_progress`` with no task in its current work cycle — the Story row's own
+  ``updated_at``, which is when it entered ``in_progress`` as long as nothing
+  wrote it since. Such a story was taken by an architect that never planned
+  it: the scaffold it waited for failed or never finished, or the architect
+  died. Nothing else moves it — ``supervise_stuck_stories`` retries only
+  ``created`` — so without this bound it reads "being built" for ever. A story
+  whose Product Brief still has a live planning attempt is left to its planner,
+  and the API refuses the ending if the row was written or a task appeared.
+  This bound ends the wait; it is not the stage's expected duration, so the
+  stage notices keep calling ``in_progress`` unbounded.
+
 Its relation to ``IMAGE_PUBLICATION_TIMEOUT_SECONDS`` (900 s), the other bound
 spent inside ``pr_review``: that one is measured from the merge and always ends,
 in a refusal that parks the story itself. This bound is an order of magnitude
@@ -77,6 +88,7 @@ from shared.contracts.dto.state_wait import (
     StateWaitSkipReason,
 )
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import in_work_cycle
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
 from shared.redis import RedisStreamClient
@@ -93,6 +105,7 @@ from ..owner_notifications import (
 )
 from .common import _parse_datetime
 from .deploy import deliver_user_secret_request, owe_user_secret_request
+from .liveness import _planning_attempt_is_live
 
 logger = structlog.get_logger(__name__)
 
@@ -148,6 +161,10 @@ class StateAgeBound:
     resolve_anchor: AnchorResolver
     owner_text: Callable[[int], str]
     confirm_anchor: AnchorConfirmation | None = None
+    #: Whether this bound is also the stage's expected duration, which the
+    #: stage notices tell the owner. False for a bound on one shape of a stage
+    #: only (a planless ``in_progress``), which says nothing about the stage.
+    bounds_stage: bool = True
 
 
 def _threshold_minutes(bound: StateAgeBound) -> int:
@@ -325,6 +342,37 @@ async def _confirm_pull_request_anchor(
     )
 
 
+async def _planless_story_anchor(sweep: _Sweep, story: StoryDTO) -> _Anchor | None:
+    """When a story with no plan entered ``in_progress``, or None if it has a plan.
+
+    A task of the current work cycle is a plan, however far it got; a Product
+    Brief whose planning attempt is still heartbeating is a plan being made.
+    Either answers None, so the story is left to the supervisors that own it.
+    """
+    api_client = sweep.api_client
+    tasks = await api_client.get_tasks_by_story(story.id)
+    if any(in_work_cycle(task.created_at, story.reopened_at, task.status) for task in tasks):
+        return None
+    brief = await api_client.get_product_brief_by_story(story.id)
+    if brief is not None and _planning_attempt_is_live(brief, datetime.now(UTC)):
+        return None
+    if story.updated_at is None:
+        return None
+    return _Anchor(
+        at=_parse_datetime(story.updated_at),
+        identity=StateWaitAnchor(story_updated_at=story.updated_at),
+    )
+
+
+def _planless_owner_text(threshold_minutes: int) -> str:
+    return (
+        "Work on this change has not started: after over "
+        f"{threshold_minutes} minutes no development task was created for it, so it "
+        "is not going to move on its own. Work is stopped and a person has to look at "
+        "it; nothing more happens automatically."
+    )
+
+
 def _deploy_owner_text(threshold_minutes: int) -> str:
     return (
         "The deployment of this change has not reported anything for over "
@@ -415,6 +463,19 @@ STATE_AGE_BOUNDS: tuple[StateAgeBound, ...] = (
         resolve_anchor=_user_secret_request_anchor,
         owner_text=_user_secret_owner_text,
     ),
+    StateAgeBound(
+        # 60 min: the architect waits `SCAFFOLD_WAIT_MAX` (5 min) for the
+        # repository and then plans in one LLM run of minutes; a Product Brief
+        # plan in progress is excluded by its own heartbeat. An hour without a
+        # single task is not a slow plan, it is no plan.
+        status=StoryStatus.IN_PROGRESS,
+        config_key="supervisor.planless_story_max_minutes",
+        anchor="story_updated_at_without_tasks",
+        ending=StateWaitEnding.PARK,
+        resolve_anchor=_planless_story_anchor,
+        owner_text=_planless_owner_text,
+        bounds_stage=False,
+    ),
 )
 
 
@@ -425,7 +486,7 @@ def configured_bound_minutes(status: StoryStatus) -> int | None:
     number an owner is told about and the number that ends the wait are one.
     """
     for bound in STATE_AGE_BOUNDS:
-        if bound.status is status:
+        if bound.status is status and bound.bounds_stage:
             return _threshold_minutes(bound)
     return None
 

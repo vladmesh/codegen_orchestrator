@@ -907,6 +907,19 @@ transaction, so no caller sequences task and story status for that park.
 `POST /api/stories/{id}/park-waiting-user-secret` moves a Story one hop together
 with the owed ask on its deploy Run (see the lifecycle-wait table above).
 
+**A platform failure names itself on the story.** `POST /api/stories/{id}/fail` and
+`/human-review` accept an optional `failure` (`StoryFailure`, `shared/contracts/dto/story_failure.py`:
+`code`, `source`, redacted and bounded `detail`). The same transaction stores it as
+`quarantine_reason` (`reason: story_failure`) and owes the owner (`story_failed` / `story_blocked`)
+and administrators the cause. The scaffolder sends `scaffold_failed` for every story still waiting on
+a failed scaffold (`created`, or `in_progress` with no task of its current cycle); the architect sends
+`scaffold_failed` (fail) when the project carries `scaffold_error` and `scaffold_timeout` (park) when
+its wait runs out. `GET /api/stories/{id}/diagnostics` (`StoryDiagnosticsRead`, project access) is
+the read-only view of the causes: typed failure or other `quarantine_reason`, `scaffold_error`,
+work-cycle task count, the last failed Runs and task stop events, and the newest error/warning Loki
+lines naming the story or project — named fields only, redacted, at most
+`STORY_DIAGNOSTIC_LOG_LIMIT`; an unreadable log store is `logs_unavailable`, never an error.
+
 The state-age watchdog's ending, `POST /api/stories/{id}/expire-state-wait`
 (`StateWaitExpiryCommand` → `StateWaitExpiryRead`, `shared/contracts/dto/state_wait.py`), moves a
 Story one hop only if the locked rows still show the expected status and anchor

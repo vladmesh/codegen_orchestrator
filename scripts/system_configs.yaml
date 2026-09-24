@@ -179,6 +179,11 @@
   category: supervisor
   description: "Minutes a story may wait, after its secret request was delivered to the owner, before it is failed (derived: the same day the pipeline already allows its other wait on a person, supervisor.resource_wait_timeout_minutes)"
 
+- key: supervisor.planless_story_max_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a story may sit in 'in_progress' with no task in its current work cycle (and no live Product Brief planning attempt) before human review (derived: the architect's 5-minute scaffold wait plus one planning run, with an order of magnitude of headroom)"
+
 - key: supervisor.stage_notice_quiet_minutes
   value: 60
   category: supervisor

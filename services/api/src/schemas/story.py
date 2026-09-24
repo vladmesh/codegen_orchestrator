@@ -21,6 +21,7 @@ from shared.contracts.dto.story import (
     StoryUpdate,
     StoryWaitingOn,
 )
+from shared.contracts.dto.story_failure import StoryFailure
 
 __all__ = [
     "StoryCreate",
@@ -31,6 +32,7 @@ __all__ = [
     "StoryOwnerNotificationRead",
     "StoryReopen",
     "StoryStatus",
+    "StoryStopTransition",
     "StoryTransition",
     "StoryType",
     "StoryUpdate",
@@ -87,6 +89,17 @@ class StoryTransition(BaseModel):
     # The terminal QA run whose verdict this transition routes. The API stamps
     # that run as routed in the transition's own transaction.
     qa_run_id: str | None = None
+
+
+class StoryStopTransition(StoryTransition):
+    """The body of the two stopping actions, `fail` and `human-review`.
+
+    ``failure`` names the platform failure that stopped the story. The API
+    stores it as the story's ``quarantine_reason`` and owes the owner and
+    administrators the matching notice, in the transition's own transaction.
+    """
+
+    failure: StoryFailure | None = None
 
 
 class StoryOwnerNotificationRead(BaseModel):

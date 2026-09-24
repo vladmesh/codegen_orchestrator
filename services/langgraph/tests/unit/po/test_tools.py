@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,9 +30,11 @@ from src.agents.po.tools_projects import (
 )
 from src.agents.po.tools_shared import init_po_clients
 from src.agents.po.tools_stories import (
+    PLANLESS_NOTICE_MINUTES,
     create_story,
     get_run_status,
     get_story,
+    get_story_diagnostics,
     list_stories,
     reopen_story,
 )
@@ -1407,11 +1410,13 @@ class TestGetStory:
             _make_response(tasks),
             _make_response(runs_for_task1),
             _make_response(runs_for_task2),
+            _make_response(_diagnostics()),
         ]
 
         result = await get_story.ainvoke({"story_id": "s1"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
+        assert parsed["problem"] is None
         assert parsed["story"]["title"] == "My story"
         assert len(parsed["tasks"]) == 2
         assert parsed["tasks"][0]["runs"][0]["id"] == "run-1"
@@ -1423,6 +1428,143 @@ class TestGetStory:
         assert "story_id=s1" in calls[1][0][0]
         assert "task_id=eng-123" in calls[2][0][0]
         assert "task_id=eng-456" in calls[3][0][0]
+        assert calls[4][0][0] == "stories/s1/diagnostics"
+        assert calls[4][1]["params"] == {"include_logs": "false"}
+
+    @pytest.mark.asyncio
+    async def test_the_incident_story_reports_its_scaffold_failure_as_a_problem(
+        self, mock_api_client
+    ):
+        """story-3990e41c read as in_progress with no tasks; now the cause is on the answer."""
+        story = {
+            "id": "story-3990e41c",
+            "status": "failed",
+            "updated_at": "2026-09-24T14:38:04+00:00",
+        }
+        failure = {
+            "reason": "story_failure",
+            "code": "scaffold_failed",
+            "source": "scaffolder",
+            "detail": "Git init/fetch failed: remote: Repository not found.",
+            "observed_at": "2026-09-24T14:38:04+00:00",
+        }
+        mock_api_client.get_raw.side_effect = [
+            _make_response(story),
+            _make_response([]),
+            _make_response(_diagnostics(failure=failure)),
+        ]
+
+        parsed = json.loads(
+            await get_story.ainvoke({"story_id": "story-3990e41c"}, config=_make_config())
+        )
+
+        assert parsed["problem"] == (
+            "scaffold_failed: Git init/fetch failed: remote: Repository not found."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_scaffold_error_is_a_problem_even_while_in_progress(
+        self, mock_api_client
+    ):
+        story = {"id": "s1", "status": "in_progress", "updated_at": _minutes_ago(1)}
+        mock_api_client.get_raw.side_effect = [
+            _make_response(story),
+            _make_response([]),
+            _make_response(_diagnostics(scaffold_error="Repository not found")),
+        ]
+
+        parsed = json.loads(await get_story.ainvoke({"story_id": "s1"}, config=_make_config()))
+
+        assert "Repository not found" in parsed["problem"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("minutes", "flagged"), [(1, False), (PLANLESS_NOTICE_MINUTES + 1, True)]
+    )
+    async def test_in_progress_without_tasks_is_a_problem_only_once_it_lasts(
+        self, mock_api_client, minutes, flagged
+    ):
+        story = {"id": "s1", "status": "in_progress", "updated_at": _minutes_ago(minutes)}
+        mock_api_client.get_raw.side_effect = [
+            _make_response(story),
+            _make_response([]),
+            _make_response(_diagnostics()),
+        ]
+
+        parsed = json.loads(await get_story.ainvoke({"story_id": "s1"}, config=_make_config()))
+
+        assert (parsed["problem"] is not None) is flagged
+
+    @pytest.mark.asyncio
+    async def test_unreadable_diagnostics_do_not_break_get_story(self, mock_api_client):
+        mock_api_client.get_raw.side_effect = [
+            _make_response({"id": "s1", "status": "in_progress"}),
+            _make_response([]),
+            _make_response({"detail": "boom"}, status_code=503),
+        ]
+
+        parsed = json.loads(await get_story.ainvoke({"story_id": "s1"}, config=_make_config()))
+
+        assert parsed["problem"] is None
+
+
+def _diagnostics(**overrides) -> dict:
+    base = {
+        "story_id": "s1",
+        "project_id": "11111111-1111-4111-8111-111111111111",
+        "story_status": "in_progress",
+        "project_status": "active",
+        "failure": None,
+        "quarantine_reason": None,
+        "scaffold_error": None,
+        "work_cycle_tasks": 0,
+        "failed_runs": [],
+        "task_failures": [],
+        "logs": [],
+        "logs_unavailable": "not requested",
+    }
+    base.update(overrides)
+    return base
+
+
+def _minutes_ago(minutes: int) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+class TestGetStoryDiagnostics:
+    @pytest.mark.asyncio
+    async def test_reads_diagnostics_with_logs_as_the_user(self, mock_api_client):
+        body = _diagnostics(
+            logs=[
+                {
+                    "timestamp": "2026-09-24T14:38:04",
+                    "service": "scaffolder",
+                    "level": "error",
+                    "event": "scaffold_job_failed",
+                    "error": "Repository not found",
+                }
+            ],
+            logs_unavailable=None,
+        )
+        mock_api_client.get_raw.return_value = _make_response(body)
+
+        result = await get_story_diagnostics.ainvoke(
+            {"story_id": "s1"}, config=_make_config("user-42")
+        )
+
+        assert json.loads(result)["logs"][0]["event"] == "scaffold_job_failed"
+        call = mock_api_client.get_raw.call_args
+        assert call[0][0] == "stories/s1/diagnostics"
+        assert call[1]["params"] == {"include_logs": "true"}
+        assert call[1]["headers"] == {"X-Telegram-ID": "user-42"}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_read_says_so(self, mock_api_client):
+        mock_api_client.get_raw.return_value = _make_response({}, status_code=403)
+
+        result = await get_story_diagnostics.ainvoke({"story_id": "s1"}, config=_make_config())
+
+        assert result == "Diagnostics for s1 could not be read."
 
 
 class TestGetRunStatus:
@@ -1617,7 +1759,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 19
+        expected_count = 20
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1638,6 +1780,7 @@ class TestGetAllTools:
             "list_stories",
             "reopen_story",
             "get_story",
+            "get_story_diagnostics",
             "get_run_status",
             "get_budget_balance",
             "set_reminder",

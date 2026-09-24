@@ -57,6 +57,7 @@ DEPLOY_BOUND_MINUTES = 30
 QA_BOUND_MINUTES = 60
 PR_REVIEW_BOUND_MINUTES = 220
 USER_SECRET_BOUND_MINUTES = 1440
+PLANLESS_BOUND_MINUTES = 60
 
 logger = structlog.get_logger(__name__)
 
@@ -140,6 +141,8 @@ class _Guard:
         self.run = _UNCHANGED
         self.pr_number = _UNCHANGED
         self.secrets_saved = False
+        self.story_updated_at = _UNCHANGED
+        self.work_cycle_tasks = 0
         self.ended: dict[str, tuple[StoryStatus, dict]] = {}
 
     async def expire(self, story_id: str, command: StateWaitExpiryCommand):
@@ -147,6 +150,21 @@ class _Guard:
             status, reason = self.ended[story_id]
             seen = StateWaitObservation(status=status)
             return _decide(story_id, command, seen, reason)
+        if command.expected_status is StoryStatus.IN_PROGRESS:
+            seen = StateWaitObservation(
+                status=StoryStatus.IN_PROGRESS if self.status is _UNCHANGED else self.status,
+                story_updated_at=command.anchor.story_updated_at
+                if self.story_updated_at is _UNCHANGED
+                else self.story_updated_at,
+                work_cycle_tasks=self.work_cycle_tasks,
+            )
+            ended = _decide(story_id, command, seen)
+            if ended.disposition is StateWaitExpiryDisposition.EXPIRED:
+                self.ended[story_id] = (
+                    command.terminal_status,
+                    command.reason.model_dump(mode="json"),
+                )
+            return ended
         run = self.run
         if run is _UNCHANGED:
             # A pull-request wait has no anchor Run; the others read the one the
@@ -169,6 +187,8 @@ class _Guard:
 def api_client():
     client = AsyncMock()
     client.get_stories_by_status.side_effect = _stories_by_status("none", [])
+    client.get_tasks_by_story.return_value = []
+    client.get_product_brief_by_story.return_value = None
     client.guard = _Guard(client)
     client.expire_state_wait.side_effect = client.guard.expire
     return client
@@ -221,6 +241,7 @@ def test_every_bound_is_one_map_entry_with_its_own_configuration_key():
         StoryStatus.TESTING,
         StoryStatus.PR_REVIEW,
         StoryStatus.WAITING_USER_SECRET,
+        StoryStatus.IN_PROGRESS,
     ]
     keys = [bound.config_key for bound in STATE_AGE_BOUNDS]
     assert len(set(keys)) == len(keys)
@@ -1208,3 +1229,144 @@ async def test_a_story_that_now_names_another_pull_request_is_skipped(api_client
     assert counts == {"parked": 0, "failed": 0, "skipped": 1}
     assert _ended_command(ended).anchor.pr_number == 42
     _assert_skipped(ended, deliver, notify, logs, mismatch=StateWaitSkipReason.PR_NUMBER_CHANGED)
+
+
+# --- in_progress with no plan ------------------------------------------------
+#
+# Incident 2026-09-24: story-3990e41c was taken to in_progress by an architect
+# that then timed out on a dead scaffold. Nothing moved it again; its owner heard
+# "development continues" for over an hour.
+
+
+def _planless_story(*, updated_minutes_ago: float, reopened_at=None):
+    story = _make_story(status="in_progress")
+    return story.model_copy(
+        update={"updated_at": _ago(updated_minutes_ago), "reopened_at": reopened_at}
+    )
+
+
+def _task(created_at: datetime, status: str = "todo"):
+    return SimpleNamespace(created_at=created_at, status=status)
+
+
+@pytest.mark.asyncio
+async def test_an_in_progress_story_with_no_task_past_the_bound_is_parked_once(
+    api_client, redis_client
+):
+    story = _planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES + 5)
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [story]
+    )
+
+    counts, ended, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 1, "failed": 0, "skipped": 0}
+    _assert_parked_once(
+        api_client,
+        ended,
+        deliver,
+        notify,
+        status="in_progress",
+        anchor="story_updated_at_without_tasks",
+    )
+    command = _ended_command(ended)
+    assert command.anchor.story_updated_at == story.updated_at
+    assert "no development task was created" in command.owner_notification.text
+
+
+@pytest.mark.asyncio
+async def test_an_in_progress_story_with_no_task_under_the_bound_is_left_alone(
+    api_client, redis_client
+):
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [_planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES - 1)]
+    )
+
+    counts, ended, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0, "skipped": 0}
+    ended.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_in_progress_story_with_a_plan_is_not_the_watchdogs_business(
+    api_client, redis_client
+):
+    story = _planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES * 10)
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [story]
+    )
+    api_client.get_tasks_by_story.return_value = [_task(_ago(PLANLESS_BOUND_MINUTES * 9))]
+
+    counts, ended, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0, "skipped": 0}
+    ended.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_reopened_story_whose_tasks_are_all_from_the_old_cycle_is_planless(
+    api_client, redis_client
+):
+    reopened_at = _ago(PLANLESS_BOUND_MINUTES + 10)
+    story = _planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES + 5, reopened_at=reopened_at)
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [story]
+    )
+    api_client.get_tasks_by_story.return_value = [
+        _task(_ago(PLANLESS_BOUND_MINUTES * 5), status="done")
+    ]
+
+    counts, _ended, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts["parked"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_story_whose_brief_is_still_being_planned_is_left_to_its_planner(
+    api_client, redis_client
+):
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [_planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES * 3)]
+    )
+    api_client.get_product_brief_by_story.return_value = SimpleNamespace(
+        planning_attempt_active=True, planning_attempt_heartbeat_at=_ago(0.2)
+    )
+
+    counts, ended, _deliver, _notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0, "skipped": 0}
+    ended.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("moved", "mismatch"),
+    [
+        ("story_updated_at", StateWaitSkipReason.STORY_UPDATED),
+        ("work_cycle_tasks", StateWaitSkipReason.TASKS_CREATED),
+    ],
+)
+async def test_a_planless_story_that_moved_before_the_lock_is_skipped(
+    api_client, redis_client, moved, mismatch
+):
+    api_client.get_stories_by_status.side_effect = _stories_by_status(
+        StoryStatus.IN_PROGRESS, [_planless_story(updated_minutes_ago=PLANLESS_BOUND_MINUTES + 5)]
+    )
+    if moved == "story_updated_at":
+        api_client.guard.story_updated_at = _ago(0)
+    else:
+        api_client.guard.work_cycle_tasks = 1
+
+    with capture_logs() as logs:
+        counts, ended, deliver, notify = await _run_watchdog(api_client, redis_client)
+
+    assert counts == {"parked": 0, "failed": 0, "skipped": 1}
+    _assert_skipped(ended, deliver, notify, logs, mismatch=mismatch)
+
+
+def test_the_planless_bound_is_not_announced_as_the_in_progress_stage_duration():
+    """It ends one shape of in_progress; it says nothing about how long a plan takes."""
+    from src.tasks.supervisor.state_age import configured_bound_minutes
+
+    assert configured_bound_minutes(StoryStatus.IN_PROGRESS) is None

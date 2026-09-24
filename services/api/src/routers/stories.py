@@ -47,17 +47,20 @@ from ..schemas.story import (
     StoryOwnerNotificationRead,
     StoryRead,
     StoryReopen,
+    StoryStopTransition,
     StoryTransition,
     StoryUpdate,
 )
 from ._recipients import resolve_project_chat_id, resolve_project_recipient
 from ._story_actions import action_router
+from ._story_diagnostics import diagnostics_router
 from ._story_helpers import (
     _do_transition,
     _get_story,
     _get_story_for_update,
     _land_on,
     _record_qa_routing,
+    _record_story_failure,
 )
 from .applications import _make_deploy_run_id
 
@@ -67,6 +70,7 @@ router = APIRouter(prefix="/stories", tags=["stories"])
 # The composite (multi-hop) Story moves live in their own declared module and
 # are served under the same /stories prefix as the single-hop actions here.
 router.include_router(action_router)
+router.include_router(diagnostics_router)
 
 _DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
     "The story is finished. Tell the user the good news that their product is ready."
@@ -651,17 +655,24 @@ async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
 async def human_review_story(
     story_id: str,
-    body: StoryTransition | None = None,
+    body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
     """Move a blocked active story to the visible human-review queue."""
-    body = body or StoryTransition()
+    body = body or StoryStopTransition()
     story = await _get_story_for_update(story_id, db)
     await _record_qa_routing(story, body.qa_run_id, StoryStatus.WAITING_HUMAN_REVIEW, db)
     _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+    if body.failure is not None:
+        _record_story_failure(story, body.failure, StoryStatus.WAITING_HUMAN_REVIEW)
     await db.commit()
     await db.refresh(story)
-    logger.info("story_waiting_human_review", story_id=story.id, actor=body.actor)
+    logger.info(
+        "story_waiting_human_review",
+        story_id=story.id,
+        actor=body.actor,
+        failure_code=None if body.failure is None else body.failure.code.value,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 
@@ -886,17 +897,24 @@ async def recheck_story_qa(
 @router.post("/{story_id}/fail", response_model=StoryRead)
 async def fail_story(
     story_id: str,
-    body: StoryTransition | None = None,
+    body: StoryStopTransition | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
-    body = body or StoryTransition()
+    body = body or StoryStopTransition()
     story = await _get_story_for_update(story_id, db)
 
     _do_transition(story, StoryStatus.FAILED)
+    if body.failure is not None:
+        _record_story_failure(story, body.failure, StoryStatus.FAILED)
     await db.commit()
     await db.refresh(story)
 
-    logger.info("story_failed", story_id=story.id, actor=body.actor)
+    logger.info(
+        "story_failed",
+        story_id=story.id,
+        actor=body.actor,
+        failure_code=None if body.failure is None else body.failure.code.value,
+    )
     return StoryRead.model_validate(story, from_attributes=True)
 
 

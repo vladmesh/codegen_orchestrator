@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- A failed or timed-out scaffold now fails or parks the stories waiting on it, `in_progress` included, with
+  a typed `StoryFailure` and an owed owner notice, instead of leaving them "in progress" for ever.
+- An `in_progress` story with no task for `supervisor.planless_story_max_minutes` (60) is parked for
+  human review by the state-age watchdog, so no dead planning run reads as work continuing.
+- PO reads `GET /api/stories/{id}/diagnostics` (recorded cause, scaffold error, failed runs, redacted
+  Loki error lines) through `get_story_diagnostics`, and must tell the owner the cause of a stop.
 - CI builds through a per-Dockerfile gha layer cache, bakes the 8 import-check images in parallel, and
   plans its docker legs and the import check from path filters, so skipped legs take no runner.
 - Docker jobs wait for a 15 s lint job instead of the unit suite, which runs beside them; main runs are

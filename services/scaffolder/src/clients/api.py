@@ -7,6 +7,8 @@ import structlog
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.story_failure import StoryFailure
+from shared.contracts.dto.task import TaskDTO
 from src.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -59,10 +61,14 @@ class ScaffolderAPIClient(InternalAPIClient):
         resp = await self.request("GET", f"stories/?project_id={project_id}")
         return [StoryDTO.model_validate(s) for s in resp.json()]
 
-    async def fail_story(self, story_id: str) -> None:
+    async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
+        resp = await self.request("GET", "tasks/", params={"story_id": story_id})
+        return [TaskDTO.model_validate(t) for t in resp.json()]
+
+    async def fail_story(self, story_id: str, failure: StoryFailure) -> None:
         await self.request(
             "POST",
             f"stories/{story_id}/fail",
-            json={"actor": "scaffolder"},
+            json={"actor": "scaffolder", "failure": failure.model_dump(mode="json")},
         )
-        logger.info("story_failed", story_id=story_id)
+        logger.info("story_failed", story_id=story_id, failure_code=failure.code.value)

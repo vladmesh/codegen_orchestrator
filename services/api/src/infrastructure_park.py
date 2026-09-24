@@ -26,6 +26,9 @@ from shared.contracts.dto.engineering_execution import (
 )
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.story import VALID_TRANSITIONS as STORY_TRANSITIONS, StoryStatus
+
+# Re-exported: the API's admission and retry paths read the key through here.
+from shared.contracts.dto.story_failure import SCAFFOLD_ERROR_KEY as SCAFFOLD_ERROR_KEY
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.diagnostics import redact_diagnostic
@@ -41,8 +44,6 @@ INFRASTRUCTURE_PARK_ACTION = "park_infrastructure_refusal"
 #: committed fact its attempt id names and the park endpoint proves against.
 WORKSPACE_ENSURE_AUDIT_SUBJECT = "workspace_ensure"
 
-#: The project config key the scaffolder records a failed scaffold/ensure under.
-SCAFFOLD_ERROR_KEY = "scaffold_error"
 
 _SCAFFOLD_ERROR_DETAIL_LIMIT = 500
 

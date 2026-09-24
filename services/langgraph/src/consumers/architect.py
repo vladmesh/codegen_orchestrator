@@ -24,6 +24,7 @@ from shared.contracts.dto.product_brief import (
 )
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import SCAFFOLD_ERROR_KEY, StoryFailure, StoryFailureCode
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
@@ -542,35 +543,104 @@ def _settings_briefing(attempt: _PlanningAttempt) -> str:
     )
 
 
+def _recorded_scaffold_error(project: ProjectDTO) -> str | None:
+    """The failure the scaffolder recorded on the project, if it recorded one."""
+    error = (project.config or {}).get(SCAFFOLD_ERROR_KEY)
+    return None if error is None else str(error)
+
+
 async def _wait_for_scaffold(
     project_id: str, project: ProjectDTO, log
-) -> tuple[ProjectDTO | None, str | None]:
+) -> tuple[ProjectDTO | None, str | None, StoryFailure | None]:
     """Wait for scaffold to complete (DRAFT → ACTIVE).
 
-    Returns (project, error). If error is set, caller should abort.
+    Returns (project, error, failure). If error is set, caller should abort;
+    ``failure`` then says why the story itself has to stop. A recorded
+    ``scaffold_error`` ends the wait at once — ``scaffold_trigger`` never retries
+    that project, so waiting out the window would only hide the cause.
     """
     if project.status != ProjectStatus.DRAFT:
-        return project, None
+        return project, None, None
 
     log.info("architect_waiting_for_scaffold")
     waited = 0
-    while waited < SCAFFOLD_WAIT_MAX:
+    while True:
+        recorded = _recorded_scaffold_error(project)
+        if recorded is not None:
+            log.error("architect_scaffold_failed", waited=waited, scaffold_error=recorded)
+            failure = StoryFailure(
+                code=StoryFailureCode.SCAFFOLD_FAILED, source="architect", detail=recorded
+            )
+            return project, "scaffold failed", failure
+        if waited >= SCAFFOLD_WAIT_MAX:
+            break
         await asyncio.sleep(SCAFFOLD_WAIT_INTERVAL)
         waited += SCAFFOLD_WAIT_INTERVAL
         project = await api_client.get_project(project_id)
         if not project:
             log.warning("architect_project_deleted_during_scaffold_wait")
-            return None, "project deleted during scaffold wait"
+            return None, "project deleted during scaffold wait", None
         if project.status != ProjectStatus.DRAFT:
-            break
+            log.info("architect_scaffold_ready", waited=waited)
+            return project, None, None
         log.debug("architect_scaffold_poll", waited=waited)
 
-    if project.status == ProjectStatus.DRAFT:
-        log.error("architect_scaffold_timeout", waited=waited)
-        return project, "scaffold did not complete in time"
+    log.error("architect_scaffold_timeout", waited=waited)
+    failure = StoryFailure(
+        code=StoryFailureCode.SCAFFOLD_TIMEOUT,
+        source="architect",
+        detail=(
+            f"the project repository was still not ready after {waited} seconds "
+            "and the scaffolder recorded no error"
+        ),
+    )
+    return project, "scaffold did not complete in time", failure
 
-    log.info("architect_scaffold_ready", waited=waited)
-    return project, None
+
+async def _stop_story_on_scaffold_failure(story_id: str, failure: StoryFailure, log) -> bool:
+    """Take the story out of ``in_progress`` with the reason it cannot go on.
+
+    A recorded scaffold error is final — nothing retries that project — so the
+    story fails. A timeout with no recorded error may still be a scaffold that
+    is merely slow, so the story is parked for a person instead, which they can
+    resume. Either way the reason and the owner's notice are written by the API
+    together with the transition. A refused transition (the story already moved)
+    is logged, never raised: it must not turn this job into a replayed one.
+    """
+    action = "fail" if failure.code is StoryFailureCode.SCAFFOLD_FAILED else "human-review"
+    try:
+        await api_client.stop_story(story_id, action, failure, actor="architect")
+    except Exception as exc:
+        log.error(
+            "architect_scaffold_story_stop_failed",
+            action=action,
+            failure_code=failure.code.value,
+            error=str(exc),
+        )
+        return False
+    log.info("architect_scaffold_story_stopped", action=action, failure_code=failure.code.value)
+    return True
+
+
+async def _await_scaffold_or_stop(
+    msg: ArchitectMessage, project: ProjectDTO, log
+) -> tuple[ProjectDTO | None, dict | None]:
+    """The ready project, or the job result when the scaffold never became ready.
+
+    A scaffold that failed or timed out also stops the story, with its reason,
+    so the story does not stay ``in_progress`` with nothing behind it. Once the
+    story is stopped the job is settled: a replay would find nothing to plan.
+    """
+    project, scaffold_err, scaffold_failure = await _wait_for_scaffold(msg.project_id, project, log)
+    if not scaffold_err:
+        return project, None
+    stopped = scaffold_failure is not None and await _stop_story_on_scaffold_failure(
+        msg.story_id, scaffold_failure, log
+    )
+    result = {"status": "failed" if project else "skipped", "error": scaffold_err}
+    if project and not stopped:
+        return project, live_work_unsettled(result)
+    return project, live_work_settled(result)
 
 
 async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -624,10 +694,9 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return live_work_settled({"status": "skipped", "error": "project not found"})
 
     # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
-    project, scaffold_err = await _wait_for_scaffold(msg.project_id, project, log)
-    if scaffold_err:
-        result = {"status": "failed" if project else "skipped", "error": scaffold_err}
-        return live_work_unsettled(result) if project else live_work_settled(result)
+    project, scaffold_result = await _await_scaffold_or_stop(msg, project, log)
+    if scaffold_result is not None:
+        return scaffold_result
 
     settings = get_settings()
 

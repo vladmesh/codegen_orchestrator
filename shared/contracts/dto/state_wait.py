@@ -17,6 +17,13 @@ The comparison is `StateWaitExpiryCommand.mismatch`, a pure function of the
 command and what the locked rows show, so the API and every test decide it the
 same way.
 
+An ``in_progress`` story that has no task in its current work cycle is a
+wait too: the architect that should have planned it is gone, and nothing else
+moves it. Its anchor is the Story row's own ``updated_at`` — the moment it
+entered ``in_progress`` — and the API refuses the ending if that moved or if a
+task of the current cycle now exists (`StateWaitSkipReason.STORY_UPDATED`,
+`StateWaitSkipReason.TASKS_CREATED`).
+
 The pull request's ``updated_at`` lives on GitHub, not in a row the API can
 lock. For ``pr_review`` the API checks ``pr_number``; the watchdog re-reads the
 pull request immediately before the call and skips if it moved
@@ -77,7 +84,9 @@ ANCHOR_RUN_TYPE_BY_STATUS: dict[StoryStatus, RunType] = {
 #: the deploy/QA supervisors route, never something to bound.
 IN_FLIGHT_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
 
-_BOUNDED_STATUSES = frozenset({*ANCHOR_RUN_TYPE_BY_STATUS, StoryStatus.PR_REVIEW})
+_BOUNDED_STATUSES = frozenset(
+    {*ANCHOR_RUN_TYPE_BY_STATUS, StoryStatus.PR_REVIEW, StoryStatus.IN_PROGRESS}
+)
 
 
 class StateWaitSkipReason(StrEnum):
@@ -98,6 +107,10 @@ class StateWaitSkipReason(StrEnum):
     #: The pull request moved on GitHub after the watchdog read it. Decided by
     #: the watchdog's re-read before the call; the API never returns it.
     PR_UPDATED_AT_MOVED = "pr_updated_at_moved"
+    #: The story row was written after the watchdog read it.
+    STORY_UPDATED = "story_updated"
+    #: A task of the story's current work cycle exists now.
+    TASKS_CREATED = "tasks_created"
 
 
 class StateWaitSkip(BaseModel):
@@ -114,7 +127,8 @@ class StateWaitAnchor(BaseModel):
     """The identity of the anchor a wait's age was measured from.
 
     ``run_id`` for a Run-anchored status, plus ``ask_delivered_at`` for
-    ``waiting_user_secret``; ``pr_number`` for ``pr_review``.
+    ``waiting_user_secret``; ``pr_number`` for ``pr_review``; the story row's
+    ``updated_at`` for an ``in_progress`` story without tasks.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -122,6 +136,7 @@ class StateWaitAnchor(BaseModel):
     run_id: str | None = Field(default=None, min_length=1)
     ask_delivered_at: datetime | None = None
     pr_number: int | None = Field(default=None, ge=1)
+    story_updated_at: datetime | None = None
 
 
 class StateWaitExpiryReason(BaseModel):
@@ -165,6 +180,9 @@ class StateWaitObservation(BaseModel):
     run_status: RunStatus | None = None
     ask: OwnerNotification | None = None
     secrets_saved: bool = False
+    story_updated_at: datetime | None = None
+    #: Tasks of the story's current work cycle (since ``reopened_at``, if any).
+    work_cycle_tasks: int | None = None
 
 
 class StateWaitExpiryCommand(BaseModel):
@@ -185,6 +203,9 @@ class StateWaitExpiryCommand(BaseModel):
         if self.expected_status is StoryStatus.PR_REVIEW:
             if self.anchor.pr_number is None:
                 raise ValueError("a pr_review wait is anchored on its pr_number")
+        elif self.expected_status is StoryStatus.IN_PROGRESS:
+            if self.anchor.story_updated_at is None:
+                raise ValueError("an in_progress wait is anchored on the story's updated_at")
         elif self.anchor.run_id is None:
             raise ValueError(f"a {self.expected_status.value} wait is anchored on a run_id")
         if (
@@ -226,6 +247,8 @@ class StateWaitExpiryCommand(BaseModel):
                     None if seen.pr_number is None else str(seen.pr_number),
                 )
             return None
+        if expected is StoryStatus.IN_PROGRESS:
+            return self._planless_mismatch(seen)
         if seen.run_id != self.anchor.run_id:
             return _skip(StateWaitSkipReason.RUN_REPLACED, self.anchor.run_id, seen.run_id)
         if expected is StoryStatus.WAITING_USER_SECRET:
@@ -236,6 +259,18 @@ class StateWaitExpiryCommand(BaseModel):
                 "|".join(sorted(status.value for status in IN_FLIGHT_RUN_STATUSES)),
                 None if seen.run_status is None else seen.run_status.value,
             )
+        return None
+
+    def _planless_mismatch(self, seen: StateWaitObservation) -> StateWaitSkip | None:
+        anchored = self.anchor.story_updated_at
+        if seen.story_updated_at != anchored:
+            return _skip(
+                StateWaitSkipReason.STORY_UPDATED,
+                None if anchored is None else anchored.isoformat(),
+                None if seen.story_updated_at is None else seen.story_updated_at.isoformat(),
+            )
+        if seen.work_cycle_tasks:
+            return _skip(StateWaitSkipReason.TASKS_CREATED, "0", str(seen.work_cycle_tasks))
         return None
 
     def _ask_mismatch(self, seen: StateWaitObservation) -> StateWaitSkip | None:
