@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from scripts import stand_run
+from scripts import clean_live_tests, stand_run
 from scripts.stand_run import (
     AGENTS,
     BRIEF_HARD_STOP_SECONDS,
@@ -44,6 +44,18 @@ def _release_override(tmp_path_factory, monkeypatch):
     override.write_text("services: {}\n", encoding="utf-8")
     monkeypatch.setenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV, str(override))
     return override
+
+
+@pytest.fixture(autouse=True)
+def _sweep_requirements(monkeypatch):
+    """And its sweep is configured: the deployed `.env` carries the key and run tag.
+
+    A test that is about a missing requirement removes it itself. `API_BASE_URL`
+    is not among these: the runner forms it, and nothing exported may stand in.
+    """
+    monkeypatch.setenv(clean_live_tests.INTERNAL_API_KEY_ENV, "test-internal-key")
+    monkeypatch.setenv(clean_live_tests.STAND_RUN_TAG_ENV, "gha-1-1")
+    monkeypatch.delenv(clean_live_tests.API_BASE_URL_ENV, raising=False)
 
 
 def test_compose_calls_drop_the_exported_qa_executor():
@@ -1002,3 +1014,175 @@ def test_every_compose_call_of_the_runner_goes_through_the_one_policed_door():
                 owners.append(function.name)
 
     assert owners == ["_compose"]
+
+
+FAKE_UV = """#!/bin/bash
+printf '%s\\n' "$*" > "$FAKE_UV_ARGS"
+env > "$FAKE_UV_ENV"
+exit "${FAKE_UV_EXIT:-0}"
+"""
+
+
+def _fake_uv(tmp_path, *, exit_code=0):
+    """A `uv` that records how the sweep was started and with what environment."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    uv = binaries / "uv"
+    uv.write_text(FAKE_UV, encoding="utf-8")
+    uv.chmod(0o755)
+    args, env_dump = tmp_path / "uv.args", tmp_path / "uv.env"
+    env = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "FAKE_UV_ARGS": str(args),
+        "FAKE_UV_ENV": str(env_dump),
+        "FAKE_UV_EXIT": str(exit_code),
+    }
+
+    def recorded() -> tuple[str, dict[str, str]]:
+        lines = env_dump.read_text(encoding="utf-8").splitlines()
+        values = dict(line.split("=", 1) for line in lines if "=" in line)
+        return args.read_text(encoding="utf-8").strip(), values
+
+    return env, recorded
+
+
+@pytest.mark.parametrize("exported", [None, "http://api:8000", "https://elsewhere.example"])
+def test_the_sweep_addresses_the_api_the_suites_used(tmp_path, monkeypatch, exported):
+    """Run 35945831487: 39 passed, then `API_BASE_URL is required` made the run red.
+
+    Neither an exported value nor the deployed `.env` (whose `http://api:8000` is
+    the container network's name) may point the sweep at another API than the
+    suites' clients.
+    """
+    env, recorded = _fake_uv(tmp_path)
+    if exported is not None:
+        monkeypatch.setenv(clean_live_tests.API_BASE_URL_ENV, exported)
+        env[clean_live_tests.API_BASE_URL_ENV] = exported
+    lines: list[str] = []
+
+    assert stand_run.sweep(env, lines.append) is True
+
+    argv, sweep_env = recorded()
+    assert argv == "run python -m scripts.clean_live_tests"
+    assert sweep_env[clean_live_tests.API_BASE_URL_ENV] == stand_run.SUITE_API_BASE_URL
+    assert sweep_env["LIVE_CONTOUR"] == "stand"
+    assert sweep_env[clean_live_tests.INTERNAL_API_KEY_ENV] == "test-internal-key"
+    assert lines == []
+
+
+def test_a_failed_sweep_is_red_and_names_its_last_line(tmp_path):
+    env, _recorded = _fake_uv(tmp_path, exit_code=1)
+    lines: list[str] = []
+
+    assert stand_run.sweep(env, lines.append) is False
+    assert lines and lines[0].startswith("sweep failed:")
+
+
+def test_the_suite_and_the_sweep_are_given_the_same_contour():
+    assert (
+        stand_run.sweep_environment({})["LIVE_CONTOUR"] == stand_run.STAND_CONTOUR.name == "stand"
+    )
+
+
+def _count_spending(monkeypatch) -> list[str]:
+    started: list[str] = []
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: started.append("preflight"))
+    monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda *_args: started.append("switch"))
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append("pytest"))
+    monkeypatch.setattr(stand_run, "sweep", lambda *_args: started.append("sweep"))
+    return started
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        name
+        for name in clean_live_tests.sweep_requirements(stand_run.STAND_CONTOUR)
+        if name != clean_live_tests.API_BASE_URL_ENV
+    ],
+)
+def test_a_run_whose_sweep_could_not_start_is_refused_before_anything_is_spent(
+    tmp_path, monkeypatch, missing
+):
+    started = _count_spending(monkeypatch)
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {missing: "  "})
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-noop"])
+
+    assert stand_run.main() == 2
+    assert started == []
+    run_dir = next(path for path in (tmp_path / "runs").iterdir() if path.is_dir())
+    assert "mega-noop\t" in (run_dir / "report.tsv").read_text(encoding="utf-8")
+    assert "\tsweep_requirements_missing\t0\n" in (run_dir / "report.tsv").read_text(
+        encoding="utf-8"
+    )
+    assert f"sweep cannot run without {missing}" in (run_dir / "run.log").read_text(
+        encoding="utf-8"
+    )
+    assert 'failures="1"' in (run_dir / "junit.xml").read_text(encoding="utf-8")
+
+
+def test_the_deployed_env_satisfies_the_sweep_the_way_it_configures_it(tmp_path, monkeypatch):
+    """On the stand the key and the run tag come from `.env`, not the shell."""
+    for name in (clean_live_tests.INTERNAL_API_KEY_ENV, clean_live_tests.STAND_RUN_TAG_ENV):
+        monkeypatch.delenv(name)
+    deployed = {
+        clean_live_tests.INTERNAL_API_KEY_ENV: "k",
+        clean_live_tests.STAND_RUN_TAG_ENV: "gha-1-1",
+    }
+
+    assert stand_run.sweep_requirements_refusal(deployed, print) is None
+    assert stand_run.sweep_requirements_refusal({}, print) == "sweep_requirements_missing"
+
+
+def test_the_entry_check_is_the_sweep_s_own_list_and_cannot_drift(monkeypatch):
+    """The runner holds no copy: a requirement the sweep adds is refused at entry.
+
+    And what the entry check reads is the environment `sweep` passes, so the one
+    variable the runner forms itself is satisfied by that and by nothing else.
+    """
+    lines: list[str] = []
+    original = clean_live_tests.sweep_requirements
+    monkeypatch.setattr(
+        clean_live_tests, "sweep_requirements", lambda contour: (*original(contour), "NEW_NEED")
+    )
+
+    assert stand_run.sweep_requirements_refusal({}, lines.append) == "sweep_requirements_missing"
+    assert lines == ["refused: the post-suite sweep cannot run without NEW_NEED"]
+    assert stand_run.sweep_requirements_refusal({"NEW_NEED": "1"}, lines.append) is None
+
+
+def test_a_run_that_skips_the_sweep_does_not_need_its_configuration(tmp_path, monkeypatch):
+    monkeypatch.delenv(clean_live_tests.INTERNAL_API_KEY_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *_args: True)
+    monkeypatch.setattr(
+        stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-noop", "--skip-sweep"]
+    )
+
+    assert stand_run.main() == 0
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(True, 0), (False, 2)])
+def test_stand_clean_sweeps_through_the_runner_s_check(tmp_path, monkeypatch, configured, expected):
+    started = _count_spending(monkeypatch)
+    monkeypatch.setattr(stand_run, "sweep", lambda *_args: started.append("sweep") or True)
+    if not configured:
+        monkeypatch.delenv(clean_live_tests.STAND_RUN_TAG_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--sweep-only"])
+
+    assert stand_run.main() == expected
+    assert started == (["sweep"] if configured else [])
+    assert not (tmp_path / "runs").exists()
+
+
+def test_make_stand_clean_is_the_runner_s_sweep():
+    makefile = (stand_run.REPO / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("\nstand-clean:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert target.strip() == "@uv run python -m scripts.stand_run --sweep-only"

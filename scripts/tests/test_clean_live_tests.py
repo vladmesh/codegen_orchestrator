@@ -364,6 +364,40 @@ def test_cleanup_refuses_missing_endpoint_before_any_cleanup(monkeypatch):
         clean_live_tests.main()
 
 
+@pytest.mark.parametrize("missing", clean_live_tests.sweep_requirements(CONTOURS["stand"]))
+def test_a_stand_sweep_refuses_each_of_its_requirements_before_any_cleanup(monkeypatch, missing):
+    """`main` enforces exactly the list the stand runner checks at its entry."""
+    monkeypatch.setattr(clean_live_tests, "CONTOUR", CONTOURS["stand"])
+    for name in clean_live_tests.sweep_requirements(CONTOURS["stand"]):
+        monkeypatch.setenv(name, "configured")
+    monkeypatch.setenv(missing, " ")
+    monkeypatch.setattr(
+        clean_live_tests, "manifest_project_ids", lambda: pytest.fail("cleanup started")
+    )
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match=f"{missing} is required") as error:
+        clean_live_tests.main()
+    assert "stand contour" in str(error.value)
+
+
+def test_the_stand_sweep_requires_its_run_tag_and_production_does_not():
+    """A stand target is admitted only by the run tag it was stamped with."""
+    stand = clean_live_tests.sweep_requirements(CONTOURS["stand"])
+    prod = clean_live_tests.sweep_requirements(CONTOURS["prod"])
+
+    assert clean_live_tests.API_BASE_URL_ENV in stand and clean_live_tests.API_BASE_URL_ENV in prod
+    assert (
+        clean_live_tests.INTERNAL_API_KEY_ENV in stand
+        and clean_live_tests.INTERNAL_API_KEY_ENV in prod
+    )
+    assert clean_live_tests.STAND_RUN_TAG_ENV in stand
+    assert clean_live_tests.STAND_RUN_TAG_ENV not in prod
+    assert (
+        clean_live_tests.missing_sweep_requirements(dict.fromkeys(stand, "x"), CONTOURS["stand"])
+        == []
+    )
+
+
 _ORPHAN = "live-te-" + "a" * 32
 
 
@@ -710,6 +744,7 @@ def test_recovery_fences_the_live_target_run_before_it_captures_or_removes_it(
 
 def test_main_remote_failure_leaves_db_slugs_available_for_retry(monkeypatch, tmp_path):
     monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     projects = [
         {
@@ -787,6 +822,7 @@ def test_unprovable_manifest_still_lets_every_other_sweep_run(monkeypatch, tmp_p
     same failure is raised, after the sweeps that can still do their work.
     """
     monkeypatch.setenv("API_BASE_URL", "https://internal.example")
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
     calls: list[str] = []
 

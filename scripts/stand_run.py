@@ -61,8 +61,10 @@ from xml.etree import ElementTree
 
 import yaml
 
+from scripts import clean_live_tests
 from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
+from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
     MEGA_BRIEF_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
@@ -92,6 +94,9 @@ READINESS_POLL_SECONDS = 5
 # the container itself was already answering itself. An in-container probe would
 # have passed and the suite would still have failed.
 SUITE_API_BASE_URL = "http://localhost:8000"
+# The contour every child of the runner is started in: the suites, preflight and
+# the sweep.
+STAND_CONTOUR = CONTOURS["stand"]
 API_HEALTH_PATH = "/health"
 API_HEALTH_OK_STATUS = 200
 # Every compose verb that can leave a container running. Each one has to go
@@ -391,6 +396,37 @@ def service_release_override() -> Path:
     return path
 
 
+def sweep_environment(env: dict[str, str]) -> dict[str, str]:
+    """The environment the post-suite sweep runs with, and the one checked at entry.
+
+    `API_BASE_URL` is the runner's own stand endpoint and outranks anything
+    exported or in `.env`: the suites build their clients on
+    `SUITE_API_BASE_URL` and read no variable, so any other value would sweep an
+    API the suites never used — and the deployed `.env` names the container
+    network's `http://api:8000`, which the host cannot reach.
+    """
+    return {
+        **os.environ,
+        **env,
+        "LIVE_CONTOUR": STAND_CONTOUR.name,
+        clean_live_tests.API_BASE_URL_ENV: SUITE_API_BASE_URL,
+    }
+
+
+def sweep_requirements_refusal(env: dict[str, str], log) -> str | None:
+    """The report status a run whose sweep could not start is refused with, or None.
+
+    The sweep's own requirement list is asked, against the environment the sweep
+    will be given: run 35945831487 passed 39 tests in 20 minutes and was then red
+    because the sweep had no `API_BASE_URL`.
+    """
+    missing = clean_live_tests.missing_sweep_requirements(sweep_environment(env), STAND_CONTOUR)
+    if missing:
+        log(f"refused: the post-suite sweep cannot run without {', '.join(missing)}")
+        return "sweep_requirements_missing"
+    return None
+
+
 def release_override_refusal(log) -> str | None:
     """The report status a run without its release override is refused with, or None."""
     try:
@@ -400,6 +436,20 @@ def release_override_refusal(log) -> str | None:
         return "release_override_missing"
     log(f"service release override={override}")
     return None
+
+
+def entry_refusal(env: dict[str, str], log, *, sweeps: bool) -> str | None:
+    """What a run is refused with before anything is spent on it, or None.
+
+    A recreate without the release override would build on the stand, and a
+    suite that needs none is still not run on a host whose bring-up left no
+    override behind. A sweep that could not start would make even a green suite
+    red, so a run that will sweep is refused for that here as well.
+    """
+    refused = release_override_refusal(log)
+    if refused is None and sweeps:
+        refused = sweep_requirements_refusal(env, log)
+    return refused
 
 
 def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
@@ -739,7 +789,7 @@ def sweep(env: dict[str, str], log) -> bool:
             # of the repository root, and `shared` then cannot be imported.
             ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
             cwd=REPO,
-            env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
+            env=sweep_environment(env),
             capture_output=True,
             text=True,
             timeout=SWEEP_TIMEOUT_SECONDS,
@@ -753,6 +803,13 @@ def sweep(env: dict[str, str], log) -> bool:
     return result.returncode == 0
 
 
+def sweep_only(env: dict[str, str]) -> int:
+    """`make stand-clean`: the run's sweep alone, with its environment and entry check."""
+    if sweep_requirements_refusal(env, print) is not None:
+        return 2
+    return 0 if sweep(env, print) else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run an e2e suite on the stand.",
@@ -762,15 +819,24 @@ def main() -> int:
             + "; legacy aliases: mega → mega-noop, llm → mega-llm"
         ),
     )
-    parser.add_argument("--suite", required=True, help="a named suite, or any pytest target")
+    entry = parser.add_mutually_exclusive_group(required=True)
+    entry.add_argument("--suite", help="a named suite, or any pytest target")
+    entry.add_argument(
+        "--sweep-only",
+        action="store_true",
+        help="run only the stand sweep, with the environment and checks a run gives it",
+    )
     parser.add_argument("--worker", choices=AGENTS, default="claude")
     parser.add_argument("--qa", choices=AGENTS, default="codex")
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument("--skip-sweep", action="store_true", help="leave resources for inspection")
     args = parser.parse_args()
 
-    canonical_suite_name, suite = resolve_suite(args.suite)
     env = read_env_file(REPO / ".env")
+    if args.sweep_only:
+        return sweep_only(env)
+
+    canonical_suite_name, suite = resolve_suite(args.suite)
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = RUN_ROOT / f"{canonical_suite_name.replace('/', '_')}-{stamp}"
@@ -795,10 +861,7 @@ def main() -> int:
     report.write_text("suite\tqa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
     results: list[tuple[str, str, str, int]] = []
 
-    # Refused before anything is spent on the run: a recreate without the release
-    # override would build on the stand, and a suite that needs none is still not
-    # run on a host whose bring-up left no override behind.
-    refused = release_override_refusal(log)
+    refused = entry_refusal(env, log, sweeps=not args.skip_sweep)
     if refused is None and not args.skip_preflight and not preflight(env, log):
         log("preflight refused the run")
         refused = "preflight_failed"

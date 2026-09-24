@@ -25,7 +25,7 @@ if _LIVE_HELPERS not in sys.path:
 import db_teardown  # noqa: E402
 from live_harness import run_user_sweep_predicate  # noqa: E402
 
-from shared.live_contour import current_contour  # noqa: E402
+from shared.live_contour import Contour, current_contour  # noqa: E402
 from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
@@ -57,6 +57,33 @@ _STACK_NAME_PATTERN = re.compile(
 
 class CleanupFailure(RuntimeError):
     """Live cleanup could not prove that all test-owned resources are absent."""
+
+
+API_BASE_URL_ENV = "API_BASE_URL"
+INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
+# The stand's targets are BitLaunch machines its own run created, and cleanup
+# admits one only by the run tag stamped on it (`cleanup_target_skip_reason`).
+# Without the tag every target is skipped and the sweep fails on "no managed
+# cleanup target" — after the suite, not before it.
+STAND_RUN_TAG_ENV = "STAND_RUN_TAG"
+
+
+def sweep_requirements(contour: Contour) -> tuple[str, ...]:
+    """Every variable a sweep of this contour cannot run without.
+
+    The one list: `main` refuses on it before touching anything, and the stand
+    runner asks it before it spends a suite, so a new requirement added here is
+    enforced at both entries without a second copy to forget.
+    """
+    names = (API_BASE_URL_ENV, INTERNAL_API_KEY_ENV)
+    if contour.name == "stand":
+        names += (STAND_RUN_TAG_ENV,)
+    return names
+
+
+def missing_sweep_requirements(environ: Mapping[str, str], contour: Contour) -> list[str]:
+    """The requirements of `sweep_requirements` this environment leaves empty."""
+    return [name for name in sweep_requirements(contour) if not (environ.get(name) or "").strip()]
 
 
 def print_step(msg):
@@ -675,16 +702,18 @@ def clean_redis_queues(project_ids):
 
 def _internal_api_headers() -> dict[str, str]:
     try:
-        internal_key = os.environ["INTERNAL_API_KEY"]
+        internal_key = os.environ[INTERNAL_API_KEY_ENV]
     except KeyError as exc:
-        raise CleanupFailure("INTERNAL_API_KEY is required for remote server cleanup") from exc
+        raise CleanupFailure(
+            f"{INTERNAL_API_KEY_ENV} is required for remote server cleanup"
+        ) from exc
     return {"X-Internal-Key": internal_key}
 
 
 def _api_base_url() -> str:
-    base_url = os.environ.get("API_BASE_URL")
+    base_url = os.environ.get(API_BASE_URL_ENV)
     if not base_url or not base_url.strip():
-        raise CleanupFailure("API_BASE_URL is required for live-test cleanup and inventory")
+        raise CleanupFailure(f"{API_BASE_URL_ENV} is required for live-test cleanup and inventory")
     return base_url
 
 
@@ -1207,7 +1236,12 @@ scan_and_clean()
 
 
 def main():
-    _api_base_url()
+    missing = missing_sweep_requirements(os.environ, CONTOUR)
+    if missing:
+        raise CleanupFailure(
+            f"live-test cleanup of the {CONTOUR.name} contour cannot run: "
+            + "; ".join(f"{name} is required" for name in missing)
+        )
     manifest_projects = manifest_project_ids()
 
     print_step("Recovering ownership manifests")
