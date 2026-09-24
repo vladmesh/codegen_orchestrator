@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- Scaffold retries `git fetch` of a just-created repository with bounded backoff (~30 s) while GitHub's git
+  endpoint still answers "Repository not found" or lacks `main`; other git failures still fail at once.
 - CI builds through a per-Dockerfile gha layer cache, bakes the 8 import-check images in parallel, and
   plans its docker legs and the import check from path filters, so skipped legs take no runner.
 - Docker jobs wait for a 15 s lint job instead of the unit suite, which runs beside them; main runs are
