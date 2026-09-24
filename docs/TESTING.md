@@ -327,7 +327,8 @@ recreates the schedulers in those containers; the worker pull is joined before t
 joins its environment and runs with `UV_FROZEN=1`. The runner's own recreates (a QA executor switch)
 use the same override, named by `STAND_SERVICE_RELEASE_COMPOSE`, and `up --no-build --pull never`;
 without the override the runner refuses the run (`release_override_missing`) rather than let compose
-build from the checkout. The run summary reports the span from Bootstrap start to all services
+build from the checkout. It likewise refuses, before preflight, a run whose final sweep lacks a variable
+`clean_live_tests.sweep_requirements` names (`sweep_requirements_missing`). The run summary reports the span from Bootstrap start to all services
 healthy (target five minutes) and each background job's duration.
 
 **Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,

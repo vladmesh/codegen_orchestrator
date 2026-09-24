@@ -431,9 +431,10 @@ stand-run:
 stand-e2e:
 	@$(MAKE) stand-run SUITE=mega-noop
 
-# Sweep this contour and no other.
+# Sweep this contour and no other, through the runner: it gives the sweep the
+# stand's endpoint and deployed .env, and refuses first if a requirement is missing.
 stand-clean:
-	@LIVE_CONTOUR=stand uv run python -m scripts.clean_live_tests
+	@uv run python -m scripts.stand_run --sweep-only
 
 # Cleanup DB and artifacts left by live tests. API_BASE_URL is required.
 test-live-clean:

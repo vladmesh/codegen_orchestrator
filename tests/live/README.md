@@ -92,6 +92,13 @@ dynamic orchestrator and wait for API") — rather than inventing a second one; 
 share that loop, which is bash on the host, and it deliberately probes from outside the container
 instead of `exec … curl 127.0.0.1`.
 
+The final sweep (`scripts.clean_live_tests`) addresses that same API: the runner sets its
+`API_BASE_URL` to `SUITE_API_BASE_URL`, over anything exported or in `.env`. Before preflight the
+runner asks the sweep for its own requirements (`clean_live_tests.sweep_requirements`: the endpoint,
+`INTERNAL_API_KEY`, and on the stand `STAND_RUN_TAG`) against the environment the sweep will get, and
+refuses a run that lacks one as `sweep_requirements_missing` instead of failing it after the suite.
+`make stand-clean` runs the same sweep the same way (`stand_run --sweep-only`).
+
 The switch is then confirmed by asking the resolver itself: `docker compose exec api` runs the same
 `resolve_executor_decision` call paid-run admission makes, in the process whose settings are its
 input, creating no Run. A consumer's local setting is not an acceptable confirmation — it flips the

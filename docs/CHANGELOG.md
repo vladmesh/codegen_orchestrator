@@ -15,6 +15,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   release pullers fetch a chain's images concurrently.
 - The stand runner's QA-switch recreate runs the release override with `--no-build --pull never` and
   refuses a run without that override, instead of building services from the checkout.
+- The stand sweep gets the suites' `API_BASE_URL`, and the runner refuses before preflight when the
+  sweep's own requirements are unmet, so a green suite is no longer made red by a sweep that cannot start.
 
 ## 2026-09-23
 
