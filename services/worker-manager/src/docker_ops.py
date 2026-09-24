@@ -264,3 +264,20 @@ class DockerClientWrapper:
         return await asyncio.wait_for(
             self._run(container.exec_run, cmd=command, user=user), timeout=timeout
         )
+
+    async def exec_capture(
+        self, container_id: str, command: str, user: str = "worker", timeout: int = 30
+    ) -> tuple[int | None, bytes, bytes]:
+        """Execute a command and keep its stdout and stderr apart.
+
+        `exec_in_container` returns one merged stream, which is fine for a probe
+        and useless for a failure: when the stream is empty nothing says whether
+        the command wrote nothing or never ran. Here the exit code and each
+        stream come back separately, empty streams as `b""`.
+        """
+        container = await self.get_container(container_id)
+        exit_code, output = await asyncio.wait_for(
+            self._run(container.exec_run, cmd=command, user=user, demux=True), timeout=timeout
+        )
+        stdout, stderr = output if isinstance(output, tuple) else (output, None)
+        return exit_code, stdout or b"", stderr or b""

@@ -18,7 +18,11 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringExecutionEvidence,
     EngineeringExecutionPhase,
 )
-from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
+from shared.contracts.dto.worker import (
+    WORKER_TERMINAL_STATUSES,
+    WorkerStatus,
+    worker_creation_failure_key,
+)
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -219,6 +223,31 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
 
 
+def _creation_failed(
+    request_id: str, worker_id: str, error_msg: str, fields: dict[str, str]
+) -> SpawnResult:
+    """The spawn result of a creation the worker-manager recorded as failed."""
+    try:
+        execution = EngineeringExecutionEvidence.model_validate(
+            {
+                key: fields[key]
+                for key in ("execution_phase", "infrastructure_refusal")
+                if key in fields
+            }
+        )
+    except ValidationError:
+        execution = None
+        logger.warning("worker_creation_execution_evidence_invalid", worker_id=worker_id)
+    return SpawnResult(
+        request_id,
+        False,
+        -1,
+        f"Creation failed: {error_msg}",
+        worker_id=worker_id,
+        execution=execution,
+    )
+
+
 async def _wait_until_ready(
     redis_client: redis.Redis,
     worker_id: str,
@@ -236,25 +265,17 @@ async def _wait_until_ready(
         if status_str == WorkerStatus.FAILED:
             error = await redis_client.get(f"worker:error:{worker_id}")
             error_msg = error.decode() if isinstance(error, bytes) else str(error)
-            try:
-                execution = EngineeringExecutionEvidence.model_validate(
-                    {
-                        key: fields[key]
-                        for key in ("execution_phase", "infrastructure_refusal")
-                        if key in fields
-                    }
-                )
-            except ValidationError:
-                execution = None
-                logger.warning("worker_creation_execution_evidence_invalid", worker_id=worker_id)
-            return SpawnResult(
-                request_id,
-                False,
-                -1,
-                f"Creation failed: {error_msg}",
-                worker_id=worker_id,
-                execution=execution,
+            return _creation_failed(request_id, worker_id, error_msg, fields)
+        if status_str is None or status_str in WORKER_TERMINAL_STATUSES:
+            # A failed creation queues its own teardown, which deletes the
+            # status and error keys — often before this poll reads them — and a
+            # container that died on its own is marked DEAD. Either way the
+            # durable creation-failure record says why, when there is one.
+            recorded = decode_redis_fields(
+                await redis_client.hgetall(worker_creation_failure_key(worker_id))
             )
+            if recorded.get("error"):
+                return _creation_failed(request_id, worker_id, recorded["error"], recorded)
         if status_str is None:
             if seen_status:
                 return SpawnResult(request_id, False, -1, "Worker disappeared during creation")

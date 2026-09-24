@@ -20,7 +20,11 @@ from shared.contracts.dto.engineering_execution import (
 )
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.dto.worker import (
+    WORKER_CREATION_FAILURE_TTL_SECONDS,
+    WorkerStatus,
+    worker_creation_failure_key,
+)
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
@@ -350,18 +354,23 @@ class WorkerManager:
         # The reason, not `str(exc)`: an exception that stringifies to nothing —
         # a bare timeout is the common one — would otherwise publish an empty
         # error to the only place the spawner can read one.
-        await self.redis.set(f"worker:error:{worker_id}", worker_creation_failure_reason(exc))
+        reason = worker_creation_failure_reason(exc)
+        await self.redis.set(f"worker:error:{worker_id}", reason)
         evidence = EngineeringExecutionEvidence(
             execution_phase=EngineeringExecutionPhase.PRE_AGENT_REFUSED,
             infrastructure_refusal=EngineeringInfrastructureRefusal.WORKER_CREATION_FAILED,
         )
+        evidence_fields = evidence.model_dump(mode="json", exclude_none=True)
         await self.redis.hset(
             f"worker:status:{worker_id}",
-            mapping={
-                "status": WorkerStatus.FAILED,
-                **evidence.model_dump(mode="json", exclude_none=True),
-            },
+            mapping={"status": WorkerStatus.FAILED, **evidence_fields},
         )
+        # The teardown queued below deletes `worker:status` and `worker:error`,
+        # usually before the spawner's next readiness poll. This record outlives
+        # it, so the caller reads the cause instead of a worker that vanished.
+        failure_key = worker_creation_failure_key(worker_id)
+        await self.redis.hset(failure_key, mapping={"error": reason, **evidence_fields})
+        await self.redis.expire(failure_key, WORKER_CREATION_FAILURE_TTL_SECONDS)
         await self.redis.xadd(
             WORKER_COMMANDS,
             {
@@ -973,9 +982,11 @@ class WorkerManager:
             # its upstream. Ignoring it used to let creation continue with the
             # worker on the wrong branch and no upstream to push to; raising
             # sends the failure into the `checkout_branch` step record.
-            if not await git_ops.checkout_branch(self.docker, container_id, branch, worker_id):
+            checkout = await git_ops.checkout_branch(self.docker, container_id, branch, worker_id)
+            if not checkout:
                 raise RuntimeError(
-                    f"checkout_branch did not establish branch {branch} or its upstream"
+                    f"checkout_branch did not establish branch {branch} or its upstream: "
+                    f"{checkout.detail}"
                 )
 
     @staticmethod

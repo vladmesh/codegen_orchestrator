@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- A failed `checkout_branch` logs and records its exit code, stderr/stdout and, when silent, the dead worker
+  container's state and log tail; the spawner reads a durable creation-failure record, not "Worker disappeared".
 - A failed or timed-out scaffold now fails or parks the stories waiting on it, `in_progress` included, with
   a typed `StoryFailure` and an owed owner notice, instead of leaving them "in progress" for ever.
 - An `in_progress` story with no task for `supervisor.planless_story_max_minutes` (60) is parked for
