@@ -17,6 +17,19 @@ Everything is keyed on one per-run marker, so nothing an earlier run left behind
 — a committed file, a cached image, a command menu Telegram still remembers —
 can answer for this run.
 
+Contract first, patch only for the scripted runner
+--------------------------------------------------
+
+The same lifecycle runs with a real developer model (`mega-live`). A model gets
+the *contract*, not a patch: every task description states in prose what the
+developer must deliver — the endpoint and its JSON shape, the setting and where
+it is declared, the command and its menu — together with the kit rules the
+change set encodes by construction and the product's own CI enforces, such as
+where an ``APIRouter()`` may live. The ``codegen-change-set`` block is appended
+to that prose **only** when the developer is the scripted runner (``noop``),
+which has nothing to read but the block. Each description has one builder, and
+the fence is that builder's only branch.
+
 Written against the pin, not against a remembered tree
 ------------------------------------------------------
 
@@ -45,10 +58,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.template_pin import TEMPLATE_PIN
+from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 
 #: The fence the scripted runner recognises, and the sentinel it demands first.
 CHANGE_SET_FENCE = "codegen-change-set"
 CHANGE_SET_SENTINEL = "codegen-change-set v1"
+#: The one developer that is handed a change set: the scripted runner.
+SCRIPTED_DEVELOPER = "noop"
 
 #: The product-scoped setting the backend manifest registers.
 LEVEL1_SETTING_KEY = "level1_marker"
@@ -78,8 +94,13 @@ BACKEND_ENDPOINT_MODULE = "services/backend/src/app/api/routers/level1.py"
 #: cannot silently lose the first story's endpoint.
 BACKEND_EXTENSION_MODULE = "services/backend/src/app/api/routers/level1_extension.py"
 BACKEND_ROUTER = "services/backend/src/app/api/router.py"
+#: The only directory the kit's gate lets a product create an ``APIRouter()`` in.
+BACKEND_ROUTERS_PACKAGE = "services/backend/src/app/api/routers/"
+BACKEND_GENERATED_PACKAGE = "services/backend/src/generated/"
 BOT_MENU_MODULE = "services/tg_bot/src/menu.py"
 BOT_MAIN = "services/tg_bot/src/main.py"
+#: The commands the kit's bot already answers, which the published menu keeps.
+BOT_EXISTING_COMMANDS = (("start", "start the bot"), ("command", "publish a command event"))
 
 
 class ChangeSetAnchorMissing(RuntimeError):
@@ -135,6 +156,135 @@ def bot_acceptance_criteria(marker: str) -> str:
         f'"level-1 marker: {marker}".\n'
         f"- The command menu the running bot publishes to Telegram lists /{LEVEL1_COMMAND} "
         f'with the description "{level1_command_description(marker)}".'
+    )
+
+
+def level1_qa_criteria(marker: str) -> str:
+    """The repository checklist a real QA executor judges the first story by.
+
+    Written through the repository update the Architect uses, at the story's
+    plan admission, when the developer is a model. It is the accumulated
+    regression checklist QA runs (`shared.contracts.acceptance`): the seeded
+    health check, then the backend observations of the first story — this run's
+    marker on `GET /level1/marker` and the `level1_marker` setting registered on
+    the deployment. They are prose on purpose, so no line collapses into a
+    health-only check QA would decide without an executor.
+
+    The bot's criteria are not here. Judging a Telegram command needs a Telegram
+    identity the QA executor is not given on the stand; they stay in the task's
+    TASK.md and in the suite's own probe of the command menu.
+    """
+    return f"{BASELINE_ACCEPTANCE_CRITERIA}\n{backend_acceptance_criteria(marker)}"
+
+
+def level1_extension_qa_criteria(marker: str, extension_marker: str) -> str:
+    """The checklist the extension story is judged by: the first story's, then its own.
+
+    Accumulated, because the repository's criteria are the product's regression
+    checklist: the first story's endpoint and setting must still answer beside
+    the extension endpoint and the second setting.
+    """
+    return (
+        f"{level1_qa_criteria(marker)}\n{extension_acceptance_criteria(marker, extension_marker)}"
+    )
+
+
+def _kit_rules(*, routers_module: str) -> str:
+    """The rules of the pinned kit a developer's change has to keep, stated once.
+
+    Each is something the scripted change set gets right by construction and the
+    product's own CI refuses otherwise, so a model that is not told them writes
+    code its own pipeline rejects.
+    """
+    return (
+        "Rules of this product's kit, which its own CI and pre-push hooks enforce:\n"
+        f"- `APIRouter()` may be created only in a module under `{BACKEND_ROUTERS_PACKAGE}` "
+        "(`framework.enforce_spec_compliance`). Put the new router in "
+        f"`{routers_module}` and include it in `{BACKEND_ROUTER}` beside the health router.\n"
+        f"- A product setting is declared in `{BACKEND_MANIFEST}` and nowhere else. "
+        "`make setup` runs `framework.generate`, which writes the `SETTINGS_SCHEMAS` registry "
+        f"under `{BACKEND_GENERATED_PACKAGE}`; never edit a generated file by hand. Run "
+        "`make setup` after changing the manifest and commit what it regenerates.\n"
+        "- Keep the repository's lint, format and unit tests green before you push."
+    )
+
+
+def _settings_endpoint_contract(
+    *, path: str, fields: tuple[tuple[str, str], ...], setting_key: str, default: str
+) -> str:
+    """One marker endpoint and the product-scoped setting behind it, in words."""
+    shape = "".join(f'  - "{name}": {value};\n' for name, value in fields)
+    return (
+        f"- The backend service answers `GET {path}` with HTTP 200 and a JSON object of "
+        "exactly these keys:\n"
+        f"{shape}"
+        '  - "declared_settings": the generated settings registry, `SETTINGS_SCHEMAS` from '
+        "`services.backend.src.generated.settings_schemas`, as a JSON object keyed by setting "
+        "key.\n"
+        f"- The product-scoped setting `{setting_key}` is a property of `settings_schema` in "
+        f'`{BACKEND_MANIFEST}`: type string, minLength 1, default "{default}". `make setup` '
+        "turns that declaration into its `SETTINGS_SCHEMAS` entry, which the endpoint reports."
+    )
+
+
+def backend_contract(marker: str) -> str:
+    """What the first task delivers: the marker endpoint and its product setting."""
+    return (
+        "What to deliver:\n"
+        + _settings_endpoint_contract(
+            path=LEVEL1_ENDPOINT_PATH,
+            fields=(
+                ("marker", f'the string "{marker}"'),
+                ("setting_key", f'the string "{LEVEL1_SETTING_KEY}"'),
+            ),
+            setting_key=LEVEL1_SETTING_KEY,
+            default=marker,
+        )
+        + "\n\n"
+        + _kit_rules(routers_module=BACKEND_ENDPOINT_MODULE)
+    )
+
+
+def bot_contract(marker: str) -> str:
+    """What the second task delivers: the bot command and its published menu."""
+    existing = ", ".join(f'/{name} "{description}"' for name, description in BOT_EXISTING_COMMANDS)
+    return (
+        "What to deliver:\n"
+        f"- The bot service (`services/tg_bot`) answers the command /{LEVEL1_COMMAND} with "
+        f'exactly "level-1 marker: {marker}". Register it with '
+        f'`CommandHandler("{LEVEL1_COMMAND}", ...)` beside the handlers the bot already has.\n'
+        "- When the bot starts, it publishes its command menu to Telegram with "
+        "`setMyCommands` (`application.bot.set_my_commands`). The menu lists "
+        f'/{LEVEL1_COMMAND} with the description "{level1_command_description(marker)}", '
+        f"beside the commands the bot already offers: {existing}.\n\n"
+        "Rules of this product's kit, which its own CI and pre-push hooks enforce:\n"
+        f"- Keep `post_init` in `{BOT_MAIN}` with its exact signature and body: the kit's own "
+        "unit test calls it directly with a mock application. Publish the menu from a new "
+        "startup step that awaits `post_init` and then publishes, and wire that step into the "
+        "application builder's `.post_init(...)` instead.\n"
+        "- Keep the repository's lint, format and unit tests green before you push."
+    )
+
+
+def extension_contract(marker: str, extension_marker: str) -> str:
+    """What the extension task delivers, with the first story's work left in place."""
+    return (
+        "What to deliver:\n"
+        + _settings_endpoint_contract(
+            path=LEVEL1_EXTENSION_ENDPOINT_PATH,
+            fields=(
+                ("marker", f'the string "{extension_marker}"'),
+                ("base_marker", f'the string "{marker}", the first story\'s marker'),
+                ("setting_key", f'the string "{LEVEL1_EXTENSION_SETTING_KEY}"'),
+            ),
+            setting_key=LEVEL1_EXTENSION_SETTING_KEY,
+            default=extension_marker,
+        )
+        + f" Declare it beside `{LEVEL1_SETTING_KEY}`, not over it.\n"
+        "- Leave the first story's work in place: "
+        f"`GET {LEVEL1_ENDPOINT_PATH}`, the `{LEVEL1_SETTING_KEY}` setting and the "
+        f"/{LEVEL1_COMMAND} bot command keep answering exactly as they do now.\n\n"
+        + _kit_rules(routers_module=BACKEND_EXTENSION_MODULE)
     )
 
 
@@ -373,16 +523,20 @@ class Level1ChangeSets:
         """Every workspace path the story's change sets touch."""
         return [operation.path for operation in (*self.backend, *self.bot)]
 
-    def backend_task_description(self) -> str:
+    def backend_task_description(self, *, agent_type: str) -> str:
         return _task_description(
             "Add the level-1 marker endpoint and register its product setting.",
+            backend_contract(self.marker),
             self.backend,
+            agent_type=agent_type,
         )
 
-    def bot_task_description(self) -> str:
+    def bot_task_description(self, *, agent_type: str) -> str:
         return _task_description(
             f"Add the /{LEVEL1_COMMAND} Telegram command and publish the bot's command menu.",
+            bot_contract(self.marker),
             self.bot,
+            agent_type=agent_type,
         )
 
     def backend_acceptance_criteria(self) -> str:
@@ -394,15 +548,22 @@ class Level1ChangeSets:
         return bot_acceptance_criteria(self.marker)
 
 
-def _task_description(headline: str, operations: list[Operation]) -> str:
-    """One task description: the sentence a human reads, then the change set.
+def _task_description(
+    headline: str, contract: str, operations: list[Operation], *, agent_type: str
+) -> str:
+    """One task description: the headline, the contract in prose, and — for noop — the patch.
 
-    The change set travels in the task description because that is the channel
-    the manager already writes to ``/workspace/TASK.md``; nothing else is added
-    to carry it. Exactly one fenced block per description — the runner refuses a
-    document holding more than one.
+    The contract is what every developer is told, so a model and the scripted
+    runner are asked for the same product. The change set is appended only for
+    the scripted runner: it travels in the task description because that is the
+    channel the manager already writes to ``/workspace/TASK.md``, and a model is
+    to write the change itself rather than be handed it. Exactly one fenced
+    block per description — the runner refuses a document holding more than one.
     """
-    return f"{headline}\n\n{render_change_set(operations)}\n"
+    description = f"{headline}\n\n{contract}\n"
+    if agent_type == SCRIPTED_DEVELOPER:
+        description += f"\n{render_change_set(operations)}\n"
+    return description
 
 
 def build_level1_change_sets(marker: str, template: tuple[str, str]) -> Level1ChangeSets:
@@ -569,10 +730,12 @@ class Level1ExtensionChangeSet:
         """Every workspace path the extension change set touches."""
         return [operation.path for operation in self.operations]
 
-    def task_description(self) -> str:
+    def task_description(self, *, agent_type: str) -> str:
         return _task_description(
             "Add the level-1 extension endpoint and register its product setting.",
+            extension_contract(self.marker, self.extension_marker),
             self.operations,
+            agent_type=agent_type,
         )
 
     def acceptance_criteria(self) -> str:

@@ -66,15 +66,33 @@ def test_po_cursor_and_events_exclude_history_and_type_the_new_system_event():
     assert events[0].story_id == "story-1"
 
 
-@pytest.mark.asyncio
-async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
-    """Noop acceptance reads durable paid-admission, result, ledger and reservation facts."""
-    ctx = {
+_RUN_OWNER = pipeline_helpers.RunOwner(
+    telegram_id=990_000_123,
+    user_id=7,
+    promo_code="spent",
+    credits_microusd=pipeline_helpers.LEVEL1_PROMO_CREDITS_MICROUSD,
+    attempt_reservation_microusd=pipeline_helpers.LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
+)
+
+
+def _settlement_ctx(agent_type: str) -> dict:
+    return {
         "project_id": "project-1",
         "story_id": "story-1",
         "task_ids": ["task-1", "task-2"],
-        "agent_type": "noop",
+        "agent_type": agent_type,
+        "run_owner": _RUN_OWNER,
     }
+
+
+def _settlement_api(agent_type: str, *, cost_microusd: int | None = None, null_cost_task=None):
+    """A stand's durable paid-work facts for two engineering Runs, one per task.
+
+    A noop attempt is unenforced and carries an unknown-cost ledger row. A model
+    attempt is admitted under the run owner's promo policy, settled, and carries
+    the cost its provider reported — except on `null_cost_task`, whose provider
+    reported none, so its reservation stayed `unknown_final`.
+    """
 
     def run(task_id):
         return {
@@ -88,13 +106,72 @@ async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
                 "triggered_by": "dispatcher",
                 "executor_decision": {
                     "attempt_kind": "engineering",
-                    "agent_type": "noop",
+                    "agent_type": agent_type,
                     "source": "project_pin",
                     "policy_version": "v2",
-                    "reason": "project config pins engineering executor to noop",
+                    "reason": f"project config pins engineering executor to {agent_type}",
                 },
             },
             "result": {"engineering_status": "done", "commit_sha": "abc123"},
+        }
+
+    def ledger(run_id, task_id):
+        row = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "idempotency_key": f"engineering-run:{run_id}",
+            "run_id": run_id,
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "task_id": task_id,
+            "user_id": 7,
+            "owner_attribution": "resolved",
+            "role": "engineering",
+            "occurred_at": "2026-08-31T00:00:00Z",
+            "provider": None,
+            "model": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "cost_microusd": None,
+            "cost_source": "unknown",
+        }
+        if agent_type != "noop" and task_id != null_cost_task:
+            row.update(
+                provider="anthropic",
+                model="claude-sonnet-5",
+                input_tokens=1000,
+                output_tokens=200,
+                total_tokens=1200,
+                cost_microusd=cost_microusd,
+                cost_source="provider_reported",
+            )
+        return row
+
+    def reservation(run_id, task_id):
+        if agent_type == "noop":
+            return {
+                "attempt_id": run_id,
+                "user_id": 7,
+                "outcome": "unlimited",
+                "reservation_microusd": 0,
+                "known_spend_microusd": 0,
+                "active_held_microusd": 0,
+                "available_microusd": None,
+                "reservation_state": None,
+            }
+        settled = task_id != null_cost_task
+        reserve = _RUN_OWNER.attempt_reservation_microusd
+        return {
+            "attempt_id": run_id,
+            "user_id": 7,
+            "outcome": "admitted",
+            "reservation_microusd": reserve,
+            "known_spend_microusd": 0,
+            "active_held_microusd": 0 if settled else reserve,
+            "available_microusd": _RUN_OWNER.credits_microusd,
+            "reservation_state": "settled" if settled else "unknown_final",
         }
 
     def handler(request):
@@ -103,33 +180,7 @@ async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
             return httpx.Response(200, json=[run(request.url.params["task_id"])])
         if path.startswith("/api/runs/engineering-attempts"):
             run_id = request.url.params["run_id"]
-            task_id = run_id.removeprefix("eng-")
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "id": "00000000-0000-0000-0000-000000000001",
-                        "idempotency_key": f"engineering-run:{run_id}",
-                        "run_id": run_id,
-                        "project_id": "project-1",
-                        "story_id": "story-1",
-                        "task_id": task_id,
-                        "user_id": 7,
-                        "owner_attribution": "resolved",
-                        "role": "engineering",
-                        "occurred_at": "2026-08-31T00:00:00Z",
-                        "provider": None,
-                        "model": None,
-                        "input_tokens": None,
-                        "output_tokens": None,
-                        "total_tokens": None,
-                        "cache_read_tokens": None,
-                        "cache_write_tokens": None,
-                        "cost_microusd": None,
-                        "cost_source": "unknown",
-                    }
-                ],
-            )
+            return httpx.Response(200, json=[ledger(run_id, run_id.removeprefix("eng-"))])
         if path.startswith("/api/runs/eng-"):
             return httpx.Response(200, json=run(path.removeprefix("/api/runs/eng-")))
         if path.startswith("/api/work-admission/paid-runs/eng-"):
@@ -139,28 +190,72 @@ async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
             )
         if path.startswith("/api/engineering-budget-policies/admissions/eng-"):
             run_id = path.rsplit("/", 1)[-1]
-            return httpx.Response(
-                200,
-                json={
-                    "attempt_id": run_id,
-                    "user_id": 7,
-                    "outcome": "unlimited",
-                    "reservation_microusd": 0,
-                    "known_spend_microusd": 0,
-                    "active_held_microusd": 0,
-                    "available_microusd": None,
-                    "reservation_state": None,
-                },
-            )
+            return httpx.Response(200, json=reservation(run_id, run_id.removeprefix("eng-")))
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
-    async with _client(handler) as api:
-        evidence = await pipeline_helpers.record_noop_settlement_evidence(api, ctx)
+    return _client(handler)
+
+
+@pytest.mark.asyncio
+async def test_noop_settlement_evidence_is_typed_per_admitted_engineering_run():
+    """Noop acceptance reads durable paid-admission, result, ledger and reservation facts."""
+    ctx = _settlement_ctx("noop")
+
+    async with _settlement_api("noop") as api:
+        evidence = await pipeline_helpers.record_engineering_settlement_evidence(api, ctx)
 
     assert set(evidence) == {"eng-task-1", "eng-task-2"}
-    assert ctx["noop_settlement_error"] is None
+    assert ctx["engineering_settlement_error"] is None
     assert all(item["admission"]["outcome"] == "admitted" for item in evidence.values())
     assert all(item["ledger"]["cost_source"] == "unknown" for item in evidence.values())
+    assert all(item["ledger"]["cost_microusd"] is None for item in evidence.values())
+
+
+@pytest.mark.asyncio
+async def test_a_claude_developer_s_settlement_carries_its_provider_cost():
+    """Level 2: the requested developer, a reported cost and a settled promo reservation."""
+    ctx = _settlement_ctx("claude")
+
+    async with _settlement_api("claude", cost_microusd=1_234_567) as api:
+        evidence = await pipeline_helpers.record_engineering_settlement_evidence(api, ctx)
+
+    assert ctx["engineering_settlement_error"] is None
+    assert set(evidence) == {"eng-task-1", "eng-task-2"}
+    for item in evidence.values():
+        assert item["decision"]["agent_type"] == "claude"
+        assert item["ledger"]["cost_source"] == "provider_reported"
+        assert item["ledger"]["cost_microusd"] == 1_234_567
+        assert item["reservation"]["reservation_state"] == "settled"
+        assert item["reservation"]["user_id"] == _RUN_OWNER.user_id
+
+
+@pytest.mark.asyncio
+async def test_a_model_run_without_a_provider_cost_is_refused_by_name():
+    """A null cost is not a cheap attempt, it is an unknown one: the run is named.
+
+    This is what a Codex developer looks like today — it reports no cost — and
+    level 2 refuses it on purpose rather than settling for `unknown`.
+    """
+    ctx = _settlement_ctx("codex")
+
+    async with _settlement_api("codex", cost_microusd=900_000, null_cost_task="task-2") as api:
+        evidence = await pipeline_helpers.record_engineering_settlement_evidence(api, ctx)
+
+    assert evidence == {}
+    assert ctx["engineering_settlement"] == {}
+    assert "eng-task-2" in ctx["engineering_settlement_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_model_run_decided_for_another_developer_is_refused():
+    """The persisted decision must be the developer this run asked for."""
+    ctx = _settlement_ctx("codex")
+
+    async with _settlement_api("claude", cost_microusd=1) as api:
+        await pipeline_helpers.record_engineering_settlement_evidence(api, ctx)
+
+    assert "eng-task-1" in ctx["engineering_settlement_error"]
+    assert "codex" in ctx["engineering_settlement_error"]
 
 
 @pytest.mark.asyncio

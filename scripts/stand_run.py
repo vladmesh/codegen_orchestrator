@@ -22,9 +22,9 @@ lessons are the reason this file exists:
   runner that sourced `.env` into its own environment pins the executor it is
   trying to change. Every compose call here is made with that name removed.
 
-* **A run outlives the SSH session that starts it.** A mega takes ten minutes,
-  a matrix an hour; both are longer than a connection reliably lives. Start this
-  detached (`setsid nohup`) and read the log it names.
+* **A run outlives the SSH session that starts it.** A mega takes tens of
+  minutes, a live one hours; both are longer than a connection reliably lives.
+  Start this detached (`setsid nohup`) and read the log it names.
 
 * **The stand runs the pulled release, never a build.** Every compose call here
   carries the service release override bring-up generated, named by
@@ -34,10 +34,9 @@ lessons are the reason this file exists:
 Suites are a table, not code paths, so a new one is a line:
 
     ./scripts/stand_run.py --suite mega-noop
-    ./scripts/stand_run.py --suite mega-llm --worker codex --qa claude
+    ./scripts/stand_run.py --suite mega-live --worker codex --qa claude
     ./scripts/stand_run.py --suite mega-brief --worker codex --qa claude
     ./scripts/stand_run.py --suite mega-brief-package --worker codex --qa claude
-    ./scripts/stand_run.py --suite matrix
     ./scripts/stand_run.py --suite tests/live/test_api_crud.py
 """
 
@@ -66,6 +65,7 @@ from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
+    LIVE_SUITE_TIMEOUT_SECONDS,
     MEGA_BRIEF_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
@@ -120,11 +120,10 @@ COMPOSE_REFUSED_COMMANDS = ("build", "create", "pull", "run", "start", "restart"
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
 _INSIDE_RECREATE_GATE = False
-# The noop lifecycle's cap is not stated here: it is derived in
-# `shared/stand_deadlines.py` from the waits themselves, so the runner, its test
-# and `tests/live/README.md` cannot drift apart again. Since card 1316 the
-# lifecycle runs two stories on one project, which is what moved it.
-LLM_SUITE_TIMEOUT_SECONDS = 3600
+# Neither level-1 lifecycle cap is stated here: `mega-noop`'s and `mega-live`'s
+# are derived in `shared/stand_deadlines.py` from the waits themselves, so the
+# runner, its test and `tests/live/README.md` cannot drift apart again. Since
+# card 1316 the lifecycle runs two stories on one project, which is what moved it.
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
@@ -167,12 +166,14 @@ BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS = (
 # about seven minutes; the minimal replacement is expected to need 2–3 minutes,
 # pending a live confirmation. The overall provisioning bound remains unchanged.
 STAND_PROVISIONING_TIMEOUT_SECONDS = 2700
-# A matrix has four 60-minute LLM cells.  Each cell can require a full executor
-# switch; runner preflight and the fail-closed sweep have their own bounds.
-MATRIX_RUNNER_TIMEOUT_SECONDS = (
+# `mega-live` switches the QA executor once — a recreate with its readiness wait,
+# then the resolver's confirmation — before its one pytest cell, and has the same
+# preflight and fail-closed sweep as every suite.
+LIVE_RUNNER_TIMEOUT_SECONDS = (
     PREFLIGHT_TIMEOUT_SECONDS
-    + len(("claude", "codex")) ** 2
-    * (LLM_SUITE_TIMEOUT_SECONDS + READINESS_TIMEOUT_SECONDS + EXECUTOR_SWITCH_TIMEOUT_SECONDS)
+    + READINESS_TIMEOUT_SECONDS
+    + EXECUTOR_SWITCH_TIMEOUT_SECONDS
+    + LIVE_SUITE_TIMEOUT_SECONDS
     + SWEEP_TIMEOUT_SECONDS
 )
 # The workflow has work before its bounded provisioning phase (checkout, uv,
@@ -181,7 +182,7 @@ MATRIX_RUNNER_TIMEOUT_SECONDS = (
 STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS = 600
 STAND_JOB_RESERVE_SECONDS = 480
 # 360 minutes covers 45m provisioning + 10m workflow reserve + the longest
-# runner path + an 8m job reserve. The longest path is the matrix (274m); the
+# runner path + an 8m job reserve. The longest path is `mega-live` (281m); the
 # Product Brief runners are 76m and 96m, and `mega-noop` is 171m. Every one of
 # those is checked against this cap in `scripts/tests/test_stand_run.py`, and
 # `tests/unit/test_documented_stand_budgets.py` checks that the minutes stated
@@ -234,13 +235,19 @@ SUITES: dict[str, Suite] = {
         target="tests/live/test_full_pipeline.py::TestFullPipeline",
         llm=False,
         timeout_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
-        description="the full pipeline with a noop worker: infrastructure and deploy, no agents",
+        description=(
+            "level 1: the two-story lifecycle with the scripted developer and deterministic QA, "
+            "no model call"
+        ),
     ),
-    "mega-llm": Suite(
-        target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
+    "mega-live": Suite(
+        target="tests/live/test_full_pipeline.py::TestFullPipeline",
         llm=True,
-        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
-        description="the full pipeline with a real coding agent and a real QA executor",
+        timeout_seconds=LIVE_SUITE_TIMEOUT_SECONDS,
+        description=(
+            "level 2: the same two-story lifecycle with a real developer (--worker) and a real "
+            "QA executor (--qa)"
+        ),
     ),
     "mega-brief": Suite(
         target="tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
@@ -263,15 +270,9 @@ SUITES: dict[str, Suite] = {
             "architect plans, the worker installs, and central QA judges on its own route"
         ),
     ),
-    "matrix": Suite(
-        target="tests/live/test_full_pipeline.py::TestFullPipelineLLM",
-        llm=True,
-        combinations=tuple((qa, worker) for qa in AGENTS for worker in AGENTS),
-        timeout_seconds=LLM_SUITE_TIMEOUT_SECONDS,
-        description="every QA executor against every worker agent",
-    ),
 }
-SUITE_ALIASES = {"mega": "mega-noop", "llm": "mega-llm"}
+# No alias names a paid suite: a paid run is always asked for by its own name.
+SUITE_ALIASES = {"mega": "mega-noop"}
 LLM_ENV_NAMES = ("LIVE_LLM_QA", "LIVE_QA_AGENT_TYPE", "LIVE_WORKER_AGENT_TYPE")
 LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
 LIVE_RELAY_LINE_MAX_CHARS = 4096
@@ -325,6 +326,25 @@ def write_qa_executor(env_path: Path, executor: str) -> None:
     env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
 
+def suite_environment(suite: Suite, *, qa: str, worker: str) -> dict[str, str]:
+    """What one suite's pytest child is told about its agents, and nothing else.
+
+    The one place a suite name becomes the child's agent environment. A suite
+    that spends no model is given nothing: `run_pytest` removes every
+    `LLM_ENV_NAMES` entry the parent or the deployed `.env` carries before this
+    is applied, so `mega-noop`'s developer resolves to `noop` whatever the
+    caller exported. A paid suite is given exactly the pair it was asked for,
+    with QA always an executor.
+    """
+    if not suite.llm:
+        return {}
+    return {
+        "LIVE_LLM_QA": "1",
+        "LIVE_QA_AGENT_TYPE": qa,
+        "LIVE_WORKER_AGENT_TYPE": worker,
+    }
+
+
 def matrix_row(suite_name: str, qa: str, worker: str, status: str, seconds: int) -> str:
     return f"{suite_name}\t{qa}\t{worker}\t{status}\t{seconds}\n"
 
@@ -334,9 +354,9 @@ def write_junit_report(
 ) -> None:
     """Write the stable JUnit companion for the human-readable TSV report.
 
-    Pytest's own JUnit output is awkward for the matrix because each invocation
-    would replace the previous file.  This report describes the runner's
-    combinations instead: one deterministic testcase per requested pair.
+    Pytest's own JUnit output describes tests, not the run the runner made of
+    them.  This report describes the runner's cells instead: one deterministic
+    testcase per requested pair.
     """
     failures = sum(status != "passed" for _qa, _worker, status, _seconds in results)
     suite = ElementTree.Element(
@@ -816,7 +836,7 @@ def main() -> int:
         epilog=(
             "suites: "
             + "; ".join(f"{name} — {s.description}" for name, s in SUITES.items())
-            + "; legacy aliases: mega → mega-noop, llm → mega-llm"
+            + "; legacy alias: mega → mega-noop"
         ),
     )
     entry = parser.add_mutually_exclusive_group(required=True)
@@ -876,21 +896,15 @@ def main() -> int:
 
     failed = 0
     for qa, worker in combinations:
-        extra: dict[str, str] = {}
-        if suite.llm:
-            if not ensure_qa_executor(env, qa, log):
-                with report.open("a", encoding="utf-8") as handle:
-                    handle.write(
-                        matrix_row(canonical_suite_name, qa, worker, "qa_executor_switch_failed", 0)
-                    )
-                results.append((qa, worker, "qa_executor_switch_failed", 0))
-                failed += 1
-                continue
-            extra = {
-                "LIVE_LLM_QA": "1",
-                "LIVE_QA_AGENT_TYPE": qa,
-                "LIVE_WORKER_AGENT_TYPE": worker,
-            }
+        if suite.llm and not ensure_qa_executor(env, qa, log):
+            with report.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    matrix_row(canonical_suite_name, qa, worker, "qa_executor_switch_failed", 0)
+                )
+            results.append((qa, worker, "qa_executor_switch_failed", 0))
+            failed += 1
+            continue
+        extra = suite_environment(suite, qa=qa, worker=worker)
 
         started = time.monotonic()
         log(f"running qa={qa} worker={worker}")

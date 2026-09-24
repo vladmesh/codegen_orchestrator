@@ -33,7 +33,6 @@ from pipeline_helpers import (
     begin_brief_productive_window,
     brief_poll,
     cleanup_all,
-    configured_qa_executor,
     ensure_test_user,
     evidence_pass,
     live_worker_agent_type,
@@ -44,6 +43,7 @@ from pipeline_helpers import (
     record_deployed_image_tags,
     record_story_branch_ahead,
     record_terminal_stage_evidence,
+    recorded_qa_executor,
     report_brief_stage,
     request_undeploy,
     run_brief_qa_and_retain_job_evidence,
@@ -373,7 +373,6 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                     ctx, key=scenario.settings_key
                 )
                 report_brief_stage(ctx, "qa", observed_state="settings_seeded")
-                ctx["qa_agent_type"] = configured_qa_executor()
                 ctx["qa_result"] = await run_brief_qa_and_retain_job_evidence(
                     api_internal,
                     ctx,
@@ -381,6 +380,9 @@ async def run_brief_pipeline(  # noqa: C901, PLR0911, PLR0915 - every stage's ex
                     timeout=QA_RUN_TIMEOUT,
                     on_poll=lambda: brief_poll(ctx, observed_state="qa_pending"),
                 )
+                # The executor QA ran under is the decision the API persisted on
+                # the QA Run it admitted, not a consumer's configured setting.
+                ctx["qa_agent_type"] = recorded_qa_executor(ctx)
                 # QA is scheduled by the normal QA consumer.  This helper only
                 # waits for its terminal verdict; the capture proves an actual
                 # central executor ran the Architect-owned criterion.

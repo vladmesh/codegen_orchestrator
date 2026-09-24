@@ -59,8 +59,10 @@ class TestScaffoldPipeline:
 
     async def test_github_repo_has_ci(self, scaffold_ctx):
         """Scaffolded repo has .github/workflows/ci.yml."""
-        if scaffold_ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-            pytest.skip("scaffold failed — cannot check repo")
+        assert scaffold_ctx.get("scaffold_status") == ProjectStatus.ACTIVE, (
+            "the scaffold phase failed, so there is no repository to check: status "
+            f"{scaffold_ctx.get('scaffold_status')}"
+        )
 
         repo_name = scaffold_ctx["repo_name"]
         script = (
@@ -82,8 +84,10 @@ class TestScaffoldPipeline:
 
     async def test_github_repo_has_makefile(self, scaffold_ctx):
         """Scaffolded repo has a Makefile."""
-        if scaffold_ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-            pytest.skip("scaffold failed — cannot check repo")
+        assert scaffold_ctx.get("scaffold_status") == ProjectStatus.ACTIVE, (
+            "the scaffold phase failed, so there is no repository to check: status "
+            f"{scaffold_ctx.get('scaffold_status')}"
+        )
 
         repo_name = scaffold_ctx["repo_name"]
         script = (

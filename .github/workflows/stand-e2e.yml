@@ -13,17 +13,16 @@ on:
         type: choice
         options:
           - mega-noop
-          - mega-llm
+          - mega-live
           - mega-brief
           - mega-brief-package
-          - matrix
           - custom
       target:
         description: 'pytest target, when suite is custom'
         required: false
         type: string
       worker:
-        description: 'Coding agent for mega-llm, mega-brief, mega-brief-package or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'Coding agent for mega-live, mega-brief, mega-brief-package or custom only; mega-noop ignores it and runs the scripted developer'
         required: false
         default: 'claude'
         type: choice
@@ -31,7 +30,7 @@ on:
           - claude
           - codex
       qa:
-        description: 'QA executor for mega-llm, mega-brief, mega-brief-package or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
+        description: 'QA executor for mega-live, mega-brief, mega-brief-package or custom only; mega-noop ignores it and runs deterministic QA'
         required: false
         default: 'codex'
         type: choice
@@ -72,8 +71,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    # 360m covers 45m provisioning, a 60m mega-brief hard stop plus runner
-    # lifecycle, and the four-cell matrix. Lifecycle cleanup has its own 30m job.
+    # 360m covers 45m provisioning and the longest runner path, mega-live's
+    # 281m (scripts/stand_run.py). Lifecycle cleanup has its own 30m job.
     timeout-minutes: 360
     permissions:
       contents: read
@@ -873,14 +872,15 @@ jobs:
           if [ -n "${TEMPLATE_SOURCE}" ]; then
             template_env=$(printf 'LIVE_TEMPLATE_REPO=%q LIVE_TEMPLATE_REF=%q ' "${TEMPLATE_SOURCE}" "${TEMPLATE_REF}")
           fi
-          # The product bot token belongs to the level-1 suite and to nothing
-          # else: it is one bot on one stand, and mega-noop is the only suite
-          # that deploys a Telegram-bot product and binds it. Every other suite
-          # is handed an empty value, and the level-1 helper refuses to start on
-          # one, which is what makes a missing secret a named failure rather than
-          # a run that quietly proves nothing.
+          # The product bot token belongs to the level-1 lifecycle and to
+          # nothing else: it is one bot on one stand, and mega-noop and mega-live
+          # — the same lifecycle with a scripted or a real developer — are the
+          # only suites that deploy a Telegram-bot product and bind it. Every
+          # other suite is handed an empty value, and the level-1 helper refuses
+          # to start on one, which is what makes a missing secret a named failure
+          # rather than a run that quietly proves nothing.
           bot_token=""
-          if [ "${SUITE}" = "mega-noop" ]; then
+          if [ "${SUITE}" = "mega-noop" ] || [ "${SUITE}" = "mega-live" ]; then
             bot_token="${STAND_PRODUCT_BOT_TOKEN}"
           fi
           # Over stdin, never in the command line: an ssh argument is visible in
@@ -1021,16 +1021,11 @@ jobs:
             if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
               if [ -d /root/e2e-runs/latest ]; then exit 0; else exit 1; fi
             '; then
-              reports=(junit.xml report.tsv run.log)
-              if [ "${SUITE}" = "matrix" ]; then
-                reports+=(claude-claude.log claude-codex.log codex-claude.log codex-codex.log)
-              else
-                # A named single-cell suite and a custom target produce exactly
-                # the pair the runner was asked for. Trying all matrix filenames
-                # here made scp wait on three files that cannot exist (21 seconds
-                # in run 33446639363), obscuring rather than improving evidence.
-                reports+=("${QA}-${WORKER}.log")
-              fi
+              # Every suite is one cell, and it produces exactly the pair the
+              # runner was asked for. Trying other pairs' filenames here made scp
+              # wait on files that cannot exist (21 seconds in run 33446639363),
+              # obscuring rather than improving evidence.
+              reports=(junit.xml report.tsv run.log "${QA}-${WORKER}.log")
               for name in "${reports[@]}"; do
                 scp -i "${key_path}" ${SSH_OPTS} \
                   root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true

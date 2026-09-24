@@ -42,7 +42,6 @@ import structlog
 import suite_outcome
 
 from shared import live_harness_cleanup
-from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.contracts.dto.task import TaskStatus
@@ -55,7 +54,6 @@ from shared.contracts.service_ports import (
     PortServiceRole,
 )
 from shared.contracts.worker_evidence import SECRET_ENV_NAME
-from shared.live_contour import require_live_contour
 
 pytestmark = pytest.mark.needs_no_api_credential
 
@@ -2143,40 +2141,6 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypatch, tmp_path):
-    requests = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.url.path, json.loads(request.content)))
-        if request.url.path == "/api/projects/":
-            return httpx.Response(201, json={"id": "project", "slug": "live-test-llm-slug"})
-        return httpx.Response(201, json={"id": "repo-1"})
-
-    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
-
-    project_payload = requests[0][1]
-    config = project_payload["config"]
-    assert project_payload["title"].startswith(f"{require_live_contour().llm_pipeline}-")
-    assert config["modules"] == ["backend"]
-    assert config["agent_type"] == "claude"
-    assert "user-provided secrets" in config["detailed_spec"]
-    assert "secrets" not in config
-    assert "env_hints" not in config
-    assert requests[1][1]["name"] == "live-test-llm-slug"
-    assert requests[1][1]["git_url"].endswith("/live-test-llm-slug")
-    assert ctx["project_name"] == "live-test-llm-slug"
-    assert ctx["repo_name"] == "live-test-llm-slug"
-    assert ctx["repo_id"] == "repo-1"
-    assert ctx["task_title"] == pipeline_helpers.LLM_BACKEND_TASK_TITLE
-    marker = ctx["health_marker"]
-    assert ctx["task_description"] == pipeline_helpers.llm_backend_task_description(marker)
-    assert marker in config["detailed_spec"]
-
-
-@pytest.mark.asyncio
 async def test_product_brief_admission_releases_every_task_in_the_current_plan():
     """Coverage is a requirement mapping, not the complete Architect task roster."""
     requests: list[tuple[str, str, dict[str, str]]] = []
@@ -2232,55 +2196,6 @@ async def test_product_brief_admission_releases_every_task_in_the_current_plan()
     assert ("GET", "/api/tasks/", {"story_id": "story-1"}) in requests
 
 
-@pytest.mark.asyncio
-async def test_llm_matrix_project_selects_worker_and_forces_exploratory_qa(monkeypatch, tmp_path):
-    requests = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else {}
-        requests.append((request.method, request.url.path, body))
-        if request.url.path == "/api/projects/":
-            return httpx.Response(201, json={"id": "project", "slug": "matrix-slug"})
-        if request.method == "POST":
-            return httpx.Response(201, json={"id": "repo-1"})
-        return httpx.Response(200, json={"id": "repo-1", **body})
-
-    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", "codex")
-    monkeypatch.setenv("LIVE_LLM_QA", "1")
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
-
-    assert requests[0][2]["config"]["agent_type"] == "codex"
-    criteria = pipeline_helpers.llm_qa_acceptance_criteria(ctx["health_marker"])
-    assert requests[2] == (
-        "PATCH",
-        "/api/repositories/repo-1",
-        {"acceptance_criteria": criteria},
-    )
-    assert ctx["agent_type"] == "codex"
-    assert ctx["qa_requires_executor"] is True
-    assert parse_health_only_criteria(criteria) is None
-
-
-def test_llm_task_asks_for_a_change_the_scaffold_does_not_have(monkeypatch):
-    """The paid task names the marker field, its exact value, and the test for it.
-
-    The scaffold already serves GET /health, so a task phrased around the
-    endpoint asks for nothing and the worker commits nothing. What the task
-    asks for has to be a field the template does not render.
-    """
-    marker = pipeline_helpers.new_health_marker()
-    description = pipeline_helpers.llm_backend_task_description(marker)
-
-    assert pipeline_helpers.LLM_HEALTH_MARKER_FIELD in description
-    assert marker in description
-    assert "test" in description.lower()
-    assert marker in pipeline_helpers.llm_backend_detailed_spec(marker)
-    assert "marker" in pipeline_helpers.LLM_BACKEND_TASK_TITLE.lower()
-
-
 def test_each_run_asks_for_its_own_marker(monkeypatch):
     """A stale artifact cannot satisfy this run: the value is minted per run."""
     markers = {pipeline_helpers.new_health_marker() for _ in range(20)}
@@ -2290,59 +2205,11 @@ def test_each_run_asks_for_its_own_marker(monkeypatch):
         assert marker.startswith("e2e-")
 
 
-def test_llm_qa_criteria_grade_the_marker_and_nothing_else(monkeypatch):
-    """QA is told to observe what the task added, on the transport contract only."""
-    marker = pipeline_helpers.new_health_marker()
-    criteria = pipeline_helpers.llm_qa_acceptance_criteria(marker)
-
-    assert marker in criteria
-    assert pipeline_helpers.LLM_HEALTH_MARKER_FIELD in criteria
-    assert "GET /health returns HTTP 200." in criteria
-    # An LLM executor is needed to read a field out of a payload, so these
-    # criteria must not collapse into deterministic GET-only checks.
-    assert parse_health_only_criteria(criteria) is None
-    lowered = criteria.lower()
-    for ungraded in ("architecture", "diff", "style", "readable", "design"):
-        assert ungraded not in lowered
-
-
-@pytest.mark.asyncio
-async def test_llm_project_drives_every_string_from_one_marker(monkeypatch, tmp_path):
-    """Spec, task and criteria carry the same value, from the one place it is minted."""
-    patched = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else {}
-        if request.url.path == "/api/projects/":
-            return httpx.Response(201, json={"id": "project", "slug": "llm-slug"})
-        if request.method == "POST":
-            return httpx.Response(201, json={"id": "repo-1"})
-        patched.append(body)
-        return httpx.Response(200, json={"id": "repo-1", **body})
-
-    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    monkeypatch.setenv("LIVE_LLM_QA", "1")
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
-
-    marker = ctx["health_marker"]
-    assert marker in ctx["task_description"]
-    assert marker in patched[0]["acceptance_criteria"]
-
-
 def test_llm_matrix_rejects_unknown_worker(monkeypatch):
     monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", "mystery")
 
     with pytest.raises(RuntimeError, match="LIVE_WORKER_AGENT_TYPE"):
         pipeline_helpers.live_worker_agent_type()
-
-
-def test_configured_qa_executor_is_read_from_live_service(monkeypatch):
-    completed = subprocess.CompletedProcess([], 0, stdout="codex\n", stderr="")
-    monkeypatch.setattr(pipeline_helpers.subprocess, "run", lambda *args, **kwargs: completed)
-
-    assert pipeline_helpers.configured_qa_executor() == "codex"
 
 
 @pytest.mark.asyncio
@@ -4792,7 +4659,7 @@ def test_a_debug_dump_bounds_the_log_slices_it_embeds(
 
 def test_a_debug_dump_is_written_where_the_handoff_collects_it(monkeypatch, tmp_path):
     """The stand checkout dies with the host; the runner directory is collected."""
-    runner_dir = tmp_path / "e2e-runs" / "mega-llm"
+    runner_dir = tmp_path / "e2e-runs" / "mega-live"
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path / "checkout")
     monkeypatch.setenv("LIVE_EVIDENCE_OUTPUT_DIR", str(runner_dir))
     monkeypatch.setattr(
@@ -6428,50 +6295,126 @@ def test_an_unreadable_scaffolder_log_is_reported_not_raised(monkeypatch):
     assert pipeline_helpers.last_scaffolder_event("project-1") == "unreadable (OSError)"
 
 
-# ── The level-1 suite may not skip ──────────────────────────────────────
+# ── No live test may skip, but for a missing environment precondition ──
 #
-# The free deterministic lifecycle is allowed to fail and not allowed to be
-# absent. A `pytest.skip` inside it hides a phase that did not happen — a failed
-# deploy would take the QA assertions with it and the suite would report green
-# — which is why every exit of the level-1 phases raises naming its own phase
-# instead (`_level1_brief_plan_and_engineering`, `_extension`). The paid
-# `TestFullPipelineLLM` class is the one place a skip is legitimate: its
-# assertions are about an agent's output and a cell that never got one has
-# nothing to judge.
+# A live suite is allowed to fail and not allowed to be absent. A `pytest.skip`
+# after a phase that did not happen — a failed scaffold, a failed engineering
+# step, a failed deploy — reports that phase as untested rather than broken, and
+# the run reads green. Every such exit raises, or asserts, naming its own phase
+# instead (`Level1PhaseFailed`, `_extension`, the engineering and scaffold
+# pipelines' own assertions).
+#
+# What remains is one allowlist, in one place, of skips that are about the
+# *environment* a test was started in rather than about anything the pipeline
+# did: each names its file, its function and the reason it gives.
 LEVEL1_SUITE_MODULE = Path(__file__).with_name("test_full_pipeline.py")
-SKIPPABLE_SUITE_CLASS = "TestFullPipelineLLM"
+LIVE_TESTS_DIR = Path(__file__).resolve().parent
+#: (file, function, the reason text the skip gives) — every one an environment
+#: precondition the test cannot create for itself.
+ENVIRONMENT_PRECONDITION_SKIPS = {
+    ("test_health.py", "test_consumer_group_exists"): (
+        "a stream is created by its first message; a fresh stack has published none"
+    ),
+    ("test_streams.py", "test_stream_has_consumer_group"): (
+        "a stream is created by its first message; a fresh stack has published none"
+    ),
+    ("test_deploy_infra.py", "managed_server"): (
+        "the contour has no managed server in an active/ready/in_use state to deploy to"
+    ),
+}
+#: The attribute chains that skip a test: `pytest.skip(...)`, a
+#: `pytest.mark.skip`/`skipif` mark, and `pytest.importorskip(...)`.
+SKIP_CHAINS = frozenset(
+    {
+        ("pytest", "skip"),
+        ("pytest", "mark", "skip"),
+        ("pytest", "mark", "skipif"),
+        ("pytest", "importorskip"),
+    }
+)
 
 
-def _skip_call_lines(tree: ast.AST) -> list[int]:
-    return [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "skip"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "pytest"
+def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return tuple(reversed(parts))
+    return ()
+
+
+def _skips_in(path: Path) -> list[tuple[str, int]]:
+    """Every skip in one module, as (enclosing function or `<module>`, line)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    enclosing: dict[ast.AST, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+            for child in ast.walk(function):
+                enclosing.setdefault(child, function.name)
+    skips = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _attribute_chain(node) in SKIP_CHAINS:
+            skips.append((enclosing.get(node, "<module>"), node.lineno))
+    return skips
+
+
+def _live_modules() -> list[Path]:
+    return sorted(path for path in LIVE_TESTS_DIR.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def test_the_skip_scan_sees_every_skip_of_the_allowlist():
+    """The scan is not vacuous: each allowlisted skip is found where it is declared."""
+    found = {
+        (path.relative_to(LIVE_TESTS_DIR).as_posix(), function)
+        for path in _live_modules()
+        for function, _line in _skips_in(path)
+    }
+
+    assert set(ENVIRONMENT_PRECONDITION_SKIPS) <= found
+    assert all(reason for reason in ENVIRONMENT_PRECONDITION_SKIPS.values())
+
+
+def test_no_live_test_skips_but_for_a_named_environment_precondition():
+    """One rule for every live module: a skip is an environment precondition or a failure."""
+    offending = [
+        f"{path.relative_to(LIVE_TESTS_DIR).as_posix()}:{line} in {function}"
+        for path in _live_modules()
+        for function, line in _skips_in(path)
+        if (path.relative_to(LIVE_TESTS_DIR).as_posix(), function)
+        not in ENVIRONMENT_PRECONDITION_SKIPS
     ]
-
-
-def test_only_the_paid_class_of_the_level1_module_may_skip():
-    """No `pytest.skip` outside the paid class, so none can hide a failed phase."""
-    tree = ast.parse(LEVEL1_SUITE_MODULE.read_text(encoding="utf-8"))
-    paid = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == SKIPPABLE_SUITE_CLASS
-    ]
-    assert len(paid) == 1, f"{SKIPPABLE_SUITE_CLASS} is not a class of {LEVEL1_SUITE_MODULE.name}"
-    paid_skips = set(_skip_call_lines(paid[0]))
-
-    offending = sorted(set(_skip_call_lines(tree)) - paid_skips)
 
     assert not offending, (
-        f"{LEVEL1_SUITE_MODULE.name} calls pytest.skip outside {SKIPPABLE_SUITE_CLASS} at "
-        f"line(s) {offending}: a skipped level-1 assertion reports a phase that never ran as "
-        "one that was fine. Raise naming the phase instead."
+        f"live tests skip at {offending}: a skip after a phase that failed reports that phase "
+        "as untested rather than broken. Fail naming the phase instead, or — only for a "
+        "precondition of the environment the test was started in — add it to "
+        "ENVIRONMENT_PRECONDITION_SKIPS with its reason."
     )
+
+
+def test_the_level1_class_collects_its_39_tests():
+    """`mega-noop` and `mega-live` are one class; neither mode grows or loses a test."""
+    env = {**os.environ, "INTERNAL_API_KEY": "collection-only"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/live/test_full_pipeline.py::TestFullPipeline",
+        ],
+        cwd=resolve_repo_root(Path(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "39 tests collected" in result.stdout, result.stdout
 
 
 # ── A recording the tests read may not happen at teardown ────────────────

@@ -5,6 +5,10 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- New stand suite `mega-live`: `TestFullPipeline`'s two-story lifecycle with a real developer and QA executor,
+  asserting provider-reported settlement; `mega-llm`, `matrix` and `TestFullPipelineLLM` are removed.
+- One contract test bans `pytest.skip` in `tests/live` outside a named environment-precondition allowlist;
+  a failed scaffold or engineering phase now fails naming the phase instead of skipping.
 - A failed `checkout_branch` logs and records its exit code, stderr/stdout and, when silent, the dead worker
   container's state and log tail; the spawner reads a durable creation-failure record, not "Worker disappeared".
 - A failed or timed-out scaffold now fails or parks the stories waiting on it, `in_progress` included, with

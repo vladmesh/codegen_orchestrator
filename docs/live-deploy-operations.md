@@ -80,7 +80,7 @@ dotenv assembly (mixed only in the deployer).
 
 ```bash
 make test-live-mega-noop                              # free full pipeline, no model call
-make stand-run SUITE=mega-llm WORKER=codex QA=claude # one real coding/QA pair on the stand
+make stand-run SUITE=mega-live WORKER=claude QA=codex # the same lifecycle, real developer and QA
 make test-live-clean                                  # always run after a local live attempt
 ```
 
