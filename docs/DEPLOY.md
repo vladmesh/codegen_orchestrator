@@ -5,6 +5,10 @@
 - Ubuntu 22.04+ with Docker Engine 24+ and Docker Compose v2.24+
 - `deploy` user with `docker` group membership and sudo access
 - Directories: `/opt/codegen_orchestrator` (git clone), `/opt/secrets`, `/opt/backups/orchestrator`
+- A contour on another layout sets the GitHub environment variables `DEPLOY_SSH_USER`,
+  `DEPLOY_PATH`, `SECRETS_PATH` and `COMPOSE_ARGS` (an extra `-f <absolute path>` override
+  for host-specific mounts, such as a rootless daemon's socket); the defaults are the
+  values above
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
