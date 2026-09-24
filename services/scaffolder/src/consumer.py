@@ -23,6 +23,7 @@ from shared.clients.github import (
 )
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode, in_work_cycle
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
@@ -255,31 +256,56 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
-    # Fail only stories that never started, so architect/dispatcher don't keep waiting.
-    # Work already in flight (in_progress, review, deploy, testing, waiting_*) and work
-    # already finished (completed, archived) is not defective because this scaffold run
-    # failed, and failing it destroys user-visible state that nothing rolls back.
+    await _fail_stories_waiting_on_scaffold(msg, result.error or "unknown error", api, log)
+    return {"status": "failed", "error": result.error or "unknown error"}
+
+
+async def _fail_stories_waiting_on_scaffold(msg, error: str, api, log) -> None:
+    """Fail every story whose only work so far was waiting for this scaffold.
+
+    That is a story still in ``created``, and one an architect already took to
+    ``in_progress`` while it waited for the repository but that has no task in
+    its current work cycle: nothing was built for it, and nothing will be,
+    because ``scaffold_trigger`` never retries a project carrying
+    ``scaffold_error``. Leaving it in ``in_progress`` is what made its owner hear
+    "work continues" for as long as anybody asked.
+
+    Work that has tasks, or already left ``in_progress`` (review, deploy,
+    testing, waiting_*), or finished (completed, archived) is not defective
+    because this scaffold run failed, and failing it destroys user-visible state
+    that nothing rolls back. Each failure carries the typed reason, so the story
+    itself says why it stopped and its owner is owed the cause.
+    """
+    failure = StoryFailure(code=StoryFailureCode.SCAFFOLD_FAILED, source="scaffolder", detail=error)
     try:
         stories = await api.get_stories_by_project(msg.project_id)
         failed_ids = []
         skipped_ids = []
         for story in stories:
-            if story.status != StoryStatus.CREATED:
+            if not await _waits_only_on_scaffold(story, api):
                 skipped_ids.append(story.id)
                 continue
-            await api.fail_story(story.id)
+            await api.fail_story(story.id, failure)
             failed_ids.append(story.id)
-            log.info("scaffold_story_failed", story_id=story.id)
+            log.info("scaffold_story_failed", story_id=story.id, story_status=story.status)
         log.info(
             "scaffold_stories_failed_summary",
             failed_count=len(failed_ids),
+            failed_story_ids=failed_ids,
             skipped_count=len(skipped_ids),
             skipped_story_ids=skipped_ids,
         )
     except Exception:
         log.warning("failed_to_fail_stories_on_scaffold_error", exc_info=True)
 
-    return {"status": "failed", "error": result.error or "unknown error"}
+
+async def _waits_only_on_scaffold(story, api) -> bool:
+    if story.status == StoryStatus.CREATED:
+        return True
+    if story.status != StoryStatus.IN_PROGRESS:
+        return False
+    tasks = await api.get_tasks_by_story(story.id)
+    return not any(in_work_cycle(task.created_at, story.reopened_at, task.status) for task in tasks)
 
 
 async def _verify_repo_auto_merge(msg, github, api, org, project_config, log) -> None:

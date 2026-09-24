@@ -76,8 +76,10 @@ def test_a_command_must_name_the_anchor_of_its_status():
         _command(StoryStatus.PR_REVIEW, StateWaitEnding.PARK, run_id="deploy-1")
     with pytest.raises(ValidationError, match="delivered_at"):
         _command(StoryStatus.WAITING_USER_SECRET, StateWaitEnding.FAIL, run_id="deploy-1")
-    with pytest.raises(ValidationError, match="not a bounded wait"):
+    with pytest.raises(ValidationError, match="story's updated_at"):
         _command(StoryStatus.IN_PROGRESS, StateWaitEnding.PARK, run_id="deploy-1")
+    with pytest.raises(ValidationError, match="not a bounded wait"):
+        _command(StoryStatus.CREATED, StateWaitEnding.PARK, run_id="deploy-1")
 
 
 def test_a_command_owes_exactly_the_notice_of_its_ending():
@@ -181,3 +183,23 @@ def test_a_repeat_is_recognised_by_its_wait_not_its_age():
     moved_anchor = {**stored, "anchor_at": "2026-09-21T00:00:00+00:00"}
     assert not command.is_repeat(StoryStatus.WAITING_HUMAN_REVIEW.value, moved_anchor)
     assert not command.is_repeat(StoryStatus.WAITING_HUMAN_REVIEW.value, None)
+
+
+def test_a_planless_in_progress_wait_is_anchored_on_the_story_row_and_its_tasks():
+    anchored_at = DELIVERED_AT
+    command = _command(StoryStatus.IN_PROGRESS, StateWaitEnding.PARK, story_updated_at=anchored_at)
+    still = StateWaitObservation(
+        status=StoryStatus.IN_PROGRESS, story_updated_at=anchored_at, work_cycle_tasks=0
+    )
+    assert command.mismatch(still) is None
+
+    written = still.model_copy(update={"story_updated_at": anchored_at + timedelta(seconds=1)})
+    assert command.mismatch(written).reason is StateWaitSkipReason.STORY_UPDATED
+
+    planned = still.model_copy(update={"work_cycle_tasks": 2})
+    skip = command.mismatch(planned)
+    assert skip.reason is StateWaitSkipReason.TASKS_CREATED
+    assert skip.actual == "2"
+
+    moved_on = still.model_copy(update={"status": StoryStatus.PR_REVIEW})
+    assert command.mismatch(moved_on).reason is StateWaitSkipReason.STATUS_MOVED

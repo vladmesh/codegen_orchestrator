@@ -13,6 +13,7 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageCreate,
 )
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailure, StoryFailureCode
 
 
 @pytest.fixture
@@ -140,6 +141,29 @@ class TestTransitionStory:
         call_args = mock_httpx_client.request.call_args
         assert "story-abc" in str(call_args)
         assert "start" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_stop_story_carries_the_typed_reason(self, api_client, mock_httpx_client):
+        mock_httpx_client.request.return_value = _ok_response(_story_dict(status="failed"))
+        failure = StoryFailure(
+            code=StoryFailureCode.SCAFFOLD_FAILED, source="architect", detail="clone failed"
+        )
+
+        result = await api_client.stop_story("story-abc", "fail", failure, actor="architect")
+
+        assert result.status == "failed"
+        call = mock_httpx_client.request.call_args
+        assert call.args[:2] == ("POST", "/api/stories/story-abc/fail")
+        body = call.kwargs["json"]
+        assert body["actor"] == "architect"
+        assert body["failure"]["code"] == "scaffold_failed"
+        assert body["failure"]["detail"] == "clone failed"
+
+    @pytest.mark.asyncio
+    async def test_stop_story_refuses_a_non_stopping_action(self, api_client):
+        failure = StoryFailure(code=StoryFailureCode.SCAFFOLD_FAILED, source="a", detail="d")
+        with pytest.raises(ValueError, match="not a stopping story action"):
+            await api_client.stop_story("story-abc", "start", failure, actor="architect")
 
 
 def _brief_dict(**overrides):

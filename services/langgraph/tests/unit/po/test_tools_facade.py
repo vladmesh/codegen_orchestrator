@@ -69,6 +69,7 @@ def test_get_all_tools_preserves_tool_identity_and_order() -> None:
         tools_stories.list_stories,
         tools_stories.reopen_story,
         tools_stories.get_story,
+        tools_stories.get_story_diagnostics,
         tools_stories.get_run_status,
         tools.get_budget_balance,
         tools.set_reminder,

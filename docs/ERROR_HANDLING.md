@@ -60,6 +60,13 @@ bounded state is an entry plus its config key, never another timeout branch.
 | `testing` | `supervisor.qa_wait_max_minutes` | 60 min | the in-flight QA Run's `created_at` | human review |
 | `pr_review` | `supervisor.pr_review_wait_max_minutes` | 220 min | the pull request's `updated_at` on GitHub | human review |
 | `waiting_user_secret` | `supervisor.user_secret_wait_max_minutes` | 1440 min | the ask's owner-notification record: its `delivered_at` | fail |
+| `in_progress` with no task in its work cycle | `supervisor.planless_story_max_minutes` | 60 min | the Story row's `updated_at` (entry into `in_progress`) | human review |
+
+The `in_progress` bound covers one shape of the stage only — a story an architect took and never
+planned (dead scaffold, dead architect). A story with a task of its current cycle, or whose Product
+Brief planning attempt still heartbeats, is not bounded; the API refuses the ending if the row was
+written or a task appeared since the watchdog read it (`story_updated`, `tasks_created`). It is not
+the stage's expected duration, so stage notices still call `in_progress` unbounded.
 
 On expiry the story carries a typed `quarantine_reason` naming the state, the threshold and the
 anchor, and its owner is told through the durable seam: record and transition commit together,

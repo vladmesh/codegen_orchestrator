@@ -19,6 +19,7 @@ from shared.contracts.dto.product_brief import (
 )
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import StoryFailureCode
 from shared.contracts.queues.architect import ArchitectMessage
 from tests.unit.factories import (
     make_admission,
@@ -269,6 +270,103 @@ class TestProcessArchitectJob:
 
         assert result["status"] == "success"
         assert mock_api.get_project.call_count == 2
+
+
+class TestScaffoldFailureStopsTheStory:
+    """Incident 2026-09-24: a dead scaffold left story-3990e41c in_progress with no tasks."""
+
+    @pytest.fixture
+    def valid_job_data(self):
+        return ArchitectMessage(
+            story_id="story-3990e41c", project_id="proj-123", telegram_chat_id="user-1"
+        ).model_dump(mode="json")
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_scaffold_error_fails_the_story_at_once(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(
+                status=ProjectStatus.DRAFT,
+                config={"scaffold_error": "Git init/fetch failed: Repository not found."},
+            )
+        )
+        mock_api.stop_story = AsyncMock()
+        sleep = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", sleep):
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["status"] == "failed"
+        assert result["_live_work_settled"] is True
+        sleep.assert_not_awaited()
+        (call,) = mock_api.stop_story.await_args_list
+        story_id, action, failure = call.args
+        assert (story_id, action, call.kwargs["actor"]) == ("story-3990e41c", "fail", "architect")
+        assert failure.code is StoryFailureCode.SCAFFOLD_FAILED
+        assert "Repository not found" in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_an_error_recorded_during_the_wait_ends_it(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            side_effect=[
+                make_project(status=ProjectStatus.DRAFT, config={}),
+                make_project(status=ProjectStatus.DRAFT, config={"scaffold_error": "clone"}),
+            ]
+        )
+        mock_api.stop_story = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            from src.consumers.architect import process_architect_job
+
+            await process_architect_job(valid_job_data, AsyncMock())
+
+        assert sleep.await_count == 1
+        assert mock_api.stop_story.await_args.args[1] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_without_a_recorded_error_parks_the_story_for_a_person(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(status=ProjectStatus.DRAFT, config={})
+        )
+        mock_api.stop_story = AsyncMock()
+
+        with patch("src.consumers.architect.asyncio.sleep", new_callable=AsyncMock):
+            from src.consumers.architect import SCAFFOLD_WAIT_MAX, process_architect_job
+
+            result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["error"] == "scaffold did not complete in time"
+        story_id, action, failure = mock_api.stop_story.await_args.args
+        assert action == "human-review"
+        assert failure.code is StoryFailureCode.SCAFFOLD_TIMEOUT
+        assert f"after {SCAFFOLD_WAIT_MAX} seconds" in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_a_refused_stop_is_logged_and_leaves_the_job_unsettled(
+        self, valid_job_data, _mock_api_get_project
+    ):
+        mock_api = _mock_api_get_project
+        mock_api.get_project = AsyncMock(
+            return_value=make_project(status=ProjectStatus.DRAFT, config={"scaffold_error": "x"})
+        )
+        mock_api.stop_story = AsyncMock(side_effect=RuntimeError("422 already failed"))
+
+        from src.consumers.architect import process_architect_job
+
+        result = await process_architect_job(valid_job_data, AsyncMock())
+
+        assert result["status"] == "failed"
+        assert result["_live_work_settled"] is False
 
 
 class TestProcessArchitectJobIntegration:

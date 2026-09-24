@@ -178,6 +178,7 @@ def get_all_tools() -> list:
         tools_stories.list_stories,
         tools_stories.reopen_story,
         tools_stories.get_story,
+        tools_stories.get_story_diagnostics,
         tools_stories.get_run_status,
         get_budget_balance,
         set_reminder,

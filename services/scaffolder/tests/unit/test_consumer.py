@@ -10,6 +10,8 @@ from structlog.testing import capture_logs
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
+from shared.contracts.dto.story_failure import StoryFailureCode
+from shared.contracts.dto.task import TaskDTO
 from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -522,7 +524,7 @@ class TestProcessScaffoldJobEnsureMode:
         mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
 
 
-def _make_story(story_id: str, status: str):
+def _make_story(story_id: str, status: str, reopened_at: str | None = None):
     """Build a StoryDTO for tests, shaped like the response the API returns.
 
     `waiting_on` is required on the DTO and follows from the status, so the
@@ -538,21 +540,62 @@ def _make_story(story_id: str, status: str):
             "waiting_on": WAITING_ON_BY_STATUS[StoryStatus(status)].value,
             "priority": 0,
             "created_by": "system",
+            "reopened_at": reopened_at,
             "created_at": "2026-03-17T00:00:00Z",
             "updated_at": "2026-03-17T00:00:00Z",
         }
     )
 
 
+def _make_task(
+    task_id: str,
+    story_id: str,
+    created_at: str = "2026-03-17T00:05:00Z",
+    status: str = "todo",
+) -> TaskDTO:
+    return TaskDTO.model_validate(
+        {
+            "id": task_id,
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "type": "feature",
+            "title": f"task {task_id}",
+            "status": status,
+            "priority": 0,
+            "current_iteration": 0,
+            "max_iterations": 3,
+            "created_by": "architect",
+            "story_id": story_id,
+            "dispatch_admitted": True,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+
+
+async def _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, error: str):
+    with (
+        patch("src.consumer.get_api_client", return_value=mock_api),
+        patch("src.consumer.GitHubAppClient", return_value=mock_github),
+        patch("src.consumer.run_scaffold", return_value=ScaffoldResult(success=False, error=error)),
+        patch("src.consumer.get_settings") as mock_settings,
+        patch.dict(os.environ, _GITHUB_ENV, clear=False),
+        capture_logs() as logs,
+    ):
+        mock_settings.return_value = MagicMock()
+        result = await process_scaffold_job(valid_job_data, mock_redis)
+    return result, logs
+
+
 class TestScaffoldFailureBlastRadius:
     @pytest.mark.asyncio
-    async def test_only_unstarted_stories_are_failed(
+    async def test_fails_stories_that_only_wait_on_the_scaffold(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
-        """A failed scaffold must not destroy work that already left `created`."""
+        """Created and planless in_progress stories fail; work with a plan or past it does not."""
         mock_api.get_stories_by_project.return_value = [
             _make_story("s-created", StoryStatus.CREATED),
-            _make_story("s-in-progress", StoryStatus.IN_PROGRESS),
+            _make_story("s-in-progress-planless", StoryStatus.IN_PROGRESS),
+            _make_story("s-in-progress-planned", StoryStatus.IN_PROGRESS),
             _make_story("s-pr-review", StoryStatus.PR_REVIEW),
             _make_story("s-deploying", StoryStatus.DEPLOYING),
             _make_story("s-testing", StoryStatus.TESTING),
@@ -562,26 +605,62 @@ class TestScaffoldFailureBlastRadius:
             _make_story("s-archived", StoryStatus.ARCHIVED),
             _make_story("s-created-2", StoryStatus.CREATED),
         ]
-        scaffold_result = ScaffoldResult(success=False, error="copier crashed")
+        tasks = {"s-in-progress-planned": [_make_task("t-1", "s-in-progress-planned")]}
+        mock_api.get_tasks_by_story.side_effect = lambda story_id: tasks.get(story_id, [])
 
-        with (
-            patch("src.consumer.get_api_client", return_value=mock_api),
-            patch("src.consumer.GitHubAppClient", return_value=mock_github),
-            patch("src.consumer.run_scaffold", return_value=scaffold_result),
-            patch("src.consumer.get_settings") as mock_settings,
-            patch.dict(os.environ, _GITHUB_ENV, clear=False),
-            capture_logs() as logs,
-        ):
-            mock_settings.return_value = MagicMock()
-            result = await process_scaffold_job(valid_job_data, mock_redis)
+        result, logs = await _run_failed_scaffold(
+            valid_job_data, mock_redis, mock_api, mock_github, "copier crashed"
+        )
 
         assert result["status"] == "failed"
-        failed_ids = [call.args[0] for call in mock_api.fail_story.await_args_list]
-        assert failed_ids == ["s-created", "s-created-2"]
+        failed = {call.args[0]: call.args[1] for call in mock_api.fail_story.await_args_list}
+        assert list(failed) == ["s-created", "s-in-progress-planless", "s-created-2"]
+        for failure in failed.values():
+            assert failure.code is StoryFailureCode.SCAFFOLD_FAILED
+            assert failure.source == "scaffolder"
+            assert failure.detail == "copier crashed"
 
         summary = next(e for e in logs if e["event"] == "scaffold_stories_failed_summary")
-        assert summary["failed_count"] == 2
+        assert summary["failed_count"] == 3
         assert summary["skipped_count"] == 8
+
+    @pytest.mark.asyncio
+    async def test_the_incident_story_taken_by_the_architect_is_failed_with_the_cause(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """story-3990e41c: in_progress, no tasks, scaffold failed on clone — it must not hide."""
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("story-3990e41c", StoryStatus.IN_PROGRESS)
+        ]
+        mock_api.get_tasks_by_story.return_value = []
+        error = (
+            "Git init/fetch failed: remote: Repository not found.\n"
+            "fatal: repository 'https://x-access-token:ghs_secretvalue1234567890@github.com/o/p/' "
+            "not found"
+        )
+
+        await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, error)
+
+        (call,) = mock_api.fail_story.await_args_list
+        story_id, failure = call.args
+        assert story_id == "story-3990e41c"
+        assert "Repository not found" in failure.detail
+        assert "ghs_secretvalue" not in failure.detail
+
+    @pytest.mark.asyncio
+    async def test_a_reopened_story_with_only_old_cycle_tasks_counts_as_planless(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("s-reopened", StoryStatus.IN_PROGRESS, reopened_at="2026-03-18T00:00:00Z")
+        ]
+        mock_api.get_tasks_by_story.return_value = [
+            _make_task("t-old", "s-reopened", created_at="2026-03-17T00:05:00Z", status="done")
+        ]
+
+        await _run_failed_scaffold(valid_job_data, mock_redis, mock_api, mock_github, "boom")
+
+        assert [c.args[0] for c in mock_api.fail_story.await_args_list] == ["s-reopened"]
 
     @pytest.mark.asyncio
     async def test_successful_scaffold_fails_no_story(

@@ -9,15 +9,24 @@ which endpoint moves it.
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
     WAITING_ON_BY_STATUS,
     StoryStatus,
 )
+from shared.contracts.dto.story_failure import (
+    CLOSED_TASK_STATUSES,
+    StoryFailure,
+    story_failure_admin_text,
+    story_failure_owner_text,
+)
+from shared.contracts.vocab import OwnerNotificationEvent
+from shared.models import Task
 from shared.models.run import Run
 from shared.models.story import Story
 
@@ -95,6 +104,49 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
     """Apply one validated hop to a locked story row."""
     _validate_transition(story.status, to_status.value)
     _land_on(story, to_status)
+
+
+async def work_cycle_task_count(story: Story, db: AsyncSession) -> int:
+    """Tasks of the story's current plan, by the rule of ``in_work_cycle``."""
+    query = select(func.count()).select_from(Task).where(Task.story_id == story.id)
+    if story.reopened_at is not None:
+        query = query.where(
+            or_(
+                Task.created_at >= story.reopened_at,
+                Task.status.not_in(CLOSED_TASK_STATUSES),
+            )
+        )
+    return int(await db.scalar(query) or 0)
+
+
+#: The owner event each landing a `StoryFailure` may accompany is told as.
+_FAILURE_EVENT_BY_STATUS: dict[StoryStatus, OwnerNotificationEvent] = {
+    StoryStatus.FAILED: OwnerNotificationEvent.STORY_FAILED,
+    StoryStatus.WAITING_HUMAN_REVIEW: OwnerNotificationEvent.STORY_BLOCKED,
+}
+
+
+def _record_story_failure(story: Story, failure: StoryFailure, to_status: StoryStatus) -> None:
+    """Write why a platform failure stopped the story, and owe its owner the notice.
+
+    Called by the transition that lands on ``to_status``, before the commit, so
+    the reason, the owed record and the status are one write: a reader never
+    sees a failed story without its cause, and the owner-notification sweep
+    delivers the notice even when the caller dies right after the commit.
+    """
+    story.quarantine_reason = failure.model_dump(mode="json")
+    project_id = str(story.project_id)
+    story.owner_notification = OwnerNotification(
+        event=_FAILURE_EVENT_BY_STATUS[to_status],
+        text=story_failure_owner_text(failure),
+        story_id=story.id,
+        project_id=project_id,
+        terminal_status=to_status,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+        admin_text=story_failure_admin_text(story.id, project_id, failure),
+        admin_state=OwnerNotificationState.OWED,
+    ).model_dump(mode="json")
 
 
 async def _record_qa_routing(

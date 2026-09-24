@@ -7,7 +7,7 @@ from src.agents.po.tools_briefs import present_product_brief
 from src.agents.po.tools_stories import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
-MAX_PROMPT_LENGTH = 14000
+MAX_PROMPT_LENGTH = 15000
 
 
 def _section(heading: str) -> str:
@@ -223,6 +223,21 @@ class TestSystemPrompt:
         listed = re.findall(r"^- `([a-z_]+)` —", listed_part, flags=re.MULTILINE)
         assert "story_requirements_returned" in listed
         assert set(listed) <= {event.value for event in OwnerNotificationEvent}
+
+    def test_a_problem_is_reported_with_its_cause_not_as_progress(self):
+        """Incident 2026-09-24: an hour of "development continues" over a dead scaffold."""
+        section = _section("## Reporting a Problem Honestly")
+        assert "`get_story_diagnostics(story_id)`" in section
+        assert "the cause in one plain sentence" in section
+        assert "NEVER say development continues or nothing is required of them" in section
+        events = _section("## Story Events & Reminders")
+        assert "a `problem` in any status → Reporting a Problem Honestly" in events
+        assert events.index("a `problem` in any status") < events.index("`in_progress` / `created`")
+
+    def test_the_diagnostics_tool_named_in_the_prompt_exists(self):
+        from src.agents.po.tools import get_all_tools
+
+        assert "get_story_diagnostics" in {tool.name for tool in get_all_tools()}
 
     def test_the_old_reassuring_blocked_wording_is_gone(self):
         assert "specialist is looking into it" not in SYSTEM_PROMPT

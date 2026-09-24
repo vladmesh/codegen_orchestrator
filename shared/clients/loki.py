@@ -45,17 +45,21 @@ class LokiClient:
         start: datetime,
         end: datetime,
         limit: int = 5000,
+        direction: str = "forward",
     ) -> list[dict]:
         """Execute a LogQL range query and return parsed log entries.
 
         Returns a flat list of parsed JSON log lines from all streams.
+        ``direction="backward"`` makes ``limit`` keep the newest lines.
         """
+        if direction not in {"forward", "backward"}:
+            raise ValueError(f"unknown Loki direction {direction!r}")
         params = {
             "query": query,
             "start": str(int(start.timestamp())),
             "end": str(int(end.timestamp())),
             "limit": str(limit),
-            "direction": "forward",
+            "direction": direction,
         }
 
         logger.debug(

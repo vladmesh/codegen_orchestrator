@@ -5,6 +5,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- A failed or timed-out scaffold now fails or parks the stories waiting on it, `in_progress` included, with
+  a typed `StoryFailure` and an owed owner notice, instead of leaving them "in progress" for ever.
+- An `in_progress` story with no task for `supervisor.planless_story_max_minutes` (60) is parked for
+  human review by the state-age watchdog, so no dead planning run reads as work continuing.
+- PO reads `GET /api/stories/{id}/diagnostics` (recorded cause, scaffold error, failed runs, redacted
+  Loki error lines) through `get_story_diagnostics`, and must tell the owner the cause of a stop.
 - Scaffold retries `git fetch` of a just-created repository with bounded backoff (~30 s) while GitHub's git
   endpoint still answers "Repository not found" or lacks `main`; other git failures still fail at once.
 - CI builds through a per-Dockerfile gha layer cache, bakes the 8 import-check images in parallel, and

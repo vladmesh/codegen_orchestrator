@@ -70,6 +70,7 @@ from ._story_helpers import (
     _get_story_for_update,
     _land_on,
     _validate_transition,
+    work_cycle_task_count,
 )
 from ._task_helpers import create_status_event, get_task_for_update, validate_transition
 from .projects_guards import load_locked_project
@@ -516,6 +517,10 @@ def _missing_secrets_saved(run: Run, project: Project) -> bool:
     return bool(missing) and missing <= saved
 
 
+async def _work_cycle_task_count(story: Story, db: AsyncSession) -> int:
+    return await work_cycle_task_count(story, db)
+
+
 async def _observe_state_wait(
     story: Story, command: StateWaitExpiryCommand, db: AsyncSession
 ) -> StateWaitObservation:
@@ -524,7 +529,18 @@ async def _observe_state_wait(
     Lock ladder: the Story is already held; then the Project, whose row every
     secret write locks, then the latest Run of the anchor type.
     """
-    observed = StateWaitObservation(status=StoryStatus(story.status), pr_number=story.pr_number)
+    observed = StateWaitObservation(
+        status=StoryStatus(story.status),
+        pr_number=story.pr_number,
+        story_updated_at=story.updated_at,
+    )
+    if (
+        observed.status is StoryStatus.IN_PROGRESS
+        and command.expected_status is StoryStatus.IN_PROGRESS
+    ):
+        return observed.model_copy(
+            update={"work_cycle_tasks": await _work_cycle_task_count(story, db)}
+        )
     run_type = ANCHOR_RUN_TYPE_BY_STATUS.get(command.expected_status)
     if observed.status is not command.expected_status or run_type is None:
         return observed
