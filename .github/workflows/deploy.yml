@@ -644,27 +644,51 @@ jobs:
       # one is what a rollback redeploys without a pull — and removes only images of
       # neither that no container uses. Service release images carry a local
       # codegen-orchestrator/<image>:<sha> name, so the dangling prune cannot take them.
+      # The deploy's outcome is the Switch (and the reconcile); cleanup is best-effort:
+      # each command runs whatever the one before it did, a non-zero exit is reported
+      # as a warning annotation and a summary line naming the command and its code, and
+      # neither that, an unreachable host nor the step's timeout fails the deploy. One
+      # SSH attempt, like the Switch: a dropped session is reported, never run twice.
       - name: Cleanup
-        uses: appleboy/ssh-action@v1
         timeout-minutes: 10
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 10m
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            cleanup_status=0
-            python3 scripts/cleanup_worker_images.py \
-              --release-record deployed-worker-images.json \
-              --previous-release-record previous-deployed-worker-images.json || cleanup_status=$?
-            python3 scripts/service_release.py cleanup \
-              --current-record deployed-service-images.json \
-              --previous-record previous-deployed-service-images.json || cleanup_status=$?
-            # Rebuilt worker images can leave their replaced images dangling on the
-            # classic image store. Docker keeps images named by containers.
-            docker image prune -f
-            if [ "${cleanup_status}" -ne 0 ]; then
-              exit "${cleanup_status}"
-            fi
+        continue-on-error: true
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          DEPLOY_SSH_ATTEMPTS: 1
+          CLEANUP_LOG: ${{ runner.temp }}/cleanup.log
+        run: |
+          set -uo pipefail
+          if bash infra/scripts/deploy-ssh.sh > "${CLEANUP_LOG}" <<'REMOTE'
+          set -euo pipefail
+          cd ${{ env.DEPLOY_PATH }}
+          python3 scripts/cleanup_worker_images.py \
+            --release-record deployed-worker-images.json \
+            --previous-release-record previous-deployed-worker-images.json \
+            || echo "cleanup-failed scripts/cleanup_worker_images.py exit=$?"
+          python3 scripts/service_release.py cleanup \
+            --current-record deployed-service-images.json \
+            --previous-record previous-deployed-service-images.json \
+            || echo "cleanup-failed scripts/service_release.py cleanup exit=$?"
+          # Rebuilt worker images can leave their replaced images dangling on the
+          # classic image store. Docker keeps images named by containers.
+          docker image prune -f || echo "cleanup-failed docker image prune exit=$?"
+          exit 0
+          REMOTE
+          then remote_status=0; else remote_status=$?; fi
+          cat "${CLEANUP_LOG}"
+          failures=$(sed -n 's/^cleanup-failed //p' "${CLEANUP_LOG}")
+          if [ "${remote_status}" -ne 0 ]; then
+            failures=$(printf '%s\n%s\n' "${failures}" \
+              "the cleanup session on the host exit=${remote_status}" | sed '/^$/d')
+          fi
+          if [ -z "${failures}" ]; then
+            echo "Cleanup: every command succeeded." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "### Cleanup warnings (the deploy is not affected)" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r failure; do
+            echo "::warning title=Cleanup failed::${failure}; the deploy is live, stale images may remain"
+            echo "- ${failure}" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "${failures}"
+          exit 0

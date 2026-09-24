@@ -17,6 +17,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   refuses a run without that override, instead of building services from the checkout.
 - The stand sweep gets the suites' `API_BASE_URL`, and the runner refuses before preflight when the
   sweep's own requirements are unmet, so a green suite is no longer made red by a sweep that cannot start.
+- [hotfix] Deploy cleanup removes images by ID, skips what is already gone, and reports a failure as a
+  warning, so a live deploy is never red over cleanup (runs 35991711761, 35993281922).
 
 ## 2026-09-23
 

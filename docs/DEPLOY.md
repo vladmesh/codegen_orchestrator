@@ -960,6 +960,9 @@ run that fails in the switch still shows what it was about to start.
   deploying the revision of the live current record (`git_sha` in `deployed-service-images.json`).
 - Cleanup runs only after a successful switch, keeps the promoted current and previous releases and
   every image a container uses, so a failed attempt deletes nothing.
+- **What makes a deploy green is the Switch** (and, in production, the target reconcile), confirmed
+  by the readback below. Cleanup is best-effort: a cleanup problem is a warning on the run, never a
+  failed deploy, and never a reason to redeploy.
 
 Every compose call after the switch adds `-f deployed-service-images.compose.yml`, and every `up`
 runs with `--no-build --pull never`, so compose runs the pulled digests and nothing else. Migrations
@@ -1038,8 +1041,26 @@ outside `infra/` and `secrets/`, and
 **Cleanup** runs last, bounded to 10 minutes, after the deploy is live. `scripts/service_release.py
 cleanup` keeps every service image of the current and the previous record and any image a container
 uses, and removes the rest of the chain's images — older releases and the `:local` images earlier
-host builds left. A missing or unreadable record removes nothing. The worker cleanup is unchanged,
-and a dangling-image prune follows; there is no build cache to prune any more.
+host builds left. A missing or unreadable record removes nothing. `scripts/cleanup_worker_images.py`
+keeps the current and previous worker generations the same way, and a dangling-image prune follows;
+there is no build cache to prune any more.
+
+Both cleanups remove what they decided by **image ID**, each image on its own, among the images on
+the host at that moment. Docker refuses an ID that several repositories name, so such an image is
+untagged name by name as it is named then, and the last name removes it. Nothing already gone is an
+error: an image that vanished, or a name docker dropped along with another (untagging the last tag of
+a repository drops that repository's digest references), is logged `GONE ... reason=already_gone` and
+skipped. An image docker refuses because a container uses it is kept (`KEEP ... reason=docker_refused`);
+any other failure is a `FAIL <id>` line, the rest are still removed, and the script exits non-zero.
+
+**Cleanup is best-effort and never fails the deploy.** The step runs through `deploy-ssh.sh` with one
+attempt; on the host each command (worker cleanup, service cleanup, prune) runs whatever the one before
+it did. Each non-zero exit — and an SSH session that could not run at all — becomes a GitHub warning
+annotation (`Cleanup failed`) and a line under "Cleanup warnings" in the run summary, naming the
+command and its exit code; the log above it has the per-image lines. The step still exits 0, and it is
+`continue-on-error`, so even its timeout leaves the job green. A deploy that is green with a cleanup
+warning is live and correct; stale images may remain until the next deploy's cleanup, or the same
+commands run by hand in the deploy path (add `--dry-run` to only print the decisions).
 
 ### Rolling back
 

@@ -8,7 +8,8 @@ Two properties of `.github/workflows/deploy.yml`:
 - every file-only step reaches the host through `infra/scripts/deploy-ssh.sh`, whose
   retry is bounded and retries only a dropped connection (proved against the helper
   itself in test_deploy_ssh_retry.py). Steps that build, deploy, migrate or check
-  health keep their single-shot ssh action.
+  health keep their single-shot ssh action. The Switch and the Cleanup use the helper
+  with a single attempt.
 
 The file-only steps are also rendered with placeholder values and run for real against
 a fake `ssh` that executes the remote script in a local shell. That is what proves the
@@ -36,10 +37,12 @@ FILE_ONLY_STEPS = (
 # The Switch carries the GitHub App key, so its script travels on stdin through the same
 # helper, but with a single attempt: it must never run twice at once on the host.
 SWITCH_STEP = "Switch"
+# The Cleanup reads each remote command's exit on the runner, to report it as a warning
+# (scripts/tests/test_deploy_cleanup.py), so it runs through the helper too, once.
+CLEANUP_STEP = "Cleanup"
 SINGLE_SHOT_STEPS = (
     "Pull and verify this revision's worker and service releases",
     "Reconcile managed deploy targets",
-    "Cleanup",
 )
 DEPLOYED_SHA = "0123456789abcdef0123456789abcdef01234567"
 EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
@@ -111,7 +114,7 @@ def test_the_job_may_read_the_ci_run_it_waits_for():
 # --- the SSH retry ---
 
 
-@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP, CLEANUP_STEP))
 def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     step = _steps()[name]
     script = step["run"]
@@ -124,7 +127,7 @@ def test_every_file_only_step_goes_through_the_retrying_helper(name: str):
     assert call_line.rstrip().endswith("<<'REMOTE'"), "the remote script is a quoted heredoc"
 
 
-@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP))
+@pytest.mark.parametrize("name", (*FILE_ONLY_STEPS, SWITCH_STEP, CLEANUP_STEP))
 def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
     """Everything before the heredoc runs on the runner command line; no secret is there."""
     script = _steps()[name]["run"]
@@ -134,11 +137,10 @@ def test_secrets_only_reach_the_remote_script_on_stdin(name: str):
     assert "REMOTE" in script.splitlines(), "the heredoc is closed at column 0"
 
 
-def test_the_switch_is_never_retried():
+def test_the_switch_and_the_cleanup_are_never_retried():
     """A dropped connection may leave the first run going; a second must not start."""
-    step = _steps()[SWITCH_STEP]
-
-    assert str(step["env"]["DEPLOY_SSH_ATTEMPTS"]) == "1"
+    for name in (SWITCH_STEP, CLEANUP_STEP):
+        assert str(_steps()[name]["env"]["DEPLOY_SSH_ATTEMPTS"]) == "1", name
     assert all(
         "DEPLOY_SSH_ATTEMPTS" not in _steps()[name].get("env", {}) for name in FILE_ONLY_STEPS
     )
