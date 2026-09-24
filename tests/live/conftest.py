@@ -16,6 +16,7 @@ import uuid
 
 import httpx
 from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
+import live_timeouts
 from pipeline_helpers import (
     api_client_as_internal_service,
     api_client_as_test_user,
@@ -76,6 +77,23 @@ def pytest_collection_modifyitems(session, config, items):
     """
     if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
         require_internal_api_key()
+
+
+def pytest_collection_finish(session):
+    """Bound every live test that will run (`live_timeouts`).
+
+    After collection is final, `-k` and `-m` deselection included: which item
+    sets up a lifecycle fixture — and so carries the lifecycle's bound — depends
+    on which items are left.
+    """
+    live_timeouts.apply_bounds(session.items)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Give the teardown its own bound rather than what the body left of its own."""
+    live_timeouts.arm_teardown_bound(item)
+    return (yield)
 
 
 def pytest_runtest_logreport(report):

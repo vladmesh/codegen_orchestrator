@@ -180,6 +180,40 @@ the overall provisioning budget. The longest runner path is `mega-live`'s, bound
 strict 24-minute reserve over provisioning, the 10-minute pre-provisioning reserve and that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
 jobs do not share an outer timeout.
 
+### Per-test bounds and the order a hang is reported in
+
+Every test under `tests/live` runs under a `pytest-timeout` bound with method `signal`. A hung test
+therefore fails as a pytest timeout — `Failed: Timeout (>Ns) from pytest-timeout`, with the test id
+and a traceback — and the fixture's cleanup, run evidence included, still runs, because `signal`
+raises inside the running test or fixture. `thread` is never used: it ends the interpreter and skips
+every `finally`.
+
+The bounds are numbers in `shared/stand_deadlines.py`, applied in one place,
+`tests/live/live_timeouts.py`, from `conftest.py`. A test module never sets its own `timeout` marker;
+one that does is refused at collection. Each item gets a body bound over its setup and call, and its
+teardown is re-armed with a teardown bound of its own. Without the re-arm a teardown after a failure
+would have no bound at all: pytest-timeout drops an item's timer whenever its setup or call fails.
+
+| Items | Body bound | Teardown bound |
+|---|---|---|
+| The first `TestFullPipeline` item under `mega-noop`, which sets up the lifecycle | 8440 s: the lifecycle's explicit waits (`NOOP_LIFECYCLE_WAITS`) | 700 s (the teardown reserve) |
+| The first `TestFullPipeline` item under `mega-live` | 14980 s: `LIVE_LIFECYCLE_WAITS` | 700 s |
+| Every other `TestFullPipeline` item (they only assert on the fixture's context) | 1800 s | 700 s |
+| The first item of each `mega-brief*` class | 4800 s, the longer brief's hard stop | 700 s |
+| Every other live test | 1800 s, one real developer Task | 700 s |
+
+A hang is reported in this order: the **test timeout**, then `stand_run`'s **suite backstop** (SIGINT
+to the process group, then a kill after the termination grace), then the workflow's **job limit**.
+For `mega-noop` and `mega-live`, the ledger checks at import that any single item's bound plus the
+teardown reserve is less than the suite cap (8440 + 700 < 9300 and 14980 + 700 < 15900). When a hang
+fails the lifecycle item, `-x` stops the session and pytest tears the module down at session end,
+outside any item. The margin the cap leaves then still covers the cleanup, so pytest reports the hang
+before the backstop can fire. An ordinary live test is checked the same way against the 2700-second
+custom-target backstop (1800 + 700 < 2700). `mega-brief*` does not fit this scheme: its fixture
+keeps its own productive clock, and the runner allows exactly the cleanup grace after it, so no bound
+fits between the two. Its bound is set at the hard stop, never cuts the productive window, and leaves
+the fixture clock and the runner as that suite's fences.
+
 ### Invariant map and first-iteration baseline
 
 All named suites exercise the product acceptance path: project creation, scaffold, engineering,

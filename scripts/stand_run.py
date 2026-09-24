@@ -65,6 +65,7 @@ from shared.contracts.worker_evidence import secret_env_values
 from shared.diagnostics import redact_diagnostic
 from shared.live_contour import CONTOURS
 from shared.stand_deadlines import (
+    CUSTOM_TARGET_TIMEOUT_SECONDS,
     LIVE_SUITE_TIMEOUT_SECONDS,
     MEGA_BRIEF_HARD_STOP_SECONDS,
     MEGA_BRIEF_PACKAGE_HARD_STOP_SECONDS,
@@ -124,7 +125,8 @@ _INSIDE_RECREATE_GATE = False
 # are derived in `shared/stand_deadlines.py` from the waits themselves, so the
 # runner, its test and `tests/live/README.md` cannot drift apart again. Since
 # card 1316 the lifecycle runs two stories on one project, which is what moved it.
-CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
+# `CUSTOM_TARGET_TIMEOUT_SECONDS` lives there too: the ordinary live test bound is
+# ordered under it.
 PREFLIGHT_TIMEOUT_SECONDS = 300
 SWEEP_TIMEOUT_SECONDS = 300
 

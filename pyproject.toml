@@ -38,6 +38,7 @@ dev = [
     "infra-service",
     "scaffolder",
     "worker-wrapper",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.uv.workspace]
