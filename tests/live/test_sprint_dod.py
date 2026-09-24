@@ -15,6 +15,7 @@ from typing import Any
 
 from live_harness import cleanup_guard
 from pipeline_helpers import (
+    BACKEND_ONLY_MODULES,
     ENGINEERING_TIMEOUT,
     LLM_ENGINEERING_TIMEOUT,
     ORCHESTRATOR_ROOT,
@@ -22,8 +23,8 @@ from pipeline_helpers import (
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     cleanup_all,
-    create_llm_backend_project,
     create_noop_project,
+    create_pipeline_project,
     create_story_and_task,
     ensure_test_user,
     live_worker_agent_type,
@@ -57,6 +58,10 @@ RESTART_TASK_DESCRIPTION = (
     "Add a GET /ping endpoint to the scaffolded backend service that returns HTTP 200 with the "
     'JSON body {"pong": true}, plus a unit test for it. Keep GET /health unchanged, keep the '
     "project backend-only and require no user-provided secrets. Commit and push the change."
+)
+RESTART_PROJECT_DESCRIPTION = (
+    "Backend-only restart proof: one real coding turn that survives an engineering consumer "
+    "restart. Requires no user-provided secrets."
 )
 # A cold stand may need the full noop engineering budget before the first
 # worker records its turn: dispatcher tick, image pull, container start, lease.
@@ -348,18 +353,25 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
         api_client_as_unscoped_observer() as api_observer,
     ):
         await ensure_test_user(api, api_internal)
-        ctx = await create_llm_backend_project(api, api_internal)
+        ctx = await create_pipeline_project(
+            api,
+            api_internal,
+            project_prefix=contour.llm_pipeline,
+            description=RESTART_PROJECT_DESCRIPTION,
+            agent_type=requested_agent,
+            task_title=RESTART_TASK_TITLE,
+            task_description=RESTART_TASK_DESCRIPTION,
+            modules=BACKEND_ONLY_MODULES,
+        )
         async with cleanup_guard(
             lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
         ):
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx)
             # A turn that lands no commit is judged failed regardless of adoption,
-            # so this proof needs a turn whose result is a real push. It keeps its
-            # own endpoint task rather than inheriting the mega's marker task: what
-            # is proved here is the restart, not the payload of /health.
-            ctx["task_title"] = RESTART_TASK_TITLE
-            ctx["task_description"] = RESTART_TASK_DESCRIPTION
+            # so this proof needs a turn whose result is a real push: the project
+            # was created with its own endpoint task, because what is proved here
+            # is the restart, not any product payload.
             await create_story_and_task(api, ctx)
 
             worker = await _wait_for_active_turn(ctx["project_id"])

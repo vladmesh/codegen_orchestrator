@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-inventory test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-llm test-live-mega-brief test-live-mega-brief-package test-live-matrix test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-live test-live-clean test-live-inventory test-live-smoke test-live-engineering test-live-mega-noop test-live-mega-live test-live-mega-brief test-live-mega-brief-package test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -42,11 +42,10 @@ help:
 	@echo "  make test-live-inventory PREFIX=name - Read-only residue inventory (requires API_BASE_URL)"
 	@echo "  make test-live-clean     - Sweep live-test residue (requires API_BASE_URL)"
 	@echo "  make test-live N=health   - Run specific live test file"
-	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
-	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
+	@echo "  make test-live-mega-noop  - Run the level-1 lifecycle: scripted developer, deterministic QA"
+	@echo "  make test-live-mega-live WORKER=.. QA=.. - Run the same lifecycle with a real developer and QA executor on the stand"
 	@echo "  make test-live-mega-brief - Run the Product Brief E2E class for one selected pair"
 	@echo "  make test-live-mega-brief-package - Run the Product Brief package E2E class"
-	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
 	@echo "Git Hooks:"
@@ -373,14 +372,18 @@ test-live-engineering:
 	@echo "Running engineering pipeline test (~3-5 min)..."
 	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
 
+# The class runs level 2 when it is told of a developer model; level 1 is told of none.
 test-live-mega-noop:
 	@echo "Running mega-noop: TestFullPipeline only (no LLM)..."
-	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
+	@env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE \
+		uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
 
 # L1 retired compatibility spelling `test-live-mega: test-live-mega-noop`; use the canonical target directly.
-test-live-mega-llm:
-	@echo "Running mega-llm: TestFullPipelineLLM only (one selected developer/QA pair)..."
-	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v --tb=long -x -s
+# Level 2 is the same class with a real developer and a real QA executor. Which
+# agents it runs, and the QA executor switch that makes the second one true, are
+# the stand runner's to decide, so the target is the runner's.
+test-live-mega-live:
+	@$(MAKE) --no-print-directory stand-run SUITE=mega-live
 
 test-live-mega-brief:
 	@echo "Running mega-brief: TestProductBriefPipeline only (one selected developer/QA pair)..."
@@ -389,10 +392,6 @@ test-live-mega-brief:
 test-live-mega-brief-package:
 	@echo "Running mega-brief-package: TestProductBriefPackagePipeline only (one selected developer/QA pair)..."
 	@uv run pytest tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline -v --tb=long -x -s
-
-# Four paid stand cells: Claude/Codex developer × Claude/Codex QA.
-test-live-matrix:
-	@$(MAKE) --no-print-directory stand-run SUITE=matrix
 
 # Legacy aggregate, not a named suite: `test-live-pipeline` is retired; invoke the named targets explicitly.
 
@@ -406,19 +405,18 @@ stand-preflight:
 	@set -a; . ./.env; set +a; \
 	uv run python -m scripts.stand_preflight
 
-# One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-llm,
-# mega-brief, matrix — or any pytest target, so a new scenario needs no new plumbing.
+# One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-live,
+# mega-brief, mega-brief-package — or any pytest target, so a new scenario needs no new plumbing.
 #
 #   make stand-run SUITE=mega-noop
-#   make stand-run SUITE=mega-llm WORKER=codex QA=claude
+#   make stand-run SUITE=mega-live WORKER=codex QA=claude
 #   make stand-run SUITE=mega-brief WORKER=codex QA=claude
-#   make stand-run SUITE=matrix
 #   make stand-run SUITE=tests/live/test_api_crud.py
 #
-# A mega takes ten minutes and the matrix an hour — longer than an SSH session
+# A mega takes tens of minutes and a live one hours — longer than an SSH session
 # reliably lives — so run it detached and read the log it names:
 #
-#   setsid nohup make stand-run SUITE=matrix > /dev/null 2>&1 &
+#   setsid nohup make stand-run SUITE=mega-live > /dev/null 2>&1 &
 #   tail -f ~/e2e-runs/latest/run.log
 SUITE ?= mega-noop
 WORKER ?= claude

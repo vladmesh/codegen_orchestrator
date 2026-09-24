@@ -8,7 +8,7 @@
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI when relevant paths change | ~10-30 min |
 | **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
-| **E2E** | `tests/live/`, `.github/workflows/stand-e2e.yml` | Stand + real LLM | Manual workflow | 10-60 min |
+| **E2E** | `tests/live/`, `.github/workflows/stand-e2e.yml` | Stand + real LLM | Manual workflow | up to each suite's own cap (below) |
 
 ## Running Tests
 
@@ -36,7 +36,7 @@ make test-live-engineering     # Scaffold + engineering (~3.5 min)
 make test-live-mega-noop       # Free full pipeline with deploy and deterministic QA
 
 # E2E
-make stand-run SUITE=mega-llm    # Full stand pipeline with real coding and QA agents
+make stand-run SUITE=mega-live WORKER=claude QA=codex  # Level 2: the level-1 lifecycle with a real developer and QA executor
 make stand-run SUITE=mega-brief  # Confirmed Product Brief through Architect, engineering, deploy and QA
 make stand-run SUITE=mega-brief-package  # The same brief path onto the kit package route
 
@@ -303,13 +303,14 @@ commit SHA with the tag it was resolved from as a `# vX` comment; the CI contrac
 
 Paid E2E tests are not part of required PR CI. Run the canonical named suites through the
 `stand-e2e` workflow or `make stand-run SUITE=<suite>` against the isolated stand. `mega-noop`
-exercises the full pipeline without a model call, `mega-llm` selects one coding/QA agent pair,
+exercises the full pipeline without a model call; `mega-live` runs the very same lifecycle — the
+same class and its 39 tests — with one selected real developer and one selected real QA executor;
 `mega-brief` proves the confirmed Product Brief through Architect, engineering, deploy and QA with
 one selected pair. Its productive work stops at 50 minutes, then its fixture gets a separate
 10-minute evidence-and-cleanup grace. `mega-brief-package` is the same path on a brief whose
 capability is a one-time reminder, so the Architect plans a kit package, the worker installs it
 with the kit recipe, and central QA judges the package behaviour on the route its criterion
-names; it gets 65 productive minutes and a 15-minute grace. `matrix` runs all supported pairs.
+names; it gets 65 productive minutes and a 15-minute grace.
 
 **The stand runs the tested release.** `stand-e2e` builds nothing on the stand. Before any machine
 is created it waits, at most ten minutes, for the worker and the service release of the workflow SHA
@@ -370,6 +371,7 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 | Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
 | Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
 | Full (level 1) | `test-live-mega-noop` | 39 | ~20 min of suite time observed (2026-09-20), 155 min cap | Two stories on one project: confirmed Product Brief, scripted engineering, deploy, deterministic QA, undeploy |
+| Full (level 2) | `test-live-mega-live` | 39 | no baseline measurement yet, 265 min cap | The same two stories, class and tests, with a real developer writing the code and a real QA executor judging each deployed story (stand runner only) |
 
 **Key properties**:
 - Module-scoped async fixtures share one pipeline run across tests per tier
@@ -423,11 +425,28 @@ that a real architect plans a brief, covers its requirements or publishes a usab
 criterion. There is no QA executor turn, so no product behaviour is judged by a model: the QA gate
 accepts `/health` answering and nothing else. It says nothing about executor selection, paid-run
 admission of a model call, provider cost or transcript retention beyond the noop settlement rows it
-asserts. Those are the paid suites' subject: `mega-llm` for one developer and one QA executor pair,
-`mega-brief` for the Architect-planned brief with a real developer and central QA,
-`mega-brief-package` for the same path onto the kit package route, and `matrix` for all four pairs.
+asserts. Those are the paid suites' subject: `mega-live` for one developer and one QA executor pair
+on this same lifecycle, `mega-brief` for the Architect-planned brief with a real developer and
+central QA, and `mega-brief-package` for the same path onto the kit package route.
 A level-1 run that is green therefore says the platform works end to end without a model — never
 that the product a model would have built is good.
+
+### What level 2 adds
+
+`mega-live` (`make stand-run SUITE=mega-live WORKER=<agent> QA=<agent>`) is not a second suite: it is
+`TestFullPipeline` again, with the developer resolved from `LIVE_WORKER_AGENT_TYPE` in one function
+(`pipeline_helpers.level1_developer_agent_type`) and the stand runner as the only place that sets it.
+Everything level 1 proves it proves again, and three facts change. A real developer (`claude` or
+`codex`) is handed the product contract in prose — endpoints and their JSON, the settings and where
+they are declared, the command and its menu, and the kit rules its own CI enforces — never a change
+set, and both story branches must carry its commits; the deployed-product probes then judge what the
+code does, unweakened. Every engineering Run must be decided for the requested developer, carry a
+provider-reported cost and settle its reservation under the run owner's promo policy — Codex reports
+no cost today, so a Codex-developed run fails that check by design. And a real QA executor judges
+each story against repository criteria that are not health-only, its QA Run's persisted executor
+decision naming the requested executor. Its cap is 265 minutes, derived like level 1's from its
+waits in `shared/stand_deadlines.py`. It still asks no model to write the brief or plan the story;
+that is `mega-brief`'s subject.
 
 ## Integration Test Architecture
 

@@ -45,9 +45,12 @@ from level1_change_set import (
     LEVEL1_COMMAND,
     LEVEL1_ENDPOINT_PATH,
     LEVEL1_EXTENSION_ENDPOINT_PATH,
+    SCRIPTED_DEVELOPER,
     build_level1_change_sets,
     build_level1_extension_change_set,
     level1_command_description,
+    level1_extension_qa_criteria,
+    level1_qa_criteria,
 )
 from level1_merge_artifact import change_set_comparison, merge_artifact_mismatches
 from level1_second_story import (
@@ -119,6 +122,7 @@ from shared.clients.registry import sha_image_tag
 from shared.contracts.acceptance import ScheduledBehaviourCriterion
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_attempt import CostSource
 from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionOutcome,
     EngineeringBudgetAdmissionRead,
@@ -164,8 +168,11 @@ from shared.stand_deadlines import (
     HEALTH_PROBE_PATHS,
     HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS,
     HEALTH_PROBE_RETRY_DELAY_SECONDS,
+    LIVE_QA_RUN_TIMEOUT,
+    LLM_ENGINEERING_TIMEOUT,
     MEGA_BRIEF_PACKAGE_PRODUCTIVE_SECONDS,
     OWNER_NOTIFICATION_TIMEOUT,
+    QA_RUN_TIMEOUT,
     STORY_AGGREGATION_POLL_INTERVAL,
     STORY_AGGREGATION_TIMEOUT,
     STORY_COMPLETION_TIMEOUT,
@@ -209,7 +216,6 @@ SCAFFOLD_POLL_INTERVAL = 3
 # without the ledger noticing is exactly the defect round 5 of card 1316 left
 # behind. What stays local is a poll interval — how often a wait looks — which
 # no budget is computed from.
-LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
 SCAFFOLD_FENCE_TIMEOUT = 900
 DEPLOY_RUN_POLL_INTERVAL = 5
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
@@ -283,8 +289,10 @@ LEVEL1_MODULES = ["backend", "tg_bot"]
 LEVEL1_PROJECT_DESCRIPTION = "Pipeline E2E test - level-1 Telegram bot product"
 #: What the level-1 scenario is called in its own evidence document — the name
 #: of the stand suite that runs it, the same way a paid brief variant is named
-#: after the suite it is the target of.
+#: after the suite it is the target of. The lifecycle is one; which suite ran it
+#: is decided by its developer.
 LEVEL1_BRIEF_VARIANT = "mega-noop"
+LEVEL2_BRIEF_VARIANT = "mega-live"
 LEVEL1_BACKEND_TASK_TITLE = "Level-1 marker endpoint and product setting"
 LEVEL1_BOT_TASK_TITLE = "Level-1 Telegram command handler"
 #: The extension story's one task — the second story of the same project.
@@ -305,18 +313,6 @@ TELEGRAM_TOKEN_ROUTE = "/api/projects/{project_id}/telegram/token"  # noqa: S105
 LEVEL1_COMMAND_MENU_TIMEOUT = 120
 LEVEL1_COMMAND_MENU_POLL_SECONDS = 5
 
-LLM_BACKEND_PROJECT_DESCRIPTION = (
-    "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
-    "without any user-provided secrets."
-)
-# The field the paid suite asks the developer worker to add to the scaffolded
-# health payload. The scaffold serves GET /health already, so a task phrased
-# around the endpoint itself asks for nothing: the third paid run (33706516335)
-# ended with an empty story branch because the worker correctly found the work
-# already done. One field the template does not render is a change the worker
-# has to write, and one the harness can see afterwards.
-LLM_HEALTH_MARKER_FIELD = "e2e_marker"
-
 
 def new_health_marker() -> str:
     """The marker value this run asks for, and only this run can be satisfied by.
@@ -327,23 +323,6 @@ def new_health_marker() -> str:
     """
     return f"e2e-{secrets.token_hex(6)}"
 
-
-def llm_backend_detailed_spec(marker: str) -> str:
-    """The project-level spec of the paid backend, carrying this run's marker."""
-    return f"""Implement a backend-only service.
-
-Requirements:
-- Keep the project backend-only. Do not add frontend, Telegram, notification, or bot modules.
-- Do not require any user-provided secrets or environment variables.
-- Keep the existing deploy contract limited to generated, computed, or literal values.
-- GET /health returns HTTP 200 and a JSON object that carries the field
-  "{LLM_HEALTH_MARKER_FIELD}" with the exact string value "{marker}".
-- Cover that field with one focused backend test.
-- Run the repository's normal formatting, linting, and unit tests before committing.
-"""
-
-
-LLM_BACKEND_TASK_TITLE = "Add the run marker to the backend health payload"
 
 # ``mega-brief`` is intentionally a backend-only product.  It proves the
 # requirement-as-data path through the generated jobs core without making a
@@ -788,33 +767,12 @@ BRIEF_PACKAGE_SCENARIO = BriefScenario(
 )
 
 
-def llm_backend_task_description(marker: str) -> str:
-    """The engineering task the paid suite drives, in the shape the plan names."""
-    return (
-        "The scaffolded backend already serves GET /health, so this task is about what that "
-        f'endpoint returns. Add the field "{LLM_HEALTH_MARKER_FIELD}" to its JSON response '
-        f'with the exact string value "{marker}", keeping the response HTTP 200 and the rest '
-        "of the payload as it is. Add or update one focused backend test asserting that "
-        f'GET /health answers 200 and that its JSON carries "{LLM_HEALTH_MARKER_FIELD}" equal '
-        f'to "{marker}". Keep the app backend-only and deployable with no user-required secrets.'
-    )
-
-
-def llm_qa_acceptance_criteria(marker: str) -> str:
-    """What QA is told to observe: the field this run's task added, and nothing else.
-
-    The transport contract only — the change is observable and the executor
-    really ran. Architecture, diff size and style are not QA's to grade.
-    """
-    return f"""- GET /health returns HTTP 200.
-- Inspect the JSON returned by GET /health and report the observed value of the field
-  "{LLM_HEALTH_MARKER_FIELD}"; it must be exactly "{marker}".
-"""
-
-
 LIVE_WORKER_AGENT_TYPE_ENV = "LIVE_WORKER_AGENT_TYPE"
 LIVE_LLM_QA_ENV = "LIVE_LLM_QA"
+LIVE_QA_AGENT_TYPE_ENV = "LIVE_QA_AGENT_TYPE"
 LIVE_MATRIX_AGENT_TYPES = frozenset({"claude", "codex"})
+#: The developer that is not a model: the scripted runner of the level-1 route.
+SCRIPTED_AGENT_TYPE = SCRIPTED_DEVELOPER
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -1219,6 +1177,65 @@ class Level1RunRefused(RuntimeError):
     """
 
 
+#: Every developer the level-1 lifecycle can be run with. The scripted runner is
+#: level 1 (`mega-noop`); a model is level 2 (`mega-live`).
+LEVEL1_DEVELOPER_AGENT_TYPES = (SCRIPTED_AGENT_TYPE, *sorted(LIVE_MATRIX_AGENT_TYPES))
+
+
+def level1_developer_agent_type() -> str:
+    """The level-1 lifecycle's one fork: which developer writes the product code.
+
+    Unset or `noop` is the scripted runner and the deterministic lifecycle;
+    `claude` or `codex` is that model, and with it the lifecycle's level-2
+    expectations. Anything else is refused here, before anything is created. The
+    stand runner (`scripts/stand_run.py`) is what sets the variable per suite, and
+    it gives `mega-noop` nothing at all.
+    """
+    raw = (os.getenv(LIVE_WORKER_AGENT_TYPE_ENV) or "").strip().lower()
+    agent_type = raw or SCRIPTED_AGENT_TYPE
+    if agent_type not in LEVEL1_DEVELOPER_AGENT_TYPES:
+        raise Level1RunRefused(
+            f"{LIVE_WORKER_AGENT_TYPE_ENV}={raw!r} names no developer the level-1 lifecycle "
+            f"runs with; it is unset or one of {', '.join(LEVEL1_DEVELOPER_AGENT_TYPES)}"
+        )
+    return agent_type
+
+
+def level1_qa_executor(agent_type: str) -> str | None:
+    """The QA executor a level-1 run asks for, or None for deterministic QA.
+
+    Not a second fork: it follows from the developer. A scripted run is judged by
+    the deterministic health-only QA; a run whose code a model wrote is judged by
+    a real executor, which the stand runner has already switched to and named in
+    `LIVE_QA_AGENT_TYPE` beside `LIVE_LLM_QA=1`. A model run without that pair is
+    refused rather than quietly judged by `/health`.
+    """
+    if agent_type == SCRIPTED_AGENT_TYPE:
+        return None
+    qa = (os.getenv(LIVE_QA_AGENT_TYPE_ENV) or "").strip().lower()
+    if os.getenv(LIVE_LLM_QA_ENV) != "1" or qa not in LIVE_MATRIX_AGENT_TYPES:
+        raise Level1RunRefused(
+            f"a level-1 run with the {agent_type} developer is judged by a real QA executor, "
+            f"but {LIVE_LLM_QA_ENV}={os.getenv(LIVE_LLM_QA_ENV)!r} and "
+            f"{LIVE_QA_AGENT_TYPE_ENV}={qa!r}; run it as `stand_run --suite mega-live`"
+        )
+    return qa
+
+
+def developer_engineering_timeout(ctx: dict) -> int:
+    """How long one engineering Task of this run is waited on, by who develops it."""
+    if ctx["agent_type"] == SCRIPTED_AGENT_TYPE:
+        return ENGINEERING_TIMEOUT
+    return LLM_ENGINEERING_TIMEOUT
+
+
+def qa_run_timeout(ctx: dict) -> int:
+    """How long one story's QA Run is waited on, by who judges it."""
+    if ctx.get("qa_requires_executor"):
+        return LIVE_QA_RUN_TIMEOUT
+    return QA_RUN_TIMEOUT
+
+
 def require_product_bot_token() -> str:
     """The stand's product bot token, or a refusal naming what is missing.
 
@@ -1282,13 +1299,19 @@ async def create_level1_bot_project(
 ) -> dict:
     """Create the level-1 Telegram-bot product: two modules, a bot, two change sets.
 
-    Order matters and is the point. The token is demanded before anything is
-    created, so a stand without it spends nothing. The change sets are built
-    before the project, so a kit that moved under the pin refuses here rather
-    than in a worker container. The binding happens after the repository exists
-    — the route needs a primary repository to hang `bot_username` on — and
-    inside a cleanup guard, so a refused token leaves no project behind.
+    Order matters and is the point. The developer is resolved first and the
+    token demanded next, both before anything is created, so a run asked for a
+    developer it cannot have or a stand without the token spends nothing. The
+    change sets are built before the project, so a kit that moved under the pin
+    refuses here rather than in a worker container; with a model developer they
+    are still what fixes the product contract's paths, but the task descriptions
+    carry the contract in prose and no patch. The binding happens after the
+    repository exists — the route needs a primary repository to hang
+    `bot_username` on — and inside a cleanup guard, so a refused token leaves no
+    project behind.
     """
+    agent_type = level1_developer_agent_type()
+    qa_executor = level1_qa_executor(agent_type)
     token = require_product_bot_token()
     marker = new_health_marker()
     template = resolve_template()
@@ -1308,28 +1331,35 @@ async def create_level1_bot_project(
         api_internal,
         project_prefix=require_live_contour().pipeline,
         description=LEVEL1_PROJECT_DESCRIPTION,
-        agent_type="noop",
+        agent_type=agent_type,
         task_title=LEVEL1_BACKEND_TASK_TITLE,
-        task_description=change_sets.backend_task_description(),
+        task_description=change_sets.backend_task_description(agent_type=agent_type),
         modules=LEVEL1_MODULES,
         run_owner=run_owner,
     )
     ctx["level1_marker"] = marker
     ctx["level1_change_set_paths"] = change_sets.paths
+    # Deterministic health-only QA for the scripted developer; a real executor,
+    # judging the repository criteria each story's plan admission writes, for a
+    # model. The requested executor itself is `qa_agent_type_requested`.
+    ctx["qa_requires_executor"] = qa_executor is not None
+    ctx["level1_qa_criteria"] = level1_qa_criteria(marker) if qa_executor else None
     # The level-1 lifecycle confirms a Product Brief through the released PO
     # tools on every run, so its evidence document owes that confirmation and
     # is red without it. It publishes no Architect criterion and its
     # deterministic QA fires no product job, so it owes neither of those: the
     # artifact used to answer "this is not a Product Brief scenario" to all of
     # them, which was false about the first and true only by accident.
-    ctx["brief_variant"] = LEVEL1_BRIEF_VARIANT
+    ctx["brief_variant"] = (
+        LEVEL1_BRIEF_VARIANT if agent_type == SCRIPTED_AGENT_TYPE else LEVEL2_BRIEF_VARIANT
+    )
     ctx[BRIEF_OBLIGATIONS_CTX_KEY] = list(LEVEL1_BRIEF_OBLIGATIONS)
     # The product contract this run's story is planned against. Minted from the
     # same marker as the change sets, so the setting the user confirms is the
     # one the backend manifest declares and the value is this run's alone.
     ctx["level1_brief"] = build_level1_brief(marker)
     ctx["followup_task_title"] = LEVEL1_BOT_TASK_TITLE
-    ctx["followup_task_description"] = change_sets.bot_task_description()
+    ctx["followup_task_description"] = change_sets.bot_task_description(agent_type=agent_type)
     # What QA judges each task by, and what `format_acceptance_criteria` has to
     # put into that task's TASK.md word for word. Minted from the same marker as
     # the change sets and the brief, so the three cannot drift apart and a
@@ -1344,9 +1374,12 @@ async def create_level1_bot_project(
     ctx["level1_extension_marker"] = extension_marker
     ctx["level1_extension_plan"] = {
         "task_title": LEVEL1_EXTENSION_TASK_TITLE,
-        "task_description": extension_change_set.task_description(),
+        "task_description": extension_change_set.task_description(agent_type=agent_type),
         "task_criteria": extension_change_set.acceptance_criteria(),
         "change_set_paths": extension_change_set.paths,
+        "qa_criteria": (
+            level1_extension_qa_criteria(marker, extension_marker) if qa_executor else None
+        ),
     }
 
     async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
@@ -1354,69 +1387,19 @@ async def create_level1_bot_project(
     return ctx
 
 
-async def create_llm_backend_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, run_owner: "RunOwner | None" = None
-) -> dict:
-    """Create project + repository for the live LLM backend pipeline.
-
-    The marker is minted here, once, and every string this run drives the LLM
-    path with is derived from it: the spec, the engineering task and — when the
-    run asks for an LLM QA executor — the acceptance criteria. They cannot drift
-    apart, because there is only one value and one place it comes from.
-    """
-    marker = new_health_marker()
-    ctx = await create_pipeline_project(
-        api,
-        api_internal,
-        project_prefix=require_live_contour().llm_pipeline,
-        description=LLM_BACKEND_PROJECT_DESCRIPTION,
-        detailed_spec=llm_backend_detailed_spec(marker),
-        agent_type=live_worker_agent_type(),
-        task_title=LLM_BACKEND_TASK_TITLE,
-        task_description=llm_backend_task_description(marker),
-        modules=BACKEND_ONLY_MODULES,
-        run_owner=run_owner,
-    )
-    ctx["health_marker"] = marker
-    ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
-    if ctx["qa_requires_executor"]:
-        response = await api.patch(
-            f"/api/repositories/{ctx['repo_id']}",
-            json={"acceptance_criteria": llm_qa_acceptance_criteria(marker)},
-        )
-        response.raise_for_status()
-    return ctx
-
-
 def live_worker_agent_type() -> str:
-    """Resolve the real developer used by a live matrix run."""
+    """Resolve the real developer a Product Brief run or the restart proof drives.
+
+    Those suites exist only with a model, so an unset variable means Claude. The
+    level-1 lifecycle resolves its developer in `level1_developer_agent_type`
+    instead, where unset means the scripted runner.
+    """
     agent_type = os.getenv(LIVE_WORKER_AGENT_TYPE_ENV, "claude").strip().lower()
     if agent_type not in LIVE_MATRIX_AGENT_TYPES:
         allowed = ", ".join(sorted(LIVE_MATRIX_AGENT_TYPES))
         raise RuntimeError(
             f"{LIVE_WORKER_AGENT_TYPE_ENV} must be one of {allowed}, got {agent_type!r}"
         )
-    return agent_type
-
-
-def configured_qa_executor() -> str:
-    """Read the executor selected by the live qa-worker container."""
-    command = (
-        "from src.config.settings import get_settings; "
-        "print(get_settings().qa_executor_agent_type.value)"
-    )
-    result = subprocess.run(
-        ["docker", "compose", "exec", "-T", "qa-worker", "python", "-c", command],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        cwd=ORCHESTRATOR_ROOT,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"cannot read qa-worker executor: {result.stderr.strip()}")
-    agent_type = result.stdout.strip()
-    if agent_type not in LIVE_MATRIX_AGENT_TYPES:
-        raise RuntimeError(f"qa-worker reported unsupported executor {agent_type!r}")
     return agent_type
 
 
@@ -1919,12 +1902,20 @@ class Level1PhaseFailed(RuntimeError):
 # nothing about the door a real first user comes through.
 
 #: What the code this run mints carries, and therefore exactly what the policy
-#: its redemption arms has to hold. Generous against the two scripted noop
-#: attempts the run makes — each holds `attempt_reservation_microusd` and
-#: settles as unknown-cost, so the limit must cover both with room left — and
-#: finite, so the run proves an *enforced* policy rather than an absent one.
-LEVEL1_PROMO_CREDITS_MICROUSD = 50_000_000
-LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD = 1_000_000
+#: its redemption arms has to hold. Finite, so the run proves an *enforced*
+#: policy rather than an absent one, and sized for the dearer of the two
+#: developers the lifecycle runs with.
+#:
+#: Admission needs the $5 reservation to fit in the limit less known spend and
+#: active holds (`engineering_budget_admission.admit_engineering_attempt`). The
+#: level-1 run makes three engineering attempts — two tasks of the first story,
+#: one of the second. With a model developer each settles at its real cost; the
+#: sizing allows every one of those three and two retries (five attempts) up to
+#: $15 each, $75, with the next attempt's $5 hold still admissible on top: $80
+#: of the $100. With the scripted developer each attempt holds $5 and settles as
+#: unknown-cost, keeping the hold — $15 of the $100.
+LEVEL1_PROMO_CREDITS_MICROUSD = 100_000_000
+LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD = 5_000_000
 
 PROMO_BATCH_ROUTE = "/api/promo-codes/batch"
 USER_UPSERT_ROUTE = "/api/users/upsert"
@@ -2742,6 +2733,8 @@ async def _plan_and_admit_level1(
                 f"HTTP {recorded.status_code} {recorded.text[:300]}",
             )
 
+    await _write_level1_qa_criteria(api, ctx)
+
     admission = await api.post(
         f"/api/product-briefs/{ctx['brief_id']}/admit", json={"planning_attempt_id": attempt_id}
     )
@@ -2784,6 +2777,42 @@ async def _plan_and_admit_level1(
     ctx["level1_plan_after_admission"] = await _level1_plan_snapshot(api, ctx)
     await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_admission")
     return ctx["brief_read"]
+
+
+async def _write_level1_qa_criteria(api: httpx.AsyncClient, ctx: dict) -> None:
+    """Give a real QA executor this story's checklist, the way the Architect would.
+
+    QA runs the *repository's* acceptance criteria (the scheduler resolves them
+    onto the QA message), and the Architect writes them through
+    `update_repository` — `PATCH /api/repositories/{id}` — while it plans. The
+    harness plans this story in the Architect's place, so it writes them here,
+    through that same update, before the plan is admitted. The scripted run has
+    none to write: its deterministic QA judges the seeded health check.
+
+    The repository's answer is read back and must be the text written, so a
+    criteria update the API dropped is this phase's failure rather than a QA
+    verdict about something else.
+    """
+    criteria = ctx.get("level1_qa_criteria")
+    if criteria is None:
+        return
+    response = await api.patch(
+        f"/api/repositories/{ctx['repo_id']}", json={"acceptance_criteria": criteria}
+    )
+    if response.status_code != httpx.codes.OK:
+        raise Level1PhaseFailed(
+            "admission",
+            f"the story's QA criteria could not be written to repository {ctx['repo_id']}: "
+            f"HTTP {response.status_code} {response.text[:300]}",
+        )
+    written = response.json().get("acceptance_criteria")
+    if written != criteria:
+        raise Level1PhaseFailed(
+            "admission",
+            f"repository {ctx['repo_id']} answered acceptance criteria {written!r} for the "
+            f"{criteria!r} this story wrote",
+        )
+    ctx["level1_qa_criteria_written"] = written
 
 
 async def _level1_plan_snapshot(api: httpx.AsyncClient, ctx: dict) -> list[dict]:
@@ -3036,6 +3065,17 @@ def record_qa_run(ctx: dict, run: dict, *, source: QARunLookup = QARunLookup.QA_
         ctx["qa_run_record_error"] = (
             f"the terminal QA Run could not be read into evidence: {type(error).__name__}: {error}"
         )
+
+
+def recorded_qa_executor(ctx: dict) -> str | None:
+    """The executor the recorded QA Run was admitted under, or None when unreadable.
+
+    `run_metadata.executor_decision` on the paid QA Run is the one place the
+    selected executor exists as a fact (`resolve_executor_decision` persists it
+    in `api`); `qa-worker` only obeys it, so its local setting is never read.
+    """
+    decision = (ctx.get("qa_run_record") or {}).get("executor_decision")
+    return decision.get("agent_type") if isinstance(decision, dict) else None
 
 
 def record_deploy_run(ctx: dict, run: dict) -> None:
@@ -3320,7 +3360,7 @@ async def record_terminal_stage_evidence(api_internal: httpx.AsyncClient, ctx: d
     record_target_host_snapshot(ctx)
 
 
-async def record_health_probe(ctx: dict, url: str, *, expect_marker: str | None = None) -> dict:
+async def record_health_probe(ctx: dict, url: str) -> dict:
     """Probe the deployed URL from the orchestrator host and keep either answer.
 
     `probe_health_endpoint` raises when the URL does not answer, and that raise
@@ -3330,7 +3370,7 @@ async def record_health_probe(ctx: dict, url: str, *, expect_marker: str | None 
     instead of leaving a blank where the third reachability read should be.
     """
     try:
-        evidence = await probe_health_endpoint(url, expect_marker=expect_marker)
+        evidence = await probe_health_endpoint(url)
     except AssertionError as error:
         ctx["health_probe_error"] = str(error)
         raise
@@ -3580,157 +3620,234 @@ async def wait_linear_noop_engineering(
                 break
 
 
-def _noop_settlement_error(ctx: dict, message: str) -> dict[str, dict]:
-    ctx["noop_settlement_error"] = message
-    ctx["noop_settlement"] = {}
-    return {}
+class _SettlementRefused(Exception):
+    """One engineering Run's paid-work evidence is not what its developer owes."""
 
 
-async def record_noop_settlement_evidence(  # noqa: PLR0911 - specific durable-boundary diagnostics
+#: What a *scripted* attempt's ledger row leaves empty: it asked no provider.
+_NOOP_EMPTY_LEDGER_FIELDS = (
+    "provider",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cost_microusd",
+)
+
+
+async def _terminal_run(api_internal: httpx.AsyncClient, run_id: str) -> dict:
+    """The Run read twice, and refused unless both reads agree: it is settled."""
+    first = await api_internal.get(f"/api/runs/{run_id}")
+    first.raise_for_status()
+    run = first.json()
+    second = await api_internal.get(f"/api/runs/{run_id}")
+    second.raise_for_status()
+    if run != second.json():
+        raise _SettlementRefused(f"engineering run {run_id} changed between terminal reads")
+    return run
+
+
+def _completed_done(run: dict) -> None:
+    """Refuse a Run that did not complete with its task done."""
+    run_id = run["id"]
+    if run.get("status") != "completed":
+        raise _SettlementRefused(f"engineering run {run_id} ended with status={run.get('status')}")
+    result = EngineeringRunResult.model_validate(run.get("result"))
+    if result.engineering_status is not EngineeringStatus.DONE:
+        raise _SettlementRefused(
+            f"engineering run {run_id} carries engineering_status={result.engineering_status}"
+        )
+
+
+def _settlement_decision(ctx: dict, run: dict) -> ExecutorDecision:
+    """The persisted executor decision, which must be the requested developer's pin."""
+    run_id = run["id"]
+    decision = ExecutorDecision.from_run_metadata(run.get("run_metadata"))
+    if (
+        decision.agent_type.value != ctx["agent_type"]
+        or decision.source is not ExecutorDecisionSource.PROJECT_PIN
+        or decision.attempt_kind is not RunType.ENGINEERING
+    ):
+        raise _SettlementRefused(
+            f"engineering run {run_id} was decided {decision.model_dump(mode='json')}, not the "
+            f"{ctx['agent_type']} developer this run's project pins"
+        )
+    dispatched = ctx.get("engineering_dispatch_decisions", {}).get(run_id)
+    if dispatched is not None and dispatched != decision.model_dump(mode="json"):
+        raise _SettlementRefused(
+            f"engineering run {run_id} changed executor decision after dispatch"
+        )
+    return decision
+
+
+def _check_reservation(ctx: dict, run_id: str, reservation: EngineeringBudgetAdmissionRead) -> None:
+    """The budget hold is released or settled the way this run's developer owes."""
+    if reservation.attempt_id != run_id:
+        raise _SettlementRefused(
+            f"reservation for {run_id} reported attempt_id={reservation.attempt_id}"
+        )
+    if ctx["agent_type"] != SCRIPTED_AGENT_TYPE:
+        # A model attempt is admitted under the run owner's promo policy, holds its
+        # reservation, and settles it against the cost its provider reported.
+        owner: RunOwner = require_run_owner(ctx)
+        if (
+            reservation.outcome is not EngineeringBudgetAdmissionOutcome.ADMITTED
+            or reservation.user_id != owner.user_id
+            or reservation.reservation_microusd != owner.attempt_reservation_microusd
+            or reservation.reservation_state is not EngineeringBudgetReservationState.SETTLED
+            or reservation.active_held_microusd != 0
+        ):
+            raise _SettlementRefused(
+                f"engineering run {run_id} is not settled under user {owner.user_id}'s promo "
+                f"policy: {reservation.model_dump(mode='json')}"
+            )
+        return
+    if reservation.outcome in {
+        EngineeringBudgetAdmissionOutcome.UNLIMITED,
+        EngineeringBudgetAdmissionOutcome.NOT_ENFORCED,
+    }:
+        if reservation.reservation_state is not None or reservation.active_held_microusd != 0:
+            raise _SettlementRefused(f"unenforced noop attempt {run_id} retained a budget hold")
+    elif reservation.reservation_state not in {
+        EngineeringBudgetReservationState.RELEASED,
+        EngineeringBudgetReservationState.SETTLED,
+        EngineeringBudgetReservationState.UNKNOWN_FINAL,
+    }:
+        raise _SettlementRefused(
+            f"noop reservation {run_id} is not terminal: {reservation.reservation_state}"
+        )
+
+
+def _check_ledger(ctx: dict, run_id: str, task_id: str, row: dict) -> None:
+    """The ledger row is this attempt's, and its cost is what its developer owes.
+
+    A scripted attempt asked no provider, so its row carries none of a
+    provider's fields and `cost_source=unknown`. A model attempt's row carries
+    the cost its provider reported, which is what settled its reservation.
+    """
+    if (
+        row.get("run_id") != run_id
+        or row.get("project_id") != ctx["project_id"]
+        or row.get("story_id") != ctx["story_id"]
+        or row.get("task_id") != task_id
+        or row.get("role") != "engineering"
+    ):
+        raise _SettlementRefused(f"engineering run {run_id} has a ledger row of another attempt")
+    if ctx["agent_type"] == SCRIPTED_AGENT_TYPE:
+        if row.get("cost_source") != CostSource.UNKNOWN.value or any(
+            row.get(field) is not None for field in _NOOP_EMPTY_LEDGER_FIELDS
+        ):
+            raise _SettlementRefused(
+                f"engineering run {run_id} has non-canonical noop ledger evidence"
+            )
+        return
+    if row.get("cost_source") != CostSource.PROVIDER_REPORTED.value or not isinstance(
+        row.get("cost_microusd"), int
+    ):
+        raise _SettlementRefused(
+            f"engineering run {run_id} of the {ctx['agent_type']} developer has no "
+            f"provider-reported cost: cost_source={row.get('cost_source')!r} "
+            f"cost_microusd={row.get('cost_microusd')!r}"
+        )
+
+
+async def _run_settlement(
+    api_internal: httpx.AsyncClient, ctx: dict, task_id: str, run: dict
+) -> dict:
+    """One engineering Run's durable paid-work facts, or the refusal naming it."""
+    run_id = run["id"]
+    decision = _settlement_decision(ctx, run)
+    admission_response = await api_internal.get(f"/api/work-admission/paid-runs/{run_id}/admission")
+    admission_response.raise_for_status()
+    admission = WorkAdmissionRead.model_validate(admission_response.json())
+    if admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        raise _SettlementRefused(f"engineering run {run_id} lacks admitted audit evidence")
+    reservation_response = await api_internal.get(
+        f"/api/engineering-budget-policies/admissions/{run_id}"
+    )
+    reservation_response.raise_for_status()
+    reservation = EngineeringBudgetAdmissionRead.model_validate(reservation_response.json())
+    _check_reservation(ctx, run_id, reservation)
+    ledger_response = await api_internal.get(
+        "/api/runs/engineering-attempts", params={"run_id": run_id}
+    )
+    ledger_response.raise_for_status()
+    ledger = ledger_response.json()
+    if len(ledger) != 1:
+        raise _SettlementRefused(
+            f"engineering run {run_id} has {len(ledger)} ledger rows; expected one"
+        )
+    _check_ledger(ctx, run_id, task_id, ledger[0])
+    return {
+        "task_id": task_id,
+        "decision": decision.model_dump(mode="json"),
+        "admission": admission.model_dump(mode="json"),
+        "reservation": reservation.model_dump(mode="json"),
+        "ledger": ledger[0],
+    }
+
+
+async def _task_settlement(api_internal: httpx.AsyncClient, ctx: dict, task_id: str) -> dict:
+    """Every engineering Run of one task, each judged by what its developer owes.
+
+    The scripted runner makes exactly one attempt per task, and it completes. A
+    model's task may take a retry, so a live task has one Run or more; the newest
+    must have completed the task, and *every* one of them owes the same paid-work
+    evidence — an attempt that failed spent the owner's credits too.
+    """
+    candidates = await _engineering_runs_for_task(api_internal, task_id)
+    scripted = ctx["agent_type"] == SCRIPTED_AGENT_TYPE
+    if (scripted and len(candidates) != 1) or not candidates:
+        raise _SettlementRefused(
+            f"task {task_id} has {len(candidates)} engineering runs; expected "
+            f"{'exactly one' if scripted else 'at least one'}"
+        )
+    runs = [await _terminal_run(api_internal, listed["id"]) for listed in candidates]
+    for run in runs:
+        if run.get("status") not in TERMINAL_RUN_STATUSES:
+            raise _SettlementRefused(
+                f"engineering run {run['id']} is still {run.get('status')} after its task settled"
+            )
+    # `/api/runs/` is newest first: the attempt that settled the task.
+    _completed_done(runs[0])
+    return {run["id"]: await _run_settlement(api_internal, ctx, task_id, run) for run in runs}
+
+
+async def record_engineering_settlement_evidence(
     api_internal: httpx.AsyncClient, ctx: dict
 ) -> dict[str, dict]:
-    """Read exactly the durable paid-work facts a completed noop route owns.
+    """Read the durable paid-work facts of every engineering Run of this story.
 
-    The noop profile deliberately has no provider usage.  Its ledger must
-    therefore say ``cost_source=unknown`` with every provider/cost field empty;
-    a reservation may be absent from enforcement (``unlimited`` or
-    ``not_enforced``) or terminal after settlement, but it may never remain an
-    active hold once its engineering Run is terminal.
+    One reader for both developers, because the facts are the same and only what
+    they must say differs. Every Run carries its admitted audit, the executor
+    decision the project pins — the requested developer — a reservation and one
+    ledger row. For the scripted runner the ledger says `cost_source=unknown` with
+    every provider and cost field empty, and the reservation may be unenforced or
+    terminal but never an active hold. For a model the ledger carries a
+    provider-reported `cost_microusd`, and the reservation was admitted under the
+    run owner's promo policy and is `settled` against that cost. A Codex
+    developer reports no cost today, so a Codex run is refused here by design.
+
+    The first Run that falls short is named in `engineering_settlement_error`.
     """
     evidence: dict[str, dict] = {}
     try:
         for task_id in ctx["task_ids"]:
-            candidates = await _engineering_runs_for_task(api_internal, task_id)
-            if len(candidates) != 1:
-                return _noop_settlement_error(
-                    ctx,
-                    f"task {task_id} has {len(candidates)} engineering runs; expected exactly one",
-                )
-            listed = candidates[0]
-            run_id = listed["id"]
-            first = await api_internal.get(f"/api/runs/{run_id}")
-            first.raise_for_status()
-            run = first.json()
-            second = await api_internal.get(f"/api/runs/{run_id}")
-            second.raise_for_status()
-            if run != second.json():
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} changed between terminal reads"
-                )
-            if run.get("status") != "completed":
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} ended with status={run.get('status')}"
-                )
-            result = EngineeringRunResult.model_validate(run.get("result"))
-            if result.engineering_status is not EngineeringStatus.DONE:
-                return _noop_settlement_error(
-                    ctx,
-                    (
-                        f"engineering run {run_id} carries "
-                        f"engineering_status={result.engineering_status}"
-                    ),
-                )
-            decision = ExecutorDecision.from_run_metadata(run.get("run_metadata"))
-            if (
-                decision.agent_type.value != "noop"
-                or decision.source is not ExecutorDecisionSource.PROJECT_PIN
-                or decision.attempt_kind is not RunType.ENGINEERING
-            ):
-                return _noop_settlement_error(
-                    ctx,
-                    (
-                        f"engineering run {run_id} has non-noop decision "
-                        f"{decision.model_dump(mode='json')}"
-                    ),
-                )
-            dispatched = ctx.get("engineering_dispatch_decisions", {}).get(run_id)
-            if dispatched is not None and dispatched != decision.model_dump(mode="json"):
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} changed executor decision after dispatch"
-                )
-            admission_response = await api_internal.get(
-                f"/api/work-admission/paid-runs/{run_id}/admission"
-            )
-            admission_response.raise_for_status()
-            admission = WorkAdmissionRead.model_validate(admission_response.json())
-            if admission.outcome is not WorkAdmissionOutcome.ADMITTED:
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} lacks admitted audit evidence"
-                )
-            reservation_response = await api_internal.get(
-                f"/api/engineering-budget-policies/admissions/{run_id}"
-            )
-            reservation_response.raise_for_status()
-            reservation = EngineeringBudgetAdmissionRead.model_validate(reservation_response.json())
-            if reservation.attempt_id != run_id:
-                return _noop_settlement_error(
-                    ctx, f"reservation for {run_id} reported attempt_id={reservation.attempt_id}"
-                )
-            if reservation.outcome in {
-                EngineeringBudgetAdmissionOutcome.UNLIMITED,
-                EngineeringBudgetAdmissionOutcome.NOT_ENFORCED,
-            }:
-                if (
-                    reservation.reservation_state is not None
-                    or reservation.active_held_microusd != 0
-                ):
-                    return _noop_settlement_error(
-                        ctx, f"unenforced noop attempt {run_id} retained a budget hold"
-                    )
-            elif reservation.reservation_state not in {
-                EngineeringBudgetReservationState.RELEASED,
-                EngineeringBudgetReservationState.SETTLED,
-                EngineeringBudgetReservationState.UNKNOWN_FINAL,
-            }:
-                return _noop_settlement_error(
-                    ctx,
-                    f"noop reservation {run_id} is not terminal: {reservation.reservation_state}",
-                )
-            ledger_response = await api_internal.get(
-                "/api/runs/engineering-attempts", params={"run_id": run_id}
-            )
-            ledger_response.raise_for_status()
-            ledger = ledger_response.json()
-            if len(ledger) != 1:
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} has {len(ledger)} ledger rows; expected one"
-                )
-            row = ledger[0]
-            required_empty = (
-                "provider",
-                "model",
-                "input_tokens",
-                "output_tokens",
-                "total_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "cost_microusd",
-            )
-            if (
-                row.get("run_id") != run_id
-                or row.get("project_id") != ctx["project_id"]
-                or row.get("story_id") != ctx["story_id"]
-                or row.get("task_id") != task_id
-                or row.get("role") != "engineering"
-                or row.get("cost_source") != "unknown"
-                or any(row.get(field) is not None for field in required_empty)
-            ):
-                return _noop_settlement_error(
-                    ctx, f"engineering run {run_id} has non-canonical noop ledger evidence"
-                )
-            evidence[run_id] = {
-                "task_id": task_id,
-                "decision": decision.model_dump(mode="json"),
-                "admission": admission.model_dump(mode="json"),
-                "reservation": reservation.model_dump(mode="json"),
-                "ledger": row,
-            }
+            evidence.update(await _task_settlement(api_internal, ctx, task_id))
+    except _SettlementRefused as refused:
+        ctx["engineering_settlement_error"] = str(refused)
+        ctx["engineering_settlement"] = {}
+        return {}
     except (httpx.HTTPError, ValidationError, ValueError) as error:
-        return _noop_settlement_error(
-            ctx, f"could not read noop settlement evidence: {type(error).__name__}: {error}"
+        ctx["engineering_settlement_error"] = (
+            f"could not read engineering settlement evidence: {type(error).__name__}: {error}"
         )
-    ctx["noop_settlement_error"] = None
-    ctx["noop_settlement"] = evidence
+        ctx["engineering_settlement"] = {}
+        return {}
+    ctx["engineering_settlement_error"] = None
+    ctx["engineering_settlement"] = evidence
     return evidence
 
 
@@ -5165,16 +5282,8 @@ async def probe_health_endpoint(
     *,
     attempts: int = HEALTH_PROBE_ATTEMPTS,
     retry_delay: float = HEALTH_PROBE_RETRY_DELAY_SECONDS,
-    expect_marker: str | None = None,
 ) -> dict:
-    """Probe the public health endpoint while the application is still running.
-
-    ``expect_marker`` is the value this run asked engineering to put in the
-    payload. It is judged here, against the whole response, because the retained
-    body is a bounded slice of it and a marker past that bound would be
-    unreadable afterwards. A run that asks for no marker records exactly what it
-    always did.
-    """
+    """Probe the public health endpoint while the application is still running."""
     last_error = None
     async with httpx.AsyncClient(timeout=HEALTH_PROBE_REQUEST_TIMEOUT_SECONDS) as client:
         for attempt in range(1, attempts + 1):
@@ -5191,8 +5300,6 @@ async def probe_health_endpoint(
                     "body": response.text[:200],
                     "attempt": attempt,
                 }
-                if expect_marker is not None:
-                    evidence["marker_present"] = expect_marker in response.text
                 if response.status_code == 200:
                     return evidence
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
@@ -5426,6 +5533,46 @@ def record_level1_scripted_path(ctx: dict) -> None:
     )
 
 
+def record_level1_developer_commits(ctx: dict) -> None:
+    """Whether a model developer's story branch carries commits and a change of its own.
+
+    The live counterpart of `record_level1_scripted_path`. A model is given the
+    contract, not a patch, so there is no list of paths to find in the diff; what
+    it owes before the deploy is judged is that it committed something — the
+    branch is ahead of main — and that what it committed changes the tree: the
+    branch's own diff is not empty. What that code *does* is then judged by the
+    same deployed-product probes the scripted run is judged by.
+    """
+    ahead = record_story_branch_ahead(ctx)
+    record_story_branch_diff(ctx)
+    diff = (ctx.get("story_branch_diff") or {}).get("diff") or ""
+    ctx["level1_developer_commits"] = {
+        "branch": ctx.get("story_branch"),
+        "ahead_by": (ctx.get("story_branch_compare") or {}).get("ahead_by"),
+        "head_sha": (ctx.get("story_branch_diff") or {}).get("head_sha"),
+        "diff_chars": len(diff),
+    }
+    if not ahead:
+        ctx["level1_developer_commits_error"] = ctx["story_branch_error"]
+    elif ctx.get("story_branch_diff_error"):
+        ctx["level1_developer_commits_error"] = ctx["story_branch_diff_error"]
+    elif not diff.strip():
+        ctx["level1_developer_commits_error"] = (
+            f"{ctx['story_branch']} is ahead of main but its diff is empty: the developer "
+            "committed no change to the product"
+        )
+    else:
+        ctx["level1_developer_commits_error"] = None
+
+
+def record_level1_developer_path(ctx: dict) -> None:
+    """Record what the story branch shows about who developed it, once engineering settled."""
+    if ctx["agent_type"] == SCRIPTED_AGENT_TYPE:
+        record_level1_scripted_path(ctx)
+    else:
+        record_level1_developer_commits(ctx)
+
+
 def probe_merge_file_set(repo_name: str, merge_commit_sha: str) -> dict:
     """Read one deployed story merge's file set through the stand GitHub App."""
     result = docker_exec_python_module(
@@ -5548,6 +5695,8 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "level1_plan_before_admission",
         "level1_plan_after_admission",
         "level1_plan_provenance",
+        "level1_qa_criteria",
+        "level1_qa_criteria_written",
         "task_id",
         "task_ids",
         "first_task_id",
@@ -5565,8 +5714,8 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "second_task_status",
         "second_task_status_before_first_terminal",
         "noop_task_sequence_error",
-        "noop_settlement",
-        "noop_settlement_error",
+        "engineering_settlement",
+        "engineering_settlement_error",
         "linear_noop_completion_error",
         "linear_noop_task_statuses_before_deploy",
         "linear_noop_worker_ids",
@@ -5574,6 +5723,8 @@ SECOND_STORY_SCOPED_KEYS = frozenset(
         "level1_change_set_paths",
         "level1_scripted_path",
         "level1_scripted_path_error",
+        "level1_developer_commits",
+        "level1_developer_commits_error",
         "level1_merge_artifact",
         "level1_merge_artifact_error",
         "level1_merge_artifact_verdict",
@@ -5704,6 +5855,7 @@ def begin_level1_extension_story(ctx: dict) -> None:
     ctx["task_description"] = plan["task_description"]
     ctx["task_criteria"] = plan["task_criteria"]
     ctx["level1_change_set_paths"] = plan["change_set_paths"]
+    ctx["level1_qa_criteria"] = plan["qa_criteria"]
     ctx["po_input_cursor"] = po_input_cursor()
 
 

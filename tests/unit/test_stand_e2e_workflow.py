@@ -17,10 +17,12 @@ import yaml
 
 from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
 from scripts.stand_run import (
-    MATRIX_RUNNER_TIMEOUT_SECONDS,
+    LIVE_RUNNER_TIMEOUT_SECONDS,
     STAND_CLEANUP_JOB_TIMEOUT_MINUTES,
+    STAND_JOB_RESERVE_SECONDS,
     STAND_JOB_TIMEOUT_MINUTES,
     STAND_PROVISIONING_TIMEOUT_SECONDS,
+    STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS,
     SUITES,
 )
 from scripts.wait_stand_provisioning import (
@@ -77,13 +79,14 @@ def test_every_named_suite_is_offered_plus_an_arbitrary_target():
 
     assert set(options) == {
         "mega-noop",
-        "mega-llm",
+        "mega-live",
         "mega-brief",
         "mega-brief-package",
-        "matrix",
         "custom",
     }
     assert "custom" in options, "an e2e invented later must be startable without a code change"
+    # The retired paid route is not offered under any spelling.
+    assert not {"mega-llm", "matrix", "llm"} & set(options)
 
 
 def test_workflow_suite_names_match_the_runner_canonical_suite_table():
@@ -99,10 +102,11 @@ def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
 
     for name in ("worker", "qa"):
         description = inputs[name]["description"]
-        assert "mega-llm" in description
+        assert "mega-live" in description
         assert "mega-brief" in description
-        assert "matrix" in description
         assert "mega-noop" in description
+        assert "mega-llm" not in description
+        assert "matrix" not in description
 
 
 def test_template_override_inputs_are_optional_and_documented():
@@ -174,16 +178,24 @@ def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
 
 
 def test_handoff_collects_only_logs_the_selected_suite_can_produce():
-    """A one-cell suite must not spend SSH retries probing the other matrix cells."""
+    """Every suite is one cell: SSH retries are never spent probing other pairs' logs."""
     collect = _steps()["Record machine manifest"]
     script = collect["run"]
 
     assert collect["env"]["SUITE"] == "${{ steps.suite.outputs.value }}"
     assert collect["env"]["WORKER"] == "${{ inputs.worker }}"
     assert collect["env"]["QA"] == "${{ inputs.qa }}"
-    assert 'if [ "${SUITE}" = "matrix" ]' in script
-    assert 'reports+=("${QA}-${WORKER}.log")' in script
+    assert "matrix" not in script
+    assert 'reports=(junit.xml report.tsv run.log "${QA}-${WORKER}.log")' in script
     assert 'for name in "${reports[@]}"' in script
+
+
+def test_the_product_bot_token_reaches_both_level1_suites_and_no_other():
+    """`mega-live` deploys the same Telegram-bot product `mega-noop` does."""
+    script = _steps()["Run selected stand suite"]["run"]
+
+    assert 'if [ "${SUITE}" = "mega-noop" ] || [ "${SUITE}" = "mega-live" ]; then' in script
+    assert script.count('bot_token="${STAND_PRODUCT_BOT_TOKEN}"') == 1
 
 
 def test_worker_failure_evidence_is_copied_before_the_ephemeral_host_is_deleted():
@@ -401,13 +413,16 @@ def test_remote_target_provisioning_script_does_not_break_its_ssh_quote():
     assert "'" not in remote_script
 
 
-def test_the_matrix_fits_in_the_job_timeout():
-    """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
+def test_the_live_runner_path_fits_in_the_job_timeout():
+    """The provisioned stand, `mega-live`'s runner path and the job reserve fit."""
     job = _workflow()["jobs"]["e2e"]
 
-    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES
-    assert job["timeout-minutes"] * 60 > (
-        STAND_PROVISIONING_TIMEOUT_SECONDS + MATRIX_RUNNER_TIMEOUT_SECONDS
+    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES == 360
+    assert job["timeout-minutes"] * 60 >= (
+        STAND_PROVISIONING_TIMEOUT_SECONDS
+        + STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + LIVE_RUNNER_TIMEOUT_SECONDS
+        + STAND_JOB_RESERVE_SECONDS
     )
     assert _workflow()["jobs"]["cleanup"]["timeout-minutes"] == STAND_CLEANUP_JOB_TIMEOUT_MINUTES
 
@@ -418,13 +433,18 @@ def test_make_targets_preserve_the_canonical_suite_contract():
     assert 'test-live-mega-noop:\n\t@echo "Running mega-noop' in makefile
     assert "pytest tests/live/test_full_pipeline.py::TestFullPipeline -v" in makefile
     assert "test-live-mega: test-live-mega-noop" in makefile
-    assert 'test-live-mega-llm:\n\t@echo "Running mega-llm' in makefile
-    assert "pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v" in makefile
+    # Level 1 is told of no developer, whatever the caller's environment carries.
+    assert "env -u LIVE_WORKER_AGENT_TYPE -u LIVE_LLM_QA -u LIVE_QA_AGENT_TYPE" in makefile
+    assert "test-live-mega-live:\n\t@$(MAKE) --no-print-directory stand-run SUITE=mega-live" in (
+        makefile
+    )
+    assert "TestFullPipelineLLM" not in makefile
+    assert "mega-llm" not in makefile
     assert 'test-live-mega-brief:\n\t@echo "Running mega-brief' in makefile
     assert (
         "pytest tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline -v" in makefile
     )
-    assert "test-live-matrix:\n\t@$(MAKE) --no-print-directory stand-run SUITE=matrix" in makefile
+    assert "test-live-matrix" not in makefile and "SUITE=matrix" not in makefile
     assert "# Legacy aggregate, not a named suite:" in makefile
 
 
@@ -1654,7 +1674,7 @@ def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_pat
         "Run selected stand suite",
         {
             "STAND_BACKGROUND_DIR": str(background),
-            "SUITE": "matrix",
+            "SUITE": "mega-live",
             "WORKER": "claude",
             "QA": "codex",
             "TEMPLATE_SOURCE": "",
@@ -1683,7 +1703,7 @@ def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_pat
 
     assert result.returncode == 0, result.stderr
     override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
-    assert "python -m scripts.stand_run --suite matrix" in result.stdout
+    assert "python -m scripts.stand_run --suite mega-live" in result.stdout
     assert f"override={override} frozen=1" in result.stdout
     # The same name bring-up writes the override to, in the checkout the runner resolves
     # it against, and the same variable the runner reads.

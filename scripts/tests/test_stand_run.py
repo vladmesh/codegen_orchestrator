@@ -13,6 +13,8 @@ from scripts.stand_run import (
     BRIEF_PACKAGE_SUITE_TIMEOUT_SECONDS,
     BRIEF_RUNNER_TIMEOUT_SECONDS,
     BRIEF_SUITE_TIMEOUT_SECONDS,
+    LIVE_RUNNER_TIMEOUT_SECONDS,
+    LIVE_SUITE_TIMEOUT_SECONDS,
     NOOP_SUITE_TIMEOUT_SECONDS,
     QA_EXECUTOR_ENV,
     STAND_JOB_RESERVE_SECONDS,
@@ -27,6 +29,7 @@ from scripts.stand_run import (
     qa_executor_services,
     read_env_file,
     resolve_suite,
+    suite_environment,
     write_junit_report,
     write_qa_executor,
 )
@@ -63,7 +66,7 @@ def test_compose_calls_drop_the_exported_qa_executor():
 
     A runner that sourced the deployed .env into its own environment therefore
     pins the executor it is trying to change: the recreated container comes back
-    with the old value and the matrix silently runs the wrong half twice.
+    with the old value and a paid run silently spends the wrong executor.
     """
     env = {QA_EXECUTOR_ENV: "claude", "INTERNAL_API_KEY": "k"}
 
@@ -94,22 +97,19 @@ def test_env_values_keep_their_own_equals_signs(tmp_path):
     assert read_env_file(env_file) == {"KEY": "abc=def=="}
 
 
-def test_the_matrix_covers_every_agent_against_every_other():
-    assert set(SUITES["matrix"].combinations) == {
-        (qa, worker) for qa in AGENTS for worker in AGENTS
-    }
-    assert len(SUITES["matrix"].combinations) == 4
+def test_no_suite_runs_more_than_the_one_pair_it_was_asked_for():
+    """The four-cell matrix is gone: every paid suite spends exactly one pair."""
+    assert all(suite.combinations == () for suite in SUITES.values())
 
 
 def test_canonical_suites_have_exact_targets_and_timeouts():
     expected_targets = {
         "mega-noop": "tests/live/test_full_pipeline.py::TestFullPipeline",
-        "mega-llm": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
+        "mega-live": "tests/live/test_full_pipeline.py::TestFullPipeline",
         "mega-brief": "tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline",
         "mega-brief-package": (
             "tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline"
         ),
-        "matrix": "tests/live/test_full_pipeline.py::TestFullPipelineLLM",
     }
 
     assert set(SUITES) == set(expected_targets)
@@ -195,6 +195,125 @@ def test_noop_cap_covers_both_stories_and_the_undeploy_lifecycle():
     assert noop_job_seconds <= stand_run.STAND_JOB_TIMEOUT_MINUTES * 60
 
 
+def test_live_cap_is_the_noop_ledger_with_a_real_developer_and_a_real_executor():
+    """`mega-live` waits what `mega-noop` waits, but for its two forks, entry by entry.
+
+    The same identity discipline as the noop ledger: every entry is the constant
+    the wait is made of. The two differences are the developer's engineering
+    bound and the executor's QA bound; everything else is the noop entry.
+    """
+    noop_first = dict(stand_deadlines.NOOP_FIRST_STORY_WAITS)
+    noop_second = dict(stand_deadlines.NOOP_SECOND_STORY_WAITS)
+    first = dict(stand_deadlines.LIVE_FIRST_STORY_WAITS)
+    second = dict(stand_deadlines.LIVE_SECOND_STORY_WAITS)
+
+    assert first["two ordered developer Tasks"] == 2 * stand_deadlines.LLM_ENGINEERING_TIMEOUT
+    assert second["extension story: one developer Task"] == stand_deadlines.LLM_ENGINEERING_TIMEOUT
+    assert (
+        first["executor QA"]
+        == second["extension story: executor QA"]
+        == (stand_deadlines.QA_RUN_TIMEOUT + stand_deadlines.QA_EXECUTOR_VERDICT_TIMEOUT)
+    )
+    assert stand_deadlines.LIVE_QA_RUN_TIMEOUT > stand_deadlines.QA_RUN_TIMEOUT
+    shared_first = set(noop_first) - {"two ordered noop engineering Tasks", "deterministic QA"}
+    assert {label: first[label] for label in shared_first} == {
+        label: noop_first[label] for label in shared_first
+    }
+    shared_second = set(noop_second) - {
+        "extension story: one noop engineering Task",
+        "extension story: deterministic QA",
+    }
+    assert {label: second[label] for label in shared_second} == {
+        label: noop_second[label] for label in shared_second
+    }
+    assert stand_deadlines.LIVE_TEARDOWN_WAITS == stand_deadlines.NOOP_TEARDOWN_WAITS
+
+    # The totals the README states, and the cap the runner actually spends.
+    assert sum(first.values()) == 8060
+    assert sum(second.values()) == 6320
+    assert stand_deadlines.live_lifecycle_explicit_waits() == 14980
+    assert LIVE_SUITE_TIMEOUT_SECONDS == stand_deadlines.LIVE_SUITE_TIMEOUT_SECONDS == 15900
+    assert SUITES["mega-live"].timeout_seconds == LIVE_SUITE_TIMEOUT_SECONDS
+    assert SUITES["mega-live"].cleanup_grace_seconds == 0
+    assert (
+        LIVE_SUITE_TIMEOUT_SECONDS - stand_deadlines.live_lifecycle_explicit_waits()
+        >= stand_deadlines.LIVE_TEARDOWN_RESERVE_SECONDS
+    )
+
+
+def test_the_live_runner_path_fits_the_workflow_job_with_the_noop_accounting():
+    """Same accounting as `mega-noop`'s: provisioning, reserve, runner path, job reserve."""
+    assert LIVE_RUNNER_TIMEOUT_SECONDS == (
+        stand_run.PREFLIGHT_TIMEOUT_SECONDS
+        + stand_run.READINESS_TIMEOUT_SECONDS
+        + stand_run.EXECUTOR_SWITCH_TIMEOUT_SECONDS
+        + LIVE_SUITE_TIMEOUT_SECONDS
+        + stand_run.SWEEP_TIMEOUT_SECONDS
+    )
+    live_job_seconds = (
+        stand_run.STAND_PROVISIONING_TIMEOUT_SECONDS
+        + stand_run.STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS
+        + LIVE_RUNNER_TIMEOUT_SECONDS
+        + stand_run.STAND_JOB_RESERVE_SECONDS
+    )
+    assert live_job_seconds == 344 * 60
+    assert live_job_seconds <= stand_run.STAND_JOB_TIMEOUT_MINUTES * 60 == 360 * 60
+    # And it is the longest runner path the job has to hold.
+    assert LIVE_RUNNER_TIMEOUT_SECONDS > max(
+        BRIEF_RUNNER_TIMEOUT_SECONDS, BRIEF_PACKAGE_RUNNER_TIMEOUT_SECONDS
+    )
+
+
+@pytest.mark.parametrize("worker", AGENTS)
+@pytest.mark.parametrize("qa", AGENTS)
+def test_mega_live_runs_the_level1_class_with_the_requested_pair(tmp_path, monkeypatch, worker, qa):
+    """`--suite mega-live --worker W --qa Q`: the level-1 class, told of both agents."""
+    captured: dict[str, object] = {}
+    switched: list[str] = []
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
+    monkeypatch.setattr(
+        stand_run,
+        "ensure_qa_executor",
+        lambda _env, executor, _log: switched.append(executor) or True,
+    )
+
+    def fake_run(target, env, extra, log_path, timeout_seconds, termination_grace_seconds, log):
+        captured.update(target=target, extra=extra, timeout_seconds=timeout_seconds)
+        return True
+
+    monkeypatch.setattr(stand_run, "run_pytest", fake_run)
+    monkeypatch.setattr(
+        stand_run.sys,
+        "argv",
+        ["stand_run.py", "--suite", "mega-live", "--worker", worker, "--qa", qa],
+    )
+
+    assert stand_run.main() == 0
+    assert captured["target"] == "tests/live/test_full_pipeline.py::TestFullPipeline"
+    assert captured["extra"] == {
+        "LIVE_LLM_QA": "1",
+        "LIVE_WORKER_AGENT_TYPE": worker,
+        "LIVE_QA_AGENT_TYPE": qa,
+    }
+    assert captured["timeout_seconds"] == LIVE_SUITE_TIMEOUT_SECONDS
+    # The executor switch the resolver confirms is applied before the cell.
+    assert switched == [qa]
+
+
+def test_the_suite_table_is_the_one_map_from_a_suite_to_its_agents():
+    """`suite_environment` per suite: nothing for level 1, the asked pair for paid ones."""
+    assert suite_environment(SUITES["mega-noop"], qa="claude", worker="codex") == {}
+    for name in ("mega-live", "mega-brief", "mega-brief-package"):
+        assert suite_environment(SUITES[name], qa="claude", worker="codex") == {
+            "LIVE_LLM_QA": "1",
+            "LIVE_QA_AGENT_TYPE": "claude",
+            "LIVE_WORKER_AGENT_TYPE": "codex",
+        }
+
+
 def test_brief_runner_ledger_reserves_a_hard_stop_after_productive_work():
     """The paid fixture retains evidence and cleans up before runner timeout."""
     assert BRIEF_SUITE_TIMEOUT_SECONDS == 50 * 60
@@ -270,7 +389,9 @@ def test_every_named_suite_reaches_the_help_epilog():
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():
-    assert SUITE_ALIASES == {"mega": "mega-noop", "llm": "mega-llm"}
+    """No alias names a paid suite: `llm` and its hidden spend are gone."""
+    assert SUITE_ALIASES == {"mega": "mega-noop"}
+    assert not any(SUITES[name].llm for name in SUITE_ALIASES.values())
 
     for alias, canonical_name in SUITE_ALIASES.items():
         resolved_name, suite = resolve_suite(alias)
@@ -287,8 +408,9 @@ def test_unknown_suite_is_a_non_llm_pytest_target():
     assert suite.llm is False
 
 
-def test_mega_llm_runs_the_one_requested_agent_pair():
-    assert SUITES["mega-llm"].combinations == ()
+def test_mega_live_runs_the_one_requested_agent_pair():
+    assert SUITES["mega-live"].llm is True
+    assert SUITES["mega-live"].combinations == ()
 
 
 def test_mega_brief_runs_the_one_requested_agent_pair():
@@ -317,8 +439,8 @@ def test_an_unknown_suite_is_taken_as_a_pytest_target():
 
 @pytest.mark.parametrize("status", ["passed", "failed", "qa_executor_switch_failed"])
 def test_every_outcome_is_one_report_row(status):
-    assert matrix_row("matrix", "codex", "claude", status, 42) == (
-        f"matrix\tcodex\tclaude\t{status}\t42\n"
+    assert matrix_row("mega-live", "codex", "claude", status, 42) == (
+        f"mega-live\tcodex\tclaude\t{status}\t42\n"
     )
 
 
@@ -337,7 +459,7 @@ def test_junit_report_records_a_passing_suite(tmp_path):
 def test_junit_report_records_a_failed_suite(tmp_path):
     report = tmp_path / "junit.xml"
 
-    write_junit_report(report, "mega-llm", [("claude", "codex", "failed", 7)])
+    write_junit_report(report, "mega-live", [("claude", "codex", "failed", 7)])
 
     contents = report.read_text(encoding="utf-8")
     assert 'failures="1"' in contents
@@ -869,7 +991,7 @@ def test_an_unready_stack_is_reported_as_a_failed_switch_and_skips_the_cell(tmp_
     monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
     monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda _env, _qa, _log: False)
     monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append(args[0]) or True)
-    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-llm"])
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-live"])
 
     assert stand_run.main() == 1
     assert started == []
@@ -975,7 +1097,7 @@ def test_a_run_without_the_release_override_is_refused_before_anything_is_spent(
     monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: started.append("preflight"))
     monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda *_args: started.append("switch"))
     monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append("pytest"))
-    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "matrix"])
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "mega-live"])
 
     assert stand_run.main() == 2
     assert started == []

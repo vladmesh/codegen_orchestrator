@@ -11,15 +11,24 @@ Exercises the entire path from project creation to a live /health response:
   7. deploy consumer → DevOps subgraph → GitHub Actions deploy.yml
   8. smoke test: GET /health → 200
 
-The noop path stays deterministic. The LLM path exercises the product route where a
-real developer worker changes code before CI, merge, deploy, health, and QA.
+The lifecycle is level-1: a Telegram-bot product with modules `backend` and
+`tg_bot`, its bot token bound through the product route, and an engineering task
+per product change. What it deploys therefore carries a backend endpoint, a
+product-scoped setting and a Telegram command handler that no scaffolded tree
+has — and the assertions below ask the deployment for them, not the repository.
 
-The deterministic path is level-1: a Telegram-bot product with modules `backend`
-and `tg_bot`, its bot token bound through the product route, and an engineering
-task per change set that the merged scripted runner applies. What it deploys
-therefore carries a backend endpoint, a product-scoped setting and a Telegram
-command handler that no scaffolded tree has — and the assertions below ask the
-deployment for them, not the repository.
+One lifecycle, one class, and one fork: who develops the product
+(`pipeline_helpers.level1_developer_agent_type`).
+
+* `mega-noop` — level 1. The merged scripted runner applies the change set each
+  task description carries, and QA is the deterministic health check. No model
+  is asked anything.
+* `mega-live` — level 2. A real developer model (`claude` or `codex`) is given
+  the same contract in prose and writes the code itself, and a real QA executor
+  judges the deployed product against the criteria each story's plan admission
+  writes. Every test below holds in both modes; where what a test can observe
+  differs — the scripted path, the settlement's cost, the QA executor — it
+  asserts the level-2 fact with the same strength, and never skips.
 """
 
 import os
@@ -56,11 +65,10 @@ from pipeline_helpers import (
     DEPLOY_OUTCOME_TIMEOUT,
     DEPLOY_RUN_TIMEOUT,
     DEPLOY_TIMEOUT,
-    ENGINEERING_TIMEOUT,
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
     LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD,
     LEVEL1_PROMO_CREDITS_MICROUSD,
-    LLM_ENGINEERING_TIMEOUT,
+    SCRIPTED_AGENT_TYPE,
     SECOND_STORY_CHECKOUT_BOUND_SECONDS,
     TEST_TELEGRAM_ID,
     Level1PhaseFailed,
@@ -74,35 +82,34 @@ from pipeline_helpers import (
     begin_level1_extension_story,
     capture_run_po_position,
     cleanup_and_prove,
-    configured_qa_executor,
     create_level1_bot_project,
     create_level1_confirmed_brief,
     create_level1_extension_brief,
-    create_llm_backend_project,
     create_story_and_task,
+    developer_engineering_timeout,
     dump_debug,
     ensure_test_user,
     evidence_pass,
     level1_completion_text_requirement,
     po_input_cursor,
+    qa_run_timeout,
     read_product_setting,
     record_deployed_image_tags,
     record_engineering_failure_steps,
+    record_engineering_settlement_evidence,
     record_env_contract,
     record_first_checkout,
     record_health_probe,
+    record_level1_developer_path,
     record_level1_extension_product_evidence,
     record_level1_merge_artifact,
     record_level1_product_evidence,
-    record_level1_scripted_path,
     record_manager_checkout_script,
-    record_noop_settlement_evidence,
     record_pre_teardown_proofs,
     record_qa_run,
     record_run_po_position,
     record_settings_seed_brief_log,
     record_stage_notices,
-    record_story_branch_ahead,
     record_story_branch_base,
     record_story_ci_runs,
     record_story_engineering_runs,
@@ -144,7 +151,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.telegram import TokenCheckName
 from shared.contracts.queues.deploy import DeployOutcome
-from shared.stand_deadlines import QA_RUN_TIMEOUT, SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT
+from shared.stand_deadlines import SECOND_STORY_DEPLOY_OUTCOME_TIMEOUT
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -152,10 +159,9 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 async def _pipeline_run(
     create_project,
     *,
-    engineering_timeout: int,
+    engineering_timeout: int | None = None,
     debug_prefix: str,
     lifecycle_undeploy: bool = False,
-    require_story_commit: bool = False,
     registration_door: bool = False,
 ):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions.
@@ -164,8 +170,12 @@ async def _pipeline_run(
     product's registration door: a Telegram id nobody has used, a promo code
     minted for this run, a registration that redeems it and a budget policy the
     code arms — and the whole product path is then driven as that user. The
-    paid LLM path still shares the fixture user, which is created by the
-    internal service naming nobody and belongs to no run.
+    one-story route the sprint DoD reuses still shares the fixture user, which is
+    created by the internal service naming nobody and belongs to no run.
+
+    `engineering_timeout` bounds that one-story route's task. The level-1
+    lifecycle takes no bound from its caller: its developer decides it
+    (`developer_engineering_timeout`).
     """
     # Deploy runs belong to no user, and list_runs hides unowned runs from a
     # non-admin user, so they are observed through a client that authenticates
@@ -232,7 +242,6 @@ async def _pipeline_run(
                             engineering_timeout=engineering_timeout,
                             debug_prefix=debug_prefix,
                             lifecycle_undeploy=lifecycle_undeploy,
-                            require_story_commit=require_story_commit,
                         ),
                         api_internal,
                         ctx,
@@ -323,17 +332,17 @@ async def _level1_brief_plan_and_engineering(
     api_internal,
     ctx: dict,
     *,
-    engineering_timeout: int,
     debug_prefix: str,
 ) -> None:
-    """The level-1 story: a confirmed brief, an admitted plan, two scripted tasks.
+    """The level-1 story: a confirmed brief, an admitted plan, two ordered tasks.
 
     Every exit from here that is not "the story is built" raises naming its own
-    phase, the way card 1310 made the scaffold raise. The level-1 route is
-    deterministic — nothing in it is allowed to fail for a reason that is not
-    this platform's — so a phase that did not produce what the phases after it
-    are about is a failure of that phase, never a skip and never an assertion
-    about a product that was never built.
+    phase, the way card 1310 made the scaffold raise. A phase that did not
+    produce what the phases after it are about is a failure of that phase, never
+    a skip and never an assertion about a product that was never built — with
+    the scripted developer, whose route nothing may fail for a reason that is not
+    this platform's, and with a model, whose tasks are waited on for as long as
+    a model's are.
     """
     # A cursor fences out historical and foreign PO events. It is captured
     # before the story can produce a completion notification.
@@ -348,7 +357,11 @@ async def _level1_brief_plan_and_engineering(
     start_story_stage_observation(api_internal, ctx)
 
     await wait_linear_noop_engineering(
-        api, api_internal, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
+        api,
+        api_internal,
+        ctx,
+        timeout=developer_engineering_timeout(ctx),
+        on_poll=lambda: evidence_pass(ctx),
     )
     if ctx.get("task_status") != TaskStatus.DONE:
         # A failed scripted step has a name; the run says which one before it
@@ -360,10 +373,10 @@ async def _level1_brief_plan_and_engineering(
             f"task status {ctx.get('task_status')}; "
             f"failed steps {ctx.get('engineering_failure_steps')}",
         )
-    await record_noop_settlement_evidence(api_internal, ctx)
-    if ctx.get("noop_settlement_error") is not None:
-        dump_debug(ctx, f"{debug_prefix}-noop-settlement")
-        raise Level1PhaseFailed("engineering", ctx["noop_settlement_error"])
+    await record_engineering_settlement_evidence(api_internal, ctx)
+    if ctx.get("engineering_settlement_error") is not None:
+        dump_debug(ctx, f"{debug_prefix}-settlement")
+        raise Level1PhaseFailed("engineering", ctx["engineering_settlement_error"])
     if not await verify_linear_noop_story_completion(api, ctx):
         dump_debug(ctx, f"{debug_prefix}-noop-linear-story")
         raise Level1PhaseFailed("engineering", ctx["linear_noop_completion_error"])
@@ -460,7 +473,7 @@ async def _level1_extension_story(
         start_story_stage_observation(api_internal, ctx)
 
         await wait_engineering(
-            api, ctx, timeout=ENGINEERING_TIMEOUT, on_poll=lambda: evidence_pass(ctx)
+            api, ctx, timeout=developer_engineering_timeout(ctx), on_poll=lambda: evidence_pass(ctx)
         )
         # Read before anything is judged. A failed engineering phase is exactly
         # when the checkout evidence is worth having, and the manager's log is
@@ -476,16 +489,16 @@ async def _level1_extension_story(
                 f"task status {ctx.get('task_status')}; "
                 f"failed steps {ctx.get('engineering_failure_steps')}",
             )
-        await record_noop_settlement_evidence(api_internal, ctx)
-        if ctx.get("noop_settlement_error") is not None:
-            dump_debug(ctx, f"{debug_prefix}-extension-noop-settlement")
-            raise Level1PhaseFailed("extension_engineering", ctx["noop_settlement_error"])
+        await record_engineering_settlement_evidence(api_internal, ctx)
+        if ctx.get("engineering_settlement_error") is not None:
+            dump_debug(ctx, f"{debug_prefix}-extension-settlement")
+            raise Level1PhaseFailed("extension_engineering", ctx["engineering_settlement_error"])
         try:
             await verify_level1_plan_is_this_runs_alone(api, ctx, when="after_engineering")
         except Level1PhaseFailed as failure:
             dump_debug(ctx, f"{debug_prefix}-extension-{failure.phase}")
             raise
-        record_level1_scripted_path(ctx)
+        record_level1_developer_path(ctx)
         record_story_branch_base(ctx, contains_sha=first_story_merge_commit or "")
 
         deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
@@ -554,7 +567,7 @@ async def _level1_extension_story(
         ctx["qa_result"] = await run_non_llm_qa(
             api_internal,
             ctx["story_id"],
-            timeout=QA_RUN_TIMEOUT,
+            timeout=qa_run_timeout(ctx),
             record=lambda run: record_qa_run(ctx, run),
             on_poll=lambda: evidence_pass(ctx),
         )
@@ -589,8 +602,8 @@ async def _record_registration_door(api_internal, ctx: dict, *, debug_prefix: st
     redeemed at a fresh Telegram id, and the policy that redemption armed is
     what every paid admission after this is judged against. So it is read back
     here, at the top of the phases, while the balance is still the whole grant.
-    A run that has no user of its own — the paid LLM path, which shares the
-    fixture user — has no door to read and is left alone.
+    A run that has no user of its own — the sprint DoD's one-story route, which
+    shares the fixture user — has no door to read and is left alone.
     """
     run_owner = ctx.get("run_owner")
     if run_owner is None:
@@ -609,15 +622,11 @@ async def _pipeline_phases(
     api_observer,
     ctx: dict,
     *,
-    engineering_timeout: int,
+    engineering_timeout: int | None,
     debug_prefix: str,
     lifecycle_undeploy: bool,
-    require_story_commit: bool = False,
 ):
     """The pipeline phases themselves, so evidence can wrap every exit from them."""
-    if ctx.get("qa_requires_executor"):
-        ctx["qa_agent_type"] = configured_qa_executor()
-
     # Phase 0: the registration door, read back.
     await _record_registration_door(api_internal, ctx, debug_prefix=debug_prefix)
 
@@ -636,14 +645,10 @@ async def _pipeline_phases(
     # the previous attempt's container, and the attempt that died is exactly the
     # one that has to stay attributable.
     if lifecycle_undeploy:
-        await _level1_brief_plan_and_engineering(
-            api,
-            api_internal,
-            ctx,
-            engineering_timeout=engineering_timeout,
-            debug_prefix=debug_prefix,
-        )
+        await _level1_brief_plan_and_engineering(api, api_internal, ctx, debug_prefix=debug_prefix)
     else:
+        if engineering_timeout is None:
+            raise TypeError("the one-story route needs its caller's engineering_timeout")
         await create_story_and_task(api, ctx)
         await wait_engineering(
             api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
@@ -658,22 +663,11 @@ async def _pipeline_phases(
 
     # Both engineering tasks are settled, so what the story branch carries is
     # settled too: this is where the scripted path is told apart from the
-    # runner's empty-commit fallback, one GitHub comparison, before any wait.
-    if ctx.get("level1_change_set_paths"):
-        record_level1_scripted_path(ctx)
-
-    # The deploy that follows exists only if engineering committed something.
-    # Task-done is the first moment that is settled and this is the last one
-    # before the suite starts waiting on it, so the branch is compared with main
-    # here — one GitHub call — instead of being inferred from a 420-second wait
-    # for a deploy run that an unopenable story PR can never produce. Only the
-    # paid path asks a real developer for a change, so only it can end with an
-    # empty story branch; the deterministic route always commits, and its
-    # phases, waits and evidence stay exactly as they were.
-    if require_story_commit and not record_story_branch_ahead(ctx):
-        yield ctx
-        dump_debug(ctx, f"{debug_prefix}-story-branch")
-        return
+    # runner's empty-commit fallback, or a model's commits are shown to change
+    # the product — one GitHub comparison, before any wait. Judged by the tests,
+    # never skipped: the product probes that follow judge what the code does.
+    if lifecycle_undeploy:
+        record_level1_developer_path(ctx)
 
     # Phase 3: Deploy. The story branch merges into main and only then
     # does a deploy run appear carrying the merged head SHA. The ref
@@ -721,12 +715,11 @@ async def _pipeline_phases(
         # The probe keeps its raise; what it also does now is leave the
         # failure behind it, so an orchestrator that could not reach the
         # deployment is a stated read rather than an absent one.
-        await record_health_probe(ctx, ctx["deployed_url"], expect_marker=ctx.get("health_marker"))
+        await record_health_probe(ctx, ctx["deployed_url"])
         # The level-1 product facts are read from the running deployment, here,
-        # because the noop lifecycle undeploys it a few phases later.
-        if ctx.get("level1_change_set_paths"):
-            await record_level1_product_evidence(ctx)
+        # because the lifecycle undeploys it a few phases later.
         if lifecycle_undeploy:
+            await record_level1_product_evidence(ctx)
             await _record_level1_settings_seed_evidence(ctx, deploy_result, key=LEVEL1_SETTING_KEY)
         # Before any QA attempt: the deployed images must be this commit's. A
         # successful deploy Run and an HTTP 200 are both compatible with the
@@ -741,7 +734,7 @@ async def _pipeline_phases(
             ctx["qa_result"] = await run_non_llm_qa(
                 api_internal,
                 ctx["story_id"],
-                timeout=QA_RUN_TIMEOUT,
+                timeout=qa_run_timeout(ctx),
                 record=lambda run: record_qa_run(ctx, run),
                 on_poll=lambda: evidence_pass(ctx),
             )
@@ -765,10 +758,9 @@ async def _pipeline_phases(
 
 @pytest_asyncio.fixture(loop_scope="module", scope="module")
 async def pipeline():
-    """The level-1 Telegram-bot product: scaffold → scripted developer → deploy."""
+    """The level-1 Telegram-bot product: scaffold → developer → deploy → QA, twice."""
     async for ctx in _pipeline_run(
         create_level1_bot_project,
-        engineering_timeout=ENGINEERING_TIMEOUT,
         debug_prefix="full-level1",
         lifecycle_undeploy=True,
         registration_door=True,
@@ -776,16 +768,26 @@ async def pipeline():
         yield ctx
 
 
-@pytest_asyncio.fixture(loop_scope="module", scope="module")
-async def llm_pipeline():
-    """Full LLM pipeline: scaffold → real worker → deploy."""
-    async for ctx in _pipeline_run(
-        create_llm_backend_project,
-        engineering_timeout=LLM_ENGINEERING_TIMEOUT,
-        debug_prefix="full-llm",
-        require_story_commit=True,
-    ):
-        yield ctx
+def _live(pipeline: dict) -> bool:
+    """Whether this run's developer is a model (`mega-live`) rather than the script."""
+    return pipeline["agent_type"] != SCRIPTED_AGENT_TYPE
+
+
+def _qa_executor_mismatches(story: dict, *, requested: str | None) -> list[str]:
+    """Why one story's terminal QA Run was not decided for the executor the run asked for.
+
+    Read from the QA Run the suite recorded — `run_metadata.executor_decision`,
+    persisted by the API that decided it — never from a consumer's setting.
+    """
+    record = story.get("qa_run_record")
+    if not record:
+        return [f"no QA Run record: {story.get('qa_run_record_error')}"]
+    decision = record.get("executor_decision") or {}
+    if requested is None or decision.get("agent_type") != requested:
+        return [
+            f"QA Run {record.get('id')} was decided {decision}, not the requested {requested!r}"
+        ]
+    return []
 
 
 def _no_probe(pipeline: dict, name: str) -> str:
@@ -849,13 +851,34 @@ class TestFullPipeline:
             TokenCheckName.TELEGRAM_POLLER,
         }, binding
 
-    async def test_the_worker_took_the_scripted_path(self, pipeline):
-        """Both tasks carried a change set, and the branch carries their changes.
+    async def test_the_developer_committed_the_story_s_change(self, pipeline):
+        """The story branches carry the developer's work, not a fallback commit.
 
-        The runner falls back to an empty commit when a task document holds no
-        change-set block, and an empty commit still makes the branch ahead of
-        main — so "ahead by two" proves nothing. The branch's own diff does.
+        Scripted: both tasks carried a change set, and the branch carries their
+        changes. The runner falls back to an empty commit when a task document
+        holds no change-set block, and an empty commit still makes the branch
+        ahead of main — so "ahead by two" proves nothing. The branch's own diff
+        does.
+
+        Live: a model is given the contract, not a patch, so there are no paths
+        to find; both stories' branches are ahead of main with a non-empty diff —
+        the model committed a change of its own. What that change *does* is
+        judged, unweakened, by the deployed-product tests below.
         """
+        if _live(pipeline):
+            extension = _extension(pipeline)
+            for story in (pipeline, extension):
+                assert story.get("level1_developer_commits_error") is None, story.get(
+                    "level1_developer_commits_error"
+                )
+                commits = story.get("level1_developer_commits")
+                assert commits, (
+                    "no developer-commit evidence was recorded; engineering ended "
+                    f"{story.get('task_status')}"
+                )
+                assert commits["ahead_by"] >= 1, commits
+                assert commits["diff_chars"] > 0, commits
+            return
         assert pipeline.get("level1_scripted_path_error") is None, pipeline.get(
             "level1_scripted_path_error"
         )
@@ -975,19 +998,38 @@ class TestFullPipeline:
         assert budget["balance"]["known_spend_microusd"] == 0
         assert budget["balance"]["exhausted"] is False
 
-    async def test_noop_paid_admission_and_settlement_are_durable(self, pipeline):
-        """Every deterministic engineering attempt retains its paid-work evidence."""
-        assert pipeline.get("noop_settlement_error") is None, pipeline.get("noop_settlement_error")
-        settlement = pipeline.get("noop_settlement") or {}
-        assert len(settlement) == 2
+    async def test_paid_admission_and_settlement_are_durable(self, pipeline):
+        """Every engineering attempt retains the paid-work evidence its developer owes.
+
+        Scripted: one attempt per task, the noop pin, and a ledger row with no
+        provider cost. Live: every attempt of every task — a retry spent credits
+        too — was decided for the requested developer, carries the cost its
+        provider reported, and settled its reservation under the run owner's
+        promo policy.
+        """
+        assert pipeline.get("engineering_settlement_error") is None, pipeline.get(
+            "engineering_settlement_error"
+        )
+        settlement = pipeline.get("engineering_settlement") or {}
+        if not _live(pipeline):
+            assert len(settlement) == 2
+        assert {evidence["task_id"] for evidence in settlement.values()} == set(
+            pipeline["task_ids"]
+        )
         for run_id, evidence in settlement.items():
-            assert evidence["decision"]["agent_type"] == "noop", run_id
+            assert evidence["decision"]["agent_type"] == pipeline["agent_type"], run_id
             assert evidence["decision"]["source"] == "project_pin", run_id
             assert evidence["admission"]["outcome"] == "admitted", run_id
-            assert evidence["ledger"]["cost_source"] == "unknown", run_id
-            assert evidence["ledger"]["cost_microusd"] is None, run_id
+            if not _live(pipeline):
+                assert evidence["ledger"]["cost_source"] == "unknown", run_id
+                assert evidence["ledger"]["cost_microusd"] is None, run_id
+                continue
+            assert evidence["ledger"]["cost_source"] == "provider_reported", run_id
+            assert isinstance(evidence["ledger"]["cost_microusd"], int), run_id
+            assert evidence["reservation"]["reservation_state"] == "settled", run_id
+            assert evidence["reservation"]["user_id"] == pipeline["run_owner"].user_id, run_id
 
-    async def test_two_noop_tasks_are_sequenced_reused_and_complete_before_deploy(self, pipeline):
+    async def test_two_tasks_are_sequenced_reused_and_complete_before_deploy(self, pipeline):
         """A blocked second Task cannot run early or create another Story worker."""
         assert pipeline.get("noop_task_sequence_error") is None, pipeline.get(
             "noop_task_sequence_error"
@@ -1042,13 +1084,24 @@ class TestFullPipeline:
         assert pipeline.get("deployed_image_error") is None, pipeline["deployed_image_error"]
         assert pipeline["deployed_image_references"], "the deploy run named no image references"
 
-    async def test_non_llm_qa_passed(self, pipeline):
-        """A separate post-deploy QA run must terminate as passed."""
+    async def test_qa_passed(self, pipeline):
+        """A separate post-deploy QA run must terminate as passed.
+
+        Live, it also has to have been judged by the executor the run asked for,
+        against the criteria the story's plan admission wrote — and those were
+        not health-only, so QA could not have passed without starting it.
+        """
         assert pipeline.get("qa_result") == {
             "run_id": pipeline["qa_result"]["run_id"],
             "status": "completed",
             "qa_outcome": "passed",
         }
+        if _live(pipeline):
+            assert pipeline["level1_qa_criteria_written"] == pipeline["level1_qa_criteria"]
+            assert (
+                _qa_executor_mismatches(pipeline, requested=pipeline.get("qa_agent_type_requested"))
+                == []
+            )
 
     async def test_story_completed_and_owner_notification_delivered(self, pipeline):
         """QA completion leaves one durable completion record accepted by PO."""
@@ -1621,6 +1674,16 @@ class TestFullPipeline:
             "status": "completed",
             "qa_outcome": "passed",
         }
+        if _live(pipeline):
+            # Its own checklist — the first story's checks and its own — judged
+            # by the executor the run asked for.
+            assert extension["level1_qa_criteria_written"] == extension["level1_qa_criteria"]
+            assert (
+                _qa_executor_mismatches(
+                    extension, requested=pipeline.get("qa_agent_type_requested")
+                )
+                == []
+            )
         assert extension.get("story_terminal_error") is None, extension.get("story_terminal_error")
         assert extension["story_terminal"]["status"] == StoryStatus.COMPLETED.value
         assert extension.get("owner_notification_error") is None, extension.get(
@@ -1665,140 +1728,3 @@ class TestFullPipeline:
         assert sorted(asked) == sorted(run_intervention.INTERVENTION_KINDS), proof
         assert pipeline["no_intervention_error"] is None, pipeline["no_intervention_error"]
         assert [check["outcome"] for check in proof["checks"]] == ["absent", "absent"], proof
-
-
-class TestFullPipelineLLM:
-    """THE MEGA TEST with a real developer worker."""
-
-    async def test_project_active(self, llm_pipeline):
-        """Project status should be 'active' after successful scaffold + deploy."""
-        assert llm_pipeline.get("agent_type") == os.getenv("LIVE_WORKER_AGENT_TYPE", "claude")
-        assert llm_pipeline.get("scaffold_status") == ProjectStatus.ACTIVE, (
-            f"Scaffold failed, status: {llm_pipeline.get('scaffold_status')}"
-        )
-        assert llm_pipeline.get("task_status") == TaskStatus.DONE, (
-            f"Engineering failed, task status: {llm_pipeline.get('task_status')}"
-        )
-        assert llm_pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
-            f"Deploy failed, app_status: {llm_pipeline.get('final_app_status')}"
-        )
-
-    async def test_story_branch_carries_the_worker_commit(self, llm_pipeline):
-        """The paid task must leave a commit, and that is asserted before deploy.
-
-        A story branch that is not ahead of main means the worker committed
-        nothing: the story PR is refused 422 and no deploy run can ever exist.
-        The suite says so here rather than expiring the deploy wait and
-        reporting the missing run as if it were the reason.
-        """
-        if llm_pipeline.get("task_status") != TaskStatus.DONE:
-            pytest.skip("engineering failed")
-        assert llm_pipeline.get("story_branch_error") is None, llm_pipeline["story_branch_error"]
-        compare = llm_pipeline.get("story_branch_compare") or {}
-        assert compare.get("ahead_by", 0) >= 1, compare
-
-    async def test_health_payload_carries_this_run_marker(self, llm_pipeline):
-        """The change the task asked for is visible on the deployed service.
-
-        The marker is minted per run, so no scaffolded file and no artifact of
-        an earlier run can answer for this one: seeing it in the live payload is
-        what proves this run's worker made an observable change.
-        """
-        probe = llm_pipeline.get("health_probe_before_undeploy")
-        if not probe:
-            pytest.skip("no health probe was recorded")
-        assert probe.get("marker_present") is True, (
-            f"GET {probe['endpoint']} does not carry {llm_pipeline['health_marker']}: {probe}"
-        )
-
-    async def test_requested_qa_executor_is_active(self, llm_pipeline):
-        if not llm_pipeline.get("qa_requires_executor"):
-            pytest.skip("ordinary mega uses deterministic health-only QA")
-        assert llm_pipeline.get("qa_agent_type") == os.environ["LIVE_QA_AGENT_TYPE"]
-
-    async def test_no_user_secrets_required(self, llm_pipeline):
-        """The backend-only LLM project must not trip the user-secret deploy path.
-
-        Only *required* user secrets dead-end the deploy (DeployOutcome
-        WAITING_FOR_USER_SECRET). Optional ``user_secret`` overrides such as the
-        template's ``DATABASE_URL`` (``required: false``) are resolved from the
-        allocated infrastructure and must not fail this project.
-        """
-        if llm_pipeline.get("task_status") != TaskStatus.DONE:
-            pytest.skip("engineering failed")
-        errors = llm_pipeline.get("env_contract_errors") or {}
-        assert "merged" not in errors, errors.get("merged")
-        probe = llm_pipeline["env_contract_probes"]["merged"]
-        assert probe["required_user_secret_entries"] == [], (
-            f"required user secrets would dead-end deploy: {probe['required_user_secret_entries']}"
-        )
-
-    async def test_deploy_run_outcome_success(self, llm_pipeline):
-        """The deploy run this mega triggered must conclude deploy_outcome=success."""
-        if llm_pipeline.get("task_status") != TaskStatus.DONE:
-            pytest.skip("engineering failed")
-        assert llm_pipeline.get("deploy_run_error") is None, llm_pipeline["deploy_run_error"]
-        assert llm_pipeline.get("deploy_outcome_error") is None, llm_pipeline[
-            "deploy_outcome_error"
-        ]
-        assert llm_pipeline.get("deploy_outcome") == DeployOutcome.SUCCESS.value, (
-            f"Deploy run {llm_pipeline.get('deploy_run_id')} ended "
-            f"deploy_outcome={llm_pipeline.get('deploy_outcome')} "
-            f"({llm_pipeline.get('deploy_error_details')})"
-        )
-
-    async def test_health_endpoint(self, llm_pipeline):
-        """GET /health evidence is recorded while the LLM deployment runs."""
-        probe = llm_pipeline.get("health_probe_before_undeploy")
-        assert probe, "No health probe was recorded"
-        assert probe["status_code"] == 200, probe
-
-    async def test_deployed_image_tag_is_the_built_commit_before_qa_runs(self, llm_pipeline):
-        """QA is only worth spending once the right code is proven to be running.
-
-        Paid run 33753667796 is why this is asserted here and not only inside the
-        deploy path: the deploy reported success, the service answered HTTP 200,
-        and the wrong code was running. Only the marker assertion, several steps
-        and one paid QA turn later, said so.
-
-        The expectation comes from GitHub — the commit `main` points at, which is
-        the commit the project's CI built — not from the deploy's own input. An
-        assertion derived from what the resolver was given agrees with itself and
-        would pass on the wrong tag.
-        """
-        if (
-            llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
-            or llm_pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
-        ):
-            pytest.skip("deploy failed")
-        assert llm_pipeline.get("deployed_image_error") is None, llm_pipeline[
-            "deployed_image_error"
-        ]
-        built_sha = llm_pipeline["main_head_probe"]["sha"]
-        expected = llm_pipeline["deployed_image_tag_expected"]
-        assert expected.endswith(built_sha[:7]), (
-            f"the expected tag {expected} was not derived from main's head {built_sha}"
-        )
-        references = llm_pipeline.get("deployed_image_references")
-        assert references, "the deploy run named no image references"
-        assert all(reference.endswith(f":{expected}") for reference in references.values()), (
-            f"deployed images {references} are not tagged {expected} for the built commit "
-            f"{built_sha}"
-        )
-        assert llm_pipeline.get("deployed_commit_sha") == built_sha, (
-            f"the deploy says it deployed {llm_pipeline.get('deployed_commit_sha')}, "
-            f"main points at {built_sha}"
-        )
-
-    async def test_non_llm_qa_passed(self, llm_pipeline):
-        """A separate post-deploy QA run must terminate as passed."""
-        if (
-            llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
-            or llm_pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
-        ):
-            pytest.skip("deploy failed")
-        assert llm_pipeline.get("qa_result") == {
-            "run_id": llm_pipeline["qa_result"]["run_id"],
-            "status": "completed",
-            "qa_outcome": "passed",
-        }

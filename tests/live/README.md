@@ -45,32 +45,32 @@ it, but the target must contain `pyproject.toml` and `tests/live`.
 The stand runner (`scripts/stand_run.py`) is the canonical contract for named E2E suites. A name
 always identifies one pytest node, whether the run can spend model budget, its number of agent
 combinations, and its subprocess timeout. The GitHub Actions dropdown exposes only the canonical
-names. `mega` and `llm` remain temporary runner aliases for `mega-noop` and `mega-llm`; reports,
+names. `mega` remains a temporary runner alias for `mega-noop`; no alias names a paid suite. Reports,
 JUnit metadata, logs, and run directories always record the canonical name.
 
 | Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; three scripted engineering Tasks across two Stories and deterministic QA | 1 | a user registered through the product's own door — a fresh Telegram id, a promo code minted through the internal API and redeemed by that named actor, and the engineering budget policy the code arms; one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
-| `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0 — 39 tests, level 1: three scripted engineering Tasks across two Stories and deterministic QA | 1 | a user registered through the product's own door — a fresh Telegram id, a promo code minted through the internal API and redeemed by that named actor, and the engineering budget policy the code arms; one `backend`+`tg_bot` product with its bot token bound through the product route; a Russian Product Brief confirmed through the released PO tools and its plan admitted through the architect's own coverage routes, both with no model call; paid admission evidence; two ordered scripted Tasks on one Story worker, each applying a change set; deploy with the confirmed settings seeded into the product; deterministic QA; completed Story/PO record and the bot product's own completion message; then a **second story on the same project** — a corrected brief revision confirmed through the same PO tools, one scripted Task on the reused workspace, deploy through the PR poller, QA, and a second completion message; explicit undeploy | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 155 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-live` | `tests/live/test_full_pipeline.py::TestFullPipeline` | the same 39 tests; three developer attempts (plus any retry) by the selected model, and one QA executor turn per story | 1 selected `--worker` / `--qa` pair | level 2: exactly the `mega-noop` lifecycle — registration door, constant brief, harness-admitted plans, two stories on one project, both deploy paths, settings seed, notifications, undeploy — except that a real developer (`claude` or `codex`) writes the product code from the contract its task descriptions state in prose, and a real QA executor judges each deployed story against the repository criteria its plan admission wrote; every engineering Run is decided for the requested developer, carries a provider-reported cost and settles its reservation under the run owner's promo policy; each story's QA Run is decided for the requested executor | manifest-owned, fail-closed, then product undeploy verifies port and bot-binding release | 265 min | measured from stand artifacts; no baseline measurement yet |
 | `mega-brief` | `tests/live/test_product_brief_pipeline.py::TestProductBriefPipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief; Architect coverage/admission; selected developer; deploy settings seed; selected QA executor | manifest-owned, fail-closed | 50 min + 10 min grace | the fixture's own productive deadline, then the runner's hard stop; no baseline measurement yet |
 | `mega-brief-package` | `tests/live/test_product_brief_package_pipeline.py::TestProductBriefPackagePipeline` | one Architect, developer and QA executor turn | 1 selected `--worker` / `--qa` pair | confirmed Product Brief whose capability is a one-time reminder; Architect plans it as a kit package; the worker installs it with the kit recipe; deploy settings seed; the deployment's own package contract and job registry must show the capability is that package; central QA judges the package behaviour on the route its criterion names | manifest-owned, fail-closed | 65 min + 15 min grace | a longer productive window than `mega-brief`, because the kit install is inside its engineering budget; no baseline measurement yet |
-| `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
 
 The local target names reflect that same contract:
 
-- `make test-live-mega-noop` runs only the noop class.
-- `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
+- `make test-live-mega-noop` runs the level-1 class with no developer model, whatever the caller's
+  environment carries.
+- `make test-live-mega-live WORKER=<agent> QA=<agent>` runs the same class as `mega-live` through the
+  stand runner, which owns the QA executor switch.
 - `make test-live-mega-brief` runs only the Product Brief E2E class for one locally configured pair.
 - `make test-live-mega-brief-package` runs only its package variant, the same path onto the kit
   package route, for one locally configured pair.
-- `make test-live-matrix` delegates the four paid cells to the stand runner.
 
 There is no compatibility alias or aggregate target in the local Makefile: select the named class
 that owns the coverage you want, or use `make stand-run SUITE=<suite>` for a canonical stand run.
 
 ### Switching the QA executor
 
-An LLM cell asks for a QA executor, and the runner has to make that true before pytest starts.
+A paid suite asks for a QA executor, and the runner has to make that true before pytest starts.
 `QA_EXECUTOR_AGENT_TYPE` is written to the deployed `.env`, and every compose service the variable
 is passed to is force-recreated — the set is read out of the compose files by
 `stand_run.qa_executor_services`, never transcribed, so a service that starts reading it tomorrow is
@@ -151,10 +151,17 @@ throughout a redeploy — the Run is the fact, not the status; the application's
 once that Run has settled; the health probe; QA; completed-story and PO delivery. **Teardown**
 spends 10m: undeploy Run, terminal application and port-allocation release. The whole `mega-noop`
 path — 45m provisioning, 10m pre-provisioning reserve, preflight, readiness, the executor switch,
-this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes. The LLM pipeline
-remains 53 minutes (`120 + 1800 + 420 + 420 + 120 + 300`) because its project is backend-only — one
-module, so one module's scaffold bound — and it does not yet run the new lifecycle
-acceptance. `mega-brief` stops its productive work at 50 minutes on the fixture's own clock and
+this cap, the sweep and the job reserve — comes to 234 of the workflow's 360 job-minutes.
+
+`mega-live` is the same lifecycle with its two forks, and its ledger (`LIVE_LIFECYCLE_WAITS`) is the
+noop ledger with exactly two kinds of entry replaced: each developer Task is waited on for
+`LLM_ENGINEERING_TIMEOUT`, 1800 seconds, instead of 420, and each story's QA for the executor's own
+1200-second verdict bound on top of the deterministic 300 (`LIVE_QA_RUN_TIMEOUT`, 1500 seconds). Its
+first story spends 134m20s (`240 + 3600 + 60 + 1320 + 420 + 120 + 320 + 1500 + 180 + 180 + 120`),
+its second 105m20s (`1800 + 60 + 1320 + 540 + 420 + 320 + 1500 + 180 + 180`) and the teardown the
+same 10m, 249m40s in all; the 265-minute live cap leaves 15m20s over the same 11m40s reserve. With
+preflight, readiness, the executor switch and the sweep, the live runner path is 281 minutes, and the
+whole `mega-live` path adds up to 344 minutes of the job. `mega-brief` stops its productive work at 50 minutes on the fixture's own clock and
 then gets a 10-minute cleanup grace before the runner kills the process group — the two are
 `MEGA_BRIEF_PRODUCTIVE_SECONDS` and `MEGA_BRIEF_HARD_STOP_SECONDS`, and the grace is their
 difference, not a third number. `mega-brief-package` runs the same lifecycle under a longer
@@ -168,9 +175,9 @@ two 10-minute machine allocations, five minutes for DNS, three minutes for API r
 minutes for target provisioning; the remainder is bootstrap/Ansible reserve. The previous broad
 control-plane bootstrap measured about seven minutes. It now uses a stand-only minimal playbook
 whose expected 2–3 minute duration is pending live confirmation; that expectation does not change
-the overall provisioning budget. The matrix runner is bounded at 274 minutes (`5m preflight + 4 ×
-(60m cell + 3m readiness + 3m switch) + 5m sweep`). The E2E job cap is 360 minutes, a strict
-31-minute reserve over provisioning, the 10-minute pre-provisioning reserve and that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
+the overall provisioning budget. The longest runner path is `mega-live`'s, bounded at 281 minutes
+(`5m preflight + 3m readiness + 3m switch + 265m cap + 5m sweep`). The E2E job cap is 360 minutes, a
+strict 24-minute reserve over provisioning, the 10-minute pre-provisioning reserve and that runner path. Lifecycle cleanup runs in its own 30-minute GitHub job, because
 jobs do not share an outer timeout.
 
 ### Invariant map and first-iteration baseline
@@ -194,22 +201,27 @@ itself. Every named suite also compares the deploy Run's image references with t
 read from GitHub, never from what the deploy was given — before it spends a QA attempt, so a
 deployment running an older image fails as a deploy defect rather than as a product one. Because no
 deploy Run is created until that commit's images are published, `DEPLOY_RUN_TIMEOUT` now spans the
-generated project's own CI while `DEPLOY_TIMEOUT` still means "deploy.yml + smoke". The LLM suites additionally prove selected executor wiring; they do not yet claim
-the new lifecycle acceptance. The static baseline at this point is one two-Task noop run, one selected LLM
-pair, or four unique matrix pairs; it does not claim unmeasured wall times.
+generated project's own CI while `DEPLOY_TIMEOUT` still means "deploy.yml + smoke". `mega-live` proves
+every one of those invariants again with a real developer and a real QA executor — the same class, the
+same assertions — and replaces only what a model changes: the story branches carry the developer's own
+commits instead of the change set's paths, every engineering Run settles a provider-reported cost under
+the run owner's promo policy instead of an unknown one, and each story's QA Run is decided for the
+requested executor. The static baseline at this point is one two-story noop run or one two-story run of
+one selected developer/QA pair; it does not claim unmeasured wall times.
 
 | Invariant level | Primary evidence | Suites |
 | --- | --- | --- |
-| Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
-| Noop paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row | `mega-noop` |
-| Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop` |
-| Confirmed brief without a model | the frozen brief's `confirmed_at` and `story_id`, read back over the API, and a plan released only by `POST /product-briefs/{id}/admit` over tasks that were undispatchable before it | `mega-noop` |
-| Nothing but the harness planned it | three durable observations — before the admission, after it and after engineering — that the brief's planning attempt is still this run's, that the claim was never finished out from under it, and that the story carries exactly the tasks this run planned | `mega-noop` |
-| Confirmed settings reach the product | the deploy Run's per-setting `settings_seed`, the consumer's `deploy_settings_seed_brief` line with `route=story`, and the deployed product's own readback | `mega-noop` |
-| Scripted product change | the story branch diff carries every change-set path, and the deployment answers the added endpoint, the registered product setting and the published bot command | `mega-noop` |
+| Product acceptance | `TestFullPipeline` status, deploy, health, and QA assertions; the brief classes' own | all named suites |
+| Paid-work settlement | admitted audit, persisted decision, typed terminal Run, reservation readback, and ledger row: unknown cost for the scripted developer; provider-reported cost settled under the promo policy for a model | `mega-noop`, `mega-live` |
+| Ordered Story work | dependency-fenced second Task, one observed developer worker, and both Tasks done before deploy | `mega-noop`, `mega-live` |
+| Confirmed brief without a model | the frozen brief's `confirmed_at` and `story_id`, read back over the API, and a plan released only by `POST /product-briefs/{id}/admit` over tasks that were undispatchable before it | `mega-noop`, `mega-live` |
+| Nothing but the harness planned it | three durable observations — before the admission, after it and after engineering — that the brief's planning attempt is still this run's, that the claim was never finished out from under it, and that the story carries exactly the tasks this run planned | `mega-noop`, `mega-live` |
+| Confirmed settings reach the product | the deploy Run's per-setting `settings_seed`, the consumer's `deploy_settings_seed_brief` line with `route=story`, and the deployed product's own readback | `mega-noop`, `mega-live` |
+| Developer product change | scripted: the story branch diff carries every change-set path; model: both story branches are ahead of main with a non-empty diff. Either way the deployment answers the added endpoint, the registered product setting and the published bot command | `mega-noop`, `mega-live` |
+| Executor QA | each story's terminal QA Run carries `executor_decision.agent_type` equal to the requested executor, over repository criteria that are not health-only | `mega-live`; the brief classes' own |
 | Deployed artifact identity | the deploy Run's image references, tagged with `main`'s head as GitHub reports it, read before any QA attempt | all named suites |
-| Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
-| Failure attribution | the failing stage, its control-plane reason, the engineering Run records and the verdict | all named suites; the paid verdict rules apply to LLM/matrix |
+| Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for the paid suites |
+| Failure attribution | the failing stage, its control-plane reason, the engineering Run records and the verdict | all named suites; the paid verdict rules apply to the paid suites |
 | Diagnostics | bounded debug dumps, redacted service tails on suite failure, runner log, and public report files | all named suites |
 | Ownership fence | `OwnershipManifest`, run labels, and fenced teardown | all named suites |
 | Neighbour isolation | manifest-scoped cleanup regressions; no prefix or shared-stream deletion | all named suites |
@@ -217,7 +229,7 @@ pair, or four unique matrix pairs; it does not claim unmeasured wall times.
 | Cleanup verification | cleanup guard plus runner sweep; either failure is red | all named suites |
 
 `tests/live/po_default_preflight.py` is retained as a separate operator preflight. It is not part
-of `matrix` in this iteration, so no named suite currently claims PO-default coverage.
+of any named suite in this iteration, so no named suite currently claims PO-default coverage.
 
 ## LIVE_NO_CLEANUP
 
@@ -240,6 +252,21 @@ The full pipeline has a separate post-deploy gate. Once the application is `runn
 starts a health-only QA observation against `/health` and `/v1/health`. It accepts only the terminal
 contract `status=completed` with `qa_outcome=passed`. An unreachable endpoint, a non-200 response or
 timeout makes the live run red. This gate does not publish to `qa:queue` and does not run an LLM.
+
+`mega-live` keeps the same gate and the same terminal contract, but the QA it waits for is a real
+executor's: at each story's plan admission the harness writes that story's accumulated checklist —
+the seeded health check, the backend endpoint answering with this run's marker and its setting
+registered, and for the second story its own endpoint and setting beside the first story's — through
+the repository update the Architect uses (`PATCH /api/repositories/{id}`). Those lines are prose, so
+they never parse as health-only and QA cannot pass without starting the executor. The bot's criteria
+stay in each task's TASK.md and in the suite's own command-menu probe: the executor has no Telegram
+identity on the stand. Each story's QA wait is `LIVE_QA_RUN_TIMEOUT`, and its terminal QA Run's
+`run_metadata.executor_decision.agent_type` must be the requested executor.
+
+No live test skips after a phase that did not happen: such an exit fails naming the phase.
+`test_harness_contract.py` scans every module under `tests/live/` and allows `pytest.skip` only for
+the environment preconditions it lists by file and function — a stream no message has created yet,
+and a contour with no managed server to deploy to.
 
 ## Run evidence
 
