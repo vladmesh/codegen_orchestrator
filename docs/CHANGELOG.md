@@ -5,6 +5,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- QA executor Runs now reserve the owner's promo budget and settle provider cost into the shared ledger; health-only QA releases its hold without spend.
 - New stand suite `mega-live`: `TestFullPipeline`'s two-story lifecycle with a real developer and QA executor,
   asserting provider-reported settlement; `mega-llm`, `matrix` and `TestFullPipelineLLM` are removed.
 - One contract test bans `pytest.skip` in `tests/live` outside a named environment-precondition allowlist;

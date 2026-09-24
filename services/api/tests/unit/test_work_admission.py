@@ -113,6 +113,12 @@ async def test_project_stop_is_checked_before_the_project_count():
 
 @pytest.mark.asyncio
 async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monkeypatch):
+    from shared.contracts.dto.engineering_budget_policy import (
+        EngineeringBudgetAdmissionOutcome,
+        EngineeringBudgetAdmissionRead,
+        EngineeringBudgetReservationState,
+    )
+
     db = AsyncMock()
     db.add = MagicMock()
     db.scalars.side_effect = [
@@ -150,6 +156,19 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
         )
 
     monkeypatch.setattr("src.work_admission.current_executor_diagnostic", available_codex)
+    reserve = AsyncMock(
+        return_value=EngineeringBudgetAdmissionRead(
+            attempt_id="qa-1",
+            user_id=7,
+            outcome=EngineeringBudgetAdmissionOutcome.ADMITTED,
+            reservation_microusd=10,
+            known_spend_microusd=0,
+            active_held_microusd=10,
+            available_microusd=90,
+            reservation_state=EngineeringBudgetReservationState.ACTIVE,
+        )
+    )
+    monkeypatch.setattr("src.engineering_budget_admission.admit_engineering_attempt", reserve)
 
     result = await start_paid_run(
         PaidRunStartCommand(
@@ -162,6 +181,7 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
 
     assert result.admission.outcome is WorkAdmissionOutcome.ADMITTED
     assert result.run_id == "qa-1"
+    assert reserve.await_args.args[0].attempt_id == "qa-1"
     assert db.add.call_count == 2  # Run plus the durable admission audit record.
 
 

@@ -1908,12 +1908,10 @@ class Level1PhaseFailed(RuntimeError):
 #:
 #: Admission needs the $5 reservation to fit in the limit less known spend and
 #: active holds (`engineering_budget_admission.admit_engineering_attempt`). The
-#: level-1 run makes three engineering attempts — two tasks of the first story,
-#: one of the second. With a model developer each settles at its real cost; the
-#: sizing allows every one of those three and two retries (five attempts) up to
-#: $15 each, $75, with the next attempt's $5 hold still admissible on top: $80
-#: of the $100. With the scripted developer each attempt holds $5 and settles as
-#: unknown-cost, keeping the hold — $15 of the $100.
+#: level-1 run makes three engineering attempts and two QA runs. With a model,
+#: five developer attempts at up to $15 plus two QA attempts at up to $10 use
+#: $95; the next $5 hold still fits within $100. With the scripted developer,
+#: three unknown-cost holds use $15; both health-only QA holds are released.
 LEVEL1_PROMO_CREDITS_MICROUSD = 100_000_000
 LEVEL1_PROMO_ATTEMPT_RESERVATION_MICROUSD = 5_000_000
 
@@ -3065,6 +3063,63 @@ def record_qa_run(ctx: dict, run: dict, *, source: QARunLookup = QARunLookup.QA_
         ctx["qa_run_record_error"] = (
             f"the terminal QA Run could not be read into evidence: {type(error).__name__}: {error}"
         )
+
+
+async def record_qa_settlement_evidence(api_internal: httpx.AsyncClient, ctx: dict) -> dict:
+    """Read the terminal QA Run's ledger and reservation under its owner's policy."""
+    run = ctx.get("qa_run")
+    if not isinstance(run, dict) or not run.get("id"):
+        ctx["qa_settlement_error"] = "no terminal QA Run was recorded"
+        return {}
+    run_id = run["id"]
+    try:
+        ledger_response = await api_internal.get(
+            "/api/runs/engineering-attempts", params={"run_id": run_id}
+        )
+        ledger_response.raise_for_status()
+        rows = ledger_response.json()
+        reservation_response = await api_internal.get(
+            f"/api/engineering-budget-policies/admissions/{run_id}"
+        )
+        reservation_response.raise_for_status()
+        reservation = EngineeringBudgetAdmissionRead.model_validate(reservation_response.json())
+        owner = require_run_owner(ctx)
+        if reservation.attempt_id != run_id or reservation.user_id != owner.user_id:
+            raise _SettlementRefused(f"QA Run {run_id} has another owner's reservation")
+        if ctx["agent_type"] == SCRIPTED_AGENT_TYPE:
+            if rows or reservation.active_held_microusd != 0:
+                raise _SettlementRefused(f"health-only QA Run {run_id} retained spend or a hold")
+        else:
+            if len(rows) != 1:
+                raise _SettlementRefused(
+                    f"QA Run {run_id} has {len(rows)} ledger rows; expected one"
+                )
+            row = rows[0]
+            if (
+                row.get("run_id") != run_id
+                or row.get("role") != "qa"
+                or row.get("user_id") != owner.user_id
+                or row.get("project_id") != ctx["project_id"]
+                or row.get("story_id") != ctx["story_id"]
+                or row.get("task_id") is not None
+                or row.get("cost_source") != CostSource.PROVIDER_REPORTED.value
+                or not isinstance(row.get("cost_microusd"), int)
+                or reservation.reservation_state is not EngineeringBudgetReservationState.SETTLED
+                or reservation.active_held_microusd != 0
+            ):
+                raise _SettlementRefused(f"QA Run {run_id} lacks provider-cost settlement")
+        evidence = {
+            "run_id": run_id,
+            "ledger": rows,
+            "reservation": reservation.model_dump(mode="json"),
+        }
+    except (_SettlementRefused, httpx.HTTPError, ValidationError, ValueError) as error:
+        ctx["qa_settlement_error"] = str(error)
+        ctx["qa_settlement"] = {}
+        return {}
+    ctx["qa_settlement_error"] = None
+    ctx["qa_settlement"] = evidence
+    return evidence
 
 
 def recorded_qa_executor(ctx: dict) -> str | None:
@@ -5675,6 +5730,8 @@ def record_level1_merge_artifact(ctx: dict) -> bool:
 #: the second story has redeployed it.
 SECOND_STORY_SCOPED_KEYS = frozenset(
     {
+        "qa_settlement",
+        "qa_settlement_error",
         # The brief, its revisions and this run's ownership of its plan
         "level1_brief",
         "brief_id",

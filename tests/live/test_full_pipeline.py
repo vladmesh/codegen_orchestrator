@@ -107,6 +107,7 @@ from pipeline_helpers import (
     record_manager_checkout_script,
     record_pre_teardown_proofs,
     record_qa_run,
+    record_qa_settlement_evidence,
     record_run_po_position,
     record_settings_seed_brief_log,
     record_stage_notices,
@@ -434,7 +435,7 @@ def _require_level1_merge_artifact(ctx: dict, *, phase: str, debug_prefix: str) 
     raise Level1PhaseFailed(phase, "; ".join(ctx["level1_merge_artifact_verdict"]["reasons"]))
 
 
-async def _level1_extension_story(
+async def _level1_extension_story(  # noqa: PLR0915 - lifecycle evidence is recorded in sequence
     api, api_internal, api_observer, ctx: dict, *, debug_prefix: str
 ) -> None:
     """The second story of the same project, on the workspace the first left behind.
@@ -571,6 +572,7 @@ async def _level1_extension_story(
             record=lambda run: record_qa_run(ctx, run),
             on_poll=lambda: evidence_pass(ctx),
         )
+        await record_qa_settlement_evidence(api_internal, ctx)
         if ctx.get("qa_result", {}).get("qa_outcome") != "passed":
             dump_debug(ctx, f"{debug_prefix}-extension-qa")
             raise Level1PhaseFailed("extension_qa", f"QA ended {ctx.get('qa_result')}")
@@ -738,6 +740,7 @@ async def _pipeline_phases(
                 record=lambda run: record_qa_run(ctx, run),
                 on_poll=lambda: evidence_pass(ctx),
             )
+            await record_qa_settlement_evidence(api_internal, ctx)
         else:
             dump_debug(ctx, f"{debug_prefix}-deployed-images")
 
@@ -1028,6 +1031,20 @@ class TestFullPipeline:
             assert isinstance(evidence["ledger"]["cost_microusd"], int), run_id
             assert evidence["reservation"]["reservation_state"] == "settled", run_id
             assert evidence["reservation"]["user_id"] == pipeline["run_owner"].user_id, run_id
+        for story in (pipeline, _extension(pipeline)):
+            assert story.get("qa_settlement_error") is None, story.get("qa_settlement_error")
+            qa = story.get("qa_settlement")
+            assert qa, f"story {story.get('story_id')} has no QA settlement evidence"
+            assert qa["run_id"] == story["qa_run"]["id"]
+            if _live(pipeline):
+                assert len(qa["ledger"]) == 1, qa
+                assert qa["ledger"][0]["role"] == "qa", qa
+                assert qa["ledger"][0]["cost_microusd"] is not None, qa
+                assert qa["reservation"]["reservation_state"] == "settled", qa
+                assert qa["reservation"]["user_id"] == pipeline["run_owner"].user_id, qa
+            else:
+                assert qa["ledger"] == [], qa
+                assert qa["reservation"]["active_held_microusd"] == 0, qa
 
     async def test_two_tasks_are_sequenced_reused_and_complete_before_deploy(self, pipeline):
         """A blocked second Task cannot run early or create another Story worker."""

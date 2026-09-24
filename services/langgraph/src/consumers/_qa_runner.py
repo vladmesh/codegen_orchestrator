@@ -18,6 +18,7 @@ from shared.contracts.acceptance import (
     ScheduledBehaviourCriterion,
     parse_scheduled_behaviours,
 )
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
@@ -133,11 +134,19 @@ class QAExecutorAttempts:
 
     attempts: int
     said: tuple[tuple[int, str], ...] = ()
+    attempt: EngineeringAttemptLedgerInput | None = None
 
-    def with_attempt(self, attempt: int, transcript: str | None) -> QAExecutorAttempts:
+    def with_attempt(
+        self,
+        attempt: int,
+        transcript: str | None,
+        facts: EngineeringAttemptLedgerInput | None = None,
+    ) -> QAExecutorAttempts:
         if transcript is None:
             return self
-        return QAExecutorAttempts(self.attempts, (*self.said, (attempt, transcript)))
+        return QAExecutorAttempts(
+            self.attempts, (*self.said, (attempt, transcript)), facts or self.attempt
+        )
 
     @property
     def evidence(self) -> str | None:
@@ -168,11 +177,13 @@ class QAInfrastructureFailure(Exception):
         summary: str,
         blocker: QABlocker,
         executor_transcript: str | None = None,
+        attempt: EngineeringAttemptLedgerInput | None = None,
     ) -> None:
         super().__init__(blocker.received)
         self.summary = summary
         self.blocker = blocker
         self.executor_transcript = executor_transcript
+        self.attempt = attempt
 
 
 @dataclass
@@ -195,6 +206,7 @@ class QAResult:
     # string is an executor that ran and said nothing. A red run's artifact
     # reports those as different findings, so they are kept apart here.
     executor_evidence: str | None = None
+    executor_attempt: EngineeringAttemptLedgerInput | None = None
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -1369,6 +1381,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         # Every attempt that ran, not only the last: the last one may be an
         # attempt that never started a container and has nothing to say.
         executor_transcript=said.evidence,
+        attempt=said.attempt,
         blocker=QABlocker(
             category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
             attempted=f"run exploratory QA on the assigned executor ({executor})",
@@ -1426,7 +1439,7 @@ async def _run_central_executor(
             )
         except QAExecutorUnavailable as exc:
             last = exc
-            said = said.with_attempt(attempt, exc.transcript)
+            said = said.with_attempt(attempt, exc.transcript, exc.attempt)
             logger.warning(
                 "qa_executor_unavailable",
                 executor=runtime.executor_agent_type.value,
@@ -1444,7 +1457,7 @@ async def _run_central_executor(
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None, said.with_attempt(attempt, run.transcript)
+        return run, None, said.with_attempt(attempt, run.transcript, run.attempt)
     return None, last, said
 
 
@@ -1466,6 +1479,7 @@ def _verdict_of(
             summary=f"the QA executor did not submit a result within {timeout}s",
             report=workspace.read_report(),
             executor_evidence=said.evidence,
+            executor_attempt=said.attempt,
             blocker=_unknown_result_blocker(
                 attempted="run the central QA executor",
                 sent=f"{service.calls_served} capability call(s)",
@@ -1475,6 +1489,7 @@ def _verdict_of(
     qa_result = parse_qa_result(workspace.verdict, transport_refusals=workspace.transport_refusals)
     qa_result.report = workspace.read_report()
     qa_result.executor_evidence = said.evidence
+    qa_result.executor_attempt = said.attempt
     return qa_result
 
 
@@ -1614,6 +1629,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
+                executor_attempt=failure.attempt,
             ),
             _residues(grant, workspace),
         )

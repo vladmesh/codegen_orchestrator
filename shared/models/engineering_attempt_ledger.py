@@ -14,7 +14,7 @@ class EngineeringAttemptLedger(Base):
 
     __tablename__ = "engineering_attempt_ledger"
     __table_args__ = (
-        CheckConstraint("role = 'engineering'", name="ck_engineering_attempt_role"),
+        CheckConstraint("role IN ('engineering', 'qa')", name="ck_engineering_attempt_role"),
         CheckConstraint(
             "(cost_source = 'unknown' AND cost_microusd IS NULL) OR "
             "(cost_source = 'provider_reported' AND cost_microusd IS NOT NULL "

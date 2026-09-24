@@ -316,6 +316,49 @@ class TestSuperviseDeployingStories:
         assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
 
     @pytest.mark.asyncio
+    async def test_qa_budget_denial_parks_story_and_notifies_owner(
+        self,
+        api_client,
+        redis_client,
+    ):
+        from shared.contracts.dto.work_admission import WorkAdmissionReason
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
+        api_client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(
+                outcome=WorkAdmissionOutcome.DENIED,
+                reason=WorkAdmissionReason.ENGINEERING_BUDGET_DENIED,
+                message="Owner budget exhausted",
+            ),
+            engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        )
+        with (
+            patch(
+                "src.tasks.supervisor.deploy.owe_owner_notification", new_callable=AsyncMock
+            ) as owe,
+            patch(
+                "src.tasks.supervisor.deploy.deliver_owed_notification", new_callable=AsyncMock
+            ) as deliver,
+        ):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["tested"] == 0
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        assert owe.await_args.kwargs["text"] == "Owner budget exhausted"
+        deliver.assert_awaited_once()
+        redis_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
         """The handoff carries the repository's criteria, whatever they say."""
         from src.tasks.supervisor import (

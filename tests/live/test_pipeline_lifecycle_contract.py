@@ -247,6 +247,57 @@ async def test_a_model_run_without_a_provider_cost_is_refused_by_name():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_type", "cost", "passes"),
+    [("claude", 125, True), ("claude", None, False), ("noop", None, True)],
+)
+async def test_qa_settlement_requires_live_cost_and_noop_release(agent_type, cost, passes):
+    ctx = _settlement_ctx(agent_type)
+    ctx["qa_run"] = {"id": "qa-story-1", "status": "completed"}
+
+    def handler(request):
+        if request.url.path == "/api/runs/engineering-attempts":
+            rows = (
+                []
+                if agent_type == "noop"
+                else [
+                    {
+                        "run_id": "qa-story-1",
+                        "role": "qa",
+                        "user_id": 7,
+                        "project_id": "project-1",
+                        "story_id": "story-1",
+                        "task_id": None,
+                        "cost_source": "provider_reported" if cost is not None else "unknown",
+                        "cost_microusd": cost,
+                    }
+                ]
+            )
+            return httpx.Response(200, json=rows)
+        if request.url.path.endswith("/admissions/qa-story-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "attempt_id": "qa-story-1",
+                    "user_id": 7,
+                    "outcome": "admitted",
+                    "reservation_microusd": 5_000_000,
+                    "known_spend_microusd": 0,
+                    "active_held_microusd": 0,
+                    "available_microusd": 90_000_000,
+                    "reservation_state": "released" if agent_type == "noop" else "settled",
+                },
+            )
+        raise AssertionError(request.url)
+
+    async with _client(handler) as api:
+        evidence = await pipeline_helpers.record_qa_settlement_evidence(api, ctx)
+    assert bool(evidence) is passes
+    if not passes:
+        assert "qa-story-1" in ctx["qa_settlement_error"]
+
+
+@pytest.mark.asyncio
 async def test_a_model_run_decided_for_another_developer_is_refused():
     """The persisted decision must be the developer this run asked for."""
     ctx = _settlement_ctx("codex")

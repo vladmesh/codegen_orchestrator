@@ -22,7 +22,8 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
-from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
@@ -33,7 +34,7 @@ from shared.contracts.dto.owner_notification import (
 from shared.contracts.dto.qa_handoff import QA_ROUTED_KEY
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.models import EngineeringAttemptLedger, Project, Run, User
+from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Project, Run, User
 
 from ..database import get_async_session
 from ..dependencies import (
@@ -42,7 +43,10 @@ from ..dependencies import (
     require_internal_or_admin,
     resolve_actor,
 )
-from ..engineering_budget_admission import finalize_engineering_reservation
+from ..engineering_budget_admission import (
+    finalize_engineering_reservation,
+    release_pre_handoff_reservation,
+)
 from ..owner_notification_attempts import claim_attempt, refuse_superseded_write
 from ..schemas import RunCreate, RunRead, RunUpdate
 
@@ -120,6 +124,7 @@ async def _record_engineering_attempt(
     existing = await db.scalar(
         select(EngineeringAttemptLedger.id).where(EngineeringAttemptLedger.run_id == run.id)
     )
+
     if existing is not None:
         return
     facts = attempt or EngineeringAttemptLedgerInput()
@@ -133,6 +138,7 @@ async def _record_engineering_attempt(
             task_id=run.task_id,
             user_id=project.owner_id if project is not None else None,
             owner_attribution="resolved" if project is not None else "unknown",
+            role=run.type,
             occurred_at=run.completed_at or datetime.now(UTC),
             provider=facts.provider,
             model=facts.model,
@@ -145,6 +151,41 @@ async def _record_engineering_attempt(
             cost_source=facts.cost_source.value,
         )
     )
+
+
+async def _settle_terminal_accounting(
+    run: Run,
+    engineering_attempt: EngineeringAttemptLedgerInput | None,
+    qa_accounting: QAAccountingFact | None,
+    db: AsyncSession,
+) -> None:
+    """Write the first terminal fact and settle its hold under the Run lock."""
+    if run.status not in _TERMINAL_RUN_STATUSES:
+        return
+    if run.type == RunType.ENGINEERING.value:
+        await _record_engineering_attempt(run, engineering_attempt, db)
+        facts = engineering_attempt or EngineeringAttemptLedgerInput()
+        await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+    elif run.type == RunType.QA.value:
+        if qa_accounting is None:
+            logger.warning("qa_terminal_accounting_fact_missing", run_id=run.id)
+        if qa_accounting is not None and qa_accounting.executor_started:
+            reservation = await db.scalar(
+                select(EngineeringBudgetReservation).where(
+                    EngineeringBudgetReservation.attempt_id == run.id
+                )
+            )
+            # An in-flight run admitted before this deploy has no reservation.
+            # A repeated terminal delivery cannot reopen a released hold.
+            if (
+                reservation is not None
+                and reservation.state is not EngineeringBudgetReservationState.RELEASED
+            ):
+                await _record_engineering_attempt(run, qa_accounting.attempt, db)
+                facts = qa_accounting.attempt or EngineeringAttemptLedgerInput()
+                await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+        else:
+            await release_pre_handoff_reservation(run.id, db)
 
 
 async def _check_run_access(
@@ -584,7 +625,9 @@ async def update_run(
             )
     requested_status = update_data.get("status")
     engineering_attempt = run_update.engineering_attempt
+    qa_accounting = run_update.qa_accounting
     update_data.pop("engineering_attempt", None)
+    update_data.pop("qa_accounting", None)
     if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -594,6 +637,13 @@ async def update_run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="engineering_attempt is only valid with a terminal engineering status",
+        )
+    if qa_accounting is not None and (
+        run.type != RunType.QA.value or requested_status not in _TERMINAL_RUN_STATUSES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="qa_accounting is only valid with a terminal QA status",
         )
 
     # A terminal run has produced its outcome and nothing may start work for it
@@ -667,13 +717,8 @@ async def update_run(
         else:
             setattr(run, field, value)
 
-    # This is deliberately the only ledger writer. Every terminal engineering
-    # path, including cancellation and a repeated worker delivery, uses the
-    # same Run lock and transaction.
-    if run.type == RunType.ENGINEERING.value and run.status in _TERMINAL_RUN_STATUSES:
-        await _record_engineering_attempt(run, engineering_attempt, db)
-        facts = engineering_attempt or EngineeringAttemptLedgerInput()
-        await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
+    # This is deliberately the only ledger writer, under the terminal Run lock.
+    await _settle_terminal_accounting(run, engineering_attempt, qa_accounting, db)
 
     await db.commit()
     await db.refresh(run)

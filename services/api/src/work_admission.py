@@ -227,7 +227,7 @@ async def _replay_paid_start(
         return None
     if existing.status not in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
         raise PaidRunIdentityExpired(command.id)
-    if command.type is RunType.ENGINEERING:
+    if command.type in {RunType.ENGINEERING, RunType.QA}:
         reservation = await db.scalar(
             select(EngineeringBudgetReservation)
             .where(EngineeringBudgetReservation.attempt_id == command.id)
@@ -235,7 +235,7 @@ async def _replay_paid_start(
         )
         if (
             reservation is not None
-            and reservation.state is not EngineeringBudgetReservationState.ACTIVE
+            and reservation.state is EngineeringBudgetReservationState.RELEASED
         ):
             return None
     return PaidRunStartRead(
@@ -425,7 +425,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             executor_diagnostic=diagnostic,
         )
 
-    if command.type is RunType.ENGINEERING:
+    if command.type in {RunType.ENGINEERING, RunType.QA}:
         from shared.contracts.dto.engineering_budget_policy import (
             EngineeringBudgetAdmissionCommand,
             EngineeringBudgetAdmissionOutcome,
@@ -509,7 +509,7 @@ async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession)
         run.status = RunStatus.CANCELLED.value
         run.error_message = reason
         run.run_metadata = {**(run.run_metadata or {}), "pre_handoff_aborted": True}
-    if run.type == RunType.ENGINEERING.value:
+    if run.type in {RunType.ENGINEERING.value, RunType.QA.value}:
         from .engineering_budget_admission import release_pre_handoff_reservation
 
         await release_pre_handoff_reservation(run_id, db)
