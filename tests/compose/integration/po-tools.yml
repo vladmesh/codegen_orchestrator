@@ -81,7 +81,9 @@ services:
   # It proves the PO path resolves the default at creation instead of retaining
   # the earlier project's agent selection.
   api-factory:
+    # Built once, by the api service of this file; never pulled.
     image: codegen-orchestrator/api:test
+    pull_policy: never
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres

@@ -29,12 +29,9 @@ services:
       - backend-test
 
   engineering-worker:
+    # Built once, by the langgraph service of this file; never pulled.
     image: codegen-orchestrator/langgraph:test
-    build:
-      context: ../../..
-      dockerfile: services/langgraph/Dockerfile
-      args:
-        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    pull_policy: never
     command: ["python", "-m", "src.consumers.engineering"]
     environment:
       - DEFAULT_AGENT_TYPE=claude

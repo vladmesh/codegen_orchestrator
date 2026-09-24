@@ -100,6 +100,64 @@ direct requirement, `make lock-deps` covers every lock, the lock is installed be
 The frontends' `npm ci` enforces their `package-lock.json` already. The rule and the check are
 described in [DEPLOY.md](DEPLOY.md#service-images-are-a-release-too).
 
+## What a CI run runs, and in what order
+
+`detect-changes` runs `dorny/paths-filter` and hands the names of the filters that matched to
+`scripts/ci_plan.py`, which plans the docker jobs:
+
+- **The test matrices are the plan's legs.** `test-service` and `test-integration` build their matrix
+  from the `service-legs` and `integration-legs` outputs (JSON lists). A leg nothing in the change
+  reaches is not created, so it takes no runner; with no leg at all the job is skipped. The tables in
+  `ci_plan.py` say which filter reaches which leg: a change to `shared/`, `packages/`, the test harness,
+  CI or the dependency set reaches every leg, a one-service change only the legs whose compose files
+  build that service. `services/worker-broker/**` reaches the worker-manager leg (its stack starts the
+  broker) and `services/scaffolder/**` the template suite.
+- **`service-image-imports` runs when an image can have changed**: the `service-images` filter (every
+  Python service directory, not the frontends, plus `shared/`, `packages/`, `.dockerignore`,
+  `docker-compose*.yml` and the check's own scripts), `deps` or `ci`. On every push to main it runs
+  whatever changed, so every commit the release chain publishes had its entrypoints imported and its
+  locks checked. A `workflow_dispatch` runs every leg and the import check.
+- **The gate accepts those skips only from the plan.** `merge-gate` passes a skipped `test-service`,
+  `test-integration` or `service-image-imports` only when the plan says it planned nothing for it
+  (`[]`, or `false`); a skip for any other reason (lint went red, the plan is missing) fails it.
+
+The docker jobs (`service-image-imports`, both test matrices, `template-compatibility` and the DinD
+suite) wait for `lint` (Ruff format and lint, about 15 s) and `CI Contract`, not for the unit suite.
+`fast-checks` runs the unit suite, the offline live regressions and the Redis regression beside them
+from the start of the run, and `merge-gate` still requires it; a lint failure still stops the heavy
+fan-out before any image is built.
+
+A pull request keeps one run: a newer push to its branch cancels the older run. Every other run, a
+push to main above all, is a concurrency group of its own and is never cancelled or replaced, so every
+merge commit runs to its gate and gets its service and worker release.
+
+### Docker layer cache
+
+Every image a CI job builds reads and writes the buildx layer cache of its **Dockerfile**, in the
+GitHub Actions cache (`type=gha`, scope `buildx-<dockerfile path>`, `scripts/ci_build_cache.py`). The
+scope is the image definition, not the job: `services/api/Dockerfile` is built by two service legs,
+four integration legs, the DinD suite and the import check, and all of them share one cache, so the
+second build of an unchanged Dockerfile is `CACHED` from its first `COPY` of changed sources on.
+
+- The test jobs expose the Actions runtime token with `crazy-max/ghaction-github-runtime` (a `run:`
+  step does not get it), write a compose override with `cache_from`/`cache_to` for every service the
+  compose file builds (`ci_build_cache.py compose-override`), and hand it to `make` as
+  `TEST_COMPOSE_OVERRIDE`, which the test targets merge into every compose call. Locally the variable
+  is unset and nothing changes.
+- `service-image-imports` builds the eight Python service images in one `docker buildx bake`, in
+  parallel and with the same scopes (`check_service_image_imports.py --layer-cache gha`), then runs the
+  import and lock checks in the built images in parallel.
+- The cache is written with `mode=max`, because the builder stages hold the slow dependency layers,
+  and `ignore-error=true`, because a throttled cache service must cost speed, not a red build.
+- The repository cache holds 10 GB and evicts the least recently used entries past it. Layers are
+  content-addressed, so the base and apt layers the Dockerfiles share are stored once; a pull request
+  reads main's cache and uploads only the layers its change produced, into its own ref.
+- A test compose file declares `build:` once per image; the other services that run the same image
+  name it with `pull_policy: never`, so Compose neither builds it twice nor asks Docker Hub for it.
+
+The worker chain (`build-worker-images`) is not built through this cache: it is keyed by content and
+built only when its source hash has no release (`infra/scripts/publish-worker-images.sh`).
+
 ## CI infrastructure failures
 
 A CI job can fail because a download or a registry did not answer, not because of the code.
@@ -125,7 +183,7 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 
 | Job | Step | Cause | What was retried |
 |-----|------|-------|------------------|
-| `fast-checks`, `ci-contract` | `install-uv` | `uv-download`, `uv-download-timeout` | `pip install uv`, 3 attempts of at most 60 s each, 10 s then 20 s apart |
+| `lint`, `fast-checks`, `ci-contract` | `install-uv` | `uv-download`, `uv-download-timeout` | `pip install uv`, 3 attempts of at most 60 s each, 10 s then 20 s apart |
 | `fast-checks` | `redis-pull` | `image-pull`, `image-pull-timeout` | `docker pull` of the Redis image the cleanup regression runs, 3 attempts of at most 90 s each |
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
 | `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration`, `build-service-images` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
@@ -195,14 +253,15 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 | Job | Longest measured | Worst case before expose | Job bound | Docker step bounds |
 |-----|------------------|--------------------------|-----------|--------------------|
 | `detect-changes` | 0.1 min | — | 5 | — |
-| `fast-checks` | 3.5 min (unit tests 2.9) | 42 | 45 | Redis pull 3 × 90 s; Redis regression 3 min |
+| `lint` | new (Ruff took 8 s inside `fast-checks`) | 11 | 15 | — |
+| `fast-checks` | 3.5 min (unit tests 2.9) | 40 | 45 | Redis pull 3 × 90 s; Redis regression 3 min |
 | `ci-contract` | 0.8 min | 11 | 15 | — |
-| `service-image-imports` | 6.6 min (import step 6.0) | 31.5 | 35 | Buildx 3 × 120 s; imports 15 min |
-| `test-service/<leg>` | 8.7 min (tests 8.4) | 48 (`scheduler`, 3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
-| `test-integration/<leg>` | 4.2 min (tests 3.9) | 38.5 (2 images) | 40 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
+| `service-image-imports` | 6.6 min (import step 6.0) | 32.5 | 35 | Buildx 3 × 120 s; imports 15 min |
+| `test-service/<leg>` | 8.7 min (tests 8.4) | 50 (`scheduler`, 3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 15 min |
+| `test-integration/<leg>` | 4.2 min (tests 3.9) | 40.5 (2 images) | 45 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
 | `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 24.5 | 30 | smoke 15 min |
 | `web-checks/<app>` | 0.5 min | — | 10 | — |
-| `test-backend-dind-integration` | 8.5 min (suite 8.1, of which about 131 s built the worker chain; it now pulls the candidates) | 50 (3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
+| `test-backend-dind-integration` | 8.5 min (suite 8.1, of which about 131 s built the worker chain; it now pulls the candidates) | 52 (3 images) | 55 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
 | `build-worker-images` | new, not yet measured (the chain built and pushed in 2.5–4 min in the old publish job; a released hash only re-verifies) | 19.5 | 20 | candidates 15 min |
 | `merge-gate` | 0.6 min | — | 5 | — |
 | `publish-worker-images` | new, not yet measured (markers only; it built the chain before, 4.0 min) | 14.5 | 15 | publish 10 min |
@@ -212,7 +271,8 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 The non-docker steps inside a sum carry step bounds of 1–10 minutes against measured maxima of
 seconds: checkout 2 (measured 6 s), Python setup 2 (1 s), `uv sync` 5 (4 s), the unit tests 10
 (173 s), the offline live regressions 3 (23 s), uv setup 3 (4 s), Ruff and the other local checks 1,
-the always() assert 1, container cleanup and artifact upload 2 (2 s).
+the Actions runtime and the cache override 1 each, the always() assert 1, container cleanup and
+artifact upload 2 (2 s).
 
 A Buildx bootstrap took at most 0.6 minutes and a whole pull step under 0.3 minutes. Buildx is not
 bootstrapped by `docker/setup-buildx-action` any more: a composite action step takes no

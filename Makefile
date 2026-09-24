@@ -236,6 +236,12 @@ setup-hooks:
 
 # === Testing ===
 
+# CI merges one more compose file into every test stack: the override
+# scripts/ci_build_cache.py writes, which wires each image the stack builds to the buildx
+# layer cache of its Dockerfile. Locally TEST_COMPOSE_OVERRIDE is unset and the stack is
+# the compose file alone.
+test_compose_files = -f $(1)$(if $(TEST_COMPOSE_OVERRIDE), -f $(TEST_COMPOSE_OVERRIDE))
+
 # Integration tests - pattern rule for dynamic discovery
 # Any tests/compose/integration/*.yml file automatically becomes test-integration-* target
 INTEGRATION_COMPOSE_FILES := $(wildcard tests/compose/integration/*.yml)
@@ -245,15 +251,15 @@ INTEGRATION_TESTS := $(patsubst tests/compose/integration/%.yml,test-integration
 # Any tests/compose/integration/*.yml file automatically becomes test-integration-* target
 test-integration-%:
 	@echo "🧪 Running $* integration tests..."
-	@docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml down --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+	@docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
 		EXIT_CODE=1; \
 	fi; \
-	docker compose -p $(TEST_PROJECT)_$* -f tests/compose/integration/$*.yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_$* $(call test_compose_files,tests/compose/integration/$*.yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # The Stage 5 smoke must run on the Docker host: generated compose files bind-mount
@@ -272,10 +278,10 @@ test-template-compat:
 		$(if $(TEMPLATE_REF),--ref "$(TEMPLATE_REF)",)
 
 test-integration-template-runner:
-	@docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml down --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+	@docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_template -f tests/compose/integration/template.yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_template $(call test_compose_files,tests/compose/integration/template.yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # Run all unit tests locally (no Docker, fast)
@@ -295,31 +301,31 @@ test-service:
 		exit 1; \
 	fi
 	@echo "🧪 Running $(SERVICE) service tests..."
-	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) down --remove-orphans 2>/dev/null || true
 	@EXIT_CODE=0; \
 	if [ "$(SERVICE)" = "worker-manager" ]; then \
 		: "The rollout suite deliberately restarts the control-plane containers."; \
 		: "Run the pytest container separately from the restarted control plane."; \
-		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml build; \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) build; \
 		EXIT_CODE=$$?; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml up -d --wait worker-manager worker-broker; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) up -d --wait worker-manager worker-broker; \
 			EXIT_CODE=$$?; \
 		fi; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml run --rm --no-deps $(SERVICE)-test-runner; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) run --rm --no-deps $(SERVICE)-test-runner; \
 			EXIT_CODE=$$?; \
 		fi; \
 	else \
-		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
 		EXIT_CODE=$$?; \
 	fi; \
-	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
 		EXIT_CODE=1; \
 	fi; \
-	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f tests/compose/service/$(SERVICE).yml down --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) $(call test_compose_files,tests/compose/service/$(SERVICE).yml) down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # Run all integration tests (auto-discovered from tests/compose/integration/*.yml)

@@ -24,9 +24,14 @@ on:
         default: false
         type: boolean
 
+# A pull request keeps one run: a new push to its branch cancels the run of the older head.
+# Every other run is a group of its own and is never cancelled: a second merge to main
+# while the first merge's run is still going used to cancel that run, and the first SHA
+# then never got its service and worker release. Run ids are unique, so no main run
+# waits behind or replaces another either (a group holds one pending run, not a queue).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job carries a timeout-minutes, so nothing waits for GitHub's 360-minute default;
 # the CI contract refuses a job without one. A docker step carries its own bound through
@@ -58,6 +63,14 @@ jobs:
       deps: ${{ steps.filter.outputs.deps }}
       integration-tests: ${{ steps.filter.outputs['integration-tests'] }}
       web: ${{ steps.filter.outputs.web }}
+      worker-broker: ${{ steps.filter.outputs['worker-broker'] }}
+      scaffolder: ${{ steps.filter.outputs.scaffolder }}
+      service-images: ${{ steps.filter.outputs['service-images'] }}
+      # The plan the docker jobs run by (scripts/ci_plan.py): the legs of the two test
+      # matrices, as JSON lists, and whether the service image import check runs.
+      service-legs: ${{ steps.plan.outputs['service-legs'] }}
+      integration-legs: ${{ steps.plan.outputs['integration-legs'] }}
+      service-image-imports: ${{ steps.plan.outputs['service-image-imports'] }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -93,6 +106,8 @@ jobs:
               - 'scripts/test-unit-local.sh'
               - 'scripts/check-ci-gate.py'
               - 'scripts/ci-infra.sh'
+              - 'scripts/ci_plan.py'
+              - 'scripts/ci_build_cache.py'
             deps:
               - 'pyproject.toml'
               - 'uv.lock'
@@ -104,12 +119,46 @@ jobs:
             web:
               - 'services/admin-frontend/**'
               - 'services/user-dashboard/**'
+            worker-broker:
+              - 'services/worker-broker/**'
+            scaffolder:
+              - 'services/scaffolder/**'
+            # What the Python service images are built from: every such service (not the
+            # frontends), shared/ and packages/ they bake, the compose files that start
+            # them, and the import check's own scripts. deps and ci count too (ci_plan.py).
+            service-images:
+              - 'services/api/**'
+              - 'services/infra-service/**'
+              - 'services/langgraph/**'
+              - 'services/scaffolder/**'
+              - 'services/scheduler/**'
+              - 'services/telegram_bot/**'
+              - 'services/worker-broker/**'
+              - 'services/worker-manager/**'
+              - 'shared/**'
+              - 'packages/**'
+              - '.dockerignore'
+              - 'docker-compose*.yml'
+              - 'infra/scripts/service-images.sh'
+              - 'scripts/check_service_image_imports.py'
+              - 'scripts/service_image_locks.py'
+              - 'scripts/ci_build_cache.py'
 
-  fast-checks:
-    name: Fast Checks (Ruff & Unit Tests)
+      - name: Plan the docker jobs
+        id: plan
+        timeout-minutes: 1
+        env:
+          CHANGES: ${{ steps.filter.outputs.changes }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: python3 scripts/ci_plan.py
+
+  # Ruff alone, in about 15 s: this is what the docker jobs wait for, so a lint failure
+  # still stops the heavy fan-out, while the unit suite (fast-checks) runs beside them
+  # and is required by merge-gate.
+  lint:
+    name: Lint (Ruff)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: detect-changes
+    timeout-minutes: 15
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
@@ -140,6 +189,37 @@ jobs:
         timeout-minutes: 1
         run: uv run ruff check .
 
+      - name: Expose CI infrastructure failure
+        id: infra
+        if: always() && hashFiles('scripts/ci-infra.sh') != ''
+        run: bash scripts/ci-infra.sh expose --output infra-marker
+
+  fast-checks:
+    name: Fast Checks (Unit Tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        timeout-minutes: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        timeout-minutes: 2
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: >-
+          bash scripts/ci-infra.sh retry --step install-uv --cause uv-download --attempt-timeout 60s
+          -- pip install uv
+
+      - name: Install dependencies
+        timeout-minutes: 5
+        run: uv sync --locked
+
       - name: Run unit tests
         timeout-minutes: 10
         run: make test-unit
@@ -169,7 +249,6 @@ jobs:
     name: CI Contract
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: detect-changes
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
@@ -200,12 +279,17 @@ jobs:
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
         run: bash scripts/ci-infra.sh expose --output infra-marker
 
+  # Builds every Python service image in one parallel bake through the layer cache, then
+  # imports its entry modules and checks its lock inside it. It runs when the plan says
+  # an image's sources changed, and on every push to main whatever changed.
   service-image-imports:
     name: Service Image Entrypoint Imports
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    needs: [fast-checks, ci-contract]
-    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    needs: [detect-changes, lint, ci-contract]
+    if: >-
+      needs.lint.result == 'success' && needs.ci-contract.result == 'success'
+      && needs.detect-changes.outputs['service-image-imports'] == 'true'
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
     steps:
@@ -230,21 +314,31 @@ jobs:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
           simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
+      # The gha layer cache needs the Actions runtime token, which only actions receive.
+      - name: Expose the Actions cache to Buildx
+        timeout-minutes: 1
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
       - name: Import every service entrypoint from its production image
         id: service-image-imports
-        run: bash scripts/ci-infra.sh bound --step service-image-imports --timeout 15m -- python scripts/check_service_image_imports.py
+        run: bash scripts/ci-infra.sh bound --step service-image-imports --timeout 15m -- python scripts/check_service_image_imports.py --layer-cache gha
 
       - name: Expose CI infrastructure failure
         id: infra
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
         run: bash scripts/ci-infra.sh expose --output infra-marker
 
+  # The legs are the plan's (scripts/ci_plan.py): a leg nothing in the change reaches is
+  # not created, so it takes no runner, and with no leg at all the job is skipped, which
+  # merge-gate accepts only because the plan says so.
   test-service:
     name: Service Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
-    timeout-minutes: 50
-    needs: [detect-changes, fast-checks, ci-contract]
-    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    timeout-minutes: 55
+    needs: [detect-changes, lint, ci-contract]
+    if: >-
+      needs.lint.result == 'success' && needs.ci-contract.result == 'success'
+      && needs.detect-changes.outputs['service-legs'] != '[]'
     env:
       CI_INFRA_JOB: test-service/${{ matrix.service }}
     # One output per matrix leg: legs share the job's outputs, and a leg that sets
@@ -259,85 +353,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - service: api
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - service: langgraph
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.langgraph == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - service: scheduler
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.scheduler == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - service: telegram_bot
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.telegram == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - service: worker-manager
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs['worker-manager'] == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - service: infra
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs['infra-service'] == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
+        service: ${{ fromJSON(needs.detect-changes.outputs['service-legs']) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -346,29 +362,36 @@ jobs:
       - name: Set up Docker Buildx with retry
         id: buildx
         uses: ./.github/actions/setup-buildx-with-retry
-        if: matrix.should_run == 'true'
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
           simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
 
+      # The gha layer cache needs the Actions runtime token, which only actions receive.
+      - name: Expose the Actions cache to Buildx
+        timeout-minutes: 1
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
+      # Every image the compose file builds reads and writes the cache of its Dockerfile,
+      # the scope every other job building that Dockerfile shares (scripts/ci_build_cache.py).
+      - name: Wire the layer cache into the test images
+        timeout-minutes: 1
+        run: python3 scripts/ci_build_cache.py compose-override tests/compose/service/${{ matrix.service }}.yml "$RUNNER_TEMP/build-cache.yml"
+
       - name: Pull test images with retry
         id: pull-images
-        if: matrix.should_run == 'true'
         run: bash scripts/ci-infra.sh pull-images --step pull-images tests/compose/service/${{ matrix.service }}.yml
 
       - name: Run service tests
         id: service-tests
-        if: matrix.should_run == 'true'
         run: bash scripts/ci-infra.sh bound --step service-tests --timeout 15m -- make test-service SERVICE=${{ matrix.service }}
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
-          BUILDX_CACHE_TO: type=gha,mode=max,scope=service-${{ matrix.service }}
-          BUILDX_CACHE_FROM: type=gha,scope=service-${{ matrix.service }}
+          TEST_COMPOSE_OVERRIDE: ${{ runner.temp }}/build-cache.yml
 
       - name: Assert required service test ran
         timeout-minutes: 1
-        if: always() && matrix.should_run == 'true'
+        if: always()
         run: |
           if [ "${{ steps.buildx.outcome }}" != "success" ]; then
             echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
@@ -386,10 +409,6 @@ jobs:
             exit 1
           fi
 
-      - name: Not applicable to this PR
-        if: matrix.should_run != 'true'
-        run: echo "No relevant changes for ${{ matrix.service }} service tests"
-
       - name: Expose CI infrastructure failure
         id: infra
         if: always() && hashFiles('scripts/ci-infra.sh') != ''
@@ -398,9 +417,11 @@ jobs:
   test-integration:
     name: Integration Tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: [detect-changes, fast-checks, ci-contract]
-    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    timeout-minutes: 45
+    needs: [detect-changes, lint, ci-contract]
+    if: >-
+      needs.lint.result == 'success' && needs.ci-contract.result == 'success'
+      && needs.detect-changes.outputs['integration-legs'] != '[]'
     env:
       CI_INFRA_JOB: test-integration/${{ matrix.suite }}
     outputs:
@@ -412,83 +433,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: backend
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.langgraph == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - suite: template
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - suite: frontend
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.telegram == 'true' ||
-                needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - suite: infra
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.scheduler == 'true' ||
-                needs.detect-changes.outputs['infra-service'] == 'true' ||
-                needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          - suite: po-tools
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.langgraph == 'true' ||
-                needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs['docker-test'] == 'true' ||
-                needs.detect-changes.outputs['integration-tests'] == 'true' ||
-                needs.detect-changes.outputs.ci == 'true' ||
-                needs.detect-changes.outputs.deps == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
+        suite: ${{ fromJSON(needs.detect-changes.outputs['integration-legs']) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         timeout-minutes: 2
-        if: matrix.should_run == 'true'
 
       - name: Set up Docker Buildx with retry
         id: buildx
-        if: matrix.should_run == 'true'
         uses: ./.github/actions/setup-buildx-with-retry
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
@@ -496,28 +448,33 @@ jobs:
 
       - name: Set up uv for template smoke
         id: setup-uv
-        if: matrix.should_run == 'true' && matrix.suite == 'template'
+        if: matrix.suite == 'template'
         timeout-minutes: 3
         uses: ./.github/actions/setup-uv-with-retry
 
+      - name: Expose the Actions cache to Buildx
+        timeout-minutes: 1
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
+      - name: Wire the layer cache into the test images
+        timeout-minutes: 1
+        run: python3 scripts/ci_build_cache.py compose-override tests/compose/integration/${{ matrix.suite }}.yml "$RUNNER_TEMP/build-cache.yml"
+
       - name: Pull test images with retry
         id: pull-images
-        if: matrix.should_run == 'true'
         run: bash scripts/ci-infra.sh pull-images --step pull-images tests/compose/integration/${{ matrix.suite }}.yml
 
       - name: Run integration tests
         id: integration-tests
-        if: matrix.should_run == 'true'
         run: bash scripts/ci-infra.sh bound --step integration-tests --timeout 10m -- make test-integration-${{ matrix.suite }}
         env:
           DOCKER_BUILDKIT: 1
           COMPOSE_DOCKER_CLI_BUILD: 1
-          BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-${{ matrix.suite }}
-          BUILDX_CACHE_FROM: type=gha,scope=integration-${{ matrix.suite }}
+          TEST_COMPOSE_OVERRIDE: ${{ runner.temp }}/build-cache.yml
 
       - name: Assert required integration test ran
         timeout-minutes: 1
-        if: always() && matrix.should_run == 'true'
+        if: always()
         run: |
           if [ "${{ steps.buildx.outcome }}" != "success" ]; then
             echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
@@ -539,13 +496,9 @@ jobs:
             exit 1
           fi
 
-      - name: Not applicable to this PR
-        if: matrix.should_run != 'true'
-        run: echo "No relevant changes for ${{ matrix.suite }} integration tests"
-
       - name: Cleanup test containers
         timeout-minutes: 2
-        if: always() && matrix.should_run == 'true'
+        if: always()
         run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f tests/compose/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
 
       - name: Expose CI infrastructure failure
@@ -557,8 +510,8 @@ jobs:
     name: Template Compatibility (${{ matrix.entry }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [detect-changes, fast-checks, ci-contract]
-    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    needs: [lint, ci-contract]
+    if: needs.lint.result == 'success' && needs.ci-contract.result == 'success'
     env:
       CI_INFRA_JOB: template-compatibility/${{ matrix.entry }}
     outputs:
@@ -660,12 +613,12 @@ jobs:
   test-backend-dind-integration:
     name: Backend Docker-in-Docker Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 50
-    needs: [fast-checks, ci-contract, build-worker-images]
+    timeout-minutes: 55
+    needs: [lint, ci-contract, build-worker-images]
     if: >-
       always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
-      && needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+      && needs.lint.result == 'success' && needs.ci-contract.result == 'success'
       && needs.build-worker-images.result == 'success'
     outputs:
       infra-marker: ${{ steps.infra.outputs['infra-marker'] }}
@@ -684,6 +637,14 @@ jobs:
         with:
           simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
           simulate_first_attempt_pull_hang: ${{ inputs.simulate_first_attempt_pull_hang }}
+
+      - name: Expose the Actions cache to Buildx
+        timeout-minutes: 1
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
+      - name: Wire the layer cache into the test images
+        timeout-minutes: 1
+        run: python3 scripts/ci_build_cache.py compose-override tests/compose/integration/backend-dind.yml "$RUNNER_TEMP/build-cache.yml"
 
       - name: Pull test images with retry
         id: pull-images
@@ -704,8 +665,7 @@ jobs:
           WORKER_BASE_CANDIDATES: ${{ needs.build-worker-images.outputs.candidates }}
           GHCR_OWNER: ${{ github.repository_owner }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-backend-dind
-          BUILDX_CACHE_FROM: type=gha,scope=integration-backend-dind
+          TEST_COMPOSE_OVERRIDE: ${{ runner.temp }}/build-cache.yml
 
       - name: Assert backend Docker-in-Docker integration test ran
         timeout-minutes: 1
@@ -846,6 +806,7 @@ jobs:
     timeout-minutes: 5
     needs:
       - detect-changes
+      - lint
       - fast-checks
       - ci-contract
       - service-image-imports
@@ -859,9 +820,13 @@ jobs:
       - name: Check required jobs
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          PLANNED_SERVICE_LEGS: ${{ needs.detect-changes.outputs['service-legs'] }}
+          PLANNED_INTEGRATION_LEGS: ${{ needs.detect-changes.outputs['integration-legs'] }}
+          PLANNED_SERVICE_IMAGE_IMPORTS: ${{ needs.detect-changes.outputs['service-image-imports'] }}
         run: |
           declare -A results=(
             ["detect-changes"]="${{ needs.detect-changes.result }}"
+            ["lint"]="${{ needs.lint.result }}"
             ["fast-checks"]="${{ needs.fast-checks.result }}"
             ["ci-contract"]="${{ needs.ci-contract.result }}"
             ["service-image-imports"]="${{ needs.service-image-imports.result }}"
@@ -872,14 +837,29 @@ jobs:
             ["test-backend-dind-integration"]="${{ needs.test-backend-dind-integration.result }}"
           )
 
+          # A skip passes only where it is the plan. web-checks runs only for frontend and
+          # CI changes. The DinD suite is deliberately main-only, but is mandatory on main
+          # before a worker release can be published: a skipped DinD suite on main is
+          # unsafe. The service and integration matrices and the service image import
+          # check are skipped when detect-changes planned nothing for them
+          # (scripts/ci_plan.py), and only then: a skip for any other reason, or with no
+          # plan at all, fails the gate.
+          skip_is_planned() {
+            case "$1" in
+              web-checks) return 0 ;;
+              test-backend-dind-integration) [ "${GITHUB_REF}" != "refs/heads/main" ] ;;
+              test-service) [ "${PLANNED_SERVICE_LEGS}" = "[]" ] ;;
+              test-integration) [ "${PLANNED_INTEGRATION_LEGS}" = "[]" ] ;;
+              service-image-imports) [ "${PLANNED_SERVICE_IMAGE_IMPORTS}" = "false" ] ;;
+              *) return 1 ;;
+            esac
+          }
+
           failed=0
           for job in "${!results[@]}"; do
             result="${results[$job]}"
             echo "$job: $result"
-            # web-checks runs only for frontend/CI changes. The DinD suite is
-            # deliberately main-only, but is mandatory on main before a worker
-            # release can be published. A skipped DinD suite on main is unsafe.
-            if [ "$result" = "skipped" ] && { [ "$job" = "web-checks" ] || { [ "$job" = "test-backend-dind-integration" ] && [ "${GITHUB_REF}" != "refs/heads/main" ]; }; }; then
+            if [ "$result" = "skipped" ] && skip_is_planned "$job"; then
               continue
             fi
             if [ "$result" != "success" ]; then

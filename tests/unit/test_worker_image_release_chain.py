@@ -229,7 +229,10 @@ def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
     assert not BACKEND_INTEGRATION_WORKFLOW.exists(), (
         "the required backend DinD suite cannot live in a parallel workflow"
     )
-    assert backend["needs"] == ["fast-checks", "ci-contract", "build-worker-images"]
+    # Lint-only gating: DinD waits for Ruff and the contract, not for the unit suite,
+    # which merge-gate still requires before the marker.
+    assert backend["needs"] == ["lint", "ci-contract", "build-worker-images"]
+    assert "fast-checks" in merge_gate["needs"]
     assert "github.event_name == 'push'" in backend["if"]
     assert "github.event_name == 'workflow_dispatch'" in backend["if"]
     assert "github.ref == 'refs/heads/main'" in backend["if"]
@@ -244,7 +247,7 @@ def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
         in required_results
     )
     assert (
-        '"$job" = "test-backend-dind-integration" ] && [ "${GITHUB_REF}" != "refs/heads/main"'
+        'test-backend-dind-integration) [ "${GITHUB_REF}" != "refs/heads/main" ] ;;'
     ) in required_results
     assert "merge-gate" in publish["needs"]
 
