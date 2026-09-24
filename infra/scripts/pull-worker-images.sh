@@ -39,6 +39,14 @@
 #       worker-base-*:latest names where they are. The production deploy verifies before
 #       its switch and moves them only after it (infra/scripts/retag-worker-images.sh),
 #       so a refusal later in the deploy leaves worker-manager on its current images.
+#   WORKER_IMAGE_SUBSET="<image> ..." — pull, verify, retag and record only these images of
+#       the chain (space-separated, each named once). The marker's record is still validated
+#       whole, so a release missing an image outside the subset is refused all the same. The
+#       default, unset, is the whole chain, which is what the deploy pulls; the stand names
+#       the images its suites run (.github/workflows/stand-e2e.yml). A subset cannot be
+#       combined with RELEASE_DEFER_RETAG: retag-worker-images.sh retags the whole chain only.
+#
+# The images of the release are pulled concurrently; each is then verified in chain order.
 #
 # Exit codes, one per reason so a caller can tell them apart:
 #   1  usage: a required variable is missing, or the tag names a mutable image
@@ -81,6 +89,33 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=infra/scripts/worker-images.sh
 source "${SCRIPT_DIR}/worker-images.sh"
 
+# The images this run pulls: the whole chain, or the subset the caller names. Refused
+# before anything is asked of the registry, like a mutable tag.
+SELECTED_IMAGES=("${WORKER_BASE_IMAGES[@]}")
+if [ -n "${WORKER_IMAGE_SUBSET+set}" ]; then
+    read -r -a SELECTED_IMAGES <<< "${WORKER_IMAGE_SUBSET}"
+    if [ "${#SELECTED_IMAGES[@]}" -eq 0 ]; then
+        echo "FATAL: WORKER_IMAGE_SUBSET names no image; leave it unset for the whole chain." >&2
+        exit "${EXIT_USAGE}"
+    fi
+    for image in "${SELECTED_IMAGES[@]}"; do
+        if [[ " ${WORKER_BASE_IMAGES[*]} " != *" ${image} "* ]]; then
+            echo "FATAL: WORKER_IMAGE_SUBSET names ${image}, which is not in the chain" >&2
+            echo "       (${WORKER_BASE_IMAGES[*]})." >&2
+            exit "${EXIT_USAGE}"
+        fi
+    done
+    if [ "$(printf '%s\n' "${SELECTED_IMAGES[@]}" | sort | uniq -d)" != "" ]; then
+        echo "FATAL: WORKER_IMAGE_SUBSET names an image twice (${WORKER_IMAGE_SUBSET})." >&2
+        exit "${EXIT_USAGE}"
+    fi
+    if [ "${RELEASE_DEFER_RETAG:-false}" = "true" ]; then
+        echo "FATAL: WORKER_IMAGE_SUBSET cannot be combined with RELEASE_DEFER_RETAG=true:" >&2
+        echo "       retag-worker-images.sh retags the whole chain, never a subset record." >&2
+        exit "${EXIT_USAGE}"
+    fi
+fi
+
 # The single producer of this value, the same one the Makefile and the publish half read.
 EXPECTED_HASH="$(python3 "${REPO_ROOT}/scripts/shared_freshness.py" hash)"
 REGISTRY="$(worker_image_registry "${GHCR_OWNER}")"
@@ -99,8 +134,12 @@ NETRC_FILE="$(mktemp)"
 TOKEN_FILE="$(mktemp)"
 MANIFEST_FILE="$(mktemp)"
 AUTH_HEADER_FILE="$(mktemp)"
+PULL_LOG_DIR=""
 cleanup_registry_files() {
     rm -f "${NETRC_FILE}" "${TOKEN_FILE}" "${MANIFEST_FILE}" "${AUTH_HEADER_FILE}"
+    if [ -n "${PULL_LOG_DIR}" ]; then
+        rm -rf "${PULL_LOG_DIR}"
+    fi
 }
 trap cleanup_registry_files EXIT
 chmod 600 "${NETRC_FILE}" "${AUTH_HEADER_FILE}"
@@ -227,22 +266,49 @@ if [ "${RELEASE_VALIDATION_ONLY:-false}" = "true" ]; then
     exit 0
 fi
 
-verified=()
+# The record was validated whole above; from here on only the selected images count.
+selected=()
 while IFS= read -r record; do
-    image="${record%%=*}"
-    # From here on nothing resolves a tag: this digest is what gets pulled, verified,
-    # retagged and recorded.
-    reference="${record#*=}"
-
-    echo "Pulling ${reference}..."
-    if ! docker pull "${reference}"; then
-        echo "FATAL: the release of ${WORKER_IMAGE_TAG} names ${reference}," >&2
-        echo "       which is not in the registry. A committed release is missing one of" >&2
-        echo "       its images; that is not repaired by deploying, and this revision" >&2
-        echo "       cannot be deployed." >&2
-        echo "       image:    ${image}" >&2
-        exit "${EXIT_MISSING_IMAGE}"
+    if [[ " ${SELECTED_IMAGES[*]} " == *" ${record%%=*} "* ]]; then
+        selected+=("${record}")
     fi
+done <<< "${released}"
+
+# Every selected image is pulled at once: they share the common layers, and one slow
+# layer should not hold the others back. From here on nothing resolves a tag: each
+# digest is what gets pulled, verified, retagged and recorded. All pulls are waited
+# for before any is judged, so a refusal leaves no pull running behind it.
+PULL_LOG_DIR="$(mktemp -d)"
+pull_pids=()
+for index in "${!selected[@]}"; do
+    reference="${selected[${index}]#*=}"
+    echo "Pulling ${reference}..."
+    docker pull "${reference}" > "${PULL_LOG_DIR}/${index}.log" 2>&1 &
+    pull_pids[${index}]=$!
+done
+pull_failed=()
+for index in "${!selected[@]}"; do
+    if ! wait "${pull_pids[${index}]}"; then
+        pull_failed+=("${index}")
+    fi
+done
+for index in "${!selected[@]}"; do
+    cat "${PULL_LOG_DIR}/${index}.log"
+done
+if [ "${#pull_failed[@]}" -gt 0 ]; then
+    record="${selected[${pull_failed[0]}]}"
+    echo "FATAL: the release of ${WORKER_IMAGE_TAG} names ${record#*=}," >&2
+    echo "       which is not in the registry. A committed release is missing one of" >&2
+    echo "       its images; that is not repaired by deploying, and this revision" >&2
+    echo "       cannot be deployed." >&2
+    echo "       image:    ${record%%=*}" >&2
+    exit "${EXIT_MISSING_IMAGE}"
+fi
+
+verified=()
+for record in "${selected[@]}"; do
+    image="${record%%=*}"
+    reference="${record#*=}"
 
     found="$(docker inspect "${reference}" \
         --format "{{index .Config.Labels \"${WORKER_SOURCE_HASH_LABEL}\"}}")"
@@ -264,7 +330,7 @@ while IFS= read -r record; do
 
     echo "  ${reference}: ${WORKER_SOURCE_HASH_LABEL}=${found} matches the deployed revision"
     verified+=("${record}")
-done <<< "${released}"
+done
 
 # Every image is verified; only now do the names worker-manager resolves move — unless
 # the caller moves them itself, at its own switch.

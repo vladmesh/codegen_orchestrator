@@ -786,13 +786,20 @@ an alias of its hash's release. Deploying an unreleased revision is refused rath
 to a different worker release.
 
 The ephemeral Stand E2E workflow applies the same rule before it invokes
-BitLaunch preflight or creation, or creates a DNS record. It checks the exact
-workflow SHA's release marker through `pull-worker-images.sh` in read-only
-validation mode. A missing marker is reported as `release_not_published` with
-retry-after-post-merge-publication guidance; authentication, transport,
-rate-limit, and registry-tool errors remain distinct failures. The workflow
-does not wait and does not build worker images on a billed Stand machine. After
-the gate passes, the Stand only pulls and fully verifies that immutable release.
+BitLaunch preflight or creation, or creates a DNS record. It waits, boundedly
+(ten minutes), for both the worker and the service release of the workflow SHA
+with `scripts/wait_release.py --chain worker --chain service`, then pulls and
+verifies the exact worker chain on the runner for its Codex check. A revision
+that is not released is refused with retry-after-post-merge-publication
+guidance; authentication, transport, rate-limit, and registry-tool errors
+remain distinct failures. Nothing is built on a billed Stand machine: it pulls
+the service release and runs it through the same compose override as the deploy
+(`--no-build --pull never`), and it pulls only the worker images its suites run
+with `WORKER_IMAGE_SUBSET="worker-base-common worker-base-claude worker-base-codex"`.
+The subset option verifies the marker's record whole, then pulls, retags and records
+only the named images; unset, it is the whole chain the deploy pulls, and it cannot
+be combined with `RELEASE_DEFER_RETAG`. Both pullers fetch a release's images
+concurrently.
 
 ### Service images are a release too
 

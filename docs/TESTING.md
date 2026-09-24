@@ -282,9 +282,10 @@ local, so neither a step bound nor a pre-pull could stop the pull that hung for 
 `simulate_first_attempt_pull_hang` make the first Buildx attempt fail or hang, to watch the retry and
 the bound on a real runner; a push or pull_request run passes them empty, which means not requested.
 
-`stand-e2e.yml` bounds its docker steps too: bring-up 25 minutes (measured 3–14.4 over 30 green
-runs), target registration and provisioning 30 (1.7–6.2; above the provisioning wait's own
-25-minute deadline, so that wait still reports), worker images 30 (0.8–18.7).
+`stand-e2e.yml` bounds its docker steps too: bring-up 30 minutes (its service release join is
+bounded at 20, the third-party pull at 10), target registration and provisioning 30 (1.7–6.2; above
+the provisioning wait's own 25-minute deadline, so that wait still reports), the worker release join
+25 (a join bounded at 20 over a pull measured 0.8–18.7 when it ran in the foreground).
 
 **A docker step that still hangs.** Cancelling is cooperative: `gh run cancel` waits for the step to
 react, and a step blocked inside a docker pull can stay `in_progress` long after it. Force the
@@ -309,6 +310,22 @@ one selected pair. Its productive work stops at 50 minutes, then its fixture get
 capability is a one-time reminder, so the Architect plans a kit package, the worker installs it
 with the kit recipe, and central QA judges the package behaviour on the route its criterion
 names; it gets 65 productive minutes and a 15-minute grace. `matrix` runs all supported pairs.
+
+**The stand runs the tested release.** `stand-e2e` builds nothing on the stand. Before any machine
+is created it waits, at most ten minutes, for the worker and the service release of the workflow SHA
+(`scripts/wait_release.py --chain worker --chain service`, the deploy's own wait); a revision whose
+post-merge CI never publishes both is refused with retry guidance. As soon as the control-plane host
+is bootstrapped, three detached jobs start there in parallel (`scripts/stand_background.sh`): the
+service release pull (`pull-service-images.sh`), the worker release pull restricted to
+`worker-base-common`, `-claude` and `-codex` (`WORKER_IMAGE_SUBSET`: the marker is still verified
+whole; no stand suite runs `worker-base-factory`), and `uv sync --frozen` for the suite environment.
+Each later step joins what it consumes, bounded and fail-closed — a failed, hung or vanished job
+fails the step with its exit code and log tail: bring-up joins the service pull, pulls the
+third-party images (`compose pull --ignore-buildable`) and starts every service from its digest
+through the deploy's compose override with `--no-build --pull never`, then migrates, seeds and
+recreates the schedulers in those containers; the worker pull is joined before the suite; the suite
+joins its environment and runs with `UV_FROZEN=1`. The run summary reports the span from Bootstrap
+start to all services healthy (target five minutes) and each background job's duration.
 
 **Template override**: `stand-e2e` takes two optional `workflow_dispatch` inputs,
 `template_source` and `template_ref`, which point the live suite's scaffold at a template other

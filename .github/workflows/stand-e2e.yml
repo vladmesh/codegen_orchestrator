@@ -78,8 +78,24 @@ jobs:
     permissions:
       contents: read
       packages: read
+      # scripts/wait_release.py asks which CI run of this SHA publishes its releases.
+      actions: read
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      # Where scripts/stand_background.sh keeps the stand host's background jobs: the
+      # service and worker release pulls and the suite's uv environment, started right
+      # after bootstrap and joined before their consumers. Outside the checkout, which
+      # bootstrap rsyncs with --delete.
+      STAND_BACKGROUND_DIR: /root/stand-background
+      # The worker images the stand suites run: `noop` and `claude` resolve to
+      # worker-base-claude, `codex` to worker-base-codex, and both are built from
+      # worker-base-common (scripts/stand_run.py, services/worker-manager/src/image_builder.py).
+      # worker-base-factory is released too, but no stand suite starts it.
+      STAND_WORKER_IMAGES: worker-base-common worker-base-claude worker-base-codex
+      # Generated on the stand host from the pulled service release record
+      # (scripts/service_release.py compose-override), the same override the deploy
+      # uses: compose runs every service from its released digest and builds nothing.
+      STAND_SERVICE_RELEASE_COMPOSE: deployed-service-images.compose.yml
       # One definition for every ssh and scp in this job. Several of these calls
       # wait minutes with the connection idle — provisioning runs ansible on the
       # far side and says nothing meanwhile — and an idle connection is what a
@@ -143,13 +159,37 @@ jobs:
           set -euo pipefail
           python3 -m scripts.stand_credentials
 
+      # Nothing is created for a revision that has no worker release and no service
+      # release: the stand pulls both and builds neither. Both are published by the
+      # push-to-main CI run of this exact commit; while that run is still going this
+      # waits a short, bounded time, re-probing each marker read-only, and a commit
+      # with no such run, a failed run or a run that finished without a marker is
+      # refused at once (scripts/wait_release.py, the deploy's own wait).
+      - name: Wait for this revision's worker and service releases
+        timeout-minutes: 15
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/wait_release.py --revision "${GITHUB_SHA}" \
+            --chain worker --chain service --timeout-seconds 600; then
+            exit 0
+          else
+            release_status=$?
+          fi
+          echo "release_not_ready: the worker and service releases of ${GITHUB_SHA} were not confirmed (scripts/wait_release.py exit ${release_status}; the reason is above). No machine was created." >&2
+          echo "Retry after the post-merge CI of this commit publishes both releases." >&2
+          exit "${release_status}"
+
       # A failed or still-running post-merge publish must cost nothing. The
       # release marker is immutable and written last by that job, so pull and
       # verify the consumer's exact digest chain before asking BitLaunch or DNS
       # to do anything. The Codex authentication check immediately after this
       # consumes the resulting pinned `worker-base-codex:latest` tag on this
-      # runner, never a mutable registry tag. This does not wait: the operator
-      # should retry once the post-merge worker-image publication CI completes.
+      # runner, never a mutable registry tag. This does not wait: the step above
+      # already waited, boundedly, for the post-merge publication of both releases.
       - name: Validate exact worker image release
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
@@ -427,6 +467,8 @@ jobs:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
         run: |
           set -euo pipefail
+          # The start of the measured bring-up span, reported with the pulls below.
+          date +%s > "${RUNNER_TEMP}/stand-bootstrap-started"
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
           {
@@ -441,6 +483,38 @@ jobs:
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'uv --version >/dev/null'
+
+      # The slow half of bring-up starts the moment the host can run it, and in
+      # parallel: the service release pull (joined before `up`), the worker release
+      # pull of the images the suites run (joined before the suite) and the suite's
+      # uv environment (joined by the suite step). Each is a detached job on the stand
+      # host with its own log and exit status (scripts/stand_background.sh); nothing
+      # waits for it here. The registry token travels on stdin, never in a command
+      # line, and is not handed to the uv job.
+      - name: Start the stand's release pulls and uv environment
+        timeout-minutes: 5
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          remote_command=$(printf '%s' \
+            "set -euo pipefail; IFS= read -r GHCR_TOKEN; export GHCR_TOKEN; " \
+            "export GHCR_OWNER='${GHCR_OWNER}'; cd /opt/codegen_orchestrator; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' service " \
+            "env SERVICE_IMAGE_TAG='${GITHUB_SHA}' " \
+            "DIGEST_FILE=/opt/codegen_orchestrator/deployed-service-images.json " \
+            "bash infra/scripts/pull-service-images.sh; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' worker " \
+            "env WORKER_IMAGE_TAG='${GITHUB_SHA}' WORKER_IMAGE_SUBSET='${STAND_WORKER_IMAGES}' " \
+            "DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json " \
+            "bash infra/scripts/pull-worker-images.sh; " \
+            "bash scripts/stand_background.sh start '${STAND_BACKGROUND_DIR}' uv " \
+            "env -u GHCR_TOKEN uv sync --frozen")
+          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
+            root@"${PROD_HOST}" "${remote_command}"
 
       # The compose services run as `${HOST_UID}:${HOST_GID}` and the App key is
       # bind-mounted into them read-only, so the file's owner and the process
@@ -540,11 +614,20 @@ jobs:
           )
           '
 
-      # Measured 3–14.4 minutes (30 green runs, 2026-09-04..09-21): the compose
-      # build pulls base images, and a pull that hangs must fail this step, not hold the
-      # pair until the 360-minute job limit.
+      # Nothing is built on the stand. Bring-up joins the service release pull started
+      # after bootstrap, pulls the third-party images compose names by tag (they need
+      # the contour .env, so they start here, beside the tail of that pull), and runs
+      # every service from its released digest through the deploy's compose override
+      # with --no-build --pull never. Migrations, both seeders and the scheduler
+      # recreate then run in the release containers. The step ends with every service
+      # up and the schedulers healthy; its end closes the measured bring-up span.
+      #
+      # 30 minutes: the build this replaced measured 3–14.4 minutes, and a cold GHCR
+      # pull on this link measured up to 18.7 (the worker chain, 29 green runs). The
+      # service join is bounded at 20 of them and the third-party join at 10, so a
+      # hung pull fails here with its log tail, not at the 360-minute job limit.
       - name: Bring up dynamic orchestrator and wait for API
-        timeout-minutes: 25
+        timeout-minutes: 30
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
           RUNTIME_UID: ${{ steps.identity.outputs.runtime_uid }}
@@ -577,13 +660,28 @@ jobs:
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             "chown ${RUNTIME_UID}:${RUNTIME_GID} /opt/secrets/github_app.pem \
              && chmod 0400 /opt/secrets/github_app.pem"
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+          remote_script='
             set -euo pipefail
             cd /opt/codegen_orchestrator
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml up -d --build --remove-orphans
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api alembic upgrade head
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+            bash scripts/stand_background.sh start "${background}" third-party \
+              ${COMPOSE} pull --ignore-buildable --policy missing --quiet
+            bash scripts/stand_background.sh join "${background}" service 1200
+            bash scripts/stand_background.sh join "${background}" third-party 600
+            # The resolved configuration carries the contour values, so it lives in
+            # the private background directory and only as long as it is read.
+            ${COMPOSE} config --format json > "${background}/compose.json"
+            python3 scripts/service_release.py compose-override \
+              --compose-config "${background}/compose.json" \
+              --record deployed-service-images.json \
+              --output "${override}"
+            rm -f "${background}/compose.json"
+            COMPOSE="${COMPOSE} -f ${override}"
+            ${COMPOSE} config --quiet
+            ${COMPOSE} up -d --remove-orphans --no-build --pull never
+            ${COMPOSE} exec -T api alembic upgrade head
             remaining=180
-            until docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api curl -fsS http://127.0.0.1:8000/health >/dev/null; do
+            until ${COMPOSE} exec -T api curl -fsS http://127.0.0.1:8000/health >/dev/null; do
               test "${remaining}" -gt 0 || exit 1
               sleep 5
               remaining=$((remaining - 5))
@@ -594,16 +692,22 @@ jobs:
             # `Missing work admission config: work_admission.emergency_stop`
             # buried in its own log — which reads as a broken build rather than
             # an unseeded database.
-            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
             ${COMPOSE} exec -T api python /app/scripts/seed_system_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/system_configs.yaml
             ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/agent_configs.yaml
-            ${COMPOSE} up -d --force-recreate --no-deps --wait --wait-timeout 180 \
+            ${COMPOSE} up -d --force-recreate --no-deps --wait --wait-timeout 180 --no-build --pull never \
               scheduler-pipeline scheduler-infrastructure scheduler-maintenance
           '
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "background=${STAND_BACKGROUND_DIR}; override=${STAND_SERVICE_RELEASE_COMPOSE}; ${remote_script}"
+          healthy_epoch=$(date +%s)
+          echo "${healthy_epoch}" > "${RUNNER_TEMP}/stand-services-healthy"
+          started_epoch=$(cat "${RUNNER_TEMP}/stand-bootstrap-started")
+          span=$((healthy_epoch - started_epoch))
+          echo "stand bring-up: ${span}s from Bootstrap start to all services healthy (target 300s)"
 
       # The stand's seeded scheduler configuration has to name the same template the
       # suite scaffolds from, or the two disagree about what is being exercised. The
@@ -721,29 +825,28 @@ jobs:
             fi
           '
 
-      # Measured 0.8–18.7 minutes (29 green runs): a cold GHCR pull of the worker chain.
-      - name: Provide worker base images on the stand
-        timeout-minutes: 30
+      # The worker release pull started after bootstrap — only the images the suites
+      # run, from the marker record verified whole — is joined here, before the suite
+      # that starts workers from them. The pull measured 0.8–18.7 minutes cold, on the
+      # foreground path; by now it has run beside bring-up and provisioning, so the
+      # join is bounded at 20 minutes and the step at 25, and a failed or hung pull
+      # fails this step with its own exit code and log tail.
+      - name: Join the worker image release pull
+        timeout-minutes: 25
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
-          GHCR_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          release_sha="${GITHUB_SHA}"
-          echo "worker image release candidate: ${release_sha}"
-          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
-            root@"${PROD_HOST}" \
-            "IFS= read -r GHCR_TOKEN && export GHCR_TOKEN && \
-             cd /opt/codegen_orchestrator && \
-             GHCR_OWNER='${GHCR_OWNER}' WORKER_IMAGE_TAG='${release_sha}' \
-             DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json \
-             bash infra/scripts/pull-worker-images.sh" || pulled=$?
-          if [ "${pulled:-0}" -ne 0 ]; then
-            echo "FATAL: pulling the worker image release failed after pre-create validation (exit ${pulled})" >&2
-            exit "${pulled}"
+          echo "worker image release candidate: ${GITHUB_SHA} (${STAND_WORKER_IMAGES})"
+          if ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join '${STAND_BACKGROUND_DIR}' worker 1200"; then
+            exit 0
+          else
+            pulled=$?
           fi
+          echo "FATAL: pulling the worker image release failed after pre-create validation (exit ${pulled})" >&2
+          exit "${pulled}"
 
       # The runner is the single owner of named-suite and custom-target
       # semantics.  Its non-zero result is held until the safe handoff has been
@@ -783,9 +886,42 @@ jobs:
           # Over stdin, never in the command line: an ssh argument is visible in
           # the stand's own process list, the same reason the worker-image step
           # above pipes its registry token.
-          remote_command=$(printf 'cd /opt/codegen_orchestrator && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
+          # The suite's environment was synced in the background after bootstrap
+          # (`uv sync --frozen`, the default group `uv run` uses). The join is bounded
+          # and fail-closed; UV_FROZEN then keeps every `uv run` of the runner, its
+          # own nested ones included, on that environment with no fresh resolve.
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && bash scripts/stand_background.sh join %q uv 600 < /dev/null && IFS= read -r STAND_PRODUCT_BOT_TOKEN && export STAND_PRODUCT_BOT_TOKEN && export UV_FROZEN=1 && %suv run python -m scripts.stand_run --suite %q --worker %q --qa %q' "${STAND_BACKGROUND_DIR}" "${template_env}" "${SUITE}" "${WORKER}" "${QA}")
           printf '%s\n' "${bot_token}" | ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             2>&1 | tee "${RUNNER_TEMP}/remote-invocation.log"
+
+      # The run's bring-up on the record: the span from Bootstrap start to all
+      # services healthy (the sprint target is 5 minutes), and each background job's
+      # own duration and exit status read from the stand host. It only reports: the
+      # joins above are what fail a run.
+      - name: Report stand bring-up timing
+        if: ${{ always() && steps.create.outputs.orchestrator_ip != '' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          started="${RUNNER_TEMP}/stand-bootstrap-started"
+          healthy="${RUNNER_TEMP}/stand-services-healthy"
+          {
+            echo '### Stand bring-up'
+            echo
+            if [ -f "${started}" ] && [ -f "${healthy}" ]; then
+              echo "Bootstrap start → all services healthy: **$(( $(cat "${healthy}") - $(cat "${started}") ))s** (target ≤ 300s)"
+            else
+              echo "Bootstrap start → all services healthy: not reached in this run"
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "cd /opt/codegen_orchestrator && bash scripts/stand_background.sh report '${STAND_BACKGROUND_DIR}' service worker uv third-party" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       # The stand is serialized, so one profile has one writer at a time. Pull a
       # worker-refreshed file before cleanup tears down the only host that has
