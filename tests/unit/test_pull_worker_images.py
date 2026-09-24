@@ -81,6 +81,20 @@ case "${command}" in
             echo "ERROR: $1: manifest unknown" >&2
             exit 1
         fi
+        # A pull that only succeeds while FAKE_PULL_BARRIER_COUNT image pulls are in
+        # flight together: pulled one after another, the first one gives up.
+        barrier="${FAKE_PULL_BARRIER_DIR:-}"
+        if [ -n "${barrier}" ] && [ "$(image_of "$1")" != "worker-base-release" ]; then
+            touch "${barrier}/$(image_of "$1")"
+            for _ in $(seq 1 200); do
+                if [ "$(ls "${barrier}" | wc -l)" -ge "${FAKE_PULL_BARRIER_COUNT}" ]; then
+                    exit 0
+                fi
+                sleep 0.05
+            done
+            echo "fake docker: $1 was pulled alone" >&2
+            exit 1
+        fi
         ;;
     inspect)
         if [[ "$*" == *worker_release* ]]; then
@@ -563,3 +577,104 @@ def test_the_retag_fails_loudly_when_a_verified_image_is_gone(run_pull, tmp_path
 
     assert result.returncode == 3, result.stderr
     assert "worker-base-codex" in result.stderr
+
+
+# --- a subset of the chain: the stand pulls only the images its suites run ---
+
+STAND_SUBSET = ("worker-base-common", "worker-base-claude", "worker-base-codex")
+
+
+def _image_pulls(calls: list[str]) -> list[str]:
+    return [
+        call for call in calls if call.startswith("pull ") and "worker-base-release" not in call
+    ]
+
+
+def test_a_subset_pulls_retags_and_records_exactly_its_images(run_pull):
+    result, calls, record = run_pull(WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET))
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(_image_pulls(calls)) == sorted(
+        f"pull {REGISTRY}/{image}@sha256:{image}" for image in STAND_SUBSET
+    )
+    assert sorted(call for call in calls if call.startswith("tag ")) == sorted(
+        f"tag {REGISTRY}/{image}@sha256:{image} {image}:latest" for image in STAND_SUBSET
+    )
+    written = json.loads(record.read_text())
+    assert set(written["images"]) == set(STAND_SUBSET)
+    assert written["git_sha"] == DEPLOYED_SHA
+
+
+def test_an_image_outside_the_subset_is_never_touched(run_pull):
+    """The factory image may even be unpullable: the stand never asks for it."""
+    result, calls, _record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET), FAKE_UNPULLABLE_IMAGE="worker-base-factory"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if "worker-base-factory" in call]
+
+
+def test_a_subset_still_validates_the_whole_marker_record(run_pull, tree_source_hash):
+    """A release missing an image outside the subset is still not a release."""
+    broken = release_record(tree_source_hash)
+    del broken["images"]["worker-base-factory"]
+
+    result, calls, record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET), FAKE_MARKER=marker_payload(broken)
+    )
+
+    assert result.returncode == EXIT_BROKEN_RELEASE, result.stderr
+    assert not _image_pulls(calls)
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+def test_a_subset_image_with_a_stale_source_hash_is_refused(run_pull):
+    result, calls, record = run_pull(
+        WORKER_IMAGE_SUBSET=" ".join(STAND_SUBSET),
+        FAKE_ODD_IMAGE="worker-base-codex",
+        FAKE_ODD_LABEL="dead0000dead0000",
+    )
+
+    assert result.returncode == EXIT_STALE_LABEL, result.stderr
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("subset", "extra", "reason"),
+    [
+        ("worker-base-common worker-base-gemini", {}, "not in the chain"),
+        ("", {}, "names no image"),
+        ("   ", {}, "names no image"),
+        ("worker-base-claude worker-base-claude", {}, "twice"),
+        ("worker-base-claude", {"RELEASE_DEFER_RETAG": "true"}, "RELEASE_DEFER_RETAG"),
+    ],
+)
+def test_a_subset_that_is_not_one_is_refused_before_the_registry_is_asked(
+    run_pull, subset, extra, reason
+):
+    result, calls, record = run_pull(WORKER_IMAGE_SUBSET=subset, **extra)
+
+    assert result.returncode == EXIT_USAGE, result.stderr
+    assert reason in result.stderr
+    assert calls == []
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("subset", "count"), [(None, len(CHAIN)), (" ".join(STAND_SUBSET), len(STAND_SUBSET))]
+)
+def test_the_images_of_the_release_are_pulled_concurrently(run_pull, tmp_path, subset, count):
+    barrier = tmp_path / "barrier"
+    barrier.mkdir()
+
+    result, _calls, _record = run_pull(
+        WORKER_IMAGE_SUBSET=subset,
+        FAKE_PULL_BARRIER_DIR=str(barrier),
+        FAKE_PULL_BARRIER_COUNT=str(count),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "was pulled alone" not in result.stdout + result.stderr

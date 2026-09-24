@@ -117,6 +117,24 @@ if [ "${VALIDATION_ONLY}" = true ]; then
     exit 0
 fi
 
+# Fetch every image the record names at once, so one slow layer does not hold the rest
+# back. This only warms the host: release_verify_committed below still reads the marker,
+# pulls each image by digest and judges it, so an image this fetch could not get is
+# refused there with its own reason. A record that does not read fetches nothing.
+if listed="$(release_marker_read "${marker_reference}" "${SERVICE_RELEASE_LABEL}" \
+    "${SERVICE_IMAGE_TAG}" "${EXPECTED_HASH}" "${REGISTRY}" \
+    "${SERVICE_RELEASE_SCHEMA_VERSION}" "${CHAIN[@]}" 2> /dev/null)"; then
+    echo "Fetching the ${#CHAIN[@]} images of the release concurrently..."
+    fetches=()
+    while IFS= read -r record; do
+        docker pull "${record#*=}" > /dev/null 2>&1 &
+        fetches+=("$!")
+    done <<< "${listed}"
+    for fetch in "${fetches[@]}"; do
+        wait "${fetch}" || true
+    done
+fi
+
 released="$(release_verify_committed "${marker_reference}" "${SERVICE_RELEASE_LABEL}" \
     "${SERVICE_IMAGE_TAG}" "${EXPECTED_HASH}" "${SERVICE_SOURCE_HASH_LABEL}" "${REGISTRY}" \
     "${SERVICE_RELEASE_SCHEMA_VERSION}" "${CHAIN[@]}")" || exit "$?"

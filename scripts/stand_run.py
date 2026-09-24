@@ -26,6 +26,11 @@ lessons are the reason this file exists:
   a matrix an hour; both are longer than a connection reliably lives. Start this
   detached (`setsid nohup`) and read the log it names.
 
+* **The stand runs the pulled release, never a build.** Every compose call here
+  carries the service release override bring-up generated, named by
+  `STAND_SERVICE_RELEASE_COMPOSE` (the workflow sets it), and a recreate runs
+  `up --no-build --pull never`. A run without the override is refused.
+
 Suites are a table, not code paths, so a new one is a line:
 
     ./scripts/stand_run.py --suite mega-noop
@@ -93,6 +98,19 @@ API_HEALTH_OK_STATUS = 200
 # through the gate, so that "recreate" and "wait" cannot be separated by a
 # future caller who only needs the first half.
 COMPOSE_LIFECYCLE_COMMANDS = ("up", "start", "restart")
+# The stand runs the tested release: the workflow's bring-up pulls the service
+# release of the run's SHA and generates the deploy's compose override from it
+# (scripts/service_release.py compose-override), and nothing on the host carries a
+# `codegen-orchestrator/*:local` image. Without that override a recreate here would
+# find no image and build the service from this checkout — an untested build, on the
+# stand, which is what the release exists to end. So every compose call of the
+# runner carries the override, the one verb it brings containers up with carries
+# the deploy's release policy, and a run without the override is refused.
+SERVICE_RELEASE_OVERRIDE_ENV = "STAND_SERVICE_RELEASE_COMPOSE"
+COMPOSE_RELEASE_POLICY = ("--no-build", "--pull", "never")
+# Verbs that build, pull, or start a container without taking that policy (`start`
+# and `restart` accept no `--no-build`); the runner has no use for any of them.
+COMPOSE_REFUSED_COMMANDS = ("build", "create", "pull", "run", "start", "restart")
 #: Set only inside `recreate_and_wait`; `_compose` refuses a lifecycle verb
 #: outside it. This is what makes the gate the only door rather than the
 #: politest one.
@@ -343,15 +361,64 @@ def write_junit_report(
     )
 
 
+class ReleaseOverrideMissing(RuntimeError):
+    """The stand's service release override is not there to run compose with."""
+
+
+def service_release_override() -> Path:
+    """The compose override bring-up generated from the pulled service release.
+
+    Named by `STAND_SERVICE_RELEASE_COMPOSE`, which the workflow sets for the
+    runner; a relative name is the file bring-up wrote in the checkout. Missing
+    either way is a refusal, never a fallback to compose's own build.
+    """
+    name = os.environ.get(SERVICE_RELEASE_OVERRIDE_ENV, "").strip()
+    if not name:
+        raise ReleaseOverrideMissing(
+            f"{SERVICE_RELEASE_OVERRIDE_ENV} is not set: the stand runs the pulled service "
+            "release through the compose override bring-up generated, and without it compose "
+            "would build the services from this checkout"
+        )
+    path = Path(name)
+    if not path.is_absolute():
+        path = REPO / path
+    if not path.is_file():
+        raise ReleaseOverrideMissing(
+            f"{SERVICE_RELEASE_OVERRIDE_ENV}={name} names no file ({path}): the service release "
+            "override bring-up generates is missing, and without it compose would build the "
+            "services from this checkout"
+        )
+    return path
+
+
+def release_override_refusal(log) -> str | None:
+    """The report status a run without its release override is refused with, or None."""
+    try:
+        override = service_release_override()
+    except ReleaseOverrideMissing as refusal:
+        log(f"refused: {refusal}")
+        return "release_override_missing"
+    log(f"service release override={override}")
+    return None
+
+
 def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
     if args and args[0] in COMPOSE_LIFECYCLE_COMMANDS and not _INSIDE_RECREATE_GATE:
         raise RuntimeError(
             f"docker compose {args[0]!r} brings containers up; call recreate_and_wait() so the "
             "runner waits for what it started instead of racing it"
         )
+    if args and args[0] in COMPOSE_REFUSED_COMMANDS or "--build" in args:
+        raise RuntimeError(
+            f"docker compose {' '.join(args[:1])!r} with {args[1:]!r} could build or pull on the "
+            "stand; the runner brings containers up only with `up "
+            f"{' '.join(COMPOSE_RELEASE_POLICY)}` from the pulled service release"
+        )
     command = ["docker", "compose"]
-    for name in COMPOSE_FILES:
+    for name in (*COMPOSE_FILES, str(service_release_override())):
         command += ["-f", name]
+    if args and args[0] == "up":
+        args = (args[0], *COMPOSE_RELEASE_POLICY, *args[1:])
     command += list(args)
     return subprocess.run(  # noqa: S603
         command,
@@ -728,9 +795,15 @@ def main() -> int:
     report.write_text("suite\tqa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
     results: list[tuple[str, str, str, int]] = []
 
-    if not args.skip_preflight and not preflight(env, log):
+    # Refused before anything is spent on the run: a recreate without the release
+    # override would build on the stand, and a suite that needs none is still not
+    # run on a host whose bring-up left no override behind.
+    refused = release_override_refusal(log)
+    if refused is None and not args.skip_preflight and not preflight(env, log):
         log("preflight refused the run")
-        results.append((args.qa, args.worker, "preflight_failed", 0))
+        refused = "preflight_failed"
+    if refused is not None:
+        results.append((args.qa, args.worker, refused, 0))
         with report.open("a", encoding="utf-8") as handle:
             handle.write(matrix_row(canonical_suite_name, *results[-1]))
         write_junit_report(run_dir / "junit.xml", canonical_suite_name, results)

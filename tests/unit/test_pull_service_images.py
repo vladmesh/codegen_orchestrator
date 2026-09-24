@@ -70,6 +70,20 @@ case "${command}" in
             echo "ERROR: $1: manifest unknown" >&2
             exit 1
         fi
+        # A pull that only succeeds while FAKE_PULL_BARRIER_COUNT image pulls are, or have
+        # been, in flight together: pulled one after another, the first one gives up.
+        barrier="${FAKE_PULL_BARRIER_DIR:-}"
+        if [ -n "${barrier}" ] && [ "$(image_of "$1")" != "service-release" ]; then
+            touch "${barrier}/$(image_of "$1")"
+            for _ in $(seq 1 200); do
+                if [ "$(ls "${barrier}" | wc -l)" -ge "${FAKE_PULL_BARRIER_COUNT}" ]; then
+                    exit 0
+                fi
+                sleep 0.05
+            done
+            echo "$1 was pulled alone" >> "${FAKE_DOCKER_LOG}"
+            exit 1
+        fi
         ;;
     inspect)
         if [[ "$*" == *service_release* ]]; then
@@ -252,6 +266,20 @@ def test_validation_only_reads_the_marker_without_pulling_images_or_recording(ho
         f"pull ghcr.io/{OWNER}/codegen-orchestrator/service-release@sha256:service-release"
     ]
     _nothing_moved(host, calls)
+
+
+def test_the_images_of_the_release_are_fetched_concurrently(host, tmp_path):
+    """One slow layer must not serialize the chain; the verification still judges each."""
+    barrier = tmp_path / "barrier"
+    barrier.mkdir()
+
+    result, calls = host.run(
+        FAKE_PULL_BARRIER_DIR=str(barrier), FAKE_PULL_BARRIER_COUNT=str(len(CHAIN))
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [call for call in calls if "pulled alone" in call]
+    assert sorted(path.name for path in barrier.iterdir()) == sorted(CHAIN)
 
 
 # --- absent, and not known -------------------------------------------------------------

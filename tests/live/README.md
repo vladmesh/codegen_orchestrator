@@ -79,7 +79,11 @@ recreated without anyone editing the runner. Today that set is `api` and `qa-wor
 The recreate does not return until every service it recreated is usable the way the suite will use
 it: `stand_run.recreate_and_wait` is the runner's only way to bring a container up — `_compose`
 refuses `up`, `start` and `restart` anywhere else — so recreating and waiting cannot be separated by
-a later caller. `api` is asked for `GET /health` on `http://localhost:8000`, the base URL
+a later caller. The stand has no locally built service image to recreate from, so every `_compose`
+call adds the service release override bring-up generated (`STAND_SERVICE_RELEASE_COMPOSE`, set by
+the workflow), the recreate runs `up --no-build --pull never`, verbs that could build or pull
+(`build`, `create`, `run`, `pull`, `start`, `restart`) are refused, and a run without the override
+is refused before preflight as `release_override_missing`. `api` is asked for `GET /health` on `http://localhost:8000`, the base URL
 `conftest.py` builds every client on, because that is the fact the suite depends on; a consumer such
 as `qa-worker` is ready when its container has logged `<service>_started`, the line
 `run_queue_worker` prints once it is connected to Redis and reading its queue. The wait copies the

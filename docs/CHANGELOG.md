@@ -9,6 +9,12 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   plans its docker legs and the import check from path filters, so skipped legs take no runner.
 - Docker jobs wait for a 15 s lint job instead of the unit suite, which runs beside them; main runs are
   never cancelled, so every merge commit gets its service and worker release.
+- The stand runs the tested release: it waits for both releases before creating machines, pulls the
+  service release instead of building, and warms both pulls and uv in the background after bootstrap.
+- `pull-worker-images.sh` takes `WORKER_IMAGE_SUBSET` (the stand skips the factory image), and both
+  release pullers fetch a chain's images concurrently.
+- The stand runner's QA-switch recreate runs the release override with `--no-build --pull never` and
+  refuses a run without that override, instead of building services from the checkout.
 
 ## 2026-09-23
 

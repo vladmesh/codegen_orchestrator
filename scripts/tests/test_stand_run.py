@@ -33,6 +33,19 @@ from scripts.stand_run import (
 from shared import stand_deadlines
 
 
+@pytest.fixture(autouse=True)
+def _release_override(tmp_path_factory, monkeypatch):
+    """Every run here is a stand run, and a stand run has its release override.
+
+    The workflow names the override bring-up generated; a test that is about its
+    absence removes it itself.
+    """
+    override = tmp_path_factory.mktemp("release") / "deployed-service-images.compose.yml"
+    override.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV, str(override))
+    return override
+
+
 def test_compose_calls_drop_the_exported_qa_executor():
     """Compose reads the process environment before .env.
 
@@ -858,3 +871,134 @@ def test_an_unready_stack_is_reported_as_a_failed_switch_and_skips_the_cell(tmp_
 
 def _last_index(events: list[str], name: str) -> int:
     return len(events) - 1 - events[::-1].index(name)
+
+
+# --- the stand runs the pulled service release, never a build ----------------------------
+#
+# Bring-up no longer leaves a `codegen-orchestrator/*:local` image on the stand, so a
+# recreate without the release override finds no image and builds the service from
+# the checkout. These run the real `_compose` against a fake `docker` on PATH.
+
+FAKE_DOCKER = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${FAKE_DOCKER_LOG}"
+case "$*" in
+    *" logs "*) echo "{\\"event\\": \\"${@: -1}_started\\"}" ;;
+esac
+exit 0
+"""
+
+
+def _fake_docker(tmp_path, monkeypatch):
+    """A stand checkout with its generated override, and a docker that records calls."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    docker = binaries / "docker"
+    docker.write_text(FAKE_DOCKER, encoding="utf-8")
+    docker.chmod(0o755)
+    log = tmp_path / "docker.log"
+    log.write_text("", encoding="utf-8")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "deployed-service-images.compose.yml").write_text(
+        "services:\n  qa-worker:\n    image: ghcr.io/o/qa-worker@sha256:" + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(stand_run, "REPO", checkout)
+    # Relative, the way the workflow names it: the file bring-up wrote in the checkout.
+    monkeypatch.setenv(
+        stand_run.SERVICE_RELEASE_OVERRIDE_ENV, "deployed-service-images.compose.yml"
+    )
+    monkeypatch.setattr(stand_run.time, "sleep", lambda _seconds: None)
+    env = {"PATH": f"{binaries}:/usr/bin:/bin", "FAKE_DOCKER_LOG": str(log)}
+    return env, log, checkout
+
+
+def test_the_runner_recreates_from_the_pulled_release_and_builds_nothing(tmp_path, monkeypatch):
+    env, log, checkout = _fake_docker(tmp_path, monkeypatch)
+    lines: list[str] = []
+
+    assert stand_run.recreate_and_wait(env, ("qa-worker",), lines.append) is True
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert lines == []
+    files = (
+        "compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml "
+        f"-f {checkout / 'deployed-service-images.compose.yml'} "
+    )
+    assert calls[0] == (
+        files + "up --no-build --pull never -d --no-deps --force-recreate qa-worker"
+    )
+    assert calls[1:] and all(call.startswith(files) for call in calls[1:])
+    for call in calls:
+        assert " build" not in call and "--build " not in call
+
+
+@pytest.mark.parametrize("named", ["", "deployed-service-images.compose.yml"])
+def test_a_recreate_without_the_release_override_is_refused_before_compose_runs(
+    tmp_path, monkeypatch, named
+):
+    """Unset, or naming a file bring-up never wrote: refused, never built instead."""
+    env, log, checkout = _fake_docker(tmp_path, monkeypatch)
+    (checkout / "deployed-service-images.compose.yml").unlink()
+    if named:
+        monkeypatch.setenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV, named)
+    else:
+        monkeypatch.delenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV)
+
+    with pytest.raises(stand_run.ReleaseOverrideMissing, match="build the services"):
+        stand_run.recreate_and_wait(env, ("qa-worker",), print)
+    with pytest.raises(stand_run.ReleaseOverrideMissing):
+        stand_run.resolved_qa_executor(env)
+
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_a_run_without_the_release_override_is_refused_before_anything_is_spent(
+    tmp_path, monkeypatch
+):
+    started: list[str] = []
+    monkeypatch.delenv(stand_run.SERVICE_RELEASE_OVERRIDE_ENV)
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: started.append("preflight"))
+    monkeypatch.setattr(stand_run, "ensure_qa_executor", lambda *_args: started.append("switch"))
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *args: started.append("pytest"))
+    monkeypatch.setattr(stand_run.sys, "argv", ["stand_run.py", "--suite", "matrix"])
+
+    assert stand_run.main() == 2
+    assert started == []
+    report = next((tmp_path / "runs").glob("*/report.tsv")).read_text(encoding="utf-8")
+    assert "\trelease_override_missing\t0\n" in report
+
+
+@pytest.mark.parametrize("verb", stand_run.COMPOSE_REFUSED_COMMANDS)
+def test_no_compose_verb_that_builds_pulls_or_skips_the_policy_gets_through(
+    tmp_path, monkeypatch, verb
+):
+    """`start` and `restart` take no --no-build, `run` no --no-build either: the
+    runner brings containers up only with the one `up` that carries the policy."""
+    env, log, _checkout = _fake_docker(tmp_path, monkeypatch)
+
+    with stand_run._recreate_gate(), pytest.raises(RuntimeError, match="build or pull"):
+        stand_run._compose(env, verb, "api")
+    with stand_run._recreate_gate(), pytest.raises(RuntimeError, match="build or pull"):
+        stand_run._compose(env, "up", "-d", "--build", "api")
+
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_every_compose_call_of_the_runner_goes_through_the_one_policed_door():
+    """A second `docker compose` call site would not carry the override or the policy."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(stand_run))
+    owners: list[str] = []
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for node in ast.walk(function):
+            if isinstance(node, ast.Constant) and node.value == "compose":
+                owners.append(function.name)
+
+    assert owners == ["_compose"]

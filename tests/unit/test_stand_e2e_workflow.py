@@ -5,10 +5,13 @@ below are the ones whose absence is discovered at the worst moment — a second
 run trampling the first, or a failed run whose logs were never collected.
 """
 
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+import time
 
 import yaml
 
@@ -598,16 +601,21 @@ def test_stand_profile_is_owned_by_the_exact_worker_image_identity():
 
 def test_missing_exact_worker_release_fails_with_retry_guidance_not_a_local_build():
     job = _workflow()["jobs"]["e2e"]
-    step = _steps()["Provide worker base images on the stand"]
+    # The stand's worker pull starts in the background after bootstrap and is joined
+    # before the suite; the properties hold across the two steps.
+    start = _steps()["Start the stand's release pulls and uv environment"]
+    step = _steps()["Join the worker image release pull"]
     gate = _steps()["Validate exact worker image release"]
 
     assert job["permissions"]["packages"] == "read"
     assert job["steps"][0]["with"]["fetch-depth"] == 0
+    assert "${GITHUB_SHA}" in start["run"]
     assert "${GITHUB_SHA}" in step["run"]
-    assert "git merge-base HEAD origin/main" not in step["run"]
-    assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in step["run"]
-    assert "read -r GHCR_TOKEN" in step["run"]
-    assert "ensure-worker-images" not in step["run"]
+    for script in (start["run"], step["run"]):
+        assert "git merge-base HEAD origin/main" not in script
+        assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in script
+        assert "ensure-worker-images" not in script
+    assert "read -r GHCR_TOKEN" in start["run"]
     assert 'case "${pulled}"' not in step["run"]
     assert "FATAL: pulling the worker image release failed" in step["run"]
     assert "release_not_published" in gate["run"]
@@ -1129,8 +1137,12 @@ def test_the_docker_steps_of_the_stand_have_their_own_bounds():
     """A hung pull fails its step, not the 360-minute job with two paid machines under it."""
     steps = _steps()
 
-    assert steps["Bring up dynamic orchestrator and wait for API"]["timeout-minutes"] == 25
-    assert steps["Provide worker base images on the stand"]["timeout-minutes"] == 30
+    # Bring-up now joins the background service release pull (bounded at 20 minutes)
+    # and the third-party pull (10) instead of building; the worker release is joined
+    # (bounded at 20) in its own step before the suite.
+    assert steps["Start the stand's release pulls and uv environment"]["timeout-minutes"] == 5
+    assert steps["Bring up dynamic orchestrator and wait for API"]["timeout-minutes"] == 30
+    assert steps["Join the worker image release pull"]["timeout-minutes"] == 25
     # The provisioning wait keeps its own deadline and reports on it; the step bound
     # only catches what hangs outside the wait.
     target = steps["Register and provision dynamic target"]["timeout-minutes"]
@@ -1138,3 +1150,546 @@ def test_the_docker_steps_of_the_stand_have_their_own_bounds():
     assert target * 60 > WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS
     for step in steps.values():
         assert step.get("timeout-minutes", 0) < STAND_JOB_TIMEOUT_MINUTES
+
+
+# --- the stand runs the tested release: pulled, never built ------------------------------
+#
+# The workflow cannot run in PR CI, so its shell is exercised here offline: each step's
+# script is run against a fake `ssh` that records what would have run on the stand host,
+# and that remote shell is then run against a fake `docker` in a scratch directory
+# standing in for /opt/codegen_orchestrator.
+
+START_STEP = "Start the stand's release pulls and uv environment"
+BRING_UP_STEP = "Bring up dynamic orchestrator and wait for API"
+WORKER_JOIN_STEP = "Join the worker image release pull"
+RELEASE_WAIT_STEP = "Wait for this revision's worker and service releases"
+TIMING_STEP = "Report stand bring-up timing"
+BACKGROUND_SCRIPT = WORKFLOW.parents[2] / "scripts" / "stand_background.sh"
+SERVICE_RELEASE_SCRIPT = WORKFLOW.parents[2] / "scripts" / "service_release.py"
+STAND_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+FAKE_SSH = """#!/usr/bin/env bash
+# The remote command is the last argument; stdin is what the runner piped to it.
+printf '%s\\0' "${@: -1}" >> "${FAKE_SSH_COMMANDS}"
+cat > "${FAKE_SSH_STDIN}.$(date +%s%N)" || true
+"""
+
+FAKE_DOCKER_FOR_STAND = """#!/usr/bin/env bash
+echo "docker $*" >> "${FAKE_DOCKER_LOG}"
+case "$*" in
+    *"config --format json"*) cat "${FAKE_COMPOSE_CONFIG}" ;;
+esac
+exit 0
+"""
+
+
+def _job_env() -> dict[str, str]:
+    return {key: str(value) for key, value in _workflow()["jobs"]["e2e"]["env"].items()}
+
+
+def _joined(script: str) -> str:
+    """A step script with its line continuations joined, as the shell reads it."""
+    return script.replace("\\\n", " ")
+
+
+def _write_executable(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    path.chmod(0o755)
+
+
+def _run_step_against_fake_ssh(tmp: Path, step: str, extra_env: dict[str, str]) -> list[str]:
+    """Run one step's script on a fake runner; return the remote commands it sent."""
+    binaries = tmp / "runner-bin"
+    _write_executable(binaries / "ssh", FAKE_SSH)
+    _write_executable(binaries / "scp", "#!/usr/bin/env bash\nexit 0\n")
+    commands = tmp / "ssh-commands"
+    runner_temp = tmp / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    environment = {
+        "PATH": f"{binaries}:/usr/bin:/bin",
+        "HOME": str(tmp),
+        "RUNNER_TEMP": str(runner_temp),
+        "SSH_OPTS": "-o BatchMode=yes",
+        "PROD_HOST": "192.0.2.10",
+        "GITHUB_SHA": STAND_SHA,
+        "FAKE_SSH_COMMANDS": str(commands),
+        "FAKE_SSH_STDIN": str(tmp / "ssh-stdin"),
+        **_job_env(),
+        **extra_env,
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-c", _steps()[step]["run"]],
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=tmp,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    return [command for command in commands.read_text().split("\0") if command]
+
+
+def _stand_host(tmp: Path) -> Path:
+    """A scratch /opt/codegen_orchestrator with the real background and release helpers."""
+    host = tmp / "host"
+    (host / "scripts").mkdir(parents=True)
+    (host / "scripts" / "stand_background.sh").write_text(BACKGROUND_SCRIPT.read_text())
+    (host / "scripts" / "service_release.py").write_text(SERVICE_RELEASE_SCRIPT.read_text())
+    return host
+
+
+def _on_host(command: str, host: Path) -> str:
+    return command.replace("/opt/codegen_orchestrator", str(host))
+
+
+def test_the_release_gate_waits_boundedly_for_both_chains_before_any_money_is_spent():
+    steps = list(_steps())
+    gate = _steps()[RELEASE_WAIT_STEP]
+
+    assert "python3 scripts/wait_release.py" in gate["run"]
+    assert '--revision "${GITHUB_SHA}"' in gate["run"]
+    assert "--chain worker --chain service" in _joined(gate["run"])
+    assert "--timeout-seconds 600" in _joined(gate["run"])
+    assert gate["timeout-minutes"] * 60 > 600
+    assert "Retry after the post-merge CI" in gate["run"]
+    assert gate["env"]["GITHUB_TOKEN"] == "${{ github.token }}"  # noqa: S105
+    assert _workflow()["jobs"]["e2e"]["permissions"]["actions"] == "read"
+    for paid in (
+        "Preflight ephemeral machines",
+        "Create ephemeral machines",
+        "Give the stand a resolvable name",
+    ):
+        assert steps.index(RELEASE_WAIT_STEP) < steps.index(paid)
+
+
+def test_no_step_of_the_workflow_builds_an_image():
+    """The stand runs the tested release; a build there is what made it fragile."""
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = _joined(step.get("run", ""))
+            assert not re.search(r"\bup\b[^\n]*(?<![\w-])--build\b", script), step.get("name")
+            assert not re.search(r"compose\b[^\n]*\sbuild\b", script, re.IGNORECASE), step.get(
+                "name"
+            )
+    bring_up = _joined(_steps()[BRING_UP_STEP]["run"])
+    ups = re.findall(r"\$\{COMPOSE\} up [^\n]*", bring_up)
+    assert len(ups) == 2
+    for up in ups:
+        assert "--no-build --pull never" in up
+    assert "pull --ignore-buildable --policy missing" in bring_up
+
+
+def test_background_work_starts_right_after_bootstrap_and_is_joined_before_its_consumer():
+    steps = list(_steps())
+    bring_up = _joined(_steps()[BRING_UP_STEP]["run"])
+    suite = _steps()["Run selected stand suite"]["run"]
+
+    assert steps.index(START_STEP) == steps.index("Bootstrap dynamic orchestrator") + 1
+    # The service release is joined, and turned into the override, before `up`.
+    join_service = bring_up.index('stand_background.sh join "${background}" service')
+    override = bring_up.index("scripts/service_release.py compose-override")
+    up = bring_up.index("up -d --remove-orphans --no-build --pull never")
+    assert join_service < override < up
+    assert bring_up.index('join "${background}" third-party') < up
+    # The worker release is joined after provisioning, before the suite starts workers.
+    assert (
+        steps.index("Register and provision dynamic target")
+        < steps.index(WORKER_JOIN_STEP)
+        < steps.index("Run selected stand suite")
+    )
+    assert "Provide worker base images on the stand" not in steps
+    # The suite joins its own environment, then runs frozen on it.
+    assert suite.index("stand_background.sh join %q uv 600") < suite.index("uv run python")
+    assert "export UV_FROZEN=1" in suite
+    assert suite.index("export UV_FROZEN=1") < suite.index("uv run python")
+
+
+def test_the_start_step_launches_three_detached_jobs_with_the_token_only_on_stdin(tmp_path):
+    token = "ghcr-token-that-must-not-reach-a-command-line"  # noqa: S105
+    background = tmp_path / "bg"
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        START_STEP,
+        {"GHCR_TOKEN": token, "GHCR_OWNER": "test-owner", "STAND_BACKGROUND_DIR": str(background)},
+    )
+    assert len(commands) == 1
+    remote = commands[0]
+    assert token not in remote
+    assert "IFS= read -r GHCR_TOKEN" in remote
+
+    # Run what the stand would run, against fake pullers and a fake uv.
+    host = _stand_host(tmp_path)
+    for script, variables in (
+        ("pull-service-images.sh", "tag=${SERVICE_IMAGE_TAG} digest=${DIGEST_FILE}"),
+        (
+            "pull-worker-images.sh",
+            "tag=${WORKER_IMAGE_TAG} subset=${WORKER_IMAGE_SUBSET} digest=${DIGEST_FILE}",
+        ),
+    ):
+        _write_executable(
+            host / "infra" / "scripts" / script,
+            f'#!/usr/bin/env bash\necho "{variables} owner=${{GHCR_OWNER}} '
+            'token=${GHCR_TOKEN:-unset}"\n',
+        )
+    stand_bin = tmp_path / "stand-bin"
+    _write_executable(
+        stand_bin / "uv", '#!/usr/bin/env bash\necho "uv $* token=${GHCR_TOKEN:-unset}"\n'
+    )
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", _on_host(remote, host)],
+        input=token + "\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stand_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert time.monotonic() - started < 5, "the start step must not wait for the jobs"
+
+    logs = {}
+    for job in ("service", "worker", "uv"):
+        joined = subprocess.run(
+            ["bash", str(BACKGROUND_SCRIPT), "join", str(background), job, "10"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "STAND_BACKGROUND_POLL_SECONDS": "0.05"},
+            timeout=30,
+        )
+        assert joined.returncode == 0, joined.stderr
+        logs[job] = (background / f"{job}.log").read_text()
+
+    assert f"tag={STAND_SHA}" in logs["service"]
+    assert f"digest={host}/deployed-service-images.json" in logs["service"]
+    assert f"token={token}" in logs["service"]
+    assert f"tag={STAND_SHA}" in logs["worker"]
+    assert f"subset={_job_env()['STAND_WORKER_IMAGES']}" in logs["worker"]
+    assert f"digest={host}/deployed-worker-images.json" in logs["worker"]
+    assert "uv sync --frozen token=unset" in logs["uv"], "the uv job never sees the token"
+
+
+def test_the_stand_pulls_exactly_the_worker_images_its_suites_run():
+    images = _job_env()["STAND_WORKER_IMAGES"].split()
+
+    assert images == ["worker-base-common", "worker-base-claude", "worker-base-codex"]
+    assert "worker-base-factory" not in images
+
+
+def _bring_up_remote(tmp: Path, background: Path) -> str:
+    runner_temp = tmp / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    (runner_temp / "stand-bootstrap-started").write_text("1000\n")
+    commands = _run_step_against_fake_ssh(
+        tmp,
+        BRING_UP_STEP,
+        {
+            "STAND_BACKGROUND_DIR": str(background),
+            "RUNTIME_UID": "1001",
+            "RUNTIME_GID": "1001",
+            "CODEX_WORKER_UID": "1002",
+            "CODEX_WORKER_GID": "1002",
+        },
+    )
+    main = [command for command in commands if "stand_background.sh join" in command]
+    assert len(main) == 1
+    return main[0]
+
+
+def _finished_job(background: Path, job: str, status: int, log: str = "") -> None:
+    background.mkdir(exist_ok=True)
+    (background / f"{job}.started").write_text("1000\n")
+    (background / f"{job}.finished").write_text("1090\n")
+    (background / f"{job}.log").write_text(log)
+    (background / f"{job}.status").write_text(f"{status}\n")
+
+
+def _run_bring_up_on_stand(
+    tmp: Path, remote: str, host: Path
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    stand_bin = tmp / "stand-bin"
+    _write_executable(stand_bin / "docker", FAKE_DOCKER_FOR_STAND)
+    config = tmp / "compose-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "services": {
+                    "api": {"build": {"context": "."}, "image": "codegen-orchestrator/api:local"},
+                    "db": {"image": "pgvector/pgvector:0.8.6-pg16"},
+                }
+            }
+        )
+    )
+    docker_log = tmp / "docker.log"
+    docker_log.write_text("")
+    result = subprocess.run(
+        ["bash", "-c", _on_host(remote, host)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env={
+            "PATH": f"{stand_bin}:/usr/bin:/bin",
+            "HOME": str(tmp),
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "FAKE_COMPOSE_CONFIG": str(config),
+            "STAND_BACKGROUND_POLL_SECONDS": "0.05",
+        },
+        timeout=60,
+    )
+    return result, docker_log.read_text().splitlines()
+
+
+def test_bring_up_runs_the_pulled_release_by_digest_and_builds_nothing(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+    digest = "ghcr.io/test-owner/codegen-orchestrator/api@sha256:" + "a" * 64
+    (host / "deployed-service-images.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "git_sha": STAND_SHA,
+                "source_hash": "feedface",
+                "images": {"api": {"reference": digest}},
+            }
+        )
+    )
+    _finished_job(background, "service", 0, "service images ready\n")
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 0, result.stderr
+    override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
+    assert json.dumps(digest) in (host / override).read_text()
+    assert not (background / "compose.json").exists(), "the resolved config is not left behind"
+    pulls = [call for call in calls if " pull --ignore-buildable" in call]
+    assert len(pulls) == 1
+    ups = [call for call in calls if " up " in call]
+    assert len(ups) == 2
+    for up in ups:
+        assert f"-f {override}" in up
+        assert "--no-build --pull never" in up
+    assert "scheduler-pipeline scheduler-infrastructure scheduler-maintenance" in ups[1]
+    assert calls.index(ups[0]) < calls.index(
+        next(call for call in calls if "alembic upgrade head" in call)
+    )
+    for call in calls:
+        assert not re.search(r"(?<![\w-])--build\b|\sbuild\b", call), call
+
+
+def test_bring_up_fails_closed_on_a_failed_service_pull_before_anything_starts(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+    _finished_job(background, "service", 10, "FATAL: the release marker is not a usable record\n")
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 10
+    assert "background job service failed with exit 10" in result.stderr
+    assert "not a usable record" in result.stderr
+    assert not [call for call in calls if " up " in call]
+
+
+def test_bring_up_fails_closed_on_a_service_pull_that_never_started(tmp_path):
+    background = tmp_path / "bg"
+    remote = _bring_up_remote(tmp_path, background)
+    host = _stand_host(tmp_path)
+
+    result, calls = _run_bring_up_on_stand(tmp_path, remote, host)
+
+    assert result.returncode == 125
+    assert not [call for call in calls if " up " in call]
+
+
+def test_the_worker_join_fails_the_step_with_the_pull_exit_code():
+    join = _steps()[WORKER_JOIN_STEP]
+
+    assert "stand_background.sh join '${STAND_BACKGROUND_DIR}' worker 1200" in join["run"]
+    assert "FATAL: pulling the worker image release failed" in join["run"]
+    assert 'exit "${pulled}"' in join["run"]
+    assert join["timeout-minutes"] * 60 > 1200
+
+
+def test_every_rendered_step_script_parses(tmp_path):
+    """No step ships a shell syntax error to the one budgeted live run."""
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run")
+            if not script:
+                continue
+            rendered = re.sub(r"\$\{\{[^}]*\}\}", "rendered", script)
+            result = subprocess.run(
+                ["bash", "-n", "-c", rendered], capture_output=True, text=True, timeout=30
+            )
+            assert result.returncode == 0, f"{step.get('name')}: {result.stderr}"
+
+
+def test_the_remote_bring_up_script_parses(tmp_path):
+    remote = _bring_up_remote(tmp_path, tmp_path / "bg")
+
+    result = subprocess.run(["bash", "-n", "-c", remote], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_bring_up_span_and_the_pull_durations_are_reported():
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]["run"]
+    bring_up = _steps()[BRING_UP_STEP]["run"]
+    timing = _steps()[TIMING_STEP]
+    steps = list(_steps())
+
+    assert bootstrap.splitlines()[2].strip() == (
+        'date +%s > "${RUNNER_TEMP}/stand-bootstrap-started"'
+    ), "the span starts with the Bootstrap step"
+    assert bring_up.rstrip().endswith('(target 300s)"')
+    assert 'echo "${healthy_epoch}" > "${RUNNER_TEMP}/stand-services-healthy"' in bring_up
+    assert "$GITHUB_STEP_SUMMARY" in timing["run"]
+    assert "stand_background.sh report" in timing["run"]
+    for job in ("service", "worker", "uv", "third-party"):
+        assert job in timing["run"].split("report", 1)[1]
+    assert timing["if"].startswith("${{ always()")
+    assert timing["continue-on-error"] is True, "reporting never decides a run"
+    assert steps.index("Run selected stand suite") < steps.index(TIMING_STEP)
+    assert steps.index(TIMING_STEP) < steps.index("Admit cleanup handoff")
+
+
+# --- every compose call that can start a container runs the pulled release ----------------
+#
+# Bring-up leaves no `codegen-orchestrator/*:local` image on the stand. A compose `up`,
+# `create`, `run` or `start` without the release override would find none and build the
+# service from the checkout; one without `--no-build --pull never` could build or pull
+# anyway. `start`, `restart` and `run` take no `--no-build`, so on the stand they cannot
+# be reached at all. The runner's own calls are pinned in scripts/tests/test_stand_run.py.
+
+POLICED_COMPOSE_VERBS = ("up", "create", "run", "start", "restart")
+RELEASE_POLICY = "--no-build --pull never"
+_COMPOSE_CALL = re.compile(r"docker compose\b|\$\{COMPOSE\}|\$COMPOSE\b")
+_COMPOSE_ASSIGNMENT = re.compile(r'^\s*COMPOSE="([^"]*)"')
+_OVERRIDE_REFERENCES = ("${override}", "${STAND_SERVICE_RELEASE_COMPOSE}")
+
+
+def _compose_invocations(script: str) -> list[tuple[list[str], str, str]]:
+    """Every compose call a step script makes: (files, verb, the rest of the line).
+
+    `${COMPOSE}` is expanded to what the script last assigned it, the way the shell
+    reads it, so an override appended to the variable counts where it was appended.
+    """
+    compose: str | None = None
+    calls: list[tuple[list[str], str, str]] = []
+    for line in _joined(script).splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assignment = _COMPOSE_ASSIGNMENT.match(line)
+        if assignment:
+            compose = assignment.group(1).replace("${COMPOSE}", compose or "")
+            continue
+        for occurrence in _COMPOSE_CALL.finditer(line):
+            text = line[occurrence.start() :]
+            if occurrence.group() != "docker compose":
+                assert compose is not None, f"${{COMPOSE}} used before it is assigned: {line}"
+                text = compose + text[len(occurrence.group()) :]
+            tokens = text.split()[2:]
+            files: list[str] = []
+            while len(tokens) > 1 and tokens[0] in ("-f", "--file", "-p", "--project-name"):
+                if tokens[0] in ("-f", "--file"):
+                    files.append(tokens[1])
+                tokens = tokens[2:]
+            calls.append((files, tokens[0] if tokens else "", " ".join(tokens[1:])))
+    return calls
+
+
+def _release_violations(script: str) -> list[str]:
+    violations = []
+    for files, verb, rest in _compose_invocations(script):
+        if verb == "build" or re.search(r"(?<![\w-])--build\b", rest):
+            violations.append(f"{verb} {rest}: builds")
+        if verb not in POLICED_COMPOSE_VERBS:
+            continue
+        if not any(reference in files for reference in _OVERRIDE_REFERENCES):
+            violations.append(f"{verb} {rest}: without the release override")
+        if RELEASE_POLICY not in rest:
+            violations.append(f"{verb} {rest}: without {RELEASE_POLICY}")
+    return violations
+
+
+def test_the_compose_scanner_catches_a_call_that_would_build_on_the_stand():
+    """The contract below is only as good as this reader, so it is shown a bad script."""
+    base = 'COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"\n'
+    released = base + 'COMPOSE="${COMPOSE} -f ${override}"\n'
+
+    assert _release_violations(released + "${COMPOSE} up -d --no-build --pull never api\n") == []
+    assert _release_violations(base + "${COMPOSE} up -d --no-build --pull never api\n")
+    assert _release_violations(released + "${COMPOSE} up -d --force-recreate api\n")
+    assert _release_violations(released + "${COMPOSE} create --no-build --pull never\n") == []
+    assert _release_violations(released + "${COMPOSE} create api\n")
+    assert _release_violations(released + "${COMPOSE} start api\n")
+    assert _release_violations(released + "${COMPOSE} run --rm api true\n")
+    assert _release_violations("ssh host 'docker compose -f a.yml -f ${override} restart api'\n")
+    assert _release_violations(released + "${COMPOSE} build api\n")
+    assert _release_violations(base + "${COMPOSE} exec -T api true\n") == []
+    assert _release_violations("# docker compose up -d, in a comment\n") == []
+
+
+def test_every_compose_call_that_starts_a_container_runs_the_pulled_release():
+    starting = []
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run", "")
+            assert _release_violations(script) == [], step.get("name")
+            starting += [
+                verb
+                for _files, verb, _rest in _compose_invocations(script)
+                if verb in POLICED_COMPOSE_VERBS
+            ]
+    # Not vacuous: bring-up's two `up` calls are the ones the reader has to have seen.
+    assert starting == ["up", "up"]
+
+
+def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_path):
+    """The runner recreates services on a QA switch; it does so from this file."""
+    background = tmp_path / "bg"
+    commands = _run_step_against_fake_ssh(
+        tmp_path,
+        "Run selected stand suite",
+        {
+            "STAND_BACKGROUND_DIR": str(background),
+            "SUITE": "matrix",
+            "WORKER": "claude",
+            "QA": "codex",
+            "TEMPLATE_SOURCE": "",
+            "TEMPLATE_REF": "",
+            "STAND_PRODUCT_BOT_TOKEN": "",
+        },
+    )
+    assert len(commands) == 1
+    host = _stand_host(tmp_path)
+    _finished_job(background, "uv", 0, "synced\n")
+    stand_bin = tmp_path / "stand-bin"
+    _write_executable(
+        stand_bin / "uv",
+        '#!/usr/bin/env bash\necho "uv $* override=${STAND_SERVICE_RELEASE_COMPOSE:-unset} '
+        'frozen=${UV_FROZEN:-unset}"\n',
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", _on_host(commands[0], host)],
+        input="\n",
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stand_bin}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    override = _job_env()["STAND_SERVICE_RELEASE_COMPOSE"]
+    assert "python -m scripts.stand_run --suite matrix" in result.stdout
+    assert f"override={override} frozen=1" in result.stdout
+    # The same name bring-up writes the override to, in the checkout the runner resolves
+    # it against, and the same variable the runner reads.
+    bring_up = _steps()[BRING_UP_STEP]["run"]
+    assert "override=${STAND_SERVICE_RELEASE_COMPOSE}" in bring_up
+    assert '--output "${override}"' in bring_up
+    from scripts import stand_run
+
+    assert stand_run.SERVICE_RELEASE_OVERRIDE_ENV == "STAND_SERVICE_RELEASE_COMPOSE"
