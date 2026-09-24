@@ -27,3 +27,18 @@ WORKER_TERMINAL_STATUSES: frozenset[WorkerStatus] = frozenset(
         WorkerStatus.GONE,
     }
 )
+
+
+#: How long a creation failure stays readable after its worker is torn down.
+WORKER_CREATION_FAILURE_TTL_SECONDS = 600
+
+
+def worker_creation_failure_key(worker_id: str) -> str:
+    """Redis hash holding why a worker's creation failed.
+
+    `worker:status` and `worker:error` are deleted with the worker, and a failed
+    creation queues that deletion at once, so a spawner polling for readiness
+    can find both gone before it ever read them. This key is not part of the
+    worker's teardown; it expires on its own.
+    """
+    return f"worker:creation-failure:{worker_id}"

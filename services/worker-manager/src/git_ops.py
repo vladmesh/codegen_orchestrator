@@ -14,6 +14,8 @@ the developer agent's own commits and pushes.
 """
 
 import base64
+from dataclasses import dataclass
+import re
 
 import structlog
 
@@ -90,28 +92,102 @@ async def _exec_script(
     return await docker.exec_in_container(container_id, cmd, timeout=30)
 
 
+_OUTPUT_TAIL_CHARS = 2000
+_CONTAINER_LOG_TAIL_LINES = 20
+_CREDENTIAL_IN_URL = re.compile(r"(https?://)[^/@\s]+@")
+
+
+def _tail(raw: bytes | str | None) -> str:
+    """The redacted last characters of one stream, for a log line and an error."""
+    if raw is None:
+        return ""
+    text = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+    text = _CREDENTIAL_IN_URL.sub(r"\1***@", text).strip()
+    return text[-_OUTPUT_TAIL_CHARS:]
+
+
+@dataclass(frozen=True)
+class CheckoutResult:
+    """What one checkout did. Truthy exactly when the branch and upstream exist.
+
+    `detail` is the account of a failure, never empty: the exit code, what the
+    script wrote to each stream, and — when the script wrote nothing — what
+    Docker says became of the container it ran in.
+    """
+
+    ok: bool
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+async def _container_account(docker: DockerClientWrapper, container_id: str) -> str:
+    """Whether the worker container is still running, and its last log lines if not.
+
+    A checkout that exits without a word is almost never git's doing: git always
+    says why it failed. It is the container the exec ran in going away under it
+    (Docker reports the exec as killed, 137, with empty output). The container's
+    own log is then the only place the reason is written.
+    """
+    try:
+        attrs = await docker.inspect_container(container_id)
+    except Exception as exc:  # noqa: BLE001 — the account is evidence, not a second failure
+        return f"the worker container could not be inspected: {type(exc).__name__}: {exc}"
+    state = (attrs or {}).get("State") or {}
+    if state.get("Running"):
+        return "the worker container is still running"
+    account = (
+        f"the worker container is not running (status={state.get('Status', 'unknown')}, "
+        f"exit_code={state.get('ExitCode', 'unknown')})"
+    )
+    try:
+        logs = await docker.read_container_logs(container_id, tail=_CONTAINER_LOG_TAIL_LINES)
+    except Exception as exc:  # noqa: BLE001 — a missing log still leaves the state above
+        return f"{account}; its log could not be read: {type(exc).__name__}: {exc}"
+    logs_tail = _tail(logs)
+    return f"{account}; its log ends: {logs_tail}" if logs_tail else account
+
+
 async def checkout_branch(
     docker: DockerClientWrapper, container_id: str, branch: str, worker_id: str
-) -> bool:
+) -> CheckoutResult:
     """Checkout a story branch in the workspace.
 
     Creates the branch from the repository's up-to-date default branch when it
     does not exist yet, or resumes it at its remote tip when it does, and
-    establishes the upstream `git push` needs. Returns False when the branch or
-    its upstream was not established.
+    establishes the upstream `git push` needs. The result is falsy, with a
+    non-empty `detail`, when the branch or its upstream was not established.
     """
     logger.info("checkout_branch_start", worker_id=worker_id, branch=branch)
-    exit_code, output = await _exec_script(docker, container_id, build_checkout_script(branch))
-    if exit_code != 0:
-        logger.error(
-            "checkout_branch_failed",
-            worker_id=worker_id,
-            branch=branch,
-            error=output,
-        )
-        return False
-    logger.info("checkout_branch_complete", worker_id=worker_id, branch=branch)
-    return True
+    encoded = base64.b64encode(build_checkout_script(branch).encode()).decode()
+    cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
+    exit_code, stdout, stderr = await docker.exec_capture(container_id, cmd, timeout=30)
+    if exit_code == 0:
+        logger.info("checkout_branch_complete", worker_id=worker_id, branch=branch)
+        return CheckoutResult(ok=True)
+
+    stdout_tail, stderr_tail = _tail(stdout), _tail(stderr)
+    parts = [f"exit_code={exit_code}"]
+    if stderr_tail:
+        parts.append(f"stderr: {stderr_tail}")
+    if stdout_tail:
+        parts.append(f"stdout: {stdout_tail}")
+    container = None
+    if not stderr_tail and not stdout_tail:
+        container = await _container_account(docker, container_id)
+        parts.append(f"no output; {container}")
+    detail = "; ".join(parts)
+    logger.error(
+        "checkout_branch_failed",
+        worker_id=worker_id,
+        branch=branch,
+        exit_code=exit_code,
+        stderr=stderr_tail,
+        stdout=stdout_tail,
+        container=container,
+    )
+    return CheckoutResult(ok=False, detail=detail)
 
 
 async def refresh_git_token(

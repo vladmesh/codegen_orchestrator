@@ -249,19 +249,23 @@ def _decoded_script(cmd: str) -> str:
 
 async def test_checkout_branch_execs_the_hook_free_script():
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(return_value=(0, ""))
+    docker.exec_capture = AsyncMock(return_value=(0, b"", b""))
 
     assert await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1")
 
-    decoded = _decoded_script(docker.exec_in_container.await_args.args[1])
+    decoded = _decoded_script(docker.exec_capture.await_args.args[1])
     assert decoded == git_ops.build_checkout_script("story/story-ea07a289")
 
 
 async def test_checkout_branch_reports_a_failed_script():
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(return_value=(1, "fatal: no upstream"))
+    docker.exec_capture = AsyncMock(return_value=(1, b"", b"fatal: no upstream"))
 
-    assert await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1") is False
+    result = await git_ops.checkout_branch(docker, "cid", "story/story-ea07a289", "w-1")
+
+    assert not result
+    assert "exit_code=1" in result.detail
+    assert "stderr: fatal: no upstream" in result.detail
 
 
 # --- Criterion 4: a checkout that did not do its job fails worker creation ---
@@ -296,7 +300,11 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
             "src.manager.workspace_mod.get_scaffolded_workspace",
             return_value=(Path("/data/ws/repo-1"), True),
         ),
-        patch("src.manager.git_ops.checkout_branch", new_callable=AsyncMock, return_value=False),
+        patch(
+            "src.manager.git_ops.checkout_branch",
+            new_callable=AsyncMock,
+            return_value=git_ops.CheckoutResult(ok=False, detail="exit_code=1; stderr: fatal"),
+        ),
         patch.object(manager, "_register_broker_worker", new_callable=AsyncMock),
         patch.object(manager, "_inject_worker_materials", new_callable=AsyncMock) as inject,
     ):
@@ -330,3 +338,5 @@ async def test_a_false_checkout_fails_creation_before_any_material_is_injected()
     recorded = await redis.get("worker:error:dev-p-checkout-false")
     assert recorded.strip()
     assert "checkout_branch" in recorded
+    # The script's own account reaches the record the spawner reads.
+    assert "exit_code=1; stderr: fatal" in recorded

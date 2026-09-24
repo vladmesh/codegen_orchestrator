@@ -14,6 +14,12 @@
   user, so the api has to run as that user: its uid on a root daemon, `0` on a rootless
   daemon (container root is the rootless user). The deploy fails after `up` when the api
   cannot read the key
+- `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME` must be owned by the worker user (uid:gid `1000:1000`) as the
+  Docker daemon sees it: `1000:1000` on a root daemon, the rootless user's subuid base + 999 on a rootless
+  one (for `vlad:165536:65536` that is `166535:166535`, e.g. `docker run --rm -u 0 -v "$HOST_CLAUDE_DIR":/p
+  --entrypoint chown worker-base-claude:latest -R 1000:1000 /p`). Owned by the host user itself, the
+  profile is root inside the container, the wrapper exits on "CLAUDE_CONFIG_DIR is not writable" and
+  every developer worker dies during `checkout_branch`
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
