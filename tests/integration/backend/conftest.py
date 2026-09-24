@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import UTC, datetime, timedelta
@@ -14,7 +16,7 @@ from docker.errors import APIError, NotFound
 import pytest
 import redis.asyncio as redis
 
-from scripts.shared_freshness import source_hash
+from scripts.shared_freshness import SOURCE_HASH_LABEL, source_hash
 from shared.contracts.dto.executor_diagnostics import (
     EXECUTOR_DIAGNOSTICS_REDIS_KEY,
     ExecutorAuthMode,
@@ -876,17 +878,73 @@ def _build_base_image(
             pytest.exit(f"Failed to build {tag}: {e}")
 
 
+def _pull_candidate_images(client, tree_hash: str, names: dict[str, list[tuple[str, str]]]):
+    """Pull the worker base image candidates of this push into DinD, by digest.
+
+    The record is the `candidates` output of build-worker-images in ci.yml, the same one
+    publish-worker-images commits after the gate (infra/scripts/publish-worker-images.sh),
+    so the images this suite tests are the digests the release names. Nothing is built
+    here: a missing, unreadable or foreign record, an image that does not pull, or one
+    built from another tree ends the session. Every pulled image then gets the local
+    names the build path gives it, the content-hash tags included.
+    """
+    payload = os.environ["WORKER_BASE_CANDIDATES"]
+    if not payload:
+        pytest.exit("WORKER_BASE_IMAGE_SOURCE=candidates, but WORKER_BASE_CANDIDATES is empty")
+    try:
+        record = json.loads(base64.b64decode(payload, validate=True))
+    except (binascii.Error, ValueError) as error:
+        pytest.exit(f"The worker candidate record does not decode: {error}")
+    if not isinstance(record, dict) or record.get("source_hash") != tree_hash:
+        pytest.exit(
+            f"The worker candidates were built from {record.get('source_hash')!r}, "
+            f"this tree is {tree_hash!r}"
+        )
+    images = record.get("images")
+    if not isinstance(images, dict) or set(images) != set(names):
+        pytest.exit(f"The worker candidate record names {images!r}, the chain is {sorted(names)}")
+
+    auth = {"username": os.environ["GHCR_OWNER"], "password": os.environ["GHCR_TOKEN"]}
+    for name, local_names in names.items():
+        entry = images[name]
+        reference = entry.get("reference", "") if isinstance(entry, dict) else ""
+        repository, _, digest = reference.partition("@")
+        if repository.rsplit("/", 1)[-1] != name or not digest.startswith("sha256:"):
+            pytest.exit(f"The worker candidate {name} is not named by digest: {entry!r}")
+        print(f"Pulling {reference}...")
+        try:
+            image = client.images.pull(repository, tag=digest, auth_config=auth)
+        except docker.errors.APIError as error:
+            pytest.exit(f"Failed to pull the worker candidate {reference}: {error}")
+        found = image.labels.get(SOURCE_HASH_LABEL)
+        if found != tree_hash:
+            pytest.exit(
+                f"{reference} carries {SOURCE_HASH_LABEL}={found!r}, the tree is {tree_hash}"
+            )
+        output = client.containers.run(reference, "id worker", remove=True, entrypoint="/bin/sh -c")
+        print(f"  {name}: {SOURCE_HASH_LABEL}={found}; verified: {output.decode().strip()}")
+        for local_repository, tag in local_names:
+            image.tag(local_repository, tag)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_worker_base_images():
-    """Build agent-specific worker base images in DIND.
+    """Provide the agent-specific worker base images in DIND.
 
-    Uses content hashing to skip rebuilds when source files haven't changed.
+    WORKER_BASE_IMAGE_SOURCE says where they come from. `candidates` (CI) pulls the
+    images build-worker-images resolved for this push, by digest, so the suite tests what
+    the release will name; `build` (a local run) builds them from the tree.
+
+    The build uses content hashing to skip rebuilds when source files haven't changed.
     DinD volume persists between runs, so cached images survive restarts.
 
     Build order: common (sequential) -> claude + factory (parallel).
     """
     if os.getenv("BUILD_WORKER_BASE_IMAGES") != "true":
         return
+    image_source = os.environ["WORKER_BASE_IMAGE_SOURCE"]
+    if image_source not in {"build", "candidates"}:
+        pytest.exit(f"WORKER_BASE_IMAGE_SOURCE must be build or candidates, not {image_source!r}")
 
     client = docker.DockerClient(base_url=DOCKER_HOST)
 
@@ -913,6 +971,27 @@ def setup_worker_base_images():
     factory_tag = f"worker-base-factory:{factory_hash}"
 
     try:
+        if image_source == "candidates":
+            # The same local names the build below gives them; codex is part of the
+            # release, so it is pulled and checked too.
+            _pull_candidate_images(
+                client,
+                common_hash,
+                {
+                    "worker-base-common": [("worker-base-common", common_hash)],
+                    "worker-base-claude": [
+                        ("worker-base-claude", claude_hash),
+                        ("worker-base-claude", "latest"),
+                    ],
+                    "worker-base-factory": [
+                        ("worker-base-factory", factory_hash),
+                        ("worker-base-factory", "latest"),
+                    ],
+                    "worker-base-codex": [("worker-base-codex", "latest")],
+                },
+            )
+            return
+
         # Build common first (claude and factory depend on it).
         # All three carry the same SOURCE_HASH label: worker-manager reads it off the base
         # image to build the runtime worker tag, and a mismatch between common and its

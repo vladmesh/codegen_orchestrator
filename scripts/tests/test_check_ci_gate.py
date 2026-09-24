@@ -496,7 +496,9 @@ def test_the_repository_workflow_bounds_every_job(gate):
     gate.assert_job_timeouts(gate.load_workflow()["jobs"])
 
 
-@pytest.mark.parametrize("job_name", ["test-service", "publish-worker-images", "web-checks"])
+@pytest.mark.parametrize(
+    "job_name", ["test-service", "build-worker-images", "publish-worker-images", "web-checks"]
+)
 def test_a_job_without_timeout_minutes_fails_the_gate(gate, job_name):
     """A new job, docker or not, cannot fall back to GitHub's 360-minute default."""
     jobs = gate.load_workflow()["jobs"]
@@ -536,7 +538,11 @@ def test_a_step_bound_not_shorter_than_its_job_fails_the_gate(gate):
 @pytest.mark.parametrize(
     "job_name,step_name",
     [
-        ("publish-worker-images", "Build and publish the worker chain"),
+        (
+            "publish-worker-images",
+            "Verify the tested candidates and publish the worker release marker",
+        ),
+        ("build-worker-images", "Build and push the worker image candidates"),
         ("template-compatibility", "Run baseline compatibility smoke"),
     ],
 )
@@ -665,3 +671,36 @@ def test_the_redis_regression_outside_its_bound_fails_the_gate(gate):
 
     with pytest.raises(SystemExit, match="step Run Redis capability cleanup regression must run"):
         gate.assert_job_timeouts(jobs)
+
+
+def test_the_repository_workflow_releases_what_the_dind_suite_tested(gate):
+    gate.assert_worker_release_tests_what_ships(gate.load_workflow()["jobs"])
+
+
+def test_a_dind_suite_that_builds_its_own_worker_chain_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    suite = gate.step_by_id(jobs["test-backend-dind-integration"], "integration-tests")
+    suite["env"]["WORKER_BASE_IMAGE_SOURCE"] = "build"
+
+    with pytest.raises(SystemExit, match="must test the candidates"):
+        gate.assert_worker_release_tests_what_ships(jobs)
+
+
+def test_a_marker_job_that_commits_another_record_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    release = gate.step_by_name(
+        jobs["publish-worker-images"],
+        "Verify the tested candidates and publish the worker release marker",
+    )
+    release["env"]["WORKER_CANDIDATES"] = "${{ steps.rebuilt.outputs.candidates }}"
+
+    with pytest.raises(SystemExit, match="must commit"):
+        gate.assert_worker_release_tests_what_ships(jobs)
+
+
+def test_a_build_after_the_gate_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["publish-worker-images"]["steps"].insert(1, {"run": "make rebuild-worker-images"})
+
+    with pytest.raises(SystemExit, match="must build nothing"):
+        gate.assert_worker_release_tests_what_ships(jobs)

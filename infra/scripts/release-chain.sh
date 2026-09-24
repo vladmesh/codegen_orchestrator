@@ -3,6 +3,8 @@
 #
 # Two chains publish images to GHCR as one release keyed by a git SHA: the worker base
 # images (worker-images.sh) and the control-plane service images (service-images.sh).
+# The worker chain also releases each source hash once, under a `source-<hash>` key, and
+# every SHA's marker names that release; to this protocol both are just keys.
 # Each chain names its own images, marker and label; what a release *is* is decided
 # here, once, so the two cannot drift apart:
 #

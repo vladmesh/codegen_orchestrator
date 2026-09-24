@@ -278,6 +278,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - BUILD_WORKER_BASE_IMAGES=true
+      # Where the worker base images come from (setup_worker_base_images): `build` them
+      # from the tree inside DinD, the local default, or pull the `candidates` CI built
+      # for this push, by digest, from the record in WORKER_BASE_CANDIDATES.
+      - WORKER_BASE_IMAGE_SOURCE=${WORKER_BASE_IMAGE_SOURCE:-build}
+      - WORKER_BASE_CANDIDATES=${WORKER_BASE_CANDIDATES:-}
+      - GHCR_OWNER=${GHCR_OWNER:-}
+      - GHCR_TOKEN=${GHCR_TOKEN:-}
       - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - FACTORY_API_KEY=${FACTORY_API_KEY}

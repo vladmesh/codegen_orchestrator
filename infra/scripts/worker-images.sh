@@ -2,8 +2,8 @@
 # The worker base image release chain, named once.
 #
 # Sourced by the two halves that have to agree on it: publish-worker-images.sh
-# (build and push) and pull-worker-images.sh (pull and verify on the deployment
-# host). Listing the chain in one place is what keeps a fifth image from being
+# (build the candidates, then commit the release) and pull-worker-images.sh (pull and
+# verify on the deployment host). Listing the chain in one place is what keeps a fifth image from being
 # published and never verified, or verified and never published.
 #
 # Build order: common first, then the agent images built from that exact common.
@@ -31,6 +31,17 @@ WORKER_SOURCE_HASH_LABEL="org.codegen.worker_source_hash"
 # That single write is the release. The puller resolves the marker before anything
 # else and deploys only the digests the marker names; leftover image tags with no
 # marker are inert residue, and a rerun of the publish job may push over them.
+#
+# The images themselves are keyed by content, not by commit: what they bake is exactly
+# the trees scripts/shared_freshness.py hashes. So the same repository carries two kinds
+# of marker, with one record shape and one validator:
+#
+#   <source key>  source-<worker_source_hash>: the release of that content, written
+#                 once, by the first green commit that built it (worker_source_key).
+#   <git sha>     the release of one commit, written for every green push to main. It
+#                 names exactly the digests of its hash's release, so two commits with
+#                 the same hash resolve to the same images. This is the marker every
+#                 consumer reads, by revision.
 WORKER_RELEASE_MARKER_IMAGE="worker-base-release"
 
 # Where the marker carries the record: the same JSON `worker_image_record` writes,
@@ -40,6 +51,15 @@ WORKER_RELEASE_LABEL="org.codegen.worker_release"
 # The marker protocol itself is shared with the service image chain.
 # shellcheck source=infra/scripts/release-chain.sh
 source "$(dirname "${BASH_SOURCE[0]}")/release-chain.sh"
+
+# The key the release of one source hash is committed under: the marker tag, and the
+# `git_sha` field its record is validated against. A git SHA is 40 hex characters and
+# never starts with `source-`, so the two kinds of marker cannot be confused.
+#
+# Usage: worker_source_key <source_hash>
+worker_source_key() {
+    printf 'source-%s' "$1"
+}
 
 # Where the chain lives, given the GitHub org/user that owns the packages.
 worker_image_registry() {
@@ -85,10 +105,11 @@ worker_release_images() {
     release_marker_images "$1" "$2" "$4" "$3" "" "${WORKER_BASE_IMAGES[@]}"
 }
 
-# Re-verify the committed worker release of a SHA whose marker resolved
-# (release_verify_committed), printing its `<image>=<repository>@<digest>` lines.
+# Re-verify the committed worker release of a key whose marker resolved
+# (release_verify_committed), printing its `<image>=<repository>@<digest>` lines. The
+# key is a git SHA, or the worker_source_key of the tree's hash.
 #
-# Usage: worker_release_verify <marker_digest_reference> <git_sha> <registry> <source_hash>
+# Usage: worker_release_verify <marker_digest_reference> <key> <registry> <source_hash>
 worker_release_verify() {
     release_verify_committed "$1" "${WORKER_RELEASE_LABEL}" "$2" "$4" \
         "${WORKER_SOURCE_HASH_LABEL}" "$3" "" "${WORKER_BASE_IMAGES[@]}"

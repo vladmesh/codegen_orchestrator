@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Pull the worker base image release of one exact revision, and refuse anything else.
 #
-# The worker base images are one release chain keyed by the git SHA they were built
-# from; the publishing half is `publish-worker-images.sh`, run by the
-# publish-worker-images job of .github/workflows/ci.yml. This is the consuming half,
+# The worker base images are one release chain. Every green revision has a release
+# marker keyed by its git SHA, naming the digests of the release of its worker source
+# hash, so two revisions with the same hash resolve to the same images; the publishing
+# half is `publish-worker-images.sh`, run by the build-worker-images and
+# publish-worker-images jobs of .github/workflows/ci.yml. This is the consuming half,
 # and it is the one place that decides whether a revision has a release at all.
 #
 # It asks the release marker first (infra/scripts/worker-images.sh). Image tags do not

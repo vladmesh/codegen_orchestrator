@@ -130,8 +130,8 @@ log and as a line in its own summary, so a reader of the gate alone sees it.
 | `test-integration/template`, `template-compatibility/<entry>` | `setup-uv` | `uv-download` | `astral-sh/setup-uv`, 3 attempts (`.github/actions/setup-uv-with-retry`) |
 | `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration`, `build-service-images` | `setup-buildx` | `buildx-registry`, `buildx-registry-timeout` | creating and booting a docker-container Buildx builder, which pulls `moby/buildkit`: 3 attempts of at most 120 s each (`.github/actions/setup-buildx-with-retry`) |
 | `test-service/<leg>`, `test-integration/<leg>`, `test-backend-dind-integration` | `pull-images` | `image-pull`, `image-pull-timeout` | `docker pull` of every image the suite's compose file runs without building it, 3 attempts of at most 90 s per image, before the tests start |
-| `test-backend-dind-integration` | `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker |
-| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `publish-worker-images`, `build-service-images`, `publish-service-release` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish`, `build-candidates` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
+| `build-worker-images`, `test-backend-dind-integration` | `build-candidates`, `integration-tests` | `claude-installer-fetch` | the Claude installer fetch in `worker-base-claude/Dockerfile` (curl, 3 retries); on exhaustion the build prints `CI-INFRA-CAUSE=claude-installer-fetch` and `ci-infra.sh watch` maps that line to the marker. In CI only `build-worker-images` builds the chain; the DinD suite pulls it, and keeps the watch for a local run that builds |
+| `fast-checks`, `service-image-imports`, `test-service/<leg>`, `test-integration/<leg>`, `template-compatibility/<entry>`, `test-backend-dind-integration`, `build-worker-images`, `publish-worker-images`, `build-service-images`, `publish-service-release` | `redis-cleanup`, `service-image-imports`, `service-tests`, `integration-tests`, `compatibility-smoke`, `publish`, `build-candidates` | `step-timeout` | nothing is retried: the docker step ran past its `ci-infra.sh bound` (see "Time bounds") and was stopped |
 
 A cause ending in `-timeout` means the last attempt did not fail but hung until its bound stopped
 it; a hung attempt is a failed attempt, and the next one starts after it. Only the bound's own timer
@@ -140,9 +140,12 @@ names a timeout: a command that exits 124 or 137 by itself before its bound (the
 
 **A job after the gate reports its marker on itself.** `publish-worker-images` runs after the
 `Required CI Gate` (it `needs: merge-gate`), so the gate can never repeat its marker. It writes the
-`step-timeout` marker of its `publish` step, or the `claude-installer-fetch` marker of the worker image
-it builds, into its own annotations and job summary, and its own `always()` expose step hands it to
-the job output `infra-marker`, like every other job. Read a failed release there, not in the gate.
+`step-timeout` marker of its `publish` step into its own annotations and job summary, and its own
+`always()` expose step hands it to the job output `infra-marker`, like every other job. Read a failed
+release there, not in the gate. `build-worker-images`, which builds the chain beside the suites, is
+outside the gate's `needs` and does the same with the `step-timeout` or `claude-installer-fetch`
+marker of its `build-candidates` step; a failure there also skips the DinD suite, which the gate
+reports.
 
 The service image release has the same shape: `publish-service-release` runs after the gate, and
 `build-service-images` is push-to-main only and outside the gate's `needs` (a pull request must not wait
@@ -199,9 +202,10 @@ Buildx bootstrap (120 s attempts), 6.5 minutes per image pulled (90 s attempts),
 | `test-integration/<leg>` | 4.2 min (tests 3.9) | 38.5 (2 images) | 40 | Buildx 3 × 120 s; pulls 3 × 90 s per image; tests 10 min |
 | `template-compatibility/<entry>` | 3.7 min (smoke 3.5) | 24.5 | 30 | smoke 15 min |
 | `web-checks/<app>` | 0.5 min | — | 10 | — |
-| `test-backend-dind-integration` | 8.5 min (suite 8.1) | 50 (3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
+| `test-backend-dind-integration` | 8.5 min (suite 8.1, of which about 131 s built the worker chain; it now pulls the candidates) | 50 (3 images) | 50 | Buildx 3 × 120 s; pulls 3 × 90 s per image; suite 15 min |
+| `build-worker-images` | new, not yet measured (the chain built and pushed in 2.5–4 min in the old publish job; a released hash only re-verifies) | 19.5 | 20 | candidates 15 min |
 | `merge-gate` | 0.6 min | — | 5 | — |
-| `publish-worker-images` | 4.0 min (publish 3.9) | 19.5 | 20 | publish 15 min |
+| `publish-worker-images` | new, not yet measured (markers only; it built the chain before, 4.0 min) | 14.5 | 15 | publish 10 min |
 | `build-service-images` | new, not yet measured (the 8 Python images build in 6 min in `service-image-imports`) | 37.5 | 40 | Buildx 3 × 120 s; candidates 25 min |
 | `publish-service-release` | new, not yet measured | 19.5 | 20 | publish 15 min |
 
@@ -354,7 +358,10 @@ Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every p
 when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged
 nested-daemon suite costs more than it protects. On `main`, `Required CI Gate` consumes that job
 before worker images may be released, so a failed DinD run blocks the release marker for the exact
-SHA it tested.
+SHA it tested. In CI it builds no worker image: it pulls the candidates `build-worker-images`
+resolved for the push into DinD by digest (`WORKER_BASE_IMAGE_SOURCE=candidates`), and the release
+commits exactly those digests (docs/DEPLOY.md, "Worker base images are a release chain"). A local
+`make test-integration-backend-dind` builds the chain from the tree inside DinD, as before.
 Worker-path coverage is available through `make test-live-engineering`
 (`tests/live/test_pipeline_engineering.py`). Use `make test-live-mega-noop` for the deterministic
 scaffold, engineering, deploy and QA path, or a named `make stand-run SUITE=...` for model-backed

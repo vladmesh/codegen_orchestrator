@@ -240,8 +240,9 @@ INFRA_MARKER_JOBS: dict[str, str | None] = {
     # Downstream of merge-gate: the gate cannot repeat this marker, so it stays on the
     # job's own annotations, summary and output (docs/TESTING.md).
     "publish-worker-images": None,
-    # Push-to-main only and outside the gate's needs, like the release job after it: both
-    # keep their marker on their own annotations, summary and output.
+    # Main only and outside the gate's needs, like the release jobs after them: they keep
+    # their marker on their own annotations, summary and output.
+    "build-worker-images": None,
     "build-service-images": None,
     "publish-service-release": None,
 }
@@ -271,6 +272,10 @@ PULL_IMAGES_COMMANDS = {
 BACKEND_DIND_COMMAND = (
     "bash scripts/ci-infra.sh watch --step integration-tests -- make test-integration-backend-dind"
 )
+WORKER_CANDIDATES_OUTPUT = "candidates"
+WORKER_CANDIDATES_REFERENCE = "${{ needs.build-worker-images.outputs.candidates }}"
+WORKER_PUBLISH_CANDIDATES = "bash infra/scripts/publish-worker-images.sh candidates"
+WORKER_PUBLISH_RELEASE = "bash infra/scripts/publish-worker-images.sh release"
 REDIS_PULL_STEP = "Pull Redis image with retry"
 REDIS_PULL_COMMAND = (
     "bash scripts/ci-infra.sh retry --step redis-pull --cause image-pull --attempt-timeout 90s "
@@ -324,7 +329,8 @@ BOUNDED_DOCKER_STEPS = {
         "Run candidate compatibility smoke",
     ],
     "test-backend-dind-integration": ["Run integration tests"],
-    "publish-worker-images": ["Build and publish the worker chain"],
+    "build-worker-images": ["Build and push the worker image candidates"],
+    "publish-worker-images": ["Verify the tested candidates and publish the worker release marker"],
     "build-service-images": ["Build and push the service image candidates"],
     "publish-service-release": ["Verify the candidates and publish the service release marker"],
 }
@@ -1021,10 +1027,14 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     It remains out of the pull-request matrix on cost grounds. On main, though,
     this job and ``merge-gate`` belong to one workflow graph, so a DinD failure
     physically prevents ``publish-worker-images`` from reaching its marker step.
+    It needs ``build-worker-images`` too, because what it tests is that job's candidates.
     """
     job = require_job(jobs, "test-backend-dind-integration")
-    if job.get("needs") != ["fast-checks", "ci-contract"]:
-        fail("backend Docker-in-Docker job must wait for fast-checks and ci-contract")
+    if job.get("needs") != ["fast-checks", "ci-contract", "build-worker-images"]:
+        fail(
+            "backend Docker-in-Docker job must wait for fast-checks, ci-contract and "
+            "build-worker-images"
+        )
     condition = " ".join(str(job.get("if", "")).split())
     for required in (
         "always()",
@@ -1033,6 +1043,7 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
         "github.ref == 'refs/heads/main'",
         "needs.fast-checks.result == 'success'",
         "needs.ci-contract.result == 'success'",
+        "needs.build-worker-images.result == 'success'",
     ):
         if required not in condition:
             fail(f"backend Docker-in-Docker job is missing required condition: {required}")
@@ -1054,6 +1065,55 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
         fail("backend Docker-in-Docker assertion must inspect the test outcome")
     assert_buildx_retry(job)
+    assert_worker_release_tests_what_ships(jobs)
+
+
+def assert_worker_release_tests_what_ships(jobs: dict[str, Any]) -> None:
+    """The worker release marker names exactly the digests the DinD suite tested.
+
+    build-worker-images resolves the candidates once and hands their record on as one job
+    output; the DinD suite pulls that record and builds no chain of its own, and the
+    post-gate publish job commits that same record and nothing else. Two reads of one
+    output are what make "tested" and "released" the same digests.
+    """
+    build = require_job(jobs, "build-worker-images")
+    if build.get("needs"):
+        fail("build-worker-images must not wait for the suites: it runs beside them")
+    if build.get("permissions", {}).get("packages") != "write":
+        fail("build-worker-images pushes candidates and needs packages: write")
+    if build.get("outputs", {}).get(WORKER_CANDIDATES_OUTPUT) != (
+        f"${{{{ steps.candidates.outputs.{WORKER_CANDIDATES_OUTPUT} }}}}"
+    ):
+        fail("build-worker-images must expose the candidate record as its candidates output")
+    build_step = step_by_name(build, "Build and push the worker image candidates")
+    if not bounded_command(build_step).endswith(WORKER_PUBLISH_CANDIDATES):
+        fail(f"build-worker-images must run {WORKER_PUBLISH_CANDIDATES}")
+
+    dind = step_by_id(require_job(jobs, "test-backend-dind-integration"), "integration-tests")
+    if dind.get("env", {}).get("WORKER_BASE_IMAGE_SOURCE") != "candidates":
+        fail("the DinD suite must test the candidates, not build its own worker chain")
+    if dind.get("env", {}).get("WORKER_BASE_CANDIDATES") != WORKER_CANDIDATES_REFERENCE:
+        fail(f"the DinD suite must pull {WORKER_CANDIDATES_REFERENCE}")
+
+    publish = require_job(jobs, "publish-worker-images")
+    if set(publish.get("needs", [])) != {"merge-gate", "build-worker-images"}:
+        fail("publish-worker-images must wait for merge-gate and build-worker-images")
+    condition = " ".join(str(publish.get("if", "")).split())
+    if not condition.startswith("always()") or (
+        "needs.merge-gate.result == 'success'" not in condition
+    ):
+        fail("publish-worker-images must run only after a green merge-gate")
+    release = step_by_name(
+        publish, "Verify the tested candidates and publish the worker release marker"
+    )
+    if bounded_command(release) != WORKER_PUBLISH_RELEASE:
+        fail(f"publish-worker-images must only run {WORKER_PUBLISH_RELEASE}")
+    if release.get("env", {}).get("WORKER_CANDIDATES") != WORKER_CANDIDATES_REFERENCE:
+        fail(f"publish-worker-images must commit {WORKER_CANDIDATES_REFERENCE}")
+    for step in publish.get("steps", []):
+        run = str(step.get("run", "")) if isinstance(step, dict) else ""
+        if "make " in run or "docker build" in run or " candidates" in run:
+            fail("publish-worker-images runs after the gate and must build nothing")
 
 
 def assert_service_image_imports(jobs: dict[str, Any]) -> None:

@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-23
 
+- Worker images are released per source hash: built once as candidates beside the suites, tested by DinD
+  by digest, and after the gate a same-hash commit only gets its alias marker naming those digests.
+
 - Every Python service image installs its `requirements.lock` before `COPY shared`/`src`, infra-service's
   Ansible collections are exact pins, and `service-image-imports` fails on any image-vs-lock drift.
 
