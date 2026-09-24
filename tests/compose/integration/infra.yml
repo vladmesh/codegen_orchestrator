@@ -62,12 +62,9 @@ services:
 
   # Seed the config read independently by both scheduler processes in this stack.
   system-config-seed:
+    # Built once, by the integration-test-runner service of this file; never pulled.
     image: codegen-orchestrator/integration-test-runner:test
-    build:
-      context: ../../..
-      dockerfile: tests/compose/integration/Dockerfile
-      args:
-        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    pull_policy: never
     environment:
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     command:
@@ -119,12 +116,9 @@ services:
       - infra-test
 
   scheduler-pipeline:
+    # Built once, by the scheduler-infrastructure service of this file; never pulled.
     image: codegen-orchestrator/scheduler:test
-    build:
-      context: ../../..
-      dockerfile: services/scheduler/Dockerfile
-      args:
-        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    pull_policy: never
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000

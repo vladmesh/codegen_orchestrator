@@ -3,6 +3,13 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-24
+
+- CI builds through a per-Dockerfile gha layer cache, bakes the 8 import-check images in parallel, and
+  plans its docker legs and the import check from path filters, so skipped legs take no runner.
+- Docker jobs wait for a 15 s lint job instead of the unit suite, which runs beside them; main runs are
+  never cancelled, so every merge commit gets its service and worker release.
+
 ## 2026-09-23
 
 - Worker images are released per source hash: built once as candidates beside the suites, tested by DinD

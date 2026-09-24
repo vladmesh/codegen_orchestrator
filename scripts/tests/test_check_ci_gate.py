@@ -595,13 +595,14 @@ def test_a_bounded_retry_costs_every_attempt_at_its_bound_plus_kill_after_and_ba
 
 
 def test_the_budget_sums_every_step_up_to_the_bound_and_the_always_steps_after(gate):
-    """test-integration/backend: checkout 2, Buildx 8, two images at 6.5, the tests'
-    10 min plus kill-after, the always() assert 1 and cleanup 2, the 2-minute margin."""
+    """test-integration/backend: checkout 2, Buildx 8, the cache runtime 1 and wiring 1,
+    two images at 6.5, the tests' 10 min plus kill-after, the always() assert 1 and
+    cleanup 2, the 2-minute margin."""
     jobs = gate.load_workflow()["jobs"]
 
-    assert _budget_minutes(gate, jobs, "test-integration", suite="backend") == 38.5
+    assert _budget_minutes(gate, jobs, "test-integration", suite="backend") == 40.5
     # The template leg pulls nothing but sets up uv; its uv step is skipped elsewhere.
-    assert _budget_minutes(gate, jobs, "test-integration", suite="template") == 28.5
+    assert _budget_minutes(gate, jobs, "test-integration", suite="template") == 30.5
 
 
 def test_a_job_whose_worst_case_retries_and_test_bound_exceed_its_limit_fails(gate):
@@ -611,17 +612,17 @@ def test_a_job_whose_worst_case_retries_and_test_bound_exceed_its_limit_fails(ga
     jobs["test-integration"]["timeout-minutes"] = 15
 
     with pytest.raises(
-        SystemExit, match="test-integration suite=backend can take 38.5 minutes .* 15"
+        SystemExit, match="test-integration suite=backend can take 40.5 minutes .* 15"
     ):
         gate.assert_job_timeouts(jobs)
 
 
 def test_the_leg_that_pulls_the_most_images_decides(gate):
     jobs = gate.load_workflow()["jobs"]
-    assert _budget_minutes(gate, jobs, "test-service", service="scheduler") == 48
+    assert _budget_minutes(gate, jobs, "test-service", service="scheduler") == 50
     jobs["test-service"]["timeout-minutes"] = 45
 
-    with pytest.raises(SystemExit, match="test-service service=scheduler can take 48 minutes"):
+    with pytest.raises(SystemExit, match="test-service service=scheduler can take 50 minutes"):
         gate.assert_job_timeouts(jobs)
 
 
@@ -630,7 +631,8 @@ def test_a_longer_retry_attempt_bound_is_counted_three_times(gate):
     pull = gate.step_by_name(jobs["fast-checks"], "Pull Redis image with retry")
     pull["run"] = pull["run"].replace("--attempt-timeout 90s", "--attempt-timeout 300s")
 
-    with pytest.raises(SystemExit, match="fast-checks can take 52.5 minutes"):
+    # The Ruff steps moved to the lint job, so fast-checks counts two minutes fewer.
+    with pytest.raises(SystemExit, match="fast-checks can take 50.5 minutes"):
         gate.assert_job_timeouts(jobs)
 
 
@@ -704,3 +706,223 @@ def test_a_build_after_the_gate_fails_the_gate(gate):
 
     with pytest.raises(SystemExit, match="must build nothing"):
         gate.assert_worker_release_tests_what_ships(jobs)
+
+
+# --- the plan, lint gating, the layer cache and concurrency --------------------
+
+
+def test_the_repository_workflow_meets_the_new_rules(gate):
+    workflow = gate.load_workflow()
+    jobs = workflow["jobs"]
+
+    gate.assert_concurrency(workflow)
+    gate.assert_detect_changes(jobs)
+    gate.assert_lint_gating(jobs)
+    gate.assert_layer_cache(jobs)
+    gate.assert_service_tests(jobs)
+    gate.assert_integration_tests(jobs)
+    gate.assert_gate(jobs)
+
+
+def test_a_workflow_that_cancels_main_runs_fails_the_gate(gate):
+    """A second merge used to cancel the first merge's run, and its release with it."""
+    workflow = gate.load_workflow()
+    workflow["concurrency"] = {
+        "group": "${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
+
+    with pytest.raises(SystemExit, match="concurrency must cancel only a pull request"):
+        gate.assert_concurrency(workflow)
+
+
+@pytest.mark.parametrize(
+    "job_name", ["service-image-imports", "test-service", "template-compatibility"]
+)
+def test_a_docker_job_waiting_for_the_unit_suite_fails_the_gate(gate, job_name):
+    jobs = gate.load_workflow()["jobs"]
+    jobs[job_name]["needs"] = [*jobs[job_name]["needs"], "fast-checks"]
+
+    with pytest.raises(SystemExit, match=f"{job_name} must not wait for the unit suite"):
+        gate.assert_lint_gating(jobs)
+
+
+def test_a_docker_job_that_does_not_wait_for_lint_fails_the_gate(gate):
+    """A lint failure must still stop the heavy fan-out."""
+    jobs = gate.load_workflow()["jobs"]
+    jobs["test-integration"]["if"] = jobs["test-integration"]["if"].replace(
+        "needs.lint.result == 'success' && ", ""
+    )
+
+    with pytest.raises(SystemExit, match="test-integration must run only after needs.lint"):
+        gate.assert_lint_gating(jobs)
+
+
+def test_ruff_outside_the_lint_job_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    step = gate.step_by_name(jobs["lint"], "Lint with Ruff")
+    jobs["lint"]["steps"].remove(step)
+    jobs["fast-checks"]["steps"].insert(3, step)
+
+    with pytest.raises(SystemExit, match="missing step Lint with Ruff"):
+        gate.assert_fast_checks(jobs)
+
+
+def test_a_static_matrix_that_holds_a_runner_per_skipped_leg_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["test-service"]["strategy"]["matrix"] = {
+        "include": [{"service": "api", "should_run": "true"}]
+    }
+
+    with pytest.raises(SystemExit, match="test-service must take its service legs from"):
+        gate.assert_service_tests(jobs)
+
+
+def test_a_matrix_job_that_runs_with_no_planned_leg_fails_the_gate(gate):
+    """fromJSON('[]') is an empty matrix, which GitHub refuses instead of skipping."""
+    jobs = gate.load_workflow()["jobs"]
+    jobs["test-integration"]["if"] = (
+        "needs.lint.result == 'success' && needs.ci-contract.result == 'success'"
+    )
+
+    with pytest.raises(SystemExit, match="must be skipped when the plan has no leg"):
+        gate.assert_integration_tests(jobs)
+
+
+def test_every_planned_leg_is_budgeted_and_claims_its_tests(gate):
+    jobs = gate.load_workflow()["jobs"]
+
+    legs = [leg["service"] for leg in gate.matrix_legs(jobs["test-service"])]
+    claims = gate.claimed_test_paths(jobs)
+
+    assert legs == list(gate.ci_plan.SERVICE_LEGS)
+    assert claims["services/scheduler/tests/service"] == "make test-service SERVICE=scheduler"
+
+
+def test_a_skip_the_gate_accepts_without_the_plan_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    check = gate.step_by_name(jobs["merge-gate"], "Check required jobs")
+    check["run"] = check["run"].replace(
+        'service-image-imports) [ "${PLANNED_SERVICE_IMAGE_IMPORTS}" = "false" ] ;;',
+        "service-image-imports) return 0 ;;",
+    )
+
+    with pytest.raises(SystemExit, match="accept a skipped service-image-imports only when"):
+        gate.assert_gate(jobs)
+
+
+def test_a_skip_read_from_another_output_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    check = gate.step_by_name(jobs["merge-gate"], "Check required jobs")
+    check["env"]["PLANNED_SERVICE_LEGS"] = "[]"
+
+    with pytest.raises(SystemExit, match="read the plan of test-service"):
+        gate.assert_gate(jobs)
+
+
+def test_the_import_check_not_gated_by_the_plan_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    jobs["service-image-imports"]["if"] = (
+        "needs.lint.result == 'success' && needs.ci-contract.result == 'success'"
+    )
+
+    with pytest.raises(SystemExit, match="require lint, ci-contract and the plan"):
+        gate.assert_service_image_imports(jobs)
+
+
+def test_the_import_check_without_the_layer_cache_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    step = gate.step_by_id(jobs["service-image-imports"], "service-image-imports")
+    step["run"] = step["run"].replace(" --layer-cache gha", "")
+
+    with pytest.raises(SystemExit, match="--layer-cache gha"):
+        gate.assert_service_image_imports(jobs)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    ["test-service", "test-integration", "test-backend-dind-integration", "service-image-imports"],
+)
+def test_a_build_without_the_actions_runtime_fails_the_gate(gate, job_name):
+    """Without the runtime token every gha cache read and write is silently skipped."""
+    jobs = gate.load_workflow()["jobs"]
+    job = jobs[job_name]
+    job["steps"].remove(gate.step_by_name(job, "Expose the Actions cache to Buildx"))
+
+    with pytest.raises(SystemExit, match="missing step Expose the Actions cache to Buildx"):
+        gate.assert_layer_cache(jobs)
+
+
+def test_a_test_stack_built_without_its_cache_override_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    del gate.step_by_id(jobs["test-service"], "service-tests")["env"]["TEST_COMPOSE_OVERRIDE"]
+
+    with pytest.raises(SystemExit, match="test-service must hand the cache override"):
+        gate.assert_layer_cache(jobs)
+
+
+def test_a_cache_wired_for_another_compose_file_fails_the_gate(gate):
+    jobs = gate.load_workflow()["jobs"]
+    wiring = gate.step_by_name(
+        jobs["test-integration"], "Wire the layer cache into the test images"
+    )
+    wiring["run"] = wiring["run"].replace("${{ matrix.suite }}", "backend")
+
+    with pytest.raises(SystemExit, match="test-integration must wire the layer cache"):
+        gate.assert_layer_cache(jobs)
+
+
+def test_the_dead_cache_env_fails_the_gate(gate, tmp_path, monkeypatch):
+    workflow = tmp_path / "ci.yml"
+    workflow.write_text(
+        gate.WORKFLOW.read_text() + "\n# BUILDX_CACHE_TO: type=gha,scope=integration\n"
+    )
+    monkeypatch.setattr(gate, "WORKFLOW", workflow)
+
+    with pytest.raises(SystemExit, match="BUILDX_CACHE_FROM is read by nothing|BUILDX_CACHE_TO"):
+        gate.assert_layer_cache(gate.load_workflow()["jobs"])
+
+
+def test_a_make_target_that_drops_the_cache_override_fails_the_gate(gate, tmp_path, monkeypatch):
+    makefile = tmp_path / "Makefile"
+    makefile.write_text(
+        gate.MAKEFILE.read_text().replace(
+            "$(call test_compose_files,tests/compose/integration/$*.yml) up",
+            "-f tests/compose/integration/$*.yml up",
+        )
+    )
+    monkeypatch.setattr(gate, "MAKEFILE", makefile)
+
+    with pytest.raises(SystemExit, match="make test-integration-% runs a test stack without"):
+        gate.assert_layer_cache(gate.load_workflow()["jobs"])
+
+
+def _filters(gate):
+    job = gate.load_workflow()["jobs"]["detect-changes"]
+    import yaml
+
+    return yaml.safe_load(gate.step_by_id(job, "filter")["with"]["filters"])
+
+
+def test_a_service_image_the_import_filter_misses_fails_the_gate(gate):
+    filters = _filters(gate)
+    filters["service-images"].remove("services/worker-broker/**")
+
+    with pytest.raises(SystemExit, match="service-images is missing services/worker-broker"):
+        gate.assert_filter_patterns(filters)
+
+
+def test_a_frontend_in_the_import_filter_fails_the_gate(gate):
+    filters = _filters(gate)
+    filters["service-images"].append("services/admin-frontend/**")
+
+    with pytest.raises(SystemExit, match="leave out the frontend admin-frontend"):
+        gate.assert_filter_patterns(filters)
+
+
+def test_a_plan_trigger_no_filter_defines_fails_the_gate(gate, monkeypatch):
+    legs = {**gate.ci_plan.SERVICE_LEGS, "api": ("api-typo",)}
+    monkeypatch.setitem(gate.PLANNED_MATRICES, "test-service", ("service", "service-legs", legs))
+
+    with pytest.raises(SystemExit, match=r"filters paths-filter does not define: \['api-typo'\]"):
+        gate.assert_filter_patterns(_filters(gate))

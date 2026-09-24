@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts import ci_build_cache, ci_plan  # noqa: E402
+from scripts.check_service_image_imports import SERVICE_IMAGES  # noqa: E402
 from scripts.template_pin import TEMPLATE_PIN  # noqa: E402
 
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -148,6 +151,7 @@ UNPINNED_IMAGE_REFS: dict[str, str] = {}
 
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
+    "lint",
     "fast-checks",
     "service-image-imports",
     "ci-contract",
@@ -156,6 +160,17 @@ EXPECTED_GATE_NEEDS = {
     "template-compatibility",
     "web-checks",
     "test-backend-dind-integration",
+}
+# job -> (the gate's env variable holding the plan, the value that means "nothing planned")
+GATE_PLANNED_SKIPS = {
+    "test-service": ("PLANNED_SERVICE_LEGS", "[]"),
+    "test-integration": ("PLANNED_INTEGRATION_LEGS", "[]"),
+    "service-image-imports": ("PLANNED_SERVICE_IMAGE_IMPORTS", "false"),
+}
+PLANNED_SKIP_OUTPUTS = {
+    "test-service": "service-legs",
+    "test-integration": "integration-legs",
+    "service-image-imports": "service-image-imports",
 }
 EXPECTED_FILTERS = {
     "api",
@@ -171,8 +186,106 @@ EXPECTED_FILTERS = {
     "deps",
     "integration-tests",
     "web",
+    "worker-broker",
+    "scaffolder",
+    "service-images",
 }
-HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
+HYPHENATED_OUTPUTS = {
+    "worker-manager",
+    "infra-service",
+    "docker-test",
+    "integration-tests",
+    "worker-broker",
+    "service-images",
+    "service-legs",
+    "integration-legs",
+    "service-image-imports",
+}
+
+# --- The plan of the docker jobs ------------------------------------------------
+#
+# detect-changes runs scripts/ci_plan.py on the paths-filter result. Its outputs build
+# the two test matrices, so a leg nothing reaches takes no runner, and decide whether the
+# service image import check runs; merge-gate accepts a skip of those jobs only when the
+# plan says so. The tables of ci_plan.py are the legs this contract checks.
+PLAN_STEP_COMMAND = "python3 scripts/ci_plan.py"
+PLAN_OUTPUTS = ("service-legs", "integration-legs", "service-image-imports")
+# job -> (matrix key, detect-changes output that lists its legs, the plan's leg table)
+PLANNED_MATRICES: dict[str, tuple[str, str, dict[str, tuple[str, ...]]]] = {
+    "test-service": ("service", "service-legs", ci_plan.SERVICE_LEGS),
+    "test-integration": ("suite", "integration-legs", ci_plan.INTEGRATION_LEGS),
+}
+PLANNED_MATRIX_VALUE = re.compile(
+    r"^\$\{\{\s*fromJSON\(needs\.detect-changes\.outputs\['(?P<output>[a-z-]+)'\]\)\s*\}\}$"
+)
+# What service-images must reach besides every Python service image's own directory.
+SERVICE_IMAGE_FILTER_PATTERNS = (
+    "shared/**",
+    "packages/**",
+    "docker-compose*.yml",
+    "infra/scripts/service-images.sh",
+    "scripts/check_service_image_imports.py",
+    "scripts/service_image_locks.py",
+    "scripts/ci_build_cache.py",
+)
+FRONTEND_SERVICES = ("admin-frontend", "user-dashboard")
+
+# --- Lint-only gating --------------------------------------------------------------
+#
+# The docker jobs wait for lint (Ruff, seconds) and the contract, not for the unit
+# suite: fast-checks runs beside them and merge-gate still requires it, while a lint
+# failure still stops the heavy fan-out.
+LINT_GATED_JOBS = (
+    "service-image-imports",
+    "test-service",
+    "test-integration",
+    "template-compatibility",
+    "test-backend-dind-integration",
+)
+LINT_GATE_CONDITIONS = ("needs.lint.result == 'success'", "needs.ci-contract.result == 'success'")
+
+# --- Docker layer cache --------------------------------------------------------------
+#
+# Every docker build reads and writes the buildx gha cache of its Dockerfile
+# (scripts/ci_build_cache.py). The gha backend needs the Actions runtime token, which
+# only an action receives, so the runtime action runs before the builds.
+CACHE_RUNTIME_STEP = "Expose the Actions cache to Buildx"
+CACHE_RUNTIME_ACTION = "crazy-max/ghaction-github-runtime"
+CACHE_WIRING_STEP = "Wire the layer cache into the test images"
+CACHE_OVERRIDE_PATH = '"$RUNNER_TEMP/build-cache.yml"'
+CACHE_OVERRIDE_ENV = "${{ runner.temp }}/build-cache.yml"
+# job -> the id of the step that builds through the compose file it pulls for.
+COMPOSE_CACHE_JOBS = {
+    "test-service": "service-tests",
+    "test-integration": "integration-tests",
+    "test-backend-dind-integration": "integration-tests",
+}
+COMPOSE_CACHE_MAKE_TARGETS = (
+    "test-service",
+    "test-integration-%",
+    "test-integration-template-runner",
+)
+COMPOSE_CACHE_MAKE_FUNCTION = (
+    "test_compose_files = -f $(1)$(if $(TEST_COMPOSE_OVERRIDE), -f $(TEST_COMPOSE_OVERRIDE))"
+)
+SERVICE_IMAGE_IMPORTS_COMMAND = (
+    f"python scripts/check_service_image_imports.py --layer-cache {ci_build_cache.BACKEND}"
+)
+# Read by nothing, and so a cache that looked wired while every build ran cold.
+DEAD_CACHE_ENV = ("BUILDX_CACHE_FROM", "BUILDX_CACHE_TO")
+
+# --- Concurrency ----------------------------------------------------------------------
+#
+# A pull request's newer push cancels its older run; any other run, a push to main
+# above all, is a group of its own and runs to completion, so every green merge SHA gets
+# its release.
+CONCURRENCY = {
+    "group": (
+        "${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref "
+        "|| github.run_id }}"
+    ),
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+}
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
 BUILDX_RETRY_ATTEMPTS = 3
 SIMULATED_REGISTRY_FAILURE_INPUT = "simulate_first_attempt_registry_failure"
@@ -230,6 +343,7 @@ INFRA_EXPOSE_CONDITION = "always() && hashFiles('scripts/ci-infra.sh') != ''"
 INFRA_OUTPUT = "infra-marker"
 # job -> the matrix key its legs are named by, or None for a single job.
 INFRA_MARKER_JOBS: dict[str, str | None] = {
+    "lint": None,
     "fast-checks": None,
     "ci-contract": None,
     "service-image-imports": None,
@@ -395,7 +509,23 @@ def step_by_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
     fail(f"missing step id {step_id}")
 
 
+def planned_legs(job: dict[str, Any], key: str) -> list[str] | None:
+    """The legs of a matrix built from a detect-changes plan output, or None when the
+    matrix does not take key from the plan."""
+    value = job.get("strategy", {}).get("matrix", {}).get(key)
+    if value is None or isinstance(value, list):
+        return None
+    match = PLANNED_MATRIX_VALUE.match(str(value))
+    planned = {output: legs for _key, output, legs in PLANNED_MATRICES.values()}
+    if match is None or match["output"] not in planned:
+        fail(f"matrix {key} is neither an include list nor a detect-changes plan output")
+    return list(planned[match["output"]])
+
+
 def matrix_values(job: dict[str, Any], key: str) -> set[str]:
+    legs = planned_legs(job, key)
+    if legs is not None:
+        return set(legs)
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
     if not isinstance(include, list):
         fail(f"job matrix for {key} is not a list")
@@ -432,6 +562,8 @@ def assert_detect_changes(jobs: dict[str, Any]) -> None:
         "Makefile",
         "scripts/test-unit-local.sh",
         "scripts/check-ci-gate.py",
+        "scripts/ci_plan.py",
+        "scripts/ci_build_cache.py",
         "pyproject.toml",
         "uv.lock",
         "shared/**",
@@ -441,23 +573,78 @@ def assert_detect_changes(jobs: dict[str, Any]) -> None:
     ]:
         if pattern not in filters:
             fail(f"paths-filter is missing pattern {pattern}")
+    assert_filter_patterns(yaml.safe_load(filters))
+    assert_plan_step(job)
+
+
+def assert_filter_patterns(filters: dict[str, list[str]]) -> None:
+    """The filters the plan reads exist, and each reaches the sources it is named for."""
+    for name, service in (("worker-broker", "worker-broker"), ("scaffolder", "scaffolder")):
+        if filters.get(name) != [f"services/{service}/**"]:
+            fail(f"paths-filter {name} must match services/{service}/**")
+    service_images = set(filters.get("service-images") or [])
+    image_dirs = {f"{Path(image.dockerfile).parent}/**" for image in SERVICE_IMAGES}
+    for pattern in sorted(image_dirs) + list(SERVICE_IMAGE_FILTER_PATTERNS):
+        if pattern not in service_images:
+            fail(f"paths-filter service-images is missing {pattern}")
+    for frontend in FRONTEND_SERVICES:
+        if any(pattern.startswith(f"services/{frontend}/") for pattern in service_images):
+            fail(f"paths-filter service-images must leave out the frontend {frontend}")
+    used = {
+        trigger
+        for _key, _output, legs in PLANNED_MATRICES.values()
+        for triggers in legs.values()
+        for trigger in triggers
+    } | set(ci_plan.SERVICE_IMAGE_IMPORT_TRIGGERS)
+    unknown = used - set(filters)
+    if unknown:
+        fail(f"scripts/ci_plan.py reads filters paths-filter does not define: {sorted(unknown)}")
+
+
+def assert_plan_step(job: dict[str, Any]) -> None:
+    """detect-changes hands the paths-filter result to ci_plan.py and exposes its plan."""
+    steps = job.get("steps", [])
+    plan = step_by_id(job, "plan")
+    if plan.get("run") != PLAN_STEP_COMMAND:
+        fail(f"detect-changes must plan the docker jobs with {PLAN_STEP_COMMAND}")
+    if steps.index(plan) < steps.index(step_by_id(job, "filter")):
+        fail("detect-changes must plan after the paths filter ran")
+    if plan.get("env") != {
+        "CHANGES": "${{ steps.filter.outputs.changes }}",
+        "EVENT_NAME": "${{ github.event_name }}",
+    }:
+        fail("the plan must read the paths-filter changes and the event name")
+    for output in PLAN_OUTPUTS:
+        if job.get("outputs", {}).get(output) != f"${{{{ steps.plan.outputs['{output}'] }}}}":
+            fail(f"detect-changes must expose the plan output {output}")
+    if ci_plan.plan(set(), "push")["service-image-imports"] != "true":
+        fail("a push to main must always run the service image import check")
+    everything = ci_plan.plan(set(), "workflow_dispatch")
+    for _key, output, legs in PLANNED_MATRICES.values():
+        if json.loads(everything[output]) != list(legs):
+            fail(f"workflow_dispatch must run every leg of {output}")
 
 
 def assert_fast_checks(jobs: dict[str, Any]) -> None:
+    lint = require_job(jobs, "lint")
     job = require_job(jobs, "fast-checks")
     expected_lint_commands: list[str] = []
-    for step_name, command in [
-        ("Check formatting with Ruff", "uv run ruff format --check ."),
-        ("Lint with Ruff", "uv run ruff check ."),
-        ("Run unit tests", "make test-unit"),
+    for step_job, step_name, command in [
+        (lint, "Check formatting with Ruff", "uv run ruff format --check ."),
+        (lint, "Lint with Ruff", "uv run ruff check ."),
+        (job, "Run unit tests", "make test-unit"),
     ]:
-        step = step_by_name(job, step_name)
+        step = step_by_name(step_job, step_name)
         if step.get("if"):
             fail(f"{step_name} must not be conditional")
         if step.get("run") != command:
             fail(f"{step_name} must run {command}")
-        if step_name in {"Check formatting with Ruff", "Lint with Ruff"}:
+        if step_job is lint:
             expected_lint_commands.append(command)
+    if lint.get("needs") or lint.get("if"):
+        fail("lint must start with the run: the docker jobs wait for it")
+    if "lint" in as_list(job.get("needs")):
+        fail("fast-checks must run beside the docker jobs, not after lint")
     lint_commands = [normalize_lint_command(command) for command in make_target_commands("lint")]
     positions = []
     for command in expected_lint_commands:
@@ -480,6 +667,35 @@ def assert_fast_checks(jobs: dict[str, Any]) -> None:
         for candidate in job.get("steps", []):
             if isinstance(candidate, dict) and candidate.get("name") == stale_step:
                 fail(f"fast-checks must not enumerate {stale_step}")
+
+
+def as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def assert_lint_gating(jobs: dict[str, Any]) -> None:
+    """The docker jobs wait for lint and the contract, never for the unit suite."""
+    for job_name in LINT_GATED_JOBS:
+        job = require_job(jobs, job_name)
+        needs = as_list(job.get("needs"))
+        condition = " ".join(str(job.get("if", "")).split())
+        if "lint" not in needs or "ci-contract" not in needs:
+            fail(f"{job_name} must wait for lint and ci-contract")
+        if "fast-checks" in needs or "needs.fast-checks" in condition:
+            fail(f"{job_name} must not wait for the unit suite: fast-checks runs beside it")
+        for required in LINT_GATE_CONDITIONS:
+            if required not in condition:
+                fail(f"{job_name} must run only after {required}")
+
+
+def assert_concurrency(workflow: dict[str, Any]) -> None:
+    if workflow.get("concurrency") != CONCURRENCY:
+        fail(
+            "concurrency must cancel only a pull request's older run: every other run is "
+            f"a group of its own and runs to completion ({CONCURRENCY})"
+        )
 
 
 def assert_offline_live_unit_runner() -> None:
@@ -946,13 +1162,31 @@ def assert_pinned_base_images() -> None:
         )
 
 
+def assert_planned_matrix(jobs: dict[str, Any], job_name: str) -> None:
+    """The job's legs are the plan's, and a job with no planned leg is skipped whole."""
+    job = require_job(jobs, job_name)
+    key, output, legs = PLANNED_MATRICES[job_name]
+    matrix = job.get("strategy", {}).get("matrix", {})
+    if set(matrix) != {key} or planned_legs(job, key) is None:
+        fail(f"{job_name} must take its {key} legs from detect-changes output {output}")
+    if f"needs.detect-changes.outputs['{output}'] != '[]'" not in " ".join(
+        str(job.get("if", "")).split()
+    ):
+        fail(f"{job_name} must be skipped when the plan has no leg for it")
+    if "detect-changes" not in as_list(job.get("needs")):
+        fail(f"{job_name} must wait for detect-changes, whose plan it runs")
+    for step in job.get("steps", []):
+        if isinstance(step, dict) and "should_run" in str(step.get("if", "")):
+            fail(f"{job_name} has no leg it does not run: no step may test should_run")
+    for leg, triggers in legs.items():
+        for trigger in ci_plan.COMMON_TRIGGERS if leg != "template" else ():
+            if trigger not in triggers:
+                fail(f"{job_name} leg {leg} is missing common trigger {trigger}")
+
+
 def assert_service_tests(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "test-service")
-    if (
-        job.get("if")
-        != "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
-    ):
-        fail("service tests must require fast-checks and ci-contract")
+    assert_planned_matrix(jobs, "test-service")
     if matrix_values(job, "service") != compose_suites(SERVICE_COMPOSE_DIR):
         fail("service test matrix does not match tests/compose/service")
     if set(SERVICE_COMPOSE_ROOTS) != compose_suites(SERVICE_COMPOSE_DIR):
@@ -960,27 +1194,19 @@ def assert_service_tests(jobs: dict[str, Any]) -> None:
     run_step = step_by_id(job, "service-tests")
     if bounded_command(run_step) != "make test-service SERVICE=${{ matrix.service }}":
         fail("service tests must call make test-service")
-    if run_step.get("if") != "matrix.should_run == 'true'":
-        fail("service test command must be guarded by matrix.should_run")
+    if run_step.get("if"):
+        fail("service test command must run in every leg the plan created")
     assert_buildx_retry(job)
     assert_step = step_by_name(job, "Assert required service test ran")
     if "steps.service-tests.outcome" not in assert_step.get("run", ""):
         fail("service tests must assert the test step outcome")
     if "always()" not in assert_step.get("if", ""):
         fail("service test assertion must run with always()")
-    matrix_text = yaml.dump(job.get("strategy", {}), sort_keys=True)
-    for output in ["shared", "packages", "docker-test", "ci", "deps", "integration-tests"]:
-        if output_reference(output) not in matrix_text:
-            fail(f"service matrix is missing common trigger {output}")
 
 
 def assert_integration_tests(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "test-integration")
-    if (
-        job.get("if")
-        != "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
-    ):
-        fail("integration tests must require fast-checks and ci-contract")
+    assert_planned_matrix(jobs, "test-integration")
     expected_suites = compose_suites(INTEGRATION_COMPOSE_DIR) - set(OUT_OF_PR_INTEGRATION_SUITES)
     if matrix_values(job, "suite") != expected_suites:
         fail("integration matrix does not match tests/compose/integration")
@@ -995,30 +1221,18 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
     run_step = step_by_id(job, "integration-tests")
     if bounded_command(run_step) != "make test-integration-${{ matrix.suite }}":
         fail("integration tests must call make test-integration-<suite>")
+    if run_step.get("if"):
+        fail("integration test command must run in every leg the plan created")
     assert_buildx_retry(job)
     assert_step = step_by_name(job, "Assert required integration test ran")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
         fail("integration tests must assert the test step outcome")
-    matrix_text = yaml.dump(job.get("strategy", {}), sort_keys=True)
-    for output in ["shared", "packages", "docker-test", "ci", "deps", "integration-tests"]:
-        if output_reference(output) not in matrix_text:
-            fail(f"integration matrix is missing common trigger {output}")
-    include = job.get("strategy", {}).get("matrix", {}).get("include", [])
-    for item in include:
-        if not isinstance(item, dict):
-            fail("integration matrix contains a non-mapping item")
-        if "github.event_name == 'workflow_dispatch'" not in item.get("should_run", ""):
-            fail(f"workflow_dispatch does not enable integration suite {item.get('suite')}")
-    backend = next(
-        (item for item in include if isinstance(item, dict) and item.get("suite") == "backend"),
-        None,
-    )
-    if not isinstance(backend, dict):
+    backend_triggers = ci_plan.INTEGRATION_LEGS.get("backend")
+    if backend_triggers is None:
         fail("integration matrix is missing backend")
-    backend_triggers = backend.get("should_run", "")
-    for output in ["api", "langgraph", "shared", "packages", "docker-test", "integration-tests"]:
-        if output_reference(output) not in backend_triggers:
-            fail(f"backend integration matrix is missing trigger {output}")
+    for trigger in ["api", "langgraph", "shared", "packages", "docker-test", "integration-tests"]:
+        if trigger not in backend_triggers:
+            fail(f"backend integration matrix is missing trigger {trigger}")
 
 
 def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
@@ -1030,18 +1244,15 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     It needs ``build-worker-images`` too, because what it tests is that job's candidates.
     """
     job = require_job(jobs, "test-backend-dind-integration")
-    if job.get("needs") != ["fast-checks", "ci-contract", "build-worker-images"]:
-        fail(
-            "backend Docker-in-Docker job must wait for fast-checks, ci-contract and "
-            "build-worker-images"
-        )
+    if job.get("needs") != ["lint", "ci-contract", "build-worker-images"]:
+        fail("backend Docker-in-Docker job must wait for lint, ci-contract and build-worker-images")
     condition = " ".join(str(job.get("if", "")).split())
     for required in (
         "always()",
         "github.event_name == 'push'",
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
-        "needs.fast-checks.result == 'success'",
+        "needs.lint.result == 'success'",
         "needs.ci-contract.result == 'success'",
         "needs.build-worker-images.result == 'success'",
     ):
@@ -1119,11 +1330,14 @@ def assert_worker_release_tests_what_ships(jobs: dict[str, Any]) -> None:
 def assert_service_image_imports(jobs: dict[str, Any]) -> None:
     """Every production service image must import its entry module before merge."""
     job = require_job(jobs, "service-image-imports")
-    if job.get("needs") != ["fast-checks", "ci-contract"]:
-        fail("service image imports must wait for fast-checks and ci-contract")
-    condition = "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
-    if job.get("if") != condition:
-        fail("service image imports must require fast-checks and ci-contract")
+    if job.get("needs") != ["detect-changes", "lint", "ci-contract"]:
+        fail("service image imports must wait for detect-changes, lint and ci-contract")
+    condition = (
+        "needs.lint.result == 'success' && needs.ci-contract.result == 'success' "
+        "&& needs.detect-changes.outputs['service-image-imports'] == 'true'"
+    )
+    if " ".join(str(job.get("if", "")).split()) != condition:
+        fail("service image imports must require lint, ci-contract and the plan")
     python = step_by_name(job, "Set up Python")
     if action_name(python.get("uses", "")) != "actions/setup-python":
         fail("service image imports must set up Python")
@@ -1134,10 +1348,54 @@ def assert_service_image_imports(jobs: dict[str, Any]) -> None:
         fail("service image imports must install its pinned Compose and lock parsers")
     assert_buildx_retry(job)
     step = step_by_id(job, "service-image-imports")
-    if bounded_command(step) != "python scripts/check_service_image_imports.py":
-        fail("service image imports must run the production-image import check")
+    if bounded_command(step) != SERVICE_IMAGE_IMPORTS_COMMAND:
+        fail(f"service image imports must run {SERVICE_IMAGE_IMPORTS_COMMAND}")
     if step.get("continue-on-error"):
         fail("service image imports must fail the job they belong to")
+
+
+def assert_cache_runtime_before(job_name: str, job: dict[str, Any], step: dict[str, Any]) -> None:
+    runtime = step_by_name(job, CACHE_RUNTIME_STEP)
+    if action_name(runtime.get("uses", "")) != CACHE_RUNTIME_ACTION or runtime.get("if"):
+        fail(f"{job_name} must expose the Actions runtime with {CACHE_RUNTIME_ACTION}")
+    steps = job.get("steps", [])
+    if steps.index(runtime) > steps.index(step):
+        fail(f"{job_name} must expose the Actions runtime before it builds")
+
+
+def assert_layer_cache(jobs: dict[str, Any]) -> None:
+    """Every docker build of a test or import job goes through the per-Dockerfile cache."""
+    workflow_text = WORKFLOW.read_text()
+    for name in DEAD_CACHE_ENV:
+        if name in workflow_text:
+            fail(f"{name} is read by nothing; wire the cache through scripts/ci_build_cache.py")
+    for job_name, test_step_id in COMPOSE_CACHE_JOBS.items():
+        job = require_job(jobs, job_name)
+        steps = job.get("steps", [])
+        tests = step_by_id(job, test_step_id)
+        wiring = step_by_name(job, CACHE_WIRING_STEP)
+        compose = PULL_IMAGES_COMMANDS[job_name].partition(" --step pull-images ")[2]
+        expected = (
+            f"python3 scripts/ci_build_cache.py compose-override {compose} {CACHE_OVERRIDE_PATH}"
+        )
+        if wiring.get("run") != expected or wiring.get("if"):
+            fail(f"{job_name} must wire the layer cache of its compose file: {expected}")
+        if steps.index(wiring) > steps.index(tests):
+            fail(f"{job_name} must wire the layer cache before it builds")
+        assert_cache_runtime_before(job_name, job, wiring)
+        if tests.get("env", {}).get("TEST_COMPOSE_OVERRIDE") != CACHE_OVERRIDE_ENV:
+            fail(f"{job_name} must hand the cache override to make as TEST_COMPOSE_OVERRIDE")
+    imports = require_job(jobs, "service-image-imports")
+    assert_cache_runtime_before(
+        "service-image-imports", imports, step_by_id(imports, "service-image-imports")
+    )
+    makefile = MAKEFILE.read_text()
+    if COMPOSE_CACHE_MAKE_FUNCTION not in makefile.splitlines():
+        fail("the Makefile must merge TEST_COMPOSE_OVERRIDE into every test stack")
+    for target in COMPOSE_CACHE_MAKE_TARGETS:
+        for command in make_target_commands(target):
+            if "docker compose" in command and " -f tests/compose/" in command:
+                fail(f"make {target} runs a test stack without $(call test_compose_files,...)")
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
@@ -1320,7 +1578,7 @@ def assert_infra_marker_exposed(jobs: dict[str, Any]) -> None:
 
 def assert_download_retries(jobs: dict[str, Any]) -> None:
     """The downloads a job starts with are retried, and name exhaustion as infra."""
-    for job_name in ["fast-checks", "ci-contract"]:
+    for job_name in ["lint", "fast-checks", "ci-contract"]:
         if step_by_name(require_job(jobs, job_name), "Install uv").get("run") != (
             INSTALL_UV_COMMAND
         ):
@@ -1416,6 +1674,13 @@ def external_image_count(compose_file: Path) -> int:
 
 
 def matrix_legs(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every leg the job can have; for a planned matrix, every leg the plan knows."""
+    for key in job.get("strategy", {}).get("matrix", {}):
+        if key in {"include", "exclude"}:
+            continue
+        legs = planned_legs(job, key)
+        if legs is not None:
+            return [{key: leg} for leg in legs]
     include = job.get("strategy", {}).get("matrix", {}).get("include")
     if include is None:
         return [{}]
@@ -1599,6 +1864,15 @@ def assert_gate(jobs: dict[str, Any]) -> None:
         fail("merge-gate must fail non-success upstream results")
     if check_step.get("env", {}).get("NEEDS_JSON") != "${{ toJSON(needs) }}":
         fail("merge-gate must read every needed job's outputs from toJSON(needs)")
+    for job_name, (variable, planned_nothing) in GATE_PLANNED_SKIPS.items():
+        output = PLANNED_SKIP_OUTPUTS[job_name]
+        if check_step.get("env", {}).get(variable) != (
+            f"${{{{ needs.detect-changes.outputs['{output}'] }}}}"
+        ):
+            fail(f"merge-gate must read the plan of {job_name} as {variable}")
+        rule = f'{job_name}) [ "${{{variable}}}" = "{planned_nothing}" ] ;;'
+        if rule not in script:
+            fail(f"merge-gate must accept a skipped {job_name} only when the plan says so")
     if INFRA_MARKER_PATTERN not in script:
         fail("merge-gate must repeat every infrastructure marker of its needs")
     if INFRA_MARKER_ANNOTATION not in script or "GITHUB_STEP_SUMMARY" not in script:
@@ -1636,8 +1910,10 @@ def main() -> None:
     for name in SIMULATION_INPUTS:
         if name not in dispatch_inputs:
             fail(f"workflow_dispatch must expose the Buildx simulation input {name}")
+    assert_concurrency(workflow)
     assert_detect_changes(jobs)
     assert_fast_checks(jobs)
+    assert_lint_gating(jobs)
     assert_offline_live_make_target()
     assert_offline_live_unit_runner()
     assert_service_tests(jobs)
@@ -1646,6 +1922,7 @@ def main() -> None:
     assert_pinned_base_images()
     assert_backend_dind_integration(jobs)
     assert_service_image_imports(jobs)
+    assert_layer_cache(jobs)
     assert_template_compatibility(jobs)
     assert_gate(jobs)
     assert_pinned_actions()

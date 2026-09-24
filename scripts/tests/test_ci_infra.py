@@ -803,6 +803,7 @@ def test_a_failing_dind_test_stays_a_product_failure(runner):
 
 GATE_NEEDS = [
     "detect-changes",
+    "lint",
     "fast-checks",
     "ci-contract",
     "service-image-imports",
@@ -814,21 +815,46 @@ GATE_NEEDS = [
 ]
 
 
-def _run_gate(runner, results, outputs=None):
+# What detect-changes planned for a pull request that runs every docker job.
+PLANNED_EVERYTHING = {
+    "service-legs": '["api", "langgraph"]',
+    "integration-legs": '["backend"]',
+    "service-image-imports": "true",
+}
+# The same plan for a pull request that reaches no docker job.
+PLANNED_NOTHING = {"service-legs": "[]", "integration-legs": "[]", "service-image-imports": "false"}
+
+
+def _run_gate(runner, results, outputs=None, plan=None, ref="refs/pull/1/merge"):
     outputs = outputs or {}
     needs = {
         job: {"result": results.get(job, "success"), "outputs": outputs.get(job, {})}
         for job in GATE_NEEDS
     }
+    needs["detect-changes"]["outputs"].update(PLANNED_EVERYTHING if plan is None else plan)
     gate = _step(_jobs()["merge-gate"], name="Check required jobs")
     context = {f"needs.{job}.result": needs[job]["result"] for job in GATE_NEEDS}
     script = _render(gate["run"], context)
     assert gate["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+    planned = {
+        name: _render(
+            value,
+            {
+                f"needs.detect-changes.outputs['{output}']": needs["detect-changes"]["outputs"][
+                    output
+                ]
+                for output in PLANNED_EVERYTHING
+            },
+        )
+        for name, value in gate["env"].items()
+        if name.startswith("PLANNED_")
+    }
     return runner.run(
         script,
         NEEDS_JSON=json.dumps(needs, indent=2),
-        GITHUB_REF="refs/pull/1/merge",
+        GITHUB_REF=ref,
         GITHUB_JOB="merge-gate",
+        **planned,
     )
 
 
@@ -839,6 +865,83 @@ def test_the_gate_passes_when_everything_succeeded(runner):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "CI-INFRA-FAILURE" not in result.stdout + runner.summary.read_text()
+
+
+def test_the_gate_passes_the_jobs_the_plan_left_out(runner):
+    """A pull request that reaches no image or suite skips them, and that skip is green."""
+    skipped = ["test-service", "test-integration", "service-image-imports"]
+
+    result = _run_gate(
+        runner,
+        dict.fromkeys([*skipped, "web-checks", "test-backend-dind-integration"], "skipped"),
+        plan=PLANNED_NOTHING,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("job", ["test-service", "test-integration", "service-image-imports"])
+def test_the_gate_fails_a_skip_the_plan_did_not_make(runner, job):
+    """Skipped although the plan wanted it run: lint went red, or the job was cut."""
+    result = _run_gate(
+        runner,
+        {job: "skipped", "web-checks": "skipped", "test-backend-dind-integration": "skipped"},
+    )
+
+    assert result.returncode == 1
+    assert f"{job}: skipped" in result.stdout
+    assert "Required CI gate failed" in result.stdout
+
+
+@pytest.mark.parametrize("job", ["test-service", "test-integration", "service-image-imports"])
+def test_the_gate_fails_a_skip_when_there_is_no_plan(runner, job):
+    """detect-changes failed, so no output says the skip was planned."""
+    result = _run_gate(
+        runner,
+        {
+            job: "skipped",
+            "detect-changes": "failure",
+            "web-checks": "skipped",
+            "test-backend-dind-integration": "skipped",
+        },
+        plan={"service-legs": "", "integration-legs": "", "service-image-imports": ""},
+    )
+
+    assert result.returncode == 1
+
+
+def test_the_gate_requires_the_import_check_on_main(runner):
+    """On main the plan always runs the import check, so its skip is never planned there."""
+    result = _run_gate(
+        runner,
+        {"service-image-imports": "skipped"},
+        plan={**PLANNED_NOTHING, "service-image-imports": "true"},
+        ref="refs/heads/main",
+    )
+
+    assert result.returncode == 1
+
+
+def test_the_gate_fails_a_skipped_dind_suite_on_main(runner):
+    """The DinD suite is mandatory on main before a worker release can be published."""
+    result = _run_gate(
+        runner,
+        {"web-checks": "skipped", "test-backend-dind-integration": "skipped"},
+        ref="refs/heads/main",
+    )
+
+    assert result.returncode == 1
+    assert "test-backend-dind-integration: skipped" in result.stdout
+
+
+def test_the_gate_fails_on_a_lint_failure(runner):
+    result = _run_gate(
+        runner,
+        {"lint": "failure", "web-checks": "skipped", "test-backend-dind-integration": "skipped"},
+    )
+
+    assert result.returncode == 1
+    assert "lint: failure" in result.stdout
 
 
 def test_the_gate_fails_and_carries_the_marker_of_an_infra_failure(runner):
