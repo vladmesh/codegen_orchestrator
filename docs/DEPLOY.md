@@ -9,6 +9,11 @@
   `DEPLOY_PATH`, `SECRETS_PATH` and `COMPOSE_ARGS` (an extra `-f <absolute path>` override
   for host-specific mounts, such as a rootless daemon's socket); the defaults are the
   values above
+- `HOST_UID` / `HOST_GID` (environment variables, default `1000`): the uid:gid the api
+  container runs as. The deploy writes the GitHub App key with mode 0600 owned by the SSH
+  user, so the api has to run as that user: its uid on a root daemon, `0` on a rootless
+  daemon (container root is the rootless user). The deploy fails after `up` when the api
+  cannot read the key
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
@@ -343,7 +348,7 @@ interchangeable:
 
 - `GH_APP_PRIVATE_KEY` — the GitHub secret, holding the PEM itself.
 - `GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem` — the host path the deploy writes that PEM to
-  (mode 0600).
+  (mode 0600, owned by the SSH user; the api reads it as `HOST_UID`, see Server Prerequisites).
 - `GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem` — the in-container path the service
   reads.
 
