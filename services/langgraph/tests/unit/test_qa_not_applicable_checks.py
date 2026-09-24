@@ -51,6 +51,7 @@ class _Service:
 
 class _Said:
     evidence = "scripted executor"
+    attempt = None
 
 
 async def _never_runs(*_args, **_kwargs):

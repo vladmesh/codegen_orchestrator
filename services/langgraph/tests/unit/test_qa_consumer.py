@@ -864,6 +864,7 @@ class TestHealthOnlyCriteriaRouting:
         run_data = completed_call[1]["json"]
         assert run_data["status"] == RunStatus.COMPLETED.value
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
+        assert run_data["qa_accounting"]["executor_started"] is False
 
     @respx.mock
     @pytest.mark.asyncio
@@ -1026,6 +1027,22 @@ class TestHealthOnlyCriteriaRouting:
 
 
 class TestProcessQAJobEdgeCases:
+    @pytest.mark.asyncio
+    async def test_exception_after_executor_create_reports_started_unknown(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        def fail_after_create(**kwargs):
+            kwargs["attempts"].record_start(1)
+            raise RuntimeError("redis failed after create")
+
+        with patch("src.consumers.qa.run_qa_centrally", side_effect=fail_after_create):
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        accounting = mock_api_client.patch.call_args.kwargs["json"]["qa_accounting"]
+        assert accounting["executor_started"] is True
+        assert accounting["attempt"]["cost_source"] == "unknown"
+
     @pytest.mark.asyncio
     async def test_unexpected_exception_stores_unknown_blocker(
         self, mock_api_client, mock_redis, qa_message_data

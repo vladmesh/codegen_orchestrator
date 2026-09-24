@@ -118,6 +118,14 @@ Canonical model: `shared/contracts/dto/engineering_attempt.py`.
 `engineering_attempt_ledger` records one terminal coding-agent attempt under
 the stable `engineering-run:{run_id}` identity. The terminal Run writer holds
 the Run lock while it writes the ledger, so redelivery retains the first fact.
+Engineering Runs always write a row. QA Runs reserve on paid admission and
+send `qa_accounting` on terminal update: an executor start writes `role=qa`
+and settles reported cost or retains an unknown-final hold; no start releases
+the hold without spend. A missing QA fact also releases the hold and logs a
+warning. An in-flight QA Run admitted before reservations existed has no hold
+or spend to settle. The QA consumer counts every published executor create in
+one Run; it reports the sum only when every start has typed provider facts,
+and otherwise reports unknown cost.
 Money is integer micro-USD, never float. Unknown cost is null, not zero; a
 provider-reported cost must name both a provider and an amount. A project
 deletion detaches relationship ids from accounting history without deleting the
@@ -882,7 +890,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Task action requests | `services/api/src/schemas/actions.py` | `routers/_task_actions.py` | actions use admission and do not bypass paid-run ownership |
 | Run create/type/status | `shared/contracts/dto/run.py` | `schemas/run.py`, `routers/runs.py` | terminal transitions are guarded by the Run owner and lock |
 | Typed run results | `shared/contracts/dto/run_result.py` | `schemas/run.py`, deploy/QA consumers | only the owning terminal writer may set its typed result; readers reject a mismatched or untyped shape |
-| Engineering attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by engineering Run |
+| Engineering and QA attempt ledger input | `shared/contracts/dto/engineering_attempt.py` | `schemas/run.py`, `routers/runs.py` | terminal ledger fact is idempotent by Run |
 | Owner notification | `shared/contracts/dto/owner_notification.py` | `schemas/story.py`, `routers/stories.py` | persist notification obligation before PO publish; retry from that record |
 | Lifecycle-wait moves | `shared/contracts/dto/lifecycle_wait.py` | `routers/_resource_wait_actions.py`, `routers/_story_actions.py` | the move and its owed owner notice on the deciding Run commit in one transaction; the API mints the record's facts |
 

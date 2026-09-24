@@ -7,7 +7,7 @@ import uuid
 from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
 
 # The create schema is the contract; the API validates against that same object
 # rather than a look-alike of its own.
@@ -71,3 +71,4 @@ class RunUpdate(BaseModel):
     # Only terminal engineering updates may supply this. The API persists it in
     # the same locked transaction as the terminal Run transition.
     engineering_attempt: EngineeringAttemptLedgerInput | None = None
+    qa_accounting: QAAccountingFact | None = None

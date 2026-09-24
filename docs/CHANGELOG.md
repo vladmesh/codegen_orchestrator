@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- Langgraph's service QA executor fixture now records a published start, so write-guard tests exercise QA accounting after executor creation.
+- QA Run accounting now totals every started executor attempt and marks post-start errors unknown; unlimited engineering replays recheck controls.
+- QA executor Runs now reserve the owner's promo budget and settle provider cost into the shared ledger; health-only QA releases its hold without spend.
 - New stand suite `mega-live`: `TestFullPipeline`'s two-story lifecycle with a real developer and QA executor,
   asserting provider-reported settlement; `mega-llm`, `matrix` and `TestFullPipelineLLM` are removed.
 - One contract test bans `pytest.skip` in `tests/live` outside a named environment-precondition allowlist;

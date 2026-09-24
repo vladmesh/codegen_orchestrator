@@ -26,8 +26,10 @@ from dataclasses import dataclass
 import json
 import uuid
 
+from pydantic import ValidationError
 import redis.asyncio as redis
 
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -68,11 +70,19 @@ class QAExecutorUnavailable(Exception):
     detail would be the last chance anybody had to read it.
     """
 
-    def __init__(self, detail: str, *, transient: bool, transcript: str | None = None) -> None:
+    def __init__(
+        self,
+        detail: str,
+        *,
+        transient: bool,
+        transcript: str | None = None,
+        attempt: EngineeringAttemptLedgerInput | None = None,
+    ) -> None:
         super().__init__(detail)
         self.detail = detail
         self.transient = transient
         self.transcript = transcript
+        self.attempt = attempt
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,7 @@ class QAExecutorRun:
     calls_served: int
     detail: str
     transcript: str = ""
+    attempt: EngineeringAttemptLedgerInput | None = None
 
 
 # Substrings in a worker-manager failure that mean "this host's agent session is
@@ -115,6 +126,7 @@ async def run_qa_executor(
     verdict_received: asyncio.Event,
     calls_served: Callable[[], int],
     timeout: int,
+    on_create_published: Callable[[], None],
 ) -> QAExecutorRun:
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
@@ -138,6 +150,8 @@ async def run_qa_executor(
         calls_served: the endpoint's live call counter, read after the run to
             tell "no executor ran" from "an executor ran and said nothing".
         timeout: seconds the executor is given to reach a verdict.
+        on_create_published: records a paid start immediately after the broker
+            accepts the create command, even if any later operation fails.
 
     Raises:
         QAExecutorUnavailable: no executor ran at all.
@@ -188,6 +202,7 @@ async def run_qa_executor(
         )
         await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
         created = True
+        on_create_published()
         logger.info("qa_executor_requested", worker_id=worker_id, agent_type=agent_type.value)
 
         ack = await _wait_for_response(
@@ -225,7 +240,7 @@ async def run_qa_executor(
         )
         logger.info("qa_executor_started", worker_id=worker_id, timeout=timeout)
 
-        transcript = await _await_verdict_or_exit(
+        transcript, attempt = await _await_verdict_or_exit(
             redis_client=redis_client,
             group_name=group_name,
             consumer_id=consumer_id,
@@ -244,12 +259,14 @@ async def run_qa_executor(
                 f"{transcript[:1000] or 'no output'}",
                 transient=True,
                 transcript=transcript,
+                attempt=attempt,
             )
         return QAExecutorRun(
             verdict_submitted=verdict_received.is_set(),
             calls_served=served,
             detail=f"{agent_type.value} executor {worker_id}",
             transcript=transcript,
+            attempt=attempt,
         )
     finally:
         if created:
@@ -281,7 +298,7 @@ async def _await_verdict_or_exit(
     worker_id: str,
     verdict_received: asyncio.Event,
     timeout: int,
-) -> str:
+) -> tuple[str, EngineeringAttemptLedgerInput | None]:
     """Wait for the run's answer, or for the container to stop having one.
 
     Two things end a run and they arrive over different channels: the verdict on
@@ -317,20 +334,32 @@ async def _await_verdict_or_exit(
             await asyncio.wait({output_task}, timeout=VERDICT_GRACE_S)
         elif output_task in done and not verdict_task.done():
             await asyncio.wait({verdict_task}, timeout=VERDICT_GRACE_S)
-        return _transcript_of(output_task)
+        return _output_of(output_task)
     finally:
         for task in (verdict_task, output_task):
             task.cancel()
 
 
-def _transcript_of(output_task: asyncio.Task) -> str:
+def _output_of(output_task: asyncio.Task) -> tuple[str, EngineeringAttemptLedgerInput | None]:
     """The container's own account of the run, if it produced one."""
     if not output_task.done() or output_task.cancelled():
-        return ""
+        return "", None
     try:
         payload = output_task.result()
     except Exception as exc:  # noqa: BLE001 — a poison payload is still evidence
-        return f"worker output could not be read: {exc}"
+        return f"worker output could not be read: {exc}", None
     if not payload:
-        return ""
-    return json.dumps(payload)[:20000]
+        return "", None
+    attempt = None
+    if isinstance(payload, dict):
+        evidence = {
+            field: payload[field]
+            for field in ("claude_evidence", "factory_evidence")
+            if field in payload and payload[field] is not None
+        }
+        if evidence:
+            try:
+                attempt = EngineeringAttemptLedgerInput.model_validate(evidence)
+            except ValidationError as exc:
+                logger.warning("qa_executor_evidence_invalid", errors=exc.error_count())
+    return json.dumps(payload)[:20000], attempt

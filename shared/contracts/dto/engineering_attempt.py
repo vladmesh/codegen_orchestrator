@@ -198,3 +198,18 @@ class EngineeringAttemptLedgerInput(BaseModel):
         elif not self.provider or self.cost_microusd is None:
             raise ValueError("provider_reported cost requires provider and cost_microusd")
         return self
+
+
+class QAAccountingFact(BaseModel):
+    """Terminal QA observation made by the consumer, independent of the verdict."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    executor_started: bool
+    attempt: EngineeringAttemptLedgerInput | None = None
+
+    @model_validator(mode="after")
+    def _no_facts_without_executor(self) -> "QAAccountingFact":
+        if not self.executor_started and self.attempt is not None:
+            raise ValueError("an executor that did not start cannot report provider facts")
+        return self
