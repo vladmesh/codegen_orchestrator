@@ -394,7 +394,9 @@ def _writing_executor(deployed_url: str):
         verdict_received,
         calls_served,
         timeout,
+        on_create_published,
     ):
+        on_create_published()
         async with aiohttp.ClientSession() as session:
             await session.post(
                 capability_url,
@@ -516,7 +518,10 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
             redis,
         )
 
-    persisted = api_client.patch.await_args_list[-1].kwargs["json"]["result"]
+    terminal = api_client.patch.await_args_list[-1].kwargs["json"]
+    assert terminal["qa_accounting"]["executor_started"] is True
+    assert terminal["qa_accounting"]["attempt"]["cost_source"] == "unknown"
+    persisted = terminal["result"]
     result = QARunResult.model_validate(persisted)
     assert result.qa_outcome.value == "blocked"
     assert result.blocker is not None
