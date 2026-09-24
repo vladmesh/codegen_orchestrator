@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-import subprocess
 
 import pytest
 import yaml
@@ -29,6 +28,7 @@ from scripts.service_release import (
     readback,
     rotate_previous_record,
 )
+from scripts.tests.fake_docker import FakeDockerDaemon
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_RECORD = json.loads(
@@ -293,38 +293,6 @@ def test_cleanup_without_both_records_removes_nothing(missing):
     assert plan.disabled_reason
 
 
-class FakeDocker:
-    def __init__(self, images: dict[str, list[str]], refuse: set[str] = frozenset()) -> None:
-        self.images = images
-        self.refuse = refuse
-        self.removed: list[list[str]] = []
-
-    def __call__(self, command: list[str]) -> str:
-        if command[:2] == ["image", "ls"]:
-            return "\n".join(self.images) + "\n"
-        if command[:2] == ["image", "inspect"]:
-            references = self.images[command[2]]
-            return json.dumps(
-                [
-                    {
-                        "Id": command[2],
-                        "RepoTags": [ref for ref in references if "@" not in ref],
-                        "RepoDigests": [ref for ref in references if "@" in ref],
-                    }
-                ]
-            )
-        if command[:2] == ["ps", "-a"]:
-            return ""
-        if command[:2] == ["image", "rm"]:
-            if set(command[2:]) & self.refuse:
-                raise subprocess.CalledProcessError(
-                    1, command, stderr="Error response from daemon: conflict: image is being used"
-                )
-            self.removed.append(command[2:])
-            return ""
-        raise AssertionError(f"unexpected docker call {command}")
-
-
 def _write_records(tmp_path: Path) -> tuple[Path, Path]:
     current = tmp_path / "deployed-service-images.json"
     previous = tmp_path / "previous-deployed-service-images.json"
@@ -333,40 +301,132 @@ def _write_records(tmp_path: Path) -> tuple[Path, Path]:
     return current, previous
 
 
-def test_cleanup_removes_a_stale_image_by_every_name_it_has(tmp_path, capsys):
+def _daemon() -> FakeDockerDaemon:
+    """A host with the current release and a stale release pulled and named locally."""
+    daemon = FakeDockerDaemon()
+    daemon.add("id-current", _record(CURRENT_SHA, "c")["images"]["api"]["reference"])
+    daemon.add(
+        "id-stale",
+        f"codegen-orchestrator/api:{STALE_SHA}",
+        _record(STALE_SHA, "s")["images"]["api"]["reference"],
+    )
+    return daemon
+
+
+def _cleanup(tmp_path: Path, daemon: FakeDockerDaemon, dry_run: bool = False) -> list[str]:
     current, previous = _write_records(tmp_path)
-    stale = _record(STALE_SHA, "s")["images"]["api"]["reference"]
-    docker = FakeDocker(
-        {
-            "id-stale": [f"codegen-orchestrator/api:{STALE_SHA}", stale],
-            "id-current": [_record(CURRENT_SHA, "c")["images"]["api"]["reference"]],
-        }
+    return cleanup_service_images(
+        current_record=current, previous_record=previous, dry_run=dry_run, run_docker=daemon
     )
 
-    cleanup_service_images(
-        current_record=current, previous_record=previous, dry_run=False, run_docker=docker
+
+def test_cleanup_removes_a_stale_image_by_its_id_and_untags_it_only_when_docker_must(
+    tmp_path, capsys
+):
+    daemon = _daemon()
+    daemon.add("id-host-build", "codegen-orchestrator/langgraph:local")
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == {"id-current"}
+    # One ID is enough for an image of one repository; one named in two is refused by ID,
+    # then untagged name by name as it is named now.
+    assert daemon.removals == [
+        "id-host-build",
+        "id-stale",
+        f"codegen-orchestrator/api:{STALE_SHA}",
+        _record(STALE_SHA, "s")["images"]["api"]["reference"],
+    ]
+    out = capsys.readouterr().out.splitlines()
+    assert "KEEP id-current reason=deployed_release" in out[0]
+    assert {"REMOVED id-host-build", "REMOVED id-stale"} <= set(out)
+
+
+def test_a_digest_whose_tag_took_it_along_is_already_gone_not_an_error(tmp_path, capsys):
+    """The failed cleanup of runs 35991711761 and 35993281922, on the daemon's rules."""
+    daemon = _daemon()
+    daemon.add(
+        "id-api-local",
+        "codegen-orchestrator/api:local",
+        "codegen-orchestrator/api@sha256:26d6abd2",
+        "ghcr.io/vladmesh/codegen-orchestrator/api@sha256:26d6abd2",
     )
 
-    assert docker.removed == [[f"codegen-orchestrator/api:{STALE_SHA}", stale]]
-    assert "KEEP id-current reason=deployed_release" in capsys.readouterr().out
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == {"id-current"}
+    out = capsys.readouterr().out.splitlines()
+    assert (
+        "GONE id-api-local reference=codegen-orchestrator/api@sha256:26d6abd2 reason=already_gone"
+    ) in out
+    assert "REMOVED id-api-local" in out
 
 
-def test_cleanup_dry_run_and_docker_refusal_remove_nothing(tmp_path, capsys):
+def test_images_and_tags_already_gone_are_skipped_and_the_rest_removed(tmp_path, capsys):
+    daemon = _daemon()
+    daemon.listed_but_gone = ["id-vanished-before-inspect"]
+    daemon.add("id-vanishes-before-rm", "codegen-orchestrator/scheduler:local")
+    daemon.add(
+        "id-loses-a-tag",
+        "codegen-orchestrator/langgraph:local",
+        f"codegen-orchestrator/langgraph:{STALE_SHA}",
+    )
+
+    def gone(host: FakeDockerDaemon) -> None:
+        del host.images["id-vanishes-before-rm"]
+        host.untag("codegen-orchestrator/langgraph:local")
+
+    daemon.before_first_removal = gone
+
+    assert _cleanup(tmp_path, daemon) == []
+
+    assert set(daemon.images) == {"id-current"}
+    out = capsys.readouterr().out.splitlines()
+    assert "GONE id-vanished-before-inspect reason=already_gone" in out
+    assert "GONE id-vanishes-before-rm reason=already_gone" in out
+    assert {"REMOVED id-loses-a-tag", "REMOVED id-stale"} <= set(out)
+
+
+def test_an_image_in_use_or_failing_is_reported_and_the_rest_still_removed(tmp_path, capsys):
+    daemon = _daemon()
+    daemon.add("id-a-in-use", "codegen-orchestrator/scheduler:local")
+    daemon.add("id-b-broken", "codegen-orchestrator/langgraph:local")
+    daemon.failures["id-b-broken"] = "Error response from daemon: driver failed\n"
+    # A container started from it after the inventory was read.
+    daemon.before_first_removal = lambda host: host.containers.update(late="id-a-in-use")
+
+    assert _cleanup(tmp_path, daemon) == ["id-b-broken"]
+
+    assert set(daemon.images) == {"id-current", "id-a-in-use", "id-b-broken"}
+    out = capsys.readouterr().out.splitlines()
+    assert "KEEP id-a-in-use reason=docker_refused" in out
+    assert "FAIL id-b-broken error=Error response from daemon: driver failed" in out
+    assert "REMOVED id-stale" in out
+
+
+def test_the_cleanup_command_exits_non_zero_only_for_a_failed_removal(tmp_path, monkeypatch):
     current, previous = _write_records(tmp_path)
-    docker = FakeDocker(
-        {"id-stale": ["codegen-orchestrator/api:local"]}, refuse={"codegen-orchestrator/api:local"}
-    )
+    argv = ["cleanup", "--current-record", str(current), "--previous-record", str(previous)]
+    # Whatever the command resolves, it never reaches this host's docker.
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    daemon = _daemon()
+    daemon.listed_but_gone = ["id-gone"]
+    monkeypatch.setattr("scripts.service_release._run_docker", daemon)
+    assert main(argv) == 0
 
-    cleanup_service_images(
-        current_record=current, previous_record=previous, dry_run=True, run_docker=docker
-    )
-    assert docker.removed == []
+    daemon = _daemon()
+    daemon.failures["id-stale"] = "Error response from daemon: driver failed\n"
+    monkeypatch.setattr("scripts.service_release._run_docker", daemon)
+    assert main(argv) == 1
 
-    cleanup_service_images(
-        current_record=current, previous_record=previous, dry_run=False, run_docker=docker
-    )
-    assert docker.removed == []
-    assert "KEEP id-stale reason=docker_refused" in capsys.readouterr().out
+
+def test_cleanup_dry_run_removes_nothing(tmp_path, capsys):
+    daemon = _daemon()
+
+    assert _cleanup(tmp_path, daemon, dry_run=True) == []
+
+    assert daemon.removals == []
+    assert "REMOVE id-stale reason=stale_release" in capsys.readouterr().out
 
 
 # --- readback ------------------------------------------------------------------------------

@@ -95,7 +95,7 @@ def test_deploy_records_the_digests_it_verified_instead_of_resolving_them_again(
     """
     steps = _deploy_steps()
     pull = _index_of(steps, "pull-worker-images.sh")
-    record = _index_of(steps, "GITHUB_STEP_SUMMARY")
+    record = _index_of(steps, "### Deployed revision")
     script = steps[record][1]
 
     pull_script = steps[pull][1]

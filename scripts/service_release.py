@@ -17,7 +17,9 @@ those records, and only once they parse as a release record:
   json`), so a build service the release does not cover fails the deploy before anything
   running is touched, rather than being built on the host.
 * ``cleanup`` removes service images of neither the current nor the previous release,
-  and never one a container uses. A missing or unreadable record removes nothing.
+  and never one a container uses. A missing or unreadable record removes nothing. It
+  removes each image by its ID and on its own: an image or name already gone is logged
+  and skipped, and a failure is reported per image without stopping the rest.
 * ``readback`` is the read-only check after a deploy that production runs the release and
   nothing else: neither the resolved compose configuration nor any container of the compose
   project (running or not, in the configuration or orphaned) bind-mounts checkout source,
@@ -276,7 +278,13 @@ def _images(run_docker: Callable[[list[str]], str]) -> list[Image]:
     )
     images = []
     for image_id in image_ids:
-        raw = json.loads(run_docker(["image", "inspect", image_id]))
+        try:
+            raw = json.loads(run_docker(["image", "inspect", image_id]))
+        except subprocess.CalledProcessError as error:
+            if not _is_gone(error):
+                raise
+            print(f"GONE {image_id} reason=already_gone")
+            continue
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
             raise RuntimeError(f"Docker returned an unusable image inspection for {image_id}")
         references = tuple((raw[0].get("RepoTags") or []) + (raw[0].get("RepoDigests") or []))
@@ -300,9 +308,60 @@ def _container_image_ids(run_docker: Callable[[list[str]], str]) -> set[str]:
     return image_ids
 
 
+def _docker_message(error: subprocess.CalledProcessError) -> str:
+    return " ".join(" ".join(str(value).split()) for value in (error.stdout, error.stderr) if value)
+
+
+def _is_gone(error: subprocess.CalledProcessError) -> bool:
+    message = _docker_message(error).lower()
+    return "no such image" in message or "no such object" in message
+
+
+def _is_multi_repository(error: subprocess.CalledProcessError) -> bool:
+    return "referenced in multiple repositories" in _docker_message(error).lower()
+
+
 def _is_docker_refusal(error: subprocess.CalledProcessError) -> bool:
-    message = "\n".join(str(value) for value in (error.stdout, error.stderr) if value).lower()
+    message = _docker_message(error).lower()
     return "conflict:" in message or "being used" in message
+
+
+def _remove_image(image_id: str, run_docker: Callable[[list[str]], str]) -> str:
+    """Remove one image by ID, tolerating that it or any of its names is already gone.
+
+    Returns the outcome line. Only a failure docker neither explains as an image that is gone
+    nor refuses as one in use starts with ``FAIL``.
+    """
+    try:
+        run_docker(["image", "rm", image_id])
+        return f"REMOVED {image_id}"
+    except subprocess.CalledProcessError as error:
+        if _is_gone(error):
+            return f"GONE {image_id} reason=already_gone"
+        if not _is_multi_repository(error):
+            if _is_docker_refusal(error):
+                return f"KEEP {image_id} reason=docker_refused"
+            return f"FAIL {image_id} error={_docker_message(error) or error}"
+    # Docker refuses an ID several repositories name, so each name it has now is untagged on
+    # its own, and the last one removes the image.
+    try:
+        raw = json.loads(run_docker(["image", "inspect", image_id]))
+    except subprocess.CalledProcessError as error:
+        if _is_gone(error):
+            return f"GONE {image_id} reason=already_gone"
+        return f"FAIL {image_id} error={_docker_message(error) or error}"
+    names = (raw[0].get("RepoTags") or []) + (raw[0].get("RepoDigests") or [])
+    for name in names:
+        try:
+            run_docker(["image", "rm", name])
+        except subprocess.CalledProcessError as error:
+            if _is_gone(error):
+                print(f"GONE {image_id} reference={name} reason=already_gone")
+            elif _is_docker_refusal(error):
+                return f"KEEP {image_id} reason=docker_refused"
+            else:
+                return f"FAIL {image_id} reference={name} error={_docker_message(error) or error}"
+    return f"REMOVED {image_id}"
 
 
 def cleanup_service_images(
@@ -311,8 +370,12 @@ def cleanup_service_images(
     previous_record: Path,
     dry_run: bool,
     run_docker: Callable[[list[str]], str] = _run_docker,
-) -> CleanupPlan:
-    """Print the retention decision, then remove only the stale service images."""
+) -> list[str]:
+    """Print the retention decision, then remove only the stale service images.
+
+    Each image is removed on its own, so one that is gone, in use or failing does not stop
+    the others. Returns the IDs of the images that failed to be removed.
+    """
     plan = plan_cleanup(
         current=load_release(current_record),
         previous=load_release(previous_record),
@@ -320,16 +383,14 @@ def cleanup_service_images(
         container_image_ids=_container_image_ids(run_docker),
     )
     print(render_plan(plan))
+    failed: list[str] = []
     if not dry_run:
         for item in plan.remove:
-            # By every name it has: removal by ID refuses an image several repositories name.
-            try:
-                run_docker(["image", "rm", *item.references])
-            except subprocess.CalledProcessError as error:
-                if not _is_docker_refusal(error):
-                    raise
-                print(f"KEEP {item.image_id} reason=docker_refused")
-    return plan
+            outcome = _remove_image(item.image_id, run_docker)
+            print(outcome)
+            if outcome.startswith("FAIL "):
+                failed.append(item.image_id)
+    return failed
 
 
 # --- readback -----------------------------------------------------------------------------
@@ -548,11 +609,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print("production runs the recorded release and mounts no checkout source")
         else:
-            cleanup_service_images(
+            failed = cleanup_service_images(
                 current_record=args.current_record,
                 previous_record=args.previous_record,
                 dry_run=args.dry_run,
+                run_docker=_run_docker,
             )
+            if failed:
+                print(f"{len(failed)} stale service images were not removed", file=sys.stderr)
+                return 1
     except ServiceReleaseError as error:
         print(f"FATAL: {error}", file=sys.stderr)
         return 1
