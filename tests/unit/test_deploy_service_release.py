@@ -347,6 +347,20 @@ def test_migrations_and_the_seeder_run_in_the_released_api_container():
     assert switch.index("up -d --remove-orphans") < switch.index("alembic upgrade head")
 
 
+def test_the_switch_proves_the_api_reads_the_github_app_key_before_seeding():
+    """A layout where HOST_UID cannot read the 0600 key fails the deploy, not the first
+    GitHub call after it."""
+    switch = _script(_step(SWITCH_STEP))
+    calls = _compose_calls(switch)
+
+    proof = [call for call in calls if "/app/keys/github_app.pem" in call]
+    assert len(proof) == 1
+    assert "exec -T api" in proof[0]
+    assert OVERRIDE in proof[0]
+    assert switch.index("API is healthy") < switch.index("/app/keys/github_app.pem")
+    assert switch.index("/app/keys/github_app.pem") < switch.index("seed_system_configs.py")
+
+
 def test_cleanup_is_last_and_bounded():
     cleanup = _steps()[-1]
 
@@ -549,6 +563,8 @@ class DeployHost:
             "env.SERVICE_RELEASE_COMPOSE": "deployed-service-images.compose.yml",
             "env.SECRETS_PATH": str(self.secrets),
             "env.DEPLOY_SSH_USER": "deploy",
+            "env.HOST_UID": "1000",
+            "env.HOST_GID": "1000",
             "secrets.GHCR_TOKEN || github.token": "test-token",
             "secrets.GH_APP_PRIVATE_KEY": "the-new-app-key",
             "github.repository_owner": "vladmesh",
