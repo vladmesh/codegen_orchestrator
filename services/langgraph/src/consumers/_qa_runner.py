@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 import json
 import re
 from typing import Protocol
@@ -18,7 +19,11 @@ from shared.contracts.acceptance import (
     ScheduledBehaviourCriterion,
     parse_scheduled_behaviours,
 )
-from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.engineering_attempt import (
+    CostSource,
+    EngineeringAttemptLedgerInput,
+    QAAccountingFact,
+)
 from shared.contracts.dto.product_brief import InitialSetting
 from shared.contracts.dto.run_result import (
     QABlocker,
@@ -111,14 +116,13 @@ class QARuntimeConfig:
 EXECUTOR_ATTEMPT_HEADER = "== QA executor attempt {attempt} of {attempts} =="
 
 
-@dataclass(frozen=True)
+@dataclass
 class QAExecutorAttempts:
     """What every executor attempt of one QA run said, in the order they ran.
 
-    An attempt that never started a container contributes nothing — there is no
-    transcript to keep — and an attempt that ran contributes what it said, the
-    empty string included, because "it ran and was silent" is something this
-    process observed.
+    A published create command counts as a start even if a later error prevents
+    a transcript. Every such start needs typed facts to report a known Run cost.
+    A returned transcript, the empty string included, is retained as evidence.
 
     `evidence` keeps those three answers apart, and they never merge:
 
@@ -128,13 +132,18 @@ class QAExecutorAttempts:
       content;
     * ``""`` — at least one attempt ran and no attempt said anything. The runner
       watched that happen, so the silence is knowledge and is carried as such;
-    * ``None`` — no attempt ever started a container, so this record holds
-      nothing and claims nothing about any executor.
+    * ``None`` — no attempt returned a transcript. A create may still have been
+      published, so accounting reads `started`, not this presentation value.
     """
 
     attempts: int
     said: tuple[tuple[int, str], ...] = ()
-    attempt: EngineeringAttemptLedgerInput | None = None
+    started: set[int] = field(default_factory=set)
+    facts: dict[int, EngineeringAttemptLedgerInput | None] = field(default_factory=dict)
+
+    def record_start(self, attempt: int) -> None:
+        """The create command was published; this start survives every later error."""
+        self.started.add(attempt)
 
     def with_attempt(
         self,
@@ -144,9 +153,50 @@ class QAExecutorAttempts:
     ) -> QAExecutorAttempts:
         if transcript is None:
             return self
-        return QAExecutorAttempts(
-            self.attempts, (*self.said, (attempt, transcript)), facts or self.attempt
+        self.record_start(attempt)
+        self.said = (*self.said, (attempt, transcript))
+        self.facts[attempt] = facts
+        return self
+
+    @property
+    def accounting(self) -> QAAccountingFact:
+        """One conservative fact for every executor create published by this Run."""
+        if not self.started:
+            return QAAccountingFact(executor_started=False)
+        if any(self.facts.get(number) is None for number in self.started):
+            return QAAccountingFact(executor_started=True, attempt=EngineeringAttemptLedgerInput())
+
+        facts = [self.facts[number] for number in sorted(self.started)]
+        providers = {fact.provider for fact in facts}
+        models = {fact.model for fact in facts}
+        provider = next(iter(providers)) if len(providers) == 1 else None
+        model = next(iter(models)) if len(models) == 1 else None
+
+        def summed(name: str) -> int | None:
+            values = [getattr(fact, name) for fact in facts]
+            return sum(values) if all(value is not None for value in values) else None
+
+        cost = summed("cost_microusd") if provider is not None else None
+        return QAAccountingFact(
+            executor_started=True,
+            attempt=EngineeringAttemptLedgerInput(
+                provider=provider,
+                model=model,
+                input_tokens=summed("input_tokens"),
+                output_tokens=summed("output_tokens"),
+                total_tokens=summed("total_tokens"),
+                cache_read_tokens=summed("cache_read_tokens"),
+                cache_write_tokens=summed("cache_write_tokens"),
+                cost_microusd=cost,
+                cost_source=(
+                    CostSource.PROVIDER_REPORTED if cost is not None else CostSource.UNKNOWN
+                ),
+            ),
         )
+
+    @property
+    def attempt(self) -> EngineeringAttemptLedgerInput | None:
+        return self.accounting.attempt
 
     @property
     def evidence(self) -> str | None:
@@ -201,10 +251,9 @@ class QAResult:
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
     # (`QARunResult.executor_transcript`) because it exists nowhere else once the
-    # stand is gone. ``None`` is "no executor ran at all" — deterministic health
-    # checks, or a container-state failure that never started one — and an empty
-    # string is an executor that ran and said nothing. A red run's artifact
-    # reports those as different findings, so they are kept apart here.
+    # stand is gone. ``None`` means no executor returned a transcript; a create
+    # may still have been published. The accumulator owns the start fact. An
+    # empty string is an executor that ran and said nothing.
     executor_evidence: str | None = None
     executor_attempt: EngineeringAttemptLedgerInput | None = None
 
@@ -1321,6 +1370,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     settings_established: bool,
     timeout: int,
     jobs: QAJobsCapability | None,
+    attempts: QAExecutorAttempts,
     acceptance: PackageAcceptance | None = None,
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint."""
@@ -1355,6 +1405,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             endpoint=endpoint,
             service=service,
             timeout=timeout,
+            attempts=attempts,
         )
         if executor_run is not None:
             return apply_unverifiable_criteria(
@@ -1407,6 +1458,7 @@ async def _run_central_executor(
     endpoint,
     service: QACapabilityService,
     timeout: int,
+    attempts: QAExecutorAttempts,
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1423,7 +1475,7 @@ async def _run_central_executor(
         settings_established=settings_established,
     )
     last: QAExecutorUnavailable | None = None
-    said = QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
+    said = attempts
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
@@ -1436,6 +1488,7 @@ async def _run_central_executor(
                 verdict_received=service.verdict_received,
                 calls_served=lambda: service.calls_served,
                 timeout=timeout,
+                on_create_published=partial(said.record_start, attempt),
             )
         except QAExecutorUnavailable as exc:
             last = exc
@@ -1511,10 +1564,12 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     established_facts: list[str],
     settings_established: bool = False,
     jobs: QAJobsCapability | None = None,
+    attempts: QAExecutorAttempts | None = None,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path."""
     grant = QAGrantOutcome(marker=new_grant_marker())
+    attempts = attempts or QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
     workspace: QAWorkspace | None = None
     try:
         with qa_workspace() as workspace:
@@ -1596,6 +1651,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             settings_established=settings_established,
                             timeout=timeout,
                             jobs=jobs,
+                            attempts=attempts,
                             acceptance=acceptance,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
@@ -1629,7 +1685,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 summary=failure.summary,
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
-                executor_attempt=failure.attempt,
+                executor_attempt=attempts.attempt,
             ),
             _residues(grant, workspace),
         )
@@ -1695,6 +1751,8 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
             QAResult(
                 passed=False,
                 summary=f"QA run against {target.server_ip} failed: {exc}",
+                executor_evidence=attempts.evidence,
+                executor_attempt=attempts.attempt,
                 blocker=_unknown_result_blocker(
                     attempted="run the central QA agent against the target",
                     sent=f"QA run on {target.server_ip}",

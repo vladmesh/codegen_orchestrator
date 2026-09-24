@@ -126,6 +126,7 @@ async def run_qa_executor(
     verdict_received: asyncio.Event,
     calls_served: Callable[[], int],
     timeout: int,
+    on_create_published: Callable[[], None],
 ) -> QAExecutorRun:
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
@@ -149,6 +150,8 @@ async def run_qa_executor(
         calls_served: the endpoint's live call counter, read after the run to
             tell "no executor ran" from "an executor ran and said nothing".
         timeout: seconds the executor is given to reach a verdict.
+        on_create_published: records a paid start immediately after the broker
+            accepts the create command, even if any later operation fails.
 
     Raises:
         QAExecutorUnavailable: no executor ran at all.
@@ -199,6 +202,7 @@ async def run_qa_executor(
         )
         await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
         created = True
+        on_create_published()
         logger.info("qa_executor_requested", worker_id=worker_id, agent_type=agent_type.value)
 
         ack = await _wait_for_response(

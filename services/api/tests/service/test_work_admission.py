@@ -273,6 +273,52 @@ async def test_paid_engineering_run_exposes_its_admission_audit_and_reservation(
 
 
 @pytest.mark.asyncio
+async def test_unlimited_engineering_replay_rechecks_emergency_stop(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": "replay-owner"}
+    )
+    assert user.status_code == HTTPStatus.CREATED
+    project_id = str(uuid.uuid4())
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "Replay",
+            "initiating_run_id": str(uuid.uuid4()),
+            "status": "active",
+            "config": {"agent_type": "noop"},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+    command = {
+        "id": f"engineering-replay-{uuid.uuid4().hex}",
+        "type": "engineering",
+        "project_id": project_id,
+    }
+    started = await async_client.post("/api/work-admission/paid-runs", json=command)
+    assert started.json()["admission"]["outcome"] == "admitted"
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == command["id"]
+        )
+    )
+    assert reservation.state is None
+
+    await _set_config(db_session, "work_admission.emergency_stop", True)
+    try:
+        replay = await async_client.post("/api/work-admission/paid-runs", json=command)
+        assert replay.status_code == HTTPStatus.OK, replay.text
+        assert replay.json()["admission"]["outcome"] == "denied"
+        assert replay.json()["admission"]["reason"] == "emergency_stop"
+    finally:
+        await _set_config(db_session, "work_admission.emergency_stop", False)
+
+
+@pytest.mark.asyncio
 async def test_emergency_stop_requires_strict_bool_and_rejects_generic_mutation(
     async_client: AsyncClient,
 ):

@@ -20,7 +20,7 @@ from shared.contracts.acceptance import (
     parse_health_only_criteria,
     parse_scheduled_behaviours,
 )
-from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput, QAAccountingFact
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.product_brief import InitialSetting
@@ -52,6 +52,8 @@ from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_grant_sweep import qa_grant_sweep_loop
 from ._qa_runner import (
+    QA_EXECUTOR_ATTEMPTS,
+    QAExecutorAttempts,
     QAResult,
     QARuntimeConfig,
     check_deployed_url_reachable,
@@ -474,6 +476,7 @@ async def _run_exploratory_qa(
     msg: QAMessage,
     server_info: QAServerInfo,
     acceptance_criteria: str,
+    attempts: QAExecutorAttempts,
 ) -> tuple[QAResult | None, QABlocker | None]:
     """Run the central QA executor against one deployment.
 
@@ -579,6 +582,7 @@ async def _run_exploratory_qa(
         established_facts=established_facts,
         settings_established=bool(confirmed_settings),
         jobs=jobs,
+        attempts=attempts,
     )
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
         await _alert_admins_qa_infrastructure(msg=msg, blocker=qa_result.blocker)
@@ -635,6 +639,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     # else once its container is deleted, so a settling path that has forgotten
     # the result would settle the Run without evidence this consumer was holding.
     qa_result: QAResult | None = None
+    attempts = QAExecutorAttempts(QA_EXECUTOR_ATTEMPTS)
 
     # Inflight dedup — prevent concurrent QA on same story/application
     dedup_id = story_id if story_id else str(msg.application_id)
@@ -654,7 +659,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         blocker = await check_deployed_url_reachable(msg.deployed_url)
         if blocker:
-            return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
+            return await _handle_qa_blocked(run_id=run_id, blocker=blocker, attempts=attempts)
 
         # A server to SSH into and a bot to talk to are what the agent needs, not
         # what the criteria ask for. Resolve them inside the agent branch only —
@@ -672,6 +677,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 )
                 return await _handle_qa_blocked(
                     run_id=run_id,
+                    attempts=attempts,
                     blocker=QABlocker(
                         category=QABlockerCategory.SERVER_UNAVAILABLE,
                         attempted="resolve QA server connection",
@@ -692,6 +698,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                     return await _handle_qa_blocked(
                         run_id=run_id,
+                        attempts=attempts,
                         blocker=QABlocker(
                             category=QABlockerCategory.MISSING_BOT_USERNAME,
                             attempted="resolve Telegram bot identity from QA message",
@@ -707,6 +714,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             if not run_id:
                 return await _handle_qa_blocked(
                     run_id=run_id,
+                    attempts=attempts,
                     blocker=QABlocker(
                         category=QABlockerCategory.UNKNOWN,
                         attempted="persist QA cleanup plan",
@@ -741,9 +749,12 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 msg=msg,
                 server_info=server_info,
                 acceptance_criteria=acceptance_criteria,
+                attempts=attempts,
             )
             if exploratory_blocker:
-                return await _handle_qa_blocked(run_id=run_id, blocker=exploratory_blocker)
+                return await _handle_qa_blocked(
+                    run_id=run_id, blocker=exploratory_blocker, attempts=attempts
+                )
 
         logger.info(
             "qa_result",
@@ -765,6 +776,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         if qa_result.blocker:
             return await _handle_qa_blocked(
                 run_id=run_id,
+                attempts=attempts,
                 blocker=qa_result.blocker,
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
@@ -774,6 +786,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         if qa_result.passed:
             return await _handle_qa_pass(
                 run_id=run_id,
+                attempts=attempts,
                 deployed_url=msg.deployed_url,
                 report=qa_result.report,
                 state_changes=qa_result.state_changes,
@@ -784,6 +797,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         else:
             return await _handle_qa_fail(
                 run_id=run_id,
+                attempts=attempts,
                 qa_attempt=msg.qa_attempt,
                 qa_result=qa_result,
             )
@@ -796,6 +810,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         )
         return await _handle_qa_blocked(
             run_id=run_id,
+            attempts=attempts,
             blocker=QABlocker(
                 category=QABlockerCategory.UNKNOWN,
                 attempted="process QA job",
@@ -816,6 +831,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 async def _handle_qa_pass(
     *,
     run_id: str,
+    attempts: QAExecutorAttempts,
     deployed_url: str,
     report: str = "",
     state_changes: list[dict] | None = None,
@@ -826,6 +842,7 @@ async def _handle_qa_pass(
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.PASSED,
         deployed_url=deployed_url,
@@ -842,6 +859,7 @@ async def _handle_qa_pass(
 async def _handle_qa_blocked(
     *,
     run_id: str,
+    attempts: QAExecutorAttempts,
     blocker: QABlocker,
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
@@ -851,6 +869,7 @@ async def _handle_qa_blocked(
     """Persist a non-product QA blocker for human review."""
     await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.BLOCKED,
         summary="QA could not verify the product",
@@ -867,6 +886,7 @@ async def _handle_qa_blocked(
 async def _handle_qa_fail(
     *,
     run_id: str,
+    attempts: QAExecutorAttempts,
     qa_attempt: int,
     qa_result: QAResult,
 ) -> dict:
@@ -892,6 +912,7 @@ async def _handle_qa_fail(
         )
         await _update_run(
             run_id,
+            attempts,
             RunStatus.COMPLETED,
             QAOutcome.EXHAUSTED,
             summary=qa_result.summary,
@@ -907,6 +928,7 @@ async def _handle_qa_fail(
 
     await _update_run(
         run_id,
+        attempts,
         RunStatus.COMPLETED,
         QAOutcome.FAILED,
         summary=qa_result.summary,
@@ -929,6 +951,7 @@ async def _handle_qa_fail(
 
 async def _update_run(
     run_id: str,
+    attempts: QAExecutorAttempts,
     status: RunStatus,
     qa_outcome: QAOutcome,
     **extra_result: object,
@@ -945,11 +968,8 @@ async def _update_run(
     if not run_id:
         logger.warning("qa_no_run_id_skip_update")
         return
-    attempt = extra_result.pop("executor_attempt", None)
-    accounting = QAAccountingFact(
-        executor_started=extra_result.get("executor_transcript") is not None,
-        attempt=attempt,
-    )
+    extra_result.pop("executor_attempt", None)
+    accounting = attempts.accounting
     run_result = QARunResult(qa_outcome=qa_outcome, **extra_result)
     try:
         await api_client.patch(

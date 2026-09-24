@@ -123,7 +123,9 @@ send `qa_accounting` on terminal update: an executor start writes `role=qa`
 and settles reported cost or retains an unknown-final hold; no start releases
 the hold without spend. A missing QA fact also releases the hold and logs a
 warning. An in-flight QA Run admitted before reservations existed has no hold
-or spend to settle.
+or spend to settle. The QA consumer counts every published executor create in
+one Run; it reports the sum only when every start has typed provider facts,
+and otherwise reports unknown cost.
 Money is integer micro-USD, never float. Unknown cost is null, not zero; a
 provider-reported cost must name both a provider and an amount. A project
 deletion detaches relationship ids from accounting history without deleting the

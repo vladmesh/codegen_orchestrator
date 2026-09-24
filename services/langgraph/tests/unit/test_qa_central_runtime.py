@@ -319,13 +319,17 @@ def _executor_factory(behaviour, *, unavailable: QAExecutorUnavailable | None = 
         verdict_received,
         calls_served,
         timeout,
+        on_create_published,
     ):
         run.prompt = prompt
         run.instructions = instructions
         run.agent_type = agent_type
         run.ownership = ownership
         if unavailable is not None:
+            if unavailable.transcript is not None:
+                on_create_published()
             raise unavailable
+        on_create_published()
         harness = ExecutorHarness(capability_url, capability_token)
         raw = await behaviour(harness)
         if raw is not None:

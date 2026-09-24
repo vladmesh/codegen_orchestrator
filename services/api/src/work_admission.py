@@ -233,8 +233,16 @@ async def _replay_paid_start(
             .where(EngineeringBudgetReservation.attempt_id == command.id)
             .with_for_update()
         )
+        # Engineering retains the base predicate exactly. A live QA replay
+        # reuses its decision unless its prior hold was released; then paid
+        # controls must decide that retry anew.
         if (
-            reservation is not None
+            command.type is RunType.ENGINEERING
+            and reservation is not None
+            and reservation.state is not EngineeringBudgetReservationState.ACTIVE
+        ) or (
+            command.type is RunType.QA
+            and reservation is not None
             and reservation.state is EngineeringBudgetReservationState.RELEASED
         ):
             return None
