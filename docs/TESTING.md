@@ -312,6 +312,15 @@ capability is a one-time reminder, so the Architect plans a kit package, the wor
 with the kit recipe, and central QA judges the package behaviour on the route its criterion
 names; it gets 65 productive minutes and a 15-minute grace.
 
+**Every live test has its own bound.** Every test under `tests/live` runs under a `pytest-timeout`
+bound with method `signal`, so a hung test fails as a pytest timeout naming the test, with a
+traceback, and its fixture's cleanup still runs. The bounds come from `shared/stand_deadlines.py`.
+The item that sets up the level-1 lifecycle gets the lifecycle's explicit waits: 8440 s under
+`mega-noop` and 14980 s under `mega-live`. Every teardown gets the 700-second reserve, and every
+other item gets 1800 s. A hang is reported first by the test timeout, then by `stand_run`'s suite
+backstop (SIGINT, then a process-group kill), and last by the workflow's job limit. The ledger checks
+that ordering at import for both level-1 suites. `tests/live/README.md` has the table.
+
 **The stand runs the tested release.** `stand-e2e` builds nothing on the stand. Before any machine
 is created it waits, at most ten minutes, for the worker and the service release of the workflow SHA
 (`scripts/wait_release.py --chain worker --chain service`, the deploy's own wait); a revision whose

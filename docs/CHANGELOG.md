@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-24
 
+- Every `tests/live` test runs under a `pytest-timeout` `signal` bound derived in `shared/stand_deadlines.py`,
+  so a hang fails as a named pytest timeout, with cleanup, before the stand runner's backstop.
 - Langgraph's service QA executor fixture now records a published start, so write-guard tests exercise QA accounting after executor creation.
 - QA Run accounting now totals every started executor attempt and marks post-start errors unknown; unlimited engineering replays recheck controls.
 - QA executor Runs now reserve the owner's promo budget and settle provider cost into the shared ledger; health-only QA releases its hold without spend.
