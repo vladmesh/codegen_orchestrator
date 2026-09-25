@@ -88,6 +88,23 @@ def read_file(path):
         fail("cannot read %s: %s" % (path, exc))
 
 
+def probe_secrets():
+    values = [os.environ.get("QA_CAPABILITY_TOKEN", "")]
+    try:
+        with open(os.path.expanduser(IDENTITY_FILE), "rb") as handle:
+            identity = json.loads(decode_output(handle.read()))
+    except (OSError, ValueError, TypeError):
+        identity = {}
+    values.extend(identity.get(name, "") for name in ("session", "api_hash"))
+    return tuple(value for value in values if isinstance(value, str) and len(value) >= 8)
+
+
+def scrub_probe_text(value):
+    for secret in probe_secrets():
+        value = value.replace(secret, "[redacted]")
+    return value
+
+
 def build_call(argv):
     command = argv[0]
     rest = argv[1:]
@@ -237,6 +254,9 @@ def run_probe(args):
         stderr = decode_output(exc.stderr) + "\\nprobe timed out after %ss" % PROBE_TIMEOUT
         exit_status = 124
     duration_ms = int((time.monotonic() - started) * 1000)
+    source = scrub_probe_text(source)
+    stdout = scrub_probe_text(stdout)
+    stderr = scrub_probe_text(stderr)
     source, source_truncated = bounded(source)
     stdout, stdout_truncated = bounded(stdout)
     stderr, stderr_truncated = bounded(stderr)
@@ -280,7 +300,7 @@ def call(tool, args):
             "this container was not given a QA capability endpoint; "
             "there is no other way to reach the deployment"
         )
-    payload = json.dumps({"tool": tool, "args": args}).encode("utf-8")
+    payload = json.dumps({"tool": tool, "args": args}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
         data=payload,

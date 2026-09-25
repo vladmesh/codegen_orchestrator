@@ -108,6 +108,25 @@ async def test_remote_docker_prepares_mounts_in_the_daemon_namespace(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_remote_docker_omits_transcript_mount_when_not_retained(monkeypatch):
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    monkeypatch.setenv("DOCKER_HOST", "tcp://docker:2375")
+
+    await manager._prepare_remote_daemon_mounts(
+        image="worker:latest",
+        worker_id="qa-1",
+        workspace_path="/data/workspaces/qa-1",
+        transcript_path=None,
+    )
+
+    call = wrapper.run_container.await_args.kwargs
+    assert call["command"] == ["-R", "1000:1000", "/workspace"]
+    assert call["volumes"] == {"/data/workspaces/qa-1": {"bind": "/workspace", "mode": "rw"}}
+
+
+@pytest.mark.asyncio
 async def test_instruction_injection_failure_aborts_worker_creation():
     """A failed created worker stays owned and fenced until deletion confirms removal."""
     redis = aioredis.FakeRedis(decode_responses=True)

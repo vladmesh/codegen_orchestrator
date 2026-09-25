@@ -24,6 +24,7 @@ from shared.qa_probe_cli import QA_PROBE_SCRIPT, QA_PROBE_USAGE
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
+from src.consumers._qa_telegram_identity import redact
 from src.consumers._qa_workspace import qa_workspace
 
 TARGET = QATarget(
@@ -43,12 +44,6 @@ CAPABILITIES = QACapabilities(
 )
 NEIGHBOUR_CONTAINER = "other-project-web-1"
 PASSING_JSON = '{"pass": true, "checks": [], "summary": "OK"}'
-
-
-def _redact_probe_text(text: str | None, secrets: tuple[str, ...]) -> str | None:
-    for secret in secrets:
-        text = text.replace(secret, "[redacted]") if text else text
-    return text
 
 
 class FakeConn:
@@ -74,7 +69,7 @@ async def endpoint(tmp_path):
             submit_verdict=workspace.submit_verdict,
             advertised_host="127.0.0.1",
             probe_secrets=("session-secret", "api-hash"),
-            redact_text=_redact_probe_text,
+            redact_text=redact,
         )
         started = await service.start()
         try:
@@ -174,6 +169,34 @@ class TestTheSetIsClosed:
                 assert response.status == 413
                 body = await response.json()
         assert "error" in body
+
+    async def test_utf8_heavy_probe_record_stays_under_encoded_body_bound(self, endpoint):
+        payload = {
+            "tool": "record_probe",
+            "args": {
+                "platform": "web",
+                "name": "unicode",
+                "source": "pass",
+                "arguments": [],
+                "stdout": "😀" * 19000,
+                "stderr": "🚀" * 19000,
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {endpoint.token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                endpoint.url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+            ) as response:
+                assert response.status == 200
+                body = await response.json()
+        assert body["id"] == "probe-1"
 
     async def test_capabilities_names_exactly_what_this_run_may_reach(self, endpoint):
         _, body = await _call(endpoint, "capabilities")
@@ -302,7 +325,42 @@ class TestTheSetIsClosed:
         retained = endpoint.workspace.probe_runs[0]
         assert "session-secret" not in retained.source
         assert endpoint.token not in retained.source
-        assert retained.arguments == ["[redacted]"]
+        assert retained.arguments[0].startswith("[redacted")
+
+    @pytest.mark.parametrize(
+        ("field", "secret_name"),
+        [
+            ("source", "session"),
+            ("stdout", "api_hash"),
+            ("stderr", "token"),
+        ],
+    )
+    async def test_probe_scrub_removes_prefixes_left_at_cli_cut(self, endpoint, field, secret_name):
+        secret = {
+            "session": "session-secret",
+            "api_hash": "api-hash",
+            "token": endpoint.token,
+        }[secret_name]
+        marker = "\n...[truncated by qa probe CLI]"
+        args = {
+            "platform": "http",
+            "name": "cut",
+            "source": "pass",
+            "arguments": [],
+            "stdout": "",
+            "stderr": "",
+            "exit_status": 0,
+            "duration_ms": 1,
+        }
+        args[field] = "x" * 100 + secret[:12] + marker
+
+        status, body = await _call(endpoint, "record_probe", args)
+
+        assert status == 200
+        assert body["id"] == "probe-1"
+        retained = endpoint.workspace.probe_runs[0]
+        for value in (retained.source, retained.stdout, retained.stderr):
+            assert secret[:8] not in value
 
 
 class TestTheVerdictComesBackThroughTheEndpoint:

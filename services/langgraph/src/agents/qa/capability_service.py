@@ -171,7 +171,18 @@ class QACapabilityService:
 
         def scrub(value):
             if isinstance(value, str):
-                return self._redact_text(value, self._probe_secrets)
+                value = self._redact_text(value, self._probe_secrets)
+                for secret in self._probe_secrets:
+                    for marker in ("\n...[truncated by qa probe CLI]", "\n...[truncated]"):
+                        if marker not in value:
+                            continue
+                        before, after = value.rsplit(marker, 1)
+                        for length in range(min(len(secret) - 1, len(before)), 7, -1):
+                            if before.endswith(secret[:length]):
+                                before = before[:-length] + "[redacted]"
+                                break
+                        value = before + marker + after
+                return value
             if isinstance(value, list):
                 return [scrub(item) for item in value]
             return value
