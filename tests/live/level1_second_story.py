@@ -46,6 +46,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import re
 
 from shared.git_not_found_retry import retry_delay_after
@@ -223,6 +224,19 @@ def manager_log_coverage(log_text: str) -> dict:
     }
 
 
+def _non_negative_number(value: object) -> int | float | None:
+    """Normalize console and JSON retry fields; keep invalid fields invalid."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if number.is_integer() else number
+
+
 def checkout_records(log_text: str, *, branch: str) -> list[dict]:
     """Every `checkout_branch` the manager ran for one branch, oldest first.
 
@@ -253,7 +267,10 @@ def checkout_records(log_text: str, *, branch: str) -> list[dict]:
             attempt = open_by_worker.get(worker_id)
             if attempt is not None:
                 attempt["retries"].append(
-                    {"attempt": record.get("attempt"), "delay_seconds": record.get("delay_seconds")}
+                    {
+                        "attempt": _non_negative_number(record.get("attempt")),
+                        "delay_seconds": _non_negative_number(record.get("delay_seconds")),
+                    }
                 )
             continue
         if event == CHECKOUT_START_EVENT:

@@ -6,7 +6,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 ## 2026-09-25
 
 - Worker-manager retries story checkout when GitHub briefly returns repository 404, sharing scaffolder's 30 s policy;
-  the live checkout check records retries and keeps its 15 s active-work bound.
+  live checks parse console retry fields and keep the 15 s active-work bound.
+- A failed story-branch fetch now exits unless Git says the remote ref is absent, avoiding an incorrect new branch.
 - A QA temporary-access grant or revoke only reads its grant's target application's allocations: a revoke after
   undeploy settles as revoked with no ports or SSH; a grant, or an unreadable target, fails closed.
 - After its HTTP result, a Claude CLI gets 30 s under a git-lock fence to end its turn, so its
