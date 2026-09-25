@@ -35,6 +35,7 @@ from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
+from shared.contracts.queues.worker import WorkerConfig, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.crypto import encrypt_dict
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
@@ -1439,6 +1440,7 @@ class TestProbeLibrary:
         assert run_result["probe_library"] == {
             "offered": [{"platform": "http", "name": "health", "origin": "qa-run-0"}],
             "read_failure": None,
+            "build_failure": None,
         }
 
     @pytest.mark.asyncio
@@ -1479,6 +1481,47 @@ class TestProbeLibrary:
         note = library_api.patch.call_args.kwargs["json"]["result"]["probe_library"]
         assert note["offered"] == []
         assert "api down" in note["read_failure"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "names",
+        [
+            # The first review's two reproductions, as rows a DB could return.
+            ["a b", "a_b-c8687a08"],
+            ["'" * 250 + f"{index:03}" for index in range(50)],
+            ["health", "health"],
+        ],
+        ids=["reviewer-collision", "reviewer-overflow", "repeated-name"],
+    )
+    async def test_an_unbuildable_library_still_reaches_the_executor_with_seeds(
+        self, library_api, mock_redis, qa_message_data, names
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        library_api.list_qa_probes.return_value = [
+            _stored_entry(self.PROJECT, name) for name in names
+        ]
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, summary="All good", probe_runs=[])
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        files = mock_run.call_args.kwargs["probe_library"]
+        assert [item.path for item in files] == ["index.json"]
+        WorkerConfig(
+            name="qa-1",
+            worker_type="qa",
+            agent_type="claude",
+            instructions="rules",
+            allowed_commands=["*"],
+            capabilities=["qa_sandbox"],
+            ownership=WorkerOwnership(project_id=self.PROJECT, run_id="r", attempt_id="a"),
+            qa_probe_library=files,
+        )
+        note = library_api.patch.call_args.kwargs["json"]["result"]["probe_library"]
+        assert note["offered"] == []
+        assert note["read_failure"] is None
+        assert note["build_failure"].startswith("the project's probe library could not be built")
 
     @pytest.mark.asyncio
     async def test_a_library_write_failure_changes_neither_verdict_nor_run(

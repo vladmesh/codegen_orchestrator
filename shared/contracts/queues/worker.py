@@ -4,7 +4,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.base import QueueMeta
-from shared.contracts.dto.qa_probe_library import QA_PROBE_LIBRARY_MAX_FILES, QAProbeLibraryFile
+from shared.contracts.dto.qa_probe_library import (
+    QA_PROBE_LIBRARY_MAX_FILES,
+    QAProbeLibraryFile,
+    check_probe_library_files,
+)
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
@@ -205,9 +209,7 @@ class WorkerConfig(BaseModel):
     def _probe_library_is_a_qa_sandbox_file_set(self) -> "WorkerConfig":
         if self.qa_probe_library and self.worker_type != "qa":
             raise ValueError("only a qa worker is offered a probe library")
-        paths = [item.path for item in self.qa_probe_library]
-        if len(paths) != len(set(paths)):
-            raise ValueError("probe library paths must be unique")
+        check_probe_library_files(self.qa_probe_library)
         return self
 
     @model_validator(mode="after")

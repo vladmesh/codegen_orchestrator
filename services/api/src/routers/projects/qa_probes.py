@@ -18,6 +18,7 @@ from shared.contracts.dto.qa_probe_library import (
     QAProbeLibraryEntry,
     QAProbeLibraryStored,
     QAProbeLibraryStoreFromRun,
+    is_probe_library_name,
 )
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QAProbeRun, QARunResult
@@ -53,17 +54,25 @@ async def list_qa_probes(
     return list(rows.scalars().all())
 
 
-def _library_candidates(result: QARunResult) -> dict[tuple[str, str], QAProbeRun]:
-    """The probes a passed run contributes: exit 0, whole source, known file kind.
+def _library_candidates(result: QARunResult) -> tuple[dict[tuple[str, str], QAProbeRun], int]:
+    """The probes a passed run contributes, and how many it named out of the library's reach.
 
-    A name the run used twice keeps its last record.
+    A probe contributes when it exited 0 with its whole source and a known file
+    kind. Its name is the executor's choice, so this is where the library
+    decides which names exist: one that is not a library name is skipped and
+    counted, never rewritten, and every later run can lay the library out by
+    name. A name the run used twice keeps its last record.
     """
     candidates: dict[tuple[str, str], QAProbeRun] = {}
+    skipped = 0
     for probe in result.probe_runs or []:
         if probe.exit_status != 0 or probe.source_truncated or probe.file_kind is None:
             continue
+        if not is_probe_library_name(probe.name):
+            skipped += 1
+            continue
         candidates[(probe.platform.value, probe.name)] = probe
-    return candidates
+    return candidates, skipped
 
 
 def _over_cap(rows: Iterable[QAProbe]) -> list[QAProbe]:
@@ -133,7 +142,8 @@ async def store_qa_probes_from_run(  # noqa: PLR0913 — FastAPI dependencies, e
     }
     now = datetime.now(UTC)
     stored: list[str] = []
-    for key, probe in _library_candidates(result).items():
+    candidates, skipped = _library_candidates(result)
+    for key, probe in candidates.items():
         row = existing.get(key)
         if row is None:
             row = QAProbe(project_id=project_id, platform=key[0], name=key[1], created_at=now)
@@ -157,5 +167,6 @@ async def store_qa_probes_from_run(  # noqa: PLR0913 — FastAPI dependencies, e
         run_id=body.run_id,
         stored=stored,
         evicted=evicted,
+        skipped=skipped,
     )
-    return QAProbeLibraryStored(stored=stored, evicted=evicted)
+    return QAProbeLibraryStored(stored=stored, evicted=evicted, skipped=skipped)

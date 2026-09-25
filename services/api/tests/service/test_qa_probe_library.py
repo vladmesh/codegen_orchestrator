@@ -74,6 +74,10 @@ async def test_a_passed_runs_probes_are_stored_and_read_back(async_client: Async
                     _probe("cut", source_truncated=True),
                     _probe("location", platform="telegram"),
                     _probe("health", source="second"),
+                    # Not library names: skipped and counted, never rewritten.
+                    _probe("a b"),
+                    _probe("../x"),
+                    _probe("x" * 256),
                 ],
             },
         },
@@ -86,6 +90,7 @@ async def test_a_passed_runs_probes_are_stored_and_read_back(async_client: Async
 
     assert stored.status_code == status.HTTP_200_OK
     assert sorted(stored.json()["stored"]) == ["http/health", "telegram/location"]
+    assert stored.json()["skipped"] == 3
     library = await async_client.get(
         f"/api/projects/{project_id}/qa-probes", headers={"X-Telegram-ID": str(admin_id)}
     )

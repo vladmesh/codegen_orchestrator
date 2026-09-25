@@ -1448,7 +1448,10 @@ the oldest `updated_at`. It is filled only after the QA consumer's own PASSED
 write settled the Run: `POST /projects/{id}/qa-probes/from-run` validates that
 Run (this project, type `qa`, `completed`, `qa_outcome: passed`) and upserts every
 `probe_runs` record with exit status 0, an untruncated source and a known
-`file_kind` — the last record of a repeated name wins. Its source is the record
+`file_kind` — the last record of a repeated name wins. It is the one writer, so
+it alone decides which names exist: a record whose name does not match
+`QA_PROBE_LIBRARY_NAME_PATTERN` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) is skipped,
+never rewritten, and counted in the response's `skipped`. Its source is the record
 the capability endpoint already scrubbed and bounded; no other path writes a
 library entry. A FAIL, BLOCKED, EXHAUSTED or infrastructure outcome stores
 nothing, and a failed library write is logged and changes neither the verdict nor
@@ -1456,16 +1459,27 @@ the Run.
 
 At run start the QA consumer reads the project's entries and the platform seeds
 (`shared/qa_probe_library/`) and sends them as `WorkerConfig.qa_probe_library`;
-worker-manager writes them under `/workspace/qa-library/<platform>/<stem>.<py|sh>`
+worker-manager writes them under `/workspace/qa-library/<platform>/<name>.<py|sh>`
 with `index.json` (name, platform, origin `seed` or the storing run id, file,
-one-line usage) before the executor is marked running. Paths are closed by
-`QA_PROBE_LIBRARY_FILE_PATTERN`; an entry name that is not already a safe stem
-gets a sanitized stem plus a digest. Seeds are offered to a run with a
-`bot_username` (the Telegram bot under test) and shadow a stored entry of the
-same platform and name; another project's entry is never offered. A failed
-library read runs with the seeds alone. `QARunResult.probe_library` records the
-offer: `offered` (platform, name, origin) and `read_failure`, `null` when the run
-never reached the executor stage.
+one-line usage) before the executor is marked running. The entry name is its
+file stem, so the table's unique key makes paths unique, and
+`QA_PROBE_LIBRARY_FILE_PATTERN` closes them. The index is bounded by arithmetic,
+`QA_PROBE_LIBRARY_INDEX_MAX`: (cap + at most 13 seeds) rows of at most
+256 + 4 × 64 (name) + 6 × 255 (a JSON-escaped `runs.id` origin) + 64 (usage
+arguments) characters. Seeds are offered to a run with a `bot_username` (the
+Telegram bot under test) and shadow a stored entry of the same platform and
+name; another project's entry is never offered.
+
+A stored library never makes a run fail. A failed library read, or stored
+entries that cannot be laid out as one executor's library (a non-library name,
+a repeated path, more than `QA_PROBE_LIBRARY_MAX_FILES` files, a file or index
+over its bound — rows written before the name rule or by any other path), run
+with the seeds alone; the seeds alone always build. `QARunResult.probe_library`
+records the offer: `offered` (platform, name, origin), `read_failure` and
+`build_failure` (a bounded note of why the stored entries were dropped). It is
+set whenever `run_qa_centrally` returned, including a result that failed before
+the executor started, and `null` only when the run ended before the library was
+prepared (a preflight blocker) or the runner raised.
 
 The Telegram location seed takes `BOT LAT LON [WAIT_SECONDS]`, parses the
 coordinates with `float()`, refuses NaN, infinities and values outside

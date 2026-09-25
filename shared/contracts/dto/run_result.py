@@ -526,14 +526,18 @@ class QAProbeLibraryOffered(BaseModel):
 class QAProbeLibraryOffer(BaseModel):
     """What probe library a QA run's executor was offered, and why not more.
 
-    `read_failure` is set when the project's stored entries could not be read;
-    the run then proceeds with the platform seeds alone.
+    The run then proceeds with the platform seeds alone when either note is
+    set: `read_failure` when the project's stored entries could not be read,
+    `build_failure` when they were read but could not be laid out as one
+    executor's library (a name that is not a library name, a repeated path,
+    too many files or an index over its budget).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     offered: list[QAProbeLibraryOffered] = Field(default_factory=list)
     read_failure: str | None = None
+    build_failure: str | None = None
 
 
 class QARunResult(BaseModel):
@@ -556,8 +560,10 @@ class QARunResult(BaseModel):
     #: terminal writer held no probe record, and claims nothing about an
     #: executor that may have been in flight, matching `executor_transcript`.
     probe_runs: list[QAProbeRun] | None = None
-    #: The probe library the runner offered this run's executor. ``None`` when
-    #: the run never reached the executor stage that prepares it.
+    #: The probe library the consumer prepared for this run's executor. Set
+    #: whenever `run_qa_centrally` returned, including a result that failed
+    #: before the executor started; ``None`` when the run ended before the
+    #: library was prepared (a preflight blocker) or the runner raised.
     probe_library: QAProbeLibraryOffer | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
     #: The QA executor's own account of the run, as the QA runner saw it over the

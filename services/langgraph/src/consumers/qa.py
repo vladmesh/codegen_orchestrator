@@ -923,6 +923,7 @@ async def _store_passed_probes(*, project_id: str, run_id: str) -> None:
         run_id=run_id,
         stored=stored.stored,
         evicted=stored.evicted,
+        skipped=stored.skipped,
     )
 
 

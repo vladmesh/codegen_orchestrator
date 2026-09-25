@@ -139,8 +139,9 @@ class TestWhatAPassedRunContributes:
             }
         )
 
-        candidates = _library_candidates(result)
+        candidates, skipped = _library_candidates(result)
 
+        assert skipped == 0
         assert list(candidates) == [("http", "health"), ("telegram", "location")]
         assert candidates[("http", "health")].source == "second"
 
@@ -179,7 +180,7 @@ class TestStoringFromARun:
         response = await _post()
 
         assert response.status_code == 200
-        assert response.json() == {"stored": ["http/health"], "evicted": []}
+        assert response.json() == {"stored": ["http/health"], "evicted": [], "skipped": 0}
         [row] = fake.rows
         assert (row.source, row.file_kind, row.origin_run_id) == ("new", "py", "qa-run-1")
         assert fake.committed
@@ -203,9 +204,72 @@ class TestStoringFromARun:
 
         response = await _post()
 
-        assert response.json() == {"stored": ["http/fresh"], "evicted": ["web/old-0"]}
+        assert response.json() == {
+            "stored": ["http/fresh"],
+            "evicted": ["web/old-0"],
+            "skipped": 0,
+        }
         assert len(fake.rows) == QA_PROBE_LIBRARY_CAP
         assert [row.name for row in fake.deleted] == ["old-0"]
+
+    @pytest.mark.parametrize(
+        ("name", "kept"),
+        [
+            ("a b", False),
+            ("it's", False),
+            ('say"hi"', False),
+            ("ctl\x01char", False),
+            ("tab\there", False),
+            ("line\n", False),
+            ("x" * 256, False),
+            ("x" * 65, False),
+            ("../x", False),
+            ("a/b", False),
+            (".hidden", False),
+            ("-flag", False),
+            ("ÿ", False),
+            # The first review's collision pair: the spaced name is skipped,
+            # and the one that looked like its digest stem is just a name.
+            ("a_b-c8687a08", True),
+            ("x" * 64, True),
+            ("health.v2", True),
+            ("Check_1-a", True),
+        ],
+    )
+    async def test_a_name_that_is_not_a_library_name_is_skipped_and_counted(
+        self, session, name, kept
+    ):
+        fake = session["session"] = FakeSession(run=_run(_probe(name), _probe("health")))
+
+        response = await _post()
+
+        assert response.status_code == 200
+        stored = ["http/health", f"http/{name}"] if kept else ["http/health"]
+        assert sorted(response.json()["stored"]) == sorted(stored)
+        assert response.json()["skipped"] == (0 if kept else 1)
+        assert sorted(row.name for row in fake.rows) == sorted(
+            [name, "health"] if kept else ["health"]
+        )
+
+    async def test_the_reviewers_collision_pair_stores_one_entry(self, session):
+        fake = session["session"] = FakeSession(
+            run=_run(_probe("a b"), _probe("a_b-c8687a08")),
+        )
+
+        response = await _post()
+
+        assert response.json() == {"stored": ["http/a_b-c8687a08"], "evicted": [], "skipped": 1}
+        assert [row.name for row in fake.rows] == ["a_b-c8687a08"]
+
+    async def test_the_reviewers_overflow_names_store_nothing(self, session):
+        fake = session["session"] = FakeSession(
+            run=_run(*(_probe("'" * 250 + f"{index:03}") for index in range(QA_PROBE_LIBRARY_CAP))),
+        )
+
+        response = await _post()
+
+        assert response.json() == {"stored": [], "evicted": [], "skipped": QA_PROBE_LIBRARY_CAP}
+        assert fake.rows == []
 
     @pytest.mark.parametrize(
         "run",
