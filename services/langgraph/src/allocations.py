@@ -132,33 +132,7 @@ async def ensure_project_allocations(
     server_ip = server.public_ip
     application_id = app["id"]
 
-    # Check for existing allocations on this application
-    existing: list[AllocationInfo] = await api_client.get_application_allocations(application_id)
-    allocated: dict[str, dict] = {}
-    if existing:
-        logger.info(
-            "allocations_already_exist",
-            application_id=application_id,
-            count=len(existing),
-        )
-        for alloc in existing:
-            alloc_server = alloc["server_handle"]
-            port = alloc["port"]
-            key = f"{alloc_server}:{port}"
-
-            alloc_ip = alloc.get("server_ip")
-            if not alloc_ip:
-                srv: ServerDTO = await api_client.get_server(alloc_server)
-                alloc_ip = srv.public_ip
-
-            allocated[key] = {
-                "port": port,
-                "server_handle": alloc_server,
-                "server_ip": alloc_ip,
-                "service_name": alloc.get("service_name"),
-                "application_id": application_id,
-            }
-
+    allocated = await _application_allocations(application_id)
     existing_services = {alloc["service_name"] for alloc in allocated.values()}
     missing_modules = [
         module for module in dict.fromkeys(modules) if module not in existing_services
@@ -201,6 +175,68 @@ async def ensure_project_allocations(
             port=port,
         )
 
+    return allocated
+
+
+async def existing_project_allocations(
+    repo_id: str,
+    min_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    min_disk_mb: int = DEFAULT_ALLOCATION_MIN_DISK_MB,
+) -> dict[str, dict]:
+    """Read the allocations a deployed project holds, never creating any.
+
+    This is the read half of :func:`ensure_project_allocations`, for work that may
+    only act on an existing deployment. It creates no Application, chooses no
+    server and allocates no port. An empty result means the project has no
+    deployment: undeploy releases every allocation the application held.
+
+    Allocations that do exist are reused exactly as the get-or-create path reuses
+    them, so the bound host still has to pass admission before anything is
+    placed on it again.
+    """
+    existing_apps = await api_client.list_applications({"repo_id": repo_id})
+    if not existing_apps:
+        return {}
+    app = existing_apps[0]
+    allocated = await _application_allocations(app["id"])
+    if not allocated:
+        return {}
+    _refuse_inadmissible_target(
+        await api_client.get_server(app["server_handle"]),
+        provisioning_failed_server_handles(await api_client.list_active_incidents()),
+        min_ram_mb=min_ram_mb,
+        min_disk_mb=min_disk_mb,
+    )
+    return allocated
+
+
+async def _application_allocations(application_id: int) -> dict[str, dict]:
+    """Return an application's existing allocations keyed by "server_handle:port"."""
+    existing: list[AllocationInfo] = await api_client.get_application_allocations(application_id)
+    allocated: dict[str, dict] = {}
+    if existing:
+        logger.info(
+            "allocations_already_exist",
+            application_id=application_id,
+            count=len(existing),
+        )
+    for alloc in existing:
+        alloc_server = alloc["server_handle"]
+        port = alloc["port"]
+        key = f"{alloc_server}:{port}"
+
+        alloc_ip = alloc.get("server_ip")
+        if not alloc_ip:
+            srv: ServerDTO = await api_client.get_server(alloc_server)
+            alloc_ip = srv.public_ip
+
+        allocated[key] = {
+            "port": port,
+            "server_handle": alloc_server,
+            "server_ip": alloc_ip,
+            "service_name": alloc.get("service_name"),
+            "application_id": application_id,
+        }
     return allocated
 
 

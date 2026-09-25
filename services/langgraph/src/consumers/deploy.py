@@ -70,8 +70,21 @@ def _deploy_lock_ttl() -> int:
     return _config.get_int("deploy.deploy_lock_ttl", default=3600)
 
 
-async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
+async def _allocate_resources(
+    project_id: str,
+    project: ProjectDTO,
+    *,
+    temporary_access_operation: str | None = None,
+) -> dict | str:
     """Get or create allocations. Returns dict of resources or error string.
+
+    This is the deploy path's only allocation call, and the one place that
+    decides whether it may create. A temporary-access grant or revoke redeploys
+    what the target already runs, so for one the allocations are only read: an
+    empty result means the application has no deployment, and nothing is
+    allocated for it. On 2026-09-25 a revoke that arrived after its target was
+    undeployed re-allocated all four ports, failed its precheck, and left them
+    owned by an application nobody runs.
 
     An `AllocationError` is deliberately *not* caught here. It is the one failure
     on this path that is about the platform rather than the project, and it
@@ -79,7 +92,7 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
     function's error string is exactly how an unfinished host build used to reach
     the story as a product failure. The caller handles it as a typed outcome.
     """
-    from ..allocations import ensure_project_allocations
+    from ..allocations import ensure_project_allocations, existing_project_allocations
 
     config = project.config or {}
     modules = list(
@@ -92,6 +105,8 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
     if not primary_repo:
         return f"No repository found for project {project_id}"
     repo_id = primary_repo.id
+    if temporary_access_operation is not None:
+        return await existing_project_allocations(repo_id=repo_id, min_ram_mb=min_ram_mb)
     service_name = project_runtime_slug(project)
 
     return await ensure_project_allocations(
@@ -545,8 +560,11 @@ async def _allocate_deploy_resources(
     redis: RedisStreamClient,
 ) -> tuple[dict, dict[str, str]] | DeployTerminal:
     """Resolve placement and effective environment for a normal deploy."""
+    operation = base.access.temporary_access_operation
     try:
-        alloc_result = await _allocate_resources(msg.project_id, base.project)
+        alloc_result = await _allocate_resources(
+            msg.project_id, base.project, temporary_access_operation=operation
+        )
     except AllocationError as error:
         return DeployTerminal(await _record_infrastructure_wait(msg.task_id, msg.project_id, error))
 
@@ -563,6 +581,9 @@ async def _allocate_deploy_resources(
         )
         return DeployTerminal(live_work_unsettled({"status": "failed", "error": alloc_result}))
 
+    if operation is not None and not alloc_result:
+        return await _access_operation_without_deployment(base, msg, redis)
+
     try:
         env_overrides = _effective_env_overrides(base.project, msg.env_overrides)
     except ValueError as error:
@@ -573,6 +594,58 @@ async def _allocate_deploy_resources(
             deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
         )
     return alloc_result, env_overrides
+
+
+async def _access_operation_without_deployment(
+    base: DeployBaseContext,
+    msg: DeployMessage,
+    redis: RedisStreamClient,
+) -> DeployTerminal:
+    """Settle a temporary-access operation whose target is no longer deployed.
+
+    No precheck, SSH or DevOps run follows: there is nothing to redeploy. Access
+    to a deployment that no longer exists went away with it, so a revoke records
+    exactly what a proved revoke records and the supervisor settles the grant as
+    revoked. A grant has nothing to grant access to and fails through the grant
+    failure path, which the supervisor already retries and then cleans up.
+    """
+    operation = base.access.temporary_access_operation
+    grant = base.access.temporary_access_grant
+    logger.info(
+        "temporary_access_target_not_deployed",
+        task_id=msg.task_id,
+        project_id=msg.project_id,
+        grant_id=grant.id,
+        target_application_id=grant.target_application_id,
+        operation=operation,
+    )
+    if operation != "revoke":
+        return await _deploy_failure_terminal(
+            msg,
+            redis,
+            f"application {grant.target_application_id} has no deployment to grant access to",
+            deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+        )
+    await api_client.patch(
+        f"runs/{msg.task_id}",
+        json={
+            "status": RunStatus.COMPLETED.value,
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS,
+                action=msg.action,
+            ).model_dump(mode="json"),
+        },
+    )
+    await publish_callback_event(
+        redis,
+        msg.callback_stream,
+        "completed",
+        msg.task_id,
+        "Temporary access revoked: the application is no longer deployed",
+        telegram_chat_id=msg.telegram_chat_id,
+        project_id=msg.project_id,
+    )
+    return DeployTerminal(live_work_settled({"status": "success", "reason": "not_deployed"}))
 
 
 async def _maybe_skip_redundant_deploy(

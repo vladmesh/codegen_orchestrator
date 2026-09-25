@@ -20,7 +20,7 @@ from shared.contracts.dto.run_result import (
     QARunResult,
 )
 from shared.contracts.dto.temporary_access import TemporaryAccessRevokeReason, TemporaryAccessStatus
-from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import QA_QUEUE
 from shared.redis import RedisStreamClient
@@ -335,6 +335,49 @@ async def test_the_second_story_gets_access_once_the_first_story_released_its_gr
 
     # Leave no queued paid run behind: the ceiling this suite shares is global.
     await _finish_qa_run(async_client, second_qa_run_id)
+
+
+@pytest.mark.asyncio
+async def test_a_revoke_that_lands_after_undeploy_closes_the_grant(
+    async_client, api_client, redis_client
+):
+    """Stand run 36075631307: the suite undeployed before the revoke ran.
+
+    The deploy consumer now allocates nothing for that revoke and records what a
+    proved revoke records; the real API has to accept it as revoke proof, and
+    the grant closes with no retry and no escalation.
+    """
+    project_id, application_id, qa_run_id = await _target_with_qa_run(async_client)
+    await _settle_grant_through_to_granted(
+        async_client, api_client, redis_client, project_id, application_id, qa_run_id
+    )
+    await _finish_qa_run(async_client, qa_run_id)
+    undeployed = await async_client.patch(
+        f"/api/applications/{application_id}", json={"status": "not_deployed"}
+    )
+    assert undeployed.status_code == httpx.codes.OK, undeployed.text
+    await supervise_temporary_access(api_client, redis_client)
+    revoking = await _grant(async_client, qa_run_id)
+    assert revoking["status"] == TemporaryAccessStatus.REVOKING.value
+
+    # The deploy consumer's record for a revoke whose target has no allocations.
+    settled = await async_client.patch(
+        f"/api/runs/{revoking['revoke_run_id']}",
+        json={
+            "status": "completed",
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.SUCCESS, action=DeployAction.FEATURE
+            ).model_dump(mode="json"),
+        },
+    )
+    assert settled.status_code == httpx.codes.OK, settled.text
+    await supervise_temporary_access(api_client, redis_client)
+
+    grant = await _grant(async_client, qa_run_id)
+    assert grant["status"] == TemporaryAccessStatus.REVOKED.value
+    assert grant["revoke_run_id"] == revoking["revoke_run_id"]
+    assert grant["revoke_attempts"] == revoking["revoke_attempts"]
+    assert grant["escalated_at"] is None
 
 
 @pytest.mark.asyncio

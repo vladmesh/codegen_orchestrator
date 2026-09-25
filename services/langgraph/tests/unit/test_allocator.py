@@ -840,3 +840,56 @@ class TestProvisioningAdmissionOnReuse:
 
         assert raised.value.required_ram_mb == 512 + 256
         assert raised.value.min_disk_mb == 1024
+
+
+class TestExistingProjectAllocations:
+    """The read half: what a deployed project holds, and never anything new."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_reading_a_deployment_obeys_the_shared_matrix(self, case):
+        """What it hands back is redeployed onto that host, so admission still applies."""
+        client, server = _bound_client(case, datetime.now(UTC))
+
+        with patch("src.allocations.api_client", client):
+            from src.allocations import AllocationError, existing_project_allocations
+
+            if case.admitted:
+                allocated = await existing_project_allocations(repo_id="repo-1")
+                assert list(allocated) == [f"{server.handle}:8000"]
+            else:
+                with pytest.raises(AllocationError) as raised:
+                    await existing_project_allocations(repo_id="repo-1")
+                assert raised.value.reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+
+        client.allocate_next_port.assert_not_awaited()
+        client.get_or_create_application.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_an_undeployed_application_reads_empty_whatever_its_host(self, case):
+        """No allocations is no deployment; there is nothing to place, so nothing to refuse."""
+        client, _ = _bound_client(case, datetime.now(UTC))
+        client.get_application_allocations.return_value = []
+
+        with patch("src.allocations.api_client", client):
+            from src.allocations import existing_project_allocations
+
+            assert await existing_project_allocations(repo_id="repo-1") == {}
+
+        client.allocate_next_port.assert_not_awaited()
+        client.get_or_create_application.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_project_without_an_application_reads_empty(self):
+        client = AsyncMock()
+        client.list_applications.return_value = []
+
+        with patch("src.allocations.api_client", client):
+            from src.allocations import existing_project_allocations
+
+            assert await existing_project_allocations(repo_id="repo-1") == {}
+
+        client.list_servers.assert_not_awaited()
+        client.get_or_create_application.assert_not_awaited()
+        client.allocate_next_port.assert_not_awaited()

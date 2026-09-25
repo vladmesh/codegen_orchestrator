@@ -67,10 +67,15 @@ def mock_api():
 
 @pytest.fixture
 def mock_allocations():
-    """Patch allocation lookup (lazy import inside process_deploy_job)."""
+    """Patch allocation lookup (lazy import inside process_deploy_job).
+
+    A product deploy gets or creates allocations; a temporary-access operation
+    only reads them. Both answer from the same mock here.
+    """
     mock_fn = AsyncMock(return_value={"server_ip": "1.2.3.4", "port": 8080})
     with (
         patch("src.allocations.ensure_project_allocations", mock_fn),
+        patch("src.allocations.existing_project_allocations", mock_fn),
         patch("src.allocations.AllocationError", Exception),
     ):
         yield mock_fn

@@ -1430,7 +1430,13 @@ Canonical contracts: `dto/temporary_access.py` and `dto/qa_ssh_grant.py`.
 Persist the immutable QA identity and exact deployed-service target before the
 capability operation is dispatched. The post-health deploy worker resolves the
 generated capability only in `secret_values`, then proves grant or revoke with
-the matching access readback. Both target columns are NOT NULL: every record has
+the matching access readback. A grant or revoke only ever acts on an existing
+deployment: the deploy consumer reads the target's allocations and never creates
+any (`existing_project_allocations`). With none, the application is not deployed:
+a revoke completes `SUCCESS` with no precheck, SSH or DevOps run, because the
+access went with the deployment, and the reconciler closes the grant as for any
+proved revoke; a grant fails `owner_access_proof_failed` through the ordinary
+grant retry. Both target columns are NOT NULL: every record has
 a target. The target lock and partial unique index scope contention to
 `(project_id, target_application_id)`.
 Cancelled deploy-lock or fence operations are redispatched against their stored
