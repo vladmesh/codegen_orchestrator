@@ -23,7 +23,7 @@ are the same whether or not that list is there.
 from collections.abc import Sequence
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
-from shared.qa_probe_cli import QA_PROBE_NAME, QA_PROBE_USAGE
+from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_NAME, QA_PROBE_USAGE
 
 __all__ = [
     "QA_TEST_TELEGRAM_ID",
@@ -275,6 +275,8 @@ try to change the application you are testing.
   file) — never a direct write to the application's API.
 - Run every script you write to check the product through `{QA_PROBE_NAME} probe`; a check
   that rests on one names its probe id in its detail.
+- `{QA_PROBE_LIBRARY_PATH}/index.json` lists ready probes: platform seeds and probes earlier
+  passed runs of this product kept. Run one through `{QA_PROBE_NAME} probe` like any other probe.
 - Never attempt any request to the application that is not a GET. The one thing you may
   ask the application to *do* is `{QA_PROBE_NAME} fire_job <name>`, for a
   scheduled behaviour this run's task names; what it answers with is a dispatch

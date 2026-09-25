@@ -24,6 +24,7 @@ import structlog
 
 from shared.contracts.dto.run_result import (
     QABlocker,
+    QAProbeFileKind,
     QAProbePlatform,
     QAProbeRun,
     QATelegramProbeEvidence,
@@ -198,7 +199,7 @@ class QAWorkspace:
         if blocker is not None and self.telegram_probe_blocker is None:
             self.telegram_probe_blocker = blocker
 
-    def record_probe(  # noqa: PLR0913 - the retained record is the typed endpoint contract
+    def record_probe(  # noqa: PLR0911, PLR0913 - the retained record is the typed endpoint contract
         self,
         *,
         platform: str,
@@ -212,6 +213,7 @@ class QAWorkspace:
         source_truncated: bool = False,
         stdout_truncated: bool = False,
         stderr_truncated: bool = False,
+        file_kind: str | None = None,
     ) -> dict:
         """Validate and retain a sandbox probe without trusting its account."""
         if len(self.probe_runs) >= MAX_PROBES:
@@ -220,6 +222,11 @@ class QAWorkspace:
             item.value for item in QAProbePlatform
         }:
             return {"error": "platform must be one of telegram, http, web"}
+        if file_kind is not None and (
+            not isinstance(file_kind, str)
+            or file_kind not in {item.value for item in QAProbeFileKind}
+        ):
+            return {"error": "file_kind must be py or sh"}
         if not isinstance(name, str) or not name.strip():
             return {"error": "name must be a non-empty string"}
         if len(name) > MAX_PROBE_NAME:
@@ -281,6 +288,7 @@ class QAWorkspace:
             source_truncated=source_truncated,
             stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated,
+            file_kind=file_kind,
         )
         self.probe_runs.append(probe)
         return {"id": probe.id}

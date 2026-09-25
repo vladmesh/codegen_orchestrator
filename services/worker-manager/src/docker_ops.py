@@ -244,14 +244,14 @@ class DockerClientWrapper:
             pass
 
     async def exec_in_container(
-        self, container_id: str, command: str, user: str = "worker", timeout: int = 30
+        self, container_id: str, command: str | list[str], user: str = "worker", timeout: int = 30
     ) -> tuple[int, bytes]:
         """
         Execute a command in a running container.
 
         Args:
             container_id: ID of the container
-            command: Command run
+            command: Command run, as a shell-free argument list or one string
             user: User to run command as (default: "worker")
             timeout: Timeout in seconds (default: 30)
 

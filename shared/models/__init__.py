@@ -18,6 +18,7 @@ from .port_allocation import PortAllocation
 from .product_brief import ProductBrief, RequirementCoverage
 from .project import Project
 from .promo_code import PromoCode
+from .qa_probe import QAProbe
 from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
 from .repository import Repository
 from .resource import Resource
@@ -56,6 +57,7 @@ __all__ = [
     "PortAllocation",
     "ProductBrief",
     "PromoCode",
+    "QAProbe",
     "RequirementCoverage",
     "Task",
     "TaskEvent",

@@ -1,4 +1,5 @@
 import base64
+from collections.abc import Sequence
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -19,6 +20,7 @@ from shared.contracts.dto.engineering_execution import (
     EngineeringInfrastructureRefusal,
 )
 from shared.contracts.dto.executor_diagnostics import ExecutorDiagnosticSnapshot
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.worker import (
     WORKER_CREATION_FAILURE_TTL_SECONDS,
@@ -27,7 +29,7 @@ from shared.contracts.dto.worker import (
 )
 from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
-from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
+from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.queues import WORKER_COMMANDS
 from shared.redis import decode_redis_fields, decode_redis_value
 
@@ -51,6 +53,15 @@ _REJECTED_WORKER_OBSERVATION_SECONDS = 300
 # capability endpoint and that endpoint's token. Anything else in a QA create
 # request is refused, so nothing more of qa-worker's environment can ride along.
 QA_EXECUTOR_ENV_KEYS = frozenset({"QA_CAPABILITY_URL", "QA_CAPABILITY_TOKEN"})
+# Writes one chunk of a probe-library file: path, base64 bytes and mode (`w` for
+# the first chunk, `a` after it) are arguments. A chunk stays well under the
+# kernel's 128 KiB limit on one exec argument once encoded.
+_WRITE_LIBRARY_FILE = (
+    "import base64, os, sys; p = sys.argv[1]; "
+    "os.makedirs(os.path.dirname(p), exist_ok=True); "
+    "open(p, sys.argv[3] + 'b').write(base64.b64decode(sys.argv[2]))"
+)
+_LIBRARY_CHUNK_BYTES = 60_000
 
 # What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
 # network is created and destroyed with its worker but is a separate Docker
@@ -752,6 +763,7 @@ class WorkerManager:
         repo_id: str | None = None,
         branch: str | None = None,
         qa_target_url: str | None = None,
+        qa_probe_library: Sequence[QAProbeLibraryFile] = (),
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -766,6 +778,9 @@ class WorkerManager:
         `qa_target_url` is a QA executor's deployed public URL. Its host is the
         one product destination the run's egress proxy opens; it is validated
         here, before anything is stamped or created.
+
+        `qa_probe_library` is the probe library a QA executor is offered, written
+        under `QA_PROBE_LIBRARY_PATH` before the executor is marked running.
         """
         logger.info(
             "create_worker_with_capabilities",
@@ -966,7 +981,7 @@ class WorkerManager:
             )
 
             if is_qa_worker:
-                await self._inject_qa_probe(container_id, worker_id)
+                await self._inject_qa_probe(container_id, worker_id, qa_probe_library)
                 await self.redis.hset(
                     f"worker:status:{worker_id}",
                     mapping={"status": WorkerStatus.RUNNING},
@@ -1285,8 +1300,13 @@ class WorkerManager:
             return settings.QA_CODEX_BACKEND_HOSTS
         return settings.QA_CLAUDE_BACKEND_HOSTS
 
-    async def _inject_qa_probe(self, container_id: str, worker_id: str) -> None:
-        """Put the QA executor's one command into its workspace.
+    async def _inject_qa_probe(
+        self,
+        container_id: str,
+        worker_id: str,
+        probe_library: Sequence[QAProbeLibraryFile] = (),
+    ) -> None:
+        """Put the QA executor's one command, and its probe library, into its workspace.
 
         This is the whole of what the container can reach the deployment with.
         It carries no address and no credential of its own — both arrive in the
@@ -1310,6 +1330,37 @@ class WorkerManager:
                 f"could not install the QA capability command in {worker_id}: {output}"
             )
         logger.info("qa_probe_installed", worker_id=worker_id, path=QA_PROBE_PATH)
+        await self._inject_qa_probe_library(container_id, worker_id, probe_library)
+
+    async def _inject_qa_probe_library(
+        self, container_id: str, worker_id: str, files: Sequence[QAProbeLibraryFile]
+    ) -> None:
+        """Write the run's probe library, one file per call, before the executor runs.
+
+        Each path already matched the library's closed pattern on the create
+        request, so none of them can name anything outside the directory. The
+        content travels as an argument rather than inside the command text, so
+        no probe source is ever part of what the container parses as code.
+        """
+        for item in files:
+            path = f"{QA_PROBE_LIBRARY_PATH}/{item.path}"
+            content = item.content.encode("utf-8")
+            for offset in range(0, max(len(content), 1), _LIBRARY_CHUNK_BYTES):
+                chunk = base64.b64encode(content[offset : offset + _LIBRARY_CHUNK_BYTES]).decode()
+                mode = "w" if offset == 0 else "a"
+                exit_code, output = await self.docker.exec_in_container(
+                    container_id, ["python3", "-c", _WRITE_LIBRARY_FILE, path, chunk, mode]
+                )
+                if exit_code != 0:
+                    raise RuntimeError(
+                        f"could not write the QA probe library file {path} in {worker_id}: {output}"
+                    )
+        logger.info(
+            "qa_probe_library_installed",
+            worker_id=worker_id,
+            path=QA_PROBE_LIBRARY_PATH,
+            files=len(files),
+        )
 
     def _prune_transcripts(self) -> None:
         """Delete expired disk artifacts without affecting worker creation."""

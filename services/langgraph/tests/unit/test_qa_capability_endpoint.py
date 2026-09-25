@@ -139,6 +139,13 @@ class TestTheSetIsClosed:
             ("name", "n" * 257),
             ("arguments", ["x"] * 65),
             ("arguments", ["x" * 8193]),
+            # The location seed's coordinates arrive only as argv strings;
+            # numbers or objects in their place are a malformed record.
+            ("arguments", ["@weather_bot", 55.75, 37.61]),
+            ("arguments", ["@weather_bot", {"lat": "1); import os#"}, "37.6"]),
+            ("arguments", "@weather_bot 55.75 37.61"),
+            ("file_kind", "exe"),
+            ("file_kind", ["py"]),
         ],
     )
     async def test_probe_metadata_over_bounds_is_refused(self, endpoint, field, value):

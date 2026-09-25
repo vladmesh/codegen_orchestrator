@@ -396,6 +396,7 @@ def _writing_executor(deployed_url: str):
         calls_served,
         timeout,
         on_create_published,
+        probe_library=None,
     ):
         on_create_published()
         async with aiohttp.ClientSession() as session:

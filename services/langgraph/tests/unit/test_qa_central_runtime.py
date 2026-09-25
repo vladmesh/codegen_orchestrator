@@ -321,8 +321,10 @@ def _executor_factory(behaviour, *, unavailable: QAExecutorUnavailable | None = 
         calls_served,
         timeout,
         on_create_published,
+        probe_library=None,
     ):
         run.prompt = prompt
+        run.probe_library = probe_library
         run.deploy_target_url = deploy_target_url
         run.instructions = instructions
         run.agent_type = agent_type

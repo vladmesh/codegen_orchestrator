@@ -151,6 +151,7 @@ class WorkerCommandConsumer:
                 repo_id=cmd.config.repo_id,
                 branch=cmd.config.branch,
                 qa_target_url=cmd.config.qa_target_url,
+                qa_probe_library=cmd.config.qa_probe_library,
             )
             # No return — early ACK already sent, status is RUNNING in Redis
             return None
