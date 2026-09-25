@@ -41,6 +41,8 @@ qa telegram_click_button ID DATA    — invoke a visible inline bot button
 qa telegram_identity                — write the QA Telegram account's Telethon
                                       credentials and proxy to ~/.qa/telegram_identity.json
                                       for your own client; never print that file
+qa probe PLATFORM NAME FILE [ARG ...] — run a .py or .sh product check and retain
+                                      its source, arguments and output as evidence
 qa report FILE                      — store the Markdown QA report
 qa finish FILE                      — submit the final result JSON and end the run\
 """
@@ -51,7 +53,9 @@ QA_PROBE_SCRIPT = '''#!/usr/bin/env python3
 
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,6 +63,7 @@ import urllib.request
 USAGE = """__QA_PROBE_USAGE__"""
 
 TIMEOUT = 180
+PROBE_TIMEOUT = 60
 IDENTITY_FILE = "__QA_IDENTITY_FILE__"
 
 
@@ -131,6 +136,15 @@ def build_call(argv):
         if rest:
             fail("usage: qa telegram_identity")
         return "telegram_identity", {}
+    if command == "probe":
+        if len(rest) < 3:
+            fail("usage: qa probe PLATFORM NAME FILE [ARG ...]")
+        platform, name, path = rest[:3]
+        if platform not in ("telegram", "http", "web"):
+            fail("PLATFORM must be one of telegram, http, web")
+        if not name.strip():
+            fail("NAME must not be empty")
+        return "probe", {"platform": platform, "name": name, "path": path, "arguments": rest[3:]}
     if command == "report":
         if len(rest) != 1:
             fail("usage: qa report FILE")
@@ -157,6 +171,8 @@ def main():
         )
 
     tool, args = build_call(argv)
+    if tool == "probe":
+        return run_probe(args)
     payload = json.dumps({"tool": tool, "args": args}).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
@@ -182,6 +198,78 @@ def main():
     sys.stdout.write(body + "\\n")
     error = answer.get("error")
     return 1 if isinstance(error, str) and error.strip() else 0
+
+
+def run_probe(args):
+    """Run one local check, then send its complete bounded record to the runner."""
+    path = args["path"]
+    source = read_file(path)
+    if path.endswith(".py"):
+        command = [sys.executable, path, *args["arguments"]]
+    elif path.endswith(".sh"):
+        command = ["sh", path, *args["arguments"]]
+    else:
+        fail("qa probe accepts only .py and .sh files")
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT,
+            check=False,
+        )
+        stdout, stderr, exit_status = completed.stdout, completed.stderr, completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = (exc.stderr or "") + "\\nprobe timed out after %ss" % PROBE_TIMEOUT
+        exit_status = 124
+    duration_ms = int((time.monotonic() - started) * 1000)
+    record = {
+        "platform": args["platform"],
+        "name": args["name"],
+        "source": source,
+        "arguments": args["arguments"],
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_status": exit_status,
+        "duration_ms": duration_ms,
+    }
+    answer = call("record_probe", record)
+    if answer.get("error"):
+        sys.stdout.write(json.dumps(answer) + "\\n")
+        return 1
+    sys.stdout.write(str(answer.get("id", "")) + "\\n")
+    sys.stdout.write(stdout)
+    sys.stderr.write(stderr)
+    return exit_status
+
+
+def call(tool, args):
+    endpoint = os.environ.get("QA_CAPABILITY_URL")
+    token = os.environ.get("QA_CAPABILITY_TOKEN")
+    if not endpoint or not token:
+        fail(
+            "this container was not given a QA capability endpoint; "
+            "there is no other way to reach the deployment"
+        )
+    payload = json.dumps({"tool": tool, "args": args}).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return json.loads(exc.read().decode("utf-8", "replace"))
+    except OSError as exc:
+        fail("the QA capability endpoint did not answer: %s" % exc)
 
 
 def write_identity(answer):

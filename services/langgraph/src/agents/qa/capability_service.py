@@ -44,6 +44,8 @@ class QACapabilityService:
         advertised_host: str,
         telegram_identity: Mapping[str, str] | None = None,
         telegram_identity_refusal: str | None = None,
+        probe_secrets: tuple[str, ...] = (),
+        redact_text: Callable[[str | None, tuple[str, ...]], str | None] | None = None,
         bind_host: str = "0.0.0.0",  # noqa: S104 — reachable from the executor's network
         port: int = 0,
     ) -> None:
@@ -61,6 +63,8 @@ class QACapabilityService:
         self._bind_host = bind_host
         self._port = port
         self._token = secrets.token_urlsafe(32)
+        self._probe_secrets = (*probe_secrets, self._token)
+        self._redact_text = redact_text or (lambda text, _secrets: text)
         self._runner: web.AppRunner | None = None
         self.verdict_received = asyncio.Event()
         # Distinguishes an executor failure from a run with no verdict.
@@ -145,6 +149,8 @@ class QACapabilityService:
                     )
                 )
             )
+        if name == "record_probe":
+            args = self._scrub_probe_args(args)
         self._check_arguments(name, call, args)
         self.calls_served += 1
         value = call(**args)
@@ -153,6 +159,18 @@ class QACapabilityService:
         if isinstance(value, dict):
             return {"tool": name, **value}
         return {"tool": name, "result": value}
+
+    def _scrub_probe_args(self, args: dict) -> dict:
+        """Keep credentials and this endpoint's token out of every probe text field."""
+
+        def scrub(value):
+            if isinstance(value, str):
+                return self._redact_text(value, self._probe_secrets)
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return {key: scrub(value) for key, value in args.items()}
 
     @staticmethod
     def _check_arguments(name: str, call: Callable, args: dict) -> None:

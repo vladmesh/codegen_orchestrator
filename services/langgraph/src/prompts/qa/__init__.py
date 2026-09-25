@@ -273,6 +273,8 @@ try to change the application you are testing.
   (plain `http://` needs `curl --proxytunnel`) and use Telegram as the QA account
   (`{QA_PROBE_NAME} telegram_identity` sets up your Telethon client; never print that
   file) — never a direct write to the application's API.
+- Run every script you write to check the product through `{QA_PROBE_NAME} probe`; a check
+  that rests on one names its probe id in its detail.
 - Never attempt any request to the application that is not a GET. The one thing you may
   ask the application to *do* is `{QA_PROBE_NAME} fire_job <name>`, for a
   scheduled behaviour this run's task names; what it answers with is a dispatch

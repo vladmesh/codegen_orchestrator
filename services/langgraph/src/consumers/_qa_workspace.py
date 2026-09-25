@@ -22,7 +22,12 @@ import tempfile
 
 import structlog
 
-from shared.contracts.dto.run_result import QABlocker, QATelegramProbeEvidence
+from shared.contracts.dto.run_result import (
+    QABlocker,
+    QAProbePlatform,
+    QAProbeRun,
+    QATelegramProbeEvidence,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +35,10 @@ QA_WORKSPACE_ROOT = "/tmp/qa-runs"  # noqa: S108 — container-local, one dir pe
 REPORT_NAME = "QA_REPORT.md"
 TRACE_NAME = "tool-trace.jsonl"
 VERDICT_NAME = "verdict.json"
+MAX_PROBES = 50
+MAX_PROBE_TEXT = 20_000
+MAX_PROBE_DURATION_MS = 65_000
+MAX_PROBE_EXIT_STATUS = 255
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,7 @@ class QAWorkspace:
     residual: str | None = None
     verdict: str | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
+    probe_runs: list[QAProbeRun] = field(default_factory=list)
     telegram_probe_blocker: QABlocker | None = None
     #: Behaviours the product accepted a fire for during this run, mapped to
     #: how many calls this run had made when it accepted them. Written by the
@@ -183,6 +193,74 @@ class QAWorkspace:
         self.telegram_probe_evidence.append(evidence)
         if blocker is not None and self.telegram_probe_blocker is None:
             self.telegram_probe_blocker = blocker
+
+    def record_probe(
+        self,
+        *,
+        platform: str,
+        name: str,
+        source: str,
+        arguments: list[str],
+        stdout: str,
+        stderr: str,
+        exit_status: int,
+        duration_ms: int,
+    ) -> dict:
+        """Validate and retain a sandbox probe without trusting its account."""
+        if len(self.probe_runs) >= MAX_PROBES:
+            return {"error": f"at most {MAX_PROBES} probes may be retained per run"}
+        if not isinstance(platform, str) or platform not in {
+            item.value for item in QAProbePlatform
+        }:
+            return {"error": "platform must be one of telegram, http, web"}
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "name must be a non-empty string"}
+        if not all(isinstance(value, str) for value in (source, stdout, stderr)):
+            return {"error": "source, stdout and stderr must be strings"}
+        if not isinstance(arguments, list) or not all(
+            isinstance(value, str) for value in arguments
+        ):
+            return {"error": "arguments must be a list of strings"}
+        if (
+            isinstance(exit_status, bool)
+            or not isinstance(exit_status, int)
+            or not -MAX_PROBE_EXIT_STATUS <= exit_status <= MAX_PROBE_EXIT_STATUS
+        ):
+            return {
+                "error": (
+                    f"exit_status must be an integer between -{MAX_PROBE_EXIT_STATUS} "
+                    f"and {MAX_PROBE_EXIT_STATUS}"
+                )
+            }
+        if (
+            isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, int)
+            or not 0 <= duration_ms <= MAX_PROBE_DURATION_MS
+        ):
+            return {"error": f"duration_ms must be between 0 and {MAX_PROBE_DURATION_MS}"}
+
+        def bounded(value: str) -> tuple[str, bool]:
+            return value[:MAX_PROBE_TEXT], len(value) > MAX_PROBE_TEXT
+
+        bounded_source, source_truncated = bounded(source)
+        bounded_stdout, stdout_truncated = bounded(stdout)
+        bounded_stderr, stderr_truncated = bounded(stderr)
+        probe = QAProbeRun(
+            id=f"probe-{len(self.probe_runs) + 1}",
+            platform=platform,
+            name=name.strip(),
+            source=bounded_source,
+            arguments=arguments,
+            stdout=bounded_stdout,
+            stderr=bounded_stderr,
+            exit_status=exit_status,
+            duration_ms=duration_ms,
+            source_truncated=source_truncated,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+        )
+        self.probe_runs.append(probe)
+        return {"id": probe.id}
 
     def trace_text(self) -> str:
         """The whole trace as one blob, for scanning."""

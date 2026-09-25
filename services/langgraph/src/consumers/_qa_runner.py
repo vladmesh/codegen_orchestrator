@@ -29,6 +29,7 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QAFailedCheckCause,
+    QAProbeRun,
     QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
@@ -257,6 +258,7 @@ class QAResult:
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
+    probe_runs: list[QAProbeRun] | None = None
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
     # (`QARunResult.executor_transcript`) because it exists nowhere else once the
@@ -1376,6 +1378,12 @@ def _apply_telegram_probe_evidence(qa_result: QAResult, workspace: QAWorkspace) 
     return qa_result
 
 
+def _apply_probe_runs(qa_result: QAResult, workspace: QAWorkspace) -> QAResult:
+    """Carry runner-owned executor probe records over the Run boundary."""
+    qa_result.probe_runs = list(workspace.probe_runs)
+    return qa_result
+
+
 async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
@@ -1420,6 +1428,8 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             if runtime.telegram_identity_refusal
             else None
         ),
+        probe_secrets=secrets,
+        redact_text=redact,
     )
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
@@ -1445,8 +1455,11 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         if executor_run is not None:
             return apply_unverifiable_criteria(
                 apply_package_acceptance(
-                    _apply_telegram_probe_evidence(
-                        _verdict_of(workspace, service, timeout, said), workspace
+                    _apply_probe_runs(
+                        _apply_telegram_probe_evidence(
+                            _verdict_of(workspace, service, timeout, said), workspace
+                        ),
+                        workspace,
                     ),
                     acceptance,
                     workspace,
@@ -1696,9 +1709,15 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             acceptance=acceptance,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
+            if attempts.started:
+                qa_result = _apply_probe_runs(qa_result, workspace)
             write = _forbidden_application_write(
                 f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
-                f"{qa_result.executor_evidence or ''}",
+                f"{qa_result.executor_evidence or ''}\n"
+                + "\n".join(
+                    f"{probe.source}\n{probe.stdout}\n{probe.stderr}"
+                    for probe in qa_result.probe_runs or []
+                ),
                 target.deployed_url,
             )
             if write:
@@ -1727,6 +1746,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                 blocker=failure.blocker,
                 executor_evidence=failure.executor_transcript,
                 executor_attempt=attempts.attempt,
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1752,6 +1772,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     sent=exc.sent,
                     received=exc.received,
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1783,6 +1804,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
                     received=str(exc),
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )
@@ -1799,6 +1821,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                     sent=f"QA run on {target.server_ip}",
                     received=str(exc),
                 ),
+                probe_runs=list(workspace.probe_runs) if attempts.started else None,
             ),
             _residues(grant, workspace),
         )

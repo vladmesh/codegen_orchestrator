@@ -1414,6 +1414,26 @@ for this sprint: closing it would change terminal ownership and the run
 lifecycle. Under the rule above it costs no false statement — the artifact
 reports which path settled the Run and claims nothing about the executor.
 
+### QA probes are Run evidence
+
+`QARunResult.probe_runs` retains each `qa probe` record in capability-call
+order: its runner-assigned id, closed platform (`telegram`, `http`, or `web`),
+source, arguments, stdout, stderr, exit status, duration and per-text truncation
+flags. The capability endpoint bounds every text field and the per-Run count,
+scrubs the QA Telethon credentials and run token before storage, and refuses a
+malformed record with an error response. `[]` means the executor ran and no
+probes were recorded; `null` means the terminal writer held no probe record and
+does not claim anything about an executor it did not observe.
+
+Probe source and output enter the same forbidden-application-write scan as the
+runner trace, report, verdict and transcript. A hidden POST, PUT, PATCH or
+DELETE therefore fails the Run closed even when its executor verdict says pass.
+
+QA executor containers retain no transcript file. Their output is retained only
+as `executor_transcript` and `probe_runs`; QA Run, attempt and executor-result
+records omit a transcript locator, and qa-worker deletes `worker:{id}:output`
+when the run ends so a session cannot survive in the broker stream.
+
 ### Deploy dispatch, withdrawal, and deadlines
 
 `shared/contracts/dto/deploy_dispatch.py` and `services/api/src/routers/runs.py`

@@ -473,6 +473,33 @@ class QAStateChange(BaseModel):
     cleanup: QAStateChangeCleanup
 
 
+class QAProbePlatform(StrEnum):
+    """The executor surface a retained QA probe exercised."""
+
+    TELEGRAM = "telegram"
+    HTTP = "http"
+    WEB = "web"
+
+
+class QAProbeRun(BaseModel):
+    """One executor-authored probe, retained by the QA runner in call order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    platform: QAProbePlatform
+    name: str = Field(min_length=1)
+    source: str
+    arguments: list[str]
+    stdout: str
+    stderr: str
+    exit_status: int
+    duration_ms: int = Field(ge=0)
+    source_truncated: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -487,6 +514,12 @@ class QARunResult(BaseModel):
     error: str | None = None
     blocker: QABlocker | None = None
     telegram_probe_evidence: list[QATelegramProbeEvidence] = Field(default_factory=list)
+    #: Executor-authored probes retained by the QA runner in the order their
+    #: `qa probe` record calls arrived. ``[]`` means the executor ran and the
+    #: writer held its probe record but none were recorded. ``None`` means this
+    #: terminal writer held no probe record, and claims nothing about an
+    #: executor that may have been in flight, matching `executor_transcript`.
+    probe_runs: list[QAProbeRun] | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
     #: The QA executor's own account of the run, as the QA runner saw it over the
     #: worker's output stream (`QAExecutorRun.transcript`, bounded there), with

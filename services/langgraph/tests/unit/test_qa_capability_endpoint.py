@@ -45,6 +45,12 @@ NEIGHBOUR_CONTAINER = "other-project-web-1"
 PASSING_JSON = '{"pass": true, "checks": [], "summary": "OK"}'
 
 
+def _redact_probe_text(text: str | None, secrets: tuple[str, ...]) -> str | None:
+    for secret in secrets:
+        text = text.replace(secret, "[redacted]") if text else text
+    return text
+
+
 class FakeConn:
     """A target that records everything the endpoint actually sends it."""
 
@@ -67,6 +73,8 @@ async def endpoint(tmp_path):
             capabilities=CAPABILITIES.describe(),
             submit_verdict=workspace.submit_verdict,
             advertised_host="127.0.0.1",
+            probe_secrets=("session-secret", "api-hash"),
+            redact_text=_redact_probe_text,
         )
         started = await service.start()
         try:
@@ -178,6 +186,86 @@ class TestTheSetIsClosed:
 
         trace = endpoint.workspace.trace_path.read_text()
         assert '"tool": "container_logs"' in trace
+
+    async def test_probe_record_is_bounded_and_retained_in_call_order(self, endpoint):
+        source = "print('x')" * 3000
+        status, first = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "http",
+                "name": "health",
+                "source": source,
+                "arguments": ["/health"],
+                "stdout": "ok",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 12,
+            },
+        )
+        _, second = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "web",
+                "name": "page",
+                "source": "echo page",
+                "arguments": [],
+                "stdout": "page",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert status == 200
+        assert (first["id"], second["id"]) == ("probe-1", "probe-2")
+        [recorded_first, recorded_second] = endpoint.workspace.probe_runs
+        assert recorded_first.source_truncated is True
+        assert recorded_first.source != source
+        assert recorded_second.name == "page"
+
+    async def test_malformed_probe_is_refused_without_recording_it(self, endpoint):
+        status, body = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "database",
+                "name": "bad",
+                "source": 3,
+                "arguments": [],
+                "stdout": "",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert status == 200
+        assert "error" in body
+        assert endpoint.workspace.probe_runs == []
+
+    async def test_probe_text_is_scrubbed_before_workspace_retention(self, endpoint):
+        _, body = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "telegram",
+                "name": "identity",
+                "source": f"print('session-secret {endpoint.token}')",
+                "arguments": ["api-hash"],
+                "stdout": "session-secret",
+                "stderr": endpoint.token,
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert body["id"] == "probe-1"
+        retained = endpoint.workspace.probe_runs[0]
+        assert "session-secret" not in retained.source
+        assert endpoint.token not in retained.source
+        assert retained.arguments == ["[redacted]"]
 
 
 class TestTheVerdictComesBackThroughTheEndpoint:

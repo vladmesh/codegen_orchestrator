@@ -121,6 +121,34 @@ async def test_the_first_terminal_outcome_wins_whichever_it_is(async_client: Asy
 
 
 @pytest.mark.asyncio
+async def test_a_run_read_returns_retained_qa_probe_records(async_client: AsyncClient):
+    run_id = await _run(async_client)
+    probe = {
+        "id": "probe-1",
+        "platform": "http",
+        "name": "health",
+        "source": "print('health')",
+        "arguments": ["/health"],
+        "stdout": "ok",
+        "stderr": "",
+        "exit_status": 0,
+        "duration_ms": 4,
+        "source_truncated": False,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+    }
+
+    settled = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "completed", "result": {"qa_outcome": "passed", "probe_runs": [probe]}},
+    )
+    assert settled.status_code == status.HTTP_200_OK
+
+    read = await async_client.get(f"/api/runs/{run_id}")
+    assert read.json()["result"]["probe_runs"] == [probe]
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_run_refuses_a_late_worker_verdict(async_client: AsyncClient):
     """The central QA PATCH cannot replace a cancellation it outlived."""
     run_id = await _run(async_client)

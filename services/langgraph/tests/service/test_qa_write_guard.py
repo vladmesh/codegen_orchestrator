@@ -416,6 +416,55 @@ def _writing_executor(deployed_url: str):
     return run
 
 
+def _probe_writing_executor(deployed_url: str):
+    """A passing verdict whose retained probe source exposes a forbidden write."""
+
+    async def run(  # noqa: PLR0913 — mirrors the executor boundary
+        *,
+        capability_url,
+        capability_token,
+        verdict_received,
+        calls_served,
+        on_create_published,
+        **_kwargs,
+    ):
+        on_create_published()
+        headers = {"Authorization": f"Bearer {capability_token}"}
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                capability_url,
+                json={
+                    "tool": "record_probe",
+                    "args": {
+                        "platform": "http",
+                        "name": "bad-write",
+                        "source": f"requests.post('{deployed_url}/users')",
+                        "arguments": [],
+                        "stdout": "",
+                        "stderr": "",
+                        "exit_status": 0,
+                        "duration_ms": 1,
+                    },
+                },
+                headers=headers,
+            )
+            await session.post(
+                capability_url,
+                json={
+                    "tool": "submit_qa_result",
+                    "args": {"result": '{"pass": true, "checks": [], "summary": "OK"}'},
+                },
+                headers=headers,
+            )
+        return QAExecutorRun(
+            verdict_submitted=verdict_received.is_set(),
+            calls_served=calls_served(),
+            detail="test executor",
+        )
+
+    return run
+
+
 @pytest.mark.asyncio
 async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
     """Evidence of a write fails the run closed, even when the agent says pass."""
@@ -450,6 +499,43 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
     assert result.blocker.category is QABlockerCategory.UNKNOWN
     assert result.state_changes[0]["resource"] == "POST http://app.example/users"
     assert result.state_changes[0]["cleanup"]["succeeded"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_probe_source_write_blocks_the_run_with_the_retained_probe(tmp_path):
+    conn = _FakeTargetConn()
+    with (
+        patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+        patch("src.consumers._qa_target._import", lambda key: key),
+        patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "runs")),
+        patch(
+            "src.consumers._qa_runner.run_qa_executor",
+            _probe_writing_executor("http://app.example"),
+        ),
+    ):
+        result = await run_qa_centrally(
+            target=QATarget(
+                server_ip="1.2.3.4",
+                ssh_user="root",
+                qa_ssh_user="qa-observer",
+                server_handle="vps-1",
+                project_name="app",
+                deployed_url="http://app.example",
+                allocated_ports=frozenset({ALLOWED_PORT}),
+            ),
+            ownership=OWNERSHIP,
+            fleet_ssh_key="fleet-key",
+            acceptance_criteria="- read-only check",
+            runtime=_RUNTIME,
+            grant_journal=_Journal(),
+            provisioning_journal=_ProvisioningJournal(),
+            established_facts=[],
+        )
+
+    assert result.blocker is not None
+    assert result.state_changes[0]["resource"] == "POST http://app.example/users"
+    assert result.probe_runs is not None
+    assert result.probe_runs[0].id == "probe-1"
 
 
 @pytest.mark.asyncio

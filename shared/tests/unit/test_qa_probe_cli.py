@@ -81,3 +81,34 @@ def test_telegram_cli_prints_the_capability_json_and_uses_error_value_for_exit_s
     assert stdout.getvalue() == body + "\n"
     assert len(requests) == 1
     assert json.loads(requests[0].data) == expected_call
+
+
+def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_path):
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import sys\nprint('probe stdout')\nprint('probe stderr', file=sys.stderr)\n"
+        "raise SystemExit(7)\n"
+    )
+    calls = []
+
+    def urlopen(request, *, timeout):
+        calls.append(json.loads(request.data))
+        return _Response(json.dumps({"tool": "record_probe", "id": "probe-1"}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("QA_CAPABILITY_URL", "http://qa.test/qa/call")
+    monkeypatch.setenv("QA_CAPABILITY_TOKEN", "capability-token")
+    monkeypatch.setattr(sys, "argv", ["qa", "probe", "http", "health", str(script), "one"])
+    stdout = StringIO()
+
+    with pytest.raises(SystemExit) as exited, redirect_stdout(stdout):
+        # stderr remains inherited so the injected CLI can print probe stderr.
+        exec(QA_PROBE_SCRIPT, {"__name__": "__main__"})  # noqa: S102 - injected script source
+
+    assert exited.value.code == 7
+    assert stdout.getvalue().startswith("probe-1\nprobe stdout\n")
+    [call] = calls
+    assert call["tool"] == "record_probe"
+    assert call["args"]["platform"] == "http"
+    assert call["args"]["arguments"] == ["one"]
+    assert call["args"]["exit_status"] == 7
