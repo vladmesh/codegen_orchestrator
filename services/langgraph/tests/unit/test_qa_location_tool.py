@@ -14,7 +14,6 @@ from src.agents.qa.tools import build_qa_callables
 from src.consumers._qa_target import QACapabilities
 from src.consumers._qa_workspace import QAWorkspace
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -170,7 +169,4 @@ async def test_telegram_send_location_undelivered_blocks_verdict(tmp_path):
 
     assert "error" in answer
     assert workspace.telegram_probe_blocker is not None
-    assert (
-        workspace.telegram_probe_blocker.category
-        is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
-    )
+    assert workspace.telegram_probe_blocker.category is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED

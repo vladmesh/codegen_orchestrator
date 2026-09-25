@@ -8,20 +8,17 @@ These tests cover:
 
 from __future__ import annotations
 
-import json
-import sys
-import time
 from contextlib import redirect_stdout
 from io import StringIO
+import sys
+import time
 from types import ModuleType
 
 from shared.telegram_bot_probe import (
     PROBE_RESULT_MARKER,
-    TELEGRAM_PROBE_PROCESS_TIMEOUT,
     build_bot_location_script,
     parse_bot_probe_result,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
