@@ -9,6 +9,7 @@ import inspect
 import secrets
 
 from aiohttp import web
+from aiohttp.web_exceptions import HTTPRequestEntityTooLarge
 import structlog
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
@@ -18,6 +19,7 @@ logger = structlog.get_logger(__name__)
 
 CALL_PATH = "/qa/call"
 MAX_VERDICT_CHARS = 100_000
+MAX_REQUEST_BODY = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,7 @@ class QACapabilityService:
         return self._token
 
     async def start(self) -> QACapabilityEndpoint:
-        app = web.Application()
+        app = web.Application(client_max_size=MAX_REQUEST_BODY)
         app.add_routes([web.post(CALL_PATH, self._handle_call)])
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -101,6 +103,10 @@ class QACapabilityService:
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = await request.json()
+        except HTTPRequestEntityTooLarge:
+            return web.json_response(
+                {"error": "request body exceeds the QA capability limit"}, status=413
+            )
         except ValueError:
             return web.json_response({"error": "body is not JSON"}, status=400)
         if not isinstance(payload, dict):

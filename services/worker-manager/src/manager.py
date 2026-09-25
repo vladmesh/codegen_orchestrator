@@ -872,7 +872,9 @@ class WorkerManager:
                 stand_claude_code_oauth_token=(
                     settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
                 ),
-                transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
+                transcript_host_path=(
+                    None if is_qa_worker else settings.WORKER_TRANSCRIPT_STORAGE_PATH
+                ),
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
             self._prune_transcripts()

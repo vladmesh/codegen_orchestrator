@@ -138,6 +138,43 @@ class TestOnlyThisRunCanUseThisEndpoint:
 
 
 class TestTheSetIsClosed:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("name", "n" * 257),
+            ("arguments", ["x"] * 65),
+            ("arguments", ["x" * 8193]),
+        ],
+    )
+    async def test_probe_metadata_over_bounds_is_refused(self, endpoint, field, value):
+        args = {
+            "platform": "http",
+            "name": "health",
+            "source": "pass",
+            "arguments": [],
+            "stdout": "",
+            "stderr": "",
+            "exit_status": 0,
+            "duration_ms": 1,
+        }
+        args[field] = value
+        status, body = await _call(endpoint, "record_probe", args)
+
+        assert status == 200
+        assert "error" in body
+        assert endpoint.workspace.probe_runs == []
+
+    async def test_oversized_request_body_is_a_json_error(self, endpoint):
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                endpoint.url,
+                json={"tool": "record_probe", "args": {"source": "x" * 300_000}},
+                headers={"Authorization": f"Bearer {endpoint.token}"},
+            ) as response:
+                assert response.status == 413
+                body = await response.json()
+        assert "error" in body
+
     async def test_capabilities_names_exactly_what_this_run_may_reach(self, endpoint):
         _, body = await _call(endpoint, "capabilities")
 

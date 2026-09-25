@@ -273,6 +273,23 @@ class TestWorkerContainerConfig:
             "mode": "rw",
         }
 
+    def test_qa_workers_have_no_transcript_mount_or_environment(self):
+        config = WorkerContainerConfig(
+            worker_id="qa-1",
+            worker_type="qa",
+            agent_type="claude",
+            capabilities=[],
+            transcript_host_path="/data/worker-transcripts",
+        )
+
+        assert all(
+            value["bind"] != "/artifacts/worker-transcripts"
+            for value in config.to_volume_mounts().values()
+        )
+        env = config.to_env_vars(**BROKER_ARGS)
+        assert "WORKER_TRANSCRIPT_DIR" not in env
+        assert "WORKER_TRANSCRIPT_MAX_BYTES" not in env
+
     def test_no_workspace_when_path_not_set(self):
         """When workspace_host_path is None, no /workspace mount should be added."""
         config = WorkerContainerConfig(

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import sys
+import urllib.error
 import urllib.request
 
 import pytest
@@ -25,6 +26,9 @@ class _Response:
 
     def read(self) -> bytes:
         return self._body.encode("utf-8")
+
+    def close(self) -> None:
+        return None
 
 
 @pytest.mark.parametrize(
@@ -112,3 +116,53 @@ def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_pa
     assert call["args"]["platform"] == "http"
     assert call["args"]["arguments"] == ["one"]
     assert call["args"]["exit_status"] == 7
+
+
+@pytest.mark.parametrize(
+    ("label", "suffix", "body", "expected_status"),
+    [
+        ("timeout", ".sh", "printf timed; sleep 1", 124),
+        ("nonutf8", ".sh", "printf '\\377\\376 binary\\n'", 0),
+        ("large", ".py", "print('x' * 1100000)", 0),
+        ("empty", ".py", "pass", 0),
+        ("nonzero", ".sh", "exit 7", 7),
+        ("endpoint-413", ".py", "print('kept')", 0),
+    ],
+)
+def test_probe_capture_is_total_for_hostile_script_and_endpoint_cases(
+    monkeypatch, tmp_path, label, suffix, body, expected_status
+):
+    script = tmp_path / f"{label}{suffix}"
+    script.write_text(body)
+    requests = []
+
+    def urlopen(request, *, timeout):
+        requests.append(json.loads(request.data))
+        if label == "endpoint-413":
+            raise urllib.error.HTTPError(
+                request.full_url, 413, "too large", {}, _Response("plain text")
+            )
+        return _Response(json.dumps({"tool": "record_probe", "id": "probe-1"}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("QA_CAPABILITY_URL", "http://qa.test/qa/call")
+    monkeypatch.setenv("QA_CAPABILITY_TOKEN", "capability-token")
+    monkeypatch.setattr(sys, "argv", ["qa", "probe", "http", label, str(script)])
+    stdout, stderr = StringIO(), StringIO()
+    source = QA_PROBE_SCRIPT.replace("PROBE_TIMEOUT = 60", "PROBE_TIMEOUT = 0.5")
+
+    with pytest.raises(SystemExit) as exited, redirect_stdout(stdout), redirect_stderr(stderr):
+        exec(source, {"__name__": "__main__"})  # noqa: S102 - injected script source
+
+    assert exited.value.code == expected_status
+    assert len(requests) == 1
+    record = requests[0]["args"]
+    assert record["source"]
+    assert len(record["stdout"]) <= 19000
+    assert len(record["stderr"]) <= 19000
+    if label == "nonutf8":
+        assert "�" in record["stdout"]
+    if label == "large":
+        assert record["stdout_truncated"] is True
+    if label == "endpoint-413":
+        assert "record not retained" in stdout.getvalue()

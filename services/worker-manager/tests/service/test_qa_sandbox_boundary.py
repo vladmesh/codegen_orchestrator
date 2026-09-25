@@ -50,7 +50,7 @@ from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src import qa_egress, workspace as workspace_mod
 from src.config import settings
-from src.container_config import CLAUDE_CONFIG_DIR, TRANSCRIPT_MOUNT
+from src.container_config import CLAUDE_CONFIG_DIR
 from src.manager import QA_WORKER_TYPE, WorkerManager
 
 TEST_IMAGE = os.environ.get("QA_EGRESS_TEST_IMAGE", "codegen-orchestrator/worker-manager:test")
@@ -449,7 +449,6 @@ def test_the_only_secret_mount_is_the_clis_own_auth_directory(sandbox):
     assert set(mounts) == {
         "/workspace",
         CLAUDE_CONFIG_DIR,
-        TRANSCRIPT_MOUNT,
         "/home/worker/.cache/uv",
     }
     # The one secret mount, named: the Claude CLI's session directory.

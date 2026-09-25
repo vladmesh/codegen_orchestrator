@@ -64,6 +64,8 @@ USAGE = """__QA_PROBE_USAGE__"""
 
 TIMEOUT = 180
 PROBE_TIMEOUT = 60
+PROBE_TEXT_MAX = 19000
+PROBE_TRUNCATION_MARKER = "\\n...[truncated by qa probe CLI]"
 IDENTITY_FILE = "__QA_IDENTITY_FILE__"
 
 
@@ -72,10 +74,16 @@ def fail(message):
     raise SystemExit(2)
 
 
+def decode_output(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return "" if value is None else str(value)
+
+
 def read_file(path):
     try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
+        with open(path, "rb") as handle:
+            return decode_output(handle.read())
     except OSError as exc:
         fail("cannot read %s: %s" % (path, exc))
 
@@ -215,34 +223,53 @@ def run_probe(args):
         completed = subprocess.run(
             command,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=PROBE_TIMEOUT,
             check=False,
         )
-        stdout, stderr, exit_status = completed.stdout, completed.stderr, completed.returncode
+        stdout, stderr, exit_status = (
+            decode_output(completed.stdout),
+            decode_output(completed.stderr),
+            completed.returncode,
+        )
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + "\\nprobe timed out after %ss" % PROBE_TIMEOUT
+        stdout = decode_output(exc.stdout)
+        stderr = decode_output(exc.stderr) + "\\nprobe timed out after %ss" % PROBE_TIMEOUT
         exit_status = 124
     duration_ms = int((time.monotonic() - started) * 1000)
+    source, source_truncated = bounded(source)
+    stdout, stdout_truncated = bounded(stdout)
+    stderr, stderr_truncated = bounded(stderr)
     record = {
         "platform": args["platform"],
         "name": args["name"],
         "source": source,
+        "source_truncated": source_truncated,
         "arguments": args["arguments"],
         "stdout": stdout,
+        "stdout_truncated": stdout_truncated,
         "stderr": stderr,
+        "stderr_truncated": stderr_truncated,
         "exit_status": exit_status,
         "duration_ms": duration_ms,
     }
     answer = call("record_probe", record)
     if answer.get("error"):
-        sys.stdout.write(json.dumps(answer) + "\\n")
-        return 1
-    sys.stdout.write(str(answer.get("id", "")) + "\\n")
+        sys.stdout.write("probe id unavailable: %s\\n" % answer["error"])
+        sys.stdout.write(stdout)
+        sys.stderr.write(stderr)
+        return exit_status
+    sys.stdout.write(str(answer.get("id", "probe id unavailable")) + "\\n")
     sys.stdout.write(stdout)
     sys.stderr.write(stderr)
     return exit_status
+
+
+def bounded(value):
+    value = decode_output(value)
+    if len(value) <= PROBE_TEXT_MAX:
+        return value, False
+    return value[: PROBE_TEXT_MAX - len(PROBE_TRUNCATION_MARKER)] + PROBE_TRUNCATION_MARKER, True
 
 
 def call(tool, args):
@@ -265,11 +292,28 @@ def call(tool, args):
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
+            status = getattr(response, "status", None)
+            if status is None and hasattr(response, "getcode"):
+                status = response.getcode()
+            if status is None:
+                status = 200
+            body = decode_output(response.read())
     except urllib.error.HTTPError as exc:
-        return json.loads(exc.read().decode("utf-8", "replace"))
+        status = exc.code
+        body = decode_output(exc.read())
     except OSError as exc:
         fail("the QA capability endpoint did not answer: %s" % exc)
+    try:
+        answer = json.loads(body)
+    except (TypeError, ValueError):
+        return {
+            "error": "record not retained: endpoint returned HTTP %s: %s" % (status, body[:500])
+        }
+    if not 200 <= status < 300 or not isinstance(answer, dict):
+        return {
+            "error": "record not retained: endpoint returned HTTP %s: %s" % (status, body[:500])
+        }
+    return answer
 
 
 def write_identity(answer):

@@ -39,6 +39,10 @@ MAX_PROBES = 50
 MAX_PROBE_TEXT = 20_000
 MAX_PROBE_DURATION_MS = 65_000
 MAX_PROBE_EXIT_STATUS = 255
+MAX_PROBE_NAME = 256
+MAX_PROBE_ARGUMENTS = 64
+MAX_PROBE_ARGUMENT_BYTES = 8192
+PROBE_TRUNCATION_MARKER = "\n...[truncated]"
 
 
 @dataclass(frozen=True)
@@ -194,7 +198,7 @@ class QAWorkspace:
         if blocker is not None and self.telegram_probe_blocker is None:
             self.telegram_probe_blocker = blocker
 
-    def record_probe(
+    def record_probe(  # noqa: PLR0913 - the retained record is the typed endpoint contract
         self,
         *,
         platform: str,
@@ -205,6 +209,9 @@ class QAWorkspace:
         stderr: str,
         exit_status: int,
         duration_ms: int,
+        source_truncated: bool = False,
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
     ) -> dict:
         """Validate and retain a sandbox probe without trusting its account."""
         if len(self.probe_runs) >= MAX_PROBES:
@@ -215,12 +222,23 @@ class QAWorkspace:
             return {"error": "platform must be one of telegram, http, web"}
         if not isinstance(name, str) or not name.strip():
             return {"error": "name must be a non-empty string"}
+        if len(name) > MAX_PROBE_NAME:
+            return {"error": f"name must be at most {MAX_PROBE_NAME} characters"}
         if not all(isinstance(value, str) for value in (source, stdout, stderr)):
             return {"error": "source, stdout and stderr must be strings"}
         if not isinstance(arguments, list) or not all(
             isinstance(value, str) for value in arguments
         ):
             return {"error": "arguments must be a list of strings"}
+        if len(arguments) > MAX_PROBE_ARGUMENTS:
+            return {"error": f"at most {MAX_PROBE_ARGUMENTS} arguments may be retained"}
+        if sum(len(value) for value in arguments) > MAX_PROBE_ARGUMENT_BYTES:
+            return {"error": "probe arguments exceed the total size limit"}
+        if not all(
+            isinstance(value, bool)
+            for value in (source_truncated, stdout_truncated, stderr_truncated)
+        ):
+            return {"error": "truncation flags must be booleans"}
         if (
             isinstance(exit_status, bool)
             or not isinstance(exit_status, int)
@@ -239,12 +257,17 @@ class QAWorkspace:
         ):
             return {"error": f"duration_ms must be between 0 and {MAX_PROBE_DURATION_MS}"}
 
-        def bounded(value: str) -> tuple[str, bool]:
-            return value[:MAX_PROBE_TEXT], len(value) > MAX_PROBE_TEXT
+        def bounded(value: str, already_truncated: bool) -> tuple[str, bool]:
+            if len(value) <= MAX_PROBE_TEXT:
+                return value, already_truncated
+            return (
+                value[: MAX_PROBE_TEXT - len(PROBE_TRUNCATION_MARKER)] + PROBE_TRUNCATION_MARKER,
+                True,
+            )
 
-        bounded_source, source_truncated = bounded(source)
-        bounded_stdout, stdout_truncated = bounded(stdout)
-        bounded_stderr, stderr_truncated = bounded(stderr)
+        bounded_source, source_truncated = bounded(source, source_truncated)
+        bounded_stdout, stdout_truncated = bounded(stdout, stdout_truncated)
+        bounded_stderr, stderr_truncated = bounded(stderr, stderr_truncated)
         probe = QAProbeRun(
             id=f"probe-{len(self.probe_runs) + 1}",
             platform=platform,
