@@ -24,6 +24,7 @@ from shared.qa_probe_cli import QA_PROBE_SCRIPT, QA_PROBE_USAGE
 from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
+from src.consumers._qa_telegram_identity import redact
 from src.consumers._qa_workspace import qa_workspace
 
 TARGET = QATarget(
@@ -67,6 +68,8 @@ async def endpoint(tmp_path):
             capabilities=CAPABILITIES.describe(),
             submit_verdict=workspace.submit_verdict,
             advertised_host="127.0.0.1",
+            probe_secrets=("session-secret", "api-hash"),
+            redact_text=redact,
         )
         started = await service.start()
         try:
@@ -130,6 +133,71 @@ class TestOnlyThisRunCanUseThisEndpoint:
 
 
 class TestTheSetIsClosed:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("name", "n" * 257),
+            ("arguments", ["x"] * 65),
+            ("arguments", ["x" * 8193]),
+        ],
+    )
+    async def test_probe_metadata_over_bounds_is_refused(self, endpoint, field, value):
+        args = {
+            "platform": "http",
+            "name": "health",
+            "source": "pass",
+            "arguments": [],
+            "stdout": "",
+            "stderr": "",
+            "exit_status": 0,
+            "duration_ms": 1,
+        }
+        args[field] = value
+        status, body = await _call(endpoint, "record_probe", args)
+
+        assert status == 200
+        assert "error" in body
+        assert endpoint.workspace.probe_runs == []
+
+    async def test_oversized_request_body_is_a_json_error(self, endpoint):
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                endpoint.url,
+                json={"tool": "record_probe", "args": {"source": "x" * 300_000}},
+                headers={"Authorization": f"Bearer {endpoint.token}"},
+            ) as response:
+                assert response.status == 413
+                body = await response.json()
+        assert "error" in body
+
+    async def test_utf8_heavy_probe_record_stays_under_encoded_body_bound(self, endpoint):
+        payload = {
+            "tool": "record_probe",
+            "args": {
+                "platform": "web",
+                "name": "unicode",
+                "source": "pass",
+                "arguments": [],
+                "stdout": "😀" * 19000,
+                "stderr": "🚀" * 19000,
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {endpoint.token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession() as http:
+            async with http.post(
+                endpoint.url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+            ) as response:
+                assert response.status == 200
+                body = await response.json()
+        assert body["id"] == "probe-1"
+
     async def test_capabilities_names_exactly_what_this_run_may_reach(self, endpoint):
         _, body = await _call(endpoint, "capabilities")
 
@@ -178,6 +246,121 @@ class TestTheSetIsClosed:
 
         trace = endpoint.workspace.trace_path.read_text()
         assert '"tool": "container_logs"' in trace
+
+    async def test_probe_record_is_bounded_and_retained_in_call_order(self, endpoint):
+        source = "print('x')" * 3000
+        status, first = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "http",
+                "name": "health",
+                "source": source,
+                "arguments": ["/health"],
+                "stdout": "ok",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 12,
+            },
+        )
+        _, second = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "web",
+                "name": "page",
+                "source": "echo page",
+                "arguments": [],
+                "stdout": "page",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert status == 200
+        assert (first["id"], second["id"]) == ("probe-1", "probe-2")
+        [recorded_first, recorded_second] = endpoint.workspace.probe_runs
+        assert recorded_first.source_truncated is True
+        assert recorded_first.source != source
+        assert recorded_second.name == "page"
+
+    async def test_malformed_probe_is_refused_without_recording_it(self, endpoint):
+        status, body = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "database",
+                "name": "bad",
+                "source": 3,
+                "arguments": [],
+                "stdout": "",
+                "stderr": "",
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert status == 200
+        assert "error" in body
+        assert endpoint.workspace.probe_runs == []
+
+    async def test_probe_text_is_scrubbed_before_workspace_retention(self, endpoint):
+        _, body = await _call(
+            endpoint,
+            "record_probe",
+            {
+                "platform": "telegram",
+                "name": "identity",
+                "source": f"print('session-secret {endpoint.token}')",
+                "arguments": ["api-hash"],
+                "stdout": "session-secret",
+                "stderr": endpoint.token,
+                "exit_status": 0,
+                "duration_ms": 1,
+            },
+        )
+
+        assert body["id"] == "probe-1"
+        retained = endpoint.workspace.probe_runs[0]
+        assert "session-secret" not in retained.source
+        assert endpoint.token not in retained.source
+        assert retained.arguments[0].startswith("[redacted")
+
+    @pytest.mark.parametrize(
+        ("field", "secret_name"),
+        [
+            ("source", "session"),
+            ("stdout", "api_hash"),
+            ("stderr", "token"),
+        ],
+    )
+    async def test_probe_scrub_removes_prefixes_left_at_cli_cut(self, endpoint, field, secret_name):
+        secret = {
+            "session": "session-secret",
+            "api_hash": "api-hash",
+            "token": endpoint.token,
+        }[secret_name]
+        marker = "\n...[truncated by qa probe CLI]"
+        args = {
+            "platform": "http",
+            "name": "cut",
+            "source": "pass",
+            "arguments": [],
+            "stdout": "",
+            "stderr": "",
+            "exit_status": 0,
+            "duration_ms": 1,
+        }
+        args[field] = "x" * 100 + secret[:12] + marker
+
+        status, body = await _call(endpoint, "record_probe", args)
+
+        assert status == 200
+        assert body["id"] == "probe-1"
+        retained = endpoint.workspace.probe_runs[0]
+        for value in (retained.source, retained.stdout, retained.stderr):
+            assert secret[:8] not in value
 
 
 class TestTheVerdictComesBackThroughTheEndpoint:

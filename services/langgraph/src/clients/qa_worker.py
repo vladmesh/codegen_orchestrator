@@ -294,11 +294,16 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
                 },
             )
             logger.info("qa_executor_deleted", worker_id=worker_id)
-        for stream in (WORKER_RESPONSES, f"worker:{worker_id}:output"):
+        output_stream = f"worker:{worker_id}:output"
+        for stream in (WORKER_RESPONSES, output_stream):
             try:
                 await redis_client.xgroup_destroy(stream, group_name)
             except Exception as exc:  # noqa: BLE001 — cleanup of a group that may not exist
                 logger.debug("qa_executor_group_cleanup_failed", stream=stream, error=str(exc))
+        try:
+            await redis_client.delete(output_stream)
+        except Exception as exc:  # noqa: BLE001 — worker removal may already have removed it
+            logger.debug("qa_executor_output_cleanup_failed", stream=output_stream, error=str(exc))
         await redis_client.aclose()
 
 
@@ -365,6 +370,14 @@ def _output_of(output_task: asyncio.Task) -> tuple[str, EngineeringAttemptLedger
         return "", None
     attempt = None
     if isinstance(payload, dict):
+        # QA executor containers retain no host transcript. A wrapper may still
+        # emit its generic locator, but it would name a file deleted with the
+        # sandbox; retain the output itself and no fictional locator.
+        payload = {
+            field: value
+            for field, value in payload.items()
+            if field not in {"transcript_path", "transcript_truncated"}
+        }
         evidence = {
             field: payload[field]
             for field in ("claude_evidence", "factory_evidence")

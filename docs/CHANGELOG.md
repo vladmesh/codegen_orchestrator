@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-25
 
+- QA probe capture now survives timeouts, invalid bytes, output bounds and non-JSON endpoint failures; endpoint fields and request bodies are bounded, and QA workers retain no transcript mount.
+- QA executor probes now retain scrubbed, bounded source and results on their Run, and QA removes its broker output
+  stream rather than naming a deleted transcript file.
 - The QA executor is a sandbox: its proxy opens the model backend, the deploy target (GETs by policy) and Telegram;
   it gets the QA Telethon identity only after a per-run proof, and no platform secret.
 - `mega-live` proves the QA Telethon session (authorized, QA identity, reaches the stand bot) before any spend,

@@ -9,6 +9,7 @@ import inspect
 import secrets
 
 from aiohttp import web
+from aiohttp.web_exceptions import HTTPRequestEntityTooLarge
 import structlog
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
@@ -18,6 +19,7 @@ logger = structlog.get_logger(__name__)
 
 CALL_PATH = "/qa/call"
 MAX_VERDICT_CHARS = 100_000
+MAX_REQUEST_BODY = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ class QACapabilityService:
         advertised_host: str,
         telegram_identity: Mapping[str, str] | None = None,
         telegram_identity_refusal: str | None = None,
+        probe_secrets: tuple[str, ...] = (),
+        redact_text: Callable[[str | None, tuple[str, ...]], str | None] | None = None,
         bind_host: str = "0.0.0.0",  # noqa: S104 — reachable from the executor's network
         port: int = 0,
     ) -> None:
@@ -61,6 +65,8 @@ class QACapabilityService:
         self._bind_host = bind_host
         self._port = port
         self._token = secrets.token_urlsafe(32)
+        self._probe_secrets = (*probe_secrets, self._token)
+        self._redact_text = redact_text or (lambda text, _secrets: text)
         self._runner: web.AppRunner | None = None
         self.verdict_received = asyncio.Event()
         # Distinguishes an executor failure from a run with no verdict.
@@ -71,7 +77,7 @@ class QACapabilityService:
         return self._token
 
     async def start(self) -> QACapabilityEndpoint:
-        app = web.Application()
+        app = web.Application(client_max_size=MAX_REQUEST_BODY)
         app.add_routes([web.post(CALL_PATH, self._handle_call)])
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -97,6 +103,10 @@ class QACapabilityService:
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = await request.json()
+        except HTTPRequestEntityTooLarge:
+            return web.json_response(
+                {"error": "request body exceeds the QA capability limit"}, status=413
+            )
         except ValueError:
             return web.json_response({"error": "body is not JSON"}, status=400)
         if not isinstance(payload, dict):
@@ -145,6 +155,8 @@ class QACapabilityService:
                     )
                 )
             )
+        if name == "record_probe":
+            args = self._scrub_probe_args(args)
         self._check_arguments(name, call, args)
         self.calls_served += 1
         value = call(**args)
@@ -153,6 +165,29 @@ class QACapabilityService:
         if isinstance(value, dict):
             return {"tool": name, **value}
         return {"tool": name, "result": value}
+
+    def _scrub_probe_args(self, args: dict) -> dict:
+        """Keep credentials and this endpoint's token out of every probe text field."""
+
+        def scrub(value):
+            if isinstance(value, str):
+                value = self._redact_text(value, self._probe_secrets)
+                for secret in self._probe_secrets:
+                    for marker in ("\n...[truncated by qa probe CLI]", "\n...[truncated]"):
+                        if marker not in value:
+                            continue
+                        before, after = value.rsplit(marker, 1)
+                        for length in range(min(len(secret) - 1, len(before)), 7, -1):
+                            if before.endswith(secret[:length]):
+                                before = before[:-length] + "[redacted]"
+                                break
+                        value = before + marker + after
+                return value
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return {key: scrub(value) for key, value in args.items()}
 
     @staticmethod
     def _check_arguments(name: str, call: Callable, args: dict) -> None:

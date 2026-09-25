@@ -31,6 +31,24 @@ async def test_qa_output_parses_provider_facts_before_transcript_truncation(payl
     assert (attempt.cost_microusd if attempt else None) == cost
 
 
+@pytest.mark.asyncio
+async def test_qa_output_keeps_the_content_not_a_deleted_transcript_locator():
+    task = asyncio.get_running_loop().create_future()
+    task.set_result(
+        {
+            "status": "failed",
+            "transcript_path": "/artifacts/worker-transcripts/qa-deleted.log",
+            "transcript_truncated": False,
+            "error": "executor stopped",
+        }
+    )
+
+    transcript, _ = _output_of(task)
+
+    assert "transcript_path" not in transcript
+    assert "executor stopped" in transcript
+
+
 def _claude_fact(cost: int, tokens: int) -> EngineeringAttemptLedgerInput:
     return EngineeringAttemptLedgerInput.model_validate(
         {
@@ -132,6 +150,9 @@ async def test_published_create_records_start_before_a_later_redis_error():
     assert events[:2] == ["published", "recorded"]
     assert attempts.accounting.executor_started is True
     assert attempts.accounting.attempt.cost_source == "unknown"
+    redis_client.delete.assert_awaited_once()
+    assert redis_client.delete.await_args.args[0].startswith("worker:qa-")
+    assert redis_client.delete.await_args.args[0].endswith(":output")
 
 
 @pytest.mark.asyncio

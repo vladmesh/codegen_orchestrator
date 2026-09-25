@@ -180,7 +180,7 @@ class WorkerManager:
         image: str,
         worker_id: str,
         workspace_path: str,
-        transcript_path: str,
+        transcript_path: str | None,
     ) -> None:
         """Prepare bind mounts in the namespace that will launch the worker.
 
@@ -196,18 +196,20 @@ class WorkerManager:
 
         helper_name = f"worker-mount-prep-{worker_id}"
         await self.docker.remove_container(helper_name, force=True)
+        volumes = {workspace_path: {"bind": "/workspace", "mode": "rw"}}
+        command = ["-R", "1000:1000", "/workspace"]
+        if transcript_path is not None:
+            command.append(TRANSCRIPT_MOUNT)
+            volumes[transcript_path] = {"bind": TRANSCRIPT_MOUNT, "mode": "rw"}
         try:
             await self.docker.run_container(
                 image,
                 name=helper_name,
                 entrypoint="/bin/chown",
-                command=["-R", "1000:1000", "/workspace", TRANSCRIPT_MOUNT],
+                command=command,
                 user="root",
                 network_mode="none",
-                volumes={
-                    workspace_path: {"bind": "/workspace", "mode": "rw"},
-                    transcript_path: {"bind": TRANSCRIPT_MOUNT, "mode": "rw"},
-                },
+                volumes=volumes,
                 remove=True,
                 read_only=True,
                 cap_drop=["ALL"],
@@ -872,7 +874,9 @@ class WorkerManager:
                 stand_claude_code_oauth_token=(
                     settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
                 ),
-                transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
+                transcript_host_path=(
+                    None if is_qa_worker else settings.WORKER_TRANSCRIPT_STORAGE_PATH
+                ),
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
             self._prune_transcripts()

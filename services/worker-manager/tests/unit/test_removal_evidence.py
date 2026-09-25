@@ -194,7 +194,9 @@ async def test_a_qa_executor_is_recorded_as_one():
 
     await manager.delete_worker(WORKER_ID)
 
-    assert (await stored_record(redis)).worker_type.value == "qa"
+    record = await stored_record(redis)
+    assert record.worker_type.value == "qa"
+    assert record.transcript_dir.value is None
 
 
 async def test_a_container_that_cannot_be_read_is_still_removed_and_still_recorded():

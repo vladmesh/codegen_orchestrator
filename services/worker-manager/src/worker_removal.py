@@ -219,10 +219,11 @@ class WorkerRemoval:
 
         agent_type = environment.get("WORKER_AGENT_TYPE")
         transcript_dir = None
-        for mount in inspected["Mounts"] or []:
-            if mount["Destination"] == TRANSCRIPT_MOUNT:
-                transcript_dir = f"{mount['Source']}/{worker_id}"
-                break
+        if not meta or meta.get("worker_type") != QA_WORKER_TYPE:
+            for mount in inspected["Mounts"] or []:
+                if mount["Destination"] == TRANSCRIPT_MOUNT:
+                    transcript_dir = f"{mount['Source']}/{worker_id}"
+                    break
 
         return RemovedWorkerEvidence(
             worker_id=worker_id,

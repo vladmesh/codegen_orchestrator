@@ -795,6 +795,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 blocker=qa_result.blocker,
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
+                probe_runs=qa_result.probe_runs,
                 executor_transcript=qa_result.executor_evidence,
                 executor_attempt=qa_result.executor_attempt,
             )
@@ -806,6 +807,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 report=qa_result.report,
                 state_changes=qa_result.state_changes,
                 telegram_probe_evidence=qa_result.telegram_probe_evidence,
+                probe_runs=qa_result.probe_runs,
                 executor_transcript=qa_result.executor_evidence,
                 executor_attempt=qa_result.executor_attempt,
             )
@@ -837,6 +839,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             # the Run, so it settles it with the evidence the run produced.
             executor_transcript=qa_result.executor_evidence if qa_result else None,
             executor_attempt=qa_result.executor_attempt if qa_result else None,
+            probe_runs=qa_result.probe_runs if qa_result else None,
         )
     finally:
         # Always release inflight marker
@@ -851,6 +854,7 @@ async def _handle_qa_pass(
     report: str = "",
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
+    probe_runs: list | None = None,
     executor_transcript: str | None = None,
     executor_attempt: EngineeringAttemptLedgerInput | None = None,
 ) -> dict:
@@ -864,6 +868,7 @@ async def _handle_qa_pass(
         report=report,
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
+        probe_runs=probe_runs,
         executor_transcript=executor_transcript,
         executor_attempt=executor_attempt,
     )
@@ -878,6 +883,7 @@ async def _handle_qa_blocked(
     blocker: QABlocker,
     state_changes: list[dict] | None = None,
     telegram_probe_evidence: list | None = None,
+    probe_runs: list | None = None,
     executor_transcript: str | None = None,
     executor_attempt: EngineeringAttemptLedgerInput | None = None,
 ) -> dict:
@@ -891,6 +897,7 @@ async def _handle_qa_blocked(
         blocker=blocker,
         state_changes=state_changes or [],
         telegram_probe_evidence=telegram_probe_evidence or [],
+        probe_runs=probe_runs,
         executor_transcript=executor_transcript,
         executor_attempt=executor_attempt,
     )
@@ -936,6 +943,7 @@ async def _handle_qa_fail(
             report=qa_result.report,
             state_changes=qa_result.state_changes,
             telegram_probe_evidence=qa_result.telegram_probe_evidence,
+            probe_runs=qa_result.probe_runs,
             executor_transcript=qa_result.executor_evidence,
             executor_attempt=qa_result.executor_attempt,
         )
@@ -952,6 +960,7 @@ async def _handle_qa_fail(
         report=qa_result.report,
         state_changes=qa_result.state_changes,
         telegram_probe_evidence=qa_result.telegram_probe_evidence,
+        probe_runs=qa_result.probe_runs,
         executor_transcript=qa_result.executor_evidence,
         executor_attempt=qa_result.executor_attempt,
     )

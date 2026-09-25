@@ -22,6 +22,7 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
     QAFailedCheck,
     QAFailedCheckCause,
+    QAProbeRun,
     QARunResult,
     QAStateChange,
     QAStateChangeCleanup,
@@ -212,6 +213,27 @@ class TestValidPayloads:
                     ],
                 }
             )
+
+    def test_qa_probe_records_distinguish_known_none_from_a_writer_without_them(self):
+        probe = QAProbeRun(
+            id="probe-1",
+            platform="http",
+            name="health",
+            source="print('health')",
+            arguments=["/health"],
+            stdout="ok",
+            stderr="",
+            exit_status=0,
+            duration_ms=1,
+        )
+
+        recorded = QARunResult(qa_outcome=QAOutcome.PASSED, probe_runs=[probe])
+        known_none = QARunResult(qa_outcome=QAOutcome.PASSED, probe_runs=[])
+        not_held = QARunResult(qa_outcome=QAOutcome.PASSED)
+
+        assert recorded.probe_runs[0].id == "probe-1"
+        assert known_none.probe_runs == []
+        assert not_held.probe_runs is None
 
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])

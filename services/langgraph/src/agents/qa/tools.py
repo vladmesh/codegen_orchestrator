@@ -554,6 +554,7 @@ def build_qa_callables(
         return f"QA report stored ({len(markdown)} characters)."
 
     callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse, observe))
+    callables["record_probe"] = workspace.record_probe
     callables["write_qa_report"] = write_qa_report
     if jobs is not None and jobs.behaviours:
         jobs_capability = _JobsCapability(
