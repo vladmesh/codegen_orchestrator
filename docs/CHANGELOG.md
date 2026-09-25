@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-25
+
+- A QA temporary-access grant or revoke only reads its grant's target application's allocations: a revoke after
+  undeploy settles as revoked with no ports or SSH; a grant, or an unreadable target, fails closed.
+
 ## 2026-09-24
 
 - Every `tests/live` test runs under a `pytest-timeout` `signal` bound derived in `shared/stand_deadlines.py`,

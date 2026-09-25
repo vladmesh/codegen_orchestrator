@@ -840,3 +840,44 @@ class TestProvisioningAdmissionOnReuse:
 
         assert raised.value.required_ram_mb == 512 + 256
         assert raised.value.min_disk_mb == 1024
+
+
+class TestExistingApplicationAllocations:
+    """The read half: what one named application holds, and never anything new."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_reading_a_deployment_obeys_the_shared_matrix(self, case):
+        """What it hands back is redeployed onto that host, so admission still applies."""
+        client, server = _bound_client(case, datetime.now(UTC))
+
+        with patch("src.allocations.api_client", client):
+            from src.allocations import AllocationError, existing_application_allocations
+
+            if case.admitted:
+                allocated = await existing_application_allocations(42, server.handle)
+                assert list(allocated) == [f"{server.handle}:8000"]
+            else:
+                with pytest.raises(AllocationError) as raised:
+                    await existing_application_allocations(42, server.handle)
+                assert raised.value.reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+
+        client.get_application_allocations.assert_awaited_once_with(42)
+        client.list_applications.assert_not_awaited()
+        client.allocate_next_port.assert_not_awaited()
+        client.get_or_create_application.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_an_undeployed_application_reads_empty_whatever_its_host(self, case):
+        """No allocations is no deployment; there is nothing to place, so nothing to refuse."""
+        client, server = _bound_client(case, datetime.now(UTC))
+        client.get_application_allocations.return_value = []
+
+        with patch("src.allocations.api_client", client):
+            from src.allocations import existing_application_allocations
+
+            assert await existing_application_allocations(42, server.handle) == {}
+
+        client.allocate_next_port.assert_not_awaited()
+        client.get_or_create_application.assert_not_awaited()
