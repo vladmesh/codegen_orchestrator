@@ -457,6 +457,16 @@ decision naming the requested executor, with provider-reported QA spend on the l
 waits in `shared/stand_deadlines.py`. It still asks no model to write the brief or plan the story;
 that is `mega-brief`'s subject.
 
+Its QA executor judges a Telegram-bot product, so `mega-live` needs the QA account's Telethon
+session. The `stand` environment must hold `TELETHON_API_ID`, `TELETHON_API_HASH` and
+`TELETHON_SESSION`, and the session must be authorized as the QA identity the QA runtime's `/start`
+probe expects (`shared.contracts.bot_access.QA_TEST_TELEGRAM_ID`) and able to resolve and write to
+the stand product bot named by `STAND_PRODUCT_BOT_TOKEN`. The workflow proves all three on the
+runner before any paid step (`scripts/stand_telethon_preflight.py`) and refuses the run as
+`telethon_session_unauthorized`, `telethon_identity_mismatch` or `telethon_bot_unreachable`; the
+credentials then reach qa-worker alone, through its own env file. `mega-noop` never opens the session
+and renders with the values empty. `scripts/make_stand_session.py` authorizes a new stand session.
+
 ## Integration Test Architecture
 
 The backend integration suite (`tests/compose/integration/backend.yml`) runs the API, Redis and

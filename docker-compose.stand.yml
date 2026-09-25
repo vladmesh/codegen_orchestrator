@@ -47,3 +47,20 @@ services:
       timeout: 5s
       retries: 20
       start_period: 120s
+
+  # The QA Telegram account reaches qa-worker and nothing else. The stand .env
+  # is every service's `env_file`, so the workflow renders the Telethon session
+  # into its own file (.qa-worker.env, from .stand-qa-worker.env) and only this
+  # service reads it. The base file's `${TELETHON_*:-}` entries are reset here:
+  # interpolated from a .env that no longer carries them they would be empty,
+  # and `environment` outranks `env_file`. The file may be absent — a local
+  # render of the stand stack has none — and a suite that never opens the
+  # session runs with the values empty.
+  qa-worker:
+    env_file:
+      - path: .qa-worker.env
+        required: false
+    environment:
+      TELETHON_API_ID: !reset null
+      TELETHON_API_HASH: !reset null
+      TELETHON_SESSION: !reset null

@@ -5,17 +5,24 @@ below are the ones whose absence is discovered at the worst moment — a second
 run trampling the first, or a failed run whose logs were never collected.
 """
 
+import ast
+import base64
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
+import textwrap
 import time
 
+import pytest
 import yaml
 
 from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+from scripts.stand_credentials import CLAUDE_MINIMUM_TTL, validate_precreate_credentials
 from scripts.stand_run import (
     LIVE_RUNNER_TIMEOUT_SECONDS,
     STAND_CLEANUP_JOB_TIMEOUT_MINUTES,
@@ -25,6 +32,7 @@ from scripts.stand_run import (
     STAND_WORKFLOW_PREPROVISION_RESERVE_SECONDS,
     SUITES,
 )
+from scripts.stand_telethon_preflight import needs_session
 from scripts.wait_stand_provisioning import (
     DEFAULT_TIMEOUT_SECONDS as WAIT_STAND_PROVISIONING_TIMEOUT_SECONDS,
 )
@@ -1713,3 +1721,312 @@ def test_the_suite_step_hands_the_runner_the_override_bring_up_generated(tmp_pat
     from scripts import stand_run
 
     assert stand_run.SERVICE_RELEASE_OVERRIDE_ENV == "STAND_SERVICE_RELEASE_COMPOSE"
+
+
+# --- The QA Telegram session: validated, rendered for qa-worker, proven, redacted ---
+
+#: Credentials pre-create validation requires that are deliberately not stand
+#: configuration, each with the reason. A name validated before any machine exists
+#: and then dropped from the render is either listed here or a defect.
+NOT_NEEDED_ON_STAND = {
+    "SSH_PRIVATE_KEY": (
+        "the runner's own key for reaching the pair it creates: written to protected key "
+        "files for ssh, bootstrap and target registration, never a service setting"
+    ),
+}
+QA_WORKER_ENV = "/opt/codegen_orchestrator/.qa-worker.env"
+TELETHON_NAMES = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
+
+
+def _render_script(step: dict) -> str:
+    """The Python program of the render step, as the runner executes it."""
+    return step["run"].split("python3 -c '\n", maxsplit=1)[1].rsplit("\n'", maxsplit=1)[0]
+
+
+def _rendered_files(step: dict) -> dict[str, tuple[str, ...]]:
+    """The names each render tuple writes: `names` to .stand.env, `telethon` to qa-worker."""
+    tuples = {}
+    for node in ast.walk(ast.parse(_render_script(step))):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Tuple)
+        ):
+            tuples[node.targets[0].id] = tuple(ast.literal_eval(node.value))
+    return {".stand.env": tuples["names"], ".stand-qa-worker.env": tuples["telethon"]}
+
+
+def _validated_but_dropped(steps: dict[str, dict]) -> set[str]:
+    """Validated credentials whose secret no rendered stand setting carries."""
+    validated = steps["Validate pre-create credentials"]["env"]
+    render = steps["Render protected dynamic configuration"]
+    rendered = {name for names in _rendered_files(render).values() for name in names}
+    carried = {render["env"][name] for name in rendered if name in render["env"]}
+    return {
+        name
+        for name, source in validated.items()
+        if source not in carried and name not in NOT_NEEDED_ON_STAND
+    }
+
+
+def test_every_validated_credential_is_rendered_for_the_stand_or_named_as_not_needed():
+    steps = _steps()
+
+    assert _validated_but_dropped(steps) == set()
+    # The list is the validation's own: each name it is handed is one it requires,
+    # and nothing it requires is outside the list.
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    valid = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake-opaque-claude-token",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (
+            now + CLAUDE_MINIMUM_TTL + timedelta(seconds=1)
+        ).isoformat(),
+        "TELETHON_API_ID": "12345",
+        "TELETHON_API_HASH": "hash",
+        "TELETHON_SESSION": "session",
+        "SSH_PRIVATE_KEY": (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\ndGVzdA==\n-----END OPENSSH PRIVATE KEY-----"
+        ),
+    }
+    validated = steps["Validate pre-create credentials"]["env"]
+    assert set(valid) == set(validated)
+    assert validate_precreate_credentials(valid, now=now) == []
+    for name in validated:
+        assert validate_precreate_credentials({**valid, name: ""}, now=now), name
+    assert set(NOT_NEEDED_ON_STAND) <= set(validated)
+
+
+def test_a_validated_credential_removed_from_the_render_fails_the_list_test():
+    workflow = _workflow()
+    steps = {step["name"]: step for step in workflow["jobs"]["e2e"]["steps"]}
+    render = steps["Render protected dynamic configuration"]
+    render["run"] = render["run"].replace(
+        '"TELETHON_API_HASH", "TELETHON_SESSION")', '"TELETHON_API_HASH")'
+    )
+
+    assert _validated_but_dropped(steps) == {"TELETHON_SESSION"}
+
+
+def _run_render(tmp_path: Path, *, qa_telethon: str, **overrides: str):
+    step = _steps()["Render protected dynamic configuration"]
+    environment = {name: f"value-of-{name}" for name in step["env"]}
+    environment.update(GH_APP_PRIVATE_KEY="key", QA_TELETHON=qa_telethon, **overrides)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _render_script(step)],
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result
+
+
+def test_the_qa_session_is_required_for_a_suite_that_opens_it():
+    step = _steps()["Render protected dynamic configuration"]
+    suite = _steps()["Resolve the suite"]
+
+    assert step["env"]["QA_TELETHON"] == "${{ steps.suite.outputs.qa_telethon }}"
+    assert "scripts.stand_telethon_preflight needs-session" in suite["run"]
+    assert "qa_telethon=" in suite["run"]
+    assert needs_session("mega-live") is True
+    assert needs_session("mega-noop") is False
+    for name in TELETHON_NAMES:
+        assert step["env"][name] == f"${{{{ secrets.{name} }}}}"
+
+
+def test_mega_live_refuses_to_render_without_the_qa_session(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="true", TELETHON_SESSION="")
+
+    assert result.returncode != 0
+    assert "missing required qa-worker configuration: TELETHON_SESSION" in result.stderr
+    assert not (tmp_path / ".stand.env").exists()
+    assert not (tmp_path / ".stand-qa-worker.env").exists()
+
+
+def test_mega_live_renders_the_qa_session_for_qa_worker_and_not_into_the_stand_env(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="true")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".stand-qa-worker.env").read_text() == "".join(
+        f"{name}=value-of-{name}\n" for name in TELETHON_NAMES
+    )
+    assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+
+
+def test_mega_noop_renders_without_the_qa_session_as_it_always_has(tmp_path):
+    result = _run_render(tmp_path, qa_telethon="false", **dict.fromkeys(TELETHON_NAMES, ""))
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".stand-qa-worker.env").read_text() == "".join(
+        f"{name}=\n" for name in TELETHON_NAMES
+    )
+    assert "TELETHON" not in (tmp_path / ".stand.env").read_text()
+
+
+def test_the_qa_worker_env_file_reaches_the_stand_beside_its_env_and_is_never_rsynced():
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]["run"]
+
+    assert re.search(
+        r'\.stand-qa-worker\.env \\\n\s+root@"\$\{PROD_HOST\}":' + re.escape(QA_WORKER_ENV) + "\n",
+        bring_up,
+    )
+    assert bring_up.index(".stand-qa-worker.env") < bring_up.index("up -d --remove-orphans")
+    assert "--exclude .stand-qa-worker.env" in bootstrap
+
+
+def _render_stand_stack(project_dir: Path, qa_worker_env: str | None) -> dict:
+    """The stand stack as compose resolves it, from a stand .env without the session."""
+    root = WORKFLOW.parents[2]
+    env_file = project_dir / ".env"
+    example = (root / ".env.example").read_text().splitlines()
+    env_file.write_text(
+        "\n".join(line for line in example if not line.startswith("TELETHON_"))
+        + "\nLOKI_URL=http://loki:3100\nHOST_CODEX_HOME=/opt/secrets/codex-stand\n"
+    )
+    if qa_worker_env is not None:
+        (project_dir / ".qa-worker.env").write_text(qa_worker_env)
+    command = ["docker", "compose", "--project-directory", str(project_dir)]
+    command += ["--env-file", str(env_file)]
+    for name in ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml"):
+        command += ["-f", str(root / name)]
+    result = subprocess.run(  # noqa: S603
+        [*command, "config", "--format", "json"], check=True, capture_output=True, text=True
+    )
+    return json.loads(result.stdout)
+
+
+def _telethon_by_service(config: dict) -> dict[str, dict[str, str]]:
+    found = {}
+    for name, service in config["services"].items():
+        environment = service.get("environment") or {}
+        telethon = {key: value for key, value in environment.items() if key.startswith("TELETHON_")}
+        if telethon:
+            found[name] = telethon
+    return found
+
+
+def test_the_qa_session_reaches_qa_worker_and_no_other_service_on_the_stand(tmp_path):
+    session = "1" + "A" * 40
+    config = _render_stand_stack(
+        tmp_path,
+        f"TELETHON_API_ID=12345\nTELETHON_API_HASH=feed\nTELETHON_SESSION={session}\n",
+    )
+
+    assert _telethon_by_service(config) == {
+        "qa-worker": {
+            "TELETHON_API_ID": "12345",
+            "TELETHON_API_HASH": "feed",
+            "TELETHON_SESSION": session,
+        }
+    }
+    # qa-worker still reads the stand .env like every other service.
+    assert config["services"]["qa-worker"]["environment"]["POSTGRES_DB"]
+
+
+def test_a_stand_without_the_qa_worker_env_file_still_renders(tmp_path):
+    assert _telethon_by_service(_render_stand_stack(tmp_path, None)) == {}
+
+
+def test_the_qa_session_is_proven_before_any_paid_step_and_only_when_a_suite_opens_it():
+    steps = list(_steps())
+    proof = _steps()["Prove the QA Telegram session"]
+
+    assert proof["if"] == "${{ steps.suite.outputs.qa_telethon == 'true' }}"
+    assert "python -m scripts.stand_telethon_preflight prove" in proof["run"]
+    assert "--with 'telethon==1.45.0'" in proof["run"]
+    for name in (*TELETHON_NAMES, "STAND_PRODUCT_BOT_TOKEN"):
+        assert proof["env"][name] == f"${{{{ secrets.{name} }}}}"
+        assert f"${{{name}}}" not in proof["run"]
+    assert proof["timeout-minutes"] <= 10
+    position = steps.index("Prove the QA Telegram session")
+    assert steps.index("Install uv") < position
+    assert steps.index("Resolve the suite") < position
+    assert steps.index("Validate pre-create credentials") < position
+    for paid in (
+        "Authenticate Codex against exact worker image",
+        "Preflight ephemeral machines",
+        "Create ephemeral machines",
+        "Give the stand a resolvable name",
+        "Run selected stand suite",
+    ):
+        assert position < steps.index(paid), paid
+
+
+def _remote_redaction_scripts() -> list[str]:
+    return [
+        _steps()["Register and provision dynamic target"]["run"],
+        _steps()["Record machine manifest"]["run"],
+    ]
+
+
+def _session_needles(script: str) -> tuple[str, str]:
+    """The shell that reads the session for the redactor, and the redactor itself."""
+    lines = script.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "qa_env=./.qa-worker.env")
+    end = next(i for i, line in enumerate(lines) if line.strip().startswith("protected_names="))
+    shell = textwrap.dedent("\n".join(lines[start : end + 1]))
+    code = re.search(r'python -c "((?:[^"\\]|\\.)*)"', script).group(1).replace('\\"', '"')
+    return shell, code
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["provisioning-tails", "suite-failure-tails"])
+def test_the_service_tail_redaction_removes_a_session_looking_value(tmp_path, which):
+    script = _remote_redaction_scripts()[which]
+    session = "1" + base64.urlsafe_b64encode(os.urandom(263)).decode()
+    api_hash = "0123456789abcdef0123456789abcdef"
+    (tmp_path / ".qa-worker.env").write_text(
+        f"TELETHON_API_ID=12345\nTELETHON_API_HASH={api_hash}\nTELETHON_SESSION={session}\n"
+    )
+    shell, code = _session_needles(script)
+    assert "-e TELETHON_API_HASH -e TELETHON_SESSION api" in script
+
+    # What the stand host's shell hands the redactor: the names, and the values by name.
+    read = subprocess.run(  # noqa: S603
+        [
+            "bash",
+            "-c",
+            f'set -euo pipefail\n{shell}\nprintf "%s\\0" "${{protected_names}}" '
+            '"${TELETHON_API_HASH}" "${TELETHON_SESSION}"',
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    names, handed_hash, handed_session = read.stdout.split("\0")[:3]
+    assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= set(names.split())
+    assert (handed_hash, handed_session) == (api_hash, session)
+
+    tail = (
+        f"qa-worker | telethon session={session}\n"
+        f"qa-worker | api_hash {api_hash} in a traceback\n"
+        "qa-worker | qa_telethon_not_configured\n"
+    )
+    redacted = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        input=tail,
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(WORKFLOW.parents[2]),
+            "STAND_DIAGNOSTIC_SECRET_NAMES": names,
+            "TELETHON_API_HASH": handed_hash,
+            "TELETHON_SESSION": handed_session,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert session not in redacted
+    assert api_hash not in redacted
+    assert redacted.count("[redacted]") >= 2
+    assert "qa_telethon_not_configured" in redacted
+
+
+def test_the_qa_session_is_a_protected_value_of_every_artifact_admission():
+    assert {"TELETHON_API_HASH", "TELETHON_SESSION"} <= PROTECTED_STAND_SECRET_NAMES
+    # TELETHON_API_ID is an application number, not a credential: never a needle.
+    assert "TELETHON_API_ID" not in PROTECTED_STAND_SECRET_NAMES

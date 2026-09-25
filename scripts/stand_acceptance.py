@@ -95,6 +95,9 @@ PROTECTED_STAND_SECRET_NAMES = frozenset(
         "ARCHITECT_LLM_API_KEY",
         "GH_APP_PRIVATE_KEY",
         "SSH_PRIVATE_KEY",
+        # The QA account's Telegram session and app hash (qa-worker only).
+        "TELETHON_API_HASH",
+        "TELETHON_SESSION",
     }
 )
 
