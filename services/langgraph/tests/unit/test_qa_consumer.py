@@ -7,6 +7,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 import json
 import os
@@ -742,6 +743,14 @@ class TestProcessQAJobFail:
                 new_callable=AsyncMock,
                 return_value=access_denied,
             ) as probe,
+            # The run's identity proof is a Telegram round trip of its own; the
+            # session here is a placeholder, so it is stood in for as proven.
+            patch(
+                "src.consumers.qa.prove_sandbox_telegram_identity",
+                new=AsyncMock(
+                    side_effect=lambda runtime: replace(runtime, telegram_identity_proven=True)
+                ),
+            ),
             patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
         ):
             result = await process_qa_job(qa_message_data, mock_redis)

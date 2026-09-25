@@ -64,6 +64,11 @@ from ._qa_runner import (
     scheduled_behaviour_facts,
 )
 from ._qa_target import QATarget
+from ._qa_telegram_identity import (
+    QA_TELEGRAM_IDENTITY_KEY,
+    identity_record,
+    prove_sandbox_telegram_identity,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -520,6 +525,15 @@ async def _run_exploratory_qa(
         return None, executor_decision
     runtime = _resolve_qa_runtime(executor_decision.agent_type)
     ownership = WorkerOwnership.for_qa(msg)
+    # Proven for this run, or withdrawn for this run: the sandbox is handed the
+    # QA Telegram identity only after this, and a refused session is treated
+    # from here on exactly as a runtime without Telethon credentials.
+    runtime = await prove_sandbox_telegram_identity(runtime)
+    if (identity := identity_record(runtime)) is not None and msg.run_id:
+        await api_client.patch(
+            f"runs/{msg.run_id}",
+            json={"run_metadata": {QA_TELEGRAM_IDENTITY_KEY: identity}},
+        )
 
     # Both of these are read here, on the management host, before any executor
     # exists: the behaviour names come off this run's own criteria and the
@@ -550,6 +564,7 @@ async def _run_exploratory_qa(
         access_blocker = await preflight_bot_access(
             bot_username=msg.bot_username,
             telethon_env=runtime.telethon_env,
+            identity_refusal=runtime.telegram_identity_refusal,
         )
         if access_blocker:
             return None, access_blocker

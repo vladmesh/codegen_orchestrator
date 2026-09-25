@@ -11,7 +11,8 @@ import secrets
 from aiohttp import web
 import structlog
 
-from shared.qa_probe_cli import CAPABILITIES_CALL, SUBMIT_VERDICT_CALL
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
+from shared.qa_probe_cli import CAPABILITIES_CALL, SUBMIT_VERDICT_CALL, TELEGRAM_IDENTITY_CALL
 
 logger = structlog.get_logger(__name__)
 
@@ -41,12 +42,21 @@ class QACapabilityService:
         capabilities: dict,
         submit_verdict: Callable[[str], None],
         advertised_host: str,
+        telegram_identity: Mapping[str, str] | None = None,
+        telegram_identity_refusal: str | None = None,
         bind_host: str = "0.0.0.0",  # noqa: S104 — reachable from the executor's network
         port: int = 0,
     ) -> None:
+        """`telegram_identity` is the QA account's Telethon variables, passed only
+        once the runtime has proven them for this run; `telegram_identity_refusal`
+        says why there is none. The identity is served to the run token on
+        request and never written to a log line here.
+        """
         self._calls = dict(calls)
         self._capabilities = capabilities
         self._submit_verdict = submit_verdict
+        self._telegram_identity = dict(telegram_identity) if telegram_identity else None
+        self._telegram_identity_refusal = telegram_identity_refusal
         self._advertised_host = advertised_host
         self._bind_host = bind_host
         self._port = port
@@ -117,12 +127,23 @@ class QACapabilityService:
             return {"tool": name, **self._capabilities}
         if name == SUBMIT_VERDICT_CALL:
             return self._accept_verdict(args)
+        if name == TELEGRAM_IDENTITY_CALL:
+            return self._serve_telegram_identity()
 
         call = self._calls.get(name)
         if call is None:
             raise QACapabilityRejected(
                 f"{name} is not a call this run has; available: "
-                f"{', '.join(sorted([*self._calls, CAPABILITIES_CALL, SUBMIT_VERDICT_CALL]))}"
+                + ", ".join(
+                    sorted(
+                        [
+                            *self._calls,
+                            CAPABILITIES_CALL,
+                            SUBMIT_VERDICT_CALL,
+                            TELEGRAM_IDENTITY_CALL,
+                        ]
+                    )
+                )
             )
         self._check_arguments(name, call, args)
         self.calls_served += 1
@@ -140,6 +161,21 @@ class QACapabilityService:
             inspect.signature(call).bind(**args)
         except TypeError as exc:
             raise QACapabilityRejected(f"{name}: {exc}") from exc
+
+    def _serve_telegram_identity(self) -> dict:
+        if self._telegram_identity is None:
+            raise QACapabilityRejected(
+                "this run has no proven QA Telegram identity: "
+                + (self._telegram_identity_refusal or "the QA runtime has no Telethon credentials")
+            )
+        logger.info("qa_capability_telegram_identity_served")
+        return {
+            "tool": TELEGRAM_IDENTITY_CALL,
+            "api_id": self._telegram_identity["TELETHON_API_ID"],
+            "api_hash": self._telegram_identity["TELETHON_API_HASH"],
+            "session": self._telegram_identity["TELETHON_SESSION"],
+            "user_id": QA_TEST_TELEGRAM_ID,
+        }
 
     def _accept_verdict(self, args: dict) -> dict:
         raw = args.get("result")

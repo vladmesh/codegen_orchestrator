@@ -36,8 +36,9 @@ Instead of Docker-in-Docker (Sysbox), the system uses the **Flat Dev Environment
 1. **Network setup**:
    Developer Workers use `codegen_worker` for the worker control plane and
    `dev_proj_<worker_id>` for their project's sidecar containers. QA Executors
-   use the isolated `codegen_qa_egress` network and reach a deployment only
-   through their per-run capability endpoint.
+   use the isolated `codegen_qa_egress` network: a per-run CONNECT-only proxy
+   opens their model backend, their deploy target's public URL and Telegram, and
+   everything SSH-based goes through their per-run capability endpoint.
 
 2. **Compose Proxy**:
    The workers (the injected AI agents) **have no access to Docker**. To start infrastructure dependencies they call `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards the request through the authenticated worker-broker to worker-manager.

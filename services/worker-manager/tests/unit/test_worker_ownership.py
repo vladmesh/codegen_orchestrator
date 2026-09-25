@@ -297,6 +297,7 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
             worker_type=QA_WORKER_TYPE,
             instructions="# QA executor",
             task_content="test it",
+            qa_target_url="https://app.example.com",
         )
 
     labels = docker.run_container.await_args.kwargs["labels"]

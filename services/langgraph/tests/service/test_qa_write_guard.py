@@ -383,10 +383,11 @@ def _writing_executor(deployed_url: str):
     nothing but the endpoint URL and this run's token.
     """
 
-    async def run(
+    async def run(  # noqa: PLR0913 — stands in for run_qa_executor's signature
         *,
         agent_type,
         ownership,
+        deploy_target_url,
         capability_url,
         capability_token,
         instructions,

@@ -118,6 +118,7 @@ async def test_published_create_records_start_before_a_later_redis_error():
                     run_id="qa-1",
                     attempt_id="qa-1",
                 ),
+                deploy_target_url="http://203.0.113.10:8080",
                 capability_url="http://127.0.0.1:8000",
                 capability_token="test-token",  # noqa: S106 - fake endpoint credential
                 instructions="test",

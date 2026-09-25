@@ -43,6 +43,7 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from shared import telethon_identity
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 
 TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
@@ -61,8 +62,8 @@ BOT_API_GET_ME = "https://api.telegram.org/bot{token}/getMe"
 
 
 class Refusal(StrEnum):
-    SESSION_UNAUTHORIZED = "telethon_session_unauthorized"
-    IDENTITY_MISMATCH = "telethon_identity_mismatch"
+    SESSION_UNAUTHORIZED = telethon_identity.SESSION_UNAUTHORIZED
+    IDENTITY_MISMATCH = telethon_identity.IDENTITY_MISMATCH
     BOT_UNREACHABLE = "telethon_bot_unreachable"
 
 
@@ -154,20 +155,15 @@ async def prove_session(client: Any, *, bot_username: str) -> Verdict:
     """
     user_id: int | None = None
     try:
-        await _bounded(client.connect(), Refusal.SESSION_UNAUTHORIZED, "connect")
-        if not await _bounded(
-            client.is_user_authorized(), Refusal.SESSION_UNAUTHORIZED, "authorization check"
-        ):
-            raise _Refused(Refusal.SESSION_UNAUTHORIZED, "the session is not authorized")
-        me = await _bounded(client.get_me(), Refusal.SESSION_UNAUTHORIZED, "get_me")
-        if me is None:
-            raise _Refused(Refusal.SESSION_UNAUTHORIZED, "get_me returned no user")
-        user_id = int(me.id)
-        if user_id != QA_TEST_TELEGRAM_ID:
-            raise _Refused(
-                Refusal.IDENTITY_MISMATCH,
-                "the session is not the QA identity the QA runtime's /start probe expects",
+        # The identity half is the QA runtime's own check, shared with it: the
+        # runtime asks exactly this before it hands the session to a sandbox.
+        try:
+            user_id = await telethon_identity.prove_qa_identity(
+                client, timeout=CALL_TIMEOUT_SECONDS
             )
+        except telethon_identity.IdentityNotProven as refused:
+            user_id = refused.user_id
+            raise _Refused(Refusal(refused.reason), refused.detail) from None
         bot = await _bounded(
             client.get_entity(f"@{bot_username}"), Refusal.BOT_UNREACHABLE, "resolve"
         )

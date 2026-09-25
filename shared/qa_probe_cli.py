@@ -9,6 +9,8 @@ __all__ = [
     "QA_PROBE_SCRIPT",
     "QA_PROBE_USAGE",
     "SUBMIT_VERDICT_CALL",
+    "TELEGRAM_IDENTITY_CALL",
+    "TELEGRAM_IDENTITY_FILE",
 ]
 
 QA_PROBE_NAME = "qa"
@@ -17,6 +19,11 @@ QA_PROBE_PATH = f"/workspace/{QA_PROBE_NAME}"
 # Shared names for the endpoint and injected script.
 CAPABILITIES_CALL = "capabilities"
 SUBMIT_VERDICT_CALL = "submit_qa_result"
+# The QA Telegram account's Telethon credentials, served only after the QA
+# runtime proved them for this run. The CLI writes them to a private file in the
+# container's home (never the host-mounted /workspace) and prints only the path.
+TELEGRAM_IDENTITY_CALL = "telegram_identity"
+TELEGRAM_IDENTITY_FILE = "~/.qa/telegram_identity.json"
 
 QA_PROBE_USAGE = """\
 qa capabilities                     — what this run may reach
@@ -31,23 +38,28 @@ qa fire_job NAME                    — invoke one named scheduled behaviour
 qa job_evidence NAME                — read back this run's record of that fire
 qa telegram_probe MESSAGE           — send a message to the bot under test
 qa telegram_click_button ID DATA    — invoke a visible inline bot button
+qa telegram_identity                — write the QA Telegram account's Telethon
+                                      credentials and proxy to ~/.qa/telegram_identity.json
+                                      for your own client; never print that file
 qa report FILE                      — store the Markdown QA report
 qa finish FILE                      — submit the final result JSON and end the run\
 """
 
 # Source text runs in the executor container without this repository installed.
 QA_PROBE_SCRIPT = '''#!/usr/bin/env python3
-"""qa — the only way this container can reach the deployment under test."""
+"""qa — this container's calls to the QA runtime: the target's SSH-side reads and the verdict."""
 
 import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 USAGE = """__QA_PROBE_USAGE__"""
 
 TIMEOUT = 180
+IDENTITY_FILE = "__QA_IDENTITY_FILE__"
 
 
 def fail(message):
@@ -115,6 +127,10 @@ def build_call(argv):
         if len(rest) != 2 or not rest[0].isdigit():
             fail("usage: qa telegram_click_button MESSAGE_ID CALLBACK_DATA")
         return "telegram_click_button", {"message_id": int(rest[0]), "callback_data": rest[1]}
+    if command == "telegram_identity":
+        if rest:
+            fail("usage: qa telegram_identity")
+        return "telegram_identity", {}
     if command == "report":
         if len(rest) != 1:
             fail("usage: qa report FILE")
@@ -160,12 +176,46 @@ def main():
     except OSError as exc:
         fail("the QA capability endpoint did not answer: %s" % exc)
 
-    sys.stdout.write(body + "\\n")
     answer = json.loads(body)
+    if tool == "telegram_identity" and not answer.get("error"):
+        return write_identity(answer)
+    sys.stdout.write(body + "\\n")
     error = answer.get("error")
     return 1 if isinstance(error, str) and error.strip() else 0
 
 
+def write_identity(answer):
+    """Keep the session out of stdout: it goes to a 0600 file, and only the path is printed."""
+    proxy = urllib.parse.urlsplit(os.environ.get("HTTPS_PROXY", ""))
+    identity = {
+        "api_id": int(answer["api_id"]),
+        "api_hash": answer["api_hash"],
+        "session": answer["session"],
+        "user_id": answer["user_id"],
+        "proxy": ["http", proxy.hostname, proxy.port] if proxy.hostname else None,
+    }
+    path = os.path.expanduser(IDENTITY_FILE)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(identity, handle)
+    sys.stdout.write(
+        json.dumps(
+            {
+                "tool": "telegram_identity",
+                "file": path,
+                "user_id": identity["user_id"],
+                "client": "TelegramClient(StringSession(f['session']), f['api_id'], "
+                "f['api_hash'], proxy=tuple(f['proxy']))",
+            }
+        )
+        + "\\n"
+    )
+    return 0
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
-'''.replace("__QA_PROBE_USAGE__", QA_PROBE_USAGE)
+'''.replace("__QA_PROBE_USAGE__", QA_PROBE_USAGE).replace(
+    "__QA_IDENTITY_FILE__", TELEGRAM_IDENTITY_FILE
+)

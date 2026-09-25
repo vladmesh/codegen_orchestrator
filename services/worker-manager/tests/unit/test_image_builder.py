@@ -9,6 +9,8 @@ Tests cover:
 
 import pytest
 
+from shared.contracts.queues.worker import WorkerCapability
+
 # This import will fail initially (RED phase) - module doesn't exist yet
 from src.image_builder import ImageBuilder, compute_image_hash, get_base_image
 
@@ -123,6 +125,16 @@ class TestImageBuilderDockerfileGeneration:
         # gh CLI requires special installation
         assert "gh" in dockerfile.lower()
         assert "apt-get" in dockerfile
+
+    def test_the_qa_sandbox_capability_installs_telethon_and_its_proxy_backend(self, builder):
+        """The container's system python3 imports both; the exact pins were proven together."""
+        dockerfile = builder.generate_dockerfile(
+            capabilities=[WorkerCapability.QA_SANDBOX.value], agent_type="codex"
+        )
+        lines = dockerfile.split("\n")
+
+        assert "RUN pip install --no-cache-dir telethon==1.45.0 python-socks==2.8.2" in lines
+        assert lines.index("USER root") < lines.index("USER worker")
 
     def test_dockerfile_curl_capability_preinstalled(self, builder):
         """CURL is pre-installed in worker-base, no apt-get needed."""

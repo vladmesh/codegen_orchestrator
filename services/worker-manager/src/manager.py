@@ -47,6 +47,10 @@ _TERMINAL_STORY_STATUSES = frozenset(
     {StoryStatus.COMPLETED, StoryStatus.FAILED, StoryStatus.ARCHIVED}
 )
 _REJECTED_WORKER_OBSERVATION_SECONDS = 300
+# The whole environment the QA runtime may hand a QA executor: its run's
+# capability endpoint and that endpoint's token. Anything else in a QA create
+# request is refused, so nothing more of qa-worker's environment can ride along.
+QA_EXECUTOR_ENV_KEYS = frozenset({"QA_CAPABILITY_URL", "QA_CAPABILITY_TOKEN"})
 
 # What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
 # network is created and destroyed with its worker but is a separate Docker
@@ -675,6 +679,31 @@ class WorkerManager:
                 raise RuntimeError("FACTORY_API_KEY is not set")
         return network_name, allow_host_network, factory_api_key
 
+    @staticmethod
+    def _validate_qa_request(
+        is_qa_worker: bool, qa_target_url: str | None, env_vars: dict[str, str]
+    ) -> tuple[str, ...]:
+        """Refuse a QA request that would widen the sandbox; return its target entries.
+
+        Runs before ownership is stamped, so a refused target leaves no
+        container, proxy or record behind. A developer worker carries no
+        target: it is never behind the QA proxy, and a target on it would mean
+        a request that was built for something else.
+        """
+        if not is_qa_worker:
+            if qa_target_url:
+                raise RuntimeError("only a QA executor is opened to a deploy target")
+            return ()
+        extra = sorted(set(env_vars) - QA_EXECUTOR_ENV_KEYS)
+        if extra:
+            raise RuntimeError(
+                "a QA executor is given its capability endpoint and nothing else; "
+                f"refusing env_vars {', '.join(extra)}"
+            )
+        return qa_egress.deploy_target_entries(
+            qa_target_url, qa_egress.direct_hosts(env_vars, settings.WORKER_BROKER_URL)
+        )
+
     # Statuses that indicate the worker is no longer alive and can be cleaned up
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
@@ -720,6 +749,7 @@ class WorkerManager:
         worker_type: str = "developer",
         repo_id: str | None = None,
         branch: str | None = None,
+        qa_target_url: str | None = None,
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -730,6 +760,10 @@ class WorkerManager:
         required — a worker nobody owns cannot be attributed once it is dead —
         and it is written below, once this worker is one that will exist, and
         always before a container of it can.
+
+        `qa_target_url` is a QA executor's deployed public URL. Its host is the
+        one product destination the run's egress proxy opens; it is validated
+        here, before anything is stamped or created.
         """
         logger.info(
             "create_worker_with_capabilities",
@@ -767,6 +801,7 @@ class WorkerManager:
                     repo_id=repo_id,
                 )
             )
+            qa_deploy_target = self._validate_qa_request(is_qa_worker, qa_target_url, env_vars)
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project
@@ -862,6 +897,8 @@ class WorkerManager:
                     internet_network=settings.WORKER_NETWORK,
                     configured_backends=self._qa_backend_setting(agent_type),
                     direct=qa_egress.direct_hosts(container_env, settings.WORKER_BROKER_URL),
+                    deploy_target=qa_deploy_target,
+                    telegram=qa_egress.telegram_entries(),
                     # The run's proxy belongs to the run that opened it, and is
                     # labelled with the same ownership as the executor it serves.
                     labels={**json.loads(settings.WORKER_DOCKER_LABELS), **ownership.as_labels()},
@@ -891,7 +928,8 @@ class WorkerManager:
                 # A QA executor runs no project of its own, and a second network
                 # is exactly what it must not have: it is attached to the QA
                 # egress network alone, where the only things it can address are
-                # the run's capability endpoint, the broker, and its own proxy.
+                # the run's capability endpoint, the broker, and its own proxy —
+                # and through the proxy, only its allowlist.
                 create_dev_network=network_name != "host" and not is_qa_worker,
                 workspace_path=str(ws_path),
                 container_config=config,
@@ -906,8 +944,8 @@ class WorkerManager:
                 # Proof, not intent: whatever was asked for, this is what Docker
                 # actually attached. A container that ended up on a second
                 # network — a leftover default, a hand-edited compose, a future
-                # branch here — can reach the deployment directly, so it is
-                # refused before it is given any work.
+                # branch here — can reach past its allowlist, so it is refused
+                # before it is given any work.
                 qa_egress.verify_isolation(
                     await self.docker.inspect_container(container_id), network_name
                 )
