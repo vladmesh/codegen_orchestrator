@@ -16,6 +16,7 @@ import structlog
 import yaml
 
 from shared.diagnostics import redact_diagnostic
+from shared.git_not_found_retry import git_repository_not_found, retry_delay_after
 from src.validation import ScaffoldInputError, validate_modules, validate_project_name
 
 logger = structlog.get_logger(__name__)
@@ -81,26 +82,7 @@ def _failure_detail(stderr: str, stdout: str, token: str) -> str:
     return redact_diagnostic(stderr or stdout, secrets=(token,))
 
 
-# Pauses between git fetch attempts on a repository GitHub's git transport does not
-# serve yet. GitHub's REST API sees a new repository (and accepts writes to it) before
-# its git smart-HTTP endpoint does: on 2026-09-24 the scaffolder set three Actions
-# secrets on a freshly created repository and ~2 s after creation `git fetch` with the
-# very same installation token still got "Repository not found". ~30 s in total.
-FETCH_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1, 2, 4, 8, 15)
-
-# What GitHub answers over git smart-HTTP for a repository it does not (yet) serve.
-# Authentication and permission failures read differently and are never retried.
-_NOT_YET_SERVED_MARKERS = (
-    "repository not found",
-    "the requested url returned error: 404",
-)
-
 _ORIGIN_MAIN = "refs/remotes/origin/main"
-
-
-def _remote_not_yet_served(stderr: str, stdout: str) -> bool:
-    text = f"{stderr}\n{stdout}".lower()
-    return any(marker in text for marker in _NOT_YET_SERVED_MARKERS)
 
 
 async def _fetch_new_remote(workspace: Path, token: str, log) -> tuple[int, str, str, int]:
@@ -112,7 +94,6 @@ async def _fetch_new_remote(workspace: Path, token: str, log) -> tuple[int, str,
     Returns (returncode, stdout, stderr, attempts).
     """
     env = _git_auth_env(token)
-    delays = iter(FETCH_RETRY_DELAYS_SECONDS)
     attempt = 0
     while True:
         attempt += 1
@@ -126,10 +107,10 @@ async def _fetch_new_remote(workspace: Path, token: str, log) -> tuple[int, str,
                     log.info("scaffold_fetch_ready", attempts=attempt)
                 return rc, out, err, attempt
             rc, out, err = 1, "", "origin has no main branch yet\n"
-        elif not _remote_not_yet_served(err, out):
+        elif not git_repository_not_found(err, out):
             return rc, out, err, attempt
 
-        delay = next(delays, None)
+        delay = retry_delay_after(attempt)
         if delay is None:
             return rc, out, err, attempt
         log.warning(

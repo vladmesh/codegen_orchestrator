@@ -69,6 +69,48 @@ def test_a_checkout_that_took_four_seconds_is_recorded_as_four_seconds():
     assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
 
 
+def test_one_repository_not_found_retry_stays_one_successful_bounded_checkout():
+    log = _log(
+        _checkout("checkout_branch_start", at="2026-09-19T18:50:34.000000"),
+        {
+            **_checkout("checkout_branch_retry", at="2026-09-19T18:50:35.000000"),
+            "attempt": 1,
+            "delay_seconds": 1,
+        },
+        _checkout("checkout_branch_complete", at="2026-09-19T18:50:50.000000"),
+    )
+
+    attempts = checkout_records(log, branch=BRANCH)
+
+    assert len(attempts) == 1
+    assert attempts[0]["retries"] == [{"attempt": 1, "delay_seconds": 1}]
+    assert attempts[0]["duration_seconds"] == 16
+    assert checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND) == []
+    attempts[0]["duration_seconds"] = 17
+    assert (
+        "over the 16s bound" in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
+def test_an_unbounded_retry_claim_does_not_relax_the_checkout_assertion():
+    attempts = checkout_records(
+        _log(
+            _checkout("checkout_branch_start", at="2026-09-19T18:50:34.000000"),
+            {
+                **_checkout("checkout_branch_retry", at="2026-09-19T18:50:35.000000"),
+                "attempt": 1,
+                "delay_seconds": 60,
+            },
+            _checkout("checkout_branch_complete", at="2026-09-19T18:50:50.000000"),
+        ),
+        branch=BRANCH,
+    )
+    assert (
+        "invalid retry schedule"
+        in checkout_mismatches(attempts, branch=BRANCH, bound_seconds=BOUND)[0]
+    )
+
+
 def test_the_checkout_that_hit_the_exec_bound_and_was_retried_is_refused():
     """`issue:028670f21dbd138ccd04`, as the manager's log actually recorded it.
 
