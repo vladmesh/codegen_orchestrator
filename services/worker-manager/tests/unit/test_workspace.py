@@ -106,3 +106,13 @@ class TestPrepareWorkerPaths:
 
             with pytest.raises(RuntimeError, match="Operation not permitted"):
                 prepare_worker_paths(workspace, transcript)
+
+    def test_qa_workspace_path_without_transcript_is_supported(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        with patch("src.workspace.subprocess.run") as run:
+            run.return_value.returncode = 0
+            prepare_worker_paths(workspace, None)
+
+        assert run.call_count == 1
