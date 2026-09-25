@@ -48,6 +48,7 @@ from shared.telegram_access_probe import ProbeRun, run_probe_script
 from shared.telegram_bot_probe import (
     TELEGRAM_PROBE_PROCESS_TIMEOUT,
     build_bot_callback_script,
+    build_bot_location_script,
     build_bot_message_script,
     parse_bot_probe_result,
 )
@@ -341,6 +342,29 @@ class _TelegramCapability:
             tool="telegram_click_button",
         )
 
+    async def telegram_send_location(self, latitude: float, longitude: float) -> dict:
+        """Send a built-in Telegram location (latitude, longitude) to the bot.
+
+        Delivers a native geo-point message via Telethon's ``send_file`` with
+        ``InputMediaGeoPoint``, then collects the bot's replies using the same
+        polling loop as the message probe.  Coordinates are forwarded verbatim;
+        the caller is responsible for supplying valid WGS-84 values.
+        """
+        attempted = f"send location ({latitude}, {longitude}) to @{self._bot_username}"
+        sent = f"latitude={latitude} longitude={longitude}"
+        run: ProbeRun = await self._run_probe(
+            build_bot_location_script(self._bot_username, latitude, longitude),
+            env=self._telethon_env,
+            timeout=TELEGRAM_PROBE_PROCESS_TIMEOUT,
+        )
+        return self._parse_result(
+            run,
+            action="location",
+            attempted=attempted,
+            sent=sent,
+            tool="telegram_send_location",
+        )
+
 
 @dataclass(frozen=True)
 class QAJobsCapability:
@@ -572,4 +596,5 @@ def build_qa_callables(
         )
         callables["telegram_probe"] = telegram.telegram_probe
         callables["telegram_click_button"] = telegram.telegram_click_button
+        callables["telegram_send_location"] = telegram.telegram_send_location
     return callables

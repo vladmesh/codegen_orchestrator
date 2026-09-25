@@ -31,6 +31,7 @@ qa fire_job NAME                    — invoke one named scheduled behaviour
 qa job_evidence NAME                — read back this run's record of that fire
 qa telegram_probe MESSAGE           — send a message to the bot under test
 qa telegram_click_button ID DATA    — invoke a visible inline bot button
+qa telegram_send_location LAT LON   — send a built-in location to the bot under test
 qa report FILE                      — store the Markdown QA report
 qa finish FILE                      — submit the final result JSON and end the run\
 """
@@ -115,6 +116,14 @@ def build_call(argv):
         if len(rest) != 2 or not rest[0].isdigit():
             fail("usage: qa telegram_click_button MESSAGE_ID CALLBACK_DATA")
         return "telegram_click_button", {"message_id": int(rest[0]), "callback_data": rest[1]}
+    if command == "telegram_send_location":
+        if len(rest) != 2:
+            fail("usage: qa telegram_send_location LAT LON")
+        try:
+            lat, lon = float(rest[0]), float(rest[1])
+        except ValueError:
+            fail("LAT and LON must be decimal numbers")
+        return "telegram_send_location", {"latitude": lat, "longitude": lon}
     if command == "report":
         if len(rest) != 1:
             fail("usage: qa report FILE")

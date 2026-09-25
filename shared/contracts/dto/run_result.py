@@ -426,7 +426,7 @@ class QATelegramProbeEvidence(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["message", "callback"]
+    action: Literal["message", "callback", "location"]
     attempted: str
     sent: str
     # None means the child process did not leave enough evidence to prove

@@ -3,6 +3,12 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-09-25
+
+- QA transport now supports `telegram_send_location(latitude, longitude)`: sends a native Telegram
+  geo-point via Telethon's `send_file`/`InputMediaGeoPoint` and collects bot replies, unblocking
+  location-based acceptance checks. CLI: `qa telegram_send_location LAT LON`.
+
 ## 2026-09-24
 
 - Every `tests/live` test runs under a `pytest-timeout` `signal` bound derived in `shared/stand_deadlines.py`,

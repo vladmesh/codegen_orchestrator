@@ -242,6 +242,74 @@ def build_bot_callback_script(
     )
 
 
+def build_bot_location_script(
+    bot_username: str,
+    latitude: float,
+    longitude: float,
+    *,
+    wait_seconds: int = TELEGRAM_REPLY_TIMEOUT,
+) -> str:
+    """Python source that sends a built-in Telegram location to the bot and prints evidence.
+
+    Uses Telethon's ``send_file`` with a ``InputMediaGeoPoint`` to deliver a
+    native location message (latitude, longitude).  The child always prints
+    exactly one result marker, identical in shape to the message probe's output.
+    """
+    bot = "@" + bot_username.lstrip("@")
+    attempted = f"send location ({latitude}, {longitude}) to @{bot_username.lstrip('@')}"
+    sent = f"latitude={latitude} longitude={longitude}"
+    return (
+        "import base64\n"
+        "import json\n"
+        "import os\n"
+        "import time\n"
+        f"MAX_REPLIES = {MAX_REPLIES}\n"
+        f"POLL_INTERVAL = {TELEGRAM_POLL_INTERVAL}\n"
+        "from telethon.sync import TelegramClient\n"
+        "from telethon.sessions import StringSession\n"
+        "from telethon.tl.types import InputMediaGeoPoint, InputGeoPoint\n"
+        + _script_helpers()
+        + "client = None\n"
+        + "result = {\n"
+        "    'action': 'location',\n"
+        f"    'attempted': {json.dumps(attempted)},\n"
+        f"    'sent': {json.dumps(sent)},\n"
+        "    'delivered': False,\n"
+        "    'replies': [],\n"
+        "    'callback': None,\n"
+        "    'error': None,\n"
+        "}\n"
+        "try:\n"
+        "    client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
+        "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
+        "    client.start()\n"
+        f"    bot = client.get_entity({json.dumps(bot)})\n"
+        f"    geo = InputMediaGeoPoint(geo_point=InputGeoPoint(lat={latitude}, long={longitude}))\n"
+        "    sent_msg = client.send_file(bot, geo)\n"
+        "    result['delivered'] = True\n"
+        f"    deadline = time.monotonic() + {wait_seconds}\n"
+        "    last_replies = []\n"
+        "    while True:\n"
+        "        now = time.monotonic()\n"
+        "        result['replies'] = received_replies(client, bot, sent_msg.id)\n"
+        "        if result['replies'] != last_replies:\n"
+        "            last_replies = result['replies']\n"
+        "        if now >= deadline:\n"
+        "            break\n"
+        "        time.sleep(min(POLL_INTERVAL, deadline - now))\n"
+        "except Exception as exc:\n"
+        "    result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
+        "finally:\n"
+        "    try:\n"
+        "        if client is not None:\n"
+        "            client.disconnect()\n"
+        "    except Exception as exc:\n"
+        "        if result['error'] is None:\n"
+        "            result['error'] = type(exc).__name__ + ': ' + str(exc)\n"
+        f"    print({json.dumps(PROBE_RESULT_MARKER)} + json.dumps(result))"
+    )
+
+
 def parse_bot_probe_result(stdout: str) -> dict:
     """Read the structured result the Telegram probe script printed.
 
