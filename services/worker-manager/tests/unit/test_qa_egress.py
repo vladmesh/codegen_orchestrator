@@ -294,6 +294,10 @@ class TestTheDeployTargetIsOpenedOnlyWhenItIsPublic:
             "http://[::1]:8000",
             "http://[fe80::1]:8000",
             "http://0.0.0.0:8000",
+            "http://app.example.com:0",
+            "http://app.example.com:",
+            "http://95.216.10.20:0",
+            "http://[2a01:4f8::1]:",
         ],
     )
     def test_a_target_that_could_point_back_at_the_platform_is_refused(self, url):

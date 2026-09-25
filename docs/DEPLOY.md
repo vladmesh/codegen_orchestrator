@@ -484,10 +484,13 @@ deployed public URL on the URL's port (or 443 and 80), and Telegram's MTProto da
 (`TELEGRAM_MTPROTO_NETWORKS` in `qa_egress.py`, matched as IP networks). The deploy target travels
 as data on the create request (`WorkerConfig.qa_target_url`) and is refused before anything exists
 when it is empty, carries userinfo, or names the platform (a direct host, a single-label or local
-name, a loopback/link-local/private literal). Since 2026-09-25 the sandbox **may send any request to
-its own deploy target, a write included**: the owner gave up the old "QA cannot write to the
-application" network invariant for a sandbox that tests like a user, and product-data isolation is
-the ephemeral-stand sprint's job. A plain-`http://` target is reached through the same proxy with a
+name, a loopback/link-local/private literal). **Reads and writes are split between two layers.**
+The network does not tell a GET from a POST: a tunnel to the deploy target carries either. Direct
+application-API writes stay forbidden by policy and evidence, not routing — the QA instructions
+allow the executor's own scripts GETs only, and the runner's write guard
+(`_forbidden_application_write`) still fails a run whose report, result or transcript shows a
+direct write — until product-data isolation (ephemeral product stands, the next sprint) exists.
+A plain-`http://` target is reached through the same proxy with a
 CONNECT tunnel (`curl --proxytunnel -x "$HTTPS_PROXY" http://…`). `worker-manager` proves the network
 is internal before it creates anything, proves the proxy is listening before the executor exists,
 and proves the started container is attached to that single network — any of those failing fails
@@ -504,8 +507,9 @@ the run continues exactly as a run without Telethon credentials, with the reason
 
 `services/worker-manager/tests/service/test_qa_sandbox_boundary.py` proves the boundary against a
 real daemon on an executor built by `create_worker_with_capabilities`: no platform secret in its
-env, the CLI's auth directory as its only secret mount, the internal network alone, the target
-(write included), a Telegram address and the backend tunnelled, every other destination refused,
+env, the CLI's auth directory as its only secret mount, the internal network alone, the target, a
+Telegram address and the backend tunnelled (the network layer carries a write too; the policy
+layer is what forbids it), every other destination refused,
 nothing reachable without the proxy. `test_qa_egress_boundary.py` proves that a host the run does
 not name receives no request at all.
 

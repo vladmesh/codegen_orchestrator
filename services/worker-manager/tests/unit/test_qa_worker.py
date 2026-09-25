@@ -21,7 +21,12 @@ from fakeredis import aioredis
 import pytest
 
 from shared.contracts.dto.worker import WorkerStatus
-from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
+from shared.contracts.queues.worker import (
+    QA_TARGET_REFUSED,
+    AgentType,
+    WorkerConfig,
+    WorkerOwnership,
+)
 from shared.qa_probe_cli import QA_PROBE_PATH
 from shared.queues import WORKER_COMMANDS
 from src import qa_egress, workspace as workspace_mod
@@ -364,7 +369,14 @@ class TestTheDeployTargetIsRefusedBeforeAnythingExists:
 
     @pytest.mark.parametrize(
         "url",
-        [None, "", "http://user:pw@app.example.com", "http://qa-worker:41234", "http://10.0.0.5"],
+        [
+            None,
+            "",
+            "http://user:pw@app.example.com",
+            "http://qa-worker:41234",
+            "http://10.0.0.5",
+            "http://app.example.com:0",
+        ],
     )
     async def test_no_container_proxy_or_ownership_is_created(self, qa_worker, url):
         wrapper = _docker_mock()
@@ -378,6 +390,8 @@ class TestTheDeployTargetIsRefusedBeforeAnythingExists:
         redis = holder["manager"].redis
         assert await redis.hget("worker:meta:qa-1", "project_id") is None
         assert await redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
+        # The requester reads only this text; its marker says "do not retry".
+        assert (await redis.get("worker:error:qa-1")).startswith(f"{QA_TARGET_REFUSED}: ")
 
     async def test_nothing_else_of_the_runtimes_environment_rides_along(self, qa_worker):
         wrapper = _docker_mock()

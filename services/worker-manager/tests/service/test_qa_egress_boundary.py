@@ -1,6 +1,6 @@
 """A host the run does not name gets nothing from the QA executor, against real Docker.
 
-The executor is a sandbox that may write to its own run's deploy target (that
+The executor is a sandbox whose network reaches its own run's deploy target (that
 positive direction, and the manager's whole creation path, is
 `test_qa_sandbox_boundary.py`). This test is the other half: an application
 that is *not* the run's target — here a recording application on the proxy's

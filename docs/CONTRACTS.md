@@ -1488,7 +1488,9 @@ run ends as a typed infrastructure outcome rather than retrying elsewhere. The e
 credential, and egress only through the assigned proxy, whose per-run allowlist
 is the model backend, the host of `WorkerConfig.qa_target_url` (the deployed
 public URL, sent as data and refused by worker-manager when it could name the
-platform) and Telegram's data centres. The QA Telegram identity is served to the
+platform) and Telegram's data centres. The network carries any request to the
+target; direct application-API writes stay forbidden by the QA instructions and
+the runner's write guard until product-data isolation exists. The QA Telegram identity is served to the
 executor by the capability endpoint (`telegram_identity`) only after the run
 proved it; the outcome is `Run.run_metadata.qa_telegram_identity`
 (`handed_over`, and on refusal `reason`/`detail`). Failure to establish

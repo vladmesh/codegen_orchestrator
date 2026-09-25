@@ -269,10 +269,10 @@ try to change the application you are testing.
 - `{QA_PROBE_NAME}` is your route to the deployment's host. Run
   `{QA_PROBE_NAME} help` to see the calls, and `{QA_PROBE_NAME} capabilities` to
   see what this run may reach.
-- You may also run your own python3/curl scripts against the deployed public URL
-  through `$HTTPS_PROXY` (plain `http://` needs `curl --proxytunnel`), and
-  `{QA_PROBE_NAME} telegram_identity` gives your own Telethon client the QA account;
-  never print that identity file.
+- Your own python3/curl scripts may GET the deployed public URL through `$HTTPS_PROXY`
+  (plain `http://` needs `curl --proxytunnel`) and use Telegram as the QA account
+  (`{QA_PROBE_NAME} telegram_identity` sets up your Telethon client; never print that
+  file) — never a direct write to the application's API.
 - Never attempt any request to the application that is not a GET. The one thing you may
   ask the application to *do* is `{QA_PROBE_NAME} fire_job <name>`, for a
   scheduled behaviour this run's task names; what it answers with is a dispatch

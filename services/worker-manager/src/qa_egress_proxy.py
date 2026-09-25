@@ -9,10 +9,11 @@ on its command line for one run:
 
 * the assigned CLI's model backend, without which there is no executor;
 * the host of the run's deployed public URL — the product under test — on the
-  ports the runtime derived from that URL. Any request may be sent there,
-  including a write: the owner accepted that the sandbox may change the product
-  under test (product-data isolation is a later sprint), so the boundary is
-  *where* the executor can go, not *what* it may say there;
+  ports the runtime derived from that URL. This process decides *where* the
+  executor can go, not *what* it says there: a tunnel carries a write as well as
+  a read. Direct application-API writes stay forbidden by the QA runtime's
+  policy and its evidence guard, not by this proxy, until product-data
+  isolation (ephemeral product stands) exists;
 * Telegram's MTProto data centres, as IP networks, so a Telethon client logged
   in as the QA account can talk to the bot under test.
 

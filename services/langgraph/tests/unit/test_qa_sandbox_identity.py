@@ -24,11 +24,15 @@ import pytest
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.contracts.dto.run_result import QABlockerCategory
-from shared.contracts.queues.worker import CreateWorkerCommand, WorkerOwnership
+from shared.contracts.queues.worker import (
+    QA_TARGET_REFUSED,
+    CreateWorkerCommand,
+    WorkerOwnership,
+)
 from shared.contracts.vocab import AgentType
 from shared.qa_probe_cli import QA_PROBE_SCRIPT, TELEGRAM_IDENTITY_CALL
 from src.agents.qa.capability_service import QACapabilityService
-from src.clients.qa_worker import run_qa_executor
+from src.clients.qa_worker import QAExecutorUnavailable, run_qa_executor
 from src.consumers._qa_runner import QARuntimeConfig, preflight_bot_access
 from src.consumers._qa_telegram_identity import (
     REDACTED,
@@ -328,3 +332,43 @@ async def test_the_create_request_carries_the_target_as_data_and_the_sandbox_too
         "QA_CAPABILITY_URL": "http://qa-worker:41234/qa/call",
         "QA_CAPABILITY_TOKEN": "run-token",
     }
+
+
+async def test_a_refused_deploy_target_is_a_permanent_start_failure_never_retried():
+    redis_client = AsyncMock()
+    refusal = (
+        f"{QA_TARGET_REFUSED}: the QA deploy target 'http://app.example.com:0' "
+        "names an empty or zero port"
+    )
+    with (
+        patch("src.clients.qa_worker.redis.from_url", return_value=redis_client),
+        patch(
+            "src.clients.qa_worker._wait_for_response",
+            new_callable=AsyncMock,
+            return_value={"success": True},
+        ),
+        patch(
+            "src.clients.qa_worker._wait_until_ready",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(output=refusal),
+        ),
+        pytest.raises(QAExecutorUnavailable) as unavailable,
+    ):
+        await run_qa_executor(
+            agent_type=AgentType.CLAUDE,
+            ownership=WorkerOwnership(
+                story_id="story-1", project_id="project-1", run_id="qa-1", attempt_id="qa-1"
+            ),
+            deploy_target_url="http://app.example.com:0",
+            capability_url="http://qa-worker:41234/qa/call",
+            capability_token="run-token",  # noqa: S106 - fake endpoint credential
+            instructions="# QA executor",
+            prompt="test it",
+            verdict_received=asyncio.Event(),
+            calls_served=lambda: 0,
+            timeout=1,
+            on_create_published=lambda: None,
+        )
+
+    assert unavailable.value.transient is False
+    assert unavailable.value.detail == refusal

@@ -715,11 +715,13 @@ networks:
   worker:
     name: codegen_worker
   # The QA executor's whole world. `internal: true` is not decoration: it is
-  # what makes "exploratory QA cannot write to the application" a fact about
-  # routing rather than a rule in a prompt. A container attached to this and to
-  # nothing else cannot reach the deployment's public URL, the fleet, or the
-  # internet — only the two services attached here, and the run's own egress
-  # proxy, which opens the assigned CLI's model backend and nothing else.
+  # what makes the executor's reach a fact about routing rather than a rule in a
+  # prompt. A container attached to this and to nothing else cannot reach the
+  # fleet, the platform or the internet — only the two services attached here,
+  # and the run's own egress proxy, which opens the assigned CLI's model
+  # backend, the run's deploy target and Telegram. That no direct application
+  # write is made there is QA policy and the runtime's evidence guard, not this
+  # network.
   # worker-manager refuses to start a QA executor if this network is missing or
   # is not internal.
   qa_egress:

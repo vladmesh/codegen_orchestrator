@@ -33,6 +33,7 @@ import redis.asyncio as redis
 
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.queues.worker import (
+    QA_TARGET_REFUSED,
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
@@ -102,7 +103,9 @@ class QAExecutorRun:
 # Substrings in a worker-manager failure that mean "this host's agent session is
 # not usable", rather than "this attempt was unlucky". They come from
 # `codex_auth.validate_codex_host_session` and the wrapper's own
-# `validate_agent_config`, which are the two places a session is checked.
+# `validate_agent_config`, which are the two places a session is checked. A
+# refused `qa_target_url` (`QA_TARGET_REFUSED`) is permanent too: the same URL
+# is refused the same way on every attempt.
 _SESSION_FAILURE_MARKERS = (
     "CLAUDE_CONFIG_DIR",
     "HOST_CLAUDE_DIR",
@@ -114,7 +117,9 @@ _SESSION_FAILURE_MARKERS = (
 
 def _classify_start_failure(detail: str) -> QAExecutorUnavailable:
     lowered = detail.lower()
-    permanent = any(marker.lower() in lowered for marker in _SESSION_FAILURE_MARKERS)
+    permanent = QA_TARGET_REFUSED in detail or any(
+        marker.lower() in lowered for marker in _SESSION_FAILURE_MARKERS
+    )
     return QAExecutorUnavailable(detail, transient=not permanent)
 
 

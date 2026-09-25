@@ -18,11 +18,13 @@ that is decided here, per run, by two things:
 
    * the assigned CLI's model backend (`model_backends`);
    * the host of the run's deployed public URL, on the URL's explicit port or
-     on 443 and 80 (`deploy_target_entries`). The executor may send *any*
-     request there, a write included. That is an owner decision (2026-09-25):
-     the old invariant "QA cannot write to the application" is given up for a
-     sandbox that can test the product the way a user would, and isolating the
-     product's data is the next sprint's ephemeral stands, not this proxy;
+     on 443 and 80 (`deploy_target_entries`). The network does not tell a read
+     from a write there: a CONNECT tunnel carries whatever the executor sends.
+     That no direct application-API write is made is policy, not routing —
+     the QA instructions allow GETs only, and the runtime's evidence guard
+     (`_forbidden_application_write` in qa-worker) fails a run whose report,
+     result or transcript shows one. It stays so until product-data isolation
+     (ephemeral product stands) exists;
    * Telegram's MTProto data centres (`TELEGRAM_MTPROTO_NETWORKS`), so a
      Telethon client logged in as the QA account can talk to the bot.
 
@@ -55,7 +57,7 @@ from urllib.parse import urlsplit
 
 import structlog
 
-from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.queues.worker import QA_TARGET_REFUSED, WorkerLabel
 from shared.contracts.vocab import AgentType
 
 from .qa_egress_proxy import LISTEN_PORT as PROXY_PORT
@@ -112,7 +114,14 @@ class QAEgressError(RuntimeError):
 
 
 class QATargetRefused(QAEgressError):
-    """The run's deploy target is not a destination the sandbox may be opened to."""
+    """The run's deploy target is not a destination the sandbox may be opened to.
+
+    The message leads with `QA_TARGET_REFUSED`, so the QA runtime reading the
+    worker's error text knows the refusal is deterministic and does not retry.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{QA_TARGET_REFUSED}: {detail}")
 
 
 @dataclass(frozen=True)
@@ -197,6 +206,12 @@ def deploy_target_entries(target_url: str | None, direct: tuple[str, ...]) -> tu
         explicit_port = parts.port
     except ValueError as exc:
         raise QATargetRefused(f"the QA deploy target {raw!r} has an invalid port") from exc
+    # The authority names a port when a `:` follows the host (after any IPv6
+    # brackets). Such a port must be a real one: `host:` and `host:0` are
+    # malformed, never a request for the defaults.
+    names_port = ":" in parts.netloc.rpartition("]")[2]
+    if names_port and not explicit_port:
+        raise QATargetRefused(f"the QA deploy target {raw!r} names an empty or zero port")
     host = (parts.hostname or "").rstrip(".").lower()
     if not host:
         raise QATargetRefused(f"the QA deploy target {raw!r} names no host")
@@ -220,7 +235,7 @@ def deploy_target_entries(target_url: str | None, direct: tuple[str, ...]) -> tu
             f"the QA deploy target {host!r} names a service on the platform's own "
             f"networks, not a public deployment"
         )
-    ports = (explicit_port,) if explicit_port else DEPLOY_TARGET_DEFAULT_PORTS
+    ports = (explicit_port,) if names_port else DEPLOY_TARGET_DEFAULT_PORTS
     spelled = f"[{host}]" if isinstance(address, ipaddress.IPv6Address) else host
     return tuple(f"{spelled}:{port}" for port in ports)
 

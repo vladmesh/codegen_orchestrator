@@ -11,9 +11,10 @@ container, and what happens to packets sent from inside it:
 * it has no bind mount of the orchestrator `.env`, an SSH key directory or the
   GitHub App key, and exactly one secret mount: the CLI's own auth directory;
 * it is attached to the internal network alone;
-* through its proxy it reaches the run's deploy target (a write included — the
-  owner accepted that, and a plain-`http://` target is reached with
-  `curl --proxytunnel`), an address inside a Telegram network and its model
+* through its proxy it reaches the run's deploy target (the network carries a
+  write as well as a read — forbidding direct application writes is the QA
+  runtime's policy and evidence guard, not this layer — and a plain-`http://`
+  target is reached with `curl --proxytunnel`), an address inside a Telegram network and its model
   backend, and nothing else — not a platform service, not a neighbour address,
   not the target's port 22;
 * without the proxy it reaches nothing off its network at all.

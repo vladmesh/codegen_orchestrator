@@ -11,6 +11,7 @@ from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
 __all__ = [
     "AgentType",
     "QA_EXECUTOR_AGENT_TYPES",
+    "QA_TARGET_REFUSED",
     "WorkerCapability",
     "WorkerChannels",
     "WorkerLabel",
@@ -34,6 +35,12 @@ class WorkerCapability(StrEnum):
     # The QA executor's sandbox tooling: Telethon and an HTTP-CONNECT proxy
     # backend for it, importable by the container's python3.
     QA_SANDBOX = "qa_sandbox"
+
+
+# Leads every worker-manager refusal of a `qa` worker's `qa_target_url`. The
+# refusal reaches the requester only as the worker's error text, and it is a
+# deterministic configuration refusal: the requester must not retry it.
+QA_TARGET_REFUSED = "qa_target_refused"
 
 
 class WorkerChannels(StrEnum):

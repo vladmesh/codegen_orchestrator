@@ -60,8 +60,10 @@ class WorkerManagerSettings(BaseSettings):
     # The QA executor's own network. It must be declared `internal: true`: a QA
     # executor is attached to this and to nothing else, so whatever its run's
     # egress proxy does not open is unreachable from its container rather than
-    # merely forbidden to it. Worker creation fails closed if this network is
-    # missing or not internal.
+    # merely forbidden to it. What the proxy opens it opens for any request; the
+    # rule against direct application writes is QA policy and qa-worker's
+    # evidence guard. Worker creation fails closed if this network is missing
+    # or not internal.
     QA_EGRESS_NETWORK: str = "codegen_qa_egress"
 
     # The model-backend part of a QA run's egress allowlist, per assigned agent
