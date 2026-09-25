@@ -1,10 +1,15 @@
-"""A temporary-access operation acts on an existing deployment and never allocates.
+"""A temporary-access operation acts on its target's existing deployment and never allocates.
 
 These drive `process_deploy_job` end to end against the real allocation code in
 `src.allocations`, backed by an in-memory allocation table instead of the API.
 What the table ends up holding is the assertion: on 2026-09-25 a QA revoke that
 arrived after the suite undeployed its target re-created all four ports, failed
 its precheck, and left the application owning allocations nothing runs on.
+
+The allocations read are always those of the grant's recorded target
+application. A repository can hold one application per server, and the product
+allocator reuses whichever the API lists first; another row's allocations, empty
+or not, say nothing about whether the target's access is gone.
 """
 
 from __future__ import annotations
@@ -13,8 +18,10 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
+from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
@@ -34,8 +41,23 @@ TASK_ID = "temporary-access-op-1"
 PROJECT_ID = "proj-1"
 REPO_ID = "repo-1"
 TARGET_APPLICATION_ID = 17
+#: A second application of the same repository, on another server. The API
+#: lists it first, so the product allocator's repository lookup would pick it.
+OTHER_APPLICATION_ID = 11
 HEAD_SHA = "a" * 40
-SERVER = make_server(last_health_check=datetime.now(UTC))
+_NOW = datetime.now(UTC)
+SERVERS = {
+    handle: make_server(handle=handle, public_ip=ip, last_health_check=_NOW)
+    for handle, ip in (("srv-1", "1.2.3.4"), ("srv-a", "5.6.7.8"))
+}
+SERVER = SERVERS["srv-1"]
+
+
+def _not_found(path: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", f"http://api/{path}")
+    return httpx.HTTPStatusError(
+        "404 Not Found", request=request, response=httpx.Response(404, request=request)
+    )
 
 
 class AllocationTable:
@@ -46,6 +68,7 @@ class AllocationTable:
         self.allocations = [dict(alloc) for alloc in allocations]
         self.get_or_create_application = AsyncMock(side_effect=self._get_or_create_application)
         self.allocate_next_port = AsyncMock(side_effect=self._allocate_next_port)
+        self.get_application_allocations = AsyncMock(side_effect=self._application_allocations)
 
     async def list_applications(self, filters):
         return [
@@ -54,16 +77,22 @@ class AllocationTable:
             if all(app.get(key) == value for key, value in filters.items())
         ]
 
+    async def get_application(self, application_id):
+        for app in self.applications:
+            if app["id"] == application_id:
+                return ApplicationDTO(**app, created_at=_NOW, updated_at=_NOW)
+        raise _not_found(f"applications/{application_id}")
+
     async def list_servers(self, *, is_managed):
         return [SERVER]
 
     async def get_server(self, handle):
-        return SERVER
+        return SERVERS[handle]
 
     async def list_active_incidents(self):
         return []
 
-    async def get_application_allocations(self, application_id):
+    async def _application_allocations(self, application_id):
         return [alloc for alloc in self.allocations if alloc["application_id"] == application_id]
 
     async def _get_or_create_application(
@@ -86,7 +115,7 @@ class AllocationTable:
             {
                 "server_handle": server_handle,
                 "port": port,
-                "server_ip": SERVER.public_ip,
+                "server_ip": SERVERS[server_handle].public_ip,
                 **body,
             }
         )
@@ -105,14 +134,27 @@ def _undeployed_application():
     }
 
 
-def _deployed_allocations():
+def _other_application(status: str):
+    """The repository's other application, named so the API lists it first."""
+    return {
+        "id": OTHER_APPLICATION_ID,
+        "repo_id": REPO_ID,
+        "server_handle": "srv-a",
+        "service_name": "a-test-project-0000",
+        "status": status,
+        "reserved_ram_mb": 512,
+    }
+
+
+def _deployed_allocations(application_id: int = TARGET_APPLICATION_ID, server=SERVER):
+    first_port = 8000 if application_id == TARGET_APPLICATION_ID else 9000
     return [
         {
-            "server_handle": SERVER.handle,
-            "port": 8000 + index,
-            "server_ip": SERVER.public_ip,
+            "server_handle": server.handle,
+            "port": first_port + index,
+            "server_ip": server.public_ip,
             "service_name": module,
-            "application_id": TARGET_APPLICATION_ID,
+            "application_id": application_id,
         }
         for index, module in enumerate(["backend", "postgres", "redis"])
     ]
@@ -177,7 +219,7 @@ def redis():
 
 @pytest.fixture
 def deploy_api():
-    """The consumer-side API; allocations go through `AllocationTable` instead."""
+    """The consumer-side API; allocations and applications come from `AllocationTable`."""
     with (
         patch("src.consumers.deploy.api_client") as api,
         patch("src.consumers.deploy_result_handler.api_client", api),
@@ -240,9 +282,10 @@ def _run_patches(deploy_api) -> list[dict]:
     ]
 
 
-async def _process(table: AllocationTable, redis, action: str = "feature") -> dict:
+async def _process(table: AllocationTable, redis, deploy_api, action: str = "feature") -> dict:
     from src.consumers.deploy import process_deploy_job
 
+    deploy_api.get_application = AsyncMock(side_effect=table.get_application)
     settings = SimpleNamespace(
         allocation_ram_reserve_mb=256, allocation_metrics_freshness_seconds=300
     )
@@ -260,6 +303,18 @@ async def _process(table: AllocationTable, redis, action: str = "feature") -> di
         return await process_deploy_job(_job(action), redis)
 
 
+def _assert_failed_closed(result, deploy_api, table, precheck, devops) -> None:
+    """A failed access operation: nothing placed, nothing checked, never the no-deployment proof."""
+    table.allocate_next_port.assert_not_awaited()
+    table.get_or_create_application.assert_not_awaited()
+    precheck.assert_not_awaited()
+    devops.assert_not_called()
+    assert result["status"] == "failed"
+    [recorded] = _run_patches(deploy_api)
+    assert recorded["status"] == RunStatus.FAILED.value
+    assert recorded["result"]["deploy_outcome"] == DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value
+
+
 @pytest.mark.asyncio
 async def test_revoke_after_undeploy_settles_as_revoked_without_allocating(
     redis, deploy_api, precheck, devops
@@ -268,7 +323,7 @@ async def test_revoke_after_undeploy_settles_as_revoked_without_allocating(
     _use_access_operation(deploy_api, "revoke")
     table = AllocationTable(applications=[_undeployed_application()])
 
-    result = await _process(table, redis)
+    result = await _process(table, redis, deploy_api)
 
     assert table.allocations == []
     table.allocate_next_port.assert_not_awaited()
@@ -284,40 +339,16 @@ async def test_revoke_after_undeploy_settles_as_revoked_without_allocating(
 
 
 @pytest.mark.asyncio
-async def test_revoke_for_a_project_without_any_application_creates_none(
-    redis, deploy_api, precheck, devops
-):
-    """Not even an Application row is created to answer a revoke."""
-    _use_access_operation(deploy_api, "revoke")
-    table = AllocationTable()
-
-    result = await _process(table, redis)
-
-    assert table.applications == []
-    assert table.allocations == []
-    precheck.assert_not_awaited()
-    devops.assert_not_called()
-    assert result["status"] == "success"
-
-
-@pytest.mark.asyncio
 async def test_grant_without_deployment_fails_through_grant_failure_without_allocating(
     redis, deploy_api, precheck, devops
 ):
     _use_access_operation(deploy_api, "grant")
     table = AllocationTable(applications=[_undeployed_application()])
 
-    result = await _process(table, redis)
+    result = await _process(table, redis, deploy_api)
 
     assert table.allocations == []
-    table.allocate_next_port.assert_not_awaited()
-    table.get_or_create_application.assert_not_awaited()
-    precheck.assert_not_awaited()
-    devops.assert_not_called()
-    assert result["status"] == "failed"
-    [recorded] = _run_patches(deploy_api)
-    assert recorded["status"] == RunStatus.FAILED.value
-    assert recorded["result"]["deploy_outcome"] == DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value
+    _assert_failed_closed(result, deploy_api, table, precheck, devops)
 
 
 @pytest.mark.asyncio
@@ -331,7 +362,7 @@ async def test_access_operation_on_a_deployment_reads_its_allocations_and_procee
         allocations=_deployed_allocations(),
     )
 
-    result = await _process(table, redis)
+    result = await _process(table, redis, deploy_api)
 
     assert table.allocations == _deployed_allocations()
     table.allocate_next_port.assert_not_awaited()
@@ -356,10 +387,128 @@ async def test_access_operation_never_fills_in_a_module_the_deployment_lacks(
         allocations=deployed,
     )
 
-    await _process(table, redis)
+    await _process(table, redis, deploy_api)
 
     assert table.allocations == deployed
     table.allocate_next_port.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_of_a_deployed_target_ignores_an_undeployed_sibling_listed_first(
+    redis, deploy_api, precheck, devops
+):
+    """Another application of the repository has no allocations; the target still does.
+
+    Reading the sibling would call the target undeployed and close a grant whose
+    access is live. The revoke has to run against the target's own deployment.
+    """
+    _use_access_operation(deploy_api, "revoke")
+    table = AllocationTable(
+        applications=[
+            _other_application("not_deployed"),
+            {**_undeployed_application(), "status": "running"},
+        ],
+        allocations=_deployed_allocations(),
+    )
+
+    result = await _process(table, redis, deploy_api)
+
+    table.get_application_allocations.assert_awaited_once_with(TARGET_APPLICATION_ID)
+    precheck.assert_awaited_once()
+    allocated_resources = precheck.await_args.args[0]
+    assert {entry["application_id"] for entry in allocated_resources.values()} == {
+        TARGET_APPLICATION_ID
+    }
+    devops.return_value.ainvoke.assert_awaited_once()
+    assert result.get("reason") != "not_deployed"
+    table.allocate_next_port.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_of_an_undeployed_target_ignores_a_live_sibling_listed_first(
+    redis, deploy_api, precheck, devops
+):
+    """The sibling is live; the target is not, so its access went with its deployment."""
+    _use_access_operation(deploy_api, "revoke")
+    sibling_allocations = _deployed_allocations(OTHER_APPLICATION_ID, SERVERS["srv-a"])
+    table = AllocationTable(
+        applications=[_other_application("running"), _undeployed_application()],
+        allocations=sibling_allocations,
+    )
+
+    result = await _process(table, redis, deploy_api)
+
+    table.get_application_allocations.assert_awaited_once_with(TARGET_APPLICATION_ID)
+    assert table.allocations == sibling_allocations
+    table.allocate_next_port.assert_not_awaited()
+    precheck.assert_not_awaited()
+    devops.assert_not_called()
+    assert result["status"] == "success"
+    assert result["reason"] == "not_deployed"
+    [recorded] = _run_patches(deploy_api)
+    assert recorded["status"] == RunStatus.COMPLETED.value
+    assert recorded["result"]["deploy_outcome"] == DeployOutcome.SUCCESS.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["grant", "revoke"])
+async def test_access_operation_whose_target_row_is_gone_fails_closed(
+    redis, deploy_api, precheck, devops, operation
+):
+    """A target that cannot be read is not a target proved undeployed."""
+    _use_access_operation(deploy_api, operation)
+    table = AllocationTable(applications=[_other_application("not_deployed")])
+
+    result = await _process(table, redis, deploy_api)
+
+    assert table.applications == [_other_application("not_deployed")]
+    assert table.allocations == []
+    table.get_application_allocations.assert_not_awaited()
+    _assert_failed_closed(result, deploy_api, table, precheck, devops)
+
+
+@pytest.mark.asyncio
+async def test_revoke_whose_target_allocations_cannot_be_read_fails_closed(
+    redis, deploy_api, precheck, devops
+):
+    _use_access_operation(deploy_api, "revoke")
+    table = AllocationTable(applications=[_undeployed_application()])
+    table.get_application_allocations.side_effect = httpx.ConnectError("api unreachable")
+
+    result = await _process(table, redis, deploy_api)
+
+    _assert_failed_closed(result, deploy_api, table, precheck, devops)
+
+
+@pytest.mark.asyncio
+async def test_revoke_whose_grant_cannot_be_read_fails_closed(redis, deploy_api, precheck, devops):
+    _use_access_operation(deploy_api, "revoke")
+    deploy_api.get_temporary_access_grant = AsyncMock(
+        side_effect=_not_found("temporary-access-grants/tempaccess-qa-1")
+    )
+    table = AllocationTable(applications=[_undeployed_application()])
+
+    result = await _process(table, redis, deploy_api)
+
+    table.get_application_allocations.assert_not_awaited()
+    _assert_failed_closed(result, deploy_api, table, precheck, devops)
+
+
+@pytest.mark.asyncio
+async def test_operation_without_a_grant_id_fails_closed_instead_of_deploying(
+    redis, deploy_api, precheck, devops
+):
+    """A capability operation that names no grant never falls through to a placing deploy."""
+    deploy_api.get_run = AsyncMock(
+        return_value=make_run(id=TASK_ID, run_metadata={"temporary_access_operation": "revoke"})
+    )
+    table = AllocationTable(applications=[_undeployed_application()])
+
+    result = await _process(table, redis, deploy_api)
+
+    assert table.allocations == []
+    table.get_application_allocations.assert_not_awaited()
+    _assert_failed_closed(result, deploy_api, table, precheck, devops)
 
 
 @pytest.mark.asyncio
@@ -369,7 +518,7 @@ async def test_product_deploy_after_undeploy_still_allocates(
 ):
     table = AllocationTable(applications=[_undeployed_application()])
 
-    result = await _process(table, redis, action)
+    result = await _process(table, redis, deploy_api, action)
 
     assert sorted(alloc["service_name"] for alloc in table.allocations) == [
         "backend",
@@ -386,7 +535,7 @@ async def test_first_product_deploy_still_places_the_application(
 ):
     table = AllocationTable()
 
-    result = await _process(table, redis, "create")
+    result = await _process(table, redis, deploy_api, "create")
 
     table.get_or_create_application.assert_awaited_once()
     assert len(table.allocations) == 3

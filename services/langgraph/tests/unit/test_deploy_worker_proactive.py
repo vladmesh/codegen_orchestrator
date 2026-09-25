@@ -75,7 +75,7 @@ def mock_allocations():
     mock_fn = AsyncMock(return_value={"server_ip": "1.2.3.4", "port": 8080})
     with (
         patch("src.allocations.ensure_project_allocations", mock_fn),
-        patch("src.allocations.existing_project_allocations", mock_fn),
+        patch("src.allocations.existing_application_allocations", mock_fn),
         patch("src.allocations.AllocationError", Exception),
     ):
         yield mock_fn
@@ -309,8 +309,9 @@ async def test_temporary_access_operation_never_takes_the_same_sha_shortcut(
     mock_api.get = AsyncMock(
         return_value=[{"application_id": 17, "deployed_sha": head_sha, "result": "success"}]
     )
+    # The grant's recorded target, whose allocations the operation reads.
     mock_api.get_application = AsyncMock(
-        return_value=type("Application", (), {"status": ApplicationStatus.RUNNING})()
+        return_value=SimpleNamespace(id=17, server_handle="vps-1", status=ApplicationStatus.RUNNING)
     )
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={

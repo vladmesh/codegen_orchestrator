@@ -5,8 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-25
 
-- A QA temporary-access grant or revoke only reads its target's allocations, never creates them: a revoke
-  after undeploy settles as revoked with no ports, precheck or SSH, and a grant fails through grant retry.
+- A QA temporary-access grant or revoke only reads its grant's target application's allocations: a revoke after
+  undeploy settles as revoked with no ports or SSH; a grant, or an unreadable target, fails closed.
 
 ## 2026-09-24
 

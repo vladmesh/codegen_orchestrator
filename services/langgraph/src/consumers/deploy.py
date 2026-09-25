@@ -70,21 +70,33 @@ def _deploy_lock_ttl() -> int:
     return _config.get_int("deploy.deploy_lock_ttl", default=3600)
 
 
+class AccessTargetUnresolvedError(Exception):
+    """A temporary-access operation whose recorded target could not be read.
+
+    Only a target application that exists and holds no allocations proves there
+    is no deployment. Anything short of reading it — no grant, no target, a row
+    that is gone, an API error — fails the operation closed, never as that proof.
+    """
+
+
 async def _allocate_resources(
     project_id: str,
     project: ProjectDTO,
     *,
-    temporary_access_operation: str | None = None,
+    access: DeployAccessContext | None = None,
 ) -> dict | str:
     """Get or create allocations. Returns dict of resources or error string.
 
     This is the deploy path's only allocation call, and the one place that
     decides whether it may create. A temporary-access grant or revoke redeploys
-    what the target already runs, so for one the allocations are only read: an
-    empty result means the application has no deployment, and nothing is
-    allocated for it. On 2026-09-25 a revoke that arrived after its target was
-    undeployed re-allocated all four ports, failed its precheck, and left them
-    owned by an application nobody runs.
+    what its grant's recorded target application already runs, so for one only
+    that application's allocations are read: an empty result means the target
+    has no deployment, and nothing is allocated for it. The repository's first
+    application is never asked instead — a repository can have one per server,
+    and another row's empty allocations say nothing about the target's access.
+    On 2026-09-25 a revoke that arrived after its target was undeployed
+    re-allocated all four ports, failed its precheck, and left them owned by an
+    application nobody runs.
 
     An `AllocationError` is deliberately *not* caught here. It is the one failure
     on this path that is about the platform rather than the project, and it
@@ -92,21 +104,21 @@ async def _allocate_resources(
     function's error string is exactly how an unfinished host build used to reach
     the story as a product failure. The caller handles it as a typed outcome.
     """
-    from ..allocations import ensure_project_allocations, existing_project_allocations
+    from ..allocations import ensure_project_allocations
 
     config = project.config or {}
     modules = list(
         dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
     )
     min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
+    if access is not None and access.temporary_access_operation is not None:
+        return await _access_target_allocations(access, min_ram_mb)
 
     # Get repo_id from primary repository
     primary_repo = await api_client.get_primary_repository(project_id)
     if not primary_repo:
         return f"No repository found for project {project_id}"
     repo_id = primary_repo.id
-    if temporary_access_operation is not None:
-        return await existing_project_allocations(repo_id=repo_id, min_ram_mb=min_ram_mb)
     service_name = project_runtime_slug(project)
 
     return await ensure_project_allocations(
@@ -116,6 +128,34 @@ async def _allocate_resources(
         modules=modules,
         min_ram_mb=min_ram_mb,
     )
+
+
+async def _access_target_allocations(access: DeployAccessContext, min_ram_mb: int) -> dict:
+    """Read the grant's recorded target application's allocations, or fail closed.
+
+    An admission refusal of the target's host stays the typed `AllocationError`
+    every placement raises; every other way of not reading the target raises
+    `AccessTargetUnresolvedError`.
+    """
+    from ..allocations import existing_application_allocations
+
+    grant = access.temporary_access_grant
+    if grant is None:
+        raise AccessTargetUnresolvedError("temporary access operation has no grant")
+    try:
+        application = await api_client.get_application(grant.target_application_id)
+        return await existing_application_allocations(
+            application_id=application.id,
+            server_handle=application.server_handle,
+            min_ram_mb=min_ram_mb,
+        )
+    except AllocationError:
+        raise
+    except Exception as error:
+        raise AccessTargetUnresolvedError(
+            f"target application {grant.target_application_id} of temporary access grant "
+            f"{grant.id} could not be read: {type(error).__name__}"
+        ) from error
 
 
 async def _record_infrastructure_wait(
@@ -468,8 +508,11 @@ async def _resolve_deploy_access(
     temporary_access_operation = None
     metadata = getattr(run, "run_metadata", None) or {}
     stored_temporary_access_grant = metadata.get("temporary_access_grant_id")
-    if stored_temporary_access_grant is not None:
-        temporary_access_operation = metadata.get("temporary_access_operation")
+    stored_temporary_access_operation = metadata.get("temporary_access_operation")
+    # Either key marks a capability operation, which must never fall through to
+    # a product deploy that places the application: it needs both.
+    if stored_temporary_access_grant is not None or stored_temporary_access_operation is not None:
+        temporary_access_operation = stored_temporary_access_operation
         if not isinstance(stored_temporary_access_grant, str) or not isinstance(
             temporary_access_operation, str
         ):
@@ -479,9 +522,23 @@ async def _resolve_deploy_access(
                 "temporary access operation is malformed",
                 deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
             )
-        temporary_access_grant = await api_client.get_temporary_access_grant(
-            stored_temporary_access_grant
-        )
+        try:
+            temporary_access_grant = await api_client.get_temporary_access_grant(
+                stored_temporary_access_grant
+            )
+        except Exception as error:
+            logger.warning(
+                "temporary_access_grant_unreadable",
+                task_id=msg.task_id,
+                grant_id=stored_temporary_access_grant,
+                error_type=type(error).__name__,
+            )
+            return await _deploy_failure_terminal(
+                msg,
+                redis,
+                f"temporary access grant {stored_temporary_access_grant} could not be read",
+                deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+            )
         if (
             temporary_access_grant.project_id != msg.project_id
             or temporary_access_grant.head_sha != msg.head_sha
@@ -562,11 +619,17 @@ async def _allocate_deploy_resources(
     """Resolve placement and effective environment for a normal deploy."""
     operation = base.access.temporary_access_operation
     try:
-        alloc_result = await _allocate_resources(
-            msg.project_id, base.project, temporary_access_operation=operation
-        )
+        alloc_result = await _allocate_resources(msg.project_id, base.project, access=base.access)
     except AllocationError as error:
         return DeployTerminal(await _record_infrastructure_wait(msg.task_id, msg.project_id, error))
+    except AccessTargetUnresolvedError as error:
+        logger.warning("temporary_access_target_unresolved", task_id=msg.task_id, error=str(error))
+        return await _deploy_failure_terminal(
+            msg,
+            redis,
+            str(error),
+            deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+        )
 
     if isinstance(alloc_result, str):
         await api_client.patch(
