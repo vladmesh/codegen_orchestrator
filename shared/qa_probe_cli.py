@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = [
     "CAPABILITIES_CALL",
+    "QA_PROBE_LIBRARY_PATH",
     "QA_PROBE_NAME",
     "QA_PROBE_PATH",
     "QA_PROBE_SCRIPT",
@@ -15,6 +16,10 @@ __all__ = [
 
 QA_PROBE_NAME = "qa"
 QA_PROBE_PATH = f"/workspace/{QA_PROBE_NAME}"
+# Probes offered to this run: the platform seeds and the project's library, each
+# under its platform directory, listed in `index.json`. `/workspace/qa` is the
+# command itself, so the library sits beside it rather than under it.
+QA_PROBE_LIBRARY_PATH = "/workspace/qa-library"
 
 # Shared names for the endpoint and injected script.
 CAPABILITIES_CALL = "capabilities"
@@ -65,6 +70,10 @@ USAGE = """__QA_PROBE_USAGE__"""
 TIMEOUT = 180
 PROBE_TIMEOUT = 60
 PROBE_TEXT_MAX = 19000
+# Each text field's share of the endpoint's 256 KiB body, counted as the field
+# is encoded on the wire: a C0 control character costs six bytes (\\u0001) and
+# an emoji four, so a character bound alone does not keep a record sendable.
+PROBE_ENCODED_MAX = 64000
 PROBE_TRUNCATION_MARKER = "\\n...[truncated by qa probe CLI]"
 IDENTITY_FILE = "__QA_IDENTITY_FILE__"
 
@@ -263,6 +272,7 @@ def run_probe(args):
     record = {
         "platform": args["platform"],
         "name": args["name"],
+        "file_kind": "py" if path.endswith(".py") else "sh",
         "source": source,
         "source_truncated": source_truncated,
         "arguments": args["arguments"],
@@ -285,11 +295,23 @@ def run_probe(args):
     return exit_status
 
 
+def encoded_size(value):
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) - 2
+
+
 def bounded(value):
+    """Cut a text by characters and by its encoded size, whichever binds first."""
     value = decode_output(value)
-    if len(value) <= PROBE_TEXT_MAX:
+    if len(value) <= PROBE_TEXT_MAX and encoded_size(value) <= PROBE_ENCODED_MAX:
         return value, False
-    return value[: PROBE_TEXT_MAX - len(PROBE_TRUNCATION_MARKER)] + PROBE_TRUNCATION_MARKER, True
+    budget = PROBE_ENCODED_MAX - encoded_size(PROBE_TRUNCATION_MARKER)
+    limit = PROBE_TEXT_MAX - len(PROBE_TRUNCATION_MARKER)
+    kept = 0
+    for index, char in enumerate(value[:limit]):
+        kept += encoded_size(char)
+        if kept > budget:
+            return value[:index] + PROBE_TRUNCATION_MARKER, True
+    return value[:limit] + PROBE_TRUNCATION_MARKER, True
 
 
 def call(tool, args):

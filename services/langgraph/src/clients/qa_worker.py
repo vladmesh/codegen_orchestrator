@@ -32,6 +32,7 @@ from pydantic import ValidationError
 import redis.asyncio as redis
 
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.queues.worker import (
     QA_TARGET_REFUSED,
     AgentType,
@@ -136,6 +137,7 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
     calls_served: Callable[[], int],
     timeout: int,
     on_create_published: Callable[[], None],
+    probe_library: list[QAProbeLibraryFile] | None = None,
 ) -> QAExecutorRun:
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
@@ -164,6 +166,8 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
         timeout: seconds the executor is given to reach a verdict.
         on_create_published: records a paid start immediately after the broker
             accepts the create command, even if any later operation fails.
+        probe_library: the seed and project probes, and their index, that
+            worker-manager writes under `QA_PROBE_LIBRARY_PATH` for this run.
 
     Raises:
         QAExecutorUnavailable: no executor ran at all.
@@ -202,6 +206,7 @@ async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each pa
                 # that lets Telethon out through the run's egress proxy.
                 capabilities=[WorkerCapability.QA_SANDBOX],
                 qa_target_url=deploy_target_url,
+                qa_probe_library=probe_library or [],
                 # The whole environment a QA executor is given. There is no
                 # GitHub token, no API key, no Telegram credential and no
                 # repository here: the only address it holds is an endpoint

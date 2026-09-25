@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.base import QueueMeta
+from shared.contracts.dto.qa_probe_library import QA_PROBE_LIBRARY_MAX_FILES, QAProbeLibraryFile
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
@@ -193,6 +194,21 @@ class WorkerConfig(BaseModel):
     # opens its host in the run's egress proxy and refuses a value that would
     # point the sandbox at the platform itself. A developer worker has none.
     qa_target_url: str | None = None
+    # A `qa` worker's probe library: the index and the probe files the QA
+    # runner offers this run, written under `QA_PROBE_LIBRARY_PATH` before the
+    # executor is given its turn. A developer worker has none.
+    qa_probe_library: list[QAProbeLibraryFile] = Field(
+        default_factory=list, max_length=QA_PROBE_LIBRARY_MAX_FILES
+    )
+
+    @model_validator(mode="after")
+    def _probe_library_is_a_qa_sandbox_file_set(self) -> "WorkerConfig":
+        if self.qa_probe_library and self.worker_type != "qa":
+            raise ValueError("only a qa worker is offered a probe library")
+        paths = [item.path for item in self.qa_probe_library]
+        if len(paths) != len(set(paths)):
+            raise ValueError("probe library paths must be unique")
+        return self
 
     @model_validator(mode="after")
     def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":

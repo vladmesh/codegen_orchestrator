@@ -481,6 +481,13 @@ class QAProbePlatform(StrEnum):
     WEB = "web"
 
 
+class QAProbeFileKind(StrEnum):
+    """How `qa probe` ran a probe file: `python3 FILE` or `sh FILE`."""
+
+    PY = "py"
+    SH = "sh"
+
+
 class QAProbeRun(BaseModel):
     """One executor-authored probe, retained by the QA runner in call order."""
 
@@ -498,6 +505,35 @@ class QAProbeRun(BaseModel):
     source_truncated: bool = False
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    #: The probe file's kind as the `qa` CLI ran it. ``None`` on records made
+    #: before the CLI reported it; such a record is evidence only and never
+    #: enters the probe library, which has to know how to run what it offers.
+    file_kind: QAProbeFileKind | None = None
+
+
+class QAProbeLibraryOffered(BaseModel):
+    """One probe the runner wrote into a QA executor's library directory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    platform: QAProbePlatform
+    name: str = Field(min_length=1)
+    #: ``"seed"`` for a platform-shipped entry, else the id of the passed QA Run
+    #: whose probe the project library stored.
+    origin: str = Field(min_length=1)
+
+
+class QAProbeLibraryOffer(BaseModel):
+    """What probe library a QA run's executor was offered, and why not more.
+
+    `read_failure` is set when the project's stored entries could not be read;
+    the run then proceeds with the platform seeds alone.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    offered: list[QAProbeLibraryOffered] = Field(default_factory=list)
+    read_failure: str | None = None
 
 
 class QARunResult(BaseModel):
@@ -520,6 +556,9 @@ class QARunResult(BaseModel):
     #: terminal writer held no probe record, and claims nothing about an
     #: executor that may have been in flight, matching `executor_transcript`.
     probe_runs: list[QAProbeRun] | None = None
+    #: The probe library the runner offered this run's executor. ``None`` when
+    #: the run never reached the executor stage that prepares it.
+    probe_library: QAProbeLibraryOffer | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
     #: The QA executor's own account of the run, as the QA runner saw it over the
     #: worker's output stream (`QAExecutorRun.transcript`, bounded there), with

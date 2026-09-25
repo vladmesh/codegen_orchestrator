@@ -5,6 +5,9 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-25
 
+- Passed QA runs keep their exit-0 probes in a per-project library (cap 50), offered to later runs with platform seeds
+  under `/workspace/qa-library`; the first seed sends a Telegram location with coordinates checked as floats.
+- `qa probe` bounds each text by its encoded size, so a control-character-heavy probe fits the 256 KiB body limit.
 - QA probe capture now survives timeouts, invalid bytes, output bounds and non-JSON endpoint failures; endpoint fields and request bodies are bounded, and QA workers retain no transcript mount.
 - QA executor probes now retain scrubbed, bounded source and results on their Run, and QA removes its broker output
   stream rather than naming a deleted transcript file.

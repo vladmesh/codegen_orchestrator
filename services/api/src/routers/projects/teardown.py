@@ -24,6 +24,7 @@ from shared.models import (
     PortAllocation,
     ProductBrief,
     Project,
+    QAProbe,
     RAGChunk,
     RAGConversationSummary,
     RAGDocument,
@@ -331,6 +332,7 @@ async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> No
     await db.execute(delete(Task).where(Task.project_id == project_id))
     await db.execute(delete(Story).where(Story.project_id == project_id))
     await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))
+    await db.execute(delete(QAProbe).where(QAProbe.project_id == project_id))
 
     for model in (AnalyticsHourly, AnalyticsDaily, AnalyticsKnownUsers):
         await db.execute(delete(model).where(model.project_id == project_id))

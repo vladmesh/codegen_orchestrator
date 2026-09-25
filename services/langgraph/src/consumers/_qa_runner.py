@@ -25,10 +25,12 @@ from shared.contracts.dto.engineering_attempt import (
     QAAccountingFact,
 )
 from shared.contracts.dto.product_brief import InitialSetting
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QAFailedCheckCause,
+    QAProbeLibraryOffer,
     QAProbeRun,
     QATelegramProbeEvidence,
 )
@@ -259,6 +261,9 @@ class QAResult:
     state_changes: list[dict] = field(default_factory=list)
     telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
     probe_runs: list[QAProbeRun] | None = None
+    # The probe library the consumer offered this run's executor, set by the
+    # consumer that prepared it and carried to the Run as `probe_library`.
+    probe_library: QAProbeLibraryOffer | None = None
     # The executor's own account of the run, scanned with runner-owned evidence
     # for forbidden writes and carried across the Run boundary
     # (`QARunResult.executor_transcript`) because it exists nowhere else once the
@@ -1398,6 +1403,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     jobs: QAJobsCapability | None,
     attempts: QAExecutorAttempts,
     acceptance: PackageAcceptance | None = None,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> QAResult:
     """Run the one assigned executor over this run's capability endpoint."""
     calls = build_qa_callables(
@@ -1451,6 +1457,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
             service=service,
             timeout=timeout,
             attempts=attempts,
+            probe_library=probe_library,
         )
         if executor_run is not None:
             return apply_unverifiable_criteria(
@@ -1495,7 +1502,7 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
     )
 
 
-async def _run_central_executor(
+async def _run_central_executor(  # noqa: PLR0913 — one run's whole context, each part named
     *,
     target: QATarget,
     ownership: WorkerOwnership,
@@ -1507,6 +1514,7 @@ async def _run_central_executor(
     service: QACapabilityService,
     timeout: int,
     attempts: QAExecutorAttempts,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None, QAExecutorAttempts]:
     """Retry only transient subscription-executor failures.
 
@@ -1539,6 +1547,7 @@ async def _run_central_executor(
                 calls_served=lambda: service.calls_served,
                 timeout=timeout,
                 on_create_published=partial(said.record_start, attempt),
+                probe_library=list(probe_library),
             )
         except QAExecutorUnavailable as exc:
             # What the sandbox said is evidence, and it may have printed the
@@ -1620,6 +1629,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
     jobs: QAJobsCapability | None = None,
     attempts: QAExecutorAttempts | None = None,
     timeout: int = QA_TIMEOUT,
+    probe_library: Sequence[QAProbeLibraryFile] = (),
 ) -> QAResult:
     """Run QA with cleanup residue reported as a blocker on every exit path."""
     grant = QAGrantOutcome(marker=new_grant_marker())
@@ -1707,6 +1717,7 @@ async def run_qa_centrally(  # noqa: PLR0913 — one run's whole context, each p
                             jobs=jobs,
                             attempts=attempts,
                             acceptance=acceptance,
+                            probe_library=probe_library,
                         )
             # The network is the boundary; scan visible evidence for unexpected writes.
             if attempts.started:

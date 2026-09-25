@@ -877,6 +877,7 @@ composition models where listed. In API-exposure cells, `schemas/...` and
 | Server and SSH user/status | `shared/contracts/dto/server.py` | `schemas/server.py`, `routers/servers.py` | server operations use the resolved caller principal |
 | Service deployment result | `shared/contracts/dto/deployment.py` | `schemas/service_deployment.py`, `routers/service_deployments.py` | deployment rows identify an owned application target |
 | User create/update | `shared/contracts/dto/user.py` | `schemas/user.py`, `routers/users.py` | an API caller cannot substitute another bearer subject |
+| QA probe library | `shared/contracts/dto/qa_probe_library.py` | `routers/projects/qa_probes.py` | `GET /projects/{id}/qa-probes` is internal or admin; `POST /projects/{id}/qa-probes/from-run` is the QA runtime only and reads the probes off the settled passed Run, never the request |
 
 ### Story, task, and run surfaces
 
@@ -1429,10 +1430,48 @@ Probe source and output enter the same forbidden-application-write scan as the
 runner trace, report, verdict and transcript. A hidden POST, PUT, PATCH or
 DELETE therefore fails the Run closed even when its executor verdict says pass.
 
+`qa probe` cuts each of source, stdout and stderr at 19,000 characters *and* at
+64,000 bytes as JSON-encoded on the wire (a C0 control character is six bytes,
+`\u0001`), so a record is always under the endpoint's 256 KiB body limit; the
+record carries `file_kind` (`py` or `sh`), `null` on records that predate it.
+
 QA executor containers retain no transcript file. Their output is retained only
 as `executor_transcript` and `probe_runs`; QA Run, attempt and executor-result
 records omit a transcript locator, and qa-worker deletes `worker:{id}:output`
 when the run ends so a session cannot survive in the broker stream.
+
+### The QA probe library
+
+A project's library (`qa_probes`) is unique on project, platform and name and
+holds at most `QA_PROBE_LIBRARY_CAP` (50) entries; a store past the cap evicts
+the oldest `updated_at`. It is filled only after the QA consumer's own PASSED
+write settled the Run: `POST /projects/{id}/qa-probes/from-run` validates that
+Run (this project, type `qa`, `completed`, `qa_outcome: passed`) and upserts every
+`probe_runs` record with exit status 0, an untruncated source and a known
+`file_kind` — the last record of a repeated name wins. Its source is the record
+the capability endpoint already scrubbed and bounded; no other path writes a
+library entry. A FAIL, BLOCKED, EXHAUSTED or infrastructure outcome stores
+nothing, and a failed library write is logged and changes neither the verdict nor
+the Run.
+
+At run start the QA consumer reads the project's entries and the platform seeds
+(`shared/qa_probe_library/`) and sends them as `WorkerConfig.qa_probe_library`;
+worker-manager writes them under `/workspace/qa-library/<platform>/<stem>.<py|sh>`
+with `index.json` (name, platform, origin `seed` or the storing run id, file,
+one-line usage) before the executor is marked running. Paths are closed by
+`QA_PROBE_LIBRARY_FILE_PATTERN`; an entry name that is not already a safe stem
+gets a sanitized stem plus a digest. Seeds are offered to a run with a
+`bot_username` (the Telegram bot under test) and shadow a stored entry of the
+same platform and name; another project's entry is never offered. A failed
+library read runs with the seeds alone. `QARunResult.probe_library` records the
+offer: `offered` (platform, name, origin) and `read_failure`, `null` when the run
+never reached the executor stage.
+
+The Telegram location seed takes `BOT LAT LON [WAIT_SECONDS]`, parses the
+coordinates with `float()`, refuses NaN, infinities and values outside
+[-90, 90] / [-180, 180] before importing Telethon, and passes them to Telethon as
+values; it generates no source. It connects with the `qa telegram_identity` file
+through the run's proxy and exits 3 when that identity is missing or unproven.
 
 ### Deploy dispatch, withdrawal, and deadlines
 

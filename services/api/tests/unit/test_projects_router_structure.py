@@ -127,6 +127,18 @@ def test_projects_route_table_keeps_its_public_surface():
             ("200", "422"),
         ),
         (
+            "GET",
+            "/api/projects/{project_id}/qa-probes",
+            "list_qa_probes_api_projects__project_id__qa_probes_get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/qa-probes/from-run",
+            "store_qa_probes_from_run_api_projects__project_id__qa_probes_from_run_post",
+            ("200", "422"),
+        ),
+        (
             "DELETE",
             "/api/projects/{project_id}/config/secrets/{key}",
             "delete_secret_api_projects__project_id__config_secrets__key__delete",

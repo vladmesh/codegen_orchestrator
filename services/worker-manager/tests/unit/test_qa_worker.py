@@ -15,11 +15,14 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import aioredis
 import pytest
 
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryFile
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     QA_TARGET_REFUSED,
@@ -27,7 +30,7 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
     WorkerOwnership,
 )
-from shared.qa_probe_cli import QA_PROBE_PATH
+from shared.qa_probe_cli import QA_PROBE_LIBRARY_PATH, QA_PROBE_PATH
 from shared.queues import WORKER_COMMANDS
 from src import qa_egress, workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
@@ -584,6 +587,100 @@ class TestTheOneCommandItIsGiven:
             await manager.delete_worker("qa-1", reason="failed")
 
         assert not workspace.exists()
+
+
+class TestTheProbeLibraryItIsOffered:
+    LIBRARY = [
+        QAProbeLibraryFile(
+            path="telegram/location.py",
+            content="print('it\\'s \"quoted\"')\n# ünïcode ✓\n$(touch /tmp/x) `id`\n",
+        ),
+        QAProbeLibraryFile(path="http/health.sh", content='curl -fsS "$1"\n'),
+        QAProbeLibraryFile(path="index.json", content='{"probes": []}\n'),
+    ]
+
+    @staticmethod
+    def _library_writes(wrapper) -> list[list[str]]:
+        return [
+            call.args[1]
+            for call in wrapper.exec_in_container.await_args_list
+            if isinstance(call.args[1], list)
+        ]
+
+    async def test_every_file_is_written_under_the_library_directory_before_ready(
+        self, qa_worker, tmp_path
+    ):
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+        statuses: list = []
+
+        async def exec_in_container(container_id, command, **kwargs):
+            if isinstance(command, list):
+                statuses.append(
+                    await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+                )
+            return 0, "ok"
+
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+        await qa_worker(
+            docker=wrapper, manager_holder=manager_holder, qa_probe_library=self.LIBRARY
+        )
+
+        writes = self._library_writes(wrapper)
+        assert [command[3] for command in writes] == [
+            f"{QA_PROBE_LIBRARY_PATH}/telegram/location.py",
+            f"{QA_PROBE_LIBRARY_PATH}/http/health.sh",
+            f"{QA_PROBE_LIBRARY_PATH}/index.json",
+        ]
+        assert [base64.b64decode(command[4]).decode() for command in writes] == [
+            item.content for item in self.LIBRARY
+        ]
+        assert [command[5] for command in writes] == ["w", "w", "w"]
+        # The source is an argument, never part of the code the container runs.
+        for command in writes:
+            assert command[:2] == ["python3", "-c"]
+            assert "touch" not in command[2]
+        assert statuses and WorkerStatus.RUNNING not in statuses
+        assert (
+            await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+            == WorkerStatus.RUNNING
+        )
+
+    async def test_the_write_commands_reproduce_each_file_byte_for_byte(self, qa_worker, tmp_path):
+        # A unicode-heavy file is three times its characters in bytes; it is
+        # written in chunks so no one exec argument nears the kernel's 128 KiB.
+        library = [
+            *self.LIBRARY,
+            QAProbeLibraryFile(path="http/wide.py", content="# " + "✓" * 63_000),
+        ]
+        wrapper, _, _ = await qa_worker(qa_probe_library=library)
+
+        writes = self._library_writes(wrapper)
+        assert len(writes) > len(library)
+        for command in writes:
+            assert max(len(argument.encode()) for argument in command) < 128 * 1024
+            local = tmp_path / "container" / command[3].lstrip("/")
+            subprocess.run([sys.executable, "-c", command[2], str(local), *command[4:]], check=True)
+        for item in library:
+            local = tmp_path / "container" / QA_PROBE_LIBRARY_PATH.lstrip("/") / item.path
+            assert local.read_text(encoding="utf-8") == item.content
+
+    async def test_a_failed_library_write_fails_the_worker(self, qa_worker):
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+
+        async def exec_in_container(container_id, command, **kwargs):
+            return (1, "no space left") if isinstance(command, list) else (0, "ok")
+
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+
+        with pytest.raises(RuntimeError, match="QA probe library file"):
+            await qa_worker(
+                docker=wrapper, manager_holder=manager_holder, qa_probe_library=self.LIBRARY
+            )
+
+        manager = manager_holder["manager"]
+        assert await manager.redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
 
 
 class TestNothingSurvivesTheRun:

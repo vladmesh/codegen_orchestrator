@@ -20,6 +20,11 @@ from shared.contracts.dto.product_brief import (
     RequirementCoverageRead,
 )
 from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.dto.qa_probe_library import (
+    QAProbeLibraryEntry,
+    QAProbeLibraryStored,
+    QAProbeLibraryStoreFromRun,
+)
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerDTO
@@ -423,6 +428,20 @@ class LanggraphAPIClient(InternalAPIClient):
         runtime — see `bot_liveness_path` for the surface this is the client of.
         """
         return BotLiveness.model_validate(await self._get_json(bot_liveness_path(project_id)))
+
+    async def list_qa_probes(self, project_id: str) -> list[QAProbeLibraryEntry]:
+        """This project's stored QA probe library."""
+        entries = await self._get_json(f"projects/{project_id}/qa-probes")
+        return [QAProbeLibraryEntry.model_validate(entry) for entry in entries]
+
+    async def store_qa_probes_from_run(self, project_id: str, run_id: str) -> QAProbeLibraryStored:
+        """Store a passed QA Run's eligible probes in its project's library."""
+        body = QAProbeLibraryStoreFromRun(run_id=run_id)
+        return QAProbeLibraryStored.model_validate(
+            await self._post_json(
+                f"projects/{project_id}/qa-probes/from-run", json=body.model_dump(mode="json")
+            )
+        )
 
     async def merge_secrets(
         self, project_id: str, secrets: dict[str, str], env_hints: dict[str, str] | None = None

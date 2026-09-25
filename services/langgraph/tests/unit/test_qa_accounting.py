@@ -176,6 +176,7 @@ async def test_terminal_qa_writers_send_explicit_executor_fact(outcome):
         if outcome in {"passed", "health-only"}:
             await _handle_qa_pass(
                 run_id="qa-1",
+                project_id="proj-1",
                 attempts=attempts,
                 deployed_url="http://example.test",
                 executor_transcript=transcript,

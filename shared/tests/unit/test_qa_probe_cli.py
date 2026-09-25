@@ -130,6 +130,14 @@ def test_probe_runs_a_python_script_and_records_its_evidence(monkeypatch, tmp_pa
             "import sys; print('😀' * 19000); print('🚀' * 19000, file=sys.stderr)",
             0,
         ),
+        (
+            "control-heavy",
+            ".py",
+            "# "
+            + "\x03" * 19000
+            + "\nimport sys; sys.stdout.write(chr(1) * 19000); sys.stderr.write(chr(2) * 19000)",
+            0,
+        ),
         ("empty", ".py", "pass", 0),
         ("nonzero", ".sh", "exit 7", 7),
         ("endpoint-413", ".py", "print('kept')", 0),
@@ -141,9 +149,11 @@ def test_probe_capture_is_total_for_hostile_script_and_endpoint_cases(
     script = tmp_path / f"{label}{suffix}"
     script.write_text(body)
     requests = []
+    body_sizes = []
 
     def urlopen(request, *, timeout):
         requests.append(json.loads(request.data))
+        body_sizes.append(len(request.data))
         if label == "endpoint-413":
             raise urllib.error.HTTPError(
                 request.full_url, 413, "too large", {}, _Response("plain text")
@@ -166,6 +176,16 @@ def test_probe_capture_is_total_for_hostile_script_and_endpoint_cases(
     assert record["source"]
     assert len(record["stdout"]) <= 19000
     assert len(record["stderr"]) <= 19000
+    # Sendable as encoded, whatever the characters: the endpoint refuses a body
+    # over 256 KiB with 413, and the record would be lost.
+    assert body_sizes[0] <= 256 * 1024
+    assert record["file_kind"] == suffix[1:]
+    if label == "control-heavy":
+        assert record["source_truncated"] is True
+        assert record["stdout_truncated"] is True
+        assert record["stderr_truncated"] is True
+        assert record["stdout"].startswith("\x01" * 1000)
+        assert record["stdout"].endswith("[truncated by qa probe CLI]")
     if label == "nonutf8":
         assert "�" in record["stdout"]
     if label == "large":

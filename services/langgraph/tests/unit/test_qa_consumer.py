@@ -28,8 +28,9 @@ from shared.contracts.dto.product_brief import (
     ProductBriefRead,
 )
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.qa_probe_library import QAProbeLibraryEntry, QAProbeLibraryStored
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAProbeRun
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import WAITING_ON_BY_STATUS, StoryDTO, StoryStatus
 from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
@@ -1367,3 +1368,192 @@ class TestTheJobsCapabilityIsResolvedOnTheManagementHost:
         facts = "\n".join(mock_run.call_args.kwargs["established_facts"])
         assert "cannot be fired" in facts
         assert "Report each such check as failed" in facts
+
+
+def _probe_run(name: str, *, exit_status: int = 0) -> QAProbeRun:
+    return QAProbeRun(
+        id=f"probe-{name}",
+        platform="http",
+        name=name,
+        source="print('ok')",
+        arguments=[],
+        stdout="ok",
+        stderr="",
+        exit_status=exit_status,
+        duration_ms=5,
+        file_kind="py",
+    )
+
+
+def _stored_entry(project_id: str, name: str) -> QAProbeLibraryEntry:
+    return QAProbeLibraryEntry(
+        project_id=project_id,
+        platform="http",
+        name=name,
+        source="print('kept')",
+        file_kind="py",
+        origin_run_id="qa-run-0",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+class TestProbeLibrary:
+    """Passed runs fill the project's library, and every later run is offered it."""
+
+    PROJECT = "116c9678-5872-4ce5-8332-9a267ab27604"
+
+    @pytest.fixture
+    def library_api(self, mock_api_client, qa_message_data):
+        qa_message_data["project_id"] = self.PROJECT
+        mock_api_client.list_qa_probes = AsyncMock(
+            return_value=[_stored_entry(self.PROJECT, "health")]
+        )
+        mock_api_client.store_qa_probes_from_run = AsyncMock(
+            return_value=QAProbeLibraryStored(stored=["http/health"])
+        )
+        return mock_api_client
+
+    @pytest.mark.asyncio
+    async def test_a_pass_stores_its_probes_and_the_run_records_the_offer(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=True, summary="All good", probe_runs=[_probe_run("health")]
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        library_api.list_qa_probes.assert_awaited_once_with(self.PROJECT)
+        library_api.store_qa_probes_from_run.assert_awaited_once_with(self.PROJECT, "qa-run-1")
+        files = {item.path: item.content for item in mock_run.call_args.kwargs["probe_library"]}
+        # No bot under test: no seed, the project's own entry, and the index.
+        assert set(files) == {"http/health.py", "index.json"}
+        assert files["http/health.py"] == "print('kept')"
+        [index] = json.loads(files["index.json"])["probes"]
+        assert index["origin"] == "qa-run-0"
+        run_result = library_api.patch.call_args.kwargs["json"]["result"]
+        assert run_result["probe_library"] == {
+            "offered": [{"platform": "http", "name": "health", "origin": "qa-run-0"}],
+            "read_failure": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_a_bot_is_offered_the_location_seed(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["bot_username"] = "weather_bot"
+        with (
+            patch("src.consumers.qa.preflight_bot_access", new=AsyncMock(return_value=None)),
+            patch(
+                "src.consumers.qa.prove_sandbox_telegram_identity",
+                new=AsyncMock(side_effect=lambda runtime: runtime),
+            ),
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = QAResult(passed=True, summary="All good", probe_runs=[])
+            await process_qa_job(qa_message_data, mock_redis)
+
+        files = {item.path for item in mock_run.call_args.kwargs["probe_library"]}
+        assert files == {"telegram/location.py", "http/health.py", "index.json"}
+
+    @pytest.mark.asyncio
+    async def test_a_library_read_failure_proceeds_with_seeds_and_a_note(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        library_api.list_qa_probes.side_effect = httpx.ConnectError("api down")
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, summary="All good", probe_runs=[])
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        files = {item.path for item in mock_run.call_args.kwargs["probe_library"]}
+        assert files == {"index.json"}
+        note = library_api.patch.call_args.kwargs["json"]["result"]["probe_library"]
+        assert note["offered"] == []
+        assert "api down" in note["read_failure"]
+
+    @pytest.mark.asyncio
+    async def test_a_library_write_failure_changes_neither_verdict_nor_run(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        library_api.store_qa_probes_from_run.side_effect = httpx.ConnectError("api down")
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=True, summary="All good", probe_runs=[_probe_run("health")]
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        assert library_api.patch.call_count == 1
+        run_data = library_api.patch.call_args.kwargs["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["failed", "blocked"])
+    async def test_a_run_that_did_not_pass_stores_nothing(
+        self, library_api, mock_redis, qa_message_data, outcome
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        blocker = QABlocker(
+            category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+            attempted="run QA",
+            sent="create",
+            received="no executor",
+        )
+        with (
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
+            patch("src.consumers.qa.notify_admins_best_effort", new_callable=AsyncMock),
+        ):
+            mock_run.return_value = QAResult(
+                passed=False,
+                summary="no",
+                probe_runs=[_probe_run("health")],
+                blocker=blocker if outcome == "blocked" else None,
+            )
+            await process_qa_job(qa_message_data, mock_redis)
+
+        library_api.store_qa_probes_from_run.assert_not_awaited()
+        assert library_api.patch.call_args.kwargs["json"]["result"]["qa_outcome"] == outcome
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_probes_all_failed_asks_nothing_of_the_library(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=True, summary="ok", probe_runs=[_probe_run("health", exit_status=1)]
+            )
+            await process_qa_job(qa_message_data, mock_redis)
+
+        library_api.store_qa_probes_from_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_the_api_refused_as_already_settled_stores_nothing(
+        self, library_api, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        refused = httpx.Response(409, request=httpx.Request("PATCH", "http://api/runs/qa-run-1"))
+        library_api.patch.side_effect = httpx.HTTPStatusError(
+            "settled", request=refused.request, response=refused
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=True, summary="ok", probe_runs=[_probe_run("health")]
+            )
+            await process_qa_job(qa_message_data, mock_redis)
+
+        library_api.store_qa_probes_from_run.assert_not_awaited()
