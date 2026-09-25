@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-09-25
 
+- The QA executor is a sandbox: its proxy opens the model backend, the deploy target (GETs by policy) and Telegram;
+  it gets the QA Telethon identity only after a per-run proof, and no platform secret.
 - `mega-live` proves the QA Telethon session (authorized, QA identity, reaches the stand bot) before any spend,
   and the stand hands it to qa-worker alone; paid run 36147402976 had blocked on missing credentials.
 - Worker-manager retries story checkout when GitHub briefly returns repository 404, sharing scaffolder's 30 s policy;

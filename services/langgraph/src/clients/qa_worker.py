@@ -4,8 +4,10 @@ There is no second way of starting agents here. This asks worker-manager for a
 container exactly as `worker_spawner` does — the same `worker:commands` stream,
 the same create/status/delete commands, the same broker — and differs only in
 what it asks for: a `qa` worker, which has no repository, no git credentials and
-nothing to commit, and whose whole reach into the deployment is the capability
-endpoint URL and token it is handed in its environment.
+nothing to commit. It is a sandbox: worker-manager opens the deployed public URL
+(and Telegram) to it through the run's egress proxy, and everything SSH-based
+stays behind the capability endpoint whose URL and token are the whole of its
+environment.
 
 The credentials of the agent itself never come near this: the subscription
 session is a host directory worker-manager mounts into the container on the
@@ -31,9 +33,11 @@ import redis.asyncio as redis
 
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.queues.worker import (
+    QA_TARGET_REFUSED,
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
+    WorkerCapability,
     WorkerConfig,
     WorkerOwnership,
 )
@@ -99,7 +103,9 @@ class QAExecutorRun:
 # Substrings in a worker-manager failure that mean "this host's agent session is
 # not usable", rather than "this attempt was unlucky". They come from
 # `codex_auth.validate_codex_host_session` and the wrapper's own
-# `validate_agent_config`, which are the two places a session is checked.
+# `validate_agent_config`, which are the two places a session is checked. A
+# refused `qa_target_url` (`QA_TARGET_REFUSED`) is permanent too: the same URL
+# is refused the same way on every attempt.
 _SESSION_FAILURE_MARKERS = (
     "CLAUDE_CONFIG_DIR",
     "HOST_CLAUDE_DIR",
@@ -111,14 +117,17 @@ _SESSION_FAILURE_MARKERS = (
 
 def _classify_start_failure(detail: str) -> QAExecutorUnavailable:
     lowered = detail.lower()
-    permanent = any(marker.lower() in lowered for marker in _SESSION_FAILURE_MARKERS)
+    permanent = QA_TARGET_REFUSED in detail or any(
+        marker.lower() in lowered for marker in _SESSION_FAILURE_MARKERS
+    )
     return QAExecutorUnavailable(detail, transient=not permanent)
 
 
-async def run_qa_executor(
+async def run_qa_executor(  # noqa: PLR0913 — one run's whole request, each part named
     *,
     agent_type: AgentType,
     ownership: WorkerOwnership,
+    deploy_target_url: str,
     capability_url: str,
     capability_token: str,
     instructions: str,
@@ -139,8 +148,11 @@ async def run_qa_executor(
             creation — so an executor that dies immediately is still attributable
             to the run that made it. It grants the container nothing: ownership
             is a record, not a capability, and the isolation below is unchanged.
-        capability_url: this run's capability endpoint, the container's only
-            route to the deployment.
+        deploy_target_url: the deployed public URL. It travels as data on the
+            create request; worker-manager opens its host, and only its host, in
+            the run's egress proxy.
+        capability_url: this run's capability endpoint, the container's route to
+            everything on the target that is not its public URL.
         capability_token: the run-scoped credential for that endpoint. It grants
             nothing after the run: the endpoint stops with it.
         instructions: the QA rules, written to the agent's instruction file.
@@ -185,14 +197,15 @@ async def run_qa_executor(
                 task_content=prompt,
                 allowed_commands=["*"],
                 ownership=ownership,
-                # No git, no GitHub CLI, no HTTP client capability: a QA
-                # executor has no repository to touch and one way to reach the
-                # deployment, which needs nothing the base image lacks.
-                capabilities=[],
+                # No git and no GitHub CLI: a QA executor has no repository to
+                # touch. Its sandbox tooling is Telethon and the proxy backend
+                # that lets Telethon out through the run's egress proxy.
+                capabilities=[WorkerCapability.QA_SANDBOX],
+                qa_target_url=deploy_target_url,
                 # The whole environment a QA executor is given. There is no
-                # GitHub token, no API key and no repository here: a QA run
-                # writes nothing anywhere, and the only address it holds is an
-                # endpoint that outlives neither the run nor this process.
+                # GitHub token, no API key, no Telegram credential and no
+                # repository here: the only address it holds is an endpoint
+                # that outlives neither the run nor this process.
                 env_vars={
                     "QA_CAPABILITY_URL": capability_url,
                     "QA_CAPABILITY_TOKEN": capability_token,

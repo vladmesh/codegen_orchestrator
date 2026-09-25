@@ -465,33 +465,53 @@ ends as `qa_executor_unavailable` — a QA-infrastructure outcome that names the
 what it said, alerts administrators and sends the story to human review, never a product defect.
 Health-only criteria run with no executor at all.
 
-**What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
-no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to
-the deployment is one injected command (`/workspace/qa`) that posts named calls to the per-run
-capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
-identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
-and read-only docker sub-commands against the deployment's own containers — the same closed set as
-before.
+**What the QA container can reach.** It is a sandbox: a shell with `python3`, `curl` and Telethon
+(image capability `qa_sandbox`), and it holds nothing of the platform — no SSH key, no fleet key, no
+provider key, no repository, no platform secret in its environment or mounts. Everything SSH-based
+on the target stays behind one injected command (`/workspace/qa`) that posts named calls to the
+per-run capability endpoint, which performs them from `qa-worker` with the run's borrowed
+`qa-observer` identity: reads inside the deployment's physical root, read-only docker sub-commands
+against the deployment's own containers, and loopback GETs. The sandbox has no route to the target's
+port 22.
 
-That the container *cannot* go around this is a property of its network, not of the prompt. The QA
-executor is attached to `codegen_qa_egress` and to nothing else, and that network is declared
-`internal: true`: it has no route to the deployment's public URL, to the fleet, or to the internet.
-Reachable on it are the run's capability endpoint (`qa-worker`), the worker broker — the runtime's
-own control channel — and one per-run egress proxy. That proxy speaks `CONNECT` only, to the
-assigned CLI's model backend and nothing else (`QA_CLAUDE_BACKEND_HOSTS` /
-`QA_CODEX_BACKEND_HOSTS`), so it can carry the model traffic the CLI needs and cannot carry a
-request to the application. `worker-manager` proves the network is internal before it creates
-anything, proves the proxy is listening before the executor exists, and proves the started
-container is attached to that single network — any of those failing fails the run closed as a
-QA-infrastructure outcome rather than starting an unrestricted container. Proxy variables are set
-in the executor's environment for the CLI's convenience; stripping them reaches less, not more.
+What it reaches directly is a property of its network, not of the prompt. The QA executor is
+attached to `codegen_qa_egress` and to nothing else, and that network is declared `internal: true`:
+it has no route to the fleet, the platform's services or the internet. Reachable on it are the run's
+capability endpoint (`qa-worker`), the worker broker — the runtime's own control channel — and one
+per-run egress proxy. That proxy speaks `CONNECT` only and opens exactly three things: the assigned
+CLI's model backend (`QA_CLAUDE_BACKEND_HOSTS` / `QA_CODEX_BACKEND_HOSTS`), the host of the run's
+deployed public URL on the URL's port (or 443 and 80), and Telegram's MTProto data centres
+(`TELEGRAM_MTPROTO_NETWORKS` in `qa_egress.py`, matched as IP networks). The deploy target travels
+as data on the create request (`WorkerConfig.qa_target_url`) and is refused before anything exists
+when it is empty, carries userinfo, or names the platform (a direct host, a single-label or local
+name, a loopback/link-local/private literal). **Reads and writes are split between two layers.**
+The network does not tell a GET from a POST: a tunnel to the deploy target carries either. Direct
+application-API writes stay forbidden by policy and evidence, not routing — the QA instructions
+allow the executor's own scripts GETs only, and the runner's write guard
+(`_forbidden_application_write`) still fails a run whose report, result or transcript shows a
+direct write — until product-data isolation (ephemeral product stands, the next sprint) exists.
+A plain-`http://` target is reached through the same proxy with a
+CONNECT tunnel (`curl --proxytunnel -x "$HTTPS_PROXY" http://…`). `worker-manager` proves the network
+is internal before it creates anything, proves the proxy is listening before the executor exists,
+and proves the started container is attached to that single network — any of those failing fails
+the run closed as a QA-infrastructure outcome rather than starting an unrestricted container.
 
-The runner's write scan over the tool trace and the container's transcript is still there, and it
-still fails the run closed with a residual-state record. It is now a second layer over an enforced
-boundary rather than the boundary itself. `services/worker-manager/tests/service/test_qa_egress_boundary.py`
-proves it against a real daemon: a recording application, a real executor container, `POST`/`PUT`/
-`PATCH`/`DELETE` from `curl` and from Python with the proxy configuration stripped, and zero write
-requests in the application's own ledger.
+The QA Telegram account reaches the sandbox only after `qa-worker` proves it for that run
+(`shared.telethon_identity.prove_qa_identity`, the stand preflight's own check: authorized and
+`get_me().id == QA_TEST_TELEGRAM_ID`). The executor fetches it with `qa telegram_identity`, which
+reads it from the run's capability endpoint with the run token and writes it to a 0600 file in the
+container's home; it never crosses a Redis stream, a log line or the Run, and `qa-worker` scrubs its
+value from the transcript, report and verdict. A session that fails the proof is never handed over:
+the run continues exactly as a run without Telethon credentials, with the reason in
+`Run.run_metadata.qa_telegram_identity`.
+
+`services/worker-manager/tests/service/test_qa_sandbox_boundary.py` proves the boundary against a
+real daemon on an executor built by `create_worker_with_capabilities`: no platform secret in its
+env, the CLI's auth directory as its only secret mount, the internal network alone, the target, a
+Telegram address and the backend tunnelled (the network layer carries a write too; the policy
+layer is what forbids it), every other destination refused,
+nothing reachable without the proxy. `test_qa_egress_boundary.py` proves that a host the run does
+not name receives no request at all.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
 fleet key opens (`root` on every row `server_sync` creates, and on the dynamic stand target too —

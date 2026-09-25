@@ -308,10 +308,11 @@ class _ToolLookup:
 def _executor_factory(behaviour, *, unavailable: QAExecutorUnavailable | None = None):
     """Stand in for `run_qa_executor`, driving the endpoint as a container would."""
 
-    async def run(
+    async def run(  # noqa: PLR0913 — stands in for run_qa_executor's signature
         *,
         agent_type,
         ownership,
+        deploy_target_url,
         capability_url,
         capability_token,
         instructions,
@@ -322,6 +323,7 @@ def _executor_factory(behaviour, *, unavailable: QAExecutorUnavailable | None = 
         on_create_published,
     ):
         run.prompt = prompt
+        run.deploy_target_url = deploy_target_url
         run.instructions = instructions
         run.agent_type = agent_type
         run.ownership = ownership
@@ -605,6 +607,34 @@ class TestCleanTargetPassesExploratoryQA:
             ".credentials.json",
         ):
             assert secret not in sent, f"{secret!r} reached the target"
+
+    async def test_a_handed_over_telegram_session_never_reaches_the_run_evidence(self, central_run):
+        """The sandbox holds a proven session; whatever it echoes back is scrubbed."""
+        session = "1BQANOTEuMTA4LjU2LjE-handed-over"
+        runtime = QARuntimeConfig(
+            executor_agent_type=AgentType.CLAUDE,
+            capability_host="127.0.0.1",
+            telethon_env={
+                "TELETHON_API_ID": "12345",
+                "TELETHON_API_HASH": "hash-value-9f2",
+                "TELETHON_SESSION": session,
+            },
+            telegram_identity_proven=True,
+        )
+
+        async def behaviour(graph):
+            identity = await graph.call("telegram_identity")
+            assert identity["session"] == session
+            await graph.tools["write_qa_report"].ainvoke({"markdown": f"# QA\nsession {session}"})
+            return PASSING_JSON.replace('"summary": "OK"', f'"summary": "used {session}"')
+
+        result, _, factory, _ = await central_run(behaviour=behaviour, runtime=runtime)
+
+        assert result.passed is True
+        assert factory.deploy_target_url == TARGET.deployed_url
+        assert session not in result.report
+        assert session not in result.summary
+        assert "[redacted: QA Telegram credential]" in result.report
 
     async def test_the_run_uses_its_own_identity_not_the_fleet_key(self, tmp_path):
         """The fleet key installs and removes a key; it is not what QA connects with."""

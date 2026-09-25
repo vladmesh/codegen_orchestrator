@@ -11,6 +11,7 @@ from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
 __all__ = [
     "AgentType",
     "QA_EXECUTOR_AGENT_TYPES",
+    "QA_TARGET_REFUSED",
     "WorkerCapability",
     "WorkerChannels",
     "WorkerLabel",
@@ -31,6 +32,15 @@ class WorkerCapability(StrEnum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
     CURL = "curl"
+    # The QA executor's sandbox tooling: Telethon and an HTTP-CONNECT proxy
+    # backend for it, importable by the container's python3.
+    QA_SANDBOX = "qa_sandbox"
+
+
+# Leads every worker-manager refusal of a `qa` worker's `qa_target_url`. The
+# refusal reaches the requester only as the worker's error text, and it is a
+# deterministic configuration refusal: the requester must not retry it.
+QA_TARGET_REFUSED = "qa_target_refused"
 
 
 class WorkerChannels(StrEnum):
@@ -153,9 +163,10 @@ class WorkerConfig(BaseModel):
 
     name: str
     # "developer" writes code in a pre-scaffolded repository workspace.
-    # "qa" is the central exploratory-QA executor: an ephemeral container with
-    # no repository, no git credentials and nothing to commit, whose only reach
-    # into a deployment is the QA runtime's typed capability endpoint.
+    # "qa" is the central exploratory-QA executor: an ephemeral sandbox with no
+    # repository, no git credentials and nothing to commit. It reaches the
+    # deployment's public URL (and Telegram) through its run's egress proxy, and
+    # everything SSH-based through the QA runtime's typed capability endpoint.
     worker_type: Literal["developer", "qa"]
     agent_type: AgentType  # Which AI agent to use
     instructions: str  # Content for the agent's instruction file (WorkerWorkspace)
@@ -178,6 +189,10 @@ class WorkerConfig(BaseModel):
     ownership: WorkerOwnership
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
     branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")
+    # A `qa` worker's deployed public URL. Data, not environment: worker-manager
+    # opens its host in the run's egress proxy and refuses a value that would
+    # point the sandbox at the platform itself. A developer worker has none.
+    qa_target_url: str | None = None
 
     @model_validator(mode="after")
     def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":

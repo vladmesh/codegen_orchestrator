@@ -1,7 +1,12 @@
-"""The QA executor's write boundary, against a real Docker daemon.
+"""A host the run does not name gets nothing from the QA executor, against real Docker.
 
-This is the test the guarantee rests on, so it substitutes nothing: a real
-recording application, a real executor container built by the real policy in
+The executor is a sandbox whose network reaches its own run's deploy target (that
+positive direction, and the manager's whole creation path, is
+`test_qa_sandbox_boundary.py`). This test is the other half: an application
+that is *not* the run's target — here a recording application on the proxy's
+outside network, as a platform service or a neighbour's deployment would be —
+receives no request at all. It substitutes nothing: a real recording
+application, a real executor container built by the real policy in
 `src.qa_egress` and `src.container_config`, and real `POST/PUT/PATCH/DELETE`
 attempts made from inside that container with raw `curl` and with a Python HTTP
 client. The application counts every request it receives, and the assertion is
@@ -230,7 +235,7 @@ def scenario(daemon):
                 pass
 
 
-def test_the_qa_executor_cannot_write_to_the_application(scenario):
+def test_the_qa_executor_cannot_write_to_a_host_the_run_does_not_name(scenario):
     # Driven synchronously on purpose: the service runner has no asyncio mode
     # configured, and the only async parts here are two policy calls.
     daemon = scenario["daemon"]
@@ -253,6 +258,10 @@ def test_the_qa_executor_cannot_write_to_the_application(scenario):
             # on the outside network exercises the identical path through the proxy.
             configured_backends=f"backend:{BACKEND_PORT}",
             direct=("capability",),
+            # The run's own target is somewhere else; the recording application
+            # below is a host this run does not name.
+            deploy_target=("elsewhere.example.test:443",),
+            telegram=(),
         )
     )
     executor = None

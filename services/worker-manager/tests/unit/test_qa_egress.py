@@ -10,6 +10,7 @@ container without.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 
 import pytest
 
@@ -109,11 +110,11 @@ class TestTheProxyAnswersOverARealSocket:
 
         assert answer.startswith(b"HTTP/1.1 405")
 
-    async def test_a_tunnel_to_the_deployment_is_answered_with_403(self):
+    async def test_a_tunnel_to_a_host_off_the_allowlist_is_answered_with_403(self):
         answer = await self._speak(b"CONNECT app.example.com:443 HTTP/1.1\r\n\r\n")
 
         assert answer.startswith(b"HTTP/1.1 403")
-        assert b"capability endpoint" in answer
+        assert b"model backend, the deployment under test and Telegram" in answer
 
 
 class TestWhatTheRuntimeRefusesToStartWithout:
@@ -202,3 +203,103 @@ class TestWhatTheExecutorIsToldAboutIt:
         assert set(qa_egress.proxy_env("qa-egress-qa-1", ("qa-worker",))) == set(
             QA_EGRESS_PROXY_ENV
         )
+
+
+class TestTelegramIsOpenedAsNetworks:
+    """Telethon dials data-centre IPs, so Telegram is a set of networks, not names."""
+
+    def test_a_network_entry_is_kept_as_a_network(self):
+        allowed = parse_allowlist(["149.154.160.0/20:443", "[2001:b28:f23d::/48]:443"])
+
+        assert allowed == frozenset(
+            {
+                (ipaddress.ip_network("149.154.160.0/20"), 443),
+                (ipaddress.ip_network("2001:b28:f23d::/48"), 443),
+            }
+        )
+
+    def test_an_address_inside_the_network_is_opened_on_its_port_only(self):
+        allowed = parse_allowlist(["149.154.160.0/20:443"])
+
+        authorize(allowed, "149.154.167.51", 443)
+        with pytest.raises(Refused):
+            authorize(allowed, "149.154.167.51", 22)
+        with pytest.raises(Refused):
+            authorize(allowed, "149.154.176.1", 443)
+
+    def test_a_name_never_borrows_a_network_entry(self):
+        allowed = parse_allowlist(["149.154.160.0/20:443"])
+
+        with pytest.raises(Refused):
+            authorize(allowed, "venus.web.telegram.org", 443)
+
+    def test_a_malformed_network_stops_the_proxy(self):
+        with pytest.raises(ValueError, match="not a network"):
+            parse_allowlist(["149.154.160.1/20:443"])
+
+    def test_an_ipv6_connect_is_read_without_its_brackets(self):
+        assert parse_connect("CONNECT [2001:b28:f23d::a]:443 HTTP/1.1") == (
+            "2001:b28:f23d::a",
+            443,
+        )
+
+    def test_the_named_constant_is_the_one_list_the_run_opens(self):
+        entries = qa_egress.telegram_entries()
+
+        assert len(entries) == len(qa_egress.TELEGRAM_MTPROTO_NETWORKS) * len(
+            qa_egress.TELEGRAM_MTPROTO_PORTS
+        )
+        allowed = parse_allowlist(list(entries))
+        # Telethon's default production data centre, DC 2.
+        authorize(allowed, "149.154.167.51", 443)
+
+
+class TestTheDeployTargetIsOpenedOnlyWhenItIsPublic:
+    DIRECT = ("localhost", "127.0.0.1", "qa-worker", "worker-broker")
+
+    @pytest.mark.parametrize(
+        ("url", "entries"),
+        [
+            ("http://95.216.10.20:8080", ("95.216.10.20:8080",)),
+            ("http://95.216.10.20", ("95.216.10.20:443", "95.216.10.20:80")),
+            ("https://App.Example.com/path?q=1", ("app.example.com:443", "app.example.com:80")),
+            ("https://app.example.com:8443", ("app.example.com:8443",)),
+            ("http://[2a01:4f8::1]:8080", ("[2a01:4f8::1]:8080",)),
+        ],
+    )
+    def test_the_host_is_opened_on_the_urls_port_or_on_https_and_http(self, url, entries):
+        assert qa_egress.deploy_target_entries(url, self.DIRECT) == entries
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            "   ",
+            "ftp://95.216.10.20",
+            "95.216.10.20:8080",
+            "http://user:secret@app.example.com",
+            "http://qa-worker:41234",
+            "http://worker-broker:8001",
+            "http://localhost:8000",
+            "http://api:8000",
+            "http://redis:6379",
+            "http://host.docker.internal:8000",
+            "http://printer.local",
+            "http://127.0.0.1:8000",
+            "http://10.0.0.5",
+            "http://172.18.0.3:8000",
+            "http://192.168.1.10",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]:8000",
+            "http://[fe80::1]:8000",
+            "http://0.0.0.0:8000",
+            "http://app.example.com:0",
+            "http://app.example.com:",
+            "http://95.216.10.20:0",
+            "http://[2a01:4f8::1]:",
+        ],
+    )
+    def test_a_target_that_could_point_back_at_the_platform_is_refused(self, url):
+        with pytest.raises(qa_egress.QATargetRefused):
+            qa_egress.deploy_target_entries(url, self.DIRECT)

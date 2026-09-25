@@ -80,6 +80,7 @@ from ._qa_target import (
     new_grant_marker,
     qa_target_grant,
 )
+from ._qa_telegram_identity import QATelegramIdentityRefusal, handed_over_secrets, redact
 from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
@@ -101,11 +102,19 @@ _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 @dataclass(frozen=True)
 class QARuntimeConfig:
-    """Assigned executor and management-host capability/Telegram configuration."""
+    """Assigned executor and management-host capability/Telegram configuration.
+
+    `telegram_identity_proven` is set only by this run's own proof of
+    `telethon_env`; it is what lets the capability endpoint hand the identity to
+    the sandbox. A refused proof drops `telethon_env` and says why in
+    `telegram_identity_refusal`.
+    """
 
     executor_agent_type: AgentType
     capability_host: str
     telethon_env: dict[str, str] | None = None
+    telegram_identity_proven: bool = False
+    telegram_identity_refusal: QATelegramIdentityRefusal | None = None
 
 
 # One header per retained attempt, so a body carrying two of them is readable as
@@ -1287,20 +1296,29 @@ def confirmed_settings_facts(settings: Sequence[InitialSetting]) -> list[str]:
 
 
 async def preflight_bot_access(
-    *, bot_username: str, telethon_env: dict[str, str] | None
+    *,
+    bot_username: str,
+    telethon_env: dict[str, str] | None,
+    identity_refusal: QATelegramIdentityRefusal | None = None,
 ) -> QABlocker | None:
     """Check the platform's own prerequisites for testing a bot, without the LLM.
 
     The credentials are the QA runtime's, so a missing one is named here rather
     than discovered by the agent mid-run; the probe then asks the bot itself
-    whether it admits the QA identity.
+    whether it admits the QA identity. Credentials this run's identity proof
+    refused are missing credentials too, and the blocker says why.
     """
     if not telethon_env:
         return QABlocker(
             category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
             attempted="validate QA Telethon credentials",
             sent="TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION in the QA runtime",
-            received="the QA runtime has no Telegram QA account configured",
+            received=(
+                f"the QA Telegram session failed this run's identity proof: "
+                f"{identity_refusal.describe()}"
+                if identity_refusal
+                else "the QA runtime has no Telegram QA account configured"
+            ),
         )
     probe = await run_probe_script(
         build_access_probe_script(bot_username),
@@ -1380,11 +1398,28 @@ async def _invoke_qa_agent(  # noqa: PLR0913 — one run's whole context, each p
         telethon_env=runtime.telethon_env,
         jobs=jobs,
     )
+    secrets = handed_over_secrets(runtime)
+    if secrets:
+        # The sandbox may print the credential it holds; the report and the
+        # verdict it submits are scrubbed on the way in, before either is kept.
+        store_report = calls["write_qa_report"]
+
+        def write_qa_report(markdown: str) -> str:
+            return store_report(redact(markdown, secrets))
+
+        calls["write_qa_report"] = write_qa_report
     service = QACapabilityService(
         calls=calls,
         capabilities=session.capabilities.describe(),
-        submit_verdict=workspace.submit_verdict,
+        submit_verdict=lambda raw: workspace.submit_verdict(redact(raw, secrets)),
         advertised_host=runtime.capability_host,
+        # Only an identity this run proved is served to the sandbox.
+        telegram_identity=runtime.telethon_env if runtime.telegram_identity_proven else None,
+        telegram_identity_refusal=(
+            runtime.telegram_identity_refusal.describe()
+            if runtime.telegram_identity_refusal
+            else None
+        ),
     )
     prepared_criteria = prepare_central_qa_criteria(acceptance_criteria)
     if prepared_criteria.adjustments:
@@ -1476,11 +1511,13 @@ async def _run_central_executor(
     )
     last: QAExecutorUnavailable | None = None
     said = attempts
+    secrets = handed_over_secrets(runtime)
     for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
         try:
             run = await run_qa_executor(
                 agent_type=runtime.executor_agent_type,
                 ownership=ownership,
+                deploy_target_url=target.deployed_url,
                 capability_url=endpoint.url,
                 capability_token=endpoint.token,
                 instructions=build_qa_instructions(),
@@ -1491,6 +1528,10 @@ async def _run_central_executor(
                 on_create_published=partial(said.record_start, attempt),
             )
         except QAExecutorUnavailable as exc:
+            # What the sandbox said is evidence, and it may have printed the
+            # credential it was handed; the value never reaches the Run.
+            exc.detail = redact(exc.detail, secrets) or ""
+            exc.transcript = redact(exc.transcript, secrets)
             last = exc
             said = said.with_attempt(attempt, exc.transcript, exc.attempt)
             logger.warning(
@@ -1510,7 +1551,7 @@ async def _run_central_executor(
             verdict=run.verdict_submitted,
             calls_served=run.calls_served,
         )
-        return run, None, said.with_attempt(attempt, run.transcript, run.attempt)
+        return run, None, said.with_attempt(attempt, redact(run.transcript, secrets), run.attempt)
     return None, last, said
 
 
