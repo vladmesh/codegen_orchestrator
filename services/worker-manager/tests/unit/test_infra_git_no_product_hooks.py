@@ -16,6 +16,7 @@ remote, a fraction of a second.
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -181,6 +182,53 @@ async def test_a_new_story_branch_is_cut_from_the_fetched_default_branch(tmp_pat
     assert _git(workspace, "rev-parse", "--abbrev-ref", "HEAD") == "story/story-ea07a289"
     assert _git(workspace, "rev-parse", "HEAD") == real_main
     assert _git(workspace, "rev-parse", "HEAD") != stale_head
+
+
+async def test_checkout_converges_after_branch_fetch_failed_following_default_fetch(tmp_path):
+    remote, workspace = _make_product_repo(tmp_path)
+    branch = "story/story-ea07a289"
+    remote_tip = _advance_remote(remote, tmp_path, branch, "existing story work")
+    real_git = subprocess.run(  # noqa: S603
+        ["which", "git"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    calls = tmp_path / "fetch-calls"
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "  *'fetch origin'*)\n"
+        f"    count=$(cat '{calls}' 2>/dev/null || echo 0)\n"
+        "    count=$((count + 1))\n"
+        f"    echo \"$count\" > '{calls}'\n"
+        '    if [ "$count" -eq 2 ]; then '
+        "echo 'remote: Repository not found.' >&2; exit 128; fi ;;\n"
+        "esac\n"
+        f"exec '{real_git}' \"$@\"\n"
+    )
+    shim.chmod(0o755)
+    script = git_ops.build_checkout_script(branch).replace("cd /workspace", f"cd {workspace}", 1)
+    env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+
+    first = subprocess.run(  # noqa: S603
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
+    assert first.returncode != 0
+    assert "Repository not found" in first.stderr
+    assert _git(workspace, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") == "origin/main"
+    assert _git(workspace, "branch", "--list", branch) == ""
+
+    resumed = subprocess.run(  # noqa: S603
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "HEAD") == branch
+    assert _git(workspace, "rev-parse", "HEAD") == remote_tip
+    assert _git(workspace, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") == (
+        f"origin/{branch}"
+    )
+    assert branch in _git(remote, "branch", "--list", branch)
 
 
 async def test_an_existing_story_branch_resumes_at_its_remote_tip(tmp_path):

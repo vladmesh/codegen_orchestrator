@@ -219,11 +219,12 @@ SCAFFOLD_POLL_INTERVAL = 3
 SCAFFOLD_FENCE_TIMEOUT = 900
 DEPLOY_RUN_POLL_INTERVAL = 5
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
-#: How long the manager's first `checkout_branch` of a story branch may take.
+#: How much active time the manager's first `checkout_branch` may take, in
+#: addition to any logged GitHub repository-not-found retry delays (at most 30 s).
 #:
 #: `issue:028670f21dbd138ccd04` is the measurement this is chosen against: on
 #: production the *first* checkout of a second story hit the manager's 30 s exec
-#: bound (`git_ops._exec_script`) and the automatic retry then did the same work
+#: bound (`git_ops.checkout_branch`) and a second worker then did the same work
 #: in about four seconds. So the honest bound sits between the two — far enough
 #: above the four seconds that a loaded stand's fetch is not a failure, and far
 #: enough below the 30 s exec bound that a checkout approaching it fails here

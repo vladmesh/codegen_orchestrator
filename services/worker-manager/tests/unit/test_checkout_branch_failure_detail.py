@@ -9,7 +9,7 @@ container's own log, which nothing read.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import structlog.testing
 
@@ -93,6 +93,54 @@ async def test_a_token_in_git_output_is_redacted():
 
     assert "ghs_SECRET" not in result.detail
     assert "https://***@github.com/o/r/" in result.detail
+
+
+async def test_repository_not_found_twice_then_checkout_completes():
+    missing = (128, b"", b"remote: Repository not found.\n")
+    docker = _docker(0)
+    docker.exec_capture.side_effect = [missing, missing, (0, b"origin/story/x", b"")]
+    sleep = AsyncMock()
+
+    with patch("src.git_ops.asyncio.sleep", sleep), structlog.testing.capture_logs() as logs:
+        result = await git_ops.checkout_branch(docker, "cid", _BRANCH, "w-1")
+
+    assert result.ok
+    assert docker.exec_capture.await_count == 3
+    assert [call.args[0] for call in sleep.await_args_list] == [1, 2]
+    retries = [entry for entry in logs if entry["event"] == "checkout_branch_retry"]
+    assert [entry["attempt"] for entry in retries] == [1, 2]
+    assert not any(entry["event"] == "checkout_branch_failed" for entry in logs)
+
+
+async def test_repository_not_found_exhausts_the_shared_schedule():
+    docker = _docker(128, b"", b"remote: Repository not found.\n")
+    sleep = AsyncMock()
+
+    with patch("src.git_ops.asyncio.sleep", sleep), structlog.testing.capture_logs() as logs:
+        result = await git_ops.checkout_branch(docker, "cid", _BRANCH, "w-1")
+
+    assert not result
+    assert "exit_code=128" in result.detail
+    assert "stderr: remote: Repository not found." in result.detail
+    assert "attempts=6" in result.detail
+    assert docker.exec_capture.await_count == 6
+    assert [call.args[0] for call in sleep.await_args_list] == [1, 2, 4, 8, 15]
+    assert [entry["event"] for entry in logs].count("checkout_branch_retry") == 5
+    assert [entry["event"] for entry in logs].count("checkout_branch_failed") == 1
+
+
+async def test_authentication_failure_does_not_retry():
+    docker = _docker(128, b"", b"fatal: Authentication failed")
+    sleep = AsyncMock()
+
+    with patch("src.git_ops.asyncio.sleep", sleep), structlog.testing.capture_logs() as logs:
+        result = await git_ops.checkout_branch(docker, "cid", _BRANCH, "w-1")
+
+    assert not result
+    assert "Authentication failed" in result.detail
+    assert docker.exec_capture.await_count == 1
+    sleep.assert_not_awaited()
+    assert not any(entry["event"] == "checkout_branch_retry" for entry in logs)
 
 
 async def test_exec_capture_keeps_streams_apart():

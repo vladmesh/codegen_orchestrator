@@ -13,11 +13,14 @@ write to the workspace's git config: the product's hooks must keep running for
 the developer agent's own commits and pushes.
 """
 
+import asyncio
 import base64
 from dataclasses import dataclass
 import re
 
 import structlog
+
+from shared.git_not_found_retry import git_repository_not_found, retry_delay_after
 
 from .docker_ops import DockerClientWrapper
 
@@ -52,10 +55,14 @@ if [ -z "$DEFAULT_BRANCH" ]; then
   exit 1
 fi
 {GIT} fetch origin "+$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
-if {GIT} fetch origin "+{branch}:refs/remotes/origin/{branch}"; then
+if BRANCH_FETCH_OUTPUT="$({GIT} fetch origin "+{branch}:refs/remotes/origin/{branch}" 2>&1)"; then
   REMOTE_BRANCH=1
 else
-  REMOTE_BRANCH=0
+  printf '%s\\n' "$BRANCH_FETCH_OUTPUT" >&2
+  case "$BRANCH_FETCH_OUTPUT" in
+    *"couldn't find remote ref"*) REMOTE_BRANCH=0 ;;
+    *) exit 1 ;;
+  esac
 fi
 if {GIT} show-ref --verify --quiet "refs/heads/{branch}"; then
   {GIT} checkout {branch}
@@ -162,10 +169,28 @@ async def checkout_branch(
     logger.info("checkout_branch_start", worker_id=worker_id, branch=branch)
     encoded = base64.b64encode(build_checkout_script(branch).encode()).decode()
     cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
-    exit_code, stdout, stderr = await docker.exec_capture(container_id, cmd, timeout=30)
-    if exit_code == 0:
-        logger.info("checkout_branch_complete", worker_id=worker_id, branch=branch)
-        return CheckoutResult(ok=True)
+    attempt = 0
+    while True:
+        attempt += 1
+        exit_code, stdout, stderr = await docker.exec_capture(container_id, cmd, timeout=30)
+        if exit_code == 0:
+            logger.info(
+                "checkout_branch_complete", worker_id=worker_id, branch=branch, attempts=attempt
+            )
+            return CheckoutResult(ok=True)
+        delay = retry_delay_after(attempt) if git_repository_not_found(stderr, stdout) else None
+        if delay is None:
+            break
+        logger.warning(
+            "checkout_branch_retry",
+            worker_id=worker_id,
+            branch=branch,
+            attempt=attempt,
+            delay_seconds=delay,
+            stderr=_tail(stderr),
+            stdout=_tail(stdout),
+        )
+        await asyncio.sleep(delay)
 
     stdout_tail, stderr_tail = _tail(stdout), _tail(stderr)
     parts = [f"exit_code={exit_code}"]
@@ -173,6 +198,8 @@ async def checkout_branch(
         parts.append(f"stderr: {stderr_tail}")
     if stdout_tail:
         parts.append(f"stdout: {stdout_tail}")
+    if attempt > 1:
+        parts.append(f"attempts={attempt}")
     container = None
     if not stderr_tail and not stdout_tail:
         container = await _container_account(docker, container_id)
@@ -186,6 +213,7 @@ async def checkout_branch(
         stderr=stderr_tail,
         stdout=stdout_tail,
         container=container,
+        attempts=attempt,
     )
     return CheckoutResult(ok=False, detail=detail)
 

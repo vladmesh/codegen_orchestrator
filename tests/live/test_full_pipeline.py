@@ -1507,7 +1507,8 @@ class TestFullPipeline:
     async def test_the_first_checkout_of_the_extension_branch_completed_in_seconds(self, pipeline):
         """The duration is in the evidence as a number, and it is under the bound.
 
-        The bound is `SECOND_STORY_CHECKOUT_BOUND_SECONDS` — fifteen seconds —
+        The active-work bound is `SECOND_STORY_CHECKOUT_BOUND_SECONDS` — fifteen
+        seconds plus any logged repository-not-found retry delays, at most 30 s —
         and it is chosen from `issue:028670f21dbd138ccd04`: the checkout that
         broke production sat on the manager's 30-second exec bound until the
         worker was killed, and the retry that worked did the same job in about
