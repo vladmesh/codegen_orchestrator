@@ -83,6 +83,19 @@ QA_WORKER_TYPE = "qa"
 PARTIAL_OUTPUT_GRACE_SECONDS = 30
 RESULT_STOP_GRACE_SECONDS = 1
 
+# How long a Claude CLI may keep running after a valid HTTP result to end its
+# own turn. Only a CLI that ends its turn prints the one `type=result` document
+# that carries Claude's `total_cost_usd`; a stopped one prints nothing. The
+# pinned CLI (2.1.278) exited 0.9-1.8 s after its result POST in real
+# captures, so this bound leaves room for a longer closing message on a large
+# context. It bounds how long a result waits to be published and has no effect
+# on provenance: the checkout is fenced for the whole grace.
+RESULT_TURN_END_GRACE_SECONDS = 30
+
+# Written into every lock file the result fence holds, so releasing the fence
+# removes only locks the wrapper itself created.
+RESULT_FENCE_MARKER = b"worker-wrapper result fence\n"
+
 
 class AgentTurnLimitExceeded(RuntimeError):
     """The agent ran past the limit this turn was given, and was stopped.
@@ -1044,8 +1057,10 @@ class WorkerWrapper:
         Returns ``(stdout, stderr, limit_exceeded, stopped_after_result)``. A
         valid HTTP result is a completion barrier: the wrapper stops the agent
         process group before the process can make a later commit and turn the
-        already-reported SHA into stale provenance. On either stop path the
-        same ``communicate()`` is awaited, preserving its transcript.
+        already-reported SHA into stale provenance. A Claude CLI is first given
+        ``RESULT_TURN_END_GRACE_SECONDS`` under ``_result_fence`` to end its turn
+        and print its cost document. On either stop path the same
+        ``communicate()`` is awaited, preserving its transcript.
         """
         collecting = asyncio.ensure_future(proc.communicate())
         leader_wait = asyncio.ensure_future(proc.wait())
@@ -1081,9 +1096,26 @@ class WorkerWrapper:
 
         if result_wait in done:
             logger.info("agent_result_completion_barrier", worker_id=self.config.worker_id)
-            await self._stop_agent_process_group(proc)
-            with suppress(asyncio.CancelledError):
-                await leader_wait
+            with self._result_fence() as fenced:
+                if fenced:
+                    # The checkout cannot take a commit while this lasts, so
+                    # the CLI may end its turn and print its cost document.
+                    ended, _ = await asyncio.wait(
+                        {collecting, leader_wait},
+                        timeout=RESULT_TURN_END_GRACE_SECONDS,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    logger.info(
+                        "agent_result_turn_end_grace",
+                        worker_id=self.config.worker_id,
+                        ended_naturally=bool(ended),
+                        grace_seconds=RESULT_TURN_END_GRACE_SECONDS,
+                    )
+                # The fence is released only once no process of the turn is
+                # left alive to use the unlocked checkout.
+                await self._stop_agent_process_group(proc)
+                with suppress(asyncio.CancelledError):
+                    await leader_wait
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     asyncio.shield(collecting), timeout=PARTIAL_OUTPUT_GRACE_SECONDS
@@ -1155,6 +1187,86 @@ class WorkerWrapper:
                 await collecting
             return b"", b"", True, False
         return stdout_bytes, stderr_bytes, True, False
+
+    @contextmanager
+    def _result_fence(self):
+        """Hold the checkout at its reported state while a Claude CLI ends its turn.
+
+        Yields whether the CLI may be given ``RESULT_TURN_END_GRACE_SECONDS`` to
+        end its turn after a valid HTTP result. Other agents print no cost
+        document worth waiting for and are stopped at the barrier as before. A
+        QA executor has no repository whose state a late action could change.
+
+        A developer checkout is fenced with git's own lock protocol: the index,
+        ``HEAD`` and the checked-out branch ref are locked, so no commit, amend,
+        reset, ref update or branch switch can land while the CLI runs. A fence
+        that cannot be taken yields ``False``, for example when another git
+        process holds one of those locks: the agent is then stopped at once, as
+        before the grace existed, and its cost stays unknown.
+
+        What the fence cannot stop, deleting its locks or pushing a commit
+        object built with plumbing, still cannot publish a different SHA. After
+        the turn, ``_pushed_completed_result`` refuses a reported commit that is
+        not the checkout's HEAD, or that the story branch does not hold after
+        the wrapper's own non-forcing push, as it refuses a late commit that
+        lands before today's barrier stop completes.
+        """
+        if self.config.agent_type != AgentType.CLAUDE:
+            yield False
+            return
+        if self.is_qa_executor:
+            yield True
+            return
+        held = self._acquire_result_fence()
+        if held is None:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            self._release_result_fence(held)
+
+    def _acquire_result_fence(self) -> list[Path] | None:
+        """Create the checkout's commit locks, or return ``None`` if any is taken."""
+        git_dir = Path(WORKSPACE_DIR, ".git")
+        try:
+            head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.warning(
+                "agent_result_fence_unavailable",
+                worker_id=self.config.worker_id,
+                error="no git checkout",
+            )
+            return None
+        locks = [git_dir / "index.lock", git_dir / "HEAD.lock"]
+        if head.startswith("ref: refs/heads/"):
+            locks.append(git_dir / f"{head.removeprefix('ref: ')}.lock")
+        held: list[Path] = []
+        try:
+            for lock in locks:
+                lock.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                held.append(lock)
+                with os.fdopen(descriptor, "wb") as lock_file:
+                    lock_file.write(RESULT_FENCE_MARKER)
+        except OSError as exc:
+            logger.warning(
+                "agent_result_fence_unavailable",
+                worker_id=self.config.worker_id,
+                error=str(exc),
+            )
+            self._release_result_fence(held)
+            return None
+        logger.info("agent_result_fence_held", worker_id=self.config.worker_id)
+        return held
+
+    @staticmethod
+    def _release_result_fence(held: list[Path]) -> None:
+        """Remove the fence's own locks, and never a lock that git wrote."""
+        for lock in held:
+            with suppress(OSError):
+                if lock.read_bytes() == RESULT_FENCE_MARKER:
+                    lock.unlink()
 
     @staticmethod
     async def _stop_agent_process_group(proc) -> None:
@@ -1254,15 +1366,9 @@ class WorkerWrapper:
                 env=agent_env,
                 start_new_session=True,
             )
-            (
-                stdout_bytes,
-                stderr_bytes,
-                limit_exceeded,
-                stopped_after_result,
-            ) = await self._collect_agent_output(proc)
-        stdout = stdout_bytes.decode().strip()
-        stderr = stderr_bytes.decode().strip()
-        self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
+            stdout, stderr, limit_exceeded, stopped_after_result = await self._finish_agent_process(
+                proc
+            )
         self._transcript_path, self._transcript_truncated = save_transcript(
             self.config.transcript_dir,
             self.config.worker_id,
@@ -1304,6 +1410,36 @@ class WorkerWrapper:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await self.broker.set_session(captured_session_id)
 
+    async def _finish_agent_process(
+        self, proc, *, timeout_seconds: int | None = None
+    ) -> tuple[str, str, bool, bool]:
+        """Where the completion barrier and cost capture meet, for every CLI run.
+
+        Every agent process a turn starts, the first one and an auto-resume, ends
+        in ``_collect_agent_output`` by one of its exits: a normal exit, the
+        result barrier (with its turn-end grace), a leader exit or the limit.
+        Whatever stdout that exit kept is read here, once, as the turn's
+        provider evidence. A run that printed no final-result document, because
+        it was stopped, killed or printed something unparsable, leaves the
+        evidence empty and its cost unknown.
+
+        An auto-resume replaces the first run's evidence rather than adding to
+        it: the pinned Claude CLI reports a resumed session's cumulative
+        ``total_cost_usd``, so the resumed document already includes the first
+        run's cost, and a resume without a document leaves the turn's cost
+        unknown.
+        """
+        (
+            stdout_bytes,
+            stderr_bytes,
+            limit_exceeded,
+            stopped_after_result,
+        ) = await self._collect_agent_output(proc, timeout_seconds=timeout_seconds)
+        stdout = stdout_bytes.decode().strip()
+        stderr = stderr_bytes.decode().strip()
+        self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
+        return stdout, stderr, limit_exceeded, stopped_after_result
+
     async def _attempt_auto_resume(self, data: dict) -> bool:
         """Attempt one resume of the Claude agent to get it to call /result.
 
@@ -1342,18 +1478,16 @@ class WorkerWrapper:
                 start_new_session=True,
             )
             (
-                stdout_bytes,
-                stderr_bytes,
+                stdout,
+                stderr,
                 limit_exceeded,
                 _stopped_after_result,
-            ) = await self._collect_agent_output(proc, timeout_seconds=resume_timeout)
+            ) = await self._finish_agent_process(proc, timeout_seconds=resume_timeout)
             if limit_exceeded:
                 logger.error("auto_resume_timed_out", worker_id=self.config.worker_id)
                 return False
 
             # Update stdout tail with resume output
-            stdout = stdout_bytes.decode().strip()
-            stderr = stderr_bytes.decode().strip()
             if self._transcript_path:
                 try:
                     prior_transcript = Path(self._transcript_path).read_text(encoding="utf-8")

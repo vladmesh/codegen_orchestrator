@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - A QA temporary-access grant or revoke only reads its grant's target application's allocations: a revoke after
   undeploy settles as revoked with no ports or SSH; a grant, or an unreadable target, fails closed.
+- After its HTTP result, a Claude CLI gets 30 s under a git-lock fence to end its turn, so its
+  `total_cost_usd` reaches the ledger as `provider_reported`; past the grace it is stopped, cost unknown.
 
 ## 2026-09-24
 
