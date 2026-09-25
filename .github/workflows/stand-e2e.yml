@@ -131,10 +131,15 @@ jobs:
               echo "FATAL: suite=custom needs a pytest target" >&2
               exit 1
             fi
-            echo "value=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+            suite="${{ inputs.target }}"
           else
-            echo "value=${{ inputs.suite }}" >> "$GITHUB_OUTPUT"
+            suite="${{ inputs.suite }}"
           fi
+          echo "value=${suite}" >> "$GITHUB_OUTPUT"
+          # Whether this suite's QA executor opens the QA Telegram session: the
+          # session is then proven before any spend and must reach qa-worker.
+          qa_telethon="$(python3 -m scripts.stand_telethon_preflight needs-session --suite "${suite}")"
+          echo "qa_telethon=${qa_telethon}" >> "$GITHUB_OUTPUT"
           # The template override is both or neither: a half-set pair is a typo,
           # and it is refused here, before any machine is created.
           if [ -n "${TEMPLATE_SOURCE}" ] && [ -z "${TEMPLATE_REF}" ]; then
@@ -157,6 +162,28 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m scripts.stand_credentials
+
+      # A suite whose QA executor judges the Telegram-bot product proves the QA
+      # session here, on the runner, with the stand's own secrets: it authorizes,
+      # it is the QA identity the QA runtime's /start probe expects
+      # (QA_TEST_TELEGRAM_ID), and it can resolve and write to the stand product
+      # bot. This is the first point Telethon can run (uv is installed above) and
+      # it precedes every paid step: the Codex check's model call, BitLaunch and
+      # DNS. The client disconnects before the step ends, so the session is never
+      # open here while qa-worker holds it. It prints the user id, the bot
+      # username and the verdict, never a credential.
+      - name: Prove the QA Telegram session
+        if: ${{ steps.suite.outputs.qa_telethon == 'true' }}
+        timeout-minutes: 5
+        env:
+          TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+          STAND_PRODUCT_BOT_TOKEN: ${{ secrets.STAND_PRODUCT_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 --with 'telethon==1.45.0' \
+            python -m scripts.stand_telethon_preflight prove
 
       # Nothing is created for a revision that has no worker release and no service
       # release: the stand pulls both and builds neither. Both are published by the
@@ -477,7 +504,8 @@ jobs:
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg ANSIBLE_PIPELINING=True \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/provision_stand_control_plane.yml
-          rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
+          rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-qa-worker.env \
+            --exclude .stand-target.env \
             -e "ssh -i ${key_path} ${SSH_OPTS}" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
@@ -583,6 +611,11 @@ jobs:
           GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
           LIVE_CONTOUR: stand
           DEFAULT_AGENT_TYPE: claude
+          # The QA account's Telethon credentials, for qa-worker alone.
+          TELETHON_API_ID: ${{ secrets.TELETHON_API_ID }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+          QA_TELETHON: ${{ steps.suite.outputs.qa_telethon }}
         run: |
           set -euo pipefail
           umask 077
@@ -602,10 +635,23 @@ jobs:
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
               "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "LIVE_CONTOUR", "DEFAULT_AGENT_TYPE",
           )
+          # Not in names: .stand.env becomes the stand .env, which compose hands
+          # to every service through env_file. The QA session belongs to
+          # qa-worker alone, so it travels in its own file, which only the
+          # qa-worker of docker-compose.stand.yml reads. Required when the suite
+          # opens the session (mega-live); allowed empty otherwise (mega-noop).
+          telethon = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
               raise SystemExit("missing required stand configuration: " + ", ".join(missing))
+          if os.environ["QA_TELETHON"] == "true":
+              missing = [name for name in telethon if not os.environ.get(name)]
+              if missing:
+                  raise SystemExit("missing required qa-worker configuration: " + ", ".join(missing))
           Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
+          Path(".stand-qa-worker.env").write_text(
+              "\n".join(f"{name}={os.environ[name]}" for name in telethon) + "\n"
+          )
           # Same terminal newline the key files get: a stored secret whose final
           # newline was eaten otherwise lands on the stand as a truncated PEM.
           Path(".stand-github-app.pem").write_text(
@@ -638,6 +684,9 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           scp -i "${key_path}" ${SSH_OPTS} .stand.env \
             root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
+          # qa-worker's own env file (docker-compose.stand.yml), no wider than .env.
+          scp -i "${key_path}" ${SSH_OPTS} .stand-qa-worker.env \
+            root@"${PROD_HOST}":/opt/codegen_orchestrator/.qa-worker.env
           # Owned by the runtime user rather than by root, and no wider than
           # before: the directory stays 0700 and the key 0400. Production does the
           # same thing with `chown deploy:deploy /opt/secrets`; the stand bootstraps
@@ -805,12 +854,22 @@ jobs:
             # path: a pipe that did not complete publishes the stated reason
             # instead of its input.
             COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+            # The QA session lives in the qa-worker env file, not in the api
+            # environment, so the redactor is handed it by name: -e NAME takes
+            # the value from this shell, never from a command line.
+            qa_env=./.qa-worker.env
+            TELETHON_API_HASH=; TELETHON_SESSION=
+            if [ -f "${qa_env}" ]; then
+              TELETHON_API_HASH=$(sed -n "s/^TELETHON_API_HASH=//p" "${qa_env}")
+              TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
+            fi
+            export TELETHON_API_HASH TELETHON_SESSION
+            protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
             services_out="${diagnostics_dir}/provisioning-services.log"
             services_partial="${services_out}.partial"
             rm -f "${services_partial}"
             if ${COMPOSE} logs --no-color --tail 300 infra-service scheduler-infrastructure 2>&1 | \
-              ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+              ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
               python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
               > "${services_partial}"; then
               mv "${services_partial}" "${services_out}"
@@ -1051,7 +1110,17 @@ jobs:
                 set -euo pipefail
                 cd /opt/codegen_orchestrator
                 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
-                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY"
+                # The QA session lives in the qa-worker env file, not in the api
+                # environment, so the redactor is handed it by name: -e NAME takes
+                # the value from this shell, never from a command line.
+                qa_env=./.qa-worker.env
+                TELETHON_API_HASH=; TELETHON_SESSION=
+                if [ -f "${qa_env}" ]; then
+                  TELETHON_API_HASH=$(sed -n "s/^TELETHON_API_HASH=//p" "${qa_env}")
+                  TELETHON_SESSION=$(sed -n "s/^TELETHON_SESSION=//p" "${qa_env}")
+                fi
+                export TELETHON_API_HASH TELETHON_SESSION
+                protected_names="INTERNAL_API_KEY POSTGRES_PASSWORD SECRETS_ENCRYPTION_KEY LK_JWT_SECRET REGISTRY_PASSWORD REGISTRY_PASSWORD_HASH LOKI_PUSH_PASSWORD LOKI_PUSH_PASSWORD_HASH ADMIN_PASSWORD GRAFANA_DB_PASSWORD GRAFANA_ADMIN_PASSWORD WORKER_BROKER_INTERNAL_TOKEN PO_LLM_API_KEY ARCHITECT_LLM_API_KEY TELETHON_API_HASH TELETHON_SESSION"
                 out=/root/e2e-runs/suite-services.log
                 partial="${out}.partial"
                 rm -f "${partial}"
@@ -1062,7 +1131,7 @@ jobs:
                      scheduler-pipeline scheduler-infrastructure scheduler-maintenance \
                      engineering-worker worker-manager worker-broker api \
                      qa-worker deploy-worker 2>&1 | \
-                   ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" api \
+                   ${COMPOSE} exec -T -e STAND_DIAGNOSTIC_SECRET_NAMES="${protected_names}" -e TELETHON_API_HASH -e TELETHON_SESSION api \
                    python -c "import os,sys; from shared.diagnostics import redact_diagnostic; names=os.environ.get(\"STAND_DIAGNOSTIC_SECRET_NAMES\", \"\").split(); secrets=tuple(os.environ.get(name, \"\") for name in names); sys.stdout.write(\"\".join(redact_diagnostic(line, secrets=secrets) for line in sys.stdin))" \
                    > "${partial}"; then
                   mv "${partial}" "${out}"
@@ -1147,6 +1216,8 @@ jobs:
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: |
           set -euo pipefail
           never_upload="${RUNNER_TEMP}/stand-e2e-never-upload"
@@ -1285,6 +1356,8 @@ jobs:
           ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          TELETHON_API_HASH: ${{ secrets.TELETHON_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: |
           set -euo pipefail
           never_upload="${RUNNER_TEMP}/stand-acceptance-never-upload"

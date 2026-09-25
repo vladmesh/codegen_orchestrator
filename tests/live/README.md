@@ -68,6 +68,23 @@ The local target names reflect that same contract:
 There is no compatibility alias or aggregate target in the local Makefile: select the named class
 that owns the coverage you want, or use `make stand-run SUITE=<suite>` for a canonical stand run.
 
+### The QA Telegram session
+
+`mega-live`'s QA executor tests the level-1 Telegram-bot product as the QA account, so the stand
+needs that account's Telethon session. The `stand` environment secrets `TELETHON_API_ID`,
+`TELETHON_API_HASH` and `TELETHON_SESSION` are required, and the session must belong to the QA
+identity the QA runtime's `/start` probe compares against (`QA_TEST_TELEGRAM_ID`,
+`shared/contracts/bot_access.py`) and be able to reach the stand product bot
+(`STAND_PRODUCT_BOT_TOKEN`). Before any machine or model is paid for, the workflow's "Prove the QA
+Telegram session" step signs in on the runner, checks the user id, resolves the bot's username
+(Bot API `getMe`) and sends it `/start`, then disconnects; a failure refuses the run as
+`telethon_session_unauthorized`, `telethon_identity_mismatch` or `telethon_bot_unreachable`. The
+render writes the three values to `.stand-qa-worker.env`, installed as the stand's `.qa-worker.env`,
+which `docker-compose.stand.yml` hands to qa-worker and no other service (the stand `.env` is every
+service's `env_file`). `mega-noop` runs deterministic QA and renders them empty. The session and API
+hash are protected values of the service-tail redaction and of every artifact admission. A new stand
+session is authorized with `scripts/make_stand_session.py`.
+
 ### Switching the QA executor
 
 A paid suite asks for a QA executor, and the runner has to make that true before pytest starts.

@@ -229,12 +229,17 @@ class Suite:
     cleanup_grace_seconds: int = 0
     #: A short process-group grace after the backstop interrupts a wedged suite.
     termination_grace_seconds: int = PROCESS_GROUP_TERMINATION_GRACE_SECONDS
+    #: The suite deploys the level-1 Telegram-bot product. With `llm`, its QA
+    #: executor opens the QA Telegram session, which the workflow proves before
+    #: any spend (scripts/stand_telethon_preflight.py).
+    telegram_bot_product: bool = False
     description: str = ""
 
 
 SUITES: dict[str, Suite] = {
     "mega-noop": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipeline",
+        telegram_bot_product=True,
         llm=False,
         timeout_seconds=NOOP_SUITE_TIMEOUT_SECONDS,
         description=(
@@ -244,6 +249,7 @@ SUITES: dict[str, Suite] = {
     ),
     "mega-live": Suite(
         target="tests/live/test_full_pipeline.py::TestFullPipeline",
+        telegram_bot_product=True,
         llm=True,
         timeout_seconds=LIVE_SUITE_TIMEOUT_SECONDS,
         description=(
